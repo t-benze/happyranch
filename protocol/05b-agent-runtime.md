@@ -738,6 +738,10 @@ release and system-contract slugs win on collision.
 
 **THR-055 B2 custom skills.** Custom skills use `custom_skills`, immutable `custom_skill_versions`, eligibility rules/events, per-session materialization evidence, and custom-skill events. The only agent create path is `POST /api/v1/orgs/{slug}/skills/agent`, invoked by `happyranch skills create --from-file <package.json> --session-id <session-id> [--org <slug>]`. It is bearer-free, derives org/task/agent/session from the verified SessionTracker binding, returns `{skill, version, hidden_reason, provenance}`, and creates a default-hidden editable B2 record. Every verified agent may use it; founders configure eligibility later.
 
+**Supported SKILL.md authoring contract (THR-169).** Newly authored SKILL.md bodies are YAML-frontmatter-first: a valid opening `---` fence, a YAML mapping, a closing `---` fence, then a Markdown heading. One canonical shape validator (`runtime/skills/skill_md.py`, reached by every custom-skill write route through `_validate_skill_package`) enforces the contract; malformed/unclosed/non-mapping frontmatter and missing post-frontmatter headings are rejected. Heading-first bodies are legacy-only: versions validated and stored valid under the pre-cutover contract remain resolvable and materializable (the resolver and materializer read stored `validation_state` and never re-validate), but heading-first bodies are NOT accepted for new authoring.
+
+**Atomic version writes.** `POST /api/v1/orgs/{slug}/custom-skills/{skill_id}/versions` (and the human/agent create paths) finish validation before any persistence. Invalid input is rejected with HTTP 422 `validation_failed` and zero durable residue — no version row, event, `current_version_id` advance, materialization, or content-artifact file. A byte-identical body conflicts with the append-only `UNIQUE (skill_id, content_hash)` invariant as HTTP 409 `duplicate_content` (never relaxed).
+
 **FAIL-CLOSED materialization.** Any error during materialization raises
 immediately. A failed materialization must NOT leave a partially-populated
 skills directory passing as complete. All five caller contexts (orchestrator

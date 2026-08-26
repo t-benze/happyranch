@@ -635,7 +635,7 @@ def _validate_skill_package(
     (a) parses / well-formed — skill_md is non-empty string
     (b) required metadata present — id, slug, name, version must all be
         non-empty strings
-    (c) SKILL.md present — skill_md is not empty/just-whitespace
+    (c) SKILL.md present — YAML-frontmatter-first, then a Markdown heading
     (d) references + assets resolve — if provided, must be dicts of
         string→string
     (e) NO bundled-slug collision — custom slug must not collide with
@@ -651,10 +651,14 @@ def _validate_skill_package(
     errors: list[str] = []
     reason_codes: list[str] = []
 
-    # (a) well-formed — skill_md must be a non-empty string
-    if not isinstance(skill_md, str) or not skill_md.strip():
-        errors.append("SKILL.md content is empty or missing")
-        reason_codes.append("skill_md_empty")
+    # (a)+(c) well-formed + supported authoring contract — one canonical
+    # shape validator (YAML-frontmatter-first, then a Markdown heading) shared
+    # by every custom-skill authoring route. Heading-first bodies are legacy
+    # only and are never re-accepted for new authoring.
+    from runtime.skills.skill_md import skill_md_contract_violations
+    for code, message in skill_md_contract_violations(skill_md):
+        errors.append(message)
+        reason_codes.append(code)
 
     # (b) required metadata: id, slug, name, version
     if not skill_id or not isinstance(skill_id, str) or not skill_id.strip():
@@ -669,11 +673,6 @@ def _validate_skill_package(
     if not version or not isinstance(version, str) or not version.strip():
         errors.append("Required metadata 'version' is missing")
         reason_codes.append("missing_version")
-
-    # (c) SKILL.md present — already covered by (a) plus heading check
-    if skill_md.strip() and not skill_md.strip().startswith("#"):
-        errors.append("SKILL.md must start with a heading")
-        reason_codes.append("skill_md_no_heading")
 
     # (d) references + assets resolve
     if not isinstance(references, dict):

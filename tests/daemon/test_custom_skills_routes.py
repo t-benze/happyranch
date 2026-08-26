@@ -14,8 +14,12 @@ _FORBIDDEN_IDENTITY = (
     "org_slug", "actor", "eligibility", "permission", "permissions",
 )
 
+# Supported authoring contract (founder-approved, THR-169): YAML
+# frontmatter first, then a Markdown heading.
+_FM_BODY = "---\nname: Test skill\ndescription: test\n---\n\n# Test\n\nOne\n"
 
-def _body(slug: str = "test-skill", skill_md: str = "# Test\n\nOne") -> dict:
+
+def _body(slug: str = "test-skill", skill_md: str = _FM_BODY) -> dict:
     return {"slug": slug, "name": "Test skill", "description": "test", "skill_md": skill_md}
 
 
@@ -27,7 +31,27 @@ def _custom_counts(org) -> dict[str, int]:
     return {table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in tables}
 
 
-def _create(client, slug: str = "test-skill", skill_md: str = "# Test\n\nOne") -> dict:
+def _artifact_keys(org) -> set[str]:
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    store = ArtifactStore(OrgPaths(org.root).artifacts_dir)
+    return {info.name for info in store.list_artifacts()}
+
+
+def _residue_snapshot(org, skill_id: str) -> dict:
+    """Snapshot every zero-residue dimension for one skill."""
+    conn = getattr(org.db, "_conn", org.db)
+    current = conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()
+    return {
+        "counts": _custom_counts(org),
+        "current_version_id": current["current_version_id"] if current else None,
+        "artifacts": _artifact_keys(org),
+    }
+
+
+def _create(client, slug: str = "test-skill", skill_md: str = _FM_BODY) -> dict:
     response = client.post(BASE, json=_body(slug, skill_md))
     assert response.status_code == 201, response.text
     return response.json()
@@ -77,7 +101,7 @@ def test_agent_create_rejects_another_agents_originated_skill_without_mutation(c
     before = _custom_counts(org)
     response = client.post(
         f"{BASE}/agent-create", params={"session_id": "sess-b"},
-        json=_body("product-manager-prd", "# Attempt"),
+        json=_body("product-manager-prd", "---\nname: Attempt\n---\n\n# Attempt\n"),
     )
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "not_origin_owner"
@@ -124,7 +148,7 @@ def test_skills_agent_returns_only_b2_custom_skill_mapping(client_with_runtime):
 @pytest.mark.parametrize("method,path,payload", [
     ("post", "", _body()),
     ("patch", "/{skill_id}", {"name": "Renamed"}),
-    ("post", "/{skill_id}/versions", {"skill_md": "# Version two"}),
+    ("post", "/{skill_id}/versions", {"skill_md": "---\nname: Test skill\n---\n\n# Version two\n"}),
     ("post", "/{skill_id}/retire", {"reason": "test"}),
     ("post", "/{skill_id}/restore", None),
     ("put", "/{skill_id}/eligibility", [{"scope_type": "org", "scope_target": None, "effect": "allow"}]),
@@ -152,7 +176,7 @@ def test_eligibility_rejections_are_atomic(client_with_runtime):
     rules = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
     preview = client.post(f"{BASE}/{skill_id}/eligibility/preview", json=rules)
     assert preview.status_code == 200 and preview.json()["revision"] == revision
-    advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": "# Test\n\nTwo"})
+    advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": "---\nname: Test skill\n---\n\n# Test\n\nTwo\n"})
     assert advanced.status_code == 201
     conn = getattr(org.db, "_conn", org.db)
     before = (
@@ -210,10 +234,10 @@ def test_b2_recover_deletes_only_corrupt_version_with_audit(
     from runtime.skills.canonical_store import CanonicalSkillStore, _make_writable_for_removal
 
     client, org = client_with_runtime
-    created = _create(client, slug="recoverable-b2", skill_md="# Recover\n\nOriginal")
+    created = _create(client, slug="recoverable-b2", skill_md="---\nname: Recover\n---\n\n# Recover\n\nOriginal\n")
     current = client.post(
         f"{BASE}/{created['skill_id']}/versions",
-        json={"skill_md": "# Recover\n\nCurrent"},
+        json={"skill_md": "---\nname: Recover\n---\n\n# Recover\n\nCurrent\n"},
     )
     assert current.status_code == 201, current.text
     content_hash = current.json()["content_hash"]
@@ -265,10 +289,10 @@ def test_b2_recover_refuses_corrupt_historical_version_after_current_advances(
     from runtime.skills.canonical_store import CanonicalSkillStore, _make_writable_for_removal
 
     client, org = client_with_runtime
-    created = _create(client, slug="stale-recoverable-b2", skill_md="# Recover\n\nVersion A")
+    created = _create(client, slug="stale-recoverable-b2", skill_md="---\nname: Recover\n---\n\n# Recover\n\nVersion A\n")
     current = client.post(
         f"{BASE}/{created['skill_id']}/versions",
-        json={"skill_md": "# Recover\n\nVersion B"},
+        json={"skill_md": "---\nname: Recover\n---\n\n# Recover\n\nVersion B\n"},
     )
     assert current.status_code == 201, current.text
     monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(org.root / "canonical-store"))
@@ -333,18 +357,33 @@ def test_b2_recover_refuses_missing_and_ineligible_current_provenance(client_wit
         "reason_codes": '["b2_provenance_not_found"]',
     }
 
-    invalid = client.post(
-        f"{BASE}/{created['skill_id']}/versions",
-        json={"skill_md": "not markdown"},
+    # Invalid bodies are now rejected atomically by POST /versions. Simulate
+    # the legacy invalid current version (pre-cutover rows persisted before
+    # rejection existed) to exercise the recover route's ineligibility gate.
+    from runtime.skills.custom import service as custom_service
+    conn.execute(
+        """INSERT INTO custom_skill_versions
+           (skill_id,parent_version_id,content_hash,content_artifact_key,skill_md_cache,
+            validation_state,validator_version,validation_findings,created_at,
+            author_kind,author_identity)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (created["skill_id"], created["version_id"], "0" * 64,
+         "custom-skills/ineligible-recoverable-b2/legacy/SKILL.md", "not markdown",
+         "invalid", "THR-055/1.0.0", '["SKILL.md must start with a heading"]',
+         custom_service.now(), "human", "founder"),
     )
-    assert invalid.status_code == 201
-    assert invalid.json()["validation_state"] == "invalid"
+    version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "UPDATE custom_skills SET current_version_id=? WHERE id=?",
+        (version_id, created["skill_id"]),
+    )
+    conn.commit()
     refused = client.post(
         "/api/v1/orgs/alpha/skills/recover",
         json={
             "slug": "ineligible-recoverable-b2",
-            "version": str(invalid.json()["version_id"]),
-            "content_hash": invalid.json()["content_hash"],
+            "version": str(version_id),
+            "content_hash": "0" * 64,
         },
     )
     assert refused.status_code == 409
@@ -399,9 +438,27 @@ def test_ineligible_skill_cannot_write_rules(client_with_runtime, state):
         assert client.post(f"{BASE}/{skill_id}/retire", json={}).status_code == 200
         revision = created["version_id"]
     else:
-        invalid = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": "not markdown"})
-        assert invalid.status_code == 201
-        revision = invalid.json()["version_id"]
+        # Legacy invalid current version: pre-cutover rows persisted before
+        # invalid rejection existed (POST /versions now rejects atomically).
+        from runtime.skills.custom import service as custom_service
+        conn = getattr(org.db, "_conn", org.db)
+        conn.execute(
+            """INSERT INTO custom_skill_versions
+               (skill_id,parent_version_id,content_hash,content_artifact_key,skill_md_cache,
+                validation_state,validator_version,validation_findings,created_at,
+                author_kind,author_identity)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (skill_id, created["version_id"], "0" * 64,
+             "custom-skills/invalid-legacy/SKILL.md", "not markdown",
+             "invalid", "THR-055/1.0.0", '["SKILL.md must start with a heading"]',
+             custom_service.now(), "human", "founder"),
+        )
+        revision = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "UPDATE custom_skills SET current_version_id=? WHERE id=?",
+            (revision, skill_id),
+        )
+        conn.commit()
     before = _custom_counts(org)
     response = client.put(f"{BASE}/{skill_id}/eligibility", json=[], headers={"If-Match": str(revision)})
     assert response.status_code == 422 and response.json()["detail"]["code"] == "version_not_eligible"
@@ -410,8 +467,8 @@ def test_ineligible_skill_cannot_write_rules(client_with_runtime, state):
 
 def test_version_diff_returns_metadata_and_unified_content_diff(client_with_runtime):
     client, _org = client_with_runtime
-    first = _create(client, skill_md="# Test\n\nOld line")
-    second = client.post(f"{BASE}/{first['skill_id']}/versions", json={"skill_md": "# Test\n\nNew line"})
+    first = _create(client, skill_md="---\nname: Test\n---\n\n# Test\n\nOld line\n")
+    second = client.post(f"{BASE}/{first['skill_id']}/versions", json={"skill_md": "---\nname: Test\n---\n\n# Test\n\nNew line\n"})
     assert second.status_code == 201
     response = client.get(f"{BASE}/{first['skill_id']}/versions/{first['version_id']}/diff/{second.json()['version_id']}")
     assert response.status_code == 200
@@ -432,10 +489,220 @@ def test_custom_skill_flow_never_writes_lifecycle_tables(client_with_runtime):
     )]
     created = _create(client)
     skill_id = created["skill_id"]
-    version = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": "# Test\n\nTwo"}).json()
+    version = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": "---\nname: Test skill\n---\n\n# Test\n\nTwo\n"}).json()
     assert client.post(f"{BASE}/{skill_id}/retire", json={}).status_code == 200
     assert client.post(f"{BASE}/{skill_id}/restore").status_code == 200
     rules = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
     assert client.post(f"{BASE}/{skill_id}/eligibility/preview", json=rules).status_code == 200
     assert client.put(f"{BASE}/{skill_id}/eligibility", json=rules, headers={"If-Match": str(version["version_id"])}).status_code == 200
     assert all(conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0 for table in lifecycle_tables)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-169 frontmatter-first authoring contract + atomic version writes
+# ═══════════════════════════════════════════════════════════════════════════
+
+_INVALID_BODIES = [
+    ("---\nname: [unclosed\n---\n# Test\n\nOne\n", "skill_md_malformed_frontmatter"),
+    ("---\nname: x\n# no closing fence\n", "skill_md_unclosed_frontmatter"),
+    ("---\n- a\n- b\n---\n# Test\n\nOne\n", "skill_md_frontmatter_not_mapping"),
+    ("---\njust a string\n---\n# Test\n\nOne\n", "skill_md_frontmatter_not_mapping"),
+    ("---\nname: x\n---\nplain text without a heading\n", "skill_md_no_heading"),
+    ("---\nname: x\n---\n\n", "skill_md_no_heading"),
+    ("# Legacy heading-first body\n", "skill_md_no_frontmatter"),
+    ("plain text without frontmatter", "skill_md_no_frontmatter"),
+]
+
+
+@pytest.mark.parametrize("skill_md,code", _INVALID_BODIES)
+def test_add_version_rejects_invalid_bodies_atomically(client_with_runtime, skill_md, code):
+    """Every invalid body is rejected with zero durable residue across ALL
+    residue dimensions: no version row, no event, no current-pointer change,
+    no artifact file, no materialization row, no eligibility row."""
+    client, org = client_with_runtime
+    created = _create(client)
+    skill_id = created["skill_id"]
+    before = _residue_snapshot(org, skill_id)
+    response = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": skill_md})
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "validation_failed"
+    assert code in detail["reason_codes"]
+    assert _residue_snapshot(org, skill_id) == before
+
+
+def test_add_version_rejects_empty_skill_md_without_residue(client_with_runtime):
+    client, org = client_with_runtime
+    created = _create(client)
+    skill_id = created["skill_id"]
+    before = _residue_snapshot(org, skill_id)
+    response = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": ""})
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_request"
+    assert _residue_snapshot(org, skill_id) == before
+
+
+def test_add_version_accepts_frontmatter_first_successor(client_with_runtime):
+    client, org = client_with_runtime
+    created = _create(client)
+    skill_id = created["skill_id"]
+    successor = "---\nname: Test skill\ndescription: test\n---\n\n# Test\n\nTwo\n"
+    response = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": successor})
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["validation_state"] == "valid"
+    conn = getattr(org.db, "_conn", org.db)
+    row = conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()
+    assert row["current_version_id"] == payload["version_id"]
+    events = [
+        r["event_type"]
+        for r in conn.execute(
+            "SELECT event_type FROM custom_skill_events WHERE skill_id=? ORDER BY id",
+            (skill_id,),
+        )
+    ]
+    assert events == ["created", "validated", "version_saved", "validated"]
+    stored = conn.execute(
+        "SELECT skill_md_cache FROM custom_skill_versions WHERE id=?",
+        (payload["version_id"],),
+    ).fetchone()
+    assert stored["skill_md_cache"] == successor
+
+
+def test_add_version_duplicate_content_conflicts_atomically(client_with_runtime):
+    """A byte-identical body (TASK-5741 failure mode) conflicts with zero
+    durable residue — the append-only (skill_id, content_hash) uniqueness
+    invariant is preserved, never relaxed."""
+    client, org = client_with_runtime
+    created = _create(client)
+    skill_id = created["skill_id"]
+    before = _residue_snapshot(org, skill_id)
+    response = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": _FM_BODY})
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "duplicate_content"
+    assert _residue_snapshot(org, skill_id) == before
+
+
+def test_create_rejects_invalid_body_atomically(client_with_runtime):
+    client, org = client_with_runtime
+    before_counts = _custom_counts(org)
+    before_artifacts = _artifact_keys(org)
+    response = client.post(
+        BASE,
+        json={"slug": "bad-create", "name": "Bad", "skill_md": "no frontmatter no heading"},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "validation_failed"
+    assert _custom_counts(org) == before_counts
+    assert _artifact_keys(org) == before_artifacts
+
+
+def test_agent_create_rejects_invalid_body_atomically(client_with_runtime):
+    client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="TASK-INV", brief="create a custom skill"))
+    org.sessions.set_active("TASK-INV", "dev_agent", "sess-inv", org_slug="alpha")
+    client.headers.pop("Authorization", None)
+    before_counts = _custom_counts(org)
+    before_artifacts = _artifact_keys(org)
+    response = client.post(
+        f"{BASE}/agent-create",
+        params={"session_id": "sess-inv"},
+        json={"slug": "bad-agent", "name": "Bad", "skill_md": "no frontmatter"},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "validation_failed"
+    assert _custom_counts(org) == before_counts
+    assert _artifact_keys(org) == before_artifacts
+
+
+def test_agent_update_rejects_invalid_body_without_residue(client_with_runtime):
+    """Agent updating its own originated skill: invalid body rejected, no
+    version/event/pointer/artifact residue, current pointer stays put."""
+    client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="TASK-OWN", brief="create a custom skill"))
+    org.sessions.set_active("TASK-OWN", "dev_agent", "sess-own", org_slug="alpha")
+    client.headers.pop("Authorization", None)
+    created = client.post(
+        f"{BASE}/agent-create", params={"session_id": "sess-own"}, json=_body("owned-skill")
+    )
+    assert created.status_code == 201, created.text
+    skill_id = created.json()["skill"]["id"]
+    before = _residue_snapshot(org, skill_id)
+    response = client.post(
+        f"{BASE}/agent-create",
+        params={"session_id": "sess-own"},
+        json=_body("owned-skill", "---\nname: x\n---\nno heading\n"),
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "validation_failed"
+    assert _residue_snapshot(org, skill_id) == before
+
+
+def test_legacy_heading_first_valid_version_stays_resolvable_and_materializable(
+    client_with_runtime, monkeypatch,
+):
+    """The approved migration boundary: heading-first versions validated under
+    the legacy contract and stored valid remain resolvable by the resolver and
+    materializable through the canonical store — the seams read stored
+    validation_state and never re-validate against the new contract."""
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.skills.canonical_store import CanonicalSkillStore
+    from runtime.skills.custom import service as custom_service
+    from runtime.orchestrator.workspace_adapters import _build_custom_skill_canonical_specs
+
+    client, org = client_with_runtime
+    _add_agent(org, "dev_agent")
+    conn = getattr(org.db, "_conn", org.db)
+    skill_id = "custom:legacy"
+    content = "# Heading-first legacy body\n\nStill valid under the old contract.\n"
+    artifact_key = ArtifactStore(OrgPaths(org.root).artifacts_dir).put(
+        "custom-skills/legacy/legacy/SKILL.md", content.encode(),
+    ).name
+    conn.execute(
+        "INSERT INTO custom_skills (id,org_slug,slug,name,origin_kind,created_at,created_by) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (skill_id, "alpha", "legacy", "Legacy", "human", custom_service.now(), "founder"),
+    )
+    conn.execute(
+        """INSERT INTO custom_skill_versions
+           (skill_id,content_hash,content_artifact_key,skill_md_cache,validation_state,
+            validator_version,validation_findings,created_at,author_kind,author_identity)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (skill_id, hashlib.sha256(content.encode()).hexdigest(), artifact_key, content,
+         "valid", "THR-055/1.0.0", "[]", custom_service.now(), "human", "founder"),
+    )
+    version_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "UPDATE custom_skills SET current_version_id=? WHERE id=?",
+        (version_id, skill_id),
+    )
+    conn.execute(
+        "INSERT INTO custom_skill_eligibility_rules "
+        "(skill_id,scope_type,scope_target,effect,created_at,created_by) "
+        "VALUES (?,?,?,?,?,?)",
+        (skill_id, "org", None, "allow", custom_service.now(), "founder"),
+    )
+    conn.commit()
+
+    # Resolver: legacy valid heading-first version is visible.
+    response = client.get(f"{BASE}/{skill_id}/eligibility/explain", params={"agent": "dev_agent"})
+    assert response.status_code == 200
+    assert response.json()["visible"] is True
+
+    # Canonical materialization: the legacy body builds a package.
+    monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(org.root / "canonical-store"))
+    specs = _build_custom_skill_canonical_specs(
+        store=CanonicalSkillStore(),
+        org_root=org.root,
+        db=org.db,
+        slug="alpha",
+        agent_name="dev_agent",
+        team="engineering",
+        task_id="TASK-LEGACY",
+        session_id="sess-legacy",
+        session_context="task",
+    )
+    assert any(spec["slug"] == "legacy" for spec in specs)

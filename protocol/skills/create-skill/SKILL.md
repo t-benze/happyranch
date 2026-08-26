@@ -68,7 +68,7 @@ persistence.
 {
   "slug": "my-workflow",
   "name": "My Workflow",
-  "skill_md": "# My Workflow\n\nGuidance content here...",
+  "skill_md": "---\nname: My Workflow\ndescription: Optional one-line summary\n---\n\n# My Workflow\n\nGuidance content here...",
   "version": "0.1.0",
   "policy_class": "standard_operational",
   "description": "Optional one-line summary",
@@ -85,8 +85,7 @@ persistence.
   `hr:manage-agent`, `hr:manage-repo`, `hr:frontend-development`,
   `hr:product-manager-prd`).
 - `name` — human-readable name.
-- `skill_md` — the SKILL.md body as a string. Must be non-empty and start
-  with a Markdown heading.
+- `skill_md` — the SKILL.md body as a string. Must be **YAML-frontmatter-first**: a valid opening `---` YAML fence containing a YAML mapping, a closing `---` fence, then a Markdown heading. Example below. Heading-first bodies (no frontmatter) are legacy-only and are **not** accepted for new authoring.
 
 ### Optional fields
 
@@ -100,7 +99,10 @@ persistence.
 
 The server runs deterministic validation before persistence. Validation checks:
 
-1. `skill_md` is non-empty and starts with a Markdown heading.
+1. `skill_md` is YAML-frontmatter-first: a valid opening `---` fence, a YAML
+   mapping inside, a closing `---` fence, then a Markdown heading. Malformed,
+   unclosed, non-mapping, or missing-heading bodies are rejected. Heading-first
+   bodies are legacy-only and not accepted for new authoring.
 2. Required metadata (`slug`, `name`, `skill_md`) is present and non-empty.
 3. `slug` does not collide with any protected slug (system contracts +
    release-managed skills, loaded from the canonical release registry).
