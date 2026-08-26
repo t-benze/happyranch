@@ -22,13 +22,19 @@
 > diagnostics with an accurately bounded daemon-child CLI-parity limitation
 > (the shipped runtime has no daemon-child diagnostic seam — see §7.2).
 >
-> **Honesty boundary (binding).** Slices B/C/D *runtime* guarantees (an
-> automated importer, online transfer fences, batch automation, an exhaustive
-> readiness command) are **not shipped** by this PR. The multi-org inventory,
-> per-org operation ledger, readiness checks, and diagnostics below are
-> **operator-enforced**: the founder runs them manually and records the
-> results; nothing in the shipped runtime verifies them. Every command below
-> is an existing, verified surface; none is invented.
+> **Honesty boundary (binding).** Slices B/C *runtime* guarantees are **not
+> shipped** by the runbook itself (an automated importer, online transfer
+> fences, batch automation, an exhaustive readiness command); Slice D is
+> entirely unshipped. What IS shipped in the runtime: Slice B ships
+> active-roster-only bulk ``init-agent`` targeting; Slice C ships
+> executor-profile-specific readiness-marker verification — ``init-agent``
+> reports ``done`` only after the selected executor profile's exact readiness
+> marker exists as a valid regular file produced by the bootstrap (see §7.1
+> steps 2–3). The multi-org inventory, per-org operation ledger, remaining
+> readiness checks, and diagnostics below are **operator-enforced**: the
+> founder runs them manually and records the results; nothing else in the
+> shipped runtime verifies them. Every command below is an existing, verified
+> surface; none is invented.
 >
 > Evidence for each statement is the shipped code at the current head and the
 > Step-0 evidence gate
@@ -49,8 +55,10 @@ later decision — §8); a merge/overwrite of two orgs; a credential or
 daemon-token transfer; an automatic rebind/rearm; an online fence or retry
 protocol; a v0/v1 layout conversion (every non-current-v2 layout is a named
 refusal, never an auto-upgrade); an automatic importer or first-class
-relocation tool (Slices B/C/D are not shipped — see the honesty boundary
-above); a batch-atomic protocol (each org publishes independently, a later
+relocation tool (no automated importer exists; Slice B shipped only
+active-roster bulk init-agent targeting and Slice C only init-agent
+readiness-marker verification — see the honesty boundary above); a
+batch-atomic protocol (each org publishes independently, a later
 failure never rolls back an already-published org, and no successful org
 masks a failure — §1.1, §8); or credential/token-residue inspection or
 cleanup (a separate, founder-authorized task; do **not** combine destructive
@@ -979,11 +987,16 @@ or settings seeding — there is no data-safe inactive state.
 
 **Rebinding target-local executors/adapters**, **regenerating agent
 workspaces**, and **re-arming schedules** are **mandatory operator work
-before any work resumes** — see §7.1. The runtime does **not** enforce any of
-them and does not block startup; the runbook makes them gating because the
-relocated org is otherwise not launch-ready (GH-709 finding 2). This manual
-start is allowed only because the §7 zero-count gate passed and the source was
-quiescent when exported.
+before any work resumes** — see §7.1. The runtime does **not** enforce
+workspace regeneration or schedule re-arm and does not block startup; the
+runbook makes them gating because the relocated org is otherwise not
+launch-ready. Since GH-709 Slice C, the runtime **does** enforce the
+per-agent readiness-marker gate inside ``init-agent`` (it never reports
+``done`` without the selected profile's exact marker as a regular file —
+GH-709 finding 2 is fixed), but the founder still runs and records the
+§7.1 checks as the operator ledger. This manual start is allowed only
+because the §7 zero-count gate passed and the source was quiescent when
+exported.
 
 ### 7.1 Mandatory post-publication readiness — before any work resumes
 
@@ -993,8 +1006,9 @@ settings, skills links, `repos/`, `output/` are excluded by design; only
 `workspaces/<agent>/memory/**` travels. **No agent can launch until the
 workspace is regenerated and the executor-specific readiness marker exists.**
 Until the gate below passes, do **not** dispatch tasks, resume threads, or
-allow any agent invocation. The runtime does **not** verify any of this — the
-gate is operator-enforced (honesty boundary in the header).
+allow any agent invocation. The runtime enforces only the init-agent
+readiness-marker gate (Slice C, step 2); the remaining checks below are
+operator-enforced (honesty boundary in the header).
 
 1. **Destination executor inventory (before any init).** For every selected
    org, list the **active AgentDef roster only** — the approved agent markdown
@@ -1030,15 +1044,28 @@ gate is operator-enforced (honesty boundary in the header).
    (GH-709 Slice B). Repository-backed agents will reclone/reconcile their
    configured repositories — an expected side effect of workspace
    regeneration.
-3. **Verify the exact readiness marker is a regular file — do not trust the
-   `done` phase.** The bulk/per-agent init stream can emit `done` without the
-   marker existing (GH-709 finding 2). After each agent's init, verify the
+
+   **GH-709 Slice C (shipped): init-agent verifies the readiness marker
+   itself before reporting `done`.** The bootstrap materializes the
+   workspace skills tree (so the claude profile marker
+   `.claude/skills/start-task/SKILL.md` exists immediately after init, not
+   only at first session spawn) and init-agent emits `done` **only** after
+   the **selected executor profile's exact marker** exists as a valid
+   regular file. An unregistered profile (not in the destination registry),
+   a missing/wrong-profile marker, or a non-regular marker (directory,
+   dangling link) emits a per-agent `error`, never `done`; the stream stops
+   at the first error (no `all_done`) and the CLI exits nonzero. A blocked
+   agent from step 1 therefore fails init rather than being reported done.
+3. **Verify the exact readiness marker is a regular file (ledger
+   evidence).** The runtime now enforces marker verification at init (Slice
+   C), but the founder must still record the check as ledger evidence — do
+   not rely on the `done` phase alone. After each agent's init, verify the
    marker for its **selected executor profile**: `claude` →
    `workspaces/<agent>/.claude/skills/start-task/SKILL.md`; `codex`,
    `opencode`, `pi` → `workspaces/<agent>/AGENTS.md`; a custom profile → its
-   registered `readiness_marker_fragment` (a missing/absent profile falls back
-   to `AGENTS.md` in code, but the agent is **not launchable** — step 1's
-   registration check is the gate):
+   registered `readiness_marker_fragment` (a missing/absent profile is a
+   blocked agent — init now fails it with an actionable message; step 1's
+   registration check remains the gate):
 
    ```bash
    set -euo pipefail
@@ -1072,9 +1099,10 @@ The destination must be startable from the **exact shell that will run the
 start** — a remote noninteractive SSH shell may not source the user profile
 and can silently lose `uv`/`happyranch` from `PATH`. The shipped
 `scripts/daemon.sh start` backgrounds bare `uv` and reports only a five-second
-timeout (GH-709 finding 5); the in-script preflight is a Slice-B runtime fix
-that is **not shipped**. Until it lands, run these operator diagnostics
-**before** `scripts/daemon.sh start` from that exact environment:
+timeout (GH-709 finding 5); the synchronous in-script `uv` PATH/version
+preflight is Slice D work that is **not shipped**. Until it lands, run these
+operator diagnostics **before** `scripts/daemon.sh start` from that exact
+environment:
 
 ```bash
 set -euo pipefail
@@ -1229,7 +1257,10 @@ runbook's success criteria do not include it.
   `cli/commands/doctor.py` (`happyranch doctor`); daemon-side active runtime
   root: `runtime/daemon/routes/runtime.py` (`GET /api/v1/runtime`) and
   `runtime/daemon/routes/health.py` (`GET /api/v1/health`) (§7.2).
-- Workspace regeneration: `runtime/daemon/routes/agents.py` (`init_agents`,
-  `ContextBuilder.ensure_workspace_ready`), `cli/commands/agents.py`
-  (`happyranch init-agent`); the runbook deliberately drives it per active
-  AgentDef and verifies the marker itself (§7.1).
+- Workspace regeneration + readiness marker: `runtime/daemon/routes/agents.py`
+  (`init_agents`, `ContextBuilder.ensure_workspace_ready`, and the Slice-C
+  `_bootstrap_readiness_marker` helper that materializes the skills tree and
+  verifies the selected profile's exact marker is a regular file before
+  `done`), `cli/commands/agents.py` (`happyranch init-agent`, exits nonzero
+  when the stream ends without `all_done`); the runbook drives it per active
+  AgentDef and records the §7.1 check as ledger evidence.

@@ -751,22 +751,62 @@ def test_cmd_learning_unknown_session_friendly_message(capsys):
     assert "dev_agent" in out
 
 
-def test_cmd_init_agent_surfaces_error_detail(capsys):
-    """Daemon-emitted error frames must show the `detail` so users see what broke."""
+def test_cmd_init_agent_surfaces_error_detail_and_exits_nonzero(capsys):
+    """Daemon-emitted error frames must show the `detail` so users see what broke,
+    and the stream ending without all_done must exit nonzero (GH-709 Slice C:
+    init-agent never reports success when a per-agent error occurred)."""
     from cli.main import cmd_init_agent
 
     fake = MagicMock()
     fake.stream.return_value = iter([
         '{"agent": "dev_agent", "phase": "starting"}',
-        '{"agent": "dev_agent", "phase": "error", "detail": "repo clone failed: fatal"}',
+        '{"agent": "dev_agent", "phase": "error", "detail": "readiness marker missing"}',
+    ])
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
+        args = MagicMock(org=None, agent="dev_agent")
+        with pytest.raises(SystemExit) as excinfo:
+            cmd_init_agent(args)
+    assert excinfo.value.code == 1
+    out = capsys.readouterr().out
+    assert "[dev_agent] starting" in out
+    assert "[dev_agent] error: readiness marker missing" in out
+
+
+def test_cmd_init_agent_success_prints_done(capsys):
+    """A stream that reaches all_done prints Done. and exits 0 (no SystemExit)."""
+    from cli.main import cmd_init_agent
+
+    fake = MagicMock()
+    fake.stream.return_value = iter([
+        '{"agent": "dev_agent", "phase": "starting"}',
+        '{"agent": "dev_agent", "phase": "done"}',
+        '{"phase": "all_done"}',
     ])
     with patch("cli.main.OpcClient.from_env", return_value=fake), \
          patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
         args = MagicMock(org=None, agent="dev_agent")
         cmd_init_agent(args)
-    out = capsys.readouterr().out
-    assert "[dev_agent] starting" in out
-    assert "[dev_agent] error: repo clone failed: fatal" in out
+    assert "Done." in capsys.readouterr().out
+
+
+def test_cmd_init_agent_stream_end_without_all_done_exits_nonzero(capsys):
+    """GH-709 Slice C: if the SSE stream ends without all_done (per-agent error
+    or abrupt close), the CLI must not report success — exit nonzero."""
+    from cli.main import cmd_init_agent
+
+    fake = MagicMock()
+    fake.stream.return_value = iter([
+        '{"agent": "dev_agent", "phase": "starting"}',
+    ])
+    with patch("cli.main.OpcClient.from_env", return_value=fake), \
+         patch("cli._shared._fetch_available_orgs", return_value=["alpha"]):
+        args = MagicMock(org=None, agent="dev_agent")
+        with pytest.raises(SystemExit) as excinfo:
+            cmd_init_agent(args)
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "did not complete" in captured.err
 
 
 def test_audit_subcommand_defaults():

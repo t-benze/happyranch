@@ -1554,6 +1554,255 @@ def test_init_agents_targets_include_approved_enrollments(
 
 
 # ---------------------------------------------------------------------------
+# GH-709 Slice C: executor-profile-specific readiness-marker verification
+# ---------------------------------------------------------------------------
+# init-agent may report done only after the selected executor profile's exact
+# expected readiness marker exists as a valid regular file produced by the
+# bootstrap (workspace adapter + skill materialization). Tests exercise the
+# real producer (population outcome) AND the diagnostic (rejection of missing /
+# wrong-profile / non-regular / stale markers, bootstrap failure, unregistered
+# profile). Slice B semantics are preserved: active-roster-only bulk targeting,
+# explicit single-agent behavior, first-error termination, no all_done on error.
+
+
+def _claude_marker(ws) -> Path:
+    """The claude profile readiness marker path inside a workspace."""
+    return ws / ".claude" / "skills" / "start-task" / "SKILL.md"
+
+
+def test_init_slice_c_reports_done_only_with_real_profile_marker(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C success: with the REAL producer (workspace adapter +
+    skill materialization), init-agent reports done/all_done only after each
+    selected profile's exact readiness marker exists as a regular file. This
+    proves the population outcome — the bootstrap wrote the marker — not
+    merely that the route inspected the filesystem.
+
+    Covers claude (.claude/skills/start-task/SKILL.md), codex (AGENTS.md) and
+    pi (AGENTS.md) profiles in one bulk run (active-roster-only targeting).
+    """
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    _seed_active_agent(org_state, "qa_engineer", executor="codex")
+    _seed_active_agent(org_state, "pi_agent", executor="pi")
+
+    events = _stream_init_bulk_events(app, auth_headers)
+
+    targeted = sorted({e["agent"] for e in events if "agent" in e})
+    assert targeted == ["dev_agent", "pi_agent", "qa_engineer"]
+    done = {e["agent"] for e in events if e.get("phase") == "done"}
+    assert done == {"dev_agent", "pi_agent", "qa_engineer"}
+    assert any(e.get("phase") == "all_done" for e in events)
+    assert not any(e.get("phase") == "error" for e in events)
+
+    # The exact profile markers exist as regular files produced by bootstrap.
+    claude_ws = org_state.root / "workspaces" / "dev_agent"
+    assert _claude_marker(claude_ws).is_file()
+    assert (claude_ws / "CLAUDE.md").is_file()
+    skills = sorted(p.name for p in (claude_ws / ".claude" / "skills").iterdir())
+    assert "start-task" in skills, f"skill materialization did not run: {skills}"
+    for name in ("qa_engineer", "pi_agent"):
+        ws = org_state.root / "workspaces" / name
+        assert (ws / "AGENTS.md").is_file(), f"{name} AGENTS.md marker missing"
+
+
+def test_init_slice_c_single_agent_explicit_name_without_agentdef(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C preserves explicit single-agent behavior: init-agent
+    with an explicit name and no AgentDef defaults to the claude profile and
+    reports done only after the claude marker exists (real producer)."""
+    events = _stream_init_events(app, auth_headers, "new_custom_agent")
+
+    done = [e for e in events if e.get("phase") == "done"]
+    assert len(done) == 1
+    assert done[0]["agent"] == "new_custom_agent"
+    assert any(e.get("phase") == "all_done" for e in events)
+    ws = org_state.root / "workspaces" / "new_custom_agent"
+    assert _claude_marker(ws).is_file()
+
+
+def test_init_slice_c_error_when_marker_missing(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C: a bootstrap that "succeeds" without producing the
+    selected profile's marker must NOT report done — per-agent error, no done,
+    no all_done (first-error termination)."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    _seed_active_agent(org_state, "qa_engineer", executor="claude")
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, \
+         patch("runtime.daemon.routes.agents.materialize_workspace_skills") as mock_mat:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+        mock_ctx.create_agent_dirs.return_value = None
+        mock_mat.return_value = []  # no skill materialization => no claude marker
+        events = _stream_init_bulk_events(app, auth_headers)
+
+    error_events = [e for e in events if e.get("phase") == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["agent"] == "dev_agent"
+    assert "readiness marker" in error_events[0]["detail"]
+    assert "start-task" in error_events[0]["detail"]
+    assert not any(e.get("phase") == "done" for e in events)
+    assert not any(e.get("phase") == "all_done" for e in events)
+    assert events[-1] == error_events[0], "stream must stop at the first error"
+
+
+def test_init_slice_c_error_when_wrong_profile_marker_exists(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C: a marker for a DIFFERENT profile (AGENTS.md on a claude
+    agent) must not satisfy the exact-profile readiness check."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    ws = org_state.root / "workspaces" / "dev_agent"
+    ws.mkdir(parents=True, exist_ok=True)
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, \
+         patch("runtime.daemon.routes.agents.materialize_workspace_skills") as mock_mat:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.create_agent_dirs.return_value = None
+
+        def _write_wrong_marker(*_args, **_kwargs):
+            # Simulate a bootstrap that produced only the codex marker.
+            (ws / "AGENTS.md").write_text("stale codex bootstrap\n")
+
+        mock_ctx.ensure_workspace_ready.side_effect = _write_wrong_marker
+        mock_mat.return_value = []
+        events = _stream_init_events(app, auth_headers, "dev_agent")
+
+    assert (ws / "AGENTS.md").is_file(), "wrong-profile marker exists on disk"
+    error_events = [e for e in events if e.get("phase") == "error"]
+    assert len(error_events) == 1
+    assert ".claude/skills/start-task/SKILL.md" in error_events[0]["detail"]
+    assert not any(e.get("phase") == "done" for e in events)
+    assert not any(e.get("phase") == "all_done" for e in events)
+
+
+def test_init_slice_c_error_when_marker_is_directory(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C: the marker path existing as a DIRECTORY is not a valid
+    regular-file marker — per-agent error, no done."""
+    _seed_active_agent(org_state, "dev_agent", executor="codex")
+    ws = org_state.root / "workspaces" / "dev_agent"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "AGENTS.md").mkdir()  # directory at the marker path
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, \
+         patch("runtime.daemon.routes.agents.materialize_workspace_skills") as mock_mat:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+        mock_ctx.create_agent_dirs.return_value = None
+        mock_mat.return_value = []
+        events = _stream_init_events(app, auth_headers, "dev_agent")
+
+    error_events = [e for e in events if e.get("phase") == "error"]
+    assert len(error_events) == 1
+    assert "AGENTS.md" in error_events[0]["detail"]
+    assert not any(e.get("phase") == "done" for e in events)
+
+
+def test_init_slice_c_error_when_profile_unregistered(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C: an executor profile that is not registered on this
+    machine cannot be verified — per-agent error with an actionable message,
+    no done (matches the relocation runbook's blocked-agent gate)."""
+    _seed_active_agent(org_state, "dev_agent", executor="no_such_profile")
+
+    with patch("runtime.daemon.routes.agents.materialize_workspace_skills") as mock_mat:
+        mock_mat.return_value = []
+        events = _stream_init_events(app, auth_headers, "dev_agent")
+
+    error_events = [e for e in events if e.get("phase") == "error"]
+    assert len(error_events) == 1
+    assert "not registered" in error_events[0]["detail"]
+    assert "no_such_profile" in error_events[0]["detail"]
+    assert not any(e.get("phase") == "done" for e in events)
+
+
+def test_init_slice_c_error_when_bootstrap_fails_despite_stale_marker(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C stale case: a pre-existing marker must not yield a done
+    when the CURRENT bootstrap fails — per-agent error, no done (the route
+    does not trust markers it did not freshly produce)."""
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    ws = org_state.root / "workspaces" / "dev_agent"
+    ws.mkdir(parents=True, exist_ok=True)
+    _claude_marker(ws).parent.mkdir(parents=True, exist_ok=True)
+    _claude_marker(ws).write_text("stale marker from an earlier run\n")
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.side_effect = RuntimeError("bootstrap exploded")
+        mock_ctx.create_agent_dirs.return_value = None
+        events = _stream_init_events(app, auth_headers, "dev_agent")
+
+    assert _claude_marker(ws).is_file(), "stale marker still on disk"
+    error_events = [e for e in events if e.get("phase") == "error"]
+    assert len(error_events) == 1
+    assert "bootstrap exploded" in error_events[0]["detail"]
+    assert not any(e.get("phase") == "done" for e in events)
+
+
+def test_init_slice_c_replaces_stale_marker_with_fresh_bootstrap(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C producer population: a stale pre-existing marker is
+    REGENERATED by the fresh bootstrap (codex adapter rewrites AGENTS.md), and
+    the route reports done — proving the population outcome, not stale-file
+    inspection."""
+    _seed_active_agent(org_state, "dev_agent", executor="codex",
+                       system_prompt="fresh prompt\n")
+    ws = org_state.root / "workspaces" / "dev_agent"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "AGENTS.md").write_text("STALE\n")
+
+    events = _stream_init_events(app, auth_headers, "dev_agent")
+
+    done = [e for e in events if e.get("phase") == "done"]
+    assert len(done) == 1
+    assert any(e.get("phase") == "all_done" for e in events)
+    assert (ws / "AGENTS.md").is_file()
+    regenerated = (ws / "AGENTS.md").read_text()
+    assert "STALE" not in regenerated
+    assert "fresh prompt" in regenerated
+
+
+def test_init_slice_c_bulk_failure_stops_before_later_agents(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """GH-709 Slice C preserves first-error termination + stream aggregation:
+    the first agent whose marker cannot be verified stops the bulk stream
+    (no all_done) and later agents are never initialized."""
+    _seed_active_agent(org_state, "dev_agent", executor="codex")
+    _seed_active_agent(org_state, "qa_engineer", executor="codex")
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, \
+         patch("runtime.daemon.routes.agents.materialize_workspace_skills") as mock_mat:
+        mock_ctx = MockCB.return_value
+        mock_ctx.clone_repo.return_value = True
+        mock_ctx.ensure_workspace_ready.return_value = None
+        mock_ctx.create_agent_dirs.return_value = None
+        mock_mat.return_value = []  # no skills => no AGENTS.md marker
+        events = _stream_init_bulk_events(app, auth_headers)
+
+    error_events = [e for e in events if e.get("phase") == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["agent"] == "dev_agent"
+    assert not any(e.get("phase") == "done" for e in events)
+    assert not any(e.get("phase") == "all_done" for e in events)
+    # qa_engineer was never targeted after the first error.
+    assert not (org_state.root / "workspaces" / "qa_engineer").exists()
+
+
+# ---------------------------------------------------------------------------
 # Task 6.1: file-based enroll / approve / reject tests
 # ---------------------------------------------------------------------------
 
