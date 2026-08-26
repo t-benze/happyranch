@@ -750,3 +750,31 @@ def test_cleanup_success_leaves_cleanup_ok_true(tmp_path: Path) -> None:
     orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-cleanok-1")
     assert orch.cleanup() is True
     assert orch._cleanup_failures == []
+
+
+def test_cell_launch_uses_absolute_bind_mount_sources(tmp_path: Path) -> None:
+    """Regression (real lab run 33000138240): docker rejects RELATIVE bind-mount
+    sources with exit 125 ('includes invalid characters for a local volume
+    name... use absolute path'). The launch command must use absolute resolved
+    host paths for every bind mount."""
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    fake = FakeBackend(script={
+        "docker pull": CmdResult(0),
+        "docker run": CmdResult(0, stdout="cid\n"),
+    })
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-absmount-1", runtime_kind="real")
+    orch.preflight()
+    cell = orch.spec.cell("a")
+    cell.state_dir.mkdir(parents=True, exist_ok=True)
+    orch._launch_cell(cell, require_running=True)
+    run_calls = [c for c in fake.calls if c[0] == "docker" and "run" in c[:2]]
+    assert run_calls, "docker run must be invoked"
+    cmd = run_calls[0]
+    join = " ".join(cmd)
+    assert "/var/lib/headscale" in join
+    # every -v source is an absolute path
+    for i, tok in enumerate(cmd):
+        if tok == "-v":
+            src = cmd[i + 1].split(":")[0]
+            assert str(src).startswith("/"), f"bind source must be absolute: {src!r}"

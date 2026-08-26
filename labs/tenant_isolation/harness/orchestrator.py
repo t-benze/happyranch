@@ -406,11 +406,15 @@ class Orchestrator:
         config_path = cell.state_dir / "config.yaml"
         config_path.write_text(config, encoding="utf-8")
         self.backend.docker_rm(name)  # idempotent; missing container is fine
+        # Bind-mount sources MUST be absolute: docker refuses relative host
+        # paths (treats them as named volumes and rejects the slashes).
+        state_abs = str(cell.state_dir.resolve())
+        config_abs = str(config_path.resolve())
         result = self.backend.run(
             [
                 "docker", "run", "-d", "--network", "host", "--name", name,
-                "-v", f"{cell.state_dir}:/var/lib/headscale",
-                "-v", f"{config_path}:/etc/headscale/config.yaml:ro",
+                "-v", f"{state_abs}:/var/lib/headscale",
+                "-v", f"{config_abs}:/etc/headscale/config.yaml:ro",
                 f"headscale/headscale@{self.manifest['artifacts']['headscale']}", "serve",
             ],
             timeout=self.bounds.per_probe,
