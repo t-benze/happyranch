@@ -56,10 +56,23 @@ def test_config_pins_policy_path_and_database_per_cell() -> None:
     cell = _cell_a()
     text = headscale_config_text(cell, cell.policy_path, derp_enabled=False)
     assert "mode: file" in text
-    assert str(cell.policy_path) in text
+    # Identity paths must be container-mapped (the state dir is bind-mounted
+    # at /var/lib/headscale inside the cell container).
+    assert "path: /var/lib/headscale/policy.json" in text
     assert "type: sqlite3" in text
-    assert str(cell.db_path) in text
-    assert str(cell.key_path) in text
+    assert "path: /var/lib/headscale/db.sqlite" in text
+    assert "private_key_path: /var/lib/headscale/noise_private.key" in text
+    # Host paths must never leak into the container config.
+    assert str(cell.state_dir) not in text
+
+
+def test_container_path_mapping() -> None:
+    from labs.tenant_isolation.harness.cellspec import container_path
+
+    cell = _cell_a()
+    assert container_path(cell.key_path, cell.state_dir) == "/var/lib/headscale/noise_private.key"
+    assert container_path(cell.db_path, cell.state_dir) == "/var/lib/headscale/db.sqlite"
+    assert container_path(cell.policy_path, cell.state_dir) == "/var/lib/headscale/policy.json"
 
 
 def test_config_cells_differ_only_in_identity_fields() -> None:

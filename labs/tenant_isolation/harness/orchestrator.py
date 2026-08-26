@@ -336,19 +336,43 @@ class Orchestrator:
                 ],
                 timeout=self.bounds.per_probe,
             )
-            self.backend.wait_for(
-                lambda: self._cell_healthy(cell),
-                timeout=self.bounds.total / 4,
-                desc=f"cell {cell.cell_id} health",
-            )
+            try:
+                self.backend.wait_for(
+                    lambda: self._cell_healthy(cell),
+                    timeout=self.bounds.total / 4,
+                    desc=f"cell {cell.cell_id} health",
+                )
+            except TimeoutError as exc:
+                diagnostics = self._cell_diagnostics(cell)
+                self.out_dir.mkdir(parents=True, exist_ok=True)
+                (self.out_dir / "cell-diagnostics.txt").write_text(
+                    diagnostics, encoding="utf-8"
+                )
+                raise RuntimeError(
+                    f"cell {cell.cell_id} failed to become healthy; diagnostics "
+                    f"written to {self.out_dir / 'cell-diagnostics.txt'}"
+                ) from exc
 
-    def _cell_healthy(self, cell) -> bool:
-        result = self.backend.run(
-            ["docker", "exec", f"{self.spec.run_id}-cell-{cell.cell_id}",
-             "headscale", "--config", "/etc/headscale/config.yaml", "nodes", "list"],
+    def _cell_diagnostics(self, cell) -> str:
+        """Collect cell container logs/state for fail-fast evidence (no secrets)."""
+        name = f"{self.spec.run_id}-cell-{cell.cell_id}"
+        logs = self.backend.run(
+            ["docker", "logs", "--tail", "60", name], timeout=self.bounds.per_probe
+        )
+        state = self.backend.run(
+            ["docker", "inspect", "--format", "{{.State.Status}}", name],
             timeout=self.bounds.per_probe,
         )
-        return result.ok()
+        return (
+            f"cell {cell.cell_id} status: {state.stdout.strip() or state.stderr.strip()}\n"
+            f"cell {cell.cell_id} logs (tail):\n{logs.stdout[-4000:]}\n{logs.stderr[-2000:]}"
+        )
+
+    def _cell_healthy(self, cell) -> bool:
+        # True liveness: the control-plane Noise listener accepts TCP on the
+        # loopback control port. (A DB read would pass even if the server
+        # crashed after creating the database.)
+        return self.backend.probe_tcp("127.0.0.1", cell.control_port, timeout=5.0)
 
     def _assert_policy_states_validate(self) -> None:
         revision = int(self.manifest.get("policy_current_revision", 0))
@@ -482,7 +506,11 @@ class Orchestrator:
     def _cell_config_text(self, cell) -> str:
         from .cellspec import headscale_config_text
 
-        return headscale_config_text(cell, cell.policy_path, derp_enabled=True)
+        # Embedded DERP requires an https server_url (upstream), which a
+        # loopback http lab cannot satisfy; DERP live-relay is therefore not
+        # established and derp_no_bypass is proven structurally (no cross-cell
+        # peer material + deny-by-default policy).
+        return headscale_config_text(cell, cell.policy_path, derp_enabled=False)
 
     def _host_facts(self) -> dict[str, str]:
         import platform
@@ -499,6 +527,12 @@ class Orchestrator:
         ]
         if self.runtime_kind != "real":
             limits.append("no isolated lab runtime executed; hostile proof not claimed")
+        limits.append(
+            "embedded DERP live relay not established in the loopback http lab "
+            "(upstream headscale requires https for embedded DERP); derp_no_bypass "
+            "is proven structurally: cross-cell nodes carry no peer material and "
+            "cell policy is deny-by-default"
+        )
         limits.append("no production SLA, capacity, DERP share, or pricing inferred")
         limits.append("connector-level cases (unit C) are deferred, not executed")
         return limits

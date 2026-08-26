@@ -20,6 +20,20 @@ from pathlib import Path
 from .models import CellSpec
 
 LAB_BASE_DOMAIN = "lab.invalid"
+# Inside the cell container the run state dir is bind-mounted here; config
+# paths must reference container paths, never host paths.
+CONTAINER_STATE_DIR = "/var/lib/headscale"
+
+
+def container_path(host_path: Path, state_dir: Path) -> str:
+    """Map a host-side state path to the path the cell container sees.
+
+    ``state_dir`` is bind-mounted at ``/var/lib/headscale``; every identity
+    file (noise key, database, policy) must be referenced by its container
+    path inside ``config.yaml``.
+    """
+    rel = Path(host_path).resolve().relative_to(Path(state_dir).resolve())
+    return f"{CONTAINER_STATE_DIR}/{rel}"
 
 
 def headscale_config_text(
@@ -27,7 +41,13 @@ def headscale_config_text(
     policy_path: Path,
     derp_enabled: bool = False,
 ) -> str:
-    """Render the cell's headscale v0.25 config as YAML text (stdlib emitter)."""
+    """Render the cell's headscale v0.25 config as YAML text (stdlib emitter).
+
+    All identity paths are container-mapped (the run state dir is bind-mounted
+    at ``/var/lib/headscale``). The embedded DERP server is DISABLED unless
+    ``derp_enabled``: upstream headscale requires an https ``server_url`` for
+    embedded DERP, which a loopback http lab cannot satisfy.
+    """
     derp_block = ""
     if derp_enabled:
         derp_block = f"""
@@ -45,7 +65,7 @@ listen_addr: 127.0.0.1:{cell.control_port}
 metrics_listen_addr: 127.0.0.1:{cell.control_port + 1000}
 
 noise:
-  private_key_path: {cell.key_path}
+  private_key_path: {container_path(cell.key_path, cell.state_dir)}
 
 prefixes:
   v4: 100.64.0.0/10
@@ -54,11 +74,11 @@ prefixes:
 
 database:
   type: sqlite3
-  path: {cell.db_path}
+  path: {container_path(cell.db_path, cell.state_dir)}
 
 policy:
   mode: file
-  path: {policy_path}
+  path: {container_path(policy_path, cell.state_dir)}
 
 dns:
   magic_dns: false
@@ -77,7 +97,7 @@ def validate_config_schema(text: str) -> None:
 
     Structural checks mirror the upstream config-example.yaml facts: map-form
     prefixes, MagicDNS off with base_domain, file-mode policy path, sqlite db,
-    per-cell noise key, loopback binds.
+    per-cell noise key, container-mapped identity paths, loopback binds.
     """
     assert "prefixes:" in text and "  v4: " in text and "  v6: " in text, (
         "config must use the v0.25 MAP-form prefixes.v4/prefixes.v6"
@@ -89,6 +109,15 @@ def validate_config_schema(text: str) -> None:
     assert "mode: file" in text and "path: " in text, "file-mode policy path required"
     assert "type: sqlite3" in text, "per-cell sqlite3 database required"
     assert "noise:" in text and "private_key_path:" in text, "per-cell Noise key required"
+    assert f"private_key_path: {CONTAINER_STATE_DIR}/" in text, (
+        "noise key path must be container-mapped (host paths break the container)"
+    )
+    assert f"path: {CONTAINER_STATE_DIR}/db.sqlite" in text, (
+        "database path must be container-mapped"
+    )
+    assert f"path: {CONTAINER_STATE_DIR}/policy.json" in text, (
+        "policy path must be container-mapped"
+    )
     assert "0.0.0.0" not in text, "cells must bind loopback only"
     assert "server_url: http://127.0.0.1:" in text, "server_url must be lab-loopback"
     assert "listen_addr: 127.0.0.1:" in text, "listen_addr must be lab-loopback"
