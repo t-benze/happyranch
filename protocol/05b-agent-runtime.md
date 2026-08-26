@@ -606,6 +606,56 @@ mismatched-hash entries are atomically repaired.
   context.  **Release-managed and B2 custom-skill links remain policy-reconciled**
   and are withdrawn when the agent becomes ineligible, retired, or unassigned.
 
+**Workspace containment (THR-190 PR-B):**
+
+*Threat principal:* a SANDBOXED Codex/Pi agent with workspace-write can
+pre-position symlinked workspace/provider/nested-skills paths — e.g.
+``<ws>/.claude``, ``<ws>/.claude/skills``, ``<ws>/.agents/skills``, or deeper
+nested entries — that point OUTSIDE the real workspace. On the next session
+start the daemon's materializer must NOT follow those pre-positioned parents
+when creating, replacing, or withdrawing skill links; following them would
+write, unlink, or replace files OUTSIDE the real workspace under the daemon's
+identity. An unsandboxed Claude session (which can already reach anything the
+daemon can) is NOT the defended principal.
+
+*Structural enforcement:* resolved-parent containment inside the REAL
+(resolved) workspace is enforced at the actual lowest-level link writer
+(``PlatformIsolation.create_relative_symlink``) immediately before each link
+creation/replacement — not by a route manifest, caller convention,
+lexical-only check, or one-time earlier validation:
+- **No-follow dirfd walk.** Every path component of the link's parent below
+  the resolved workspace root is admitted (and, where authorized, created)
+  RELATIVE to its already-pinned parent directory fd in a
+  component-by-component walk rooted at a pinned no-follow
+  (``O_NOFOLLOW``) fd for the REAL workspace root: ``os.open(part,
+  O_RDONLY|O_DIRECTORY|O_NOFOLLOW, dir_fd=parent)`` /
+  ``os.mkdir(part, dir_fd=parent)``. A full pathname is never re-resolved
+  or reopened after admission, so a symlink at ANY level — workspace-level
+  provider dir (``.claude``), provider root (``.claude/skills`` /
+  ``.agents/skills``), or a nested skills root — fails closed with a named
+  ``escaped_parent`` error, and a same-UID swap of an already-admitted
+  ancestor cannot redirect any later step. Missing components are created
+  as genuine directories anchored to the pinned parent.
+- **Pinned-fd mutation.** The final parent fd is retained through the ENTIRE
+  mutation — mkdir, stale temporary-parent/temp-link cleanup, temporary-
+  symlink creation, ``os.replace`` repair, and withdrawal ``unlink`` — so
+  every same-UID ancestor-swap window is closed: the write/unlink/replace
+  is bound to the admitted inode, never re-resolved through a pathname.
+- **Contained withdrawal, admission, and enumeration.** ``withdraw_workspace_link``
+  and ``admit_skills_directory`` apply the same component-by-component dirfd
+  walk; ``admit_skills_directory`` returns the ADMITTED directory fd,
+  retained open, and repair enumerates the skills root ONLY through that
+  admitted fd (the full pathname is never re-resolved to list after
+  admission) — so no symlink swap or escaped parent can list, write, unlink,
+  or replace outside the real workspace.
+- **Ordinary workspaces unchanged.** Canonical relative symlinks wholly
+  inside a normal workspace materialize and repair exactly as before.
+
+*Failure ordering:* containment failures surface as named materialization
+errors during the pre-spawn transaction, BEFORE executor construction or
+launch — every session-start family (task, thread, wake, dream, schedule)
+persists a terminal failure and returns without invoking the executor.
+
 **Legacy compatibility fallback:** The legacy per-session copy model
 (``_copy_skills_tree``, ``refresh_session_skills``, and the former
 ``_WHOLESALE_DUMP_ENABLED`` flag) is removed as an executable path. No
