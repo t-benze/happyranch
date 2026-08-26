@@ -382,10 +382,9 @@ def test_system_rows_derived_from_body_containing_mentions_still_null(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_mentioned_and_unmentioned_bodies_have_identical_fanout(tmp_path):
-    """Regression: Slice A must not narrow wakes. A body that @-mentions a
-    participant produces exactly the same recipients/arrivals as a plain
-    body (broadcast to every recipient). Uses two identical threads so the
+def test_mentioned_and_unmentioned_bodies_differ_only_by_mentions(tmp_path):
+    """Slice B: a body that @-mentions a participant wakes exactly that
+    participant; a plain body broadcasts. Uses two identical threads so the
     first arrival on each pair mints a fresh token (no coalescing shadow)."""
     db = Database(tmp_path / "happyranch.db")
     _make_thread(db, "THR-A", ("alpha", "bravo", "charlie"))
@@ -401,11 +400,12 @@ def test_mentioned_and_unmentioned_bodies_have_identical_fanout(tmp_path):
         kind=ThreadMessageKind.MESSAGE, body_markdown="plain broadcast",
         recipients=["alpha", "bravo", "charlie"],
     )
-    assert [a.agent_name for a in a1] == ["alpha", "bravo", "charlie"]
+    # Mention-routed: exactly the mentioned set; plain: full broadcast.
+    assert [a.agent_name for a in a1] == ["bravo"]
     assert [a.agent_name for a in a2] == ["alpha", "bravo", "charlie"]
-    assert all(a.invocation_token is not None for a in a1)
+    assert a1[0].invocation_token is not None
     assert all(a.invocation_token is not None for a in a2)
-    # Mentions differ on disk (the durable signal) but wakes are identical.
+    # Mentions persist on disk (the durable signal) in both cases.
     assert _mentions_json(db, "THR-A", 1) == '["bravo"]'
     assert _mentions_json(db, "THR-B", 1) == "[]"
 
@@ -448,7 +448,9 @@ def test_coalescing_semantics_preserved_for_mentioned_burst(tmp_path):
     assert _mentions_json(db, "THR-001", seq1 + 2) == '["alpha"]'
 
 
-def test_reply_broadcast_fanout_unchanged(tmp_path):
+def test_reply_mention_narrows_broadcast_fanout(tmp_path):
+    """Slice B: a REPLY whose body mentions one participant wakes exactly
+    that participant (mention-routed), not the full broadcast."""
     db = Database(tmp_path / "happyranch.db")
     _make_thread(db, "THR-001", ("alpha", "bravo", "charlie"))
     _seq1, arrivals = db.record_conversational_arrival(
@@ -459,8 +461,8 @@ def test_reply_broadcast_fanout_unchanged(tmp_path):
     alpha_token = next(
         a.invocation_token for a in arrivals if a.agent_name == "alpha"
     )
-    # Clear bravo+charlie obligations so the reply's broadcast mints fresh
-    # wakes (otherwise their compose-step queued tokens coalesce).
+    # Clear bravo+charlie obligations so the reply's wakes mint fresh
+    # (otherwise their compose-step queued tokens coalesce).
     db.discard_reply_delivery("THR-001", agent_name="bravo", decline_reason="test")
     db.discard_reply_delivery("THR-001", agent_name="charlie", decline_reason="test")
     _seq2, settlement, broadcast = db.reply_conversational(
@@ -468,9 +470,9 @@ def test_reply_broadcast_fanout_unchanged(tmp_path):
         body_markdown="replying to @bravo only", attachments=[],
         token=alpha_token, token_purpose=ThreadInvocationPurpose.REPLY,
     )
-    # Broadcast unchanged: every OTHER participant still woken.
-    assert {a.agent_name for a in broadcast} == {"bravo", "charlie"}
-    assert all(a.invocation_token is not None for a in broadcast)
+    # Mention-routed: exactly the mentioned OTHER participant is woken.
+    assert [a.agent_name for a in broadcast] == ["bravo"]
+    assert broadcast[0].invocation_token is not None
     assert settlement is not None
 
 

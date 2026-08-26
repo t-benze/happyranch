@@ -91,12 +91,17 @@ def three_agent_thread(tmp_home, app, org_state, auth_headers):
 # ---------------------------------------------------------------------------
 
 
-def test_founder_compose_persists_mentions_and_keeps_broadcast(
+def test_founder_compose_mention_narrows_wake_set(
     three_agent_thread,
 ):
-    """A compose body that @-mentions one participant persists the mention
-    AND still wakes every participant (Slice A must not route)."""
+    """Slice B: a compose/send body that @-mentions one participant wakes
+    exactly that participant (mention-routed), not the full broadcast."""
     thread_id, client, org_state, auth_headers = three_agent_thread
+    # Settle the compose-step wakes so the assertion isolates the /send.
+    for agent in ("alpha", "bravo", "charlie"):
+        org_state.db.discard_reply_delivery(
+            thread_id, agent_name=agent, decline_reason="test_settled",
+        )
 
     r = client.post(
         f"/api/v1/orgs/alpha/threads/{thread_id}/send",
@@ -106,10 +111,9 @@ def test_founder_compose_persists_mentions_and_keeps_broadcast(
     assert r.status_code == 200, r.text
     seq = r.json()["seq"]
     assert _mentions_json(org_state, thread_id, seq) == '["bravo"]'
-    # Fan-out unchanged: every participant woken, exactly one pending each.
-    assert _pending_names(org_state, thread_id) == {
-        "alpha": 1, "bravo": 1, "charlie": 1,
-    }
+    # Mention-routed: exactly the mentioned participant woken, one pending.
+    assert _pending_names(org_state, thread_id) == {"bravo": 1}
+    assert r.json()["pending_replies"] == ["bravo"]
 
 
 def test_founder_compose_unmentioned_body_persists_empty_mentions(
@@ -162,9 +166,11 @@ def test_multipart_compose_persists_mentions(
 # ---------------------------------------------------------------------------
 
 
-def test_agent_reply_persists_mentions_and_broadcast(
+def test_agent_reply_mention_narrows_wake_set(
     three_agent_thread,
 ):
+    """Slice B: an agent reply that @-mentions one participant wakes exactly
+    that participant, not the full broadcast."""
     thread_id, client, org_state, auth_headers = three_agent_thread
     # Settle bravo+charlie (NOT alpha) so the assertion is about NEW wakes
     # minted by alpha's reply.
@@ -192,10 +198,10 @@ def test_agent_reply_persists_mentions_and_broadcast(
     assert r.status_code == 200, r.text
     seq = r.json()["seq"]
     assert _mentions_json(org_state, thread_id, seq) == '["bravo"]'
-    # Broadcast unchanged: bravo + charlie woken, alpha not.
+    # Mention-routed: only bravo woken; charlie untouched; alpha not.
     pending = _pending_names(org_state, thread_id)
     assert pending.get("bravo") == 1
-    assert pending.get("charlie") == 1
+    assert pending.get("charlie") is None
     assert "alpha" not in pending
 
 
@@ -327,14 +333,14 @@ def test_create_agent_thread_locked_core_persists_mentions(tmp_path):
             recipients=["alpha", "bravo", "charlie"],
             turn_cap=500,
         )
-    assert addressed == ["bravo", "charlie"]
+    assert addressed == ["bravo"]
     row = db._conn.execute(
         "SELECT mentions_json FROM thread_messages "
         "WHERE thread_id = ? AND seq = ?",
         (thread_id, seq),
     ).fetchone()
     assert row["mentions_json"] == '["bravo"]'
-    # Fan-out unchanged: one REPLY per addressed agent (minus composer).
+    # Slice B: only the mentioned participant (minus composer) is woken.
     invs = db.list_thread_invocations(thread_id)
-    assert sorted(i.agent_name for i in invs) == ["bravo", "charlie"]
+    assert sorted(i.agent_name for i in invs) == ["bravo"]
     assert all(i.purpose.value == "reply" for i in invs)

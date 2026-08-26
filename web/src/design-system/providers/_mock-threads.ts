@@ -261,6 +261,7 @@ function useComposeThread(): MutationLike<ComposeArgs, ComposeResult> {
         last_speaker: 'founder',
         pinned: false,
         pinned_at: null,
+        mention_routing_enabled: true,
         last_activity_at: startedAt,
       };
       store.threads = [rec, ...store.threads];

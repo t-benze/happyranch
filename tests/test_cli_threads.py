@@ -1040,3 +1040,124 @@ def test_threads_compose_agent_rejects_relative_from_file(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "absolute" in captured.err
     assert "thread-compose" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Phase-2 mention routing (THR-198 Slice B) — CLI read/write parity
+# ---------------------------------------------------------------------------
+
+
+def test_threads_mention_routing_read_prints_state(monkeypatch, capsys):
+    from cli.commands.threads import cmd_threads_mention_routing
+
+    fake = Mock()
+    fake.get.return_value = _json_response({
+        "thread_id": "THR-001",
+        "mention_routing_enabled": False,
+    })
+    _stub_client(monkeypatch, fake)
+
+    cmd_threads_mention_routing(argparse.Namespace(
+        org="alpha", thread_id="THR-001", enabled=None, json=False,
+    ))
+    out = capsys.readouterr().out
+    assert "Thread THR-001 mention routing: off" in out
+    # Read path must not POST.
+    assert not fake.post.called
+
+
+def test_threads_mention_routing_write_posts_and_prints(monkeypatch, capsys):
+    from cli.commands.threads import cmd_threads_mention_routing
+
+    fake = Mock()
+    fake.post.return_value = _json_response({
+        "thread_id": "THR-001",
+        "mention_routing_enabled": True,
+    })
+    _stub_client(monkeypatch, fake)
+
+    cmd_threads_mention_routing(argparse.Namespace(
+        org="alpha", thread_id="THR-001", enabled=True, json=False,
+    ))
+    out = capsys.readouterr().out
+    assert "Thread THR-001 mention routing: on" in out
+    fake.post.assert_called_once_with(
+        "/api/v1/orgs/alpha/threads/THR-001/mention-routing",
+        json={"mention_routing_enabled": True},
+    )
+
+
+def test_threads_mention_routing_write_json_output(monkeypatch, capsys):
+    from cli.commands.threads import cmd_threads_mention_routing
+
+    fake = Mock()
+    fake.post.return_value = _json_response({
+        "thread_id": "THR-001",
+        "mention_routing_enabled": False,
+    })
+    _stub_client(monkeypatch, fake)
+
+    cmd_threads_mention_routing(argparse.Namespace(
+        org="alpha", thread_id="THR-001", enabled=False, json=True,
+    ))
+    out = capsys.readouterr().out
+    assert '"mention_routing_enabled": false' in out
+
+
+def test_threads_mention_routing_idempotent_noop_printed(monkeypatch, capsys):
+    from cli.commands.threads import cmd_threads_mention_routing
+
+    fake = Mock()
+    fake.post.return_value = _json_response({
+        "thread_id": "THR-001",
+        "mention_routing_enabled": True,
+        "idempotent": True,
+    })
+    _stub_client(monkeypatch, fake)
+
+    cmd_threads_mention_routing(argparse.Namespace(
+        org="alpha", thread_id="THR-001", enabled=True, json=False,
+    ))
+    out = capsys.readouterr().out
+    assert "Thread THR-001 mention routing: on (no-op)" in out
+
+
+def test_threads_mention_routing_flag_parser_rejects_invalid():
+    from cli.commands.threads import _parse_mention_routing_flag
+    import argparse
+
+    for good, expected in (("on", True), ("off", False), ("true", True),
+                           ("false", False), ("1", True), ("0", False),
+                           ("TRUE", True), ("OFF", False)):
+        assert _parse_mention_routing_flag(good) is expected
+    # Ratified domain is exactly on|off|true|false|1|0 — "yes"/"no" and any
+    # other value must be rejected (THR-198 parity with the strict-bool API).
+    for bad in ("yes", "no", "maybe", "", "2", "enabled"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _parse_mention_routing_flag(bad)
+
+
+def test_threads_show_prints_mention_routing_line(monkeypatch, capsys):
+    from cli.main import cmd_threads_show
+
+    fake = Mock()
+    fake.get.return_value = _json_response({
+        "thread_id": "THR-001",
+        "subject": "Files",
+        "status": "open",
+        "turns_used": 1,
+        "turn_cap": 500,
+        "mention_routing_enabled": False,
+        "participants": ["dev_agent"],
+        "forwarded_from_id": None,
+        "messages": [],
+    })
+    monkeypatch.setattr("cli.commands.threads.OpcClient.from_env", lambda: fake)
+    monkeypatch.setattr(
+        "cli.commands.threads._shared._fetch_available_orgs",
+        lambda _client: ["alpha"],
+    )
+
+    cmd_threads_show(argparse.Namespace(org="alpha", thread_id="THR-001", json=False))
+    out = capsys.readouterr().out
+    assert "mention routing: off" in out

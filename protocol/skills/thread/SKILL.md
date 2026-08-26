@@ -338,7 +338,14 @@ to append to a thread remains **post-as-agent** (attributed to you) or
 - Do NOT issue multiple terminal callbacks (reply AND decline) in one
   invocation. One terminal outcome per turn. Dispatch is the only non-terminal
   extra.
-- Do NOT parse `@text` in message bodies as routing. Every message broadcasts
-  to all participants; body @-mentions are visual only.
+- Do NOT treat `@text` in message bodies as a routing *instruction to yourself*
+  beyond the server's decision: the daemon routes every message at write time
+  (Phase-2 mention routing, THR-198) — with the thread's mention-routing
+  setting enabled (default), a body that mentions one or more valid current
+  participants wakes exactly that set (minus the speaker); with the setting
+  disabled, or zero valid participant mentions (none, `@founder`/typos,
+  self-only), every participant minus the speaker is woken. You only ever
+  receive a wake the daemon selected; @-mentions in bodies are no longer
+  purely visual. TASK_FOLLOWUP and BOOTSTRAP wakes are never mention-routed.
 - Do NOT share or persist your `invocation_token` outside the current
   subprocess — it's single-use and turn-scoped.
