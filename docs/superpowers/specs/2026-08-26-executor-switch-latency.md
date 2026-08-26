@@ -75,10 +75,15 @@ Its **entire** write surface is the following declared set
 | `.claude` (dir) | claude provider writer (`settings.json` parent) |
 | `memory` (dir) | `PersistentWorkspaceSetup.ensure` |
 
-The journal captures **absence/presence/type/content** of exactly this set.
-Canonical skill links materialized by the union (`.claude/skills/*`,
-`.agents/skills/*`) and all other workspace content are **never** touched by
-capture, bootstrap compensation, or restore.
+The journal captures **absence/presence/type/content** of exactly this set —
+with a distinct **present-but-uncapturable** state for a regular file whose
+`read_bytes()` raises `OSError`. Such a file is NEVER represented as absent
+(which would let rollback delete it); the preflight (§4 gate 3) rejects it
+before any mutation, and the journal's fail-closed backstop reports a
+compensation error rather than deleting it. Canonical skill links
+materialized by the union (`.claude/skills/*`, `.agents/skills/*`) and all
+other workspace content are **never** touched by capture, bootstrap
+compensation, or restore.
 
 ---
 
@@ -104,7 +109,7 @@ rollback.
 
 ## 4. Fail-closed preflights (before the first mutation)
 
-Two gates run in `set_agent_executor` **before** `_executor_switch_materialize`
+Three gates run in `set_agent_executor` **before** `_executor_switch_materialize`
 (which is itself a mutation surface over the owned `.claude` directory) and
 before any adapter writer, frontmatter, or audit write:
 
@@ -122,8 +127,14 @@ before any adapter writer, frontmatter, or audit write:
    mutation — critically **before materialization**, so the union
    reconciler can never follow a symlinked owned directory (e.g.
    `workspace/.claude` → external target).
+3. **Uncapturable owned-file gate** — a present regular owned file whose
+   `read_bytes()` raises `OSError` is materially distinct from an absent
+   file: the journal could not capture its content, so a bootstrap failure
+   could never restore it (and must never delete it). The switch fails
+   closed before any mutation with a named reason identifying the file
+   (`read_bytes` failure), never representing it as absent.
 
-Both gates run right after read-only request/agent/workspace resolution.
+All three gates run right after read-only request/agent/workspace resolution.
 Regular-file switching is unaffected.
 
 ---
@@ -179,5 +190,13 @@ Extending the adapter writer and the declared set are one atomic change.
 - The symlinked-owned-path tests prove fail-closed before bootstrap, and the
   `.claude`-symlink test proves fail-closed **before materialization** with
   the external sentinel directory untouched.
+- `test_set_executor_preflight_rejects_uncapturable_owned_file` proves a
+  present regular declared file whose `read_bytes()` raises `OSError` is
+  rejected at preflight (400 `executor_bootstrap_failed`) **before**
+  materialization/bootstrap/frontmatter/audit, with the original file bytes
+  surviving unchanged, and
+  `test_bootstrap_journal_uncapturable_present_file_is_not_absent` locks the
+  journal's distinct present-but-uncapturable state (never absent; restore
+  reports an error instead of deleting the file).
 - No client contract change: PUT response shape, `before`/`after` fields,
   `stale_files`/`cleaned`/`removed`, and named error codes are unchanged.

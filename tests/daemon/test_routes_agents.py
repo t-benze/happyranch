@@ -2907,6 +2907,182 @@ def test_set_executor_bootstrap_preflight_rejects_symlinked_owned_path(
     )
 
 
+def test_set_executor_preflight_rejects_uncapturable_owned_file(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """THR-190 fix (TASK-5691/TASK-5704 HIGH): a present regular
+    bootstrap-owned file whose read_bytes() raises OSError is materially
+    distinct from an absent file. The old journal recorded both as None and
+    restore() interpreted None as 'absent before bootstrap' — a bootstrap
+    failure could delete an unreadable present file.
+
+    This test forces read_bytes OSError on a present CLAUDE.md at the real
+    PUT /agents/{agent_name}/executor route and proves the switch fails
+    closed DURING PREFLIGHT, BEFORE _executor_switch_materialize and before
+    every filesystem/executor-state/frontmatter/audit mutation:
+    (1) 400 executor_bootstrap_failed naming the uncapturable file,
+    (2) the original file bytes survive unchanged,
+    (3) union materialization NEVER ran,
+    (4) the provider bootstrap writer NEVER ran,
+    (5) org frontmatter + workspace agent.yaml are unchanged,
+    (6) no audit row was written."""
+    import os as _os
+    from pathlib import Path as _Path
+
+    import runtime.daemon.routes.agents as agents_mod
+    from runtime.orchestrator import workspace_adapters as wa
+
+    real_read_bytes = _Path.read_bytes  # captured BEFORE the monkeypatch
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
+    (workspace / "repos" / "test" / ".git").mkdir(parents=True)
+
+    # Present regular declared file whose bytes cannot be captured.
+    original = b"# CLAUDE.md: must survive the rejected switch unchanged\n"
+    target = workspace / "CLAUDE.md"
+    target.write_bytes(original)
+
+    def _read_bytes(self, *a, **k):
+        if _os.path.abspath(str(self)) == _os.path.abspath(str(target)):
+            raise OSError("forced unreadable present declared file")
+        return real_read_bytes(self, *a, **k)
+
+    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+
+    frontmatter_path = _paths(org_state).agents_dir / "dev_agent.md"
+    frontmatter_before = frontmatter_path.read_text()
+    agent_yaml_before = (workspace / "agent.yaml").read_text()
+    audit_before = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+
+    # ── Recording spies at the materializer + bootstrap writer seams ──
+    materialize_calls: list[str] = []
+    real_materialize_union = wa.materialize_workspace_skills_union
+
+    def _materialize_spy(*args, **kwargs):
+        materialize_calls.append("union")
+        return real_materialize_union(*args, **kwargs)
+
+    monkeypatch.setattr(wa, "materialize_workspace_skills_union", _materialize_spy)
+
+    bootstrap_calls: list[str] = []
+    real_ensure = agents_mod.ContextBuilder.ensure_workspace_ready
+
+    def _ensure_spy(self, workspace, agent_name, system_prompt, provider="claude"):
+        bootstrap_calls.append(provider)
+        return real_ensure(
+            self, workspace, agent_name, system_prompt, provider=provider,
+        )
+
+    monkeypatch.setattr(
+        agents_mod.ContextBuilder, "ensure_workspace_ready", _ensure_spy,
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "codex"},
+        headers=auth_headers,
+    )
+
+    # ── FAIL-CLOSED: named preflight rejection ──
+    assert r.status_code == 400, (
+        f"Expected 400 on uncapturable-file preflight, got {r.status_code}: {r.text}"
+    )
+    body = r.json()
+    assert body["detail"]["code"] == "executor_bootstrap_failed", (
+        f"Expected executor_bootstrap_failed, got {body}"
+    )
+    assert "CLAUDE.md" in body["detail"]["error"], (
+        f"Expected the uncapturable file named in the error, "
+        f"got {body['detail']['error']}"
+    )
+    assert "read_bytes" in body["detail"]["error"], (
+        f"Expected read_bytes failure named, got {body['detail']['error']}"
+    )
+
+    # ── No materialization, no bootstrap writer, no mutation ──
+    assert materialize_calls == [], (
+        f"materialization ran despite uncapturable-file preflight: "
+        f"{materialize_calls}"
+    )
+    assert bootstrap_calls == [], (
+        f"bootstrap ran despite uncapturable-file preflight: {bootstrap_calls}"
+    )
+
+    # ── The present declared file's original bytes survive unchanged ──
+    assert real_read_bytes(target) == original, (
+        "the uncapturable declared file was modified or deleted"
+    )
+
+    # ── Old executor / frontmatter / audit unchanged ──
+    assert (workspace / "agent.yaml").read_text() == agent_yaml_before, (
+        "workspace agent.yaml changed on uncapturable-file rejection"
+    )
+    assert frontmatter_path.read_text() == frontmatter_before, (
+        "Agent frontmatter was mutated on uncapturable-file rejection"
+    )
+    audit_after = [
+        log for log in org_state.db.get_audit_logs("founder")
+        if log["action"] == "agent_managed"
+    ]
+    assert audit_after == audit_before, (
+        f"Audit row written despite uncapturable-file rejection: "
+        f"before={audit_before}, after={audit_after}"
+    )
+
+
+def test_bootstrap_journal_uncapturable_present_file_is_not_absent(
+    tmp_home, monkeypatch,
+) -> None:
+    """THR-190 fix (TASK-5691/TASK-5704): _BootstrapRollbackJournal must
+    keep a present regular file whose read_bytes() raises OSError in a
+    DISTINCT state from an absent file. restore() must never unlink such a
+    file (the old code collapsed both into None and deleted it); it reports
+    a compensation error instead, and the file survives unchanged."""
+    from pathlib import Path as _Path
+
+    import runtime.daemon.routes.agents as agents_mod
+
+    workspace = tmp_home / "ws"
+    workspace.mkdir(parents=True)
+    present = workspace / "CLAUDE.md"
+    original = b"# original bytes must survive\n"
+    present.write_bytes(original)
+    (workspace / "memory").mkdir(parents=True)
+
+    real_read_bytes = _Path.read_bytes
+
+    def _read_bytes(self, *a, **k):
+        if str(self) == str(present):
+            raise OSError("forced OSError on present declared file")
+        return real_read_bytes(self, *a, **k)
+
+    monkeypatch.setattr(_Path, "read_bytes", _read_bytes)
+
+    journal = agents_mod._BootstrapRollbackJournal.capture(workspace)
+
+    # The present-but-uncapturable file is NEVER recorded as absent: it is
+    # absent from the content map entirely and tracked in the distinct set.
+    assert "CLAUDE.md" not in journal._files, (
+        "uncapturable file must not be recorded in the content map"
+    )
+    assert "CLAUDE.md" in journal._uncapturable, (
+        "uncapturable file must be recorded in the distinct uncapturable set"
+    )
+
+    errors = journal.restore(workspace)
+    assert any("Uncapturable" in e and "CLAUDE.md" in e for e in errors), errors
+    # The file survives: not deleted, not overwritten, not treated as absent.
+    assert real_read_bytes(present) == original, (
+        "journal restore deleted/modified an uncapturable present file"
+    )
+
+
 def test_set_executor_preflight_rejects_symlinked_claude_before_materialization(
     tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:

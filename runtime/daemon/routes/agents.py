@@ -1067,7 +1067,7 @@ _CLAUDE_ONLY_WORKSPACE_FILES: tuple[str, ...] = ("CLAUDE.md", ".claude")
 # (absence/presence/type/content) and NEVER traverses the workspace,
 # ``repos/``, or the canonical skill links materialized by the union.
 #
-# Two preflight gates make lossless compensation possible:
+# Three preflight gates make lossless compensation possible:
 #  * ``_bootstrap_legacy_migration_unsupported`` — a structured legacy
 #    ``learnings/`` (with ``memory/`` absent) would trigger the unbounded
 #    ``learnings/ -> memory/`` migration during bootstrap, which a bounded
@@ -1076,6 +1076,11 @@ _CLAUDE_ONLY_WORKSPACE_FILES: tuple[str, ...] = ("CLAUDE.md", ".claude")
 #    at an owned path cannot be restored exactly after a write-through or
 #    replace; the switch fails closed BEFORE materialization so the union
 #    reconciler can never follow a symlinked owned directory either.
+#  * ``_bootstrap_uncapturable_owned_files`` — a present regular owned file
+#    whose ``read_bytes()`` raises ``OSError`` is materially distinct from an
+#    absent file (rollback must never delete a file it could not capture);
+#    the switch fails closed BEFORE materialization and never represents
+#    the file as absent.
 #
 # The drift-tripwire test (tests/daemon/test_routes_agents.py) instruments
 # the real adapter bootstrap call against these constants so future adapter
@@ -1141,6 +1146,28 @@ def _bootstrap_unsupported_owned_paths(workspace: Path) -> list[str]:
     return unsupported
 
 
+def _bootstrap_uncapturable_owned_files(workspace: Path) -> list[str]:
+    """Return owned regular files whose bytes cannot be captured.
+
+    A present regular file whose ``read_bytes()`` raises ``OSError`` is
+    materially distinct from an absent file: bootstrap may overwrite it (or
+    fail after partial writes) and the journal cannot restore content it
+    never read. ``_bootstrap_unsupported_owned_paths`` already rejects
+    symlinks and non-regular types; this gate catches regular files that are
+    present but unreadable so the switch fails closed BEFORE any mutation
+    (including union materialization), never representing the file as absent.
+    """
+    uncapturable: list[str] = []
+    for rel in _BOOTSTRAP_OWNED_FILES:
+        fp = workspace / rel
+        if fp.is_file() and not fp.is_symlink():
+            try:
+                fp.read_bytes()
+            except OSError:
+                uncapturable.append(rel)
+    return uncapturable
+
+
 class _BootstrapRollbackJournal:
     """Bounded record of bootstrap-owned filesystem state, captured pre-bootstrap.
 
@@ -1152,12 +1179,22 @@ class _BootstrapRollbackJournal:
     Canonical skill links (materialized by the union before capture) and all
     other workspace content are never touched. No broad workspace/repos
     traversal occurs on either the capture or the restore path.
+
+    A present regular file whose bytes cannot be read is a THIRD state,
+    distinct from both absence and captured content. It is recorded in
+    ``_uncapturable`` — NEVER as ``None``/absent, because ``restore``
+    interprets ``None`` as "absent before bootstrap" and would delete the
+    file. ``_bootstrap_uncapturable_owned_files`` rejects this state during
+    Step-0 preflight (before any mutation), so capture never encounters it in
+    practice; the distinct state is the fail-closed backstop: any restore
+    around an uncapturable file reports an error instead of deleting it.
     """
 
-    __slots__ = ("_files", "_dirs")
+    __slots__ = ("_files", "_uncapturable", "_dirs")
 
     def __init__(self) -> None:
         self._files: dict[str, bytes | None] = {}
+        self._uncapturable: set[str] = set()
         self._dirs: set[str] = set()
 
     @classmethod
@@ -1170,7 +1207,11 @@ class _BootstrapRollbackJournal:
                 try:
                     original = fp.read_bytes()
                 except OSError:
-                    original = None  # unreadable owned file — treat as absent
+                    # Present regular file whose bytes cannot be captured.
+                    # Never collapse this into the absent (None) state —
+                    # restore() would delete a file it could not read.
+                    journal._uncapturable.add(rel)
+                    continue
             journal._files[rel] = original
         for dirname in _BOOTSTRAP_OWNED_DIRS:
             d = workspace / dirname
@@ -1180,6 +1221,13 @@ class _BootstrapRollbackJournal:
 
     def restore(self, workspace: Path) -> list[str]:
         errors: list[str] = []
+        for rel in sorted(self._uncapturable):
+            # Never delete or overwrite a file whose original bytes were
+            # never captured; compensation cannot be lossless, so surface
+            # the failure instead of guessing.
+            errors.append(
+                f"Uncapturable owned file {rel} cannot be compensated"
+            )
         for rel, original in self._files.items():
             fp = workspace / rel
             if original is None:
@@ -1293,7 +1341,11 @@ async def set_agent_executor(
     #    fail closed BEFORE materialization so the union reconciler can
     #    never follow a symlinked owned directory (e.g. workspace/.claude)
     #    into an arbitrary external target.
-    # Both gates run before _executor_switch_materialize and before any
+    # 3. A present regular owned file whose read_bytes() raises OSError is
+    #    materially distinct from an absent file — the journal must never
+    #    represent it as absent (rollback would delete it); fail closed
+    #    BEFORE materialization and every mutation.
+    # All gates run before _executor_switch_materialize and before any
     # adapter writer — no materialize/bootstrap/frontmatter/audit mutation.
     if has_workspace:
         if _bootstrap_legacy_migration_unsupported(workspace):
@@ -1335,6 +1387,27 @@ async def set_agent_executor(
                         "unsupported non-regular type. The previous executor "
                         "has been preserved. Resolve the path conflict before "
                         "retrying."
+                    ),
+                },
+            )
+        uncapturable = _bootstrap_uncapturable_owned_files(workspace)
+        if uncapturable:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_bootstrap_failed",
+                    "error": (
+                        "Bootstrap-owned file is present but cannot be "
+                        "captured (read_bytes failed): "
+                        + ", ".join(sorted(uncapturable))
+                    ),
+                    "message": (
+                        "Executor workspace bootstrap was rejected before "
+                        "any mutation because a bootstrap-owned file is "
+                        "present but its contents could not be read, so the "
+                        "switch cannot be compensated losslessly. The "
+                        "previous executor has been preserved. Resolve the "
+                        "file readability issue before retrying."
                     ),
                 },
             )
