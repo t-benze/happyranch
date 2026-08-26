@@ -1056,6 +1056,168 @@ _VALID_EXECUTORS: tuple[str, ...] = ()  # populated lazily
 _CLAUDE_ONLY_WORKSPACE_FILES: tuple[str, ...] = ("CLAUDE.md", ".claude")
 
 
+# ---------------------------------------------------------------------------
+# THR-190: bounded declared-write rollback journal for executor switch.
+# ---------------------------------------------------------------------------
+# The executor-switch bootstrap writer chain is
+# ``set_agent_executor -> ContextBuilder.ensure_workspace_ready -> provider
+# adapter -> PersistentWorkspaceSetup.ensure + provider writers``. Its whole
+# write surface is a small, explicit set of bootstrap-owned paths (listed
+# below). ``_BootstrapRollbackJournal`` captures/restores exactly that set
+# (absence/presence/type/content) and NEVER traverses the workspace,
+# ``repos/``, or the canonical skill links materialized by the union.
+#
+# Two preflight gates make lossless compensation possible:
+#  * ``_bootstrap_legacy_migration_unsupported`` — a structured legacy
+#    ``learnings/`` (with ``memory/`` absent) would trigger the unbounded
+#    ``learnings/ -> memory/`` migration during bootstrap, which a bounded
+#    journal cannot reverse; the switch fails closed BEFORE materialization.
+#  * ``_bootstrap_unsupported_owned_paths`` — a symlink or non-regular entry
+#    at an owned path cannot be restored exactly after a write-through or
+#    replace; the switch fails closed BEFORE materialization so the union
+#    reconciler can never follow a symlinked owned directory either.
+#
+# The drift-tripwire test (tests/daemon/test_routes_agents.py) instruments
+# the real adapter bootstrap call against these constants so future adapter
+# evolution cannot silently outrun the journal.
+
+# Bootstrap-owned regular-file paths (relative to the workspace root).
+_BOOTSTRAP_OWNED_FILES: tuple[str, ...] = (
+    "CLAUDE.md",             # claude provider writer
+    "AGENTS.md",             # codex/opencode/pi provider writer
+    ".claude/settings.json",  # claude provider writer
+    "opencode.json",         # opencode provider writer
+    "task_history.md",       # PersistentWorkspaceSetup.ensure
+    "recent_tasks.md",       # legacy rename source (recent_tasks.md -> task_history.md)
+    "memory/_index.md",      # MemoryStore index (create/regenerate)
+)
+
+# Directories bootstrap may create (removed only if empty and newly created).
+_BOOTSTRAP_OWNED_DIRS: tuple[str, ...] = (".claude", "memory")
+
+
+def _bootstrap_legacy_migration_unsupported(workspace: Path) -> bool:
+    """True when bootstrap would run the legacy ``learnings/ -> memory/`` migration.
+
+    ``migrate_workspace`` performs its (unbounded) structural move only when
+    ``memory/`` is absent AND ``learnings/`` is present; in every other case
+    it is a no-op. A bounded declared-write journal cannot reverse that move
+    losslessly, so the executor switch fails closed BEFORE any materialization
+    or bootstrap mutation when this gate fires.
+    """
+    return (workspace / "learnings").exists() and not (workspace / "memory").exists()
+
+
+def _bootstrap_unsupported_owned_paths(workspace: Path) -> list[str]:
+    """Return owned paths bootstrap cannot safely mutate (symlink / non-regular).
+
+    Bootstrap may write through an owned path (following a symlink) or
+    atomically replace it. A pre-existing symlink (e.g. a symlinked
+    ``AGENTS.md``) or a non-regular entry (directory, FIFO, socket, device)
+    at an owned path cannot be losslessly compensated: writing through a
+    symlink mutates its (arbitrary, possibly external) target, and replacing
+    it discards the link. The caller must therefore reject the switch BEFORE
+    any mutation — including union materialization, which reconciles the
+    bootstrap-owned ``.claude`` directory.
+
+    Detection uses ``is_symlink`` first (an ``lstat`` that never follows the
+    link), so a symlink is classified without reading or touching its
+    target. ``exists``/``is_file``/``is_dir`` are only consulted after the
+    path is known not to be a symlink.
+    """
+    unsupported: list[str] = []
+    for rel in _BOOTSTRAP_OWNED_FILES:
+        fp = workspace / rel
+        if fp.is_symlink():
+            unsupported.append(rel)
+        elif fp.exists() and not fp.is_file():
+            unsupported.append(rel)
+    for dirname in _BOOTSTRAP_OWNED_DIRS:
+        d = workspace / dirname
+        if d.is_symlink():
+            unsupported.append(dirname)
+        elif d.exists() and not d.is_dir():
+            unsupported.append(dirname)
+    return unsupported
+
+
+class _BootstrapRollbackJournal:
+    """Bounded record of bootstrap-owned filesystem state, captured pre-bootstrap.
+
+    Records only ``_BOOTSTRAP_OWNED_FILES``/``_BOOTSTRAP_OWNED_DIRS``
+    (absence/presence/type/content). ``restore`` returns a list of
+    compensation error strings (empty when clean). Files that did not exist
+    before bootstrap are removed; files that existed are restored to their
+    original bytes; newly-created owned directories are removed when empty.
+    Canonical skill links (materialized by the union before capture) and all
+    other workspace content are never touched. No broad workspace/repos
+    traversal occurs on either the capture or the restore path.
+    """
+
+    __slots__ = ("_files", "_dirs")
+
+    def __init__(self) -> None:
+        self._files: dict[str, bytes | None] = {}
+        self._dirs: set[str] = set()
+
+    @classmethod
+    def capture(cls, workspace: Path) -> "_BootstrapRollbackJournal":
+        journal = cls()
+        for rel in _BOOTSTRAP_OWNED_FILES:
+            fp = workspace / rel
+            original: bytes | None = None
+            if fp.is_file() and not fp.is_symlink():
+                try:
+                    original = fp.read_bytes()
+                except OSError:
+                    original = None  # unreadable owned file — treat as absent
+            journal._files[rel] = original
+        for dirname in _BOOTSTRAP_OWNED_DIRS:
+            d = workspace / dirname
+            if d.is_dir() and not d.is_symlink():
+                journal._dirs.add(dirname)
+        return journal
+
+    def restore(self, workspace: Path) -> list[str]:
+        errors: list[str] = []
+        for rel, original in self._files.items():
+            fp = workspace / rel
+            if original is None:
+                # Absent before bootstrap — remove anything bootstrap created.
+                if fp.is_symlink() or fp.is_file():
+                    try:
+                        fp.unlink()
+                    except OSError as exc:
+                        errors.append(f"Failed to remove new file {rel}: {exc}")
+            elif fp.is_symlink() or not fp.is_file():
+                # Existed before but bootstrap replaced it with a link or
+                # deleted it — restore the original bytes.
+                try:
+                    if fp.is_symlink() or fp.exists():
+                        fp.unlink()
+                    fp.write_bytes(original)
+                except OSError as exc:
+                    errors.append(f"Failed to restore file {rel}: {exc}")
+            else:
+                try:
+                    if fp.read_bytes() != original:
+                        fp.write_bytes(original)
+                except OSError as exc:
+                    errors.append(f"Failed to restore file {rel}: {exc}")
+        # Remove newly-created owned directories (only when empty).
+        for dirname in _BOOTSTRAP_OWNED_DIRS:
+            d = workspace / dirname
+            if dirname not in self._dirs and d.is_dir() and not d.is_symlink():
+                try:
+                    if not any(d.iterdir()):
+                        d.rmdir()
+                except OSError as exc:
+                    errors.append(
+                        f"Failed to remove new directory {dirname}: {exc}"
+                    )
+        return errors
+
+
 class SetExecutorBody(BaseModel):
     executor: str
     clean: bool = False
@@ -1123,6 +1285,60 @@ async def set_agent_executor(
     before_org = existing.executor
     before_ws = load_agent_config(workspace).get("executor") if has_workspace else None
 
+    # ── Step 0: Preflight — reject the switch before ANY mutation when the
+    # bounded declared-write journal cannot compensate losslessly ──
+    # 1. Structured legacy learnings/ state would trigger the unbounded
+    #    learnings/ -> memory/ migration during bootstrap; fail closed.
+    # 2. Symlinked / non-regular owned paths cannot be restored exactly;
+    #    fail closed BEFORE materialization so the union reconciler can
+    #    never follow a symlinked owned directory (e.g. workspace/.claude)
+    #    into an arbitrary external target.
+    # Both gates run before _executor_switch_materialize and before any
+    # adapter writer — no materialize/bootstrap/frontmatter/audit mutation.
+    if has_workspace:
+        if _bootstrap_legacy_migration_unsupported(workspace):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_bootstrap_failed",
+                    "error": (
+                        "unsupported structured legacy learnings state: "
+                        "workspace holds learnings/ without memory/, which "
+                        "would require a learnings/ -> memory/ migration "
+                        "during bootstrap"
+                    ),
+                    "message": (
+                        "Executor workspace bootstrap was rejected before "
+                        "any mutation because the workspace holds a "
+                        "structured legacy learnings/ directory that would "
+                        "require a learnings/ -> memory/ migration during "
+                        "the switch. Executor switching does not perform "
+                        "that migration; the previous executor has been "
+                        "preserved. Migrate the workspace via the normal "
+                        "init/session path before retrying."
+                    ),
+                },
+            )
+        unsupported = _bootstrap_unsupported_owned_paths(workspace)
+        if unsupported:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "executor_bootstrap_failed",
+                    "error": (
+                        "Bootstrap-owned path is a symlink or unsupported "
+                        "non-regular type: " + ", ".join(sorted(unsupported))
+                    ),
+                    "message": (
+                        "Executor workspace bootstrap was rejected before "
+                        "any mutation because an owned path is a symlink or "
+                        "unsupported non-regular type. The previous executor "
+                        "has been preserved. Resolve the path conflict before "
+                        "retrying."
+                    ),
+                },
+            )
+
     # ── Step 1: Materialize the six-context canonical union FIRST ──
     # This MUST complete successfully before any frontmatter is persisted.
     # On failure, the previous executor is preserved and a named HTTP
@@ -1153,31 +1369,12 @@ async def set_agent_executor(
     # switch — no config change, no audit row. Only if this succeeds does
     # the switch become durable.
     if has_workspace:
-        # ── Snapshot pre-bootstrap workspace state ──
-        # Every file, directory, link, and their contents that existed
-        # before bootstrap must survive a subsequent bootstrap failure
-        # exactly. Only artifacts newly created by the failed attempt
-        # will be removed.
-        pre_bootstrap_snapshot: set[str] = set()
-        pre_bootstrap_contents: dict[str, bytes] = {}
-        for root_dir, dirnames, filenames in os.walk(str(workspace)):
-            root_path = Path(root_dir)
-            rel_root = root_path.relative_to(workspace)
-            pre_bootstrap_snapshot.add(str(rel_root))
-            for name in filenames:
-                rel = str(rel_root / name) if str(rel_root) != "." else name
-                pre_bootstrap_snapshot.add(rel)
-                # Snapshot contents for restoration if modified
-                fp = root_path / name
-                if fp.is_file() and not fp.is_symlink():
-                    try:
-                        pre_bootstrap_contents[rel] = fp.read_bytes()
-                    except OSError:
-                        pass  # unreadable file — skip content snapshot
-            for name in dirnames:
-                pre_bootstrap_snapshot.add(
-                    str(rel_root / name) if str(rel_root) != "." else name
-                )
+        # ── Bounded declared-write rollback journal (THR-190) ──
+        # Capture ONLY the bootstrap-owned write surface; never traverse or
+        # read repos/ or other broad workspace content. The legacy
+        # learnings/ -> memory/ migration is rejected up front (Step 0), so
+        # no full-workspace snapshot is ever taken on this path.
+        rollback_journal = _BootstrapRollbackJournal.capture(workspace)
 
         ctx = ContextBuilder(org.settings, paths, slug=org.slug)
         try:
@@ -1194,49 +1391,15 @@ async def set_agent_executor(
                 "union for provider=%s agent=%s: %s",
                 body.executor, agent_name, e,
             )
-            # ── Snapshot-and-restore compensation ──
-            # 1. Remove ONLY artifacts newly created by this bootstrap attempt.
-            # 2. Restore any pre-existing files whose contents were modified.
-            # Every pre-existing workspace file/directory/link is preserved
-            # exactly. Errors during cleanup are surfaced, not suppressed.
-            errors: list[str] = []
-            # Restore modified pre-existing files to original contents
-            for rel, original_bytes in pre_bootstrap_contents.items():
-                fp = workspace / rel
-                if fp.is_file() and not fp.is_symlink():
-                    try:
-                        current = fp.read_bytes()
-                        if current != original_bytes:
-                            fp.write_bytes(original_bytes)
-                    except OSError as exc:
-                        errors.append(
-                            f"Failed to restore file {rel}: {exc}"
-                        )
-            for root_dir, _dirnames, filenames in os.walk(
-                str(workspace), topdown=False,
-            ):
-                root_path = Path(root_dir)
-                for name in filenames:
-                    fp = root_path / name
-                    rel = fp.relative_to(workspace)
-                    if str(rel) not in pre_bootstrap_snapshot:
-                        try:
-                            fp.unlink()
-                        except OSError as exc:
-                            errors.append(
-                                f"Failed to remove new file {fp}: {exc}"
-                            )
-                # Remove empty directories that were newly created
-                if str(root_path) != str(workspace):
-                    rel_dir = root_path.relative_to(workspace)
-                    if str(rel_dir) not in pre_bootstrap_snapshot:
-                        try:
-                            if not any(root_path.iterdir()):
-                                root_path.rmdir()
-                        except OSError as exc:
-                            errors.append(
-                                f"Failed to remove new directory {root_path}: {exc}"
-                            )
+            # ── Bounded rollback compensation ──
+            # 1. Remove ONLY declared bootstrap-owned artifacts newly created
+            #    by this bootstrap attempt.
+            # 2. Restore any pre-existing declared bootstrap-owned files
+            #    whose contents (or absence/presence/type) changed.
+            # Canonical skill links and all non-owned workspace content are
+            # preserved exactly. Errors during cleanup are surfaced, not
+            # suppressed.
+            errors = rollback_journal.restore(workspace)
             if errors:
                 _logger.error(
                     "Executor switch bootstrap cleanup errors: %s",
