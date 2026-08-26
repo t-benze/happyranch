@@ -182,6 +182,19 @@ class Runner:
         self._emit(self.enroll_path, {"run_id": self.run_id, "cell": cell, "node": node, "ephemeral": ephemeral, "latency_ms": None, "ok": False})
         return None, False
 
+    def _dump_failure_evidence(self, scenario: str, started_cells: list[int]) -> None:
+        """Capture cell logs + container state on scenario failure for diagnosis."""
+        lines = [f"scenario={scenario} failure evidence"]
+        ps = self.docker.run(["docker", "ps", "-a", "--filter", f"label=lab.run={self.run_id}", "--format", "{{json .}}"], check=False)
+        lines.append("--- docker ps -a ---")
+        lines.append(ps.stdout[-4000:])
+        for c in sorted(set(started_cells)):
+            name = headscale_container_name(self.run_id, c)
+            logs = self.docker.run(["docker", "logs", "--tail", "30", name], check=False)
+            lines.append(f"--- docker logs {name} (rc={logs.returncode}) ---")
+            lines.append((logs.stdout + logs.stderr)[-4000:])
+        (self.out_dir / f"{scenario}.failure.log").write_text("\n".join(lines), encoding="utf-8")
+
     def _teardown_and_residue(self, scenario: str) -> dict:
         self.docker.teardown()
         time.sleep(2)
@@ -210,6 +223,7 @@ class Runner:
 
         try:
             self.docker.network_create()
+            started: list[int] = []
             for cells in plan_idle_cells():
                 ports: dict[int, dict] = {}
                 api_keys: dict[int, str] = {}
@@ -218,6 +232,7 @@ class Runner:
                     info = self._start_cell(c)
                     ports[c] = info
                     cell_names.append(c)
+                    started.append(c)
                 # wait for healthy
                 deadline = time.monotonic() + 60
                 while time.monotonic() < deadline:
@@ -242,7 +257,8 @@ class Runner:
             result.summary = {"baseline_host_cpu_mean_pct": round(mean(baseline), 3)}
         except Exception as exc:  # noqa: BLE001 — lab harness surfaces any failure
             result.ok = False
-            result.summary["error"] = str(exc)
+            result.summary["error"] = f"{type(exc).__name__}: {exc}"
+            self._dump_failure_evidence("idle", started)
         finally:
             self._teardown_and_residue("idle")
         self._write_summary(result)
@@ -301,7 +317,8 @@ class Runner:
                 result.summary[str(step)] = {"fail_ratio": round(fail_ratio, 4), "connected_total": connected_total}
         except Exception as exc:  # noqa: BLE001
             result.ok = False
-            result.summary["error"] = str(exc)
+            result.summary["error"] = f"{type(exc).__name__}: {exc}"
+            self._dump_failure_evidence("nodes", list(range(1, 5)))
         finally:
             self._teardown_and_residue("nodes")
         self._write_summary(result)
@@ -354,7 +371,8 @@ class Runner:
             result.summary["db_growth_bytes"] = db_after - db_before
         except Exception as exc:  # noqa: BLE001
             result.ok = False
-            result.summary["error"] = str(exc)
+            result.summary["error"] = f"{type(exc).__name__}: {exc}"
+            self._dump_failure_evidence("churn", [1])
         finally:
             self._teardown_and_residue("churn")
         self._write_summary(result)
@@ -402,7 +420,8 @@ class Runner:
             result.summary["nodes_online_final"] = self.docker.connected_node_count(cell)
         except Exception as exc:  # noqa: BLE001
             result.ok = False
-            result.summary["error"] = str(exc)
+            result.summary["error"] = f"{type(exc).__name__}: {exc}"
+            self._dump_failure_evidence("restart", [1])
         finally:
             self._teardown_and_residue("restart")
         self._write_summary(result)
@@ -436,7 +455,8 @@ class Runner:
             ).stdout.strip()
         except Exception as exc:  # noqa: BLE001
             result.ok = False
-            result.summary["error"] = str(exc)
+            result.summary["error"] = f"{type(exc).__name__}: {exc}"
+            self._dump_failure_evidence("failure", [1])
         finally:
             self._teardown_and_residue("failure")
         self._write_summary(result)

@@ -136,7 +136,10 @@ def main(argv: list[str] | None = None) -> int:
         results[name] = {"ok": result.ok, "aborts": result.aborts, "elapsed_s": elapsed}
         print(f"[lab] scenario {name} ok={result.ok} aborts={result.aborts} elapsed_s={elapsed}", flush=True)
         if not result.ok:
+            err = result.summary.get("error")
+            print(f"[lab] scenario {name} ERROR: {err}", file=sys.stderr, flush=True)
             ok_all = False
+            break  # fail fast: stop the run at the first failing scenario
 
     # Final overall residue check across the run.
     res = runner.docker.residue()
