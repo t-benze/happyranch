@@ -626,6 +626,17 @@ def _forge_attempted(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcom
     )
 
 
+def _peer_entries(parsed: dict) -> list[dict]:
+    """Normalize the ``Peer`` section of ``tailscale status --json``.
+
+    Tailscale 1.102 serializes ``Peer`` as a MAP keyed by peer id; older
+    shapes are a list. Both are normalized to a list of peer objects.
+    """
+    peers = parsed.get("Peer") or []
+    entries = peers.values() if isinstance(peers, dict) else peers
+    return [p for p in entries if isinstance(p, dict)]
+
+
 def _peer_view(env: "ProbeEnv", node_id: str, target_hostname: str) -> dict | None:
     """The tailnet view of ``target_hostname`` as seen by ``node_id``.
 
@@ -643,7 +654,7 @@ def _peer_view(env: "ProbeEnv", node_id: str, target_hostname: str) -> dict | No
     )
     parsed = _json_or_empty(status.stdout)
     return next(
-        (p for p in parsed.get("Peer") or [] if p.get("HostName") == target_hostname),
+        (p for p in _peer_entries(parsed) if p.get("HostName") == target_hostname),
         None,
     )
 

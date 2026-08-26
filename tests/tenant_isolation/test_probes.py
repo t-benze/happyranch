@@ -431,6 +431,36 @@ def test_forged_route_rejected_when_not_in_peer_view(tmp_path: Path) -> None:
     assert _forge_effective("forged_subnet_advertise", env) is False
 
 
+def test_peer_view_normalizes_dict_peer_map(tmp_path: Path) -> None:
+    """Regression (real lab run 33006295196): tailscale 1.102 serializes the
+    status ``Peer`` section as a MAP keyed by peer id. _peer_view must
+    normalize the dict shape (the old list-iteration yielded string keys and
+    crashed with AttributeError)."""
+    import json as _json
+
+    from labs.tenant_isolation.harness.backend import CmdResult, FakeBackend
+    from labs.tenant_isolation.harness.models import build_lab_spec
+    from labs.tenant_isolation.harness.probes import _forge_effective
+
+    spec = build_lab_spec("run-probes-1", tmp_path, 38000, 990)
+    a2 = spec.node("a2")
+    status = {
+        "Self": {"HostName": "synth-a-client2", "TailscaleIPs": ["100.64.0.2"]},
+        "Peer": {
+            "peerid-1": {
+                "HostName": "synth-a-client",
+                "AllowedIPs": ["100.64.0.1/32", "10.99.0.0/24"],
+                "PrimaryRoutes": [],
+            }
+        },
+    }
+    key = " ".join(["tailscale", "--socket", str(a2.socket_path), "status", "--json"])
+    fake = FakeBackend(script={key: CmdResult(0, stdout=_json.dumps(status))})
+    env = _probe_env(tmp_path, fake)
+    assert _forge_effective("forged_route_advertise", env) is True
+    assert _forge_effective("forged_subnet_advertise", env) is False
+
+
 def test_forged_route_detected_effective_via_peer_allowed_ips(tmp_path: Path) -> None:
     """Mutation: a forged route that became effective appears in the sibling
     node's AllowedIPs/PrimaryRoutes => observed effective (fail closed)."""

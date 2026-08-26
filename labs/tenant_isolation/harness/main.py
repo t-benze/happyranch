@@ -173,6 +173,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"run failed: {exc}", file=sys.stderr)
         orch.write_failure_evidence(str(exc), preflight_ok=False)
         return EXIT_PROBE_FAILURE
+    except Exception as exc:  # noqa: BLE001 - fail closed with evidence
+        # Any unexpected harness defect must still produce machine-readable
+        # fail-closed evidence (never a bare traceback with no summary).
+        print(f"run failed (unexpected {type(exc).__name__}): {exc}", file=sys.stderr)
+        orch.write_failure_evidence(f"unexpected {type(exc).__name__}: {exc}", preflight_ok=False)
+        return EXIT_PROBE_FAILURE
 
     print(json.dumps(summary.to_dict(), indent=1))
     if summary.residue:

@@ -199,6 +199,33 @@ def test_parse_tailscale_status_extracts_peers() -> None:
     assert peer.public_key == "PLACEHOLDER_PUBLIC_KEY_A2"
 
 
+def test_parse_tailscale_status_normalizes_dict_peer_map() -> None:
+    """Regression (real lab run 33006295196): tailscale 1.102 serializes
+    ``Peer`` as a MAP keyed by peer id, not a list. Parsing must normalize
+    both shapes (a dict-iteration used to yield string keys and crash with
+    AttributeError 'str' object has no attribute get')."""
+    raw = {
+        "Self": {"HostName": "synth-a-client", "TailscaleIPs": ["100.64.0.1"]},
+        "Peer": {
+            "peerid-1": {
+                "HostName": "synth-a-home",
+                "DNSName": "synth-a-home.",
+                "TailscaleIPs": ["100.64.0.2"],
+                "PublicKey": "PLACEHOLDER_PUBLIC_KEY_A2",
+            }
+        },
+    }
+    status = parse_tailscale_status(raw)
+    assert [p.hostname for p in status.peers] == ["synth-a-home"]
+
+
+def test_parse_tailscale_status_tolerates_stray_peer_entries() -> None:
+    """Non-object entries in the Peer section must never crash the parser."""
+    raw = {"Self": {"HostName": "x"}, "Peer": {"bad-key": "not-an-object"}}
+    status = parse_tailscale_status(raw)
+    assert status.peers == []
+
+
 def test_parse_tailscale_status_tolerates_absent_peer_section() -> None:
     status = parse_tailscale_status({"Self": {"HostName": "synth-a-client"}})
     assert status.peers == []

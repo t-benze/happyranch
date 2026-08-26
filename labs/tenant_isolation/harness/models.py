@@ -360,11 +360,17 @@ def parse_tailscale_status(raw: dict[str, Any]) -> TailscaleStatus:
 
     Peer records carry hostname/DNS/IP/key material; the leak checks rely on
     this shape. Missing ``Peer`` is tolerated (a node may legitimately have no
-    peers yet — that is exactly the cross-cell expectation).
+    peers yet — that is exactly the cross-cell expectation). Tailscale 1.102
+    serializes ``Peer`` as a MAP keyed by peer id (not a list), so both shapes
+    are normalized.
     """
     self_node = raw.get("Self") or {}
+    raw_peers = raw.get("Peer") or []
+    entries = raw_peers.values() if isinstance(raw_peers, dict) else raw_peers
     peers: list[TailscalePeer] = []
-    for peer in raw.get("Peer") or []:
+    for peer in entries:
+        if not isinstance(peer, dict):
+            continue  # tolerate stray non-object entries (fail closed on leaks)
         peers.append(
             TailscalePeer(
                 hostname=peer.get("HostName") or "",
