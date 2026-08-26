@@ -121,6 +121,11 @@ export type RenameThreadResult = Awaited<ReturnType<typeof threadsApi.renameThre
 export type SetThreadPinArgs = { pinned: boolean };
 export type SetThreadPinResult = Awaited<ReturnType<typeof threadsApi.setThreadPinned>>;
 
+export type SetThreadMentionRoutingArgs = { mention_routing_enabled: boolean };
+export type SetThreadMentionRoutingResult = Awaited<
+  ReturnType<typeof threadsApi.setThreadMentionRouting>
+>;
+
 export interface ThreadsApi {
   // Reads
   useThreadsList: (
@@ -155,6 +160,12 @@ export interface ThreadsApi {
   useRenameThread: (threadId: string) => MutationLike<RenameThreadArgs, RenameThreadResult>;
   /** Founder-only durable pin/unpin (THR-209). Optimistic with rollback. */
   useSetThreadPinned: (threadId: string) => MutationLike<SetThreadPinArgs, SetThreadPinResult>;
+  /** Founder-only per-thread mention-routing switch (THR-198 Slice C).
+   *  Optimistic with rollback; same-state server no-ops resolve as success
+   *  (the wire marks them ``idempotent``). */
+  useSetThreadMentionRouting: (
+    threadId: string,
+  ) => MutationLike<SetThreadMentionRoutingArgs, SetThreadMentionRoutingResult>;
 }
 
 // ---------------------------------------------------------------------------

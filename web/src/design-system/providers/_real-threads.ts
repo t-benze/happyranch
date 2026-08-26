@@ -36,6 +36,7 @@ import type {
   RenameThreadArgs,
   ResumeArgs,
   SendFollowUpArgs,
+  SetThreadMentionRoutingArgs,
   SetThreadPinArgs,
   ThreadsApi,
 } from './DataContext';
@@ -418,6 +419,67 @@ function useSetThreadPinned(threadId: string): MutationLike<
   });
 }
 
+function useSetThreadMentionRouting(threadId: string): MutationLike<
+  SetThreadMentionRoutingArgs,
+  Awaited<ReturnType<typeof threadsApi.setThreadMentionRouting>>
+> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: SetThreadMentionRoutingArgs) =>
+      threadsApi.setThreadMentionRouting(slug, threadId, body),
+    // Optimistic enable/disable: flip the flag in every cached list + the
+    // detail row before the write lands; roll back to the snapshot on
+    // failure so the UI never lies about server state (THR-198 Slice C,
+    // mirrors useSetThreadPinned). Same-state server no-ops resolve as
+    // success — the wire marks them idempotent.
+    onMutate: async (body) => {
+      await qc.cancelQueries({ queryKey: ['threads', slug] });
+      await qc.cancelQueries({ queryKey: ['thread', slug, threadId] });
+      const prevLists = qc.getQueriesData<{ threads: ThreadRecord[] }>({
+        queryKey: ['threads', slug],
+      });
+      const prevDetail = qc.getQueryData<Awaited<ReturnType<typeof threadsApi.getThread>>>(
+        ['thread', slug, threadId],
+      );
+      for (const [key, data] of prevLists) {
+        if (!data) continue;
+        qc.setQueryData<{ threads: ThreadRecord[] }>(key, {
+          threads: data.threads.map((t) =>
+            t.thread_id === threadId
+              ? { ...t, mention_routing_enabled: body.mention_routing_enabled }
+              : t,
+          ),
+        });
+      }
+      if (prevDetail) {
+        qc.setQueryData<Awaited<ReturnType<typeof threadsApi.getThread>>>(
+          ['thread', slug, threadId],
+          { ...prevDetail, mention_routing_enabled: body.mention_routing_enabled },
+        );
+      }
+      return { prevLists, prevDetail };
+    },
+    onError: (_err, _vars, ctx) => {
+      // Roll back every optimistic write — server state wins.
+      if (!ctx) return;
+      for (const [key, data] of ctx.prevLists) {
+        qc.setQueryData<{ threads: ThreadRecord[] }>(key, data);
+      }
+      if (ctx.prevDetail) {
+        qc.setQueryData<Awaited<ReturnType<typeof threadsApi.getThread>>>(
+          ['thread', slug, threadId],
+          ctx.prevDetail,
+        );
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['threads', slug] });
+      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Exposed surface
 // ---------------------------------------------------------------------------
@@ -438,4 +500,5 @@ export const realThreadsApi: ThreadsApi = {
   useAbortReplies,
   useRenameThread,
   useSetThreadPinned,
+  useSetThreadMentionRouting,
 };

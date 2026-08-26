@@ -81,6 +81,8 @@ vi.mock('@/lib/api', () => ({
     setThreadPinned: vi.fn(),
     getThread: vi.fn(),
     renameThread: vi.fn(),
+    // THR-198 Slice C: per-thread mention-routing switch.
+    setThreadMentionRouting: vi.fn(),
   },
 }));
 
@@ -399,5 +401,116 @@ describe('useRenameThread — detail cache patch (THR-209)', () => {
 
     const detail = qc.getQueryData<{ subject: string }>(['thread', SLUG, THREAD_ID]);
     expect(detail?.subject).toBe('New');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THR-198 Slice C — useSetThreadMentionRouting optimistic update + rollback
+// ---------------------------------------------------------------------------
+
+describe('useSetThreadMentionRouting — optimistic toggle (THR-198 Slice C)', () => {
+  interface RoutingState {
+    thread_id: string;
+    subject: string;
+    pinned: boolean;
+    pinned_at: string | null;
+    last_activity_at: string | null;
+    mention_routing_enabled: boolean;
+  }
+
+  function seed(qc: QueryClient): RoutingState {
+    const thread: RoutingState = {
+      thread_id: THREAD_ID,
+      subject: 'S',
+      pinned: false,
+      pinned_at: null,
+      last_activity_at: null,
+      mention_routing_enabled: true,
+    };
+    qc.setQueryData(['threads', SLUG, { status: 'open' }], { threads: [thread] });
+    qc.setQueryData(['thread', SLUG, THREAD_ID], {
+      ...thread,
+      participants: [],
+      messages: [],
+      reply_delivery: [],
+    });
+    return thread;
+  }
+
+  it('flips the cached routing flag optimistically and keeps it on success', async () => {
+    const qc = makeClient();
+    seed(qc);
+    (threadsApi.setThreadMentionRouting as ReturnType<typeof vi.fn>).mockResolvedValue({
+      thread_id: THREAD_ID,
+      mention_routing_enabled: false,
+    });
+
+    const { result } = renderHook(
+      () => realThreadsApi.useSetThreadMentionRouting(THREAD_ID),
+      { wrapper: wrapper(qc) },
+    );
+    await act(async () => {
+      await result.current.mutateAsync({ mention_routing_enabled: false });
+    });
+
+    const list = qc.getQueryData<{ threads: { mention_routing_enabled: boolean }[] }>([
+      'threads', SLUG, { status: 'open' },
+    ]);
+    expect(list?.threads[0].mention_routing_enabled).toBe(false);
+    const detail = qc.getQueryData<{ mention_routing_enabled: boolean }>([
+      'thread', SLUG, THREAD_ID,
+    ]);
+    expect(detail?.mention_routing_enabled).toBe(false);
+  });
+
+  it('rolls the optimistic flip back on failure', async () => {
+    const qc = makeClient();
+    seed(qc);
+    (threadsApi.setThreadMentionRouting as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('boom'),
+    );
+
+    const { result } = renderHook(
+      () => realThreadsApi.useSetThreadMentionRouting(THREAD_ID),
+      { wrapper: wrapper(qc) },
+    );
+    await act(async () => {
+      await expect(
+        result.current.mutateAsync({ mention_routing_enabled: false }),
+      ).rejects.toThrow('boom');
+    });
+
+    const list = qc.getQueryData<{ threads: { mention_routing_enabled: boolean }[] }>([
+      'threads', SLUG, { status: 'open' },
+    ]);
+    expect(list?.threads[0].mention_routing_enabled).toBe(true);
+    const detail = qc.getQueryData<{ mention_routing_enabled: boolean }>([
+      'thread', SLUG, THREAD_ID,
+    ]);
+    expect(detail?.mention_routing_enabled).toBe(true);
+  });
+
+  it('treats the idempotent same-state no-op as success', async () => {
+    const qc = makeClient();
+    seed(qc);
+    (threadsApi.setThreadMentionRouting as ReturnType<typeof vi.fn>).mockResolvedValue({
+      thread_id: THREAD_ID,
+      mention_routing_enabled: true,
+      idempotent: true,
+    });
+
+    const { result } = renderHook(
+      () => realThreadsApi.useSetThreadMentionRouting(THREAD_ID),
+      { wrapper: wrapper(qc) },
+    );
+    await act(async () => {
+      // A same-state request resolves (never rejects) with idempotent: true.
+      await result.current.mutateAsync({ mention_routing_enabled: true });
+    });
+
+    const detail = qc.getQueryData<{ mention_routing_enabled: boolean }>([
+      'thread', SLUG, THREAD_ID,
+    ]);
+    expect(detail?.mention_routing_enabled).toBe(true);
   });
 });
