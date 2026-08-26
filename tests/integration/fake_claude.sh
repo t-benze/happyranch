@@ -7,8 +7,20 @@ PROMPT=""
 JSON_OUTPUT=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -p) PROMPT="$2"; shift 2 ;;
+        -p)
+            # THR-200: the runtime now launches `claude -p ...` with the prompt
+            # body on stdin (no message argument after -p). Accept BOTH the
+            # legacy `-p <prompt>` form and the boolean `-p` + stdin form so
+            # direct plan invocations keep working.
+            shift
+            if [[ $# -gt 0 && "$1" != -* && -z "$PROMPT" ]]; then
+                PROMPT="$1"; shift
+            fi
+            ;;
+        --model) shift 2 ;;
         --permission-mode) shift 2 ;;
+        --allowedTools) shift 2 ;;
+        --resume) shift 2 ;;
         --output-format)
             if [[ "$2" == "json" ]]; then
                 JSON_OUTPUT=1
@@ -17,6 +29,12 @@ while [[ $# -gt 0 ]]; do
         *) shift ;;
     esac
 done
+
+# THR-200: when -p carries no message argument, the CLI reads the sole user
+# prompt from stdin — mirror the real claude 2.1.241 behavior here.
+if [[ -z "$PROMPT" ]]; then
+    PROMPT="$(cat)"
+fi
 
 # Extract task_id, session_id, and agent name from the start-task SKILL's
 # Parameters block. The agent name appears in the prompt's first line:

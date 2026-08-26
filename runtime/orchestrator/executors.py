@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import subprocess
 import sys
 import time
@@ -67,6 +68,68 @@ class ExecutorResult:
 
 
 _TAIL_BYTES = 2000
+
+# ── THR-200: pre-spawn prompt-transport guard ────────────────────────────
+# Large opaque prompt bodies do not belong in argv: the kernel caps a single
+# argv element (Linux MAX_ARG_STRLEN = 128 KiB - 1, measured 131,071 bytes on
+# this org's hosts), macOS enforces a combined argv+environment budget, and
+# Windows command-line limits are materially smaller. When an argv transport
+# is in use (input_text is None), the guard fails deterministically BEFORE
+# Popen with a normalized, actionable category instead of letting execve raise
+# E2BIG mid-launch. The prompt is NEVER truncated, and the guard is purely a
+# transport check: encoded byte size is transport-only — it must never be
+# interpreted as a cost or reset policy (see protocol/05b-agent-runtime.md;
+# future cost policy should use turn count or cumulative session tokens).
+_PROMPT_TRANSPORT_TOO_LARGE = "prompt_transport_too_large"
+
+
+# Linux MAX_ARG_STRLEN measured on this org's hosts (128 KiB - 1).
+_LINUX_MAX_ARGV_ELEMENT_BYTES = 131_071
+# macOS does not export its per-argument ceiling; 256 KiB is below the
+# smallest documented per-argument limit, so the guard never rejects an
+# element the kernel would accept there.
+_DARWIN_MAX_ARGV_ELEMENT_BYTES = 262_144
+# Windows command-line limits are char-based and much smaller; the runtime
+# refuses Windows before Popen anyway, this is belt-and-braces.
+_WINDOWS_MAX_ARGV_ELEMENT_BYTES = 16_000
+
+
+def _max_argv_element_bytes() -> int:
+    """Platform-safe conservative per-argument transport limit (encoded bytes).
+
+    Deliberately conservative: the guard converts a platform-dependent E2BIG
+    into a deterministic normalized failure BEFORE spawn, so the limit must
+    sit at or below the platform's actual per-argument cap. Known-good smaller
+    argv executions are preserved because the limit is never below the
+    kernel's documented floor for the running platform.
+    """
+    system = platform.system()
+    if system == "Windows":
+        return _WINDOWS_MAX_ARGV_ELEMENT_BYTES
+    if system == "Darwin":
+        return _DARWIN_MAX_ARGV_ELEMENT_BYTES
+    return _LINUX_MAX_ARGV_ELEMENT_BYTES
+
+
+def _prompt_transport_too_large_error(limit: int) -> str:
+    return (
+        f"prompt_transport_too_large: the invocation prompt cannot be "
+        f"transported as a single argv element on this platform (safe "
+        f"per-argument limit {limit} encoded bytes). The prompt was NOT "
+        f"truncated. Encoded byte size is transport-only — it is not a cost "
+        f"or reset policy. Use a stdin-capable transport (claude/pi/codex/"
+        f"custom adapters) or reduce the delivered payload."
+    )
+
+
+def is_prompt_transport_too_large(result) -> bool:
+    """True when ``result`` is a pre-spawn prompt-transport failure.
+
+    Normalized marker for consumers (thread_runner, wake/dream runners) so a
+    deterministic oversized-argv rejection can be surfaced distinctly from
+    other launch failures.
+    """
+    return _PROMPT_TRANSPORT_TOO_LARGE in str(getattr(result, "error", "") or "")
 
 # Standard tool directories prepended to PATH at daemon startup so executor
 # binaries resolve under Finder/launchd (which pass PATH=/usr/bin:/bin).
@@ -657,6 +720,27 @@ def _run_command(
 
     def _launch() -> ExecutorResult:
         start_time = time.monotonic()
+        # ── THR-200 pre-spawn prompt-transport guard ───────────────────
+        # When the prompt travels via argv (input_text is None), any element
+        # over the platform-safe per-argument byte limit would raise E2BIG at
+        # execve. Fail deterministically BEFORE Popen with a normalized
+        # category. stdin-capable transports (input_text set) are unbounded.
+        if input_text is None:
+            limit = _max_argv_element_bytes()
+            for elem in cmd:
+                if len(elem.encode("utf-8")) > limit:
+                    logger.warning(
+                        "%s: argv element of %d encoded bytes exceeds "
+                        "platform-safe per-argument limit %d",
+                        _PROMPT_TRANSPORT_TOO_LARGE,
+                        len(elem.encode("utf-8")), limit,
+                    )
+                    return ExecutorResult(
+                        success=False,
+                        duration_seconds=0,
+                        session_id=sid,
+                        error=_prompt_transport_too_large_error(limit),
+                    )
         # ── Pre-launch integrity validation ──────────────────────────
         # Caller-provided validator runs BEFORE every Popen attempt,
         # including throttle retries after rate-limited responses.
@@ -872,6 +956,7 @@ class ClaudeExecutor:
                 resume_session_id=resume_session_id,
             )
         # Compatibility fallback — bit-identical to the adapter path.
+        # THR-200: the prompt is delivered via stdin (input_text), never argv.
         cmd = [
             _resolve_binary(self._profile_name),
         ]
@@ -880,7 +965,6 @@ class ClaudeExecutor:
                 cmd.append(elem.replace("{model}", model))
         cmd += [
             "-p",
-            prompt,
             "--permission-mode",
             self._permission_mode,
             "--allowedTools",
@@ -929,6 +1013,7 @@ class ClaudeExecutor:
             workspace,
             session_id,
             timeout_seconds,
+            input_text=prompt,
             on_started=on_started,
             usage_parser=_parse_claude_usage,
             session_id_parser=_parse_claude_session_id,
@@ -936,7 +1021,7 @@ class ClaudeExecutor:
             on_throttle_event=on_throttle_event,
             error_parser=_parse_claude_terminal_error,
             pre_launch_validator=pre_launch_validator,
-        org_slug=org_slug,
+            org_slug=org_slug,
         )
 
 
@@ -1168,6 +1253,7 @@ class PiExecutor:
                 model_arg=self._model_arg,
             )
         # Compatibility fallback — bit-identical to the adapter path.
+        # THR-200: the prompt is delivered via stdin (input_text), never argv.
         cmd = [
             _resolve_binary(self._profile_name),
         ]
@@ -1176,7 +1262,6 @@ class PiExecutor:
                 cmd.append(elem.replace("{model}", model))
         cmd += [
             "-p",
-            prompt,
             "--mode",
             "json",
         ]
@@ -1201,12 +1286,13 @@ class PiExecutor:
             workspace,
             session_id,
             timeout_seconds,
+            input_text=prompt,
             on_started=on_started,
             usage_parser=_parse_pi_usage,
             provider="pi",
             on_throttle_event=on_throttle_event,
             pre_launch_validator=pre_launch_validator,
-        org_slug=org_slug,
+            org_slug=org_slug,
         )
 
 

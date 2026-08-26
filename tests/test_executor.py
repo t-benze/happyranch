@@ -96,10 +96,8 @@ def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_pa
     cmd = call_args[0][0]
     assert cmd[0].endswith("claude")
     assert cmd[1] == "-p"
-    # The executor prepends the shared session-lifetime preamble to every prompt.
-    sent = cmd[2]
-    assert sent.endswith("Implement Alipay support")
-    assert "<session-lifetime>" in sent
+    # THR-200: the prompt body travels via stdin, never argv.
+    assert not any("Implement Alipay support" in el for el in cmd)
     assert "--permission-mode" in cmd
     assert "auto" in cmd
     assert "--allowedTools" in cmd
@@ -107,6 +105,10 @@ def test_claude_executor_launches_with_current_semantics(mock_subprocess, tmp_pa
     # Non-EH workspaces keep the narrow happyranch allowlist.
     assert "Bash(happyranch *)" in allowed
     assert "gh " not in allowed
+    # Prompt delivered via stdin (communicate input), preamble included.
+    sent = mock_subprocess.Popen.return_value.communicate.call_args.kwargs["input"]
+    assert sent.endswith("Implement Alipay support")
+    assert "<session-lifetime>" in sent
 
 
 @patch("runtime.orchestrator.executors.subprocess")
@@ -268,12 +270,13 @@ def test_pi_executor_launches_print_mode_with_json_events(mock_subprocess, tmp_p
     cmd = mock_subprocess.Popen.call_args[0][0]
     assert cmd[0].endswith("pi")
     assert cmd[1] == "-p"
-    # The executor prepends the shared session-lifetime preamble to every prompt.
-    sent = cmd[cmd.index("-p") + 1]
-    assert sent.endswith("Implement Alipay support")
-    assert "<session-lifetime>" in sent
+    # THR-200: the prompt body travels via stdin, never argv.
+    assert not any("Implement Alipay support" in el for el in cmd)
     assert "--mode" in cmd
     assert cmd[cmd.index("--mode") + 1] == "json"
+    sent = mock_subprocess.Popen.return_value.communicate.call_args.kwargs["input"]
+    assert sent.endswith("Implement Alipay support")
+    assert "<session-lifetime>" in sent
 
 
 @patch("runtime.orchestrator.executors.subprocess")

@@ -2693,8 +2693,14 @@ async def archive_thread_endpoint(
             purposes=[ThreadInvocationPurpose.BOOTSTRAP],
             decline_reason="archive_started",
         )
-        org.db.set_thread_status(
-            thread_id, status=ThreadStatus.ARCHIVED, summary=summary,
+        # THR-200: archive flips the thread to ARCHIVED and invalidates every
+        # participant's resumable provider session state (id NULL, watermark 0)
+        # in ONE database-owned transaction together with the lifecycle audit —
+        # a reset/audit failure rolls back the whole archive, leaving the
+        # thread OPEN with every session row and no audit residue.
+        org.db.archive_thread_and_reset_sessions(
+            thread_id, summary=summary,
+            audit_scope_id=thread_id, audit_agent="founder",
         )
         participants = [p.agent_name for p in org.db.list_thread_participants(thread_id)]
         sys_seq = org.db.append_thread_message(

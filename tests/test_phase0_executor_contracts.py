@@ -237,19 +237,22 @@ class TestCmdBaselines:
                 )
                 ex.run(workspace, prompt="hello", session_id="sess-X")
 
-        # [claude, "-p", <prompt>, "--permission-mode", "auto",
+        # [claude, "-p", "--permission-mode", "auto",
         #  "--allowedTools", "Bash(happyranch *)", "--output-format", "json"]
+        # THR-200: the prompt body travels via stdin (input_text), never argv.
         self._assert_argv_structure(
-            captured_cmd, binary_ends_with="/claude", expected_len=9,
-            prompt_index=2, prompt_contains=["hello"],
+            captured_cmd, binary_ends_with="/claude", expected_len=8,
         )
         assert captured_cmd[1] == "-p"
-        assert captured_cmd[3] == "--permission-mode"
-        assert captured_cmd[4] == "auto"
-        assert captured_cmd[5] == "--allowedTools"
-        assert captured_cmd[6] == "Bash(happyranch *)"
-        assert captured_cmd[7] == "--output-format"
-        assert captured_cmd[8] == "json"
+        assert captured_cmd[2] == "--permission-mode"
+        assert captured_cmd[3] == "auto"
+        assert captured_cmd[4] == "--allowedTools"
+        assert captured_cmd[5] == "Bash(happyranch *)"
+        assert captured_cmd[6] == "--output-format"
+        assert captured_cmd[7] == "json"
+        assert not any("hello" in el for el in captured_cmd)
+        sent = fake_proc.communicate.call_args.kwargs["input"]
+        assert "hello" in sent and _SESSION_LIFETIME_PREAMBLE.strip() in sent
 
     def test_claude_cmd_with_model(self, tmp_path: Path):
         workspace = tmp_path / "ws"
@@ -272,22 +275,25 @@ class TestCmdBaselines:
                 ex.run(workspace, prompt="hi", session_id="sess-X",
                        model="claude-sonnet-4-20250514")
 
-        # [claude, "--model", "claude-sonnet-4-20250514", "-p", <prompt>,
+        # [claude, "--model", "claude-sonnet-4-20250514", "-p",
         #  "--permission-mode", "auto", "--allowedTools", "Bash(happyranch *)",
         #  "--output-format", "json"]
+        # THR-200: prompt travels via stdin, never argv.
         self._assert_argv_structure(
-            captured_cmd, binary_ends_with="/claude", expected_len=11,
-            prompt_index=4, prompt_contains=["hi"],
+            captured_cmd, binary_ends_with="/claude", expected_len=10,
         )
         assert captured_cmd[1] == "--model"
         assert captured_cmd[2] == "claude-sonnet-4-20250514"
         assert captured_cmd[3] == "-p"
-        assert captured_cmd[5] == "--permission-mode"
-        assert captured_cmd[6] == "auto"
-        assert captured_cmd[7] == "--allowedTools"
-        assert captured_cmd[8] == "Bash(happyranch *)"
-        assert captured_cmd[9] == "--output-format"
-        assert captured_cmd[10] == "json"
+        assert captured_cmd[4] == "--permission-mode"
+        assert captured_cmd[5] == "auto"
+        assert captured_cmd[6] == "--allowedTools"
+        assert captured_cmd[7] == "Bash(happyranch *)"
+        assert captured_cmd[8] == "--output-format"
+        assert captured_cmd[9] == "json"
+        assert not any("hi" in el for el in captured_cmd)
+        sent = fake_proc.communicate.call_args.kwargs["input"]
+        assert "hi" in sent
 
     def test_claude_cmd_with_resume(self, tmp_path: Path):
         workspace = tmp_path / "ws"
@@ -309,21 +315,25 @@ class TestCmdBaselines:
                 ex.run(workspace, prompt="hi", session_id="sess-X",
                        resume_session_id="resume-abc")
 
-        # [claude, "-p", <prompt>, "--permission-mode", "auto",
+        # [claude, "-p", "--permission-mode", "auto",
         #  "--allowedTools", "Bash(happyranch *)", "--output-format", "json",
         #  "--resume", "resume-abc"]
+        # THR-200: prompt travels via stdin, never argv.
         self._assert_argv_structure(
-            captured_cmd, binary_ends_with="/claude", expected_len=11,
-            prompt_index=2, prompt_contains=["hi"],
+            captured_cmd, binary_ends_with="/claude", expected_len=10,
         )
-        assert captured_cmd[3] == "--permission-mode"
-        assert captured_cmd[4] == "auto"
-        assert captured_cmd[5] == "--allowedTools"
-        assert captured_cmd[6] == "Bash(happyranch *)"
-        assert captured_cmd[7] == "--output-format"
-        assert captured_cmd[8] == "json"
-        assert captured_cmd[9] == "--resume"
-        assert captured_cmd[10] == "resume-abc"
+        assert captured_cmd[1] == "-p"
+        assert captured_cmd[2] == "--permission-mode"
+        assert captured_cmd[3] == "auto"
+        assert captured_cmd[4] == "--allowedTools"
+        assert captured_cmd[5] == "Bash(happyranch *)"
+        assert captured_cmd[6] == "--output-format"
+        assert captured_cmd[7] == "json"
+        assert captured_cmd[8] == "--resume"
+        assert captured_cmd[9] == "resume-abc"
+        assert not any("hi" in el for el in captured_cmd)
+        sent = fake_proc.communicate.call_args.kwargs["input"]
+        assert "hi" in sent
 
     # -- Codex --------------------------------------------------------------
 
@@ -505,14 +515,17 @@ class TestCmdBaselines:
             ex = PiExecutor(pi_cli_path="pi")
             ex.run(workspace, prompt="hello pi", session_id="sess-X")
 
-        # [pi, "-p", <prompt>, "--mode", "json"]
+        # [pi, "-p", "--mode", "json"]
+        # THR-200: prompt travels via stdin, never argv.
         self._assert_argv_structure(
-            captured_cmd, binary_ends_with="/pi", expected_len=5,
-            prompt_index=2, prompt_contains=["hello pi"],
+            captured_cmd, binary_ends_with="/pi", expected_len=4,
         )
         assert captured_cmd[1] == "-p"
-        assert captured_cmd[3] == "--mode"
-        assert captured_cmd[4] == "json"
+        assert captured_cmd[2] == "--mode"
+        assert captured_cmd[3] == "json"
+        assert not any("hello pi" in el for el in captured_cmd)
+        sent = fake_proc.communicate.call_args.kwargs["input"]
+        assert "hello pi" in sent
 
     def test_pi_cmd_with_model(self, tmp_path: Path):
         workspace = tmp_path / "ws"
@@ -531,16 +544,19 @@ class TestCmdBaselines:
             ex.run(workspace, prompt="hi", session_id="sess-X",
                    model="pi-model-v2")
 
-        # [pi, "--model", "pi-model-v2", "-p", <prompt>, "--mode", "json"]
+        # [pi, "--model", "pi-model-v2", "-p", "--mode", "json"]
+        # THR-200: prompt travels via stdin, never argv.
         self._assert_argv_structure(
-            captured_cmd, binary_ends_with="/pi", expected_len=7,
-            prompt_index=4, prompt_contains=["hi"],
+            captured_cmd, binary_ends_with="/pi", expected_len=6,
         )
         assert captured_cmd[1] == "--model"
         assert captured_cmd[2] == "pi-model-v2"
         assert captured_cmd[3] == "-p"
-        assert captured_cmd[5] == "--mode"
-        assert captured_cmd[6] == "json"
+        assert captured_cmd[4] == "--mode"
+        assert captured_cmd[5] == "json"
+        assert not any("hi" in el for el in captured_cmd)
+        sent = fake_proc.communicate.call_args.kwargs["input"]
+        assert "hi" in sent
 
     # -- Custom argv_template -----------------------------------------------
 
@@ -1830,10 +1846,11 @@ class TestFirstPartyAdapterCatalog:
             permission_mode="acceptEdits",
             allowed_tools="happyranch Bash(git:*)",
         )
+        # THR-200: prompt body is NOT an argv element — it travels via stdin
+        # (the executor passes it as ``input_text``).
         assert cmd == [
             "/usr/local/bin/claude",
             "-p",
-            "hello",
             "--permission-mode",
             "acceptEdits",
             "--allowedTools",
@@ -1841,6 +1858,7 @@ class TestFirstPartyAdapterCatalog:
             "--output-format",
             "json",
         ]
+        assert "hello" not in cmd
 
     def test_claude_adapter_build_argv_with_model(self):
         from runtime.adapters import ClaudeAdapter
@@ -1854,13 +1872,12 @@ class TestFirstPartyAdapterCatalog:
             model="claude-sonnet-4-20250514",
             model_arg=["--model", "{model}"],
         )
-        # Model injected after binary, before -p
+        # Model injected after binary, before -p; prompt NOT in argv (stdin).
         expected = [
             "/usr/local/bin/claude",
             "--model",
             "claude-sonnet-4-20250514",
             "-p",
-            "hello",
             "--permission-mode",
             "acceptEdits",
             "--allowedTools",
@@ -1869,6 +1886,7 @@ class TestFirstPartyAdapterCatalog:
             "json",
         ]
         assert cmd == expected
+        assert "hello" not in cmd
 
     def test_claude_adapter_build_argv_with_resume(self):
         from runtime.adapters import ClaudeAdapter
@@ -1980,14 +1998,15 @@ class TestFirstPartyAdapterCatalog:
             cli_path="/usr/local/bin/pi",
             prompt="hello",
         )
+        # THR-200: prompt body is NOT an argv element — it travels via stdin.
         expected = [
             "/usr/local/bin/pi",
             "-p",
-            "hello",
             "--mode",
             "json",
         ]
         assert cmd == expected
+        assert "hello" not in cmd
 
     def test_pi_adapter_build_argv_with_model(self):
         from runtime.adapters import PiAdapter
@@ -2160,12 +2179,14 @@ class TestD2BuildExecutorAdapterInjection:
                 model="test-model",
             )
 
-            # Bit-identical to what the adapter would produce
+            # Bit-identical to what the adapter would produce. THR-200: the
+            # prompt body travels via stdin — neither the adapter path nor the
+            # fallback puts it in argv.
             assert cmd[0] == "/usr/local/bin/claude"
             assert cmd[1] == "--model"
             assert cmd[2] == "test-model"
             assert "-p" in cmd
-            assert "hello" in cmd
+            assert "hello" not in cmd
             assert "--permission-mode" in cmd
             assert "--allowedTools" in cmd
             assert "happyranch" in cmd

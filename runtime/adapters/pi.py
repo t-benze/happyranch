@@ -12,8 +12,12 @@ class PiAdapter:
     """First-party adapter for Pi's ``-p`` print mode.
 
     Encapsulates argv construction: binary, optional model flag, print
-    flag with prompt, and json output mode. Every element and order is
-    pinned to the Phase-0 cmd-baseline contract.
+    flag, and json output mode. Every element and order is pinned to the
+    Phase-0 cmd-baseline contract except the prompt transport: THR-200
+    moved the prompt body OFF argv onto stdin (verified on pi 0.84.2:
+    ``-p`` with no message argument reads the sole user prompt from stdin
+    as a ``role: user`` / ``type: text`` message). The caller delivers
+    the prompt via ``input_text`` on the subprocess.
     """
 
     def build_argv(
@@ -28,6 +32,7 @@ class PiAdapter:
         Args:
             cli_path: Resolved absolute path to the ``pi`` binary.
             prompt: Full prompt text including session-lifetime preamble.
+                Delivered via stdin (``input_text``), never argv (THR-200).
             model: Agent model id to inject, or None for CLI default.
             model_arg: Model arg template ``[flag, placeholder]`` or None.
         """
@@ -37,7 +42,6 @@ class PiAdapter:
                 cmd.append(elem.replace("{model}", model))
         cmd += [
             "-p",
-            prompt,
             "--mode",
             "json",
         ]

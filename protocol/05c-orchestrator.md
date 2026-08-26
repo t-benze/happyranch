@@ -151,6 +151,30 @@ registration stricter. Token usage remains optional here: it is required only
 when a candidate declares the established ``token_metering`` capability and
 supplies trustworthy canonical ``token_usage``; direct candidates are not
 rejected merely for omitting optional usage fields.
+
+**Thread provider-session state (THR-200).** The per-``(thread, agent)``
+resumable provider session id + delta watermark on ``thread_participants``
+is a Claude-only optimization, never a correctness dependency (see
+`protocol/05b-agent-runtime.md`). Eviction — a provider-declared
+session-not-found on a resume attempt — invalidates the durable id in the
+SAME transaction as the eviction audit, BEFORE the full-prompt fallback
+launch; a failed fallback leaves the id NULL and the delivery watermark
+unadvanced, so the next wake re-attempts the same required range from a full
+prompt. Archive, successful executor switch, and agent termination clear the
+resume state (id NULL, watermark 0) so any later wake starts fresh. Each
+boundary is a database-owned transaction — the participant reset and its
+``thread_session_invalidated`` audit commit atomically (termination runs
+reset+audit inside the existing terminate-cleanup transaction; archive wraps
+the status flip, every participant reset, and the audit in one transaction),
+so a reset/audit failure leaves no partial lifecycle state: a failed switch
+is rolled back (no new executor installed) and a failed archive leaves the
+thread OPEN with every session row unmodified; participant removal deletes
+the row and its session state together. The GH-688 claim gate stays strict (`<` resumes,
+`=`/`>` use the full prompt) so no required sequence is ever omitted; the
+equality state self-heals after one successfully settled full-prompt turn.
+Prompt bodies travel via stdin for claude/pi/codex and via argv (guard-
+limited) for opencode/generic-CLI; encoded byte size is transport-only, never
+a cost or reset policy.
 For a first conformance-probe failure the canonical ledger state is
 ``failed_retryable`` with ``retry_eligible: true``. The normal flow retry is a
 same-token corrected-artifact retry: the founder modifies the wrapper/child

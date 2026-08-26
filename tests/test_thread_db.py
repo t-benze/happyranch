@@ -455,6 +455,120 @@ def test_thread_session_defaults_and_roundtrip(tmp_path):
     assert db.get_thread_session("THR-001", "alice") == (None, 0)
 
 
+def test_invalidate_thread_session_evicted_is_atomic(tmp_path):
+    """THR-200: the eviction audit and the durable session-id invalidation
+    commit in ONE transaction; the watermark is preserved (a failed fallback
+    must not advance delivery state)."""
+    from runtime.infrastructure.database import Database
+    from runtime.models import ThreadRecord
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.update_thread_session(
+        "THR-001", "alice", agent_session_id="claude-stale", last_resumed_seq=9,
+    )
+
+    db.invalidate_thread_session_evicted(
+        "THR-001", "alice",
+        stale_session_id="claude-stale", error="No conversation found",
+    )
+
+    # Durable id NULL; watermark preserved at 9 (no advance).
+    assert db.get_thread_session("THR-001", "alice") == (None, 9)
+    audits = [r for r in db.get_audit_logs("THR-001")
+              if r["action"] == "agent_session_evicted_fallback"]
+    assert len(audits) == 1
+    assert audits[0]["payload"]["stale_session_id"] == "claude-stale"
+
+
+def test_reset_thread_session_clears_id_and_watermark(tmp_path):
+    """Lifecycle reset (archive/switch/termination) clears id AND watermark
+    so any later wake starts fresh with a full prompt."""
+    from runtime.infrastructure.database import Database
+    from runtime.models import ThreadRecord
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.update_thread_session(
+        "THR-001", "alice", agent_session_id="sess-123", last_resumed_seq=7,
+    )
+
+    db.reset_thread_session("THR-001", "alice")
+    assert db.get_thread_session("THR-001", "alice") == (None, 0)
+
+
+def test_reset_thread_sessions_for_agent_covers_all_rows(tmp_path):
+    """Executor switch / termination invalidate every participant row owned
+    by the agent across all threads."""
+    from runtime.infrastructure.database import Database
+    from runtime.models import ThreadRecord
+
+    db = Database(tmp_path / "happyranch.db")
+    for tid in ("THR-001", "THR-002"):
+        db.insert_thread(ThreadRecord(id=tid, subject=f"s{tid}"))
+        db.add_thread_participant(tid, "alice", added_by="founder")
+        db.add_thread_participant(tid, "bob", added_by="founder")
+        db.update_thread_session(
+            tid, "alice", agent_session_id="sess-a", last_resumed_seq=5,
+        )
+        db.update_thread_session(
+            tid, "bob", agent_session_id="sess-b", last_resumed_seq=2,
+        )
+
+    rows = db.reset_thread_sessions_for_agent("alice")
+    assert rows == 2
+    for tid in ("THR-001", "THR-002"):
+        assert db.get_thread_session(tid, "alice") == (None, 0)
+        # Bob untouched.
+        assert db.get_thread_session(tid, "bob") == ("sess-b", 2)
+
+
+def test_reset_thread_sessions_for_thread_covers_all_participants(tmp_path):
+    """Archive resets every participant of one thread."""
+    from runtime.infrastructure.database import Database
+    from runtime.models import ThreadRecord
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.insert_thread(ThreadRecord(id="THR-002", subject="y"))
+    for tid in ("THR-001", "THR-002"):
+        db.add_thread_participant(tid, "alice", added_by="founder")
+        db.update_thread_session(
+            tid, "alice", agent_session_id="sess-a", last_resumed_seq=5,
+        )
+
+    rows = db.reset_thread_sessions_for_thread("THR-001")
+    assert rows == 1
+    assert db.get_thread_session("THR-001", "alice") == (None, 0)
+    # Other thread untouched.
+    assert db.get_thread_session("THR-002", "alice") == ("sess-a", 5)
+
+
+def test_remove_thread_participant_deletes_session_state(tmp_path):
+    """THR-200 regression proof: participant removal hard-deletes the row, so
+    the resumable session state (id + watermark) goes with it — no redundant
+    clear is needed at the removal seam."""
+    from runtime.infrastructure.database import Database
+    from runtime.models import ThreadRecord
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.update_thread_session(
+        "THR-001", "alice", agent_session_id="sess-123", last_resumed_seq=4,
+    )
+    assert db.get_thread_session("THR-001", "alice") == ("sess-123", 4)
+
+    assert db.remove_thread_participant("THR-001", "alice") is True
+
+    # Row gone → safe default; a re-added participant starts fresh.
+    assert db.get_thread_session("THR-001", "alice") == (None, 0)
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    assert db.get_thread_session("THR-001", "alice") == (None, 0)
+
+
 def test_remove_thread_participant_succeeds(tmp_path):
     """Remove a participant returns True and the row is hard-deleted."""
     from runtime.infrastructure.database import Database

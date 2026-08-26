@@ -990,25 +990,61 @@ watermark). Issue #53. Implementation: `src/daemon/thread_runner.py`
   columns. Don't generalize without a per-provider resume design.
 - **Session id is an optimization, never a correctness dependency.** The SQLite
   transcript is canonical. A parse miss, an eviction, or any non-Claude executor
-  silently falls back to a full-context fresh session.
+  silently falls back to a full-context fresh session. THR-200: the full-prompt
+  fallback is only reachable if the prompt can actually be transported —
+  Claude/Pi/Codex deliver the prompt on **stdin** (verified pinned-version
+  canaries), so the fallback no longer hits the kernel argv E2BIG cliff;
+  OpenCode/generic-CLI stay argv-based until their stdin contracts are proven.
 - **`last_resumed_seq` advances ONLY on a successful subprocess.** A failed/timed-
   out turn leaves the watermark untouched so the next successful resume re-
   includes the messages the broken turn skipped. Reverting to "advance on every
   invocation" orphans messages from the session on any failure.
+- **Eviction invalidation is transactional and precedes the fallback (THR-200).**
+  On a provider-declared session-not-found, the `agent_session_evicted_fallback`
+  audit row AND the durable `agent_session_id = NULL` invalidation commit in ONE
+  database transaction BEFORE the full-prompt fallback launch. If the fallback
+  also fails, the id stays NULL and the delivery watermark does NOT advance —
+  the next wake re-attempts the same range from a full prompt instead of a
+  doomed resume against the stale provider session.
+- **The equality watermark state self-heals (THR-200 binding correction).**
+  `last_resumed_seq == running_from_seq` refuses resume (correct — a delta must
+  never omit a required sequence) and runs the full prompt; after ONE
+  successfully transported, terminally settled full-prompt turn both watermarks
+  converge and resume eligibility returns. This is NOT a permanent wedge, and
+  no standalone watermark-comparison change is permitted.
+- **Lifecycle invalidation (THR-200).** Thread archive, a SUCCESSFUL executor
+  switch, and agent termination clear resume state (id NULL, watermark 0) so
+  any later wake starts fresh. Each boundary is a database-owned transaction:
+  the participant reset and its `thread_session_invalidated` audit commit
+  atomically (termination runs reset+audit inside the existing
+  terminate-cleanup transaction; archive wraps the status flip, every
+  participant reset, and the audit in one transaction). A reset/audit failure
+  leaves no partial lifecycle state — a failed switch is rolled back (prior
+  frontmatter restored, workspace re-reconciled, so no new executor is
+  installed) and a failed archive leaves the thread OPEN with every session
+  row unmodified.
+  Participant removal already hard-deletes the participant row — its session
+  state goes with it; do not add a redundant clear.
+- **Encoded byte size is transport-only (THR-200).** The pre-spawn
+  `prompt_transport_too_large` guard is a deterministic normalized failure for
+  argv transports (opencode/generic-CLI; never truncates). It must never be
+  interpreted as a cost or reset policy: future cost-bounding policy must use
+  turn count or cumulative session tokens, not transcript bytes.
 - **Eviction fallback runs the executor a second time within one `run_invocation`,
   then clears `resume_sid`.** Because the failed resume never consumed the single-
   use invocation token, the full-context retry can still consume it. The fallback
-  path audits `claude_session_evicted_fallback` and (because `resume_sid` is now
-  None) does NOT also audit `claude_session_reused`.
-- **`--resume` may fork a new session id.** Always persist `result.claude_session_id`
+  path audits `agent_session_evicted_fallback` and (because `resume_sid` is now
+  None) does NOT also audit `agent_session_reused`.
+- **`--resume` may fork a new session id.** Always persist `result.agent_session_id`
   from each successful turn, not the id you passed in.
 - **Concurrency safety comes from per-`(thread, agent)` serialization** (the thread
   queue), giving at most one in-flight invocation per session. `--resume` on the
   same session concurrently is undefined; don't add parallelism per participant.
 - **System-prompt drift is accepted.** A mid-thread CLAUDE.md / org-prompt change
   is not visible to an already-resumed session (it was locked in at session
-  creation). To force a fresh session, clear `claude_session_id` for that
-  `(thread, agent)` row. Most prompt changes happen between conversations.
+  creation). To force a fresh session, clear `agent_session_id` for that
+  `(thread, agent)` row (or archive/switch/terminate, which now do it
+  automatically). Most prompt changes happen between conversations.
 - **Two-place schema add** — the columns are in BOTH the `thread_participants`
   CREATE TABLE (fresh DBs) and the idempotent ALTER block (existing DBs). Both
   paths are required, same as the assets-dir pattern.

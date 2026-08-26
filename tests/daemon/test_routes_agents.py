@@ -4153,6 +4153,312 @@ def test_manage_agent_terminate_archives_worker_preserves_history(
     assert any(row["agent"] == "dev_agent" for row in audit)
 
 
+def test_manage_agent_terminate_invalidates_thread_sessions(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """THR-200: terminating an agent clears every thread participant resume
+    row it owns (id NULL, watermark 0) with a lifecycle audit — a terminated
+    agent must never resume a provider session."""
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    org_state.db.update_thread_session(
+        tid, "dev_agent", agent_session_id="sess-claude", last_resumed_seq=4,
+    )
+
+    resp = client.post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={"action": "terminate", "name": "dev_agent",
+              "task_id": _EH_TASK, "session_id": _EH_SESSION},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
+    assert org_state.db.get_thread_session(tid, "dev_agent") == (None, 0)
+    audits, _ = org_state.db.query_audit_logs(
+        action="thread_session_invalidated", limit=10,
+    )
+    assert len(audits) == 1
+    assert audits[0]["payload"]["reason"] == "termination"
+    assert audits[0]["payload"]["name"] == "dev_agent"
+
+
+def test_manage_agent_update_executor_switch_invalidates_thread_sessions(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """THR-200: a SUCCESSFUL executor switch (claude→codex) invalidates every
+    thread participant session row for the agent — a later switch back to a
+    resume-capable executor starts fresh instead of reusing a provider session
+    minted under a different executor."""
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    org_state.db.update_thread_session(
+        tid, "dev_agent", agent_session_id="sess-claude", last_resumed_seq=6,
+    )
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.ensure_workspace_ready.return_value = None
+        resp = client.post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={"action": "update", "name": "dev_agent",
+                  "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "executor": "codex"},
+            headers=auth_headers,
+        )
+    assert resp.status_code == 200, resp.text
+
+    assert org_state.db.get_thread_session(tid, "dev_agent") == (None, 0)
+    audits, _ = org_state.db.query_audit_logs(
+        action="thread_session_invalidated", limit=10,
+    )
+    assert len(audits) == 1
+    assert audits[0]["payload"]["reason"] == "executor_switch"
+    assert audits[0]["payload"]["name"] == "dev_agent"
+
+
+def test_manage_agent_update_failed_switch_leaves_prior_state_intact(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """THR-200: a FAILED executor switch (workspace reconciliation raises)
+    returns 500 and leaves the agent's thread session rows untouched — the
+    invalidation is only applied after the switch fully succeeds."""
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    org_state.db.update_thread_session(
+        tid, "dev_agent", agent_session_id="sess-claude", last_resumed_seq=6,
+    )
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.ensure_workspace_ready.side_effect = RuntimeError("boom")
+        resp = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={"action": "update", "name": "dev_agent",
+                  "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "executor": "codex"},
+            headers=auth_headers,
+        )
+    assert resp.status_code == 500, resp.text
+
+    # Prior state intact: session row unchanged, no invalidation audit.
+    assert org_state.db.get_thread_session(tid, "dev_agent") == ("sess-claude", 6)
+    audits, _ = org_state.db.query_audit_logs(
+        action="thread_session_invalidated", limit=10,
+    )
+    assert audits == []
+
+
+def test_manage_agent_update_same_executor_does_not_invalidate(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """THR-200: an update that keeps the same executor is not a switch — no
+    session invalidation fires."""
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", executor="codex")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    org_state.db.update_thread_session(
+        tid, "dev_agent", agent_session_id="sess-codex", last_resumed_seq=6,
+    )
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        mock_ctx = MockCB.return_value
+        mock_ctx.ensure_workspace_ready.return_value = None
+        resp = client.post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={"action": "update", "name": "dev_agent",
+                  "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "executor": "codex"},
+            headers=auth_headers,
+        )
+    assert resp.status_code == 200, resp.text
+
+    assert org_state.db.get_thread_session(tid, "dev_agent") == ("sess-codex", 6)
+    audits, _ = org_state.db.query_audit_logs(
+        action="thread_session_invalidated", limit=10,
+    )
+    assert audits == []
+
+
+def test_manage_agent_update_switch_reset_failure_rolls_back_switch(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """THR-200 fix-forward: a provider-session RESET failure after the
+    executor-switch filesystem writes succeeded rolls back the WHOLE switch —
+    the prior executor frontmatter is restored, the workspace is re-reconciled
+    back to the prior executor, and every participant session row stays
+    untouched (no new executor installed, no partial lifecycle state)."""
+    from runtime.infrastructure import database as db_module
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    org_state.db.update_thread_session(
+        tid, "dev_agent", agent_session_id="sess-claude", last_resumed_seq=6,
+    )
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, \
+         patch.object(
+             db_module.Database, "_reset_thread_sessions_for_agent_uncommitted",
+             side_effect=RuntimeError("injected session reset failure"),
+             create=True,
+         ):
+        mock_ctx = MockCB.return_value
+        mock_ctx.ensure_workspace_ready.return_value = None
+        resp = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={"action": "update", "name": "dev_agent",
+                  "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "executor": "codex"},
+            headers=auth_headers,
+        )
+    assert resp.status_code == 500, resp.text
+
+    # No new executor installed: frontmatter restored to the prior executor.
+    updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert updated is not None
+    assert updated.executor == "claude"
+    # Compensation re-reconciled the workspace back to the prior executor.
+    calls = mock_ctx.ensure_workspace_ready.call_args_list
+    assert len(calls) == 2
+    assert calls[1].kwargs["provider"] == "claude"
+    # Prior session state remains and no invalidation audit was emitted.
+    assert org_state.db.get_thread_session(tid, "dev_agent") == ("sess-claude", 6)
+    audits, _ = org_state.db.query_audit_logs(
+        action="thread_session_invalidated", limit=10,
+    )
+    assert audits == []
+    assert org_state.db._conn.in_transaction is False
+
+
+def test_manage_agent_update_switch_audit_failure_rolls_back_switch(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """THR-200 fix-forward: an invalidation AUDIT failure after the participant
+    reset already executed in-transaction rolls back the reset AND the
+    executor switch — no new executor installed, prior session state intact,
+    no partial audit residue."""
+    from runtime.infrastructure import database as db_module
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    org_state.db.update_thread_session(
+        tid, "dev_agent", agent_session_id="sess-claude", last_resumed_seq=6,
+    )
+
+    transiently_reset = {"seen": False}
+    original_uncommitted = db_module.Database.insert_audit_log_uncommitted
+
+    def _failing_invalidation_audit(self, task_id, agent, action, payload=None):
+        if action == "thread_session_invalidated":
+            row = self._conn.execute(
+                "SELECT agent_session_id FROM thread_participants "
+                "WHERE thread_id = ? AND agent_name = ?",
+                (tid, "dev_agent"),
+            ).fetchone()
+            transiently_reset["seen"] = (
+                row is not None and row["agent_session_id"] is None
+            )
+            raise RuntimeError("injected invalidation audit failure")
+        return original_uncommitted(self, task_id, agent, action, payload)
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, \
+         patch.object(
+             db_module.Database, "insert_audit_log_uncommitted",
+             new=_failing_invalidation_audit,
+         ):
+        mock_ctx = MockCB.return_value
+        mock_ctx.ensure_workspace_ready.return_value = None
+        resp = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={"action": "update", "name": "dev_agent",
+                  "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "executor": "codex"},
+            headers=auth_headers,
+        )
+    assert resp.status_code == 500, resp.text
+    # The failure landed mid-flight: the reset executed in-transaction first.
+    assert transiently_reset["seen"] is True
+
+    updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert updated is not None
+    assert updated.executor == "claude"
+    calls = mock_ctx.ensure_workspace_ready.call_args_list
+    assert len(calls) == 2
+    assert calls[1].kwargs["provider"] == "claude"
+    assert org_state.db.get_thread_session(tid, "dev_agent") == ("sess-claude", 6)
+    audits, _ = org_state.db.query_audit_logs(
+        action="thread_session_invalidated", limit=10,
+    )
+    assert audits == []
+    assert org_state.db._conn.in_transaction is False
+
+
 def test_manage_agent_terminate_refuses_manager(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
@@ -4892,6 +5198,197 @@ def test_manage_agent_terminate_cleanup_failure_rolls_back_everything(
     assert all(row["action"] not in cleanup_actions for row in audit_rows)
 
     # The database connection has no open transaction left behind.
+    assert org_state.db._conn.in_transaction is False
+
+
+def test_manage_agent_terminate_session_reset_failure_rolls_back_cleanup(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """THR-200 fix-forward: a provider-session RESET failure inside the
+    terminate cleanup rolls back the ENTIRE terminate DB transaction AND the
+    route's external rollback — agent, workspace, team membership, every
+    future-work row, and every session row stay exactly as they were."""
+    from runtime.infrastructure import database as db_module
+    from runtime.models import (
+        DreamStatus,
+        ScheduleStatus,
+        ThreadInvocationStatus,
+        WorkHourStatus,
+    )
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "marker.txt").write_text("keep me")
+
+    inv_token = _seed_all_future_work(org_state)
+
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    org_state.db.update_thread_session(
+        tid, "dev_agent", agent_session_id="sess-claude", last_resumed_seq=6,
+    )
+
+    with patch.object(
+        db_module.Database, "_reset_thread_sessions_for_agent_uncommitted",
+        side_effect=RuntimeError("injected session reset failure"),
+        create=True,
+    ):
+        resp = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={"action": "terminate", "name": "dev_agent",
+                  "task_id": _EH_TASK, "session_id": _EH_SESSION},
+            headers=auth_headers,
+        )
+
+    assert resp.status_code == 500, resp.text
+    assert resp.json()["detail"]["code"] == "terminate_cleanup_failed"
+
+    # Every future-work record exactly as before the call.
+    sched = org_state.db.schedules.get("SCHED-ARMED")
+    assert sched.status == ScheduleStatus.ARMED
+    assert sched.active == 1
+    wake = org_state.db.work_hours.get("WORKHOUR-PEND")
+    assert wake.status == WorkHourStatus.PENDING
+    assert wake.ended_at is None
+    assert wake.error is None
+    dream = org_state.db.get_dream("DREAM-PEND")
+    assert dream.status == DreamStatus.PENDING
+    assert dream.ended_at is None
+    assert dream.error is None
+    inv = org_state.db.get_invocation_any_status(inv_token)
+    assert inv.status == ThreadInvocationStatus.PENDING
+    assert inv.decline_reason is None
+    assert inv.consumed_at is None
+
+    # External rollback behavior preserved: agent + workspace + team intact.
+    assert prompt_loader.load_agent(paths, "dev_agent") is not None
+    assert workspace.exists()
+    assert (workspace / "marker.txt").read_text() == "keep me"
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+
+    # Session rows + audit residue unchanged.
+    assert org_state.db.get_thread_session(tid, "dev_agent") == ("sess-claude", 6)
+    audits, _ = org_state.db.query_audit_logs(
+        action="thread_session_invalidated", limit=10,
+    )
+    assert audits == []
+    cleanup_actions = {"schedule_cancelled", "work_hour_skipped", "dream_skipped"}
+    audit_rows, _ = org_state.db.query_audit_logs(agent="dev_agent", limit=1000)
+    assert all(row["action"] not in cleanup_actions for row in audit_rows)
+    assert org_state.db._conn.in_transaction is False
+
+
+def test_manage_agent_terminate_session_audit_failure_rolls_back_cleanup(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """THR-200 fix-forward: an invalidation AUDIT failure after the session
+    reset already executed in-transaction rolls back the complete terminate
+    cleanup AND the external archive compensation — no committed cleanup, no
+    cleared sessions, no audit residue."""
+    from runtime.infrastructure import database as db_module
+    from runtime.models import (
+        DreamStatus,
+        ScheduleStatus,
+        ThreadInvocationStatus,
+        WorkHourStatus,
+    )
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "marker.txt").write_text("keep me")
+
+    inv_token = _seed_all_future_work(org_state)
+
+    client = TestClient(app)
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    org_state.db.update_thread_session(
+        tid, "dev_agent", agent_session_id="sess-claude", last_resumed_seq=6,
+    )
+
+    transiently_reset = {"seen": False}
+    original_uncommitted = db_module.Database.insert_audit_log_uncommitted
+
+    def _failing_invalidation_audit(self, task_id, agent, action, payload=None):
+        if action == "thread_session_invalidated":
+            row = self._conn.execute(
+                "SELECT agent_session_id FROM thread_participants "
+                "WHERE thread_id = ? AND agent_name = ?",
+                (tid, "dev_agent"),
+            ).fetchone()
+            transiently_reset["seen"] = (
+                row is not None and row["agent_session_id"] is None
+            )
+            raise RuntimeError("injected invalidation audit failure")
+        return original_uncommitted(self, task_id, agent, action, payload)
+
+    with patch.object(
+        db_module.Database, "insert_audit_log_uncommitted",
+        new=_failing_invalidation_audit,
+    ):
+        resp = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={"action": "terminate", "name": "dev_agent",
+                  "task_id": _EH_TASK, "session_id": _EH_SESSION},
+            headers=auth_headers,
+        )
+
+    assert resp.status_code == 500, resp.text
+    assert resp.json()["detail"]["code"] == "terminate_cleanup_failed"
+    # The failure landed mid-flight: the reset executed in-transaction first.
+    assert transiently_reset["seen"] is True
+
+    sched = org_state.db.schedules.get("SCHED-ARMED")
+    assert sched.status == ScheduleStatus.ARMED
+    assert sched.active == 1
+    wake = org_state.db.work_hours.get("WORKHOUR-PEND")
+    assert wake.status == WorkHourStatus.PENDING
+    assert wake.ended_at is None
+    assert wake.error is None
+    dream = org_state.db.get_dream("DREAM-PEND")
+    assert dream.status == DreamStatus.PENDING
+    assert dream.ended_at is None
+    assert dream.error is None
+    inv = org_state.db.get_invocation_any_status(inv_token)
+    assert inv.status == ThreadInvocationStatus.PENDING
+    assert inv.decline_reason is None
+    assert inv.consumed_at is None
+
+    assert prompt_loader.load_agent(paths, "dev_agent") is not None
+    assert workspace.exists()
+    assert (workspace / "marker.txt").read_text() == "keep me"
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+
+    assert org_state.db.get_thread_session(tid, "dev_agent") == ("sess-claude", 6)
+    audits, _ = org_state.db.query_audit_logs(
+        action="thread_session_invalidated", limit=10,
+    )
+    assert audits == []
+    audit_rows, _ = org_state.db.query_audit_logs(agent="dev_agent", limit=1000)
+    assert all(
+        row["action"]
+        not in {"schedule_cancelled", "work_hour_skipped", "dream_skipped"}
+        for row in audit_rows
+    )
     assert org_state.db._conn.in_transaction is False
 
 
