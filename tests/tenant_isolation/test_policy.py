@@ -1,10 +1,11 @@
 """Unit tests for labs.tenant_isolation.harness.policy — deny-by-default policy
 generation, policy-state variants, and fail-closed policy validation.
 
-Merge unit B (THR-097, TASK-5792). The generated cell policy begins with
-``grants: []``; only the cell's own client→home:connector_port grant is ever
-added. Empty/malformed/missing/stale/future/rollback states must all fail
-closed, and allow-all or cross-cell grants must be rejected.
+Merge unit B (THR-097, TASK-5792). The generated cell policy is deny-by-default:
+the ONLY rule is the cell's own client→home:connector_port accept (headscale
+v0.25.1 ``acls`` schema — verified against hscontrol/policy/acls_types.go).
+Empty/malformed/missing/stale/future/rollback states must all fail closed, and
+allow-all or cross-cell rules must be rejected.
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ import pytest
 from labs.tenant_isolation.harness.policy import (
     assert_cell_scoped,
     assert_deny_by_default,
-    deny_by_default_policy,
+    empty_policy,
     policy_artifact,
     policy_states,
     positive_control_policy,
@@ -28,19 +29,19 @@ from labs.tenant_isolation.harness.policy import (
 # ---------------------------------------------------------------------------
 
 
-def test_deny_by_default_policy_is_empty_grants() -> None:
-    policy = deny_by_default_policy()
-    assert policy == {"grants": []}
+def test_empty_policy_is_empty_acls() -> None:
+    policy = empty_policy()
+    assert policy == {"acls": []}
 
 
 def test_positive_control_policy_grants_only_own_cell() -> None:
     policy = positive_control_policy(cell_id="a", connector_port=48080)
-    grants = policy["grants"]
-    assert len(grants) == 1
-    src = grants[0]["src"]
-    dst = grants[0]["dst"]
-    assert src == ["tag:a-client"]
-    assert dst == ["tag:a-home:48080"]
+    acls = policy["acls"]
+    assert len(acls) == 1
+    rule = acls[0]
+    assert rule["action"] == "accept"
+    assert rule["src"] == ["tag:a-client"]
+    assert rule["dst"] == ["tag:a-home:48080"]
     # tagOwners make the tags compiler/operator-owned authority.
     assert policy["tagOwners"]["tag:a-client"] == ["admin"]
     assert policy["tagOwners"]["tag:a-home"] == ["admin"]
@@ -60,37 +61,44 @@ def test_policies_are_cell_scoped() -> None:
 
 def test_allow_all_policy_is_rejected() -> None:
     with pytest.raises(AssertionError, match="deny-by-default"):
-        assert_deny_by_default({"grants": [{"src": ["*"], "dst": ["*:*"]}]})
+        assert_deny_by_default({"acls": [{"action": "accept", "src": ["*"], "dst": ["*:*"]}]})
 
 
 def test_cross_cell_grant_is_rejected() -> None:
-    """A grant that lets tenant A reach tenant B's home must never validate."""
+    """A rule that lets tenant A reach tenant B's home must never validate."""
     bad = positive_control_policy(cell_id="a", connector_port=48080)
-    bad["grants"][0]["dst"] = ["tag:b-home:48080"]
+    bad["acls"][0]["dst"] = ["tag:b-home:48080"]
     with pytest.raises(AssertionError, match="cell"):
         assert_cell_scoped(bad, "a")
 
 
+def test_non_accept_action_is_rejected() -> None:
+    bad = positive_control_policy(cell_id="a", connector_port=48080)
+    bad["acls"][0]["action"] = "reject"
+    with pytest.raises(AssertionError, match="action"):
+        assert_cell_scoped(bad, "a")
+
+
 def test_validate_policy_artifact_rejects_allow_all() -> None:
-    artifact = policy_artifact(deny_by_default_policy(), revision=1)
-    artifact["policy"]["grants"] = [{"src": ["*"], "dst": ["*:*"]}]
+    artifact = policy_artifact(empty_policy(), revision=1)
+    artifact["policy"]["acls"] = [{"action": "accept", "src": ["*"], "dst": ["*:*"]}]
     with pytest.raises(AssertionError):
         validate_policy_artifact(artifact, current_revision=1)
 
 
 def test_validate_policy_artifact_rejects_stale_and_future() -> None:
-    current = policy_artifact(deny_by_default_policy(), revision=7)
+    current = policy_artifact(empty_policy(), revision=7)
     validate_policy_artifact(current, current_revision=7)
-    stale = policy_artifact(deny_by_default_policy(), revision=6)
+    stale = policy_artifact(empty_policy(), revision=6)
     with pytest.raises(AssertionError, match="revision"):
         validate_policy_artifact(stale, current_revision=7)
-    future = policy_artifact(deny_by_default_policy(), revision=8)
+    future = policy_artifact(empty_policy(), revision=8)
     with pytest.raises(AssertionError, match="revision"):
         validate_policy_artifact(future, current_revision=7)
 
 
 def test_validate_policy_artifact_rejects_missing_checksum() -> None:
-    artifact = policy_artifact(deny_by_default_policy(), revision=1)
+    artifact = policy_artifact(empty_policy(), revision=1)
     del artifact["checksum"]
     with pytest.raises(AssertionError, match="checksum"):
         validate_policy_artifact(artifact, current_revision=1)
@@ -120,7 +128,7 @@ def test_policy_states_cover_required_fail_closed_states(tmp_path: Path) -> None
 def test_policy_state_content_semantics(tmp_path: Path) -> None:
     states = policy_states(tmp_path, cell_id="a", connector_port=48080)
     empty = json.loads(states["empty"].read_text(encoding="utf-8"))
-    assert empty == {"grants": []}
+    assert empty == {"acls": []}
     malformed = states["malformed"].read_text(encoding="utf-8")
     with pytest.raises(json.JSONDecodeError):
         json.loads(malformed)  # malformed state must be invalid JSON

@@ -167,7 +167,7 @@ def test_run_rejects_allow_all_policy(tmp_path: Path) -> None:
     """Mutation: current policy swapped for allow-all must abort before probes."""
     spec = build_lab_spec("run-aa", tmp_path, 38000, 990)
     states = policy_states(spec.cell("a").state_dir, "a", 48080)
-    allow_all = policy_artifact({"grants": [{"src": ["*"], "dst": ["*:*"]}]}, 7)
+    allow_all = policy_artifact({"acls": [{"action": "accept", "src": ["*"], "dst": ["*:*"]}]}, 7)
     states["current"].write_text(json.dumps(allow_all, indent=1), encoding="utf-8")
 
     def never(case, env):  # pragma: no cover - must never run
@@ -794,8 +794,9 @@ def test_cell_policy_path_carries_raw_policy_body_not_versioned_wrapper(
         raw = json.loads(cell.policy_path.read_text(encoding="utf-8"))
         assert "revision" not in raw, cell.cell_id
         assert "checksum" not in raw, cell.cell_id
-        assert "grants" in raw, cell.cell_id
-        assert raw["grants"], "current policy must carry the cell-scoped grant"
+        assert "grants" not in raw, cell.cell_id
+        assert "acls" in raw, cell.cell_id
+        assert raw["acls"], "current policy must carry the cell-scoped accept rule"
 
 
 def test_policy_variant_empty_writes_raw_deny_by_default_body(tmp_path: Path) -> None:
@@ -806,7 +807,7 @@ def test_policy_variant_empty_writes_raw_deny_by_default_body(tmp_path: Path) ->
     orch._materialize_policy_states()
     orch.apply_policy_variant("b", "empty")
     raw = json.loads(orch.spec.cell("b").policy_path.read_text(encoding="utf-8"))
-    assert raw == {"grants": []}, "empty variant must be the RAW deny-by-default body"
+    assert raw == {"acls": []}, "empty variant must be the RAW empty-policy body"
     orch.restore_policy("b")
     restored = json.loads(orch.spec.cell("b").policy_path.read_text(encoding="utf-8"))
-    assert restored["grants"], "restore must put the RAW current body back"
+    assert restored["acls"], "restore must put the RAW current body back"

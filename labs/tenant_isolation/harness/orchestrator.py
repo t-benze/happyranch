@@ -34,8 +34,7 @@ from .backend import Backend
 from .contract import Contract
 from .models import LabSpec, ProbeResult, RunSummary, build_lab_spec, node_online
 from .policy import (
-    deny_by_default_policy,
-    policy_artifact,
+    empty_policy,
     validate_policy_states,
 )
 from .redact import assert_no_leak, bounded_redacted_stderr
@@ -546,13 +545,12 @@ class Orchestrator:
         """
         cell = self.spec.cell(cell_id)
         if variant == "empty":
-            # RAW deny-by-default policy body (headscale parses the file
-            # directly; the versioned wrapper would parse as empty policy).
+            # RAW empty policy: headscale v0.25.1 treats an empty ``acls`` list
+            # as ErrEmptyPolicy and refuses to start — the cell fails closed.
             cell.policy_path.write_text(
-                json.dumps(deny_by_default_policy(), indent=1), encoding="utf-8"
+                json.dumps(empty_policy(), indent=1), encoding="utf-8"
             )
-            self._sighup_cell(cell_id)
-            time.sleep(2.0)
+            self._restart_cell(cell_id)
         elif variant == "malformed":
             cell.policy_path.write_text('{"grants": [}', encoding="utf-8")
             self._restart_cell(cell_id)

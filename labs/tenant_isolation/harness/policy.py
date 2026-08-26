@@ -1,11 +1,23 @@
 """Deny-by-default cell policy generation and fail-closed policy validation.
 
 Merge unit B (THR-097, TASK-5792). Per the normative contract §4, every cell
-policy begins with ``grants: []`` and only the cell's own
-``client:<device> -> home:<home>:connector_port`` grant is added. Tags are
-compiler/operator-owned authority (tagOwners). The harness models policy
-*state* (current/empty/malformed/missing/stale/future/rollback/compiler-failed)
-as versioned artifacts so every non-current state fails closed.
+policy is deny-by-default: the ONLY rule is the cell's own
+``client:<device> -> home:<home>:connector_port`` accept. Tags are
+compiler/operator-owned authority (``tagOwners``).
+
+Schema facts (pinned upstream): headscale v0.25.1 parses the policy file
+directly into its ``ACLPolicy`` — the classic Tailscale ACL form with
+``acls: [{"action": "accept", "src": [...], "dst": [...]}]`` at the top level
+(verified against ``hscontrol/policy/acls_types.go``). The newer ``grants``
+form is NOT accepted, and an empty ``acls`` list makes ``IsZero()`` true, so
+headscale refuses to start (``failed to load ACL policy: parsing policy:
+empty policy``) — that is the cell-level fail-closed proof for the empty /
+malformed / compiler-failed policy variants.
+
+The harness models policy *state* (current/empty/malformed/missing/stale/
+future/rollback/compiler-failed) as versioned artifacts for validation; the
+CELL's live policy file always carries the RAW body (never the versioned
+wrapper, which would parse as an empty policy).
 """
 from __future__ import annotations
 
@@ -13,29 +25,31 @@ import hashlib
 import json
 from pathlib import Path
 
-from .redact import assert_tenant_neutral
-
 CURRENT_REVISION = 7
 ADMIN_USER = "admin"
 CONNECTOR_PORT = 48080
 
 
-def deny_by_default_policy() -> dict:
-    """The deny-by-default baseline: empty grants, nothing else."""
-    return {"grants": []}
+def empty_policy() -> dict:
+    """The empty (no-rule) policy. Headscale REFUSES to start with this
+    (``IsZero`` => ``ErrEmptyPolicy``) — the cell fails closed."""
+    return {"acls": []}
 
 
 def positive_control_policy(cell_id: str, connector_port: int = CONNECTOR_PORT) -> dict:
-    """The only sanctioned grant for a cell: own client -> own home:connector_port.
+    """The only sanctioned rule for a cell: own client -> own home:connector_port.
 
+    Deny-by-default: no other rule exists, so every other path (cross-cell,
+    client-to-client, home-to-client, non-connector ports, relay) is denied.
     Tags are operator-owned (``tagOwners``), so a node can never self-assert a
     tag it does not own — forged tags are rejected by the cell.
     """
     client_tag = f"tag:{cell_id}-client"
     home_tag = f"tag:{cell_id}-home"
     return {
-        "grants": [
+        "acls": [
             {
+                "action": "accept",
                 "src": [client_tag],
                 "dst": [f"{home_tag}:{connector_port}"],
             }
@@ -48,27 +62,30 @@ def positive_control_policy(cell_id: str, connector_port: int = CONNECTOR_PORT) 
 
 
 def assert_deny_by_default(policy: dict) -> None:
-    """The deny-state policy must be exactly empty grants (no allow-all)."""
-    grants = policy.get("grants")
-    assert grants == [], (
-        "deny-by-default violated: policy must begin with grants: [] "
+    """The deny-state policy must be exactly empty acls (no allow-all)."""
+    acls = policy.get("acls")
+    assert acls == [], (
+        "deny-by-default violated: empty-state policy must carry acls: [] "
         "(allow-all or partial grants are a mutation)"
     )
 
 
 def assert_cell_scoped(policy: dict, cell_id: str) -> None:
-    """Every grant must reference only this cell's own client/home tags.
+    """Every ACL rule must reference only this cell's own client/home tags.
 
-    A grant pointing at another cell's tag (cross-cell reachability), at a
+    A rule pointing at another cell's tag (cross-cell reachability), at a
     wildcard, or at a bare IP is a mutation and must be rejected.
     """
     allowed = {f"tag:{cell_id}-client", f"tag:{cell_id}-home"}
-    for grant in policy.get("grants", []):
-        for src in grant.get("src", []):
+    for acl in policy.get("acls", []):
+        assert acl.get("action") == "accept", (
+            f"unsupported ACL action {acl.get('action')!r} is a mutation"
+        )
+        for src in acl.get("src", []):
             assert src in allowed or src == "autogroup:member", (
                 f"cross-cell/wildcard src {src!r} is a mutation"
             )
-        for dst in grant.get("dst", []):
+        for dst in acl.get("dst", []):
             assert dst.startswith(f"tag:{cell_id}-home:"), (
                 f"cross-cell/wildcard dst {dst!r} is a mutation"
             )
@@ -100,7 +117,7 @@ def validate_policy_artifact(artifact: dict, current_revision: int = CURRENT_REV
     canonical = json.dumps(policy, sort_keys=True, separators=(",", ":"))
     expected = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     assert artifact["checksum"] == expected, "policy artifact checksum mismatch (mutation)"
-    assert_deny_by_default(policy) if policy.get("grants") == [] else None
+    assert_deny_by_default(policy) if policy.get("acls") == [] else None
 
 
 def policy_states(
@@ -124,8 +141,8 @@ def policy_states(
 
     out: dict[str, Path] = {}
     out["current"] = write("current", json.dumps(current, indent=1))
-    out["empty"] = write("empty", json.dumps(deny_by_default_policy(), indent=1))
-    out["malformed"] = write("malformed", '{"grants": [}')
+    out["empty"] = write("empty", json.dumps(empty_policy(), indent=1))
+    out["malformed"] = write("malformed", '{"acls": [}')
     missing = dir_path / "missing.json"
     out["missing"] = missing  # deliberately absent
     out["stale"] = write("stale", json.dumps(
@@ -198,7 +215,7 @@ def validate_policy_states(
             validate_policy_artifact(artifact, current_revision)
             # reaching here means a non-current state validated — a mutation
             raise AssertionError(f"policy state {name!r} must NOT validate (fail closed)")
-        except AssertionError:
-            pass
-        except _json.JSONDecodeError:
-            pass  # malformed is deliberately invalid JSON
+        except json.JSONDecodeError:
+            pass  # malformed state is invalid by design
+        except (KeyError, TypeError, AssertionError):
+            pass  # non-current states are invalid by design

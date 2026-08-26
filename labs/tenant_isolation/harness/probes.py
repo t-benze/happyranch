@@ -381,38 +381,18 @@ def _run_recipe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcome:
         # sibling node's peer status. Effectiveness => allowed (fail closed).
         return _forge_attempted(recipe, case, env)
 
-    if recipe == "policy_empty_denied":
-        # Cell-level fail-closed: with an EMPTY (deny-by-default) policy loaded
-        # by the cell, same-cell node-to-node traffic is denied. The cell
-        # reloads policy on SIGHUP; the probe is a genuine same-cell dial.
-        env.orchestrator.apply_policy_variant("b", "empty")
-        try:
-            target_ip = _node_ip(env, b_home)
-            if target_ip is None:
-                return _policy_denied(case["category"])
-            reachable = backend.probe_node_http(
-                "127.0.0.1", spec.node("b1").socks5_port, target_ip,
-                b_home.connector_port, env.bounds.per_probe,
-            )
-            if reachable:
-                return ObservedOutcome(
-                    outcome="allowed",
-                    deny_category=None,
-                    audit_category="allowed_request",
-                    detail="Traffic permitted under invalid policy state.",
-                    route_evidence="direct",
-                    target_kind="node_to_node",
-                )
-            return _policy_denied(case["category"])
-        finally:
-            env.orchestrator.restore_policy("b")
-
-    if recipe in {"policy_malformed_denied", "policy_compile_failed_denied"}:
-        # Cell-level fail-closed: headscale refuses to START when its policy
-        # artifact is malformed / fails to compile (verified upstream:
-        # hscontrol app.go fails startup on policy load error). A cell that
-        # cannot serve authorizes nothing — a genuine launch fail-closed proof.
-        env.orchestrator.apply_policy_variant("b", "malformed" if recipe == "policy_malformed_denied" else "compile_failed")
+    if recipe in {"policy_empty_denied", "policy_malformed_denied", "policy_compile_failed_denied"}:
+        # Cell-level fail-closed: headscale REFUSES to START when its policy
+        # artifact is empty (ErrEmptyPolicy on a zero ACLPolicy), malformed, or
+        # fails to compile (upstream hscontrol fails startup on policy load
+        # error). A cell that cannot serve authorizes nothing — a genuine
+        # launch fail-closed proof.
+        variant = {
+            "policy_empty_denied": "empty",
+            "policy_malformed_denied": "malformed",
+            "policy_compile_failed_denied": "compile_failed",
+        }[recipe]
+        env.orchestrator.apply_policy_variant("b", variant)
         try:
             healthy = env.orchestrator.cell_healthy("b")
             if healthy:
