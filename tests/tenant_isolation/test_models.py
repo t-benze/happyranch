@@ -52,6 +52,11 @@ def test_lab_spec_has_exactly_two_cells_with_disjoint_identity() -> None:
         assert cell.control_port >= spec.port_min and cell.control_port <= spec.port_max
     # Shared DERP region is deliberately identical (shared fleet, cell-scoped policy).
     assert a.derp_region_id == b.derp_region_id == 990
+    # Embedded-DERP STUN ports are loopback, in the lab range, and per-cell
+    # distinct (host-network cells would collide on a shared UDP port).
+    assert a.stun_port != b.stun_port
+    for cell in spec.cells:
+        assert 40000 <= cell.stun_port <= 40999
 
 
 def test_cell_state_paths_are_under_run_dir() -> None:

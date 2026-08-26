@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from labs.tenant_isolation.harness.backend import FakeBackend
+from labs.tenant_isolation.harness.cellspec import validate_config_schema
 from labs.tenant_isolation.harness.contract import Contract
 from labs.tenant_isolation.harness.models import (
     ProbeResult,
@@ -73,6 +74,57 @@ def _orchestrator(
     return orch, fake
 
 
+def test_cell_config_text_embeds_derp_and_validates(tmp_path: Path) -> None:
+    """Regression: headscale v0.25.1 refuses to boot with an empty DERPMap
+    ("initial DERPMap is empty, Headscale requires at least one entry"). Every
+    generated cell config must therefore carry the embedded DERP server and
+    pass schema validation before launch."""
+    orch, _ = _orchestrator(tmp_path)
+    cell = orch.spec.cell("a")
+    text = orch._cell_config_text(cell)
+    assert "derp:" in text
+    assert "enabled: true" in text
+    assert f'stun_listen_addr: "127.0.0.1:{cell.stun_port}"' in text
+    assert "automatically_add_embedded_derp_region: true" in text
+    validate_config_schema(text)
+
+
+def test_cell_config_without_derp_map_fails_validation(tmp_path: Path) -> None:
+    """Mutation: stripping the embedded DERP block from the generated config
+    (the empty-DERPMap regression shape) must FAIL schema validation so the
+    run fails closed before docker launch instead of on the lab runner."""
+    orch, _ = _orchestrator(tmp_path)
+    cell = orch.spec.cell("a")
+    text = orch._cell_config_text(cell)
+    stripped = text.split("derp:")[0]
+    assert "derp:" not in stripped
+    with pytest.raises(AssertionError):
+        validate_config_schema(stripped)
+
+
+def test_preflight_rejects_shared_stun_ports(tmp_path: Path) -> None:
+    """Mutation: two cells sharing a STUN port is a collapsed network identity
+    (host-network cells would contend for one UDP socket)."""
+    spec = build_lab_spec("run-x", tmp_path, 38000, 990)
+    a, b = spec.cells
+    collapsed_b = b.__class__(
+        cell_id=b.cell_id,
+        tenant_id=b.tenant_id,
+        control_port=b.control_port,
+        state_dir=b.state_dir,
+        key_path=b.key_path,
+        db_path=b.db_path,
+        policy_path=b.policy_path,
+        server_url=b.server_url,
+        derp_region_id=b.derp_region_id,
+        stun_port=a.stun_port,  # shared STUN port -> same network identity
+    )
+    spec = spec.__class__(spec.run_id, spec.run_dir, list(spec.cells)[0:1] + [collapsed_b], spec.nodes, spec.port_min, spec.port_max, spec.derp_region_id)
+    orch, _ = _orchestrator(tmp_path, spec=spec)
+    with pytest.raises(PreflightError, match="STUN port"):
+        orch.preflight()
+
+
 def _denied_result(case_id: str, deny: str, audit: str) -> ProbeResult:
     return ProbeResult(
         case_id=case_id,
@@ -104,6 +156,7 @@ def test_preflight_rejects_non_lab_port(tmp_path: Path) -> None:
         policy_path=b.policy_path,
         server_url="http://127.0.0.1:8443",
         derp_region_id=b.derp_region_id,
+        stun_port=b.stun_port,
     )
     spec = spec.__class__(spec.run_id, spec.run_dir, cells, spec.nodes, spec.port_min, spec.port_max, spec.derp_region_id)
     orch, _ = _orchestrator(tmp_path, spec=spec)
@@ -125,6 +178,7 @@ def test_preflight_rejects_public_hostname(tmp_path: Path) -> None:
         policy_path=a.policy_path,
         server_url="https://headscale.example.com",
         derp_region_id=a.derp_region_id,
+        stun_port=a.stun_port,
     )
     spec = spec.__class__(spec.run_id, spec.run_dir, cells, spec.nodes, spec.port_min, spec.port_max, spec.derp_region_id)
     orch, _ = _orchestrator(tmp_path, spec=spec)
@@ -151,6 +205,7 @@ def test_preflight_rejects_collapsed_cells(tmp_path: Path) -> None:
         policy_path=a.policy_path,
         server_url=a.server_url,
         derp_region_id=a.derp_region_id,
+        stun_port=a.stun_port,
     )
     spec = spec.__class__(spec.run_id, spec.run_dir, [a, collapsed_b], spec.nodes, spec.port_min, spec.port_max, spec.derp_region_id)
     orch, _ = _orchestrator(tmp_path, spec=spec)

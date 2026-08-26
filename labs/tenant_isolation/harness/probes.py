@@ -12,11 +12,13 @@ executable probe recipe or an explicit non-execution with a recorded reason:
 - **hostile direct probes** originate in tenant A node context and target
   tenant B's synthetic connector/data-plane listener;
 - **relay-forced probes are NOT executed** unless a real DERP relay exists:
-  the pinned tailscale tarball ships no ``derper`` and headscale v0.25.1
-  embedded DERP requires TLS termination, so the already-authorized isolated
-  runner cannot provide a deterministic real relay path without adding a
-  pinned derper dependency or TLS infrastructure. DERP isolation is therefore
-  never claimed while DERP is disabled — the exact prerequisite is recorded.
+  the pinned tailscale tarball ships no ``derper`` and tailscale clients
+  connect to DERP over TLS while the lab's loopback-http server_url cannot
+  terminate TLS (headscale v0.25.1 embedded DERP serves plain http), so the
+  already-authorized isolated runner cannot provide a deterministic real
+  relay path without adding a pinned derper dependency or TLS infrastructure.
+  DERP isolation is therefore never claimed and no real relay path is
+  exercised — the exact prerequisite is recorded.
 - connector-level request-decision categories (normalization/allow-list/
   upgrades/smuggling/bearer/revocation/epoch/apply) are deferred to merge
   unit C, never silently dropped and never claimed as proven here.
@@ -36,11 +38,14 @@ from .redact import assert_no_leak
 # every non-executed relay case and in run limitations — never weakened.
 DERP_PREREQUISITE = (
     "real forced-relay proof requires a DERP relay server reachable by both "
-    "cells; the pinned tailscale tarball ships no derper binary and headscale "
-    "v0.25.1 embedded DERP requires TLS termination, so the authorized "
-    "isolated runner cannot provide a deterministic real relay path without "
-    "adding a pinned derper dependency or TLS infrastructure — DERP isolation "
-    "is NOT claimed while DERP is disabled"
+    "cells; the pinned tailscale tarball ships no derper binary and tailscale "
+    "clients connect to DERP over TLS while the lab's loopback-http server_url "
+    "cannot terminate TLS (headscale v0.25.1 embedded DERP serves plain http — "
+    "it is enabled only to satisfy headscale's non-empty-DERPMap startup "
+    "invariant, not as a usable relay), so the authorized isolated runner "
+    "cannot provide a deterministic real relay path without adding a pinned "
+    "derper dependency or TLS infrastructure — DERP isolation is NOT claimed "
+    "and no real relay path is exercised"
 )
 POLICY_EPOCH_UNIT_C = (
     "policy/revocation epoch and policy-apply-step semantics are connector "
@@ -585,14 +590,19 @@ _FORGE_RECIPES: dict[str, tuple[str, str, str]] = {
     "forged_ssh_advertise": ("--ssh", "policy", "ssh_denied"),
 }
 
+_FORGED_ROUTES = {
+    "forged_route_advertise": "10.99.0.0/24",
+    "forged_subnet_advertise": "10.88.0.0/24",
+}
+
 
 def _forge_attempted(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcome:
     """Attempt a forged advertisement from A1 and verify it never takes effect.
 
     The forge is a genuine control-plane advertisement; effectiveness is
-    verified against the cell's authoritative state (headscale node record for
-    tags/routes, the sibling node's peer status for exit-node/ssh). A forge
-    that became effective is observed as ``allowed`` (fail closed).
+    verified against authoritative state (a sibling node's own tailnet view
+    for routes/exit-node/ssh, the cell's node record for tags). A forge that
+    became effective is observed as ``allowed`` (fail closed).
     """
     backend = env.backend
     spec = env.spec
@@ -616,35 +626,60 @@ def _forge_attempted(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcom
     )
 
 
-def _forge_effective(recipe: str, env: "ProbeEnv") -> bool:
-    """Check the cell's authoritative state for the forged capability."""
+def _peer_view(env: "ProbeEnv", node_id: str, target_hostname: str) -> dict | None:
+    """The tailnet view of ``target_hostname`` as seen by ``node_id``.
+
+    Genuine authoritative observable for route/exit-node/ssh forgeries: the
+    headscale v0.25.1 node record carries NO route fields (``host_info`` was
+    removed from the proto), so the cell record alone can never prove whether
+    an advertised route became effective. The sibling node's own
+    ``tailscale status --json`` is what the control plane actually distributed.
+    """
     backend = env.backend
-    spec = env.spec
-    a1 = spec.node("a1")
-    if recipe in ("forged_tag_advertise",):
-        record = _headscale_record(env, "a", a1.hostname)
-        if record is None:
-            return False  # cannot verify => assume not effective (fail closed)
-        forced = record.get("forced_tags") or []
-        return any("b-client" in t for t in forced)
-    if recipe in ("forged_route_advertise", "forged_subnet_advertise"):
-        record = _headscale_record(env, "a", a1.hostname)
-        if record is None:
-            return False
-        routable = (record.get("host_info") or {}).get("routable_ips") or []
-        return any(p in ("10.99.0.0/24", "10.88.0.0/24") for p in routable)
-    # exit-node / ssh: ask the sibling client node what IT sees for A1.
-    a2 = spec.node("a2")
+    node = env.spec.node(node_id)
     status = backend.run(
-        ["tailscale", "--socket", str(a2.socket_path), "status", "--json"],
+        ["tailscale", "--socket", str(node.socket_path), "status", "--json"],
         timeout=env.bounds.per_probe,
     )
     parsed = _json_or_empty(status.stdout)
-    peer = None
-    for p in parsed.get("Peer") or []:
-        if p.get("HostName") == a1.hostname:
-            peer = p
-            break
+    return next(
+        (p for p in parsed.get("Peer") or [] if p.get("HostName") == target_hostname),
+        None,
+    )
+
+
+def _forge_effective(recipe: str, env: "ProbeEnv") -> bool:
+    """Check the cell's AUTHORITATIVE state for the forged capability.
+
+    - route forges: a sibling node's own tailnet view — the forged prefix must
+      appear in the peer's ``AllowedIPs``/``PrimaryRoutes`` (headscale v0.25.1
+      node records have no route field, so a cell-record check could never
+      detect an effective forge);
+    - tag forges: the cell's authoritative node record — the forged tag must
+      appear in ``valid_tags``/``forced_tags``;
+    - exit-node/ssh forges: the sibling node's peer view
+      (``ExitNodeOption``/``RunningSSHServer``).
+
+    A forge that became effective is observed as ``allowed`` (fail closed).
+    """
+    spec = env.spec
+    a1 = spec.node("a1")
+    if recipe in ("forged_route_advertise", "forged_subnet_advertise"):
+        peer = _peer_view(env, "a2", a1.hostname)
+        if peer is None:
+            return False  # cannot observe => assume not effective (fail closed)
+        forged = _FORGED_ROUTES[recipe]
+        for key in ("AllowedIPs", "PrimaryRoutes"):
+            if forged in (peer.get(key) or []):
+                return True
+        return False
+    if recipe == "forged_tag_advertise":
+        record = _headscale_record(env, "a", a1.hostname)
+        if record is None:
+            return False
+        applied = (record.get("valid_tags") or []) + (record.get("forced_tags") or [])
+        return any("b-client" in t for t in applied)
+    peer = _peer_view(env, "a2", a1.hostname)
     if peer is None:
         return False
     if recipe == "forged_exit_node_advertise":

@@ -18,14 +18,20 @@ the two-cell topology runs deterministically with outcome-bearing cleanup —
 all with **tenant-neutral category-level results and zero secret/raw-exception
 leakage**.
 
-**DERP relay isolation is NOT claimed in this lab.** A deterministic real
-forced-relay path needs a DERP relay server reachable by both cells; the
-pinned tailscale tarball ships no `derper` binary and headscale v0.25.1
-embedded DERP requires TLS termination, so the already-authorized isolated
-runner cannot provide one without adding a pinned `derper` dependency or TLS
-infrastructure. The relay-forced cases are recorded as **not executed with the
-exact prerequisite** (`coverage.json` disposition `not-executed-prerequisite`,
-limitations in `summary.json`) — never weakened or fabricated.
+**DERP relay isolation is NOT claimed in this lab.** Every cell runs the
+headscale v0.25.1 **embedded DERP server** (loopback-only, per-cell STUN
+listener) solely because headscale refuses to boot with an empty DERPMap
+("initial DERPMap is empty, Headscale requires at least one entry") — the
+region is advertised to clients, but tailscale always connects to DERP over
+TLS while the lab's `server_url` is loopback http (headscale's embedded DERP
+serves plain http), so **no real relay path is ever established**. A
+deterministic real forced-relay path needs a DERP relay server reachable by
+both cells; the pinned tailscale tarball ships no `derper` binary, so the
+already-authorized isolated runner cannot provide one without adding a pinned
+`derper` dependency or TLS infrastructure. The relay-forced cases are
+recorded as **not executed with the exact prerequisite** (`coverage.json`
+disposition `not-executed-prerequisite`, limitations in `summary.json`) —
+never weakened or fabricated, and DERP isolation is never claimed.
 
 ## Honest runtime status (read first)
 
@@ -93,6 +99,7 @@ mutations **fails for its intended reason**:
 | target a non-lab endpoint | preflight endpoint allow-range | `test_preflight_rejects_non_lab_port` / `_public_hostname` |
 | runner-host control-plane TCP probe in transport recipes | node-context SOCKS5 probe (never 127.0.0.1:control-port) | `test_transport_probes_use_node_context_socks5_not_control_port` |
 | DERP isolation claimed while DERP disabled | not-executed disposition + exact prerequisite | `test_relay_categories_are_not_executed_with_prerequisite` |
+| empty DERPMap config (embedded DERP disabled) | config schema validation fails closed before launch (headscale v0.25.1 refuses to boot with an empty DERPMap) | `test_config_without_derp_map_is_invalid` / `test_cell_config_without_derp_map_fails_validation` |
 | one pre-auth key per cell reused for two nodes | one single-use key minted per node; reuse rejected | `test_mint_preauth_keys_issues_one_key_per_node`, `test_run_aborts_before_probes_when_key_reuse_rejected` |
 | missing/offline node | pre-probe readiness gate (every node online) | `test_node_ready_false_when_record_missing_from_cell`, `test_run_aborts_before_probes_when_node_offline` |
 | docker run result ignored | immediate launch check + bounded/redacted stderr | `test_launch_failure_aborts_before_any_enrollment`, `test_missing_container_immediately_after_launch_aborts` |
@@ -114,7 +121,7 @@ labs/tenant_isolation/
     probes.py          threat-category → recipe mapping, outcome classifier, evaluate (assertion layer)
     orchestrator.py    preflight, lifecycle, cleanup, residue check, post-run guards, evidence
     main.py            CLI: --check-runtime / --runtime {auto,real,mock,none} / bounds
-tests/tenant_isolation/   focused unit tests (113) incl. the mandated mutation probes
+tests/tenant_isolation/   focused unit tests (122) incl. the mandated mutation probes
 .github/workflows/lab-tenant-isolation.yml   the one path-scoped lab workflow
 ```
 

@@ -348,3 +348,131 @@ def test_run_case_deferred_unit_c_never_counts_as_proof(contract: Contract) -> N
         if result.disposition in ("deferred", "not-executed"):
             assert result.passed is False, case["id"]
             assert result.limitation, case["id"]
+
+
+# ---------------------------------------------------------------------------
+# Forge effectiveness: genuine authoritative observables (headscale v0.25.1
+# node records carry NO route field — host_info was removed from the proto —
+# so route/exit-node/ssh forges must be verified from a sibling node's own
+# tailnet view, never from a record field that never exists in the response).
+# ---------------------------------------------------------------------------
+
+
+def _status_script(tmp_path: Path, peer: dict) -> "dict":
+    import json as _json
+
+    from labs.tenant_isolation.harness.backend import CmdResult
+    from labs.tenant_isolation.harness.models import build_lab_spec
+
+    spec = build_lab_spec("run-probes-1", tmp_path, 38000, 990)
+    a2 = spec.node("a2")
+    status = {
+        "Self": {"HostName": "synth-a-client2", "TailscaleIPs": ["100.64.0.2"]},
+        "Peer": [peer],
+    }
+    key = " ".join(["tailscale", "--socket", str(a2.socket_path), "status", "--json"])
+    return {key: CmdResult(0, stdout=_json.dumps(status))}
+
+
+def _node_list_script(records: list[dict]) -> "dict":
+    import json as _json
+
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    return {"docker exec": CmdResult(0, stdout=_json.dumps(records))}
+
+
+def test_forged_route_rejected_when_not_in_peer_view(tmp_path: Path) -> None:
+    """A forged route absent from the sibling node's tailnet view is NOT
+    effective => denied (the genuine observable; the cell record has no route
+    field in headscale v0.25.1)."""
+    from labs.tenant_isolation.harness.backend import FakeBackend
+    from labs.tenant_isolation.harness.probes import _forge_effective
+
+    peer = {
+        "HostName": "synth-a-client",
+        "AllowedIPs": ["100.64.0.1/32"],
+        "PrimaryRoutes": [],
+    }
+    fake = FakeBackend(script=_status_script(tmp_path, peer))
+    env = _probe_env(tmp_path, fake)
+    assert _forge_effective("forged_route_advertise", env) is False
+    assert _forge_effective("forged_subnet_advertise", env) is False
+
+
+def test_forged_route_detected_effective_via_peer_allowed_ips(tmp_path: Path) -> None:
+    """Mutation: a forged route that became effective appears in the sibling
+    node's AllowedIPs/PrimaryRoutes => observed effective (fail closed)."""
+    from labs.tenant_isolation.harness.backend import FakeBackend
+    from labs.tenant_isolation.harness.probes import _forge_effective
+
+    peer = {
+        "HostName": "synth-a-client",
+        "AllowedIPs": ["100.64.0.1/32", "10.99.0.0/24"],
+        "PrimaryRoutes": ["10.99.0.0/24"],
+    }
+    env = _probe_env(tmp_path, FakeBackend(script=_status_script(tmp_path, peer)))
+    assert _forge_effective("forged_route_advertise", env) is True
+
+    peer2 = {
+        "HostName": "synth-a-client",
+        "AllowedIPs": ["100.64.0.1/32"],
+        "PrimaryRoutes": ["10.88.0.0/24"],
+    }
+    env2 = _probe_env(tmp_path, FakeBackend(script=_status_script(tmp_path, peer2)))
+    assert _forge_effective("forged_subnet_advertise", env2) is True
+
+
+def test_forged_route_ignores_removed_host_info_field(tmp_path: Path) -> None:
+    """Regression: headscale v0.25.1 removed host_info from the node proto, so
+    the OLD cell-record check (host_info.routable_ips) could never detect an
+    effective route forge. The check must consult the sibling node's tailnet
+    view; a record claiming routable_ips must be ignored when the sibling sees
+    no such route."""
+    from labs.tenant_isolation.harness.backend import FakeBackend
+    from labs.tenant_isolation.harness.probes import _forge_effective
+
+    records = [{"given_name": "synth-a-client", "online": True,
+                "host_info": {"routable_ips": ["10.99.0.0/24"]}}]
+    peer = {"HostName": "synth-a-client", "AllowedIPs": ["100.64.0.1/32"], "PrimaryRoutes": []}
+    script = _node_list_script(records)
+    script.update(_status_script(tmp_path, peer))
+    env = _probe_env(tmp_path, FakeBackend(script=script))
+    assert _forge_effective("forged_route_advertise", env) is False
+
+
+def test_forged_tag_detected_effective_via_valid_or_forced_tags(tmp_path: Path) -> None:
+    """A forged tag accepted by the cell appears in the authoritative node
+    record's valid_tags/forced_tags => effective (fail closed); a tag that the
+    cell rejected (invalid_tags only) is NOT effective."""
+    from labs.tenant_isolation.harness.backend import FakeBackend
+    from labs.tenant_isolation.harness.probes import _forge_effective
+
+    for field in ("valid_tags", "forced_tags"):
+        records = [{"given_name": "synth-a-client", "online": True, field: ["tag:b-client"]}]
+        env = _probe_env(tmp_path, FakeBackend(script=_node_list_script(records)))
+        assert _forge_effective("forged_tag_advertise", env) is True, field
+
+    rejected = [{"given_name": "synth-a-client", "online": True, "invalid_tags": ["tag:b-client"]}]
+    env_rej = _probe_env(tmp_path, FakeBackend(script=_node_list_script(rejected)))
+    assert _forge_effective("forged_tag_advertise", env_rej) is False
+
+
+def test_forged_exit_node_and_ssh_use_peer_view(tmp_path: Path) -> None:
+    """Exit-node/ssh forges are verified from the sibling node's peer view
+    (ExitNodeOption/RunningSSHServer) — effective => fail closed."""
+    from labs.tenant_isolation.harness.backend import FakeBackend
+    from labs.tenant_isolation.harness.probes import _forge_effective
+
+    peer = {"HostName": "synth-a-client", "ExitNodeOption": True}
+    env = _probe_env(tmp_path, FakeBackend(script=_status_script(tmp_path, peer)))
+    assert _forge_effective("forged_exit_node_advertise", env) is True
+
+    peer2 = {"HostName": "synth-a-client", "RunningSSHServer": True}
+    env2 = _probe_env(tmp_path, FakeBackend(script=_status_script(tmp_path, peer2)))
+    assert _forge_effective("forged_ssh_advertise", env2) is True
+
+    peer3 = {"HostName": "synth-a-client", "ExitNodeOption": False, "RunningSSHServer": False}
+    env3 = _probe_env(tmp_path, FakeBackend(script=_status_script(tmp_path, peer3)))
+    assert _forge_effective("forged_exit_node_advertise", env3) is False
+    assert _forge_effective("forged_ssh_advertise", env3) is False

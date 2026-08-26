@@ -32,7 +32,15 @@ from pathlib import Path
 
 from .backend import Backend
 from .contract import Contract
-from .models import LabSpec, ProbeResult, RunSummary, build_lab_spec, node_online
+from .models import (
+    STUN_PORT_MAX,
+    STUN_PORT_MIN,
+    LabSpec,
+    ProbeResult,
+    RunSummary,
+    build_lab_spec,
+    node_online,
+)
 from .policy import (
     empty_policy,
     validate_policy_states,
@@ -132,6 +140,11 @@ class Orchestrator:
                     f"endpoint cell {cell.cell_id} control port {cell.control_port} "
                     f"outside lab range [{self.bounds.port_min}, {self.bounds.port_max}]"
                 )
+            if not (STUN_PORT_MIN <= cell.stun_port <= STUN_PORT_MAX):
+                raise PreflightError(
+                    f"endpoint cell {cell.cell_id} STUN port {cell.stun_port} "
+                    f"outside lab range [{STUN_PORT_MIN}, {STUN_PORT_MAX}]"
+                )
         for node in self.spec.nodes:
             if not (37000 <= node.socks5_port <= 37999):
                 raise PreflightError(
@@ -144,11 +157,13 @@ class Orchestrator:
         if len(cells) != 2 or {c.cell_id for c in cells} != {"a", "b"}:
             raise PreflightError("lab requires exactly two cells (a and b)")
         ports = [c.control_port for c in cells]
+        stuns = [c.stun_port for c in cells]
         state_dirs = [str(c.state_dir) for c in cells]
         keys = [str(c.key_path) for c in cells]
         dbs = [str(c.db_path) for c in cells]
         for label, values in (
             ("control port", ports),
+            ("STUN port", stuns),
             ("state dir", state_dirs),
             ("key path", keys),
             ("database path", dbs),
@@ -809,13 +824,19 @@ class Orchestrator:
     # ------------------------------------------------------------------ evidence
 
     def _cell_config_text(self, cell) -> str:
-        from .cellspec import headscale_config_text
+        from .cellspec import headscale_config_text, validate_config_schema
 
-        # Embedded DERP requires an https server_url (upstream), which a
-        # loopback http lab cannot satisfy; DERP live-relay is therefore not
-        # established and relay-forced cases are recorded as NOT executed with
-        # the exact prerequisite (never claimed as proven).
-        return headscale_config_text(cell, cell.policy_path, derp_enabled=False)
+        # headscale v0.25.1 refuses to boot with an empty DERPMap, so every
+        # cell runs the embedded DERP server (loopback-only, per-cell STUN).
+        # Tailscale always connects to DERP over TLS while the lab server_url
+        # is loopback http, so no relay path is ever established: DERP
+        # isolation is NOT claimed, relay-forced cases stay
+        # not-executed-prerequisite (exact prerequisite recorded). The config
+        # is schema-validated here so a regression (e.g. embedded DERP
+        # disabled) fails closed BEFORE docker launch, never on the lab runner.
+        config = headscale_config_text(cell, cell.policy_path, derp_enabled=True)
+        validate_config_schema(config)
+        return config
 
     def _host_facts(self) -> dict[str, str]:
         import platform

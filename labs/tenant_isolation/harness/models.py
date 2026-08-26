@@ -22,6 +22,10 @@ from typing import Any
 # range: cells bind 127.0.0.1 only and control ports live in [port_min, port_max].
 DEFAULT_PORT_MIN = 38000
 DEFAULT_PORT_MAX = 38999
+# Embedded-DERP STUN listeners (UDP, loopback) live in their own disjoint
+# range so they can never collide with a control or SOCKS5 endpoint.
+STUN_PORT_MIN = 40000
+STUN_PORT_MAX = 40999
 # Per-node tailscaled SOCKS5 proxy ports (data-plane probe ingress). Disjoint
 # from the control-port range so a probe can never collide with a cell endpoint.
 SOCKS5_PORT_MIN = 37000
@@ -43,6 +47,7 @@ class CellSpec:
     cell_id: str
     tenant_id: str
     control_port: int
+    stun_port: int
     state_dir: Path
     key_path: Path
     db_path: Path
@@ -270,6 +275,7 @@ def build_lab_spec(
             cell_id=cell_id,
             tenant_id=f"tenant-{cell_id}",
             control_port=port,
+            stun_port=STUN_PORT_MIN + i * 2,
             state_dir=state_dir,
             key_path=state_dir / "noise_private.key",
             db_path=state_dir / "db.sqlite",
