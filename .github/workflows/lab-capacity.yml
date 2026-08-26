@@ -31,8 +31,8 @@ on:
         default: ''
   pull_request:
     paths:
-      - 'labs/managed-remote-access/capacity/**'
-      - '!labs/managed-remote-access/capacity/results/**'
+      - 'labs/managed-remote-access/capacity/harness/**'
+      - 'labs/managed-remote-access/capacity/run_capacity_lab.sh'
       - '.github/workflows/lab-capacity.yml'
 
 jobs:
