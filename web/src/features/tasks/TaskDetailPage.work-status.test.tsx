@@ -8,6 +8,7 @@
  * previous empty behavior (no card, no error).
  */
 import { screen, waitFor } from '@testing-library/react';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
@@ -16,6 +17,15 @@ import { server } from '@/test/server';
 import type { TaskRecord, WorkStatusResponse } from '@/lib/api/types';
 
 const SLUG = 'hk-macau-tourism';
+
+function QueryClientCapture({
+  capture,
+}: {
+  capture: (client: QueryClient) => void;
+}) {
+  capture(useQueryClient());
+  return null;
+}
 
 const TASK: TaskRecord = {
   task_id: 'TASK-0091',
@@ -117,18 +127,49 @@ describe('TaskDetailPage execution status card (TASK-5522)', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubDetail(ws({}));
     let detailRequested = false;
+    let releaseErrorResponse!: () => void;
+    const errorResponsePending = new Promise<void>((resolve) => {
+      releaseErrorResponse = resolve;
+    });
     server.use(
-      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, () => {
+      http.get(`/api/v1/orgs/${SLUG}/tasks/${TASK.task_id}`, async () => {
         detailRequested = true;
+        await errorResponsePending;
         return HttpResponse.json({ detail: 'Task lookup failed' }, { status: 500 });
       }),
     );
 
-    renderWithProviders(<AppRoutes />, {
-      route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
-    });
+    let queryClient!: QueryClient;
+    renderWithProviders(
+      <>
+        <QueryClientCapture
+          capture={(client) => {
+            queryClient = client;
+          }}
+        />
+        <AppRoutes />
+      </>,
+      {
+        route: `/orgs/${SLUG}/tasks/${TASK.task_id}`,
+      },
+    );
 
     await waitFor(() => expect(detailRequested).toBe(true));
+    expect(
+      queryClient.getQueryState(['task', SLUG, TASK.task_id])?.status,
+    ).toBe('pending');
+    expect(
+      screen.queryByRole('complementary', {
+        name: 'Task status and properties',
+      }),
+    ).toBeNull();
+
+    releaseErrorResponse();
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryState(['task', SLUG, TASK.task_id])?.status,
+      ).toBe('error'),
+    );
     expect(
       screen.getByRole('heading', { name: TASK.task_id }),
     ).toBeInTheDocument();
