@@ -15,8 +15,13 @@ spec is explicitly SUPERSEDED**: body `@`-mentions ARE routing signals when
 the thread setting is enabled (default), per the ratified matrix
 (disabled/zero-valid → broadcast; valid mentions → exactly that set),
 while `thread_messages.addressed_to_json` stays unwritten/unread with its
-separate cleanup plan intact. Web control and analytics validation remain
-LATER slices.
+separate cleanup plan intact. **Slice C (merged) ships the per-thread web
+control** (founder-only "Mention routing…" item in the thread-detail
+header settings surface → a dialog with a truthful switch, optimistic
+persist through the strict-boolean `POST /threads/{id}/mention-routing`
+API, in-flight duplicate prevention, failure rollback + visible error,
+and keyboard/switch accessibility). **Analytics validation remains a
+LATER slice.**
 **Origin:** Founder-reported pattern on THR-011 (tourism-org, 2026-05-29): the founder addressed seq 10 to `["finance_agent"]` only; finance_agent's seq 11 prose-mentioned `@admin_head 你那边合同库归档...` but its structured `addressed_to_json` was empty; no invocation was ever minted for admin_head, so the hand-off was silently dropped. Founder diagnosis: structured `addressed_to` invites exactly this class of silent-drop bug, and every reasonable thread should broadcast to all participants.
 **Relates to:**
 - `docs/superpowers/specs/2026-05-13-threads-design.md` — the threads primitive this changes.

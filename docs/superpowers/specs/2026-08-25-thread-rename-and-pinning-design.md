@@ -152,7 +152,7 @@ sentences) to stay in parity with the audit row shapes.
   cache and invalidates the list.
 - List renders a "Pinned" section header when any filtered thread is pinned;
   rows carry per-row pin toggles; the detail header carries Rename +
-  Pin/Unpin buttons and a ⋯ overflow menu (Rename / Pin·Unpin / Archive),
+  Pin/Unpin buttons and a ⋯ overflow menu (Rename / Pin·Unpin / Archive / Mention routing…),
   all keyboard-accessible with accessible labels.
 
 ## Tests
