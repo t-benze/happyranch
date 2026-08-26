@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from runtime.models import StepRecord
 from runtime.orchestrator.capabilities import build_capabilities_prompt
 
@@ -244,6 +246,54 @@ def test_manager_prompt_shows_fanout_constraints():
     assert "team manager" in p.lower()
     assert "mutating fan-out" in p.lower() or "decision-capable" in p.lower()
     assert "implementation subtrees" in p.lower() or "implementation children" in p.lower()
+
+
+def test_manager_prompt_documents_fanout_child_retry_link():
+    """The manager prompt must expose the nested fanout-child retry link
+    (THR-078): decision.children[].revisit_of_task_id, its FAILED
+    same-parent/same-agent constraint, and whole-fanout fail-closed
+    rejection. Regression for the TASK-4987 HIGH finding — managers
+    authoring a retry fanout must be told about the field before an
+    otherwise-valid retry fanout is rejected."""
+    p = build_capabilities_prompt(
+        agents=[{"name": "dev_agent", "description": "Implements features"}],
+        step_number=1, max_steps=10,
+        manager_name="engineering_head",
+    )
+    # The nested field must be advertised on fanout children.
+    assert "revisit_of_task_id" in p
+    # FAILED same-parent/same-agent constraint.
+    assert "FAILED child of this parent" in p
+    assert "same agent" in p
+    # Mandatory when a child re-targets an agent with a FAILED sibling.
+    assert "MUST" in p
+    # Whole-fanout fail-closed rejection before any child is spawned.
+    assert "WHOLE fanout" in p
+    assert "before any child" in p
+
+
+def test_canonical_contract_documents_fanout_child_retry_link():
+    """The canonical completion contract must document the nested fanout
+    retry link with the same three semantics as the emitted prompt:
+    (1) a supplied link must identify a FAILED child of the same parent
+    assigned to the same target agent; (2) the field is mandatory when a
+    fanout child re-targets an agent with a FAILED sibling; (3) any
+    missing/invalid link rejects the WHOLE fanout fail-closed before any
+    child is spawned. Regression for the TASK-4987 HIGH finding."""
+    contract = (
+        Path(__file__).resolve().parent.parent
+        / "protocol" / "00-completion-contract.md"
+    ).read_text(encoding="utf-8")
+    # The nested field is documented on fanout children.
+    assert "children[].revisit_of_task_id" in contract or "revisit_of_task_id" in contract
+    # FAILED same-parent/same-agent constraint.
+    assert "FAILED child of this parent" in contract
+    assert "same agent" in contract
+    # Mandatory when a child re-targets an agent with a FAILED sibling.
+    assert "MUST" in contract
+    # Whole-fanout fail-closed rejection before any child is spawned.
+    assert "WHOLE fanout" in contract
+    assert "before any child" in contract
 
 
 def test_manager_prompt_no_longer_claims_only_delegate_done_escalate():

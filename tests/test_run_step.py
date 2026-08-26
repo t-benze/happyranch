@@ -2977,6 +2977,166 @@ def test_delegate_without_revisit_of_task_id_when_failed_sibling_is_rejected(run
     assert tid == "T-NOLINK"
 
 
+def test_fanout_without_revisit_of_task_id_when_failed_sibling_is_rejected(runtime, db, monkeypatch):
+    """THR-078: fanout rejects the whole decision if any retry lacks its link."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+    (runtime.workspaces_dir / "qa_engineer").mkdir(parents=True)
+    db.insert_task(TaskRecord(
+        id="T-FANOUT-NOLINK", brief="fan-out parent",
+        assigned_agent="engineering_head", task_type="task",
+    ))
+    db.insert_task(TaskRecord(
+        id="T-FANOUT-NOLINK-C1", brief="build feature X",
+        assigned_agent="dev_agent", parent_task_id="T-FANOUT-NOLINK",
+        task_type="subtask",
+    ))
+    db.update_task("T-FANOUT-NOLINK-C1", status=TaskStatus.FAILED)
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(output_summary=json.dumps({
+            "action": "fanout",
+            "children": [
+                {"agent": "dev_agent", "prompt": "retry feature X"},
+                {"agent": "qa_engineer", "prompt": "test feature Y"},
+            ],
+            "width_cap_ack": 2,
+        }))
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    orch.run_step("T-FANOUT-NOLINK")
+
+    parent = db.get_task("T-FANOUT-NOLINK")
+    assert parent.status == TaskStatus.PENDING
+    assert parent.block_kind is None
+    assert db.get_children("T-FANOUT-NOLINK") == ["T-FANOUT-NOLINK-C1"]
+    assert orch._queue.qsize() == 1
+    _, queued_id = orch._queue.get_nowait()
+    assert queued_id == "T-FANOUT-NOLINK"
+
+
+def test_delegate_with_invalid_revisit_link_is_rejected(runtime, db, monkeypatch):
+    """THR-078: a retry link must name this parent's FAILED same-agent child."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+    db.insert_task(TaskRecord(
+        id="T-BADLINK", brief="parent", assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    db.insert_task(TaskRecord(
+        id="T-BADLINK-C1", brief="failed feature", assigned_agent="dev_agent",
+        parent_task_id="T-BADLINK", task_type="subtask",
+    ))
+    db.update_task("T-BADLINK-C1", status=TaskStatus.FAILED)
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        return _make_result(), _make_report(output_summary=json.dumps({
+            "action": "delegate",
+            "agent": "dev_agent",
+            "prompt": "retry feature",
+            "revisit_of_task_id": "TASK-NOT-A-FAILED-SIBLING",
+        }))
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    orch.run_step("T-BADLINK")
+
+    parent = db.get_task("T-BADLINK")
+    assert parent.status == TaskStatus.PENDING
+    assert parent.block_kind is None
+    assert db.get_children("T-BADLINK") == ["T-BADLINK-C1"]
+    assert orch._queue.qsize() == 1
+
+
+def test_fanout_retry_link_reaches_second_failure_escalation(runtime, db, monkeypatch):
+    """THR-078: retrying a failed fanout slice links its second failure."""
+    import json
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True)
+    (runtime.workspaces_dir / "qa_engineer").mkdir(parents=True)
+    db.insert_task(TaskRecord(
+        id="T-FANOUT-RETRY", brief="fan-out parent",
+        assigned_agent="engineering_head", task_type="task",
+    ))
+
+    responses = [
+        {
+            "action": "fanout",
+            "children": [
+                {"agent": "dev_agent", "prompt": "build feature X"},
+                {"agent": "qa_engineer", "prompt": "test feature Y"},
+            ],
+            "width_cap_ack": 2,
+        },
+        {
+            "action": "fanout",
+            "children": [
+                {
+                    "agent": "dev_agent",
+                    "prompt": "retry feature X",
+                    "revisit_of_task_id": "REPLACED-BEFORE-SECOND-ROUND",
+                },
+                {"agent": "qa_engineer", "prompt": "test feature Z"},
+            ],
+            "width_cap_ack": 2,
+        },
+    ]
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        response = responses.pop(0)
+        if response["children"][0].get("revisit_of_task_id"):
+            response["children"][0]["revisit_of_task_id"] = failed_slice_id
+        return _make_result(), _make_report(output_summary=json.dumps(response))
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    orch.run_step("T-FANOUT-RETRY")
+
+    first_round = [db.get_task(cid) for cid in db.get_children("T-FANOUT-RETRY")]
+    failed_slice = next(child for child in first_round if child.assigned_agent == "dev_agent")
+    failed_slice_id = failed_slice.id
+    first_round_qa = next(child for child in first_round if child.assigned_agent == "qa_engineer")
+    db.update_task(failed_slice.id, status=TaskStatus.FAILED)
+    db.update_task(first_round_qa.id, status=TaskStatus.COMPLETED)
+
+    # All first-round siblings are terminal, so the owner may fan out again.
+    orch.run_step("T-FANOUT-RETRY")
+    all_children = [db.get_task(cid) for cid in db.get_children("T-FANOUT-RETRY")]
+    retry_slice = next(
+        child for child in all_children
+        if child.assigned_agent == "dev_agent" and child.id != failed_slice.id
+    )
+    second_round_qa = next(
+        child for child in all_children
+        if child.assigned_agent == "qa_engineer" and child.id != first_round_qa.id
+    )
+    assert retry_slice.revisit_of_task_id == failed_slice.id
+
+    db.update_task(retry_slice.id, status=TaskStatus.FAILED)
+    db.update_task(second_round_qa.id, status=TaskStatus.COMPLETED)
+    _enqueue_parent_if_waiting(orch, retry_slice.id)
+
+    parent = db.get_task("T-FANOUT-RETRY")
+    assert parent.status == TaskStatus.ESCALATED
+    assert parent.block_kind is None
+    assert orch._queue.qsize() == 4  # two rounds' children; no parent wake on escalation
+
+
 def test_delegate_with_revisit_of_task_id_e2e_ceiling_fires(runtime, db, monkeypatch):
     """THR-078 Fix 2: end-to-end.  Parent with a failed slice + uncleared
     active_fanout wakes → join context is injected.  Simulate the second
