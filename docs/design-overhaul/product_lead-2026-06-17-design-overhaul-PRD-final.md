@@ -62,8 +62,10 @@
 > broadcasts; **TASK_FOLLOWUP/BOOTSTRAP are isolated and never mention-routed**; the
 > toggle is **founder-only** (thread-detail ⋯ menu "Mention routing…",
 > `POST /threads/{id}/mention-routing`, `happyranch threads mention-routing`);
-> routing is **not** priority/fairness, and there is **no autocomplete or
-> active-respondent fallback**. The clauses below are retained verbatim as the
+> routing is **not** priority/fairness, and there is **no new routing-feature
+> autocomplete or active-respondent fallback** (the composer's pre-existing
+> participant @-mention typing autocomplete is separate and unchanged). The
+> clauses below are retained verbatim as the
 > 2026-06-17 audit trail; each carries an inline **🟢 SUPERSEDED (THR-198 Phase 2)**
 > marker. Contract: `docs/agent-guides/features-and-invariants.md` (Threads) and
 > `docs/superpowers/specs/2026-05-30-thread-broadcast-only-design.md` (supersession
