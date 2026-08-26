@@ -730,7 +730,14 @@ import subprocess as _sp
 
 
 def _mock_recall_output(output_summary: str, verdict: str | None = None) -> str:
-    """Build a JSON recall output as returned by `happyranch recall`."""
+    """Build a JSON recall output with an OPTIONAL verdict key.
+
+    When ``verdict`` is None the key is omitted — a direct-input shape the
+    parser still accepts (absent-key prose fallback).  The durable producer
+    (``get_recall_payload``) instead ALWAYS emits the key, serializing
+    legacy/no-structured rows as null; the serializer-null shape is covered
+    by the dedicated null-key tests (see ``test_null_verdict_*``).
+    """
     import json
     payload: dict[str, object] = {
         "task_id": "TASK-TEST",
@@ -966,14 +973,16 @@ class TestGuardedMergeLegacyEvidenceRejection:
         assert verdict.verdict == "merged"
         assert call_log == ["squash"]
 
-    def test_null_verdict_with_legacy_pass_no_merge(
+    def test_null_verdict_with_legacy_pass_merges(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Null verdict key present + Verdict: PASS → github_error, perform_merge NOT called.
+        """Serializer-null verdict (durable producer shape) + Verdict: PASS → merged.
 
-        A present ``verdict`` key whose value is ``null`` is malformed
-        structured evidence.  The engine MUST fail closed and never fall
-        back to the legacy ``Verdict: PASS`` line.
+        ``get_recall_payload`` ALWAYS emits the top-level ``verdict`` key —
+        ``null`` for legacy/no-structured rows.  Serialized null represents
+        absence of structured evidence, so the strictly parsed legacy prose
+        candidate ``Verdict: PASS`` may be used.  All other guards green →
+        merged, perform_merge called once.
         """
         import json
         recall_out = json.dumps({
@@ -991,12 +1000,180 @@ class TestGuardedMergeLegacyEvidenceRejection:
         call_log: list[str] = []
 
         def track_merge(method: str) -> MergeResult:
-            call_log.append("perform_merge_called")
+            call_log.append(method)
             return _result()
 
         verdict = _merge(
             fetch_review_verdict=lambda: "APPROVE",
             fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-NULLPASS", "qa"),
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "merged"
+        assert call_log == ["squash"]
+
+    def test_null_verdict_with_annotated_legacy_pass_merges(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Serializer-null verdict + `Verdict: PASS — rationale` → merged (shipping seam).
+
+        Mirrors the durable TASK-5619 legacy form through the real recall
+        shape (key always present, null for no structured verdict).
+        """
+        import json
+        recall_out = json.dumps({
+            "task_id": "TASK-NULLANN",
+            "status": "completed",
+            "verdict": None,
+            "output_summary": "Verdict: PASS \u2014 Independent QA of PR #710. All checks green.\n",
+        })
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append(method)
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: "APPROVE",
+            fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-NULLANN", "qa"),
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "merged"
+        assert call_log == ["squash"]
+
+    def test_null_verdict_with_legacy_request_changes_blocks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Serializer-null verdict + `Verdict: REQUEST_CHANGES` → merge_guard_review.
+
+        REQUEST_CHANGES is a canonical token the parser accepts through the
+        null-prose path; the review role gate rejects it.  perform_merge is
+        NOT called.
+        """
+        import json
+        recall_out = json.dumps({
+            "task_id": "TASK-NULLRC",
+            "status": "completed",
+            "verdict": None,
+            "output_summary": "Verdict: REQUEST_CHANGES\n\nReview found gaps to fix.\n",
+        })
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-NULLRC", "review"),
+            fetch_qa_verdict=lambda: "PASS",
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "merge_guard_review"
+        assert "perform_merge_called" not in call_log
+
+    def test_null_verdict_with_malformed_legacy_no_merge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Serializer-null verdict + malformed `Verdict: APPROVED` → github_error, NO merge.
+
+        Serialized null only unlocks the STRICT prose grammar; a malformed
+        candidate still fails closed.
+        """
+        import json
+        recall_out = json.dumps({
+            "task_id": "TASK-NULLMAL",
+            "status": "completed",
+            "verdict": None,
+            "output_summary": "Verdict: APPROVED\n\nNon-standard label.\n",
+        })
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: "APPROVE",
+            fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-NULLMAL", "qa"),
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_null_verdict_with_duplicate_legacy_no_merge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Serializer-null verdict + duplicate `Verdict: PASS` lines → github_error, NO merge."""
+        import json
+        recall_out = json.dumps({
+            "task_id": "TASK-NULLDUP",
+            "status": "completed",
+            "verdict": None,
+            "output_summary": "Verdict: PASS\nVerdict: PASS\n\nDone.\n",
+        })
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: "APPROVE",
+            fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-NULLDUP", "qa"),
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
+    def test_null_verdict_with_conflicting_legacy_no_merge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Serializer-null verdict + conflicting `Verdict: PASS`/`Verdict: FAIL` → github_error."""
+        import json
+        recall_out = json.dumps({
+            "task_id": "TASK-NULLCONF",
+            "status": "completed",
+            "verdict": None,
+            "output_summary": "Verdict: PASS\nVerdict: FAIL\n\nConflict.\n",
+        })
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: "APPROVE",
+            fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-NULLCONF", "qa"),
             perform_merge=track_merge,
         )
         assert verdict.verdict == "github_error"
@@ -1005,7 +1182,7 @@ class TestGuardedMergeLegacyEvidenceRejection:
     def test_null_verdict_no_legacy_no_merge(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Null verdict key present, no Verdict: line → github_error, perform_merge NOT called."""
+        """Serializer-null verdict, no Verdict: line → github_error, perform_merge NOT called."""
         import json
         recall_out = json.dumps({
             "task_id": "TASK-NULLNL2",
@@ -1033,15 +1210,53 @@ class TestGuardedMergeLegacyEvidenceRejection:
         assert verdict.verdict == "github_error"
         assert "perform_merge_called" not in call_log
 
+    def test_non_null_non_string_verdict_no_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-null non-string structured verdict (int) + Verdict: PASS → github_error.
+
+        Only serialized null unlocks the prose fallback; a non-null non-string
+        value is unusable structured evidence and must fail closed.
+        """
+        import json
+        recall_out = json.dumps({
+            "task_id": "TASK-INTV",
+            "status": "completed",
+            "verdict": 123,
+            "output_summary": "Verdict: PASS\n\nQA green.",
+        })
+
+        def fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=recall_out, stderr="")
+
+        monkeypatch.setattr(_sp, "run", fake_run)
+
+        call_log: list[str] = []
+
+        def track_merge(method: str) -> MergeResult:
+            call_log.append("perform_merge_called")
+            return _result()
+
+        verdict = _merge(
+            fetch_review_verdict=lambda: "APPROVE",
+            fetch_qa_verdict=lambda: _recall_fetch_verdict("happyranch", "TASK-INTV", "qa"),
+            perform_merge=track_merge,
+        )
+        assert verdict.verdict == "github_error"
+        assert "perform_merge_called" not in call_log
+
 
 class TestGuardedMergeMergeEvidenceContract:
     """Guarded-merge integration for the canonical merge-evidence contract.
 
     The contract is canonical in protocol/00-completion-contract.md
-    ("Merge-evidence contract", THR-204): structured `verdict` is primary and
-    must be a canonical token; prose `Verdict:` lines may carry the canonical
-    token followed by a human annotation (e.g. `Verdict: PASS — rationale`);
-    both forms must agree exactly.  The role gates (review == APPROVE,
+    ("Merge-evidence contract", THR-204): a NON-NULL structured `verdict` is
+    primary and must be a canonical token; serialized `null` (the durable
+    producer's representation of absence — `get_recall_payload` always emits
+    the key) may use the strictly parsed prose `Verdict:` line, which may
+    carry the canonical token followed by a human annotation (e.g.
+    `Verdict: PASS — rationale`); both forms must agree exactly when the
+    structured value is non-null.  The role gates (review == APPROVE,
     QA == PASS) reject known non-passing tokens (REQUEST_CHANGES / BLOCK /
     REVISE / FAIL); every rejecting case proves `perform_merge` is NOT called,
     and accepting cases traverse the real role gates, immutable-head, CI,

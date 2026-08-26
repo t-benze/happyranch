@@ -448,19 +448,25 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
        ``APPROVE``, QA == ``PASS``) reject known non-passing tokens
        (``REQUEST_CHANGES`` / ``BLOCK`` / ``REVISE`` / ``FAIL``) before merge.
 
-    2. **Structured-verdict evidence first.**  Parse the entire stdout as a
-       single JSON blob.  If the top-level ``verdict`` field is present:
-       * It MUST be a canonical non-empty token — any other type (null,
-         non-string), empty/whitespace-only, or non-canonical value (e.g.
+    2. **Structured-verdict evidence first (non-null only).**  Parse the
+       entire stdout as a single JSON blob.  If the top-level ``verdict``
+       field is a NON-NULL value:
+       * It MUST be a canonical non-empty token — any other type
+         (non-string), empty/whitespace-only, or non-canonical value (e.g.
          ``APPROVED``, ``pass``, or a value carrying an in-field annotation
-         such as ``REVISE — …``) fails closed.  A row that claims a
+         such as ``REVISE — …``) fails closed.  A row with a non-null
          structured key never falls back to prose.
        * If ``output_summary`` also carries a prose ``Verdict:`` line, the
          two normalized canonical tokens must agree EXACTLY; disagreement
          fails closed (no equality bypass).
 
-    3. **Anchored prose fallback (structured key absent only).**
-       Extract exactly ONE physical line matching
+    3. **Anchored prose fallback (serialized-null / absent key).**  The
+       durable producer (``get_recall_payload``) ALWAYS emits the top-level
+       ``verdict`` key — ``null`` for legacy/no-structured rows.  Serialized
+       ``null`` represents ABSENCE of historical structured evidence and MAY
+       use the strictly parsed legacy prose candidate; the absent-key form
+       (direct input) is treated identically.  Extract exactly ONE physical
+       line matching
        ``^Verdict:[ \t]*<canonical-token>(?:[ \t]annotation)?$`` — the
        canonical token optionally followed by horizontal whitespace and a
        human annotation (e.g. ``Verdict: PASS — rationale``).  Horizontal
@@ -475,8 +481,9 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
 
     4. **No permissive unanchored scraping.**  There is no line-by-line JSON
        fallback, no bare ``verdict:`` prefix search, and no unanchored
-       ``Verdict:`` match — the two paths above (structured field, anchored
-       line) are the only extraction modes.  Anything else fails closed.
+       ``Verdict:`` match — the two paths above (non-null structured field,
+       anchored line) are the only extraction modes.  Anything else fails
+       closed.
 
     5. **Malformed Verdict: candidate lines fail closed unconditionally.**
        Any physical line starting with ``Verdict:`` that is not a valid
@@ -519,7 +526,7 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
 
     output_summary = data.get("output_summary", "") or ""
 
-    # ── Anchored prose candidates (structured key absent only) ──
+    # ── Anchored prose candidates (serialized-null / absent key) ──
     # One physical line per iteration; horizontal whitespace only; the first
     # whitespace-delimited token must be EXACTLY a canonical vocabulary
     # member (case-sensitive); an optional whitespace-separated human
@@ -560,16 +567,17 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
             f"{legacy_candidates}"
         )
 
-    # ── 1. Structured verdict evidence (primary) ──
-    # Key presence, not value truthiness.  A JSON payload with a present
-    # ``verdict`` key MUST enter structured validation even when its value
-    # is ``null``, empty, wrong-typed, or not a canonical token; all unusable
-    # present structured values fail closed and never fall back to
-    # output_summary.  Anchored prose fallback is reserved for records where
-    # the key is absent.
-    if "verdict" in data:
-        structured_verdict = data["verdict"]
-        # Fail closed: structured verdict must be a non-empty string.
+    # ── 1. Structured verdict evidence (primary, non-null only) ──
+    # A NON-NULL top-level ``verdict`` is structured evidence and is primary:
+    # it must be a non-empty canonical token, agree with any prose candidate,
+    # and NEVER falls back to prose.  Serialized ``null`` is the durable
+    # producer's representation of ABSENCE of historical structured evidence
+    # (``get_recall_payload`` always emits the key; legacy/no-structured rows
+    # serialize as null) — it falls through to the strictly parsed prose
+    # candidate below.  The absent-key form (direct input) behaves the same.
+    structured_verdict = data.get("verdict")
+    if structured_verdict is not None:
+        # Fail closed: non-null structured verdict must be a non-empty string.
         if not isinstance(structured_verdict, str) or not structured_verdict.strip():
             raise RuntimeError(
                 f"Structured verdict for {task_id} is not a non-empty string: "
@@ -594,7 +602,7 @@ def _recall_fetch_verdict(org: str, task_id: str, verdict_key: str) -> str:
             )
         return structured_verdict
 
-    # ── 2. Anchored prose fallback ──
+    # ── 2. Anchored prose fallback (serialized-null / absent key) ──
     if legacy_verdict is not None:
         return legacy_verdict
 

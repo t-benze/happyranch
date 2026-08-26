@@ -158,9 +158,11 @@ The merge guard is conjunctive — all must pass before the engine attempts merg
 
 Review/QA evidence extraction follows the **Merge-evidence contract** in
 `protocol/00-completion-contract.md` (canonical vocabulary
-`APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL`; structured
-`verdict` primary; annotated prose `Verdict: PASS — rationale` supported;
-missing/contradictory/malformed/ambiguous evidence fails closed).
+`APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL`; NON-NULL structured
+`verdict` primary; serialized `null` — the durable recall producer's
+representation of legacy/no-structured rows — uses the strict annotated
+prose `Verdict: PASS — rationale` fallback; missing/contradictory/malformed/
+ambiguous evidence fails closed).
 
 It exits successfully only when the PR is merged after all merge guards pass. It exits non-zero for CI failure, stale PR head, timeout, missing checks after settle, non-clean mergeability, rejected job, or failed merge.
 
