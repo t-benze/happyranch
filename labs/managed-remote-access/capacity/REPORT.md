@@ -71,7 +71,9 @@ a mismatch between resolved and pinned digest fails the run's residue gate.
 
 ## 4. Lab acceptance gates (exploratory thresholds — NOT product SLOs)
 
-These are **laboratory acceptance gates** for a disposable 4-vCPU / 16 GiB runner.
+These are **laboratory acceptance gates** for a disposable GitHub Actions hosted
+runner (standard `ubuntu-latest`; exact CPU / RAM are recorded at runtime in
+`results/<run_id>/env.json`, not assumed here).
 They bound the experiment so a pathological step aborts deterministically. They are
 **not** capacity commitments, service-level objectives, or product thresholds.
 

@@ -24,7 +24,7 @@ from gates import (
     evaluate_host_gates,
 )
 from metrics import counter_rate, extract_http_duration_histogram, histogram_quantile, parse_prometheus
-from models import headscale_container_name, state_dir_name
+from models import headscale_container_name, node_online, state_dir_name
 from planning import (
     all_node_steps,
     plan_churn_waves,
@@ -170,7 +170,7 @@ class Runner:
             return -1.0, False
         deadline = time.monotonic() + ENROLL_TIMEOUT_S
         while time.monotonic() < deadline:
-            online = [n for n in self.docker.nodes_list_json(cell) if n.get("givenName") == hostname and n.get("online")]
+            online = [n for n in self.docker.nodes_list_json(cell) if node_online(n, hostname)]
             if online:
                 latency_ms = round((time.monotonic() - t0) * 1000, 1)
                 self._emit(self.enroll_path, {

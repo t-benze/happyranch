@@ -51,3 +51,15 @@ def volume_name(run_id: str, cell: int) -> str:
 def state_dir_name(run_id: str) -> str:
     validate_run_id(run_id)
     return f"st-{run_id}"
+
+
+def node_online(record: dict, hostname: str) -> bool:
+    """True when a parsed ``headscale nodes list --output json`` record shows
+    the named synthetic node online.
+
+    The headscale CLI's ``--output json`` serializes the protobuf-generated
+    structs with standard ``encoding/json``, which emits the snake_case
+    protobuf json tags (``given_name``, ``online``) — not protojson
+    camelCase (``givenName``).
+    """
+    return bool(record.get("online")) and record.get("given_name") == hostname

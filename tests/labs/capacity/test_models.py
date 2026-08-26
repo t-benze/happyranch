@@ -17,6 +17,7 @@ from models import (
     headscale_container_name,
     make_run_id,
     network_name,
+    node_online,
     state_dir_name,
     validate_run_id,
     volume_name,
@@ -38,6 +39,19 @@ def test_make_run_id_unique_for_rand():
 
 def test_validate_run_id_accepts_canonical():
     validate_run_id("cap-20260826T120000Z-ab12")
+
+
+def test_node_online_matches_headscale_cli_json():
+    # `headscale nodes list --output json` emits the protobuf struct json tags
+    # (snake_case `given_name`, `online`) via encoding/json — not protojson
+    # camelCase (`givenName`).
+    rec = {"id": "1", "given_name": "n3", "online": True}
+    assert node_online(rec, "n3")
+    assert not node_online(rec, "n4")  # wrong hostname
+    assert not node_online({**rec, "online": False}, "n3")
+    assert not node_online({**rec, "given_name": ""}, "n3")
+    assert not node_online({}, "n3")
+    assert not node_online({**rec, "given_name": "n3"}, "")
 
 
 @pytest.mark.parametrize(

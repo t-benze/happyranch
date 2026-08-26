@@ -65,9 +65,25 @@ def _gen_run_id() -> str:
     return make_run_id(datetime.now(timezone.utc), rand)
 
 
-def _write_env_facts(out_dir: Path, docker: Docker) -> None:
-    env: dict = {"run_id": out_dir.parent.name}
+def _meminfo_kb(key: str) -> int | None:
+    """Read one /proc/meminfo value in KiB (host facts for env.json)."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                k, _, v = line.partition(":")
+                if k.strip() == key:
+                    return int(v.strip().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _write_env_facts(out_dir: Path, docker: Docker, run_id: str) -> None:
+    env: dict = {"run_id": run_id}
     env["host"] = host_facts()
+    env["host"]["cpus"] = (docker.run(["nproc"], check=False).stdout or "").strip() or None
+    env["host"]["mem_total_kb"] = _meminfo_kb("MemTotal")
+    env["host"]["mem_available_kb"] = _meminfo_kb("MemAvailable")
     env["uname"] = parse_uname(
         docker.run(["uname", "-a"], check=False).stdout.strip()
     )
@@ -119,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
 
     limits = LabLimits()
     runner = Runner(run_id, out_dir, limits)
-    _write_env_facts(out_dir, runner.docker)
+    _write_env_facts(out_dir, runner.docker, run_id)
 
     print(f"[lab] run_id={run_id} out_dir={out_dir}", flush=True)
     print(f"[lab] scenarios={','.join(wanted)} limits={limits}", flush=True)

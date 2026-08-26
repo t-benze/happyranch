@@ -3,8 +3,8 @@
 These thresholds bound the experiment so a pathological load step or a
 host/runtime failure stops the run deterministically instead of exhausting
 the disposable lab VM. They are justified in REPORT.md as exploratory
-laboratory gates for a 4-vCPU / 16 GiB disposable runner, not as capacity
-or SLA commitments.
+laboratory gates for the GitHub Actions hosted runner (exact host facts in
+results/<run_id>/env.json), not as capacity or SLA commitments.
 """
 
 from __future__ import annotations

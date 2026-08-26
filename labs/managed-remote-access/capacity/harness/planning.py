@@ -2,8 +2,8 @@
 
 All step sequences are fixed constants (no runtime discovery), bounded by
 the lab acceptance gates in REPORT.md: max 4 cells per host, max 64 nodes
-per cell, max 128 concurrent nodes per host on the disposable 4-vCPU /
-16 GiB runner.
+per cell, max 128 concurrent nodes per host on the disposable lab runner
+(host CPU/RAM are recorded at runtime in results/<run_id>/env.json).
 """
 
 from __future__ import annotations

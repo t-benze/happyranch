@@ -73,8 +73,13 @@ def headscale_config(run_id: str, cell: int, ephemeral_timeout: str = "75s") -> 
                 "write_ahead_log": True,
             },
         },
-        "prefixes": ["100.64.0.0/10", "fd7a:115c:a1e0::/48"],
-        "dns": {"override_local_dns": False},
+        # headscale v0.25 reads the map form prefixes.v4/v6; a list under
+        # `prefixes` (or the legacy `ip_prefixes` key) is not recognized and
+        # headscale refuses to start without a prefix.
+        "prefixes": {"v4": "100.64.0.0/10", "v6": "fd7a:115c:a1e0::/48"},
+        # MagicDNS off (v0.25 defaults it on and then requires base_domain);
+        # no nameservers, so no third-party resolver is ever configured.
+        "dns": {"magic_dns": False},
         "policy": {"path": ""},
         "log": {"format": "text", "level": "info"},
         "ephemeral_node_inactivity_timeout": ephemeral_timeout,

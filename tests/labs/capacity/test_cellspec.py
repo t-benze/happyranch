@@ -48,7 +48,11 @@ def test_config_is_valid_yaml_and_canonical_keys():
     assert cfg["database"]["type"] == "sqlite"
     assert cfg["database"]["sqlite"]["path"] == "/var/lib/headscale/db.sqlite"
     assert cfg["database"]["sqlite"]["write_ahead_log"] is True
-    assert cfg["prefixes"] == ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
+    # headscale v0.25 reads `prefixes.v4` / `prefixes.v6` (map form). A list
+    # under `prefixes` (or the legacy `ip_prefixes` key) is not recognized and
+    # headscale refuses to start: "no IPv4 or IPv6 prefix configured, minimum
+    # one prefix is required".
+    assert cfg["prefixes"] == {"v4": "100.64.0.0/10", "v6": "fd7a:115c:a1e0::/48"}
     assert cfg["ephemeral_node_inactivity_timeout"] == "75s"
     assert cfg["randomize_client_port"] is False
 
@@ -59,10 +63,16 @@ def test_config_disables_derp_and_dns():
     assert cfg["derp"]["server"]["enabled"] is False
     assert cfg["derp"]["urls"] == []
     assert cfg["derp"]["auto_update_enabled"] is False
+    # MagicDNS is disabled: headscale v0.25 defaults `dns.magic_dns` to true
+    # and then fatals without `dns.base_domain`; the lab sets it false so no
+    # base_domain is required and no resolver is ever configured.
+    assert cfg["dns"]["magic_dns"] is False
     # No external DNS resolvers may be configured (lab cannot egress to
     # third-party resolvers; "cannot target non-lab endpoints").
-    assert "nameservers" not in cfg.get("dns", {})
-    assert cfg.get("dns", {}).get("override_local_dns") is False
+    assert "nameservers" not in cfg["dns"]
+    assert "base_domain" not in cfg["dns"]
+    # v0.25 deprecates `dns_config.override_local_dns`; it must not be emitted.
+    assert "override_local_dns" not in cfg["dns"]
 
 
 def test_config_contains_no_external_urls():
