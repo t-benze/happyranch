@@ -129,7 +129,7 @@ class PlatformIsolation(ABC):
     @abstractmethod
     def admit_skills_directory(
         self, skills_dir: Path, *, workspace_root: Path,
-    ) -> None:
+    ) -> int | None:
         """No-follow admission of a provider/nested skills root.
 
         Walks every EXISTING path component of *skills_dir* below the
@@ -137,9 +137,15 @@ class PlatformIsolation(ABC):
         at a pinned no-follow fd for the REAL workspace root (each component
         opened relative to its already-pinned parent fd). A symlink at any
         level — a pre-positioned workspace/provider/nested-skills path —
-        raises ``PlatformIsolationError`` with code ``escaped_parent``. A
-        missing component (fresh workspace, nothing admitted yet) is a no-op:
-        later writes create real directories.
+        raises ``PlatformIsolationError`` with code ``escaped_parent``.
+
+        Returns the ADMITTED directory fd, retained OPEN so the caller can
+        enumerate and mutate through the admitted inode without ever
+        re-resolving the full pathname after admission — a same-UID swap of
+        an already-admitted ancestor cannot redirect the caller's later
+        enumeration/mutation. The caller OWNS the returned fd and must close
+        it when done. Returns ``None`` when the directory (or an ancestor)
+        is missing — a fresh workspace with nothing admitted yet.
         """
         ...
 
@@ -505,19 +511,25 @@ class _PosixSameOwnerIsolation(PlatformIsolation):
 
     def admit_skills_directory(
         self, skills_dir: Path, *, workspace_root: Path,
-    ) -> None:
+    ) -> int | None:
         """No-follow admission of a provider/nested skills root.
 
         Every EXISTING component of *skills_dir* below the resolved workspace
         root is walked relative to pinned parent fds (never re-resolved
         through a full pathname); a symlink at any level raises
-        ``escaped_parent``. A missing component (fresh workspace) is a no-op.
+        ``escaped_parent``.
+
+        Returns the ADMITTED directory fd, retained OPEN — the caller owns it
+        and MUST retain it through enumeration/mutation (never re-resolve the
+        full pathname after admission) and close it when done. Returns
+        ``None`` when the directory (or an ancestor) is missing (fresh
+        workspace — nothing to admit).
         """
         # Walk skills_dir itself (all components including the final one),
         # rooted at a pinned fd for the REAL workspace root.
         ws_fd = self._open_workspace_root(workspace_root, create=False)
         if ws_fd is None:
-            return  # nothing to admit below a missing workspace root
+            return None  # nothing to admit below a missing workspace root
         try:
             rel_parts = skills_dir.relative_to(workspace_root).parts
         except ValueError:
@@ -533,8 +545,9 @@ class _PosixSameOwnerIsolation(PlatformIsolation):
         parent_fd = self._walk_contained_components(
             ws_fd, rel_parts, create=False,
         )
-        if parent_fd is not None:
-            os.close(parent_fd)
+        if parent_fd is None:
+            return None  # skills dir (or an ancestor) missing — nothing to admit
+        return parent_fd  # caller owns the fd — retained through enumeration
 
     def verify_workspace_link(
         self, link_path: Path, expected_target: Path, canonical_root: Path,

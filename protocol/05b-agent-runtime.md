@@ -641,11 +641,13 @@ lexical-only check, or one-time earlier validation:
   symlink creation, ``os.replace`` repair, and withdrawal ``unlink`` — so
   every same-UID ancestor-swap window is closed: the write/unlink/replace
   is bound to the admitted inode, never re-resolved through a pathname.
-- **Contained withdrawal and admission.** ``withdraw_workspace_link`` and
-  ``admit_skills_directory`` apply the same component-by-component dirfd
-  walk; repair never lists a skills root and withdraw never unlinks through
-  an escaped parent, so no symlink swap or escaped parent can
-  write/unlink/replace outside the real workspace.
+- **Contained withdrawal, admission, and enumeration.** ``withdraw_workspace_link``
+  and ``admit_skills_directory`` apply the same component-by-component dirfd
+  walk; ``admit_skills_directory`` returns the ADMITTED directory fd,
+  retained open, and repair enumerates the skills root ONLY through that
+  admitted fd (the full pathname is never re-resolved to list after
+  admission) — so no symlink swap or escaped parent can list, write, unlink,
+  or replace outside the real workspace.
 - **Ordinary workspaces unchanged.** Canonical relative symlinks wholly
   inside a normal workspace materialize and repair exactly as before.
 

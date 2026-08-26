@@ -184,6 +184,58 @@ def _install_ancestor_swap(
     return swapped
 
 
+def _install_listing_swap(
+    monkeypatch,
+    ws: Path,
+    ext: Path,
+    ancestor: str,
+    skills_dir: Path,
+    *,
+    pathname_trigger: bool = True,
+) -> list[bool]:
+    """Deterministically swap *ancestor* to an EXTERNAL symlink at the exact
+    post-admission/pre-listing seam (TASK-5715).
+
+    The swap fires exactly ONCE, synchronously INSIDE the first enumeration
+    of the skills directory, with no timing, sleeps, or probabilistic
+    interleaving:
+
+    - corrected repair: ``os.scandir(fd)`` — the enumeration of the ADMITTED
+      directory fd (``isinstance(path, int)``);
+    - pre-fix repair: ``Path.iterdir()`` reopens the FULL pathname
+      (``path == skills_dir``) — enabled by *pathname_trigger* so the
+      regression is also RED against the pre-fix writer.
+
+    The original *ancestor* directory is renamed to ``<ancestor>.original``
+    (so the already-pinned inode stays referenceable for assertions) and the
+    pathname is replaced by a symlink to *ext* (outside the workspace) — the
+    attacker's swap. Returns a one-element list that flips to True once fired.
+    """
+    swapped: list[bool] = [False]
+    real_scandir = os.scandir
+
+    def _fire_once() -> None:
+        if swapped[0]:
+            return
+        src = ws / ancestor
+        os.rename(src, ws / f"{ancestor}.original")
+        os.symlink(ext, src)
+        swapped[0] = True
+
+    def _scandir(path="."):
+        if isinstance(path, int):
+            # Corrected writer: enumeration of the admitted directory fd.
+            _fire_once()
+        elif pathname_trigger and os.fspath(path) == str(skills_dir):
+            # Pre-fix writer: Path.iterdir() re-resolves the full pathname
+            # (it passes the STRING path to os.scandir).
+            _fire_once()
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", _scandir)
+    return swapped
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Lowest-level link writer (production POSIX class, real seam)
 # ═══════════════════════════════════════════════════════════════════════
@@ -405,13 +457,64 @@ class TestLinkWriterContainment:
         )
 
     def test_admit_accepts_genuine_and_missing_roots(self, tmp_path):
-        """Genuine roots pass; missing roots (fresh workspace) are a no-op."""
+        """Genuine roots pass (returning an fd the caller must close);
+        missing roots (fresh workspace) are a no-op returning None."""
         iso = _LinuxPlatformIsolation()
         ws = tmp_path / "ws"
         (ws / ".claude" / "skills").mkdir(parents=True)
-        iso.admit_skills_directory(ws / ".claude" / "skills", workspace_root=ws)
+        fd = iso.admit_skills_directory(
+            ws / ".claude" / "skills", workspace_root=ws,
+        )
+        assert isinstance(fd, int)
+        os.close(fd)
         # Missing tail — nothing to admit, no raise
-        iso.admit_skills_directory(ws / ".agents" / "skills", workspace_root=ws)
+        assert (
+            iso.admit_skills_directory(
+                ws / ".agents" / "skills", workspace_root=ws,
+            )
+            is None
+        )
+
+    def test_admitted_fd_stays_authoritative_through_enumeration(
+        self, tmp_path, monkeypatch,
+    ):
+        """The fd returned by admit_skills_directory binds enumeration to the
+        admitted inode (TASK-5715): a same-UID swap at the exact
+        post-admission/pre-listing seam cannot redirect the listing to an
+        external directory — the full pathname is never re-resolved after
+        admission."""
+        iso = _LinuxPlatformIsolation()
+        ws = tmp_path / "ws"
+        (ws / ".claude" / "skills").mkdir(parents=True)
+        (ws / ".claude" / "skills" / "owned-a").write_bytes(b"a")
+        (ws / ".claude" / "skills" / "owned-b").write_bytes(b"b")
+        ext = _external_sentinel(tmp_path)
+        before = _snapshot(ext)
+
+        fd = iso.admit_skills_directory(
+            ws / ".claude" / "skills", workspace_root=ws,
+        )
+        assert isinstance(fd, int), "admit must return the retained fd"
+        try:
+            # Swap fires inside the FIRST fd enumeration — after admission
+            # has returned, before the listing reads a single entry.
+            _install_listing_swap(
+                monkeypatch, ws, ext, ".claude", ws / ".claude" / "skills",
+            )
+            with os.scandir(fd) as it:
+                names = {e.name for e in it}
+            assert names == {"owned-a", "owned-b"}
+            assert not names & {"start-task", "decoy-skill"}
+        finally:
+            os.close(fd)
+
+        # External sentinel byte- and state-identical; swap survives; the
+        # original (renamed) inode still holds the owned entries.
+        _assert_sentinel_unchanged(ext, before)
+        assert (ws / ".claude").is_symlink()
+        assert os.readlink(ws / ".claude") == str(ext)
+        assert (ws / ".claude.original" / "skills" / "owned-a").read_bytes() == b"a"
+        assert (ws / ".claude.original" / "skills" / "owned-b").read_bytes() == b"b"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -738,6 +841,60 @@ class TestMaterializerContainment:
         assert ei.value.code == "escaped_parent"
         _assert_sentinel_unchanged(ext, before)
         assert (ws / ".claude").is_symlink()
+
+    def test_repair_ancestor_swap_between_admission_and_listing_never_lists_external(
+        self, tmp_path, test_settings, monkeypatch,
+    ):
+        """TASK-5715: a same-UID swap at the exact post-admission/pre-listing
+        seam must not redirect repair's enumeration to an external directory.
+
+        The genuine skills root holds a stale owned entry; the EXTERNAL root
+        holds decoy entries. The swap fires deterministically INSIDE the first
+        enumeration of the skills directory — the fd-based ``os.scandir(fd)``
+        in the corrected repair (or the full-pathname ``Path.iterdir()``
+        reopen in the pre-fix repair). The repair must enumerate only the
+        PINNED directory: the attempted withdrawal targets the pinned entry,
+        never an external decoy; the external sentinel stays byte-identical;
+        the attacker's swap survives; and the repair fails closed
+        (``escaped_parent`` at the writer's re-admission) — before any
+        executor launch.
+        """
+        materializer, _store = self._materializer(tmp_path, test_settings)
+        ws = tmp_path / "ws"
+        (ws / ".claude" / "skills").mkdir(parents=True)
+        skills_dir = ws / ".claude" / "skills"
+        # Genuine (owned) stale entry inside the REAL skills root.
+        (skills_dir / "stale-extra").symlink_to("../../canonical/stale-extra")
+        ext = _external_sentinel(tmp_path)
+        before = _snapshot(ext)
+
+        _install_listing_swap(monkeypatch, ws, ext, ".claude", skills_dir)
+
+        seen: list[str] = []
+        real_withdraw = SymlinkMaterializer.withdraw_skill
+
+        def _spy_withdraw(self, slug, workspace, skills_subdir):
+            seen.append(slug)
+            return real_withdraw(self, slug, workspace, skills_subdir)
+
+        monkeypatch.setattr(SymlinkMaterializer, "withdraw_skill", _spy_withdraw)
+
+        with pytest.raises(SymlinkMaterializationError) as ei:
+            materializer.repair_workspace_skills([], ws, ".claude/skills")
+
+        # Fail-closed at the writer's re-admission (ancestor is now a symlink).
+        assert ei.value.code == "escaped_parent"
+        # The enumerated slugs came from the PINNED (renamed) dir — the first
+        # attempted withdrawal targets the pinned stale entry, never an
+        # external decoy (pre-fix: iterdir lists the external dir, so the
+        # first attempted slug is the external "decoy-skill").
+        assert seen and seen[0] == "stale-extra"
+        assert not any(s in seen for s in ("start-task", "decoy-skill"))
+        _assert_sentinel_unchanged(ext, before)
+        assert (ws / ".claude").is_symlink()
+        assert os.readlink(ws / ".claude") == str(ext)
+        # The pinned entry was never unlinked through the swapped pathname.
+        assert (ws / ".claude.original" / "skills" / "stale-extra").is_symlink()
 
     def test_ordinary_in_workspace_links_materialize_and_repair(
         self, tmp_path, test_settings,

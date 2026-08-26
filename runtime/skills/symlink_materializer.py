@@ -115,9 +115,13 @@ class SymlinkMaterializer:
         # lowest-level link writer re-enforces the same containment
         # immediately before link creation/replacement (defense in depth).
         try:
-            self._isolation.admit_skills_directory(
+            fd = self._isolation.admit_skills_directory(
                 link_path.parent, workspace_root=workspace,
             )
+            if fd is not None:
+                # Validation-only admission: the write itself is re-admitted
+                # by the lowest-level writer. Nothing is enumerated here.
+                os.close(fd)
         except PlatformIsolationError as exc:
             raise SymlinkMaterializationError(
                 getattr(exc, "code", None) or "escaped_parent",
@@ -267,26 +271,35 @@ class SymlinkMaterializer:
         expected_slugs = {spec["slug"] for spec in expected_specs}
 
         # THR-190 PR-B containment: no-follow admission of the provider /
-        # nested skills root BEFORE listing it. A pre-positioned symlink at
-        # the workspace level, the provider root, or any nested component
-        # must never be iterated (reading an external directory) or used to
-        # unlink external entries via withdrawal. The lowest-level link
-        # writer re-enforces containment on every write/unlink.
+        # nested skills root returns the ADMITTED directory fd, retained open,
+        # and the skills root is enumerated ONLY through that fd — the full
+        # pathname is never re-resolved after admission. A same-UID swap of an
+        # already-admitted ancestor at the post-admission/pre-listing seam
+        # cannot redirect the listing to an external directory; the resulting
+        # materialize/withdraw mutations are bound to the lowest-level
+        # writer's re-admission (fail closed ``escaped_parent``). ``None``
+        # means a fresh workspace (skills dir or an ancestor missing) —
+        # nothing to list.
         existing_slugs: set[str] = set()
-        if skills_dir.is_dir():
-            try:
-                self._isolation.admit_skills_directory(
-                    skills_dir, workspace_root=workspace,
-                )
-            except PlatformIsolationError as exc:
-                raise SymlinkMaterializationError(
-                    getattr(exc, "code", None) or "escaped_parent",
-                    f"Workspace skills root {skills_dir} refused: {exc}",
-                ) from exc
-            for entry in skills_dir.iterdir():
-                if entry.name.startswith(".tmp."):
-                    continue  # Stale temp dirs from crashed materialization
-                existing_slugs.add(entry.name)
+        try:
+            skills_dir_fd = self._isolation.admit_skills_directory(
+                skills_dir, workspace_root=workspace,
+            )
+        except PlatformIsolationError as exc:
+            raise SymlinkMaterializationError(
+                getattr(exc, "code", None) or "escaped_parent",
+                f"Workspace skills root {skills_dir} refused: {exc}",
+            ) from exc
+        try:
+            if skills_dir_fd is not None:
+                with os.scandir(skills_dir_fd) as it:
+                    for entry in it:
+                        if entry.name.startswith(".tmp."):
+                            continue  # Stale temp dirs from crashed materialization
+                        existing_slugs.add(entry.name)
+        finally:
+            if skills_dir_fd is not None:
+                os.close(skills_dir_fd)
 
         # Materialize expected
         materialized: list[str] = []
