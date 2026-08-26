@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -3787,6 +3788,122 @@ def test_archive_invalidates_participant_session_state(tmp_home, app, org_state,
     assert len(audits) == 1
     assert audits[0]["payload"]["reason"] == "archive"
     assert audits[0]["payload"]["rows"] == 2
+
+
+def test_archive_session_reset_failure_leaves_thread_open(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """THR-200 fix-forward: a participant session RESET failure during archive
+    rolls back the archive transaction — the thread stays OPEN and every
+    participant session row stays unmodified (no partially archived thread)."""
+    from runtime.infrastructure import database as db_module
+    from runtime.models import ThreadStatus
+
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    org_state.db.update_thread_session(
+        tid, "dev_agent", agent_session_id="sess-claude", last_resumed_seq=3,
+    )
+    org_state.db.update_thread_session(
+        tid, "qa_engineer", agent_session_id="sess-pi", last_resumed_seq=2,
+    )
+
+    with patch.object(
+        db_module.Database, "_reset_thread_sessions_for_thread_uncommitted",
+        side_effect=RuntimeError("injected session reset failure"),
+        create=True,
+    ):
+        resp = TestClient(app, raise_server_exceptions=False).post(
+            f"/api/v1/orgs/alpha/threads/{tid}/archive",
+            json={"summary": "done"}, headers=auth_headers,
+        )
+
+    assert resp.status_code == 500, resp.text
+    assert org_state.db.get_thread(tid).status is ThreadStatus.OPEN
+    assert org_state.db.get_thread_session(tid, "dev_agent") == ("sess-claude", 3)
+    assert org_state.db.get_thread_session(tid, "qa_engineer") == ("sess-pi", 2)
+    audits = [a for a in org_state.db.get_audit_logs(tid)
+              if a["action"] == "thread_session_invalidated"]
+    assert audits == []
+    assert org_state.db._conn.in_transaction is False
+
+
+def test_archive_session_audit_failure_leaves_thread_open(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """THR-200 fix-forward: an invalidation AUDIT failure after the status flip
+    and the session resets already executed in-transaction rolls back the
+    archive transaction — the thread stays OPEN, every participant session row
+    stays unmodified, and no audit residue remains."""
+    from runtime.infrastructure import database as db_module
+    from runtime.models import ThreadStatus
+
+    client = TestClient(app)
+    _seed_agent(org_state, "dev_agent")
+    _seed_agent(org_state, "qa_engineer")
+    r = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent", "qa_engineer"],
+              "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = r["thread_id"]
+    org_state.db.update_thread_session(
+        tid, "dev_agent", agent_session_id="sess-claude", last_resumed_seq=3,
+    )
+    org_state.db.update_thread_session(
+        tid, "qa_engineer", agent_session_id="sess-pi", last_resumed_seq=2,
+    )
+
+    transiently_archived = {"seen": False}
+    original_uncommitted = db_module.Database.insert_audit_log_uncommitted
+
+    def _failing_invalidation_audit(self, task_id, agent, action, payload=None):
+        if action == "thread_session_invalidated":
+            status = self._conn.execute(
+                "SELECT status FROM threads WHERE id = ?", (tid,),
+            ).fetchone()
+            row = self._conn.execute(
+                "SELECT agent_session_id FROM thread_participants "
+                "WHERE thread_id = ? AND agent_name = ?",
+                (tid, "dev_agent"),
+            ).fetchone()
+            transiently_archived["seen"] = (
+                status is not None
+                and status["status"] == ThreadStatus.ARCHIVED.value
+                and row is not None
+                and row["agent_session_id"] is None
+            )
+            raise RuntimeError("injected invalidation audit failure")
+        return original_uncommitted(self, task_id, agent, action, payload)
+
+    with patch.object(
+        db_module.Database, "insert_audit_log_uncommitted",
+        new=_failing_invalidation_audit,
+    ):
+        resp = TestClient(app, raise_server_exceptions=False).post(
+            f"/api/v1/orgs/alpha/threads/{tid}/archive",
+            json={"summary": "done"}, headers=auth_headers,
+        )
+
+    assert resp.status_code == 500, resp.text
+    # The failure landed mid-flight: status flip + resets executed first.
+    assert transiently_archived["seen"] is True
+    assert org_state.db.get_thread(tid).status is ThreadStatus.OPEN
+    assert org_state.db.get_thread_session(tid, "dev_agent") == ("sess-claude", 3)
+    assert org_state.db.get_thread_session(tid, "qa_engineer") == ("sess-pi", 2)
+    audits = [a for a in org_state.db.get_audit_logs(tid)
+              if a["action"] == "thread_session_invalidated"]
+    assert audits == []
+    assert org_state.db._conn.in_transaction is False
 
 
 # ---------------------------------------------------------------------------

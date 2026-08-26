@@ -1679,33 +1679,6 @@ class AuditLogger:
             executor=executor,
         )
 
-    def log_thread_sessions_invalidated(
-        self,
-        *,
-        scope_id: str,
-        agent: str,
-        reason: str,
-        rows: int,
-        name: str | None = None,
-    ) -> None:
-        """Record a lifecycle session-state invalidation (THR-200).
-
-        Fires on thread archive, successful executor switch, and agent
-        termination — the durable resume id + watermark are cleared so any
-        later wake starts from a fresh full-prompt launch. ``scope_id``
-        follows the generic audit scope convention: a THR- id for archive,
-        the manager task id for switch/termination.
-        """
-        payload: dict = {"reason": reason, "rows": rows}
-        if name is not None:
-            payload["name"] = name
-        self._db.insert_audit_log(
-            task_id=scope_id,
-            agent=agent,
-            action="thread_session_invalidated",
-            payload=payload,
-        )
-
     def log_thread_task_followup_enqueued(
         self,
         thread_id: str,

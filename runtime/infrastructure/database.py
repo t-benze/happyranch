@@ -5188,37 +5188,146 @@ class Database:
         self._conn.commit()
 
     @_synchronized
-    def reset_thread_sessions_for_agent(self, agent_name: str) -> int:
+    def reset_thread_sessions_for_agent(
+        self,
+        agent_name: str,
+        *,
+        audit_scope_id: str | None = None,
+        audit_agent: str | None = None,
+        audit_reason: str | None = None,
+    ) -> int:
         """Clear resume state (id NULL, watermark 0) for every thread
         participant row owned by ``agent_name``. Returns the row count.
 
         Executor-switch and agent-termination lifecycle: a participant whose
         executor changes must not resume a provider session minted under a
         different executor profile; a terminated agent must not resume at all.
+
+        THR-200: when ``audit_scope_id`` is given, the participant reset and
+        the ``thread_session_invalidated`` audit row commit in ONE database
+        transaction, so a reset/audit failure can never leave a partially
+        committed lifecycle state (a new executor installed over stale
+        sessions, or cleared sessions with no audit). The audit is only
+        written when at least one row was reset.
         """
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self._reset_thread_sessions_for_agent_uncommitted(agent_name)
+            if rows and audit_scope_id is not None:
+                self.insert_audit_log_uncommitted(
+                    task_id=audit_scope_id,
+                    agent=audit_agent,
+                    action="thread_session_invalidated",
+                    payload={
+                        "reason": audit_reason,
+                        "rows": rows,
+                        "name": agent_name,
+                    },
+                )
+            self._conn.commit()
+            return rows
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def _reset_thread_sessions_for_agent_uncommitted(self, agent_name: str) -> int:
+        """UPDATE every participant row owned by ``agent_name`` WITHOUT
+        committing. The owning transaction (``reset_thread_sessions_for_agent``,
+        ``terminate_agent_cleanups``) commits or rolls back."""
         cursor = self._conn.execute(
             "UPDATE thread_participants SET agent_session_id = NULL, "
             "last_resumed_seq = 0 WHERE agent_name = ?",
             (agent_name,),
         )
-        self._conn.commit()
         return cursor.rowcount
 
     @_synchronized
-    def reset_thread_sessions_for_thread(self, thread_id: str) -> int:
+    def reset_thread_sessions_for_thread(
+        self,
+        thread_id: str,
+        *,
+        audit_scope_id: str | None = None,
+        audit_agent: str | None = None,
+        audit_reason: str | None = None,
+    ) -> int:
         """Clear resume state (id NULL, watermark 0) for every participant of
         one thread. Returns the row count.
 
         Archive lifecycle: the thread is closed; if it is ever re-opened,
         every participant resumes from a fresh full-prompt launch.
+
+        THR-200: when ``audit_scope_id`` is given, the participant reset and
+        the ``thread_session_invalidated`` audit row commit in ONE database
+        transaction, so a reset/audit failure can never leave a partially
+        committed lifecycle state (cleared sessions with no audit). The audit
+        is only written when at least one row was reset.
         """
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self._reset_thread_sessions_for_thread_uncommitted(thread_id)
+            if rows and audit_scope_id is not None:
+                self.insert_audit_log_uncommitted(
+                    task_id=audit_scope_id,
+                    agent=audit_agent,
+                    action="thread_session_invalidated",
+                    payload={"reason": audit_reason, "rows": rows},
+                )
+            self._conn.commit()
+            return rows
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def _reset_thread_sessions_for_thread_uncommitted(self, thread_id: str) -> int:
+        """UPDATE every participant row of one thread WITHOUT committing. The
+        owning transaction (``reset_thread_sessions_for_thread``,
+        ``archive_thread_and_reset_sessions``) commits or rolls back."""
         cursor = self._conn.execute(
             "UPDATE thread_participants SET agent_session_id = NULL, "
             "last_resumed_seq = 0 WHERE thread_id = ?",
             (thread_id,),
         )
-        self._conn.commit()
         return cursor.rowcount
+
+    @_synchronized
+    def archive_thread_and_reset_sessions(
+        self,
+        thread_id: str,
+        *,
+        summary: str,
+        audit_scope_id: str,
+        audit_agent: str,
+    ) -> None:
+        """Archive a thread and invalidate every participant's resume state in
+        ONE database transaction: the ``ARCHIVED`` status flip, the
+        participant session resets (id NULL, watermark 0), and the
+        ``thread_session_invalidated`` audit row commit atomically. A failure
+        at any step rolls back the whole archive, leaving the thread OPEN
+        with every session row and no audit residue.
+
+        THR-200: the thread is closed; if it is ever re-opened, every
+        participant resumes from a fresh full-prompt launch instead of a
+        stale provider session.
+        """
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._set_thread_status_archived_uncommitted(
+                thread_id, summary=summary,
+            )
+            rows = self._reset_thread_sessions_for_thread_uncommitted(thread_id)
+            if rows:
+                self.insert_audit_log_uncommitted(
+                    task_id=audit_scope_id,
+                    agent=audit_agent,
+                    action="thread_session_invalidated",
+                    payload={"reason": "archive", "rows": rows},
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def _append_thread_message_uncommitted(
         self,
@@ -7551,12 +7660,9 @@ class Database:
         status: ThreadStatus,
         summary: str | None = None,
     ) -> None:
-        now = _now().isoformat()
         if status is ThreadStatus.ARCHIVED:
-            self._conn.execute(
-                "UPDATE threads SET status = ?, summary = COALESCE(?, summary), "
-                "archived_at = COALESCE(archived_at, ?) WHERE id = ?",
-                (status.value, summary, now, thread_id),
+            self._set_thread_status_archived_uncommitted(
+                thread_id, summary=summary,
             )
         else:
             # OPEN (resume): plain status flip; archived_at + summary preserved as historical record.
@@ -7565,6 +7671,20 @@ class Database:
                 (status.value, thread_id),
             )
         self._conn.commit()
+
+    @_synchronized
+    def _set_thread_status_archived_uncommitted(
+        self, thread_id: str, *, summary: str | None = None,
+    ) -> None:
+        """Flip one thread to ARCHIVED (summary/archived_at preserved) WITHOUT
+        committing. Callers own the transaction
+        (``set_thread_status``, ``archive_thread_and_reset_sessions``)."""
+        now = _now().isoformat()
+        self._conn.execute(
+            "UPDATE threads SET status = ?, summary = COALESCE(?, summary), "
+            "archived_at = COALESCE(archived_at, ?) WHERE id = ?",
+            (ThreadStatus.ARCHIVED.value, summary, now, thread_id),
+        )
 
     @_synchronized
     def set_thread_subject(self, thread_id: str, *, subject: str) -> None:
@@ -8083,7 +8203,12 @@ class Database:
         return cursor.rowcount == 1
 
     @_synchronized
-    def terminate_agent_cleanups(self, agent_name: str) -> None:
+    def terminate_agent_cleanups(
+        self, agent_name: str,
+        *,
+        audit_scope_id: str | None = None,
+        audit_agent: str | None = None,
+    ) -> None:
         """Atomically cancel/skip/decline all future work for ``agent_name``.
 
         Runs every cleanup DML statement and each audit write inside ONE
@@ -8093,6 +8218,13 @@ class Database:
         and no partial cancellation or audit residue. The caller is responsible
         for archiving the AgentDef/workspace and removing team membership first
         (or rolling them back if this method raises).
+
+        THR-200: when ``audit_scope_id`` is given, the provider-session reset
+        (every thread participant row owned by the agent -> id NULL, watermark
+        0) and its ``thread_session_invalidated`` audit run inside the SAME
+        transaction — a terminated agent must never resume a provider session,
+        and a reset/audit failure rolls back the complete cleanup so the agent
+        stays fully active with prior session state intact.
         """
         now_iso = _now().isoformat()
         self._conn.execute("BEGIN IMMEDIATE")
@@ -8167,6 +8299,26 @@ class Database:
                     ThreadInvocationStatus.PENDING.value,
                 ),
             )
+
+            # THR-200: a terminated agent must never resume a thread provider
+            # session. Clear every participant row it owns and record the
+            # invalidation audit inside this same transaction — a failure here
+            # rolls back the whole cleanup, leaving the agent fully active
+            # with prior session state intact.
+            session_rows = self._reset_thread_sessions_for_agent_uncommitted(
+                agent_name,
+            )
+            if session_rows and audit_scope_id is not None:
+                self.insert_audit_log_uncommitted(
+                    task_id=audit_scope_id,
+                    agent=audit_agent,
+                    action="thread_session_invalidated",
+                    payload={
+                        "reason": "termination",
+                        "rows": session_rows,
+                        "name": agent_name,
+                    },
+                )
 
             self._conn.commit()
         except Exception:

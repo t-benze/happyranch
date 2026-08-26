@@ -769,15 +769,54 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         # participant session row for this agent — a later switch back to a
         # resume-capable executor must start from a fresh full-prompt launch,
         # never reuse a provider session minted under a different executor.
-        # This runs only after the switch fully succeeded (frontmatter written
-        # and workspace reconciled): a failed switch leaves prior state intact.
+        # The reset and its invalidation audit commit in ONE database-owned
+        # transaction: if either fails, the whole switch is rolled back
+        # (prior frontmatter restored + workspace re-reconciled) so no new
+        # executor is ever installed over stale provider sessions.
         if body.executor is not None and body.executor != existing.executor:
-            rows = org.db.reset_thread_sessions_for_agent(body.name)
-            if rows:
-                audit.log_thread_sessions_invalidated(
-                    scope_id=scope_id, agent=manager_name,
-                    reason="executor_switch", rows=rows, name=body.name,
+            try:
+                org.db.reset_thread_sessions_for_agent(
+                    body.name,
+                    audit_scope_id=scope_id,
+                    audit_agent=manager_name,
+                    audit_reason="executor_switch",
                 )
+            except Exception:
+                _logger = logging.getLogger(__name__)
+                _logger.exception(
+                    "executor-switch session invalidation failed for %s; "
+                    "rolling back the switch", body.name,
+                )
+                # Best-effort compensation, mirroring the terminate rollback
+                # contract: restore the prior AgentDef (executor + every other
+                # updated field) and re-reconcile the workspace back to the
+                # prior executor profile.
+                try:
+                    fd, tmp = tempfile.mkstemp(
+                        prefix=f".{body.name}.", suffix=".md",
+                        dir=str(paths.agents_dir),
+                    )
+                    with os.fdopen(fd, "w") as fh:
+                        fh.write(render_agent_text(existing))
+                    os.replace(tmp, active_path)
+                except Exception:
+                    _logger.exception(
+                        "failed to restore agent file for %s", body.name,
+                    )
+                try:
+                    if workspace.exists():
+                        ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+                        await asyncio.to_thread(
+                            ctx.ensure_workspace_ready,
+                            workspace, body.name,
+                            existing.system_prompt,
+                            provider=existing.executor,
+                        )
+                except Exception:
+                    _logger.exception(
+                        "failed to re-reconcile workspace for %s", body.name,
+                    )
+                raise
         # THR-095: agent.yaml executor/model sync REMOVED.
         # The .md frontmatter is the single source of truth.
         audit.log_agent_managed(
@@ -924,18 +963,11 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             # decline unstarted invocations. A failure here rolls back the team
             # and filesystem archive so the agent stays active and consistent.
             try:
-                org.db.terminate_agent_cleanups(body.name)
-                # THR-200: a terminated agent must never resume a thread
-                # provider session. Invalidate every participant row in the
-                # same atomicity domain as the other terminate cleanup — a
-                # failure rolls back the whole archive, leaving the agent
-                # fully active with prior session state intact.
-                rows = org.db.reset_thread_sessions_for_agent(body.name)
-                if rows:
-                    audit.log_thread_sessions_invalidated(
-                        scope_id=scope_id, agent=manager_name,
-                        reason="termination", rows=rows, name=body.name,
-                    )
+                org.db.terminate_agent_cleanups(
+                    body.name,
+                    audit_scope_id=scope_id,
+                    audit_agent=manager_name,
+                )
             except Exception:
                 _logger = logging.getLogger(__name__)
                 _logger.exception(

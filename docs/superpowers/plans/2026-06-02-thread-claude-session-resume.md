@@ -1014,7 +1014,15 @@ watermark). Issue #53. Implementation: `src/daemon/thread_runner.py`
   no standalone watermark-comparison change is permitted.
 - **Lifecycle invalidation (THR-200).** Thread archive, a SUCCESSFUL executor
   switch, and agent termination clear resume state (id NULL, watermark 0) so
-  any later wake starts fresh; a failed switch leaves prior state intact.
+  any later wake starts fresh. Each boundary is a database-owned transaction:
+  the participant reset and its `thread_session_invalidated` audit commit
+  atomically (termination runs reset+audit inside the existing
+  terminate-cleanup transaction; archive wraps the status flip, every
+  participant reset, and the audit in one transaction). A reset/audit failure
+  leaves no partial lifecycle state — a failed switch is rolled back (prior
+  frontmatter restored, workspace re-reconciled, so no new executor is
+  installed) and a failed archive leaves the thread OPEN with every session
+  row unmodified.
   Participant removal already hard-deletes the participant row — its session
   state goes with it; do not add a redundant clear.
 - **Encoded byte size is transport-only (THR-200).** The pre-spawn

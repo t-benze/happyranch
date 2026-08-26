@@ -161,9 +161,15 @@ SAME transaction as the eviction audit, BEFORE the full-prompt fallback
 launch; a failed fallback leaves the id NULL and the delivery watermark
 unadvanced, so the next wake re-attempts the same required range from a full
 prompt. Archive, successful executor switch, and agent termination clear the
-resume state (id NULL, watermark 0) so any later wake starts fresh; a failed
-switch leaves prior state intact; participant removal deletes the row and its
-session state together. The GH-688 claim gate stays strict (`<` resumes,
+resume state (id NULL, watermark 0) so any later wake starts fresh. Each
+boundary is a database-owned transaction — the participant reset and its
+``thread_session_invalidated`` audit commit atomically (termination runs
+reset+audit inside the existing terminate-cleanup transaction; archive wraps
+the status flip, every participant reset, and the audit in one transaction),
+so a reset/audit failure leaves no partial lifecycle state: a failed switch
+is rolled back (no new executor installed) and a failed archive leaves the
+thread OPEN with every session row unmodified; participant removal deletes
+the row and its session state together. The GH-688 claim gate stays strict (`<` resumes,
 `=`/`>` use the full prompt) so no required sequence is ever omitted; the
 equality state self-heals after one successfully settled full-prompt turn.
 Prompt bodies travel via stdin for claude/pi/codex and via argv (guard-

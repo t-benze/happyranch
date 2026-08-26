@@ -287,9 +287,15 @@ Traps:
   full-prompt fallback; a failed fallback leaves the id NULL and the delivery
   watermark unadvanced.
 - **Lifecycle invalidation (THR-200).** Archive, successful executor switch, and
-  agent termination clear resume state (id NULL, watermark 0); a failed switch
-  leaves prior state intact; participant removal deletes the row and its session
-  state together (no redundant clear).
+  agent termination clear resume state (id NULL, watermark 0). Each boundary is
+  a database-owned transaction: the participant reset and its
+  `thread_session_invalidated` audit commit atomically (termination runs
+  reset+audit inside the existing terminate-cleanup transaction; archive wraps
+  the status flip, every participant reset, and the audit in one transaction).
+  A reset/audit failure leaves no partial lifecycle state — a failed switch is
+  rolled back (no new executor installed) and a failed archive leaves the
+  thread OPEN with every session row unmodified. Participant removal deletes
+  the row and its session state together (no redundant clear).
 - **Equality self-heals (THR-200).** `last_resumed_seq == running_from_seq` runs
   the full prompt (never omits a required sequence) and recovers after one
   successfully settled full-prompt turn — no watermark-comparison change.
