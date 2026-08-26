@@ -1,0 +1,24 @@
+{
+  "name": "hostile-tenant-isolation-lab",
+  "version": 1,
+  "description": "Pinned artifacts + normative fixture digests consumed by the hostile tenant-isolation lab harness (THR-097 merge unit B). Fixtures are read-only normative inputs; drift from these digests fails closed at preflight.",
+  "fixtures": {
+    "route-policy.json": "sha256:20b69e728b677b488e1565b79fedf02c0fd9060dd39968325888f6a2411839f6",
+    "credential-taxonomy.json": "sha256:9aa64674cd40588f239c1ce9ebb0c1d35f79f0d53a0f2b4cb2c56eb15e73b4e9",
+    "failure-categories.json": "sha256:6beb79d0553e856b279f73977457f7958d3c1e9ccd4937d7c1772817c1422be6",
+    "threat-cases.json": "sha256:6267d23806a1c32e29b266b87fda84350a0614f28178bdc7a233395f56fe73ac"
+  },
+  "artifacts": {
+    "headscale": "sha256:a7a8ae9616bb964a3eed8101ebb020213f73668142a84806ec37a5eeb2c1fceb",
+    "headscale_tag": "v0.25.1",
+    "tailscale": "sha256:36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5",
+    "tailscale_version": "1.102.3",
+    "tailscale_url": "https://pkgs.tailscale.com/stable/tailscale_1.102.3_amd64.tgz"
+  },
+  "policy_current_revision": 7,
+  "notes": [
+    "headscale digest is the v0.25.1 multi-arch manifest list; the runner's docker will resolve the platform image.",
+    "config schema facts (map-form prefixes.v4/v6, dns.magic_dns false + base_domain, policy.mode file) verified against upstream v0.25.1 config-example.yaml.",
+    "Synthetic identities only: tenants tenant-a/tenant-b, nodes synth-<cell>-<role>, credentials PLACEHOLDER_*."
+  ]
+}

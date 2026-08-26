@@ -1,0 +1,63 @@
+# Hostile tenant-isolation lab harness (THR-097 merge unit B)
+#
+# Runs the REAL hostile isolation harness on the repo's existing authorized
+# CI runner (GitHub Actions ubuntu-latest — Docker preinstalled), path-gated
+# so it only fires when the lab or its tests change. The harness itself pins
+# its artifacts (headscale container digest, tailscale tarball sha256) and
+# verifies them at preflight; it never targets non-lab endpoints and cleans
+# up on success/failure/signal paths. Machine-readable evidence is uploaded
+# as an artifact even when the run fails (fail-closed, evidence preserved).
+#
+# This check is a LAB gate, not a product SLA/capacity/DERP-share claim.
+# GitHub CI (ci.yml) remains the authoritative merge gate.
+
+name: Lab tenant isolation
+
+on:
+  pull_request:
+    paths:
+      - 'labs/tenant_isolation/**'
+      - 'tests/tenant_isolation/**'
+      - '.github/workflows/lab-tenant-isolation.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'labs/tenant_isolation/**'
+      - 'tests/tenant_isolation/**'
+      - '.github/workflows/lab-tenant-isolation.yml'
+  workflow_dispatch:
+
+jobs:
+  isolation-harness:
+    name: Hostile tenant-isolation harness (real runtime)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: '3.12'
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen
+      - name: Unit + contract tests
+        run: uv run pytest tests/tenant_isolation/ tests/contract/test_managed_remote_access_contract.py -q
+      - name: Run hostile isolation harness (real runtime)
+        id: harness
+        run: |
+          RUN_ID="ci-$(date -u +%Y%m%dT%H%M%SZ)"
+          uv run python -m labs.tenant_isolation.harness.main \
+            --runtime real \
+            --results-dir "labs/tenant_isolation/results/${RUN_ID}" \
+            --run-id "${RUN_ID}" \
+            --per-probe-timeout 60 \
+            --total-timeout 1500
+      - name: Upload machine-readable evidence
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: tenant-isolation-evidence
+          path: labs/tenant_isolation/results/**
+          if-no-files-found: warn
