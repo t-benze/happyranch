@@ -573,6 +573,26 @@ def _relay_active(env: "ProbeEnv") -> bool:
         return False
 
 
+def _relay_waits_connected(env: "ProbeEnv", node, timeout: float) -> bool:
+    """Wait (bounded) for the node's own status to report a real DERP region.
+
+    After direct paths are suppressed the client re-establishes its DERP
+    session asynchronously; polling up to ``timeout`` seconds gives it a real
+    chance before the probe classifies. A relay claim is recorded ONLY when
+    ``Self.Relay`` is actually non-empty.
+    """
+    try:
+        env.backend.wait_for(
+            lambda: _node_relay_region(env, node) is not None,
+            timeout=timeout,
+            interval=2.0,
+            desc=f"node {node.node_id} relay session",
+        )
+        return True
+    except Exception:  # noqa: BLE001 - timed out / backend error => not relayed
+        return False
+
+
 def _relay_forced_probe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcome:
     """Deterministic forced-DERP hostile probe with REAL relay traversal.
 
@@ -616,7 +636,7 @@ def _relay_forced_probe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOut
             target_kind="node_to_node",
         )
     try:
-        if not _node_relay_region(env, a1):
+        if not _relay_waits_connected(env, a1, timeout=env.bounds.per_probe):
             # Direct block applied but no real relay session: do NOT claim
             # relayed denial — fail closed with an explicit observation.
             return ObservedOutcome(
