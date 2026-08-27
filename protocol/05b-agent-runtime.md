@@ -897,7 +897,11 @@ while the PID stays diagnostic/restart evidence only, and finishes
 containment before exactly-once lease release on every terminal path — the
 supervisor's terminal hook clears the control/PID/session on the final path
 after finalization and before lease release, ownership-safe against a newer
-session of the same (task, agent)) and
+session of the same (task, agent); PID diagnostics and opaque cancel
+controls are generation-versioned by session_id — a superseded invocation's
+late registration is rejected and its terminal cleanup is a no-op, so
+cancellation always resolves the currently active generation's control/PID
+and never invokes an old/already-terminal token) and
 **BOTH executor Popen launch bodies** (``executors._run_command`` and
 ``CustomAdapterExecutor.run`` receive the backend-created ``RunningHandle``
 and communicate/parse only — no self-Popen, no ``on_started``, no internal

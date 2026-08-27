@@ -11,6 +11,13 @@ invokes the registered control (which drives the HostSessionSupervisor's
 opaque containment handle) instead of signalling the PID directly; the PID is
 retained as diagnostic/restart evidence only and is never the cancellation
 path for a session that holds a control.
+
+The PID diagnostics and opaque cancel controls are **versioned by
+session_id**: a registration can only ever touch its own generation's slot, a
+superseded invocation's late registration is rejected (no-op) and its terminal
+cleanup is a no-op, and every lookup/iteration resolves the CURRENTLY active
+generation's control/PID — cancellation can never invoke an old or
+already-terminal token.
 """
 from __future__ import annotations
 
@@ -21,13 +28,20 @@ from threading import Lock
 class SessionTracker:
     def __init__(self) -> None:
         self._active: dict[tuple[str, str], str] = {}
-        self._pids: dict[tuple[str, str], int] = {}
+        # PID diagnostics, versioned by session_id: (task_id, agent) ->
+        # {session_id: pid}. A registration can only ever touch its OWN
+        # generation's slot — a superseded invocation can never overwrite the
+        # newer generation's diagnostic pid.
+        self._pids: dict[tuple[str, str], dict[str, int]] = {}
         # Opaque cancellation controls for wired (contained) task sessions
-        # (THR-207): a per-(task_id, agent) callable that cancels the logical
-        # invocation through the HostSessionSupervisor's opaque containment
-        # handle. Invoked by the /tasks/{id}/cancel route; the PID is never the
-        # cancellation authority for a session that holds a control.
-        self._cancel_controls: dict[tuple[str, str], Callable[[], None]] = {}
+        # (THR-207): (task_id, agent) -> {session_id: callable} that cancels
+        # the logical invocation through the HostSessionSupervisor's opaque
+        # containment handle. Versioned by session_id like the PID half, so
+        # registration is generation-owned. Invoked by the /tasks/{id}/cancel
+        # route — which resolves ONLY the currently active generation's
+        # control; the PID is never the cancellation authority for a session
+        # that holds a control.
+        self._cancel_controls: dict[tuple[str, str], dict[str, Callable[[], None]]] = {}
         # Additive: map session_id → (org_slug, task_id, agent_name) for
         # four-part server-authoritative provenance.  Callers that supply an
         # org_slug on set_active() populate this index; callers that don't
@@ -67,11 +81,18 @@ class SessionTracker:
         with binding_lease:
             with self._lock:
                 old_session_id = self._active.get((task_id, agent))
-                self._active[(task_id, agent)] = session_id
                 if old_session_id is not None and old_session_id != session_id:
-                    # Invalidate the superseded session's context so stale
+                    # Supersession: the (task_id, agent) binding is owned by
+                    # exactly ONE generation. The superseded generation's PID
+                    # diagnostics and opaque cancel control die with the
+                    # active flip (atomically, under the same lock), so a
+                    # stale control can never cancel a later session of the
+                    # same pair. Its context is invalidated too, so stale
                     # opaque capabilities cannot create B2 custom skills.
+                    self._pids.pop((task_id, agent), None)
+                    self._cancel_controls.pop((task_id, agent), None)
                     self._context_by_session.pop(old_session_id, None)
+                self._active[(task_id, agent)] = session_id
                 if org_slug is not None:
                     self._context_by_session[session_id] = (org_slug, task_id, agent)
 
@@ -104,64 +125,116 @@ class SessionTracker:
         with self._lock:
             return self._context_by_session.get(session_id)
 
-    def set_pid(self, task_id: str, agent: str, pid: int) -> None:
+    def set_pid(self, task_id: str, agent: str, session_id: str, pid: int) -> None:
         """Register the OS pid for an already-set-active session.
 
-        Called from the executor's on_started callback after Popen returns.
-        If `set_active` hasn't been called yet (unit tests, odd ordering),
-        the pid is still stored — it will simply have no session_id to
-        validate against, which is fine because cancel only needs the pid.
+        Called from the executor's on_started callback after Popen returns,
+        carrying the owning invocation's session_id. The pid is stored under
+        the (task_id, agent, session_id) generation: a superseded
+        invocation's late registration is rejected (no-op) and can never
+        overwrite the newer generation's diagnostic pid. If `set_active`
+        hasn't been called yet (unit tests, odd ordering), the pid is still
+        stored — lookups resolve through the active generation only, which is
+        fine because cancel only needs the current generation's pid.
         """
-        with self._lock:
-            self._pids[(task_id, agent)] = pid
+        binding_lease = self._get_binding_lease(task_id, agent)
+        with binding_lease:
+            with self._lock:
+                active = self._active.get((task_id, agent))
+                if active is None or active == session_id:
+                    self._pids.setdefault((task_id, agent), {})[session_id] = pid
 
     def get_pid(self, task_id: str, agent: str) -> int | None:
+        """Return the diagnostic pid of the CURRENTLY active session, or None.
+
+        Resolves through the active generation only — a superseded or
+        orphaned generation's pid is never reported.
+        """
         with self._lock:
-            return self._pids.get((task_id, agent))
+            active = self._active.get((task_id, agent))
+            if active is None:
+                return None
+            by_session = self._pids.get((task_id, agent))
+            if by_session is None:
+                return None
+            return by_session.get(active)
 
     def iter_task_pids(self, task_id: str) -> list[tuple[str, int]]:
-        """Return (agent, pid) for every live pid under ``task_id``.
+        """Return (agent, pid) for every CURRENTLY active session's pid under ``task_id``.
 
         Diagnostic/restart evidence only for wired sessions — cancellation
         goes through the opaque control (see :meth:`set_cancel_control` /
-        :meth:`iter_task_cancel_controls`), never a bare PID signal.
-        Returns a snapshot — safe to iterate without holding the lock.
+        :meth:`iter_task_cancel_controls`), never a bare PID signal. A
+        superseded/orphaned generation's pid is never reported. Returns a
+        snapshot — safe to iterate without holding the lock.
         """
         with self._lock:
-            return [
-                (agent, pid)
-                for (tid, agent), pid in self._pids.items()
-                if tid == task_id
-            ]
+            result: list[tuple[str, int]] = []
+            for (tid, agent), by_session in self._pids.items():
+                if tid != task_id:
+                    continue
+                active = self._active.get((tid, agent))
+                if active is None:
+                    continue
+                pid = by_session.get(active)
+                if pid is not None:
+                    result.append((agent, pid))
+            return result
 
-    def set_cancel_control(self, task_id: str, agent: str, cancel: Callable[[], None]) -> None:
+    def set_cancel_control(self, task_id: str, agent: str, session_id: str, cancel: Callable[[], None]) -> None:
         """Register the opaque cancellation control for a wired session.
 
         ``cancel`` is the logical invocation's ``CancellationToken.cancel``
-        (drives the supervisor's containment handle). Registered BEFORE the
-        invocation enters admission so the cancel route can cancel a queued
-        request without launch. Latest-wins per (task_id, agent), mirroring
-        ``set_active``.
+        (drives the supervisor's containment handle), registered by the
+        invocation that owns ``session_id`` BEFORE it enters admission so the
+        cancel route can cancel a queued request without launch. The control
+        is stored under the (task_id, agent, session_id) generation: a
+        superseded invocation's late registration is rejected (no-op) and can
+        never overwrite the newer generation's control. Latest-wins only
+        WITHIN a generation, mirroring ``set_active``.
         """
-        with self._lock:
-            self._cancel_controls[(task_id, agent)] = cancel
+        binding_lease = self._get_binding_lease(task_id, agent)
+        with binding_lease:
+            with self._lock:
+                active = self._active.get((task_id, agent))
+                if active is None or active == session_id:
+                    self._cancel_controls.setdefault((task_id, agent), {})[session_id] = cancel
 
     def get_cancel_control(self, task_id: str, agent: str) -> Callable[[], None] | None:
-        with self._lock:
-            return self._cancel_controls.get((task_id, agent))
+        """Return the opaque control of the CURRENTLY active session, or None.
 
-    def iter_task_cancel_controls(self, task_id: str) -> list[tuple[str, Callable[[], None]]]:
-        """Return (agent, cancel) for every registered control under ``task_id``.
-
-        Used by /cancel to drive containment teardown for the whole subtree.
-        Returns a snapshot — safe to iterate without holding the lock.
+        Resolves through the active generation only — cancellation can never
+        invoke an old/already-terminal token.
         """
         with self._lock:
-            return [
-                (agent, cancel)
-                for (tid, agent), cancel in self._cancel_controls.items()
-                if tid == task_id
-            ]
+            active = self._active.get((task_id, agent))
+            if active is None:
+                return None
+            by_session = self._cancel_controls.get((task_id, agent))
+            if by_session is None:
+                return None
+            return by_session.get(active)
+
+    def iter_task_cancel_controls(self, task_id: str) -> list[tuple[str, Callable[[], None]]]:
+        """Return (agent, cancel) for every CURRENTLY active session's control under ``task_id``.
+
+        Used by /cancel to drive containment teardown for the whole subtree —
+        only the active generation's control per (task, agent), so a stale or
+        already-terminal token is never invoked. Returns a snapshot — safe to
+        iterate without holding the lock.
+        """
+        with self._lock:
+            result: list[tuple[str, Callable[[], None]]] = []
+            for (tid, agent), by_session in self._cancel_controls.items():
+                if tid != task_id:
+                    continue
+                active = self._active.get((tid, agent))
+                if active is None:
+                    continue
+                cancel = by_session.get(active)
+                if cancel is not None:
+                    result.append((agent, cancel))
+            return result
 
     def count_active(self) -> int:
         with self._lock:

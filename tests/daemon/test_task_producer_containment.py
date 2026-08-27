@@ -534,8 +534,8 @@ def test_session_tracker_cancel_control_lifecycle():
         calls.append("cancel")
 
     tracker.set_active("T-1", "dev_agent", "sess-1", org_slug="test")
-    tracker.set_pid("T-1", "dev_agent", 1234)
-    tracker.set_cancel_control("T-1", "dev_agent", cancel)
+    tracker.set_pid("T-1", "dev_agent", "sess-1", 1234)
+    tracker.set_cancel_control("T-1", "dev_agent", "sess-1", cancel)
 
     assert tracker.get_cancel_control("T-1", "dev_agent") is cancel
     assert tracker.iter_task_cancel_controls("T-1") == [("dev_agent", cancel)]
@@ -566,13 +566,13 @@ async def test_cancel_route_invokes_control_and_skips_pid_kill(client_with_runti
     client, org = client_with_runtime
     org.db.insert_task(TaskRecord(id="T-1", brief="x"))
     org.sessions.set_active("T-1", "dev_agent", "sess-1")
-    org.sessions.set_pid("T-1", "dev_agent", 99999)
+    org.sessions.set_pid("T-1", "dev_agent", "sess-1", 99999)
     invoked: list[str] = []
 
     def cancel():
         invoked.append("cancel")
 
-    org.sessions.set_cancel_control("T-1", "dev_agent", cancel)
+    org.sessions.set_cancel_control("T-1", "dev_agent", "sess-1", cancel)
 
     kills: list[tuple[int, int]] = []
     monkeypatch.setattr(tasks_route.os, "kill", lambda pid, sig: kills.append((pid, sig)))
@@ -722,11 +722,11 @@ def test_session_tracker_clear_if_active_session_ownership_safe():
 
     # Old invocation registers, then a newer invocation supersedes it.
     tracker.set_active("T-1", "dev_agent", "sess-old", org_slug="test")
-    tracker.set_pid("T-1", "dev_agent", 1111)
-    tracker.set_cancel_control("T-1", "dev_agent", old_cancel)
+    tracker.set_pid("T-1", "dev_agent", "sess-old", 1111)
+    tracker.set_cancel_control("T-1", "dev_agent", "sess-old", old_cancel)
     tracker.set_active("T-1", "dev_agent", "sess-new", org_slug="test")
-    tracker.set_pid("T-1", "dev_agent", 2222)
-    tracker.set_cancel_control("T-1", "dev_agent", new_cancel)
+    tracker.set_pid("T-1", "dev_agent", "sess-new", 2222)
+    tracker.set_cancel_control("T-1", "dev_agent", "sess-new", new_cancel)
 
     # The old attempt finalizes and tries to clear — refused (ownership-safe).
     assert tracker.clear_if_active_session("T-1", "dev_agent", "sess-old") is False
@@ -740,6 +740,182 @@ def test_session_tracker_clear_if_active_session_ownership_safe():
     assert tracker.get_cancel_control("T-1", "dev_agent") is None
     # Clearing an absent binding is a harmless no-op (idempotent).
     assert tracker.clear_if_active_session("T-1", "dev_agent", "sess-new") is False
+
+
+def test_session_tracker_stale_registration_rejected_after_supersession():
+    """Adversarial interleaving: old active -> new active -> old
+    set_cancel_control/set_pid. The superseded invocation's late registration
+    is REJECTED (no-op) and can never overwrite the newer session's control/
+    pid — cancellation keeps resolving the live generation."""
+    tracker = SessionTracker()
+    invoked: list[str] = []
+
+    def old_cancel():
+        invoked.append("old")
+
+    def new_cancel():
+        invoked.append("new")
+
+    tracker.set_active("T-1", "dev_agent", "sess-old", org_slug="test")
+    tracker.set_active("T-1", "dev_agent", "sess-new", org_slug="test")
+
+    # The OLD invocation wakes up and tries to register AFTER supersession.
+    tracker.set_pid("T-1", "dev_agent", "sess-old", 1111)
+    tracker.set_cancel_control("T-1", "dev_agent", "sess-old", old_cancel)
+
+    # The NEW generation registers afterwards (fully ordered for the winner).
+    tracker.set_pid("T-1", "dev_agent", "sess-new", 2222)
+    tracker.set_cancel_control("T-1", "dev_agent", "sess-new", new_cancel)
+
+    assert tracker.get_active("T-1", "dev_agent") == "sess-new"
+    assert tracker.get_pid("T-1", "dev_agent") == 2222
+    assert tracker.get_cancel_control("T-1", "dev_agent") is new_cancel
+    assert tracker.iter_task_pids("T-1") == [("dev_agent", 2222)]
+    assert tracker.iter_task_cancel_controls("T-1") == [("dev_agent", new_cancel)]
+
+    # Even AFTER the new generation registered, a straggler old write is a
+    # no-op — it can never overwrite the newer state.
+    tracker.set_pid("T-1", "dev_agent", "sess-old", 3333)
+    tracker.set_cancel_control("T-1", "dev_agent", "sess-old", old_cancel)
+    assert tracker.get_pid("T-1", "dev_agent") == 2222
+    assert tracker.get_cancel_control("T-1", "dev_agent") is new_cancel
+    assert tracker.iter_task_pids("T-1") == [("dev_agent", 2222)]
+    assert tracker.iter_task_cancel_controls("T-1") == [("dev_agent", new_cancel)]
+
+    # Cancellation after the interleaving invokes ONLY the new token.
+    controls = dict(tracker.iter_task_cancel_controls("T-1"))
+    controls["dev_agent"]()
+    assert invoked == ["new"]
+
+
+def test_session_tracker_supersession_purges_old_generation_slots():
+    """The moment a newer session supersedes the active generation, the old
+    generation's registered PID/control/context are purged atomically — no
+    residue is left behind for the cancel route to find."""
+    tracker = SessionTracker()
+
+    def old_cancel():
+        pass
+
+    tracker.set_active("T-1", "dev_agent", "sess-old", org_slug="test")
+    tracker.set_pid("T-1", "dev_agent", "sess-old", 1111)
+    tracker.set_cancel_control("T-1", "dev_agent", "sess-old", old_cancel)
+    assert tracker.get_pid("T-1", "dev_agent") == 1111
+    assert tracker.get_cancel_control("T-1", "dev_agent") is old_cancel
+
+    # Supersession purges the old generation's owned slots in the same lock
+    # hold as the active flip.
+    tracker.set_active("T-1", "dev_agent", "sess-new", org_slug="test")
+    assert tracker.get_active("T-1", "dev_agent") == "sess-new"
+    assert tracker.get_pid("T-1", "dev_agent") is None
+    assert tracker.get_cancel_control("T-1", "dev_agent") is None
+    assert tracker.iter_task_pids("T-1") == []
+    assert tracker.iter_task_cancel_controls("T-1") == []
+    assert tracker.get_by_session("sess-old") is None
+    assert tracker.get_context_by_session("sess-old") is None
+
+
+def test_session_tracker_stale_terminal_cleanup_noop_cancel_uses_new_token():
+    """Adversarial interleaving: old active -> new active -> old terminal
+    cleanup -> cancel new. The old invocation's terminal cleanup is a strict
+    no-op (it must not clear newer state), and cancellation after supersession
+    invokes ONLY the currently active generation's token."""
+    tracker = SessionTracker()
+    invoked: list[str] = []
+
+    def old_cancel():
+        invoked.append("old")
+
+    def new_cancel():
+        invoked.append("new")
+
+    tracker.set_active("T-1", "dev_agent", "sess-old", org_slug="test")
+    tracker.set_cancel_control("T-1", "dev_agent", "sess-old", old_cancel)
+    tracker.set_active("T-1", "dev_agent", "sess-new", org_slug="test")
+    tracker.set_cancel_control("T-1", "dev_agent", "sess-new", new_cancel)
+
+    # Old terminal cleanup after supersession: refused, and a no-op for the
+    # newer generation's state.
+    assert tracker.clear_if_active_session("T-1", "dev_agent", "sess-old") is False
+    assert tracker.get_active("T-1", "dev_agent") == "sess-new"
+    assert tracker.get_cancel_control("T-1", "dev_agent") is new_cancel
+
+    # Cancel after supersession: only the new token is ever invoked.
+    assert tracker.iter_task_cancel_controls("T-1") == [("dev_agent", new_cancel)]
+    controls = dict(tracker.iter_task_cancel_controls("T-1"))
+    controls["dev_agent"]()
+    assert invoked == ["new"]
+
+
+def test_session_tracker_current_generation_cleanup_clears_all_owned_slots():
+    """The current generation's terminal cleanup clears ALL THREE owned slots
+    (active session, PID diagnostic, opaque cancel control) plus its context,
+    and no old-generation residue remains anywhere."""
+    tracker = SessionTracker()
+
+    def old_cancel():
+        pass
+
+    def new_cancel():
+        pass
+
+    tracker.set_active("T-1", "dev_agent", "sess-old", org_slug="test")
+    tracker.set_pid("T-1", "dev_agent", "sess-old", 1111)
+    tracker.set_cancel_control("T-1", "dev_agent", "sess-old", old_cancel)
+    tracker.set_active("T-1", "dev_agent", "sess-new", org_slug="test")
+    tracker.set_pid("T-1", "dev_agent", "sess-new", 2222)
+    tracker.set_cancel_control("T-1", "dev_agent", "sess-new", new_cancel)
+
+    assert tracker.clear_if_active_session("T-1", "dev_agent", "sess-new") is True
+    assert tracker.get_active("T-1", "dev_agent") is None
+    assert tracker.get_pid("T-1", "dev_agent") is None
+    assert tracker.get_cancel_control("T-1", "dev_agent") is None
+    assert tracker.iter_task_pids("T-1") == []
+    assert tracker.iter_task_cancel_controls("T-1") == []
+    assert tracker.get_by_session("sess-old") is None
+    assert tracker.get_by_session("sess-new") is None
+    assert tracker.get_context_by_session("sess-old") is None
+    assert tracker.get_context_by_session("sess-new") is None
+    assert tracker.count_active() == 0
+    # Idempotent re-clear of an absent binding stays a False no-op.
+    assert tracker.clear_if_active_session("T-1", "dev_agent", "sess-new") is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_supersession_invokes_only_new_token(client_with_runtime):
+    """Route-level adversarial proof: after old active -> new active -> old
+    terminal cleanup, POST /tasks/{id}/cancel invokes ONLY the new generation's
+    opaque control (never the old/already-terminal token) and clears the
+    binding."""
+    from runtime.models import TaskRecord
+
+    client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="T-1", brief="x"))
+    invoked: list[str] = []
+
+    def old_cancel():
+        invoked.append("old")
+
+    def new_cancel():
+        invoked.append("new")
+
+    org.sessions.set_active("T-1", "dev_agent", "sess-old")
+    org.sessions.set_cancel_control("T-1", "dev_agent", "sess-old", old_cancel)
+    # Supersession: the newer invocation takes over the binding.
+    org.sessions.set_active("T-1", "dev_agent", "sess-new")
+    org.sessions.set_cancel_control("T-1", "dev_agent", "sess-new", new_cancel)
+    # The old invocation's terminal cleanup races in — must be a no-op.
+    assert org.sessions.clear_if_active_session("T-1", "dev_agent", "sess-old") is False
+
+    r = client.post("/api/v1/orgs/alpha/tasks/T-1/cancel", json={"rationale": ""})
+    assert r.status_code == 200
+    body = r.json()
+    assert invoked == ["new"]
+    assert body["killed"] == [{"task_id": "T-1", "agent": "dev_agent"}]
+    # The cancel route cleared the binding on the way out.
+    assert org.sessions.get_active("T-1", "dev_agent") is None
+    assert org.sessions.get_pid("T-1", "dev_agent") is None
+    assert org.sessions.get_cancel_control("T-1", "dev_agent") is None
 
 
 def test_supervisor_on_terminal_fires_before_lease_release_final_only():

@@ -942,7 +942,7 @@ class Orchestrator:
         # evidence only — cancellation goes through the opaque control.
         def _on_started(pid: int) -> None:
             if self._sessions is not None:
-                self._sessions.set_pid(task_id, agent_name, pid)
+                self._sessions.set_pid(task_id, agent_name, session_id, pid)
             # THR-079: persist executor OS pid for daemon-restart liveness probe.
             # THR-090 Track A: also persist the current session id so the
             # daemon-restart sweep can scope orphaned-result detection.
@@ -1057,7 +1057,9 @@ class Orchestrator:
         # by ``on_started`` (diagnostic/restart evidence only) AFTER the
         # supervisor binds the RunningHandle.
         if self._sessions is not None:
-            self._sessions.set_cancel_control(task_id, agent_name, token.cancel)
+            self._sessions.set_cancel_control(
+                task_id, agent_name, session_id, token.cancel
+            )
 
         # THR-207 task-producer terminal cleanup: every final terminal path
         # of this invocation clears the SessionTracker opaque cancel control,

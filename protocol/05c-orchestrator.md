@@ -824,7 +824,11 @@ fresh backend handle. Every final terminal path (pre-launch/admission
 failure, prepare/spawn failure, nonzero/no-callback exit, cancel, timeout,
 429-final, shutdown) clears the control/PID/session after supervisor
 finalization and before lease release (ownership-safe — an old attempt never
-clears a newer session of the same (task, agent)). The schedule producer's
+clears a newer session of the same (task, agent); PID diagnostics and opaque
+cancel controls are generation-versioned by session_id — a superseded
+invocation's late registration is rejected and its terminal cleanup is a
+no-op, so cancellation always resolves the currently active generation's
+control/PID and never invokes an old/already-terminal token). The schedule producer's
 honest-passthrough branch disables the executor's internal 429 retry so the
 supervisor is the single retry owner. Thread/dream/wake producers stay
 structurally unchanged; later serial slices attach them to the same contract.
