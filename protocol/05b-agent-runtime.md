@@ -982,8 +982,10 @@ or config change:
   legacy rows stay readable).
 - `GET /api/v1/health` (unauthenticated liveness) gains a **bounded,
   non-sensitive** `host_sessions` block only when the supervisor is wired:
-  aggregates and admission/backpressure counts yes; per-receipt detail and
-  censused survivor identities (PIDs / start identities) are dropped.
+  aggregates and admission/backpressure counts yes; per-receipt detail,
+  censused survivor identities (PIDs / start identities), and the backend
+  probe evidence string (a failed probe can embed raw exception text) are
+  dropped; the stable backend classification stays observable.
 
 **Boundedness:** at most 64 receipts retained (oldest dropped); aggregate
 maps keyed by the fixed terminal-reason / cleanup-status vocabularies, never

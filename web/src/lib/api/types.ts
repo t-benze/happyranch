@@ -408,12 +408,14 @@ export interface HealthResponse {
   /** Bounded, non-sensitive host-session health block (THR-207). Present only
    *  when the daemon-wide HostSessionSupervisor is wired (runtime-backed
    *  states); idle states keep the two-key contract. Public variant drops the
-   *  per-receipt recent window and censused survivor identities. */
+   *  per-receipt recent window, censused survivor identities, and backend
+   *  probe evidence. */
   host_sessions?: HostSessionPublicBlock;
 }
 
 /** Mirror of the public (unauthenticated) `host_sessions` block on /health.
- *  Counts and aggregates yes; per-receipt detail and survivor identities no.
+ *  Counts, aggregates, and the stable backend classification yes; per-receipt
+ *  detail, survivor identities, and probe evidence no.
  *  Full block: web/src/lib/api/metrics.ts HostSessionBlock. */
 export interface HostSessionPublicBlock {
   wired: boolean;
@@ -423,7 +425,6 @@ export interface HostSessionPublicBlock {
     healthy: boolean;
     probed_at: number;
     capabilities: Record<string, string>;
-    evidence: string | null;
   };
   admission: {
     cap: number | null;

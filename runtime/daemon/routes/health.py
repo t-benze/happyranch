@@ -119,8 +119,9 @@ def health(request: Request) -> dict:
     # is wired (runtime-backed states), surface a BOUNDED, NON-SENSITIVE
     # host-session health block — receipt aggregates, admission/backpressure
     # state, and the capability probe summary. The public variant drops the
-    # per-receipt recent window and censused survivor identities (PIDs / start
-    # identities), keeping counts and aggregates observable. Idle states keep
+    # per-receipt recent window, censused survivor identities (PIDs / start
+    # identities), and the backend probe evidence string, keeping counts,
+    # aggregates, and the stable classification observable. Idle states keep
     # the pre-existing exact two-key contract.
     if state.host_supervisor is not None:
         body["host_sessions"] = compose_host_sessions_block(state, public=True)

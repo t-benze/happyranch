@@ -23,7 +23,11 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from runtime.config import Settings
-from runtime.daemon.host_session_store import HostSessionStore
+from runtime.daemon.app import create_app
+from runtime.daemon.host_session_store import (
+    HostSessionStore,
+    compose_host_sessions_block,
+)
 from runtime.daemon.metrics_store import (
     _SNAPSHOT_FORMAT_FIELD,
     MetricsStore,
@@ -31,6 +35,7 @@ from runtime.daemon.metrics_store import (
     maybe_persist_metrics_snapshot,
 )
 from runtime.daemon.state import DaemonState
+from runtime.orchestrator.host_supervisor import _MAX_HEALTH_EVIDENCE_CHARS
 from runtime.platform.session_backend import (
     CleanupStatus,
     MeasurementProvenance,
@@ -427,3 +432,85 @@ def test_health_host_sessions_reflects_admission_backpressure(tmp_home, app) -> 
     hs = r.json()["host_sessions"]
     assert hs["residue"]["admission_blocked"] is True
     assert hs["residue"]["block_reason"] == "measurement_unhealthy"
+
+
+def _hostile_probe() -> None:
+    """A capability probe that fails with secret-bearing diagnostics."""
+    raise RuntimeError("secret-path=/srv/private/token")
+
+
+def _state_with_hostile_probe(runtime, monkeypatch) -> DaemonState:
+    """Runtime-backed state whose next supervisor probe embeds the hostile
+    sentinel in the cached evidence (the construction-time probe already
+    cached a healthy passthrough report, so we reset the cache to force a
+    re-probe through the hostile backend probe on the next read)."""
+    state = DaemonState.from_runtime(runtime, Settings())
+    assert state.host_supervisor is not None
+    monkeypatch.setattr(state.host_supervisor._backend, "probe", _hostile_probe)
+    state.host_supervisor._capability_report = None
+    return state
+
+
+def test_health_public_variant_never_exposes_hostile_probe_evidence(
+    tmp_home, runtime, monkeypatch
+) -> None:
+    """Adversarial: a probe exception carrying secret-bearing text must never
+    reach the unauthenticated /health payload, even though the supervisor
+    embeds the raw exception text in its evidence field (the reviewer repro:
+    ``probe failed: secret-path=/srv/private/token`` verbatim). The degraded
+    probe stays honestly classified (healthy=False) without the raw text."""
+    state = _state_with_hostile_probe(runtime, monkeypatch)
+    client = TestClient(create_app(state))
+    r = client.get("/api/v1/health")
+    assert r.status_code == 200
+    body = r.json()
+    blob = json.dumps(body)
+    assert "secret-path" not in blob
+    assert "/srv/private/token" not in blob
+    hs = body["host_sessions"]
+    assert hs["wired"] is True
+    assert hs["backend"]["healthy"] is False
+    assert "evidence" not in hs["backend"]
+
+
+def test_health_public_backend_shape_omits_evidence_when_wired(tmp_home, app) -> None:
+    client = TestClient(app)
+    r = client.get("/api/v1/health")
+    assert r.status_code == 200
+    hs = r.json()["host_sessions"]
+    assert hs["wired"] is True
+    # Intended public backend shape: bounded classification + capability view,
+    # never the probe evidence string.
+    assert set(hs["backend"].keys()) == {
+        "name", "version", "healthy", "probed_at", "capabilities",
+    }
+
+
+def test_health_public_backend_shape_omits_evidence_when_unwired(daemon_state_idle) -> None:
+    # The unauthenticated /health route only serves the block when the
+    # supervisor is wired (idle keeps the two-key contract), so the unwired
+    # public projection is exercised at the shared composer boundary.
+    block = compose_host_sessions_block(daemon_state_idle, public=True)
+    assert block["wired"] is False
+    # Uniform public backend shape even when the supervisor is not wired.
+    assert set(block["backend"].keys()) == {
+        "name", "version", "healthy", "probed_at", "capabilities",
+    }
+
+
+def test_metrics_authed_surface_retains_bounded_backend_evidence(
+    tmp_home, runtime, monkeypatch, auth_headers
+) -> None:
+    """The authenticated operator surface retains the bounded operational
+    evidence (truncated), so the scrub is scoped to the public projection
+    only and does not over-redact the /metrics observability contract."""
+    state = _state_with_hostile_probe(runtime, monkeypatch)
+    client = TestClient(create_app(state))
+    r = client.get("/api/v1/metrics", headers=auth_headers)
+    assert r.status_code == 200
+    hs = r.json()["host_sessions"]
+    assert hs["wired"] is True
+    evidence = hs["backend"]["evidence"]
+    assert evidence is not None
+    assert "secret-path" in evidence
+    assert len(evidence) <= _MAX_HEALTH_EVIDENCE_CHARS

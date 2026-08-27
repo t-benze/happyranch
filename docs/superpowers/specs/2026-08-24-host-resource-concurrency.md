@@ -297,8 +297,11 @@ new route, no dependency, no config change:
   non-sensitive** `host_sessions` block only when the supervisor is wired
   (idle states keep the pre-existing exact two-key contract): receipt
   aggregates and admission/backpressure counts yes; the per-receipt recent
-  window and censused survivor identities (PIDs / start identities) are
-  dropped so the public surface never leaks process identity.
+  window, censused survivor identities (PIDs / start identities), and the
+  backend probe evidence string (a failed probe can embed raw exception
+  text) are dropped so the public surface never leaks process identity or
+  raw diagnostics; the stable backend classification (healthy / capability
+  levels) stays observable.
 
 **Boundedness is by construction:** the store retains at most 64 receipts
 (oldest dropped); aggregate maps are keyed by the fixed terminal-reason /

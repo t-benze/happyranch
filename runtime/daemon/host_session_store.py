@@ -22,8 +22,8 @@ Boundedness is by construction:
   ``unavailable`` values are counted, never rendered as fabricated zeros;
 * the census survivor list exposed on the authed surface is truncated to
   ``_MAX_SURVIVORS_EXPOSED`` (exact count preserved); the public
-  (unauthenticated) surface drops per-receipt detail and survivor
-  identities entirely.
+  (unauthenticated) surface drops per-receipt detail, survivor identities,
+  and backend probe evidence entirely.
 
 Failure containment: the store itself never raises for the publish path, and
 the supervisor additionally contains a raising publisher at the
@@ -211,10 +211,11 @@ def compose_host_sessions_block(state: "DaemonState", *, public: bool = False) -
     broken supervisor/store degrades to a bounded unavailable shape and can
     never crash the calling route or the periodic snapshot writer.
 
-    ``public=True`` drops the per-receipt recent window and the censused
-    survivor identities (PIDs / start identities) so the unauthenticated
-    ``/health`` surface stays non-sensitive while keeping counts and
-    aggregates observable.
+    ``public=True`` drops the per-receipt recent window, the censused
+    survivor identities (PIDs / start identities), and the backend probe
+    evidence string (a failed probe can embed raw exception text) so the
+    unauthenticated ``/health`` surface stays non-sensitive while keeping
+    counts, aggregates, and the stable classification observable.
     """
     store = getattr(state, "host_session_store", None)
     if store is not None:
@@ -254,10 +255,12 @@ def compose_host_sessions_block(state: "DaemonState", *, public: bool = False) -
         }
 
     if public:
-        # Non-sensitive public surface: counts and aggregates yes, per-receipt
-        # detail and survivor identities no.
+        # Non-sensitive public surface: counts and aggregates yes; per-receipt
+        # detail, survivor identities, and backend probe evidence (raw
+        # exception text on a failed probe) no.
         block["residue"].pop("survivors", None)
         block["receipts"].pop("recent", None)
+        block["backend"].pop("evidence", None)
     return block
 
 
