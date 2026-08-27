@@ -1847,3 +1847,72 @@ def test_supervisor_shutdown_stops_admission_and_finishes_active():
     # B was never admitted (cancelled while queued), so only A's lease
     # was released — exactly once.
     assert supervisor._admission.released_total() == 1
+
+
+# ── publication-failure containment (THR-207 observability slice) ────
+
+
+def test_publisher_failure_is_contained_and_never_replaces_terminal_cause():
+    """A raising receipt publisher must not escape the supervisor: the primary
+    terminal reason survives, the receipt/cleanup_status are still delivered
+    in the outcome, the on_terminal hook fires with the real outcome, and the
+    lease releases exactly once (no admission leak)."""
+    backend = FakeBackend()
+    policy = make_policy()
+    fired: list = []
+
+    def raising_publisher(receipt: Receipt) -> None:
+        fired.append(receipt)
+        raise RuntimeError("publisher boom")
+
+    supervisor = HostSessionSupervisor(
+        backend=backend,
+        policy=policy,
+        publisher=raising_publisher,
+    )
+    outcome = supervisor.run(
+        make_request("a"),
+        launch_spec=make_spec(),
+        launch_body=_ok_body,
+    )
+    # The terminal cause is untouched by the publication failure.
+    assert outcome.terminal_reason is TerminalReason.SUCCESS
+    assert outcome.receipt is not None
+    assert outcome.receipt.terminal_reason == TerminalReason.SUCCESS.value
+    assert outcome.cleanup_status is CleanupStatus.CLEAN
+    assert outcome.cleanup_error is None
+    # Containment ran exactly once; the lease released exactly once.
+    assert backend.calls["finish"] == 1
+    assert supervisor._admission.active_count() == 0
+    assert supervisor._admission.released_total() == 1
+    # The publisher did receive the receipt before raising (publication
+    # attempted, then contained).
+    assert len(fired) == 1
+
+
+def test_publisher_failure_does_not_break_on_terminal_hook():
+    """The caller's on_terminal hook must still run with the real outcome when
+    publication fails — the terminal hook (SessionTracker cleanup) can never
+    be skipped by a contained publication failure."""
+    backend = FakeBackend()
+    policy = make_policy()
+    outcomes: list = []
+
+    def raising_publisher(receipt: Receipt) -> None:
+        raise RuntimeError("publisher boom")
+
+    supervisor = HostSessionSupervisor(
+        backend=backend,
+        policy=policy,
+        publisher=raising_publisher,
+    )
+    outcome = supervisor.run(
+        make_request("a"),
+        launch_spec=make_spec(),
+        launch_body=_ok_body,
+        on_terminal=outcomes.append,
+    )
+    assert outcome.terminal_reason is TerminalReason.SUCCESS
+    assert len(outcomes) == 1
+    assert outcomes[0] is outcome
+    assert supervisor._admission.released_total() == 1

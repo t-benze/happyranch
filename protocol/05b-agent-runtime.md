@@ -963,6 +963,42 @@ sampling gaps stay bounded; the truncated prefix's elapsed span is preserved
 as the truthful leading gap, so cadence is never presented as continuous
 or gap-free truth.
 
+**Receipt observability (THR-207 observability slice).** The daemon wiring
+(`runtime/daemon/state.py`) binds the supervisor's `publisher` seam to one
+process-wide, thread-safe, **bounded in-memory** `HostSessionStore`
+(`runtime/daemon/host_session_store.py`). The EXISTING bounded operator
+surfaces consume it additively — no schema migration, new route, dependency,
+or config change:
+
+- `GET /api/v1/metrics` (bearer-authed; `compose_metrics_snapshot`) gains a
+  `host_sessions` block: bounded receipt aggregates + a newest-first recent
+  window (per-receipt `memory_peak_bytes`, `cpu_total_seconds`, `process_peak`
+  each WITH their provenance — `kernel`/`sampled`/`unavailable` — plus
+  cleanup status/duration, quiescence, residue counts, gap/event summaries)
+  AND the supervisor's live admission/backpressure view (cap, active, queue
+  depth, oldest wait, head stall reason, shutdown, cumulative counters),
+  residue gate/census, and cached capability probe. The block is persisted by
+  the existing periodic writer (additive; snapshot format marker unchanged;
+  legacy rows stay readable).
+- `GET /api/v1/health` (unauthenticated liveness) gains a **bounded,
+  non-sensitive** `host_sessions` block only when the supervisor is wired:
+  aggregates and admission/backpressure counts yes; per-receipt detail,
+  censused survivor identities (PIDs / start identities), and the backend
+  probe evidence string (a failed probe can embed raw exception text) are
+  dropped; the stable backend classification stays observable.
+
+**Boundedness:** at most 64 receipts retained (oldest dropped); aggregate
+maps keyed by the fixed terminal-reason / cleanup-status vocabularies, never
+by session/org/task identity; survivor-identity list and evidence/event
+strings truncated; peak aggregates grouped **per provenance** (kernel values
+never blended with sampled); `unavailable` values counted, never rendered as
+fabricated zeros. **Publication failure is operationally contained** at the
+supervisor's `finalize_once` seam: a raising publisher is logged and never
+replaces the primary terminal reason, never disrupts the cleanup ordering
+(finish → residue accounting → publish → release), and never leaks the
+admission lease (released exactly once; the `on_terminal` hook still fires
+with the real outcome).
+
 Callers above the factory branch on **capabilities**, never OS names; the
 factory is the single OS-name site and even it selects by operational probe,
 never by OS/version strings. Unsupported or unhealthy environments select the

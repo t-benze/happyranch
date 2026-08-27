@@ -25,7 +25,15 @@
 > owned 429 retry; thread/dream/wake producers are wired in later slices
 > against the same contract; `runtime/platform/isolation.py`
 > (canonical-skill-store integrity + same-owner launch) is deliberately
-> untouched by this design.
+> untouched by this design. The observability slice (this PR) wires Receipt
+> publication into the EXISTING bounded operator surfaces — the bearer-authed
+> `GET /api/v1/metrics` snapshot and the unauthenticated `GET /api/v1/health`
+> liveness probe — through one bounded in-memory `HostSessionStore`
+> (`runtime/daemon/host_session_store.py`) plus the supervisor's live
+> admission/backpressure/residue/capability view, with publication failures
+> contained at the supervisor seam. No schema migration, dependency, config,
+> provider/pool/spacing, or producer wiring changes; thread/dream/wake stay
+> unwired.
 
 ## Decision in one page
 
@@ -270,6 +278,56 @@ both backends:
   survivor; a PID is only acted upon when its (pid, start identity) still
   matches.
 
+## Operator observability (receipt publication into existing surfaces)
+
+The daemon wiring (`runtime/daemon/state.py`) binds the supervisor's
+`publisher` seam to one process-wide, thread-safe, **bounded in-memory**
+`HostSessionStore` (`runtime/daemon/host_session_store.py`). The EXISTING
+bounded operator surfaces consume it additively — no schema migration, no
+new route, no dependency, no config change:
+
+- `GET /api/v1/metrics` (bearer-authed; `compose_metrics_snapshot`) gains a
+  `host_sessions` block: the store's bounded receipt aggregates + recent
+  window AND the supervisor's live admission/backpressure/residue view and
+  cached capability probe. The block is also persisted by the existing
+  periodic writer into `metrics_snapshots` rows (additive; the snapshot
+  format marker is unchanged — its semantics are the route-template label
+  format, untouched by this slice; legacy rows stay readable).
+- `GET /api/v1/health` (unauthenticated liveness) gains a **bounded,
+  non-sensitive** `host_sessions` block only when the supervisor is wired
+  (idle states keep the pre-existing exact two-key contract): receipt
+  aggregates and admission/backpressure counts yes; the per-receipt recent
+  window, censused survivor identities (PIDs / start identities), and the
+  backend probe evidence string (a failed probe can embed raw exception
+  text) are dropped so the public surface never leaks process identity or
+  raw diagnostics; the stable backend classification (healthy / capability
+  levels) stays observable.
+
+**Boundedness is by construction:** the store retains at most 64 receipts
+(oldest dropped); aggregate maps are keyed by the fixed terminal-reason /
+cleanup-status vocabularies (bounded by the enums), never by session/org/
+task identity; the censused survivor identity list is truncated to a bounded
+exposure (exact count preserved); evidence strings and enforcement-event
+lists are truncated; the `recent` window is newest-first with a fixed
+per-receipt summary shape.
+
+**Provenance/capability honesty is preserved:** peak aggregates are grouped
+**per provenance** (`kernel` / `sampled`) so an authoritative counter is
+never blended with a sampled estimate; `unavailable` values are counted,
+never rendered as fabricated zeros; capability levels are reported exactly
+as declared by the cached probe (three-state), never inferred from OS names.
+The unauthenticated surface drops per-receipt detail entirely.
+
+**Publication failure is operationally contained:** a raising publisher is
+caught at the supervisor's `finalize_once` seam and logged — it never
+replaces the primary terminal reason, never disrupts the cleanup ordering
+already completed (finish → residue accounting → publish → release), and
+never leaks the admission lease (released exactly once in the run loop's
+`finally`; the caller's `on_terminal` hook still fires with the real
+outcome). The read path is likewise failure-contained: a broken
+store/supervisor read degrades to a bounded unavailable shape and can never
+crash the route or the periodic writer.
+
 ## Policy inputs
 
 `PolicySnapshot` is an immutable per-invocation snapshot of explicit canary
@@ -312,6 +370,14 @@ PIDs / 2800% CPU` remain unapproved measurement candidates.
   behavior, and its honest-passthrough branch disables executor-internal 429
   retry so the supervisor is the single retry owner (same values, no
   multiplication). Thread/dream/wake producers remain unwired.
+- **B″ — receipt observability (this PR):** the supervisor's publisher seam is
+  bound to one bounded in-memory `HostSessionStore`; the existing `/metrics`
+  snapshot (live + persisted) and the unauthenticated `/health` liveness
+  probe gain the bounded `host_sessions` block (receipt aggregates + recent
+  window, live admission/backpressure, residue census/gate, cached capability
+  probe). Publication failures are contained at the supervisor seam. No
+  schema/dependency/config/provider/producer change; thread/dream/wake stay
+  unwired.
 - **C — bounded enforcement:** canary Linux limits chosen from measured
   receipts; macOS remains honestly capped.
 - **D — evidence-based policy proposal:** only then propose session/resource

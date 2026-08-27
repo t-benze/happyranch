@@ -405,6 +405,57 @@ export interface OrgsListResponse {
 export interface HealthResponse {
   status: string;
   active_runtime: string | null;
+  /** Bounded, non-sensitive host-session health block (THR-207). Present only
+   *  when the daemon-wide HostSessionSupervisor is wired (runtime-backed
+   *  states); idle states keep the two-key contract. Public variant drops the
+   *  per-receipt recent window, censused survivor identities, and backend
+   *  probe evidence. */
+  host_sessions?: HostSessionPublicBlock;
+}
+
+/** Mirror of the public (unauthenticated) `host_sessions` block on /health.
+ *  Counts, aggregates, and the stable backend classification yes; per-receipt
+ *  detail, survivor identities, and probe evidence no.
+ *  Full block: web/src/lib/api/metrics.ts HostSessionBlock. */
+export interface HostSessionPublicBlock {
+  wired: boolean;
+  backend: {
+    name: string | null;
+    version: string | null;
+    healthy: boolean;
+    probed_at: number;
+    capabilities: Record<string, string>;
+  };
+  admission: {
+    cap: number | null;
+    active: number;
+    queue_depth: number;
+    oldest_wait_seconds: number;
+    head_stall_reason: string | null;
+    shutdown: boolean;
+    admitted_total: number;
+    released_total: number;
+    cancelled_queued_total: number;
+  };
+  residue: {
+    admission_blocked: boolean;
+    block_reason: string | null;
+    survivors_count: number;
+  };
+  receipts: {
+    published_total: number;
+    window_size: number;
+    by_terminal_reason: Record<string, number>;
+    by_cleanup_status: Record<string, number>;
+    quiescent_count: number;
+    with_residue_count: number;
+    cleanup_duration_seconds: { max: number | null; last: number | null };
+    peaks: {
+      memory_peak_bytes: { kernel: { max: number | null; count: number }; sampled: { max: number | null; count: number }; unavailable_count: number };
+      cpu_total_seconds: { kernel: { max: number | null; count: number }; sampled: { max: number | null; count: number }; unavailable_count: number };
+      process_peak: { kernel: { max: number | null; count: number }; sampled: { max: number | null; count: number }; unavailable_count: number };
+    };
+  };
 }
 
 /** Mirror of runtime/daemon/routes/health.py::ExecutorPrereq. */

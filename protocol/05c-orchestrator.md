@@ -939,6 +939,18 @@ blocks admission — never an empty clean group. Retained samples and
 serialized sampling gaps are cardinality-bounded (truncated-prefix span
 preserved truthfully).
 
+**Admission/backpressure observability (THR-207 observability slice).** The
+bounded `host_sessions` block on `GET /api/v1/metrics` (and a bounded,
+non-sensitive subset on the unauthenticated `GET /api/v1/health` when the
+supervisor is wired) exposes the live admission state: effective cap, active
+leases, queue depth, oldest wait, head stall reason, shutdown state, and the
+cumulative admitted/released/cancelled-while-queued counters — so
+backpressure (queue depth, stall reasons, cap tightness) is observable from
+the existing operator surfaces without any schema change. Receipt aggregates
+(by terminal reason / cleanup status, per-provenance peaks, cleanup
+duration, residue counts) and the residue admission gate/census ride the
+same block; publication failures are contained at the supervisor seam.
+
 ### Timeout handling
 
 Blocked tasks don't wait forever:

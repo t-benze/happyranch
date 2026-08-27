@@ -93,6 +93,13 @@ logger = logging.getLogger(__name__)
 # truthfully as the leading gap.
 _MAX_RETAINED_SAMPLES = 1024
 
+# Bounded exposure of the capability-report evidence string and the censused
+# survivor identities in the operator health/metrics view (THR-207
+# observability slice). The exact census count is preserved; only the
+# identity list is truncated.
+_MAX_HEALTH_EVIDENCE_CHARS = 200
+_MAX_HEALTH_SURVIVORS = 16
+
 
 # ── Cancellation ─────────────────────────────────────────────────────
 
@@ -1105,7 +1112,17 @@ class _AttemptContext:
             # keeps them censused/charged/visible and blocks only on actual
             # census/measurement failure or the conservative threshold.
             accountant.note_measurement_failure()
-        publisher(receipt)
+        try:
+            publisher(receipt)
+        except Exception as exc:  # noqa: BLE001 — publication is contained
+            # A receipt-publication failure is operationally contained: it is
+            # logged, never replaces the primary terminal reason, never
+            # disrupts the cleanup ordering already completed above, and
+            # never leaks the admission lease (the run loop releases it
+            # exactly once in ``finally`` regardless).
+            logger.warning(
+                "host session receipt publisher raised (contained): %s", exc
+            )
 
 
 # ── sampler thread ───────────────────────────────────────────────────
@@ -1581,6 +1598,65 @@ class HostSessionSupervisor:
     def active_count(self) -> int:
         """Admitted-but-not-yet-released attempts (the ownership registry)."""
         return len(self._admission.ownerships_snapshot())
+
+    def health_snapshot(self) -> dict:
+        """Bounded, capability-honest live view for the operator health/metrics
+        surfaces (THR-207 observability slice).
+
+        Reads the cached capability probe, the admission controller's live
+        stats (cap/active/queue depth/oldest wait/stall/shutdown/cumulative
+        counters), and the residue accountant's gate + identity-safe census.
+        Capability levels are reported exactly as declared (never inferred
+        from OS names); the census survivor identity list is truncated to a
+        bounded exposure while the exact count is preserved; evidence strings
+        are truncated. Never raises for the normal path: ``probe()`` already
+        degrades a failed probe to an unhealthy report, and each sub-read is
+        lock-protected — the health/metrics composer additionally wraps the
+        whole read as a second containment layer.
+        """
+        report = self.probe()
+        verdict = self._residue.evaluate()
+        survivors = self._residue.census()
+        admission = self._admission
+        return {
+            "backend": {
+                "name": report.backend,
+                "version": report.backend_version,
+                "healthy": report.healthy,
+                "probed_at": report.probed_at,
+                "capabilities": {
+                    cap.value: level.value
+                    for cap, level in report.capabilities.items()
+                },
+                "evidence": (report.evidence or "")[: _MAX_HEALTH_EVIDENCE_CHARS]
+                or None,
+            },
+            "admission": {
+                "cap": admission.cap(),
+                "active": admission.active_count(),
+                "queue_depth": admission.queue_depth(),
+                "oldest_wait_seconds": round(admission.oldest_wait(), 6),
+                "head_stall_reason": admission.head_stall_reason(),
+                "shutdown": admission.is_shutdown(),
+                "admitted_total": admission.admitted_total(),
+                "released_total": admission.released_total(),
+                "cancelled_queued_total": admission.cancelled_queued_total(),
+            },
+            "residue": {
+                "admission_blocked": not verdict.admit,
+                "block_reason": verdict.reason,
+                "survivors_count": len(survivors),
+                "survivors": [
+                    {
+                        "pid": sv.pid,
+                        "start_identity": sv.start_identity,
+                        "backend": sv.backend,
+                        "last_seen_at": sv.last_seen_at,
+                    }
+                    for sv in survivors[:_MAX_HEALTH_SURVIVORS]
+                ],
+            },
+        }
 
     def shutdown(self) -> None:
         """Stop admission, cancel queued, and finish every owned attempt.
