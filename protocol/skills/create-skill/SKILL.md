@@ -101,8 +101,11 @@ The server runs deterministic validation before persistence. Validation checks:
 
 1. `skill_md` is YAML-frontmatter-first: a valid opening `---` fence, a YAML
    mapping inside, a closing `---` fence, then a Markdown heading. Malformed,
-   unclosed, non-mapping, or missing-heading bodies are rejected. Heading-first
-   bodies are legacy-only and not accepted for new authoring.
+   unclosed, non-mapping, or missing-heading bodies are classified invalid
+   under the authoring contract and persisted as immutable validation/
+   provenance evidence — they are not accepted as valid or materializable
+   versions. Heading-first bodies are legacy-only and not accepted for new
+   authoring.
 2. Required metadata (`slug`, `name`, `skill_md`) is present and non-empty.
 3. `slug` does not collide with any protected slug (system contracts +
    release-managed skills, loaded from the canonical release registry).
@@ -111,9 +114,17 @@ The server runs deterministic validation before persistence. Validation checks:
 5. References and assets filenames are safe (no path traversal, no
    absolute paths).
 
-On failure, the response includes actionable error codes and leaves zero
-artifact, package, ledger event, materialization, or operational-session
-residue.
+On document-contract failure (THR-210 PR 1), the candidate is NOT silently
+discarded: it is appended as immutable validation/provenance evidence — one
+invalid version row with deterministic findings, your task/session provenance,
+and its content-addressed artifact — and the skill (or first-version creation)
+is returned as created with `validation_state: invalid`. The invalid candidate
+never displaces an existing valid current version and is never eligible or
+materialized; an initial invalid creation darkens the skill as
+`current_version_invalid` until a valid successor advances it. Requests
+rejected before persistence (missing metadata, protected-slug collision,
+unknown/cross-org session, identity spoofing) leave zero artifact, package,
+ledger-event, materialization, or operational-session residue.
 
 ## Provenance and atomicity
 
@@ -136,7 +147,8 @@ the entire transaction rolls back with zero residue.
 - Authorization header present → HTTP 401 `bearer_not_accepted`.
 - Body contains trusted identity key → HTTP 403 `body_identity_rejected`.
 - Protected slug collision → HTTP 409 `protected_slug`.
-- Validation failure → HTTP 422 with structured error codes.
+- Missing/empty required metadata (`slug`, `name`, `skill_md`) → HTTP 422 with structured error codes.
+- Document-contract validation failure → the candidate is appended as immutable invalid-version evidence (HTTP 201, `validation_state: invalid`); it never becomes the current version when a valid one exists.
 - Server error → HTTP 500 with detail.
 
 ## Visibility after creation

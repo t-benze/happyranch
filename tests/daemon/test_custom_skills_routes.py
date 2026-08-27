@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 
 import pytest
@@ -539,20 +540,55 @@ _INVALID_BODIES = [
 
 
 @pytest.mark.parametrize("skill_md,code", _INVALID_BODIES)
-def test_add_version_rejects_invalid_bodies_atomically(client_with_runtime, skill_md, code):
-    """Every invalid body is rejected with zero durable residue across ALL
-    residue dimensions: no version row, no event, no current-pointer change,
-    no artifact file, no materialization row, no eligibility row."""
+def test_add_version_appends_invalid_bodies_as_evidence_retaining_current(client_with_runtime, skill_md, code):
+    """THR-210 PR 1 (A): an invalid successor is appended as immutable
+    validation/provenance evidence — exactly one version row with
+    deterministic findings, its content-addressed artifact, and the
+    version_saved + validated events — but NEVER displaces the existing
+    valid current_version_id. Eligibility/materialization stay bound to the
+    retained valid current version."""
+    from runtime.skills.custom import service as custom_service
     client, org = client_with_runtime
     created = _create(client)
-    skill_id = created["skill_id"]
-    before = _residue_snapshot(org, skill_id)
+    skill_id, prior_revision = created["skill_id"], created["version_id"]
+    prior_keys = _artifact_keys(org)
     response = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": skill_md})
-    assert response.status_code == 422, response.text
-    detail = response.json()["detail"]
-    assert detail["code"] == "validation_failed"
-    assert code in detail["reason_codes"]
-    assert _residue_snapshot(org, skill_id) == before
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["validation_state"] == "invalid"
+    assert payload["current_version_id"] == prior_revision
+    conn = getattr(org.db, "_conn", org.db)
+    row = conn.execute(
+        "SELECT * FROM custom_skill_versions WHERE id=?", (payload["version_id"],)
+    ).fetchone()
+    expected = custom_service.validate_package(
+        org, slug="test-skill", name="Test skill", skill_md=skill_md
+    )
+    assert row["validation_state"] == "invalid"
+    assert row["parent_version_id"] == prior_revision
+    assert json.loads(row["validation_findings"]) == expected["errors"]
+    assert row["skill_md_cache"] == skill_md
+    # current pointer unchanged: prior valid revision retained
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"] == prior_revision
+    # events: created+validated (original) then version_saved+validated (evidence)
+    events = [r["event_type"] for r in conn.execute(
+        "SELECT event_type FROM custom_skill_events WHERE skill_id=? ORDER BY id", (skill_id,)
+    )]
+    assert events == ["created", "validated", "version_saved", "validated"]
+    # content-addressed artifact is durable provenance (never a dangling key)
+    digest = hashlib.sha256(skill_md.encode()).hexdigest()
+    assert f"custom-skills/test-skill/{digest}/SKILL.md" in _artifact_keys(org)
+    assert prior_keys <= _artifact_keys(org)
+    # detail still resolves the retained VALID current version
+    detail = client.get(f"{BASE}/{skill_id}").json()
+    assert detail["validation_state"] == "valid"
+    assert detail["version_id"] == prior_revision
+    # history exposes the invalid evidence
+    versions = client.get(f"{BASE}/{skill_id}/versions").json()["versions"]
+    assert versions[0]["validation_state"] == "invalid"
+    assert versions[0]["id"] == payload["version_id"]
 
 
 def test_add_version_rejects_empty_skill_md_without_residue(client_with_runtime):
@@ -609,41 +645,92 @@ def test_add_version_duplicate_content_conflicts_atomically(client_with_runtime)
     assert _residue_snapshot(org, skill_id) == before
 
 
-def test_create_rejects_invalid_body_atomically(client_with_runtime):
+def test_create_with_invalid_first_version_creates_skill_with_evidence(client_with_runtime):
+    """THR-210 PR 1 (B): initial creation with an invalid candidate persists
+    the skill with the invalid FIRST version as the current pointer — the
+    nullable-pointer schema has no prior pointer to preserve, and a NULL
+    pointer is unreadable by every JOIN-based list/detail consumer and
+    uneditable through the version route. The invalid candidate is
+    inspectable evidence (catalog/detail/history + artifact) but never
+    eligible or materializable; a later valid successor advances the
+    pointer normally."""
     client, org = client_with_runtime
-    before_counts = _custom_counts(org)
-    before_artifacts = _artifact_keys(org)
+    invalid_md = "---\nname: Bad\n---\nno heading\n"
     response = client.post(
         BASE,
-        json={"slug": "bad-create", "name": "Bad", "skill_md": "no frontmatter no heading"},
+        json={"slug": "bad-create", "name": "Bad", "skill_md": invalid_md},
     )
-    assert response.status_code == 422
-    assert response.json()["detail"]["code"] == "validation_failed"
-    assert _custom_counts(org) == before_counts
-    assert _artifact_keys(org) == before_artifacts
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["validation_state"] == "invalid"
+    skill_id = payload["skill_id"]
+    conn = getattr(org.db, "_conn", org.db)
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"] == payload["version_id"]
+    # catalog + detail read it as inspectable invalid evidence
+    listed = next(
+        s for s in client.get(f"{BASE}/catalog").json()["skills"] if s["id"] == skill_id
+    )
+    assert listed["validation_state"] == "invalid"
+    detail = client.get(f"{BASE}/{skill_id}").json()
+    assert detail["validation_state"] == "invalid"
+    assert detail["version_id"] == payload["version_id"]
+    # version history exposes the invalid first version
+    versions = client.get(f"{BASE}/{skill_id}/versions").json()["versions"]
+    assert len(versions) == 1 and versions[0]["validation_state"] == "invalid"
+    # never eligible: rules PUT refused; explain hidden as current_version_invalid
+    rules = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
+    assert client.put(
+        f"{BASE}/{skill_id}/eligibility", json=rules,
+        headers={"If-Match": str(payload["version_id"])},
+    ).status_code == 422
+    _add_agent(org)
+    explain = client.get(f"{BASE}/{skill_id}/eligibility/explain", params={"agent": "dev_agent"})
+    assert explain.json()["visible"] is False
+    assert explain.json()["hidden_reason"] == "current_version_invalid"
+    # content-addressed artifact evidence exists
+    digest = hashlib.sha256(invalid_md.encode()).hexdigest()
+    assert f"custom-skills/bad-create/{digest}/SKILL.md" in _artifact_keys(org)
+    # a later VALID successor advances the pointer (D over the B shape)
+    valid_md = "---\nname: Bad\n---\n\n# Bad\n\nNow valid\n"
+    advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": valid_md})
+    assert advanced.status_code == 201, advanced.text
+    assert advanced.json()["validation_state"] == "valid"
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"] == advanced.json()["version_id"]
 
 
-def test_agent_create_rejects_invalid_body_atomically(client_with_runtime):
+def test_agent_create_with_invalid_first_version_creates_skill_with_evidence(client_with_runtime):
+    """Agent path (B): an invalid first version persists with verified
+    task/session provenance and darkens the skill (current_version_invalid) —
+    evidence, never eligible or materializable."""
     client, org = client_with_runtime
     org.db.insert_task(TaskRecord(id="TASK-INV", brief="create a custom skill"))
     org.sessions.set_active("TASK-INV", "dev_agent", "sess-inv", org_slug="alpha")
     client.headers.pop("Authorization", None)
-    before_counts = _custom_counts(org)
-    before_artifacts = _artifact_keys(org)
     response = client.post(
         f"{BASE}/agent-create",
         params={"session_id": "sess-inv"},
-        json={"slug": "bad-agent", "name": "Bad", "skill_md": "no frontmatter"},
+        json={"slug": "bad-agent", "name": "Bad", "skill_md": "---\nname: Bad\n---\nno heading\n"},
     )
-    assert response.status_code == 422
-    assert response.json()["detail"]["code"] == "validation_failed"
-    assert _custom_counts(org) == before_counts
-    assert _artifact_keys(org) == before_artifacts
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["version"]["validation_state"] == "invalid"
+    assert payload["version"]["source_task_id"] == "TASK-INV"
+    assert payload["version"]["source_session_id"] == "sess-inv"
+    assert payload["provenance"]["task_brief_digest"] == payload["version"]["task_brief_digest"]
+    conn = getattr(org.db, "_conn", org.db)
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (payload["skill"]["id"],)
+    ).fetchone()["current_version_id"] == payload["version"]["id"]
 
 
-def test_agent_update_rejects_invalid_body_without_residue(client_with_runtime):
-    """Agent updating its own originated skill: invalid body rejected, no
-    version/event/pointer/artifact residue, current pointer stays put."""
+def test_agent_update_appends_invalid_body_as_evidence_retaining_current(client_with_runtime):
+    """Agent updating its own originated skill (A): invalid body appended as
+    evidence with task/session provenance; current pointer stays at the prior
+    valid version."""
     client, org = client_with_runtime
     org.db.insert_task(TaskRecord(id="TASK-OWN", brief="create a custom skill"))
     org.sessions.set_active("TASK-OWN", "dev_agent", "sess-own", org_slug="alpha")
@@ -653,15 +740,189 @@ def test_agent_update_rejects_invalid_body_without_residue(client_with_runtime):
     )
     assert created.status_code == 201, created.text
     skill_id = created.json()["skill"]["id"]
-    before = _residue_snapshot(org, skill_id)
+    prior_revision = created.json()["skill"]["version_id"]
     response = client.post(
         f"{BASE}/agent-create",
         params={"session_id": "sess-own"},
         json=_body("owned-skill", "---\nname: x\n---\nno heading\n"),
     )
-    assert response.status_code == 422
-    assert response.json()["detail"]["code"] == "validation_failed"
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["version"]["validation_state"] == "invalid"
+    assert payload["version"]["source_task_id"] == "TASK-OWN"
+    assert payload["version"]["source_session_id"] == "sess-own"
+    conn = getattr(org.db, "_conn", org.db)
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"] == prior_revision
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# THR-210 PR 1: invalid candidates are immutable validation/provenance evidence
+#
+# State matrix locked in tests before production edits:
+#   (A) valid current + invalid successor  -> append evidence, RETAIN pointer
+#   (B) no prior version + invalid first   -> first version becomes current
+#        (NULL pointer is unreadable by JOIN consumers and uneditable),
+#        skill darkens as current_version_invalid until a valid successor
+#   (C) legacy records incl. current->invalid read without healing/rewriting
+#   (D) later valid successor advances current_version_id normally
+#   (E) any persistence failure -> full rollback + artifact compensation,
+#        zero partial residue
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_invalid_duplicate_content_conflicts_atomically(client_with_runtime):
+    """A byte-identical INVALID body still conflicts with the append-only
+    UNIQUE (skill_id, content_hash) invariant as 409 duplicate_content with
+    zero additional residue — the same evidence is never appended twice."""
+    client, org = client_with_runtime
+    created = _create(client)
+    skill_id = created["skill_id"]
+    invalid_md = "---\nname: x\n---\nno heading\n"
+    first = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": invalid_md})
+    assert first.status_code == 201 and first.json()["validation_state"] == "invalid"
+    before = _residue_snapshot(org, skill_id)
+    response = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": invalid_md})
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "duplicate_content"
     assert _residue_snapshot(org, skill_id) == before
+
+
+def test_invalid_append_then_valid_successor_advances_current_with_lineage(client_with_runtime):
+    """THR-210 PR 1 (D): after an invalid evidence append, a later valid
+    successor advances current_version_id normally. Parent/provenance
+    continuity: every version's parent is the current version it was authored
+    against — the invalid evidence never displaces the pointer, so the
+    advancing line's parent is the retained valid current, not the evidence."""
+    client, org = client_with_runtime
+    created = _create(client, slug="lineage-skill")
+    skill_id, v1 = created["skill_id"], created["version_id"]
+    invalid_md = "---\nname: x\n---\nno heading\n"
+    invalid = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": invalid_md})
+    assert invalid.status_code == 201, invalid.text
+    v2 = invalid.json()["version_id"]
+    valid_md = "---\nname: Lineage\n---\n\n# Lineage\n\nNow valid\n"
+    valid = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": valid_md})
+    assert valid.status_code == 201, valid.text
+    assert valid.json()["validation_state"] == "valid"
+    v3 = valid.json()["version_id"]
+    conn = getattr(org.db, "_conn", org.db)
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"] == v3
+    parents = {
+        r["id"]: r["parent_version_id"]
+        for r in conn.execute(
+            "SELECT id, parent_version_id FROM custom_skill_versions WHERE skill_id=?",
+            (skill_id,),
+        )
+    }
+    assert parents[v1] is None
+    assert parents[v2] == v1   # authored against the current (v1) guidance
+    assert parents[v3] == v1   # v2 never displaced the pointer
+    assert conn.execute(
+        "SELECT count(*) FROM custom_skill_versions WHERE skill_id=?", (skill_id,)
+    ).fetchone()[0] == 3
+
+
+def test_legacy_invalid_current_and_history_read_without_silent_healing(client_with_runtime):
+    """THR-210 PR 1 (C): pre-existing records — including a current pointer
+    that already references an invalid version alongside a valid/invalid
+    history — continue to read/resolve with no silent healing and no
+    destructive rewriting. Appends follow the same pointer contract: an
+    invalid successor keeps the existing pointer; a valid one advances."""
+    from runtime.skills.custom import service as custom_service
+    client, org = client_with_runtime
+    created = _create(client, slug="legacy-history")
+    skill_id, v1 = created["skill_id"], created["version_id"]
+    conn = getattr(org.db, "_conn", org.db)
+    conn.execute(
+        """INSERT INTO custom_skill_versions
+           (skill_id,parent_version_id,content_hash,content_artifact_key,skill_md_cache,
+            validation_state,validator_version,validation_findings,created_at,
+            author_kind,author_identity)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?) """,
+        (skill_id, v1, "0" * 64, "custom-skills/legacy-history/legacy/SKILL.md",
+         "not markdown", "invalid", "THR-055/1.0.0",
+         '["SKILL.md must start with a heading"]', custom_service.now(),
+         "human", "founder"),
+    )
+    v_legacy = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "UPDATE custom_skills SET current_version_id=? WHERE id=?", (v_legacy, skill_id)
+    )
+    conn.commit()
+    # (C) reads without healing: detail/catalog show the legacy invalid current
+    assert client.get(f"{BASE}/{skill_id}").json()["validation_state"] == "invalid"
+    rows_before = [
+        dict(r) for r in conn.execute(
+            "SELECT id, validation_state, content_hash, skill_md_cache "
+            "FROM custom_skill_versions WHERE skill_id=? ORDER BY id", (skill_id,)
+        )
+    ]
+    # another invalid successor keeps the EXISTING (invalid) pointer
+    second_invalid = client.post(
+        f"{BASE}/{skill_id}/versions", json={"skill_md": "---\nname: x\n---\nno heading\n"}
+    )
+    assert second_invalid.status_code == 201, second_invalid.text
+    assert second_invalid.json()["validation_state"] == "invalid"
+    assert second_invalid.json()["current_version_id"] == v_legacy
+    # no silent healing: every pre-existing row is byte-identical after the append
+    rows_after = [
+        dict(r) for r in conn.execute(
+            "SELECT id, validation_state, content_hash, skill_md_cache "
+            "FROM custom_skill_versions WHERE skill_id=? ORDER BY id", (skill_id,)
+        )
+    ]
+    assert rows_before == rows_after[: len(rows_before)]
+    # valid successor advances from the legacy invalid current (D over C)
+    valid_md = "---\nname: Legacy\n---\n\n# Legacy\n\nHealed by valid successor\n"
+    advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": valid_md})
+    assert advanced.status_code == 201, advanced.text
+    assert advanced.json()["validation_state"] == "valid"
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"] == advanced.json()["version_id"]
+
+
+def test_invalid_successor_keeps_prior_valid_eligible_and_materializable(client_with_runtime, monkeypatch):
+    """THR-210 PR 1 (A): after an invalid evidence append, eligibility writes
+    and canonical materialization stay bound to the retained VALID current
+    version — the invalid candidate never becomes eligible or materializable."""
+    from runtime.skills.canonical_store import CanonicalSkillStore
+    from runtime.orchestrator.workspace_adapters import _build_custom_skill_canonical_specs
+
+    client, org = client_with_runtime
+    _add_agent(org)
+    created = _create(
+        client, slug="materializable-b2",
+        skill_md="---\nname: M\n---\n\n# M\n\nOne\n",
+    )
+    skill_id, v1 = created["skill_id"], created["version_id"]
+    rules = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
+    assert client.put(
+        f"{BASE}/{skill_id}/eligibility", json=rules, headers={"If-Match": str(v1)}
+    ).status_code == 200
+    invalid = client.post(
+        f"{BASE}/{skill_id}/versions", json={"skill_md": "---\nname: x\n---\nno heading\n"}
+    )
+    assert invalid.status_code == 201 and invalid.json()["validation_state"] == "invalid"
+    # eligibility still writes against the retained valid revision
+    assert client.put(
+        f"{BASE}/{skill_id}/eligibility", json=rules, headers={"If-Match": str(v1)}
+    ).status_code == 200
+    # materialization resolves the RETAINED valid v1, never the invalid evidence
+    monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(org.root / "canonical-store"))
+    specs = _build_custom_skill_canonical_specs(
+        store=CanonicalSkillStore(), org_root=org.root, db=org.db, slug="alpha",
+        agent_name="dev_agent", team="engineering", task_id="TASK-MAT",
+        session_id="sess-mat", session_context="task",
+    )
+    spec = next(s for s in specs if s["slug"] == "materializable-b2")
+    assert spec["version"] == str(v1)
+    # explain still resolves visible through the valid current
+    explain = client.get(f"{BASE}/{skill_id}/eligibility/explain", params={"agent": "dev_agent"})
+    assert explain.json()["visible"] is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -857,6 +1118,82 @@ def test_authoring_persistence_fault_leaves_zero_residue_and_no_false_409(
         assert "duplicate_content" not in response.text
     assert _residue_snapshot(org, skill_id, conn=real_conn) == before
 
+
+@pytest.mark.parametrize("stage", [
+    "version-insert", "artifact-write", "current-pointer",
+    "first-event", "validated-event", "commit",
+])
+@pytest.mark.parametrize("surface", [
+    "human-create", "agent-create", "agent-update", "human-version",
+])
+def test_invalid_candidate_persistence_fault_leaves_zero_residue(
+    client_with_runtime, monkeypatch, surface, stage,
+):
+    """THR-210 PR 1 (E): an INVALID candidate flows through the SAME shared
+    persistence helper as valid ones, so every post-validation fault still
+    maps correctly (only the version INSERT's IntegrityError is 409
+    duplicate_content; everything later is 500) and rolls back with full
+    artifact compensation — zero partial version/event/pointer/artifact
+    residue in every dimension."""
+    client, org = client_with_runtime
+    real_conn = getattr(org.db, "_conn", org.db)
+    invalid_md = "---\nname: x\n---\nno heading\n"
+
+    if surface == "human-create":
+        skill_id = None
+        _install_persistence_fault(monkeypatch, org, stage)
+        fault = _fault_client(client)
+        before = _residue_snapshot(org, None, conn=real_conn)
+        response = fault.post(BASE, json=_body(f"fault-invalid-{stage}", invalid_md))
+    elif surface == "agent-create":
+        skill_id = None
+        org.db.insert_task(TaskRecord(id="TASK-FII", brief="create a custom skill"))
+        org.sessions.set_active("TASK-FII", "dev_agent", "sess-fii", org_slug="alpha")
+        _install_persistence_fault(monkeypatch, org, stage)
+        fault = _fault_client(client)
+        fault.headers.pop("Authorization", None)
+        before = _residue_snapshot(org, None, conn=real_conn)
+        response = fault.post(
+            f"{BASE}/agent-create", params={"session_id": "sess-fii"},
+            json=_body(f"fault-invalid-{stage}", invalid_md),
+        )
+    elif surface == "agent-update":
+        org.db.insert_task(TaskRecord(id="TASK-OWN3", brief="create a custom skill"))
+        org.sessions.set_active("TASK-OWN3", "dev_agent", "sess-own3", org_slug="alpha")
+        client.headers.pop("Authorization", None)
+        created = client.post(
+            f"{BASE}/agent-create", params={"session_id": "sess-own3"},
+            json=_body("owned-fault-inv"),
+        )
+        assert created.status_code == 201, created.text
+        skill_id = created.json()["skill"]["id"]
+        _install_persistence_fault(monkeypatch, org, stage)
+        fault = _fault_client(client)
+        fault.headers.pop("Authorization", None)
+        before = _residue_snapshot(org, skill_id, conn=real_conn)
+        response = fault.post(
+            f"{BASE}/agent-create", params={"session_id": "sess-own3"},
+            json=_body("owned-fault-inv", invalid_md),
+        )
+    elif surface == "human-version":
+        created = _create(client, slug=f"fault-invalid-{stage}")
+        skill_id = created["skill_id"]
+        _install_persistence_fault(monkeypatch, org, stage)
+        fault = _fault_client(client)
+        before = _residue_snapshot(org, skill_id, conn=real_conn)
+        response = fault.post(
+            f"{BASE}/{skill_id}/versions", json={"skill_md": invalid_md}
+        )
+    else:
+        raise AssertionError(surface)
+
+    if stage == "version-insert":
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["code"] == "duplicate_content"
+    else:
+        assert response.status_code == 500, response.text
+        assert "duplicate_content" not in response.text
+    assert _residue_snapshot(org, skill_id, conn=real_conn) == before
 
 
 def test_legacy_heading_first_valid_version_stays_resolvable_and_materializable(
