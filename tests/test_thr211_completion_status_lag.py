@@ -1172,3 +1172,341 @@ def test_mutation_force_legacy_fallback_reproduces_unauthorized_spawn(tmp_path, 
     children = db.get_children("TASK-P")
     assert len(children) == 2
     assert db.get_task(children[1]).assigned_agent == "qa_engineer"
+
+
+# ---------------------------------------------------------------------------
+# TASK-5823 (third fix-forward): structurally malformed exact rows fail closed
+# ---------------------------------------------------------------------------
+# The exact-scoped `get_latest_completion_report(task_id, agent, session_id)`
+# read (the sole reader of the modern fingerprint) must convert ONLY row
+# deserialization/structural-validation failure — invalid JSON in the
+# persisted `risks_flagged` / `waiting_on_job_ids` JSON text, or values
+# failing the strict `CompletionReport` contract (wrong scalar/container
+# shape, invalid element types, out-of-range confidence) — into the existing
+# no-acceptable-authenticated-report fail-closed path (`_NO_AUTHENTICATED_
+# REPORT`): chain cleared, parent woken once, task-wide evidence NEVER
+# consulted.  SQLite/transaction/I/O/programming/operational exceptions still
+# propagate.  A malformed exact row is never terminal evidence for a running
+# child, and a well-formed exact report keeps its full authority.
+
+def _corrupt_exact_result_row(
+    db: Database, *, task_id: str, session_id: str,
+    column: str, raw,
+) -> None:
+    """Overwrite one persisted column of the exact (task_id, session_id) row
+    with a value that fails deserialization/structural validation.  ``column``
+    is a test-controlled literal (risks_flagged / waiting_on_job_ids /
+    confidence_score), never user input."""
+    db._conn.execute(
+        f"UPDATE task_results SET {column} = ? "
+        "WHERE task_id = ? AND session_id = ?",
+        (raw, task_id, session_id),
+    )
+    db._conn.commit()
+
+
+def _seed_completed_child_with_malformed_exact_row(
+    db: Database,
+    *,
+    corrupt_column: str,
+    corrupt_raw,
+    child_id: str = "TASK-R",
+    parent_id: str = "TASK-P",
+    agent: str = "code_reviewer",
+    session_id: str = "sess-current",
+) -> None:
+    """Seed the TASK-5822 shape: a COMPLETED child carrying a modern
+    (assigned_agent, current_session_id) fingerprint whose EXACT current
+    task_results row is structurally malformed, PLUS an unrelated task-wide
+    APPROVE row that must never gate the chain."""
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_completed_child_with_fingerprint(
+        db, child_id=child_id, parent_id=parent_id,
+        agent=agent, session_id=session_id,
+    )
+    db.insert_task_result(
+        task_id=child_id, agent=agent, session_id=session_id,
+        status="completed", confidence_score=90,
+        output_summary="exact completed row", verdict="APPROVE",
+    )
+    _corrupt_exact_result_row(
+        db, task_id=child_id, session_id=session_id,
+        column=corrupt_column, raw=corrupt_raw,
+    )
+    # Unrelated task-wide APPROVE — the newest task row.  Must never be
+    # consulted for chain advancement when the exact row is unacceptable.
+    db.insert_task_result(
+        task_id=child_id, agent="intruder_agent", session_id="sess-intruder",
+        status="completed", confidence_score=90,
+        output_summary="unrelated passing row", verdict="APPROVE",
+    )
+
+
+def test_modern_fingerprint_exact_row_invalid_risks_json_fails_closed_with_unrelated_approve(tmp_path) -> None:
+    """TASK-5822 HIGH repro: invalid JSON in the exact row's persisted
+    risks_flagged must NOT raise out of the dispatch seam — it fails closed
+    (chain cleared, parent woken once, no leg) with an unrelated task-wide
+    APPROVE present."""
+    import json as _json
+
+    db = Database(tmp_path / "x.db")
+    _seed_completed_child_with_malformed_exact_row(
+        db, corrupt_column="risks_flagged", corrupt_raw="not-json{{[",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    _assert_chain_failed_closed(db, q)
+    # Sanity: the raw value really is invalid JSON (shape class proof).
+    with pytest.raises(_json.JSONDecodeError):
+        _json.loads("not-json{{[")
+
+
+def test_modern_fingerprint_exact_row_invalid_waiting_on_job_ids_json_fails_closed_with_unrelated_approve(tmp_path) -> None:
+    """Invalid JSON in the exact row's persisted waiting_on_job_ids — same
+    fail-closed outcome (second structured column, independent shape class)."""
+    db = Database(tmp_path / "x.db")
+    _seed_completed_child_with_malformed_exact_row(
+        db, corrupt_column="waiting_on_job_ids", corrupt_raw="[unclosed",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    _assert_chain_failed_closed(db, q)
+
+
+def test_modern_fingerprint_exact_row_risks_scalar_shape_fails_closed_with_unrelated_approve(tmp_path) -> None:
+    """Valid JSON of the WRONG scalar shape: risks_flagged is a JSON string
+    rather than a list — the strict CompletionReport contract rejects it and
+    the read fails closed."""
+    db = Database(tmp_path / "x.db")
+    _seed_completed_child_with_malformed_exact_row(
+        db, corrupt_column="risks_flagged", corrupt_raw='"oops-not-a-list"',
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    _assert_chain_failed_closed(db, q)
+
+
+def test_modern_fingerprint_exact_row_risks_dict_shape_fails_closed_with_unrelated_approve(tmp_path) -> None:
+    """Valid JSON of the wrong CONTAINER shape: risks_flagged is a JSON object
+    (dict) instead of a list — fail closed."""
+    db = Database(tmp_path / "x.db")
+    _seed_completed_child_with_malformed_exact_row(
+        db, corrupt_column="risks_flagged", corrupt_raw='{"not": "a list"}',
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    _assert_chain_failed_closed(db, q)
+
+
+def test_modern_fingerprint_exact_row_risks_non_string_elements_fails_closed_with_unrelated_approve(tmp_path) -> None:
+    """Valid JSON list with INVALID element types: risks_flagged must be
+    list[str], a list of ints violates the strict contract — fail closed."""
+    db = Database(tmp_path / "x.db")
+    _seed_completed_child_with_malformed_exact_row(
+        db, corrupt_column="risks_flagged", corrupt_raw="[1, 2, 3]",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    _assert_chain_failed_closed(db, q)
+
+
+def test_modern_fingerprint_exact_row_confidence_out_of_range_fails_closed_with_unrelated_approve(tmp_path) -> None:
+    """Structural validation failure beyond the JSON columns: confidence_score
+    outside the strict CompletionReport range (0..100) fails closed too."""
+    db = Database(tmp_path / "x.db")
+    _seed_completed_child_with_malformed_exact_row(
+        db, corrupt_column="confidence_score", corrupt_raw=150,
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    _assert_chain_failed_closed(db, q)
+
+
+def test_in_progress_child_with_malformed_exact_row_does_not_count_as_landed(tmp_path) -> None:
+    """A malformed exact row is NOT terminal evidence: an in_progress child
+    whose exact row is structurally malformed stays 'genuinely running' — the
+    parent is neither advanced nor woken (no suppression of live work, no
+    premature dispatch from unverifiable data)."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_child_with_landed_result(
+        db, child_id="TASK-R", parent_id="TASK-P",
+        agent="code_reviewer", session_id="sess-current", verdict="APPROVE",
+    )
+    _corrupt_exact_result_row(
+        db, task_id="TASK-R", session_id="sess-current",
+        column="risks_flagged", raw="not-json{{[",
+    )
+    q = _FakeQueue()
+    orch = _make_orch(db, q)
+    assert _child_has_landed_terminal_result(orch, db.get_task("TASK-R")) is False
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+    assert db.get_children("TASK-P") == ["TASK-R"]
+    assert db.get_task("TASK-P").active_chain is not None
+    assert q.items == []
+
+
+def test_modern_fingerprint_malformed_exact_row_delayed_finalization_no_duplicate(tmp_path) -> None:
+    """Delayed-finalization no-duplicate for the malformed-row fail-closed
+    case: the first consumer call clears the chain and wakes the parent once;
+    a second call (delayed session-finalization re-trigger) spawns no leg and
+    does not revive the chain — the extra put is absorbed by the run-step
+    claim CAS (at-most-once wake)."""
+    db = Database(tmp_path / "x.db")
+    _seed_completed_child_with_malformed_exact_row(
+        db, corrupt_column="risks_flagged", corrupt_raw="not-json{{[",
+    )
+    q = _FakeQueue()
+    orch = _make_orch(db, q)
+
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+    _assert_chain_failed_closed(db, q)
+    # Delayed re-trigger (child already COMPLETED).
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+    assert db.get_children("TASK-P") == ["TASK-R"]
+    assert db.get_task("TASK-P").active_chain is None
+    assert q.items == ["TASK-P", "TASK-P"]
+
+
+def test_modern_fingerprint_malformed_exact_row_operational_db_failure_propagates_then_retry_wakes_once(tmp_path) -> None:
+    """Operational database exceptions are NOT converted to fail-closed: a
+    sqlite3.OperationalError during the exact read propagates out of
+    _enqueue_parent_if_waiting with NO partial chain/queue/audit mutation,
+    and a retry completes the fail-closed wake exactly once."""
+    import sqlite3 as _sqlite3
+
+    db = Database(tmp_path / "x.db")
+    _seed_completed_child_with_malformed_exact_row(
+        db, corrupt_column="risks_flagged", corrupt_raw="not-json{{[",
+    )
+
+    real_conn = db._conn
+
+    class _FailOnceTaskResultsRead:
+        """Proxy the sqlite3.Connection: fail the FIRST task_results SELECT
+        with an operational error, then delegate everything (retry-safety)."""
+
+        def __init__(self, real) -> None:
+            self._real = real
+            self._fail = True
+
+        def execute(self, sql, *parameters):
+            if (
+                self._fail
+                and sql.lstrip().upper().startswith("SELECT")
+                and "task_results" in sql
+            ):
+                self._fail = False
+                raise _sqlite3.OperationalError("simulated operational DB failure")
+            return self._real.execute(sql, *parameters)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    db._conn = _FailOnceTaskResultsRead(real_conn)
+    q = _FakeQueue()
+    orch = _make_orch(db, q)
+
+    # First attempt: operational failure propagates — no partial mutation.
+    with pytest.raises(_sqlite3.OperationalError):
+        _enqueue_parent_if_waiting(orch, "TASK-R")
+    assert db.get_children("TASK-P") == ["TASK-R"]
+    assert db.get_task("TASK-P").active_chain is not None
+    assert q.items == []
+    audits, _ = db.query_audit_logs(task_id="TASK-P", limit=100)
+    assert audits == []
+
+    # Retry: the malformed row fail-closes exactly once (chain cleared, one
+    # wake, no leg, no audit row).
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+    _assert_chain_failed_closed(db, q)
+    audits, _ = db.query_audit_logs(task_id="TASK-P", limit=100)
+    assert audits == []
+
+
+def test_positive_control_exact_valid_row_with_structured_fields_still_advances(tmp_path) -> None:
+    """Positive control: a VALID exact current row — including populated
+    risks_flagged / waiting_on_job_ids JSON that round-trips through the
+    strict contract — still advances the chain normally.  The fix must never
+    degrade a well-formed authenticated report."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_child_with_landed_result(
+        db, child_id="TASK-R", parent_id="TASK-P",
+        agent="code_reviewer", session_id="sess-r", verdict="APPROVE",
+    )
+    db._conn.execute(
+        "UPDATE task_results SET risks_flagged = ?, waiting_on_job_ids = ? "
+        "WHERE task_id = ? AND session_id = ?",
+        ('["risk one", "risk two"]', '["JOB-1"]', "TASK-R", "sess-r"),
+    )
+    db._conn.commit()
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+
+    children = db.get_children("TASK-P")
+    assert len(children) == 2
+    assert db.get_task(children[1]).assigned_agent == "qa_engineer"
+    assert q.items == [children[1]]
+
+
+def test_mutation_malformed_exact_row_raising_strands_chain_reproduces_task5822(tmp_path, monkeypatch) -> None:
+    """Mutation-guard: without the fail-closed boundary (the pre-TASK-5823
+    reader re-raises the deserialization failure), the same malformed exact
+    row strands active_chain and suppresses the parent wake — reproducing the
+    TASK-5822 HIGH finding.  Pins the sensitivity of every malformed-row
+    fail-closed test to the exact boundary this fix adds."""
+    import json as _json
+
+    from runtime.infrastructure import database as db_module
+
+    def _no_boundary(self, task_id, agent=None, session_id=None):
+        # Faithful pre-fix reader: raw row → CompletionReport conversion with
+        # no deserialization/validation boundary.
+        if agent is not None and session_id is not None:
+            row = self._conn.execute(
+                "SELECT * FROM task_results WHERE task_id = ? "
+                "AND agent = ? AND session_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (task_id, agent, session_id),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT * FROM task_results WHERE task_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_completion_report(task_id, row)
+
+    monkeypatch.setattr(
+        db_module.Database, "get_latest_completion_report", _no_boundary,
+    )
+    db = Database(tmp_path / "x.db")
+    _seed_completed_child_with_malformed_exact_row(
+        db, corrupt_column="risks_flagged", corrupt_raw="not-json{{[",
+    )
+    q = _FakeQueue()
+
+    with pytest.raises(_json.JSONDecodeError):
+        _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    # Stranded: chain intact, no parent wake, no successor dispatch.
+    assert db.get_children("TASK-P") == ["TASK-R"]
+    assert db.get_task("TASK-P").active_chain is not None
+    assert q.items == []

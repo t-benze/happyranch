@@ -3966,8 +3966,20 @@ class Database:
         (the same authority the boot sweep / zombie reaper use) so a newer
         unrelated row can never substitute for the authenticated report.
         Without the scope the most-recent row is returned (legacy behavior).
+
+        THR-211 (TASK-5823): for the exact-fingerprint scope, a row whose
+        persisted structured fields fail deserialization/structural
+        validation (invalid JSON in ``risks_flagged`` / ``waiting_on_job_ids``,
+        or values failing the strict ``CompletionReport`` contract) has NO
+        acceptable authenticated report: it returns ``None`` so the caller's
+        existing fail-closed path applies (chain cleared, parent woken once,
+        task-wide evidence never consulted).  Only ``json.JSONDecodeError`` and
+        ``pydantic.ValidationError`` are converted; SQLite, transaction, I/O,
+        programming, and unrelated operational exceptions still propagate.
+        The unscoped (legacy) read keeps its prior behavior.
         """
-        from runtime.models import CompletionReport, LocalCiEvidence
+        from pydantic import ValidationError
+
         if agent is not None and session_id is not None:
             row = self._conn.execute(
                 "SELECT * FROM task_results WHERE task_id = ? "
@@ -3983,6 +3995,29 @@ class Database:
             ).fetchone()
         if row is None:
             return None
+        try:
+            return self._row_to_completion_report(task_id, row)
+        except (json.JSONDecodeError, ValidationError):
+            if agent is None or session_id is None:
+                # Unscoped (legacy) read: preserve prior behavior — a
+                # structurally malformed newest row still surfaces as an
+                # error rather than silently degrading the fallback.
+                raise
+            # Exact modern fingerprint: no acceptable authenticated report.
+            return None
+
+    def _row_to_completion_report(self, task_id: str, row) -> "CompletionReport":
+        """Build a CompletionReport from a task_results row dict.
+
+        ``risks_flagged`` / ``waiting_on_job_ids`` are persisted as JSON text
+        and re-deserialized here; malformed JSON or a value failing the strict
+        ``CompletionReport`` contract raises ``json.JSONDecodeError`` /
+        ``pydantic.ValidationError``, which the exact-scope caller converts to
+        the no-acceptable-report fail-closed outcome.  ``local_ci`` degrades
+        to None (documented behavior).
+        """
+        from runtime.models import CompletionReport, LocalCiEvidence
+
         keys = row.keys()
         # Safely parse local_ci from the task_results row.
         # A missing legacy column, NULL, empty/malformed JSON, wrong shape,

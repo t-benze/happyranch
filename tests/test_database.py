@@ -2747,3 +2747,74 @@ def test_get_latest_completion_report_scoped_by_agent_session(db):
     assert scoped2 is not None
     assert scoped2.output_summary == "auth retry"
     assert scoped2.verdict == "APPROVE"
+
+
+# ── TASK-5823: exact-scoped reader fail-closes on structural malformation ──
+
+def _insert_malformed_exact_result(db, *, column: str, raw) -> None:
+    db.insert_task_result(
+        task_id="TASK-MAL", agent="code_reviewer", session_id="sess-cur",
+        status="completed", output_summary="exact completed row",
+        confidence_score=90, verdict="APPROVE",
+    )
+    db._conn.execute(
+        f"UPDATE task_results SET {column} = ? "
+        "WHERE task_id = ? AND session_id = ?",
+        (raw, "TASK-MAL", "sess-cur"),
+    )
+    db._conn.commit()
+
+
+def test_get_latest_completion_report_scoped_malformed_risks_json_returns_none(db):
+    """TASK-5823: a modern exact-fingerprint row whose persisted risks_flagged
+    is invalid JSON has NO acceptable authenticated report — the scoped read
+    returns None (fail-closed) instead of raising."""
+    _insert_malformed_exact_result(db, column="risks_flagged", raw="not-json{{[")
+    assert db.get_latest_completion_report("TASK-MAL", "code_reviewer", "sess-cur") is None
+
+
+def test_get_latest_completion_report_scoped_wrong_shape_returns_none(db):
+    """Valid JSON of the wrong container shape (dict instead of list) fails the
+    strict CompletionReport contract and fail-closes to None on the scoped read."""
+    _insert_malformed_exact_result(db, column="risks_flagged", raw='{"not": "a list"}')
+    assert db.get_latest_completion_report("TASK-MAL", "code_reviewer", "sess-cur") is None
+
+
+def test_get_latest_completion_report_scoped_non_string_elements_returns_none(db):
+    """A list with invalid element types (list[int] instead of list[str])
+    fail-closes to None on the scoped read."""
+    _insert_malformed_exact_result(db, column="risks_flagged", raw="[1, 2, 3]")
+    assert db.get_latest_completion_report("TASK-MAL", "code_reviewer", "sess-cur") is None
+
+
+def test_get_latest_completion_report_scoped_confidence_out_of_range_returns_none(db):
+    """confidence_score outside the strict CompletionReport range (0..100) is a
+    structural validation failure — fail-closes to None on the scoped read."""
+    _insert_malformed_exact_result(db, column="confidence_score", raw=150)
+    assert db.get_latest_completion_report("TASK-MAL", "code_reviewer", "sess-cur") is None
+
+
+def test_get_latest_completion_report_unscoped_malformed_still_raises(db):
+    """Legacy unscoped read keeps its prior behavior: a structurally malformed
+    newest row still surfaces as JSONDecodeError — the TASK-5823 fail-closed
+    conversion applies ONLY to the modern exact-fingerprint scope."""
+    _insert_malformed_exact_result(db, column="risks_flagged", raw="not-json{{[")
+    with pytest.raises(ValueError):
+        db.get_latest_completion_report("TASK-MAL")
+
+
+def test_get_latest_completion_report_scoped_valid_row_round_trips_structured_fields(db):
+    """Positive control at the reader seam: a VALID exact row round-trips its
+    structured fields through the strict contract — the fail-closed conversion
+    must never degrade a well-formed authenticated report."""
+    db.insert_task_result(
+        task_id="TASK-OK", agent="code_reviewer", session_id="sess-cur",
+        status="completed", output_summary="approved", confidence_score=90,
+        verdict="APPROVE", risks_flagged=["risk one", "risk two"],
+        waiting_on_job_ids=["JOB-1"],
+    )
+    report = db.get_latest_completion_report("TASK-OK", "code_reviewer", "sess-cur")
+    assert report is not None
+    assert report.risks_flagged == ["risk one", "risk two"]
+    assert report.waiting_on_job_ids == ["JOB-1"]
+    assert report.verdict == "APPROVE"
