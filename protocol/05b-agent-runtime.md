@@ -942,9 +942,13 @@ factory** (``runtime/platform/backend_factory.py``):
   evidence so admission blocks). Verified residue is reported as
   guaranteed-cleanup residue (admission-blocking). Counters are authoritative
   where the kernel exposes them (``memory.peak``, ``cpu.stat``
-  ``usage_usec``, ``pids.current``); an absent counter falls back to the
-  sampled peak with ``sampled`` provenance only when a sample exists,
-  otherwise it is ``unavailable`` — never a fabricated value.
+  ``usage_usec``, ``pids.peak``); ``pids.current`` is only a best-effort
+  live count — merged with sampled evidence under ``sampled`` provenance
+  when ``pids.peak`` is absent, never labeled authoritative (an empty-tree
+  teardown value of 0 must not masquerade as a kernel peak). An absent
+  counter falls back to the sampled peak with ``sampled`` provenance only
+  when a sample exists, otherwise it is ``unavailable`` — never a
+  fabricated value.
 - ``runtime/platform/macos_process_group.py`` — honestly capped macOS
   backend: process-group launch, TERM/KILL bounded cleanup with
   group-ownership proof before signaling, identity-safe escaped-descendant
