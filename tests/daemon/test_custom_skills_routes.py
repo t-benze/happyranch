@@ -738,13 +738,46 @@ def _install_persistence_fault(monkeypatch, org, stage: str) -> None:
                 raise sqlite3.IntegrityError("injected event append failure")
             return real_append(*args, **kwargs)
         monkeypatch.setattr(service, "append_event", _append_fails)
+    elif stage == "commit":
+        # The FINAL commit boundary (TASK-5803): the persistence helper
+        # returns after writing the artifact, and the route then commits.
+        # A commit failure must still compensate the artifact this request
+        # wrote — compensation stays armed through successful commit.
+        real_conn = org.db._conn
+        class _CommitFailureProxy:
+            """Delegating connection proxy that fails the route's final
+            conn.commit() exactly once — but only after a BEGIN IMMEDIATE
+            transaction has written custom_skills rows in this request, so
+            reads, fixture commits, and teardown commits pass untouched.
+            Disarms after the single injected failure."""
+            def __init__(self):
+                self._begun = False
+                self._custom_write = False
+                self._failed = False
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+            def execute(self, sql, *args, **kwargs):
+                text = str(sql).strip().upper()
+                if text.startswith("BEGIN"):
+                    self._begun = True
+                if text.startswith(("INSERT", "UPDATE")) and "CUSTOM_SKILL" in text:
+                    self._custom_write = True
+                return real_conn.execute(sql, *args, **kwargs)
+            def commit(self):
+                if not self._failed and self._begun and self._custom_write:
+                    self._failed = True
+                    raise sqlite3.OperationalError("injected commit failure")
+                self._begun = False
+                self._custom_write = False
+                return real_conn.commit()
+        monkeypatch.setattr(org.db, "_conn", _CommitFailureProxy())
     else:
         raise AssertionError(f"unknown stage: {stage}")
 
 
 @pytest.mark.parametrize("stage", [
     "version-insert", "artifact-write", "current-pointer",
-    "first-event", "validated-event",
+    "first-event", "validated-event", "commit",
 ])
 @pytest.mark.parametrize("surface", [
     "human-create", "agent-create", "agent-update", "human-version",
@@ -758,7 +791,10 @@ def test_authoring_persistence_fault_leaves_zero_residue_and_no_false_409(
     error (500) and compensate the artifact + empty dirs this request created,
     with zero durable residue in version rows, events, current_version_id,
     parent/current lineage, artifacts, empty directories, materialization,
-    and any temporary parent."""
+    and any temporary parent. The `commit` stage (TASK-5803) fails the final
+    conn.commit() — compensation must stay armed through successful commit
+    so a commit failure rolls back the DB AND removes the request-written
+    artifact, not just the DB rows."""
     client, org = client_with_runtime
     real_conn = getattr(org.db, "_conn", org.db)
     body_two = "---\nname: Test skill\ndescription: test\n---\n\n# Test\n\nTwo\n"

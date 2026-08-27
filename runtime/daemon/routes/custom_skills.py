@@ -76,7 +76,7 @@ def _persist_validated_version(
     parent_id: int | None = None, task_id: str | None = None,
     session_id: str | None = None, brief_digest: str | None = None,
     event: str = "version_saved",
-) -> tuple[int, str, str]:
+) -> tuple[int, str, str, str]:
     """Append one validated version inside the caller's BEGIN IMMEDIATE block.
 
     Validation completed before this helper runs. The version row is inserted
@@ -94,6 +94,13 @@ def _persist_validated_version(
     back the transaction, leaving no durable version/event/current-pointer/
     artifact residue. The append-only uniqueness invariant is preserved,
     never relaxed.
+
+    Returns ``(version, content_hash, state, key)`` — the last element is the
+    deterministic content-addressed artifact key. The key crosses the helper
+    boundary so the CALLER keeps artifact compensation armed through its own
+    ``conn.commit()``: the artifact written by this request is removed if the
+    commit itself fails, and compensation is disarmed only by a successful
+    commit (see ``_commit_compensating_artifact``).
     """
     key = _artifact_key(slug, skill_md)
     artifact_written = False
@@ -125,10 +132,32 @@ def _persist_validated_version(
         )
         service.append_event(conn, skill_id, event, actor, version, task_id=task_id, session_id=session_id)
         service.append_event(conn, skill_id, "validated", actor, version, task_id=task_id, session_id=session_id)
-        return version, content_hash, state
+        return version, content_hash, state, key
     except Exception:
         if artifact_written:
             _remove_artifact(org, key)
+        raise
+
+
+def _commit_compensating_artifact(conn, org, key: str) -> None:
+    """Commit the caller's BEGIN IMMEDIATE transaction with artifact
+    compensation still armed.
+
+    The content artifact is a filesystem write outside the SQLite transaction:
+    by the time the route calls this, ``_persist_validated_version`` has
+    returned successfully and the artifact this request wrote is durable even
+    though the version row is still uncommitted. If ``conn.commit()`` fails,
+    the caller's rollback clears every DB row but would strand the artifact —
+    so this helper removes it (and any now-empty parent directories) before
+    re-raising, keeping the write atomic with zero durable residue. Under
+    BEGIN IMMEDIATE no other writer can commit between this request's artifact
+    write and its commit, so removing the artifact cannot delete a committed
+    row's content; compensation is disarmed by a successful commit.
+    """
+    try:
+        conn.commit()
+    except Exception:
+        _remove_artifact(org, key)
         raise
 
 def _recipients(org):
@@ -187,7 +216,7 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
         try:
             if existing:
                 skill_id = existing["id"]
-                version, digest_hash, validation = _persist_validated_version(
+                version, digest_hash, validation, key = _persist_validated_version(
                     conn, org=org, slug=skill_slug, skill_id=skill_id,
                     skill_md=skill_md, actor_kind="agent", actor=agent,
                     validation=validation_result, parent_id=existing["current_version_id"],
@@ -195,13 +224,13 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
                 )
             else:
                 skill_id = f"custom:{uuid.uuid4()}"; conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,origin_agent,created_at,created_by) VALUES (?,?,?,?,?,'agent',?,?,?)", (skill_id, slug, skill_slug, body["name"], body.get("description", ""), agent, service.now(), agent))
-                version, digest_hash, validation = _persist_validated_version(
+                version, digest_hash, validation, key = _persist_validated_version(
                     conn, org=org, slug=skill_slug, skill_id=skill_id,
                     skill_md=skill_md, actor_kind="agent", actor=agent,
                     validation=validation_result, task_id=task_id,
                     session_id=session_id, brief_digest=digest, event="created",
                 )
-            conn.commit()
+            _commit_compensating_artifact(conn, org, key)
         except Exception: conn.rollback(); raise
     version_row = conn.execute("SELECT * FROM custom_skill_versions WHERE id=?", (version,)).fetchone()
     skill_row = service.current(conn, skill_id)
@@ -250,12 +279,12 @@ def create_human(slug: str, body: dict = Body(...), org: OrgDep = None, _: None 
     skill_id = f"custom:{uuid.uuid4()}"; conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,created_at,created_by) VALUES (?,?,?,?,?,'human',?,?)", (skill_id,slug,skill_slug,body["name"],body.get("description", ""),service.now(),"founder"))
-        version, content_hash, validation = _persist_validated_version(
+        version, content_hash, validation, key = _persist_validated_version(
             conn, org=org, slug=skill_slug, skill_id=skill_id,
             skill_md=skill_md, actor_kind="human", actor="founder",
             validation=validation_result, event="created",
         )
-        conn.commit()
+        _commit_compensating_artifact(conn, org, key)
     except Exception: conn.rollback(); raise
     return {"skill_id":skill_id,"version_id":version,"content_hash":content_hash,"validation_state":validation,"hidden_reason":"no_eligibility_policy"}
 
@@ -294,12 +323,12 @@ def add_version(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: No
         _validation_error(validation_result)
     conn=getattr(org.db,"_conn",org.db); conn.execute("BEGIN IMMEDIATE")
     try:
-        version,content_hash,validation = _persist_validated_version(
+        version,content_hash,validation,key = _persist_validated_version(
             conn, org=org, slug=row["slug"], skill_id=skill_id,
             skill_md=skill_md, actor_kind="human", actor="founder",
             validation=validation_result, parent_id=row["version_id"],
         )
-        conn.commit()
+        _commit_compensating_artifact(conn, org, key)
     except Exception: conn.rollback(); raise
     return {"skill_id":skill_id,"version_id":version,"content_hash":content_hash,"validation_state":validation}
 
