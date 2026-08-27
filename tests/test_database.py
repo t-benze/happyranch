@@ -2710,3 +2710,40 @@ def test_get_latest_completion_report_returns_latest_row_local_ci(db):
     assert report is not None
     assert report.local_ci is not None
     assert report.output_summary == "second with local_ci"
+
+
+def test_get_latest_completion_report_scoped_by_agent_session(db):
+    """THR-211: the (agent, session_id) scoped lookup returns the exact
+    fingerprint row even when a newer unrelated row exists — the authority the
+    chain gate relies on. The unscoped lookup keeps the newest-row contract
+    for the non-chain readers, and an unknown fingerprint fails closed."""
+    db.insert_task_result(
+        task_id="TASK-MIX", agent="dev_agent", session_id="sess-auth",
+        status="completed", output_summary="auth ok", confidence_score=90,
+        verdict="APPROVE",
+    )
+    db.insert_task_result(
+        task_id="TASK-MIX", agent="other_agent", session_id="sess-other",
+        status="completed", output_summary="intruder", confidence_score=10,
+        verdict="REQUEST_CHANGES",
+    )
+    scoped = db.get_latest_completion_report("TASK-MIX", "dev_agent", "sess-auth")
+    assert scoped is not None
+    assert scoped.verdict == "APPROVE"
+    assert scoped.output_summary == "auth ok"
+    # Unscoped keeps the newest-row contract (used by non-chain readers).
+    unscoped = db.get_latest_completion_report("TASK-MIX")
+    assert unscoped is not None
+    assert unscoped.verdict == "REQUEST_CHANGES"
+    # Unknown fingerprint fails closed.
+    assert db.get_latest_completion_report("TASK-MIX", "dev_agent", "nope") is None
+    # A newer row within the SAME fingerprint still wins (retry semantics).
+    db.insert_task_result(
+        task_id="TASK-MIX", agent="dev_agent", session_id="sess-auth",
+        status="completed", output_summary="auth retry", confidence_score=95,
+        verdict="APPROVE",
+    )
+    scoped2 = db.get_latest_completion_report("TASK-MIX", "dev_agent", "sess-auth")
+    assert scoped2 is not None
+    assert scoped2.output_summary == "auth retry"
+    assert scoped2.verdict == "APPROVE"

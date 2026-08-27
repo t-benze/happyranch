@@ -641,7 +641,13 @@ never be masked by the deferred status transition:
   child's result is durable, without waiting for session finalization.
 - `_enqueue_parent_if_waiting` chain-advance branch may auto-advance a
   chain from a landed report while the leg row is still `in_progress`.
-  Recognition is **at-most-once**: the advance is gated to the parent's
+  The gate consumer carries the exact authenticated report (the
+  `(task_id, assigned_agent, current_session_id)`-scoped row) through
+  `compute_advance_action` and the carrier verdict-mismatch check — an
+  unrelated newer row (wrong agent or wrong session) can never advance or
+  clear the chain, and a non-authoritative passing row can never substitute
+  for the authenticated verdict. Recognition is **at-most-once**: the
+  advance is gated to the parent's
   newest child (the current chain leg), so the delayed session-finalization
   consumption of the same child can neither spawn a duplicate next leg nor
   prematurely clear the chain. The atomic `try_advance_chain` transaction
@@ -650,13 +656,17 @@ never be masked by the deferred status transition:
 
 **Authority (session-safe, fail-closed).** Recognition uses exactly the
 same fingerprint the boot sweep and zombie reaper use: the exact
-`(task_id, assigned_agent, current_session_id)` triple via
-`get_latest_task_result`, with report `status == "completed"`. It fails
+`(task_id, assigned_agent, current_session_id)` triple via the scoped
+`get_latest_completion_report(task_id, agent, session_id)` lookup, with
+report `status == "completed"`. It fails
 closed on absent agent/session, no row, prior-session or wrong-agent rows,
 `blocked` reports (the blocked-on-job park is a live state owned by the
 resume flow), unknown statuses, and malformed rows. It never infers
 terminality from prose, never suppresses a genuinely-running task with no
-terminal result, and never terminalizes the task row early.
+terminal result, and never terminalizes the task row early. The unscoped
+`get_latest_completion_report(task_id)` newest-row read remains available
+for non-chain readers (status/display, fan-out join context) and as the
+fallback when no agent/session fingerprint exists (legacy rows).
 
 **Required contract.** Do NOT set `tasks.status` terminal inside the
 completion POST: early transition risks lifecycle/restart/session races.

@@ -3952,19 +3952,35 @@ class Database:
         return d
 
     @_synchronized
-    def get_latest_completion_report(self, task_id: str):
+    def get_latest_completion_report(
+        self, task_id: str, agent: str | None = None, session_id: str | None = None,
+    ):
         """Return the most-recent task_results row for the given task as a
         CompletionReport, or None if no row exists.
 
         Used by the chain-advance logic in run_step to read the just-completed
         child's verdict without requiring the caller to know agent/session_id.
+
+        THR-211: when ``agent`` AND ``session_id`` are both provided the lookup
+        is scoped to the exact ``(task_id, agent, session_id)`` fingerprint
+        (the same authority the boot sweep / zombie reaper use) so a newer
+        unrelated row can never substitute for the authenticated report.
+        Without the scope the most-recent row is returned (legacy behavior).
         """
         from runtime.models import CompletionReport, LocalCiEvidence
-        row = self._conn.execute(
-            "SELECT * FROM task_results WHERE task_id = ? "
-            "ORDER BY id DESC LIMIT 1",
-            (task_id,),
-        ).fetchone()
+        if agent is not None and session_id is not None:
+            row = self._conn.execute(
+                "SELECT * FROM task_results WHERE task_id = ? "
+                "AND agent = ? AND session_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (task_id, agent, session_id),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT * FROM task_results WHERE task_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
         if row is None:
             return None
         keys = row.keys()

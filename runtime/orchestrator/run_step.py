@@ -1754,6 +1754,7 @@ def _advance_chain_for_completed_child(
     orch: "Orchestrator",
     parent_task_id: str,
     child_task_id: str,
+    report=None,
 ) -> str:
     """Inspect the parent's active_chain against the just-completed subtask's
     report. Either spawn the next leg ("advance") or clear the chain so the
@@ -1764,6 +1765,13 @@ def _advance_chain_for_completed_child(
 
     Only called when child.status == COMPLETED — FAILED subtasks are handled
     by the bounded-wake logic in _enqueue_parent_if_waiting (TASK-573).
+
+    THR-211: ``report`` carries the exact authenticated CompletionReport for
+    the child's current session (``_child_landed_terminal_report``). When it
+    is provided it is authoritative — a newer unrelated row can never advance
+    or clear the chain. When None (no fingerprint exists, e.g. legacy rows
+    without agent/session), the most-recent-row read is kept for
+    compatibility.
     """
     from runtime.models import TaskRecord
     from runtime.orchestrator.chain import (
@@ -1777,7 +1785,8 @@ def _advance_chain_for_completed_child(
         return "wake"
 
     chain = ChainState.deserialize(parent.active_chain)
-    report = orch._db.get_latest_completion_report(child_task_id)
+    if report is None:
+        report = orch._db.get_latest_completion_report(child_task_id)
     if report is None:
         orch._db.update_task_active_chain(parent_task_id, None)
         return "wake"
@@ -1876,19 +1885,26 @@ def _is_carrier(orch: "Orchestrator", parent: "TaskRecord") -> bool:
 
 def _carrier_fail_on_verdict_mismatch(
     orch: "Orchestrator", parent: "TaskRecord",
-    child_task_id: str, chain_snapshot: str | None,
+    child_task_id: str, chain_snapshot: str | None, report=None,
 ) -> bool:
     """After a carrier's chain leg completed but the chain did not advance
     (outcome == "wake"), check if this was a verdict mismatch.  If so, fail
     the carrier immediately (fail-closed at carrier).  Returns True if the
-    carrier was failed, False otherwise (including non-carriers)."""
+    carrier was failed, False otherwise (including non-carriers).
+
+    THR-211: ``report`` carries the exact authenticated CompletionReport for
+    the child's current session when one exists; it is authoritative over the
+    most-recent-row read, which remains the fallback when no fingerprint
+    exists (compatibility with pre-THR-211 behavior).
+    """
     if chain_snapshot is None:
         return False
     if not _is_carrier(orch, parent):
         return False
     from runtime.orchestrator.chain import ChainState, compute_advance_action
     chain = ChainState.deserialize(chain_snapshot)
-    report = orch._db.get_latest_completion_report(child_task_id)
+    if report is None:
+        report = orch._db.get_latest_completion_report(child_task_id)
     if report is None:
         # No report for the completed child — fail-closed only when a verdict
         # expectation exists (pre-existing semantics).
@@ -2093,11 +2109,9 @@ def _format_slice_retry_exhausted_reason(
     )
 
 
-def _child_has_landed_terminal_result(orch: "Orchestrator", child: "TaskRecord") -> bool:
-    """THR-211: True when the child's CURRENT session has durably landed a
-    structured terminal completion report even though the task row still reads
-    ``in_progress`` (the status transition is deferred to executor/session
-    finalization by ``_consume_completion_report``).
+def _child_landed_terminal_report(orch: "Orchestrator", child: "TaskRecord"):
+    """THR-211: return the exact authenticated CompletionReport for the
+    child's CURRENT session, or None when it is not dispatch-terminal.
 
     Authority is deliberately narrow and session-safe: the exact
     ``(task_id, assigned_agent, current_session_id)`` triple — the same
@@ -2105,13 +2119,29 @@ def _child_has_landed_terminal_result(orch: "Orchestrator", child: "TaskRecord")
     status == ``completed``.  Fails closed on absent agent/session, no row,
     blocked reports (the blocked_on_job park is a live state owned by the
     resume flow), or any other status.  Never infers terminality from prose.
+
+    The returned report is the one the chain/gate consumers must use: a newer
+    unrelated (wrong-agent/wrong-session) row can never substitute for it.
     """
     if child is None or not child.assigned_agent or not child.current_session_id:
-        return False
-    row = orch._db.get_latest_task_result(
+        return None
+    report = orch._db.get_latest_completion_report(
         child.id, child.assigned_agent, child.current_session_id,
     )
-    return row is not None and row.get("status") == "completed"
+    if report is None or report.status != "completed":
+        return None
+    return report
+
+
+def _child_has_landed_terminal_result(orch: "Orchestrator", child: "TaskRecord") -> bool:
+    """THR-211: True when the child's CURRENT session has durably landed a
+    structured terminal completion report even though the task row still reads
+    ``in_progress`` (the status transition is deferred to executor/session
+    finalization by ``_consume_completion_report``).
+
+    See ``_child_landed_terminal_report`` for the authority predicate.
+    """
+    return _child_landed_terminal_report(orch, child) is not None
 
 
 def _enqueue_parent_if_waiting(
@@ -2196,16 +2226,24 @@ def _enqueue_parent_if_waiting(
         if is_chain_trigger:
             children_ids = orch._db.get_children(parent.id)
             if children_ids and child.id == children_ids[-1]:
+                # THR-211: carry the EXACT authenticated report (the
+                # (task_id, assigned_agent, current_session_id) fingerprint
+                # scoped row) through the chain gate so a newer unrelated
+                # row can never advance or clear the chain.  Falls back to
+                # the newest-row read only when no fingerprint exists.
+                authenticated_report = _child_landed_terminal_report(orch, child)
                 # Snapshot the chain BEFORE advance (which may clear it).
                 chain_snapshot = parent.active_chain
                 outcome = _advance_chain_for_completed_child(
                     orch=orch, parent_task_id=parent.id, child_task_id=task_id,
+                    report=authenticated_report,
                 )
                 if outcome == "advance":
                     return  # next leg spawned; parent stays in_progress(delegated)
                 # outcome == "wake" → chain cleared; carrier fail-closed?
                 if _carrier_fail_on_verdict_mismatch(
                     orch, parent, task_id, chain_snapshot,
+                    report=authenticated_report,
                 ):
                     return  # carrier failed; outer _enqueue_parent_if_waiting skipped
                 # Chain complete + verdict matched → carrier auto-completes

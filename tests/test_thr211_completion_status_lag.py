@@ -506,3 +506,207 @@ def test_failed_chain_advance_rolls_back_without_partial_state(tmp_path, monkeyp
     chain = ChainState.deserialize(db.get_task("TASK-P").active_chain)
     assert chain.step_index == 1
     assert q.items == ["TASK-P"]
+
+
+# ---------------------------------------------------------------------------
+# mixed-row authenticity — a newer unrelated row can never gate the chain
+# (TASK-5815 fix-forward of the TASK-5814 HIGH finding)
+# ---------------------------------------------------------------------------
+
+def test_mixed_rows_newer_wrong_agent_failing_cannot_override_auth_approve(tmp_path) -> None:
+    """Direction A (reviewer reproduction): the exact-current authenticated
+    APPROVE is the chain gate's evidence even when a NEWER wrong-agent /
+    wrong-session REQUEST_CHANGES row exists. The chain must advance from the
+    authenticated passing report — never clear or advance from the unrelated
+    newer row (which is what the unscoped newest-row read would have done)."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_child_with_landed_result(
+        db, child_id="TASK-R", parent_id="TASK-P", agent="code_reviewer",
+        session_id="sess-r", verdict="APPROVE",
+    )
+    # Newer unrelated row: different agent AND different session, failing.
+    db.insert_task_result(
+        task_id="TASK-R", agent="intruder_agent", session_id="sess-intruder",
+        status="completed", confidence_score=10,
+        output_summary="unrelated newer row", verdict="REQUEST_CHANGES",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+
+    children = db.get_children("TASK-P")
+    assert len(children) == 2, f"chain wrongly cleared: {children}"
+    next_child = db.get_task(children[1])
+    assert next_child.assigned_agent == "qa_engineer"
+    # The prior-leg context must cite the AUTHENTICATED verdict (APPROVE),
+    # not the unrelated newer row's REQUEST_CHANGES.
+    assert "APPROVE" in next_child.brief
+    assert "REQUEST_CHANGES" not in next_child.brief
+    chain = ChainState.deserialize(db.get_task("TASK-P").active_chain)
+    assert chain.step_index == 2
+    assert q.items == [children[1]]
+    # The audit row records the authenticated verdict.
+    audit = db.get_audit_logs_by_action("chain_auto_advance")
+    assert audit and audit[-1]["payload"]["triggering_verdict"] == "APPROVE"
+
+
+def test_mixed_rows_newer_wrong_session_same_agent_cannot_override_auth_approve(tmp_path) -> None:
+    """A newer row from the SAME agent but a DIFFERENT session is equally
+    unrelated — the exact (task_id, assigned_agent, current_session_id)
+    fingerprint must win, not merely (task_id, agent)."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_child_with_landed_result(
+        db, child_id="TASK-R", parent_id="TASK-P", agent="code_reviewer",
+        session_id="sess-r", verdict="APPROVE",
+    )
+    # Newer row, same agent, different (foreign) session, failing.
+    db.insert_task_result(
+        task_id="TASK-R", agent="code_reviewer", session_id="sess-foreign",
+        status="completed", confidence_score=10,
+        output_summary="unrelated session row", verdict="REQUEST_CHANGES",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+
+    children = db.get_children("TASK-P")
+    assert len(children) == 2, f"chain wrongly cleared: {children}"
+    assert db.get_task(children[1]).assigned_agent == "qa_engineer"
+    chain = ChainState.deserialize(db.get_task("TASK-P").active_chain)
+    assert chain.step_index == 2
+    assert q.items == [children[1]]
+
+
+def test_mixed_rows_newer_unrelated_passing_cannot_override_auth_failing(tmp_path) -> None:
+    """Direction B: the exact-current authenticated REQUEST_CHANGES fails the
+    chain closed (chain cleared + parent woken, no QA leg) even when a NEWER
+    unrelated APPROVE row exists — a non-authoritative passing row can never
+    advance the chain."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_child_with_landed_result(
+        db, child_id="TASK-R", parent_id="TASK-P", agent="code_reviewer",
+        session_id="sess-r", verdict="REQUEST_CHANGES",
+    )
+    # Newer unrelated row: wrong agent/session, PASSING verdict.
+    db.insert_task_result(
+        task_id="TASK-R", agent="intruder_agent", session_id="sess-intruder",
+        status="completed", confidence_score=10,
+        output_summary="unrelated newer row", verdict="APPROVE",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+
+    # No QA leg spawned; chain cleared; parent woken — fail closed.
+    assert db.get_children("TASK-P") == ["TASK-R"]
+    assert db.get_task("TASK-P").active_chain is None
+    assert q.items == ["TASK-P"]
+
+
+def test_mixed_rows_delayed_finalization_does_not_duplicate_advance(tmp_path) -> None:
+    """Mixed-row variant of the at-most-once proof: after the recognition
+    advance driven by the authenticated APPROVE, the delayed session
+    finalization (child row now COMPLETED) must not spawn a duplicate leg or
+    clear the chain — even with the unrelated newer row still present."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_child_with_landed_result(
+        db, child_id="TASK-R", parent_id="TASK-P", agent="code_reviewer",
+        session_id="sess-r", verdict="APPROVE",
+    )
+    db.insert_task_result(
+        task_id="TASK-R", agent="intruder_agent", session_id="sess-intruder",
+        status="completed", confidence_score=10,
+        output_summary="unrelated newer row", verdict="REQUEST_CHANGES",
+    )
+    q = _FakeQueue()
+    orch = _make_orch(db, q)
+
+    # First consumer call during the lag window → recognition advance.
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+    children_after_first = db.get_children("TASK-P")
+    assert len(children_after_first) == 2
+
+    # Delayed finalization + same child re-trigger → still exactly one leg.
+    db.update_task("TASK-R", status=TaskStatus.COMPLETED)
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+
+    children = db.get_children("TASK-P")
+    assert len(children) == 2, f"duplicate leg spawned: {children}"
+    chain = ChainState.deserialize(db.get_task("TASK-P").active_chain)
+    assert chain.step_index == 2
+    assert db.get_task("TASK-P").active_chain is not None
+    assert q.items == [children_after_first[1]]
+
+
+def test_mixed_rows_failed_advance_rolls_back_then_retry_advances_once(tmp_path, monkeypatch) -> None:
+    """Retry/exception behavior under mixed rows: if the atomic chain-advance
+    write fails, no partial child/link/audit/chain state remains and the
+    parent wakes once; a later retry (write succeeds) produces exactly one
+    advance from the SAME authenticated report."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_child_with_landed_result(
+        db, child_id="TASK-R", parent_id="TASK-P", agent="code_reviewer",
+        session_id="sess-r", verdict="APPROVE",
+    )
+    db.insert_task_result(
+        task_id="TASK-R", agent="intruder_agent", session_id="sess-intruder",
+        status="completed", confidence_score=10,
+        output_summary="unrelated newer row", verdict="REQUEST_CHANGES",
+    )
+    real_try_advance_chain = Database.try_advance_chain
+    state = {"fail": True}
+
+    def _flaky(*args, **kwargs):
+        if state["fail"]:
+            return False  # simulate the transactional write failing
+        return real_try_advance_chain(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "runtime.infrastructure.database.Database.try_advance_chain", _flaky,
+    )
+    q = _FakeQueue()
+    orch = _make_orch(db, q)
+
+    # First attempt fails → rollback, chain intact at step 1, parent woken once.
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+    assert db.get_children("TASK-P") == ["TASK-R"]
+    chain = ChainState.deserialize(db.get_task("TASK-P").active_chain)
+    assert chain.step_index == 1
+    assert q.items == ["TASK-P"]
+
+    # Retry succeeds → exactly one advance from the authenticated APPROVE.
+    state["fail"] = False
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+    children = db.get_children("TASK-P")
+    assert len(children) == 2
+    assert db.get_task(children[1]).assigned_agent == "qa_engineer"
+    chain = ChainState.deserialize(db.get_task("TASK-P").active_chain)
+    assert chain.step_index == 2
+    assert q.items == ["TASK-P", children[1]]
