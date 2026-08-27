@@ -21,7 +21,15 @@ Design contract:
   resolve_wake_set) for the pre-change replay.
 * DETERMINISTIC. All windows are half-open ``[start, end)`` over parsed UTC
   datetimes; ``as_of`` is explicit (defaults to now only at the CLI boundary,
-  never inside the measurement functions).
+  never inside the measurement functions). Every population that claims the
+  observation instant is bounded by the half-open cutoff
+  ``min(as_of, window_end)`` — an interim record never contains rows after
+  its stated ``as_of``.
+* RANGE-AWARE COVERAGE. GH-688 Phase-1 coalescing lets ONE consumed REPLY
+  cover an inclusive sequence range; coverage uses the authoritative
+  immutable claimed range (the ``thread_reply_wake_claimed`` audit's
+  ``from_seq..through_seq``, floor = the invocation's ``triggering_seq``),
+  never an exact-``triggering_seq`` join.
 
 Ratified gates (THR-198 seq 87/88/108):
 
@@ -193,6 +201,95 @@ def _pct(part: int, total: int) -> float | None:
     return round(100.0 * part / total, 1)
 
 
+def _seq_covered(
+    ranges: list[tuple[str, str, int, int]], thread_id: str, seq: int,
+) -> bool:
+    """True when any consumed-REPLY range covers ``seq`` in ``thread_id``.
+
+    Ranges are inclusive ``[from_seq, through_seq]`` — the authoritative
+    claimed/settled coverage of a coalesced wake."""
+    return any(
+        tid == thread_id and from_seq <= seq <= through_seq
+        for (tid, _agent, from_seq, through_seq) in ranges
+    )
+
+
+def _consumed_reply_ranges(
+    conn: sqlite3.Connection,
+    invocations: list[sqlite3.Row],
+    *,
+    enqueued_start: datetime,
+    enqueued_end: datetime,
+    consumed_before: datetime | None,
+) -> list[tuple[str, str, int, int]]:
+    """Inclusive ``(thread_id, agent_name, from_seq, through_seq)`` coverage
+    ranges of every ``purpose='reply'`` invocation that reached
+    ``status='consumed'`` with ``enqueued_at`` in the half-open enqueued
+    window, observable by ``consumed_before`` (``None`` = no bound).
+
+    GH-688 Phase-1 coalescing means one consumed REPLY presents/handles an
+    inclusive sequence range. The authoritative immutable claimed range is
+    captured at claim time: ``thread_reply_wake_claimed`` audit
+    ``from_seq``/``through_seq``, matched to the invocation by its 8-char
+    ``token_prefix`` within the same ``(thread_id, agent_name)`` pair
+    (the audit deliberately stores only the prefix). The range floor equals
+    the invocation's ``triggering_seq`` (every mint path seeds it as
+    ``acknowledged + 1`` and the watermark cannot move between mint and
+    claim). A consumed invocation with no matching claim audit — a
+    queued-settled wake that was never claimed, or a legacy pre-coalescing
+    row — covers only its own ``triggering_seq``: an honest
+    under-approximation that never fabricates coverage.
+    """
+    claimed_by_pair_prefix: dict[tuple[str, str, str], tuple[int, int]] = {}
+    for row in conn.execute(
+        "SELECT task_id, agent, payload FROM audit_log "
+        "WHERE action = 'thread_reply_wake_claimed'",
+    ).fetchall():
+        if not row["payload"]:
+            continue
+        try:
+            payload = json.loads(row["payload"])
+        except json.JSONDecodeError:
+            continue
+        prefix = payload.get("token_prefix")
+        from_seq = payload.get("from_seq")
+        through_seq = payload.get("through_seq")
+        if not prefix or from_seq is None or through_seq is None:
+            continue
+        claimed_by_pair_prefix[(row["task_id"], row["agent"], str(prefix))] = (
+            int(from_seq),
+            int(through_seq),
+        )
+
+    ranges: list[tuple[str, str, int, int]] = []
+    for row in invocations:
+        if row["purpose"] != _PURPOSE_REPLY:
+            continue
+        if row["status"] != _STATUS_CONSUMED:
+            continue
+        enqueued = parse_timestamp(row["enqueued_at"])
+        if not (enqueued_start <= enqueued < enqueued_end):
+            continue
+        if consumed_before is not None:
+            consumed_at = row["consumed_at"]
+            if not consumed_at:
+                continue
+            if not (parse_timestamp(consumed_at) < consumed_before):
+                continue
+        token = row["invocation_token"] or ""
+        claimed = claimed_by_pair_prefix.get(
+            (row["thread_id"], row["agent_name"], token[:8]),
+        )
+        trig = int(row["triggering_seq"])
+        if claimed is None:
+            ranges.append((row["thread_id"], row["agent_name"], trig, trig))
+        else:
+            ranges.append(
+                (row["thread_id"], row["agent_name"], claimed[0], claimed[1]),
+            )
+    return ranges
+
+
 # ---------------------------------------------------------------------------
 # Live (post-change) measurement over [epoch, window_end)
 # ---------------------------------------------------------------------------
@@ -239,6 +336,11 @@ def measure_live_window(
     window_start = parse_timestamp(epoch)
     window_end = add_calendar_months(window_start, window_months)
     as_of_dt = parse_timestamp(as_of) if as_of else utc_now()
+    # The observation cutoff: every population/diagnostic that claims the
+    # observation instant is bounded by min(as_of, window_end) (half-open).
+    # An interim run never includes rows after its stated as_of; a completed
+    # window (as_of >= window_end) still caps at window_end.
+    observation_end = min(as_of_dt, window_end)
 
     # Mentioned messages (live): kind='message' with a non-empty mentions_json.
     mentioned: dict[tuple[str, int], bool] = {}  # (thread_id, seq) -> mentioned
@@ -251,7 +353,7 @@ def measure_live_window(
         if row["kind"] != "message":
             continue
         created = parse_timestamp(row["created_at"])
-        if not (window_start <= created < window_end):
+        if not (window_start <= created < observation_end):
             continue
         key = (row["thread_id"], row["seq"])
         if row["speaker"] == "founder":
@@ -263,14 +365,14 @@ def measure_live_window(
 
     invocations = [
         row for row in conn.execute(
-            "SELECT thread_id, agent_name, triggering_seq, purpose, status, "
-            "enqueued_at FROM thread_invocations",
+            "SELECT thread_id, agent_name, invocation_token, triggering_seq, "
+            "purpose, status, enqueued_at, consumed_at FROM thread_invocations",
         ).fetchall()
     ]
     reply_in_window = [
         row for row in invocations
         if row["purpose"] == _PURPOSE_REPLY
-        and window_start <= parse_timestamp(row["enqueued_at"]) < window_end
+        and window_start <= parse_timestamp(row["enqueued_at"]) < observation_end
     ]
     org_wakes = len(reply_in_window)
     org_declines = sum(1 for row in reply_in_window if row["status"] == _STATUS_DECLINED)
@@ -283,15 +385,22 @@ def measure_live_window(
         1 for row in mentioned_wakes if row["status"] == _STATUS_DECLINED
     )
 
-    # G2 coverage: founder message covered iff ≥1 purpose='reply' invocation
-    # for that message reached status='consumed' (the "698 founder messages
-    # with ≥1 consumed REPLY" definition, TASK-5647 §8).
-    consumed_keys: set[tuple[str, int]] = {
-        (row["thread_id"], row["triggering_seq"])
-        for row in invocations
-        if row["purpose"] == _PURPOSE_REPLY and row["status"] == _STATUS_CONSUMED
-    }
-    founder_covered = sum(1 for key in founder if key in consumed_keys)
+    # G2 coverage: founder message covered iff a consumed REPLY's authoritative
+    # claimed/settled inclusive delivery range contains its sequence (the
+    # "698 founder messages with ≥1 consumed REPLY" definition, TASK-5647 §8,
+    # read range-aware: Phase-1 coalescing lets ONE consumed REPLY cover an
+    # inclusive sequence range — see _consumed_reply_ranges). Only REPLYs
+    # observable by the observation instant count.
+    consumed_ranges = _consumed_reply_ranges(
+        conn,
+        invocations,
+        enqueued_start=window_start,
+        enqueued_end=observation_end,
+        consumed_before=observation_end,
+    )
+    founder_covered = sum(
+        1 for (tid, seq) in founder if _seq_covered(consumed_ranges, tid, seq)
+    )
     founder_uncovered = len(founder) - founder_covered
 
     notes: list[str] = []
@@ -304,7 +413,8 @@ def measure_live_window(
         if founder_uncovered:
             notes.append(
                 f"G2: {founder_uncovered} in-window founder message(s) have no "
-                "consumed REPLY yet — interim only while the window is open."
+                "consumed REPLY covering them yet — interim only while the "
+                "window is open."
             )
     else:
         notes.append("G2 denominator is zero (no founder messages in window).")
@@ -415,8 +525,8 @@ def replay_baseline(
 
     invocations = [
         row for row in conn.execute(
-            "SELECT thread_id, agent_name, triggering_seq, purpose, status, "
-            "enqueued_at FROM thread_invocations",
+            "SELECT thread_id, agent_name, invocation_token, triggering_seq, "
+            "purpose, status, enqueued_at, consumed_at FROM thread_invocations",
         ).fetchall()
     ]
     reply_in_window = [
@@ -475,12 +585,22 @@ def replay_baseline(
                 projected_declines += 1
 
     # Zero-loss (G2): every founder message with ≥1 baseline consumed REPLY
-    # Zero-loss (G2): every founder message with ≥1 baseline consumed REPLY
     # must keep ≥1 replier under the Phase-2 wake set. A violation whose
     # baseline repliers are ALL absent from the reconstructed write-time
     # roster is a roster-under-approximation artifact (removed/re-added
     # participants), not a routing failure — counted separately so the record
     # never presents reconstruction noise as a genuine silence risk.
+    # Baseline replying set is derived from the authoritative claimed ranges
+    # of the window's consumed REPLYs (range-aware: a coalesced founder
+    # message is covered by the wake that claimed it — the 698-style
+    # population, TASK-5647 §8), never from the Phase-2 wake set.
+    consumed_ranges = _consumed_reply_ranges(
+        conn,
+        invocations,
+        enqueued_start=start,
+        enqueued_end=end,
+        consumed_before=None,
+    )
     violations = 0
     artifact_candidates = 0
     founder_replied = 0
@@ -488,13 +608,10 @@ def replay_baseline(
         if row["speaker"] != "founder":
             continue
         key = (row["thread_id"], row["seq"])
-        # Baseline replying set = the agents who actually reached a consumed
-        # REPLY for this message in the window (the "698 founder messages with
-        # ≥1 consumed REPLY" population, TASK-5647 §8) — derived from the
-        # baseline invocations, never from the Phase-2 wake set.
         baseline_repliers = {
-            agent for (tid, seq, agent) in outcome
-            if (tid, seq) == key and outcome[(tid, seq, agent)] == _STATUS_CONSUMED
+            agent
+            for (tid, agent, from_seq, through_seq) in consumed_ranges
+            if tid == key[0] and from_seq <= key[1] <= through_seq
         }
         if not baseline_repliers:
             continue  # not part of the 698-style population
@@ -604,7 +721,7 @@ def format_markdown(record: dict[str, Any]) -> str:
             "",
             "### G2 — founder-message coverage",
             f"- founder_messages: {live['founder_messages']}",
-            f"- covered (≥1 consumed REPLY): {live['founder_covered']}",
+            f"- covered (≥1 consumed REPLY covering it): {live['founder_covered']}",
             f"- uncovered (interim): {live['founder_uncovered']}",
             "",
             "### G3 — org-wide decline (report only)",

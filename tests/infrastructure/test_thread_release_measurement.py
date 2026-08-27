@@ -51,10 +51,22 @@ def _conn() -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             thread_id TEXT NOT NULL,
             agent_name TEXT NOT NULL,
+            invocation_token TEXT NOT NULL UNIQUE,
             triggering_seq INTEGER NOT NULL,
             purpose TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending',
-            enqueued_at TEXT NOT NULL
+            enqueued_at TEXT NOT NULL,
+            started_at TEXT,
+            consumed_at TEXT,
+            decline_reason TEXT
+        );
+        CREATE TABLE audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            action TEXT NOT NULL,
+            payload TEXT,
+            timestamp TEXT NOT NULL
         );
         """
     )
@@ -91,11 +103,39 @@ def _add_message(
 def _add_invocation(
     conn, thread_id: str, agent: str, triggering_seq: int, enqueued_at: str, *,
     purpose: str = "reply", status: str = "consumed",
+    token: str | None = None, consumed_at: str | None = None,
 ) -> None:
+    invocation_token = token or f"tok-{thread_id}-{agent}-{triggering_seq}-{enqueued_at}"
+    if consumed_at is None and status == "consumed":
+        consumed_at = enqueued_at
     conn.execute(
-        "INSERT INTO thread_invocations (thread_id, agent_name, triggering_seq, "
-        "purpose, status, enqueued_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (thread_id, agent, triggering_seq, purpose, status, enqueued_at),
+        "INSERT INTO thread_invocations (thread_id, agent_name, invocation_token, "
+        "triggering_seq, purpose, status, enqueued_at, consumed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (thread_id, agent, invocation_token, triggering_seq, purpose, status,
+         enqueued_at, consumed_at),
+    )
+
+
+def _add_claim_audit(
+    conn, thread_id: str, agent: str, token: str, from_seq: int, through_seq: int,
+    timestamp: str,
+) -> None:
+    """Insert the authoritative immutable claimed-range audit the harness
+    reads for coalesced REPLY coverage (mirrors
+    ``Database.claim_conversational_reply``'s ``thread_reply_wake_claimed``
+    payload shape: agent, from_seq, through_seq, 8-char token_prefix)."""
+    conn.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES (?, ?, 'thread_reply_wake_claimed', ?, ?)",
+        (thread_id, agent,
+         json.dumps({
+             "agent_name": agent,
+             "from_seq": from_seq,
+             "through_seq": through_seq,
+             "token_prefix": token[:8],
+         }),
+         timestamp),
     )
 
 
@@ -325,6 +365,103 @@ def test_partial_window_is_interim_and_complete_after_end() -> None:
     assert record_mid["observation"] == "interim"
 
 
+def test_as_of_cutoff_excludes_post_as_of_rows() -> None:
+    """[MEDIUM regression] An interim run bounded by as_of: messages and
+    wakes between as_of and window_end never enter ANY population — the
+    record is reproducible at its stated observation instant."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    # Before as_of: founder message + consumed REPLY.
+    _add_message(conn, "T1", 1, "founder", "2026-08-27T00:00:00Z")
+    _add_invocation(conn, "T1", "alice", 1, "2026-08-27T00:01:00Z",
+                    token="aaa11111", consumed_at="2026-08-27T00:02:00Z")
+    _add_claim_audit(conn, "T1", "alice", "aaa11111", 1, 1,
+                     "2026-08-27T00:01:30Z")
+    # Between as_of and window_end: a founder message + its REPLY, and a
+    # mentioned message + its declined wake — ALL must be excluded.
+    _add_message(conn, "T1", 2, "founder", "2026-08-27T18:00:00Z")
+    _add_invocation(conn, "T1", "alice", 2, "2026-08-27T18:01:00Z",
+                    token="bbb22222", consumed_at="2026-08-27T18:02:00Z")
+    _add_claim_audit(conn, "T1", "alice", "bbb22222", 2, 2,
+                     "2026-08-27T18:01:30Z")
+    _add_message(conn, "T1", 3, "founder", "2026-08-27T19:00:00Z",
+                 mentions='["alice"]')
+    _add_invocation(conn, "T1", "alice", 3, "2026-08-27T19:01:00Z",
+                    token="ccc33333", status="declined",
+                    consumed_at="2026-08-27T19:02:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.interim is True
+    assert live.founder_messages == 1  # seq 2 excluded
+    assert live.founder_covered == 1
+    assert live.founder_uncovered == 0
+    assert live.mentioned_messages == 0  # seq 3 excluded
+    assert live.mentioned_wakes == 0
+    assert live.org_wakes == 1  # only seq 1's REPLY; seqs 2/3 wakes excluded
+    assert live.org_declines == 0
+
+
+def test_as_of_cutoff_is_half_open() -> None:
+    """[MEDIUM regression] Rows exactly AT the observation cutoff are
+    excluded (half-open [start, as_of)): a message at as_of, a wake at as_of,
+    and a REPLY consumed at as_of all fall outside the interim record."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    # Message before as_of; its REPLY is consumed EXACTLY at as_of → the reply
+    # is not observable at as_of → the message is uncovered at that instant.
+    _add_message(conn, "T1", 1, "founder", "2026-08-27T11:59:59Z")
+    _add_invocation(conn, "T1", "alice", 1, "2026-08-27T11:59:59.5Z",
+                    token="aaa11111", consumed_at="2026-08-27T12:00:00Z")
+    _add_claim_audit(conn, "T1", "alice", "aaa11111", 1, 1,
+                     "2026-08-27T11:59:59.6Z")
+    # Message EXACTLY at as_of → excluded from the founder population.
+    _add_message(conn, "T1", 2, "founder", "2026-08-27T12:00:00Z")
+    # Wake EXACTLY at as_of → excluded from org-wide wakes.
+    _add_invocation(conn, "T1", "alice", 2, "2026-08-27T12:00:00Z",
+                    token="bbb22222", status="declined",
+                    consumed_at="2026-08-27T12:00:01Z")
+    # Wake just BEFORE as_of → included.
+    _add_invocation(conn, "T1", "alice", 2, "2026-08-27T11:59:58Z",
+                    token="eee55555", status="declined",
+                    consumed_at="2026-08-27T11:59:59Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.founder_messages == 1  # seq 2 (exactly at as_of) excluded
+    assert live.founder_covered == 0  # consumed exactly at as_of is excluded
+    assert live.founder_uncovered == 1
+    # Two in-window wakes before as_of (the consumed 11:59:59.5 REPLY and the
+    # declined 11:59:58 wake); the wake exactly AT as_of is excluded.
+    assert live.org_wakes == 2
+    assert live.org_declines == 1
+
+
+def test_completed_window_still_caps_at_window_end() -> None:
+    """[MEDIUM regression] A completed window (as_of past window_end) caps at
+    window_end: rows between window_end and as_of never enter a population,
+    and the observation is 'complete', not interim."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 1, "founder", "2026-09-26T00:00:00Z")
+    _add_invocation(conn, "T1", "alice", 1, "2026-09-26T00:01:00Z",
+                    token="aaa11111", consumed_at="2026-09-26T00:02:00Z")
+    _add_claim_audit(conn, "T1", "alice", "aaa11111", 1, 1,
+                     "2026-09-26T00:01:30Z")
+    # After window_end, before as_of: excluded by the window_end cap.
+    _add_message(conn, "T1", 2, "founder", "2026-09-27T00:00:00Z")
+    _add_invocation(conn, "T1", "alice", 2, "2026-09-27T00:01:00Z",
+                    token="bbb22222", consumed_at="2026-09-27T00:02:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-09-27T00:00:00Z")
+    assert live.interim is False
+    assert live.founder_messages == 1  # seq 2 after window_end excluded
+    assert live.founder_covered == 1
+    assert live.org_wakes == 1
+
+
+
 def test_g2_founder_coverage_live() -> None:
     conn = _conn()
     _add_thread(conn, "T1")
@@ -342,7 +479,157 @@ def test_g2_founder_coverage_live() -> None:
     assert live.founder_messages == 2
     assert live.founder_covered == 1
     assert live.founder_uncovered == 1
-    assert any("no consumed REPLY yet" in note for note in live.notes)
+    assert any("no consumed REPLY" in note for note in live.notes)
+
+
+def test_g2_coalesced_consumed_reply_covers_inclusive_range() -> None:
+    """[HIGH regression] One consumed coalesced REPLY covers EVERY founder
+    message inside its authoritative claimed range — both boundaries and the
+    middle — never only its exact triggering_seq. A founder message outside
+    the range stays uncovered."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 1, "founder", "2026-08-27T00:00:00Z")
+    _add_message(conn, "T1", 2, "founder", "2026-08-27T00:01:00Z")
+    _add_message(conn, "T1", 3, "founder", "2026-08-27T00:02:00Z")
+    _add_message(conn, "T1", 4, "founder", "2026-08-27T00:03:00Z")
+    # One coalesced REPLY: minted at seq 1, claimed the inclusive range 1..3.
+    _add_invocation(conn, "T1", "alice", 1, "2026-08-27T00:04:00Z",
+                    token="aaa11111", consumed_at="2026-08-27T00:05:00Z")
+    _add_claim_audit(conn, "T1", "alice", "aaa11111", 1, 3,
+                     "2026-08-27T00:04:30Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.founder_messages == 4
+    # seqs 1, 2, 3 are inside [1, 3] (both boundaries + middle); seq 4 is not.
+    assert live.founder_covered == 3
+    assert live.founder_uncovered == 1
+    assert any("no consumed REPLY" in note for note in live.notes)
+
+
+def test_g2_claimed_range_not_settled_watermark_is_coverage_authority() -> None:
+    """Claimed-versus-settled semantics: the immutable claimed range at claim
+    time is the authority. A wake claimed [1,1] before later arrivals
+    coalesced into it covers ONLY seq 1; the follow-on wake claimed [2,3]
+    covers seqs 2 and 3 (arrivals strictly after the first wake's range)."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 1, "founder", "2026-08-27T00:00:00Z")
+    _add_message(conn, "T1", 2, "founder", "2026-08-27T00:01:00Z")
+    _add_message(conn, "T1", 3, "founder", "2026-08-27T00:02:00Z")
+    _add_message(conn, "T1", 4, "founder", "2026-08-27T00:03:00Z")
+    # Wake A: minted at seq 1, CLAIMED [1,1] (arrivals 2/3 coalesced into its
+    # required watermark only AFTER the claim snapshot). Settled consumed.
+    _add_invocation(conn, "T1", "alice", 1, "2026-08-27T00:04:00Z",
+                    token="aaa11111", consumed_at="2026-08-27T00:05:00Z")
+    _add_claim_audit(conn, "T1", "alice", "aaa11111", 1, 1,
+                     "2026-08-27T00:04:30Z")
+    # Follow-on B: minted at acknowledged+1 = 2, claimed [2,3].
+    _add_invocation(conn, "T1", "alice", 2, "2026-08-27T00:06:00Z",
+                    token="bbb22222", consumed_at="2026-08-27T00:08:00Z")
+    _add_claim_audit(conn, "T1", "alice", "bbb22222", 2, 3,
+                     "2026-08-27T00:06:30Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.founder_covered == 3  # 1 (wake A) + 2,3 (wake B)
+    assert live.founder_uncovered == 1  # seq 4 outside both claimed ranges
+
+
+def test_g2_declined_wake_never_covers_founder_messages() -> None:
+    """A DECLINED wake's claimed range is not coverage — only a REPLY that
+    reached status='consumed' covers a founder message."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 1, "founder", "2026-08-27T00:00:00Z")
+    _add_message(conn, "T1", 2, "founder", "2026-08-27T00:01:00Z")
+    _add_message(conn, "T1", 3, "founder", "2026-08-27T00:02:00Z")
+    _add_invocation(conn, "T1", "alice", 1, "2026-08-27T00:03:00Z",
+                    token="ddd44444", status="declined",
+                    consumed_at="2026-08-27T00:04:00Z")
+    _add_claim_audit(conn, "T1", "alice", "ddd44444", 1, 2,
+                     "2026-08-27T00:03:30Z")
+    _add_invocation(conn, "T1", "alice", 3, "2026-08-27T00:05:00Z",
+                    token="ccc33333", consumed_at="2026-08-27T00:06:00Z")
+    _add_claim_audit(conn, "T1", "alice", "ccc33333", 3, 3,
+                     "2026-08-27T00:05:30Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    # The declined wake claimed [1,2] but wrote no reply: seqs 1-2 uncovered.
+    assert live.founder_covered == 1  # only seq 3
+    assert live.founder_uncovered == 2  # seqs 1, 2
+
+
+def test_g2_consumed_without_claim_audit_covers_only_own_trigger() -> None:
+    """A consumed invocation with no matching claim audit (queued-settled or
+    legacy pre-coalescing row) covers only its own triggering_seq — an honest
+    under-approximation that never fabricates a coalesced range."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 1, "founder", "2026-08-27T00:00:00Z")
+    _add_message(conn, "T1", 2, "founder", "2026-08-27T00:01:00Z")
+    _add_invocation(conn, "T1", "alice", 2, "2026-08-27T00:03:00Z",
+                    token="ccc33333", consumed_at="2026-08-27T00:04:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.founder_covered == 1  # seq 2 only
+    assert live.founder_uncovered == 1  # seq 1
+
+
+def test_replay_coalesced_founder_population_not_undercounted() -> None:
+    """[HIGH regression, replay] A coalesced consumed REPLY covering three
+    founder messages counts all three in the founder-replied population
+    (the 698-style definition), not just its exact triggering seq."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 1, "founder", "2026-08-05T00:00:00Z",
+                 body="please @alice")
+    _add_message(conn, "T1", 2, "founder", "2026-08-05T00:01:00Z",
+                 body="and @alice")
+    _add_message(conn, "T1", 3, "founder", "2026-08-05T00:02:00Z",
+                 body="also @alice")
+    _add_invocation(conn, "T1", "alice", 1, "2026-08-05T00:03:00Z",
+                    token="aaa11111", consumed_at="2026-08-05T00:05:00Z")
+    _add_claim_audit(conn, "T1", "alice", "aaa11111", 1, 3,
+                     "2026-08-05T00:03:30Z")
+
+    rep = m.replay_baseline(conn, window_start=AUG_START, window_end=AUG_END)
+    assert rep.founder_replied_messages == 3
+    assert rep.zero_loss_violations == 0
+
+
+def test_replay_coalescing_does_not_mask_genuine_violation() -> None:
+    """[HIGH regression, replay] Range-aware coverage must NOT mask a genuine
+    zero-loss violation: founder message 2 was replied to (by alice, via her
+    coalesced range 1..3) but its Phase-2 wake set {bob} misses alice — a
+    real violation, not a roster artifact."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_participant(conn, "T1", "bob", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 1, "founder", "2026-08-05T00:00:00Z",
+                 body="please @alice")
+    _add_message(conn, "T1", 2, "founder", "2026-08-05T00:01:00Z",
+                 body="please @bob")
+    _add_message(conn, "T1", 3, "founder", "2026-08-05T00:02:00Z",
+                 body="update @alice")
+    # alice's single coalesced wake covered founder messages 1..3.
+    _add_invocation(conn, "T1", "alice", 1, "2026-08-05T00:03:00Z",
+                    token="aaa11111", consumed_at="2026-08-05T00:05:00Z")
+    _add_claim_audit(conn, "T1", "alice", "aaa11111", 1, 3,
+                     "2026-08-05T00:03:30Z")
+
+    rep = m.replay_baseline(conn, window_start=AUG_START, window_end=AUG_END)
+    assert rep.founder_replied_messages == 3
+    # Message 2: baseline repliers {alice} vs Phase-2 wake set {bob} — genuine
+    # violation (alice is roster-visible), never masked by coalescing.
+    assert rep.zero_loss_violations == 1
+    assert rep.zero_loss_artifact_candidates == 0
+
 
 
 # ---------------------------------------------------------------------------

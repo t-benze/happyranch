@@ -287,9 +287,15 @@ re-derived):
    `@`-names ≥1 co-participant. Baseline 293/499 = **58.7%** (August 2026,
    happyranch); expectation ~24/204 ≈ **12%** among retained wakes.
 2. **G2 — founder-message coverage (gate).** Founder messages (kind=message,
-   `speaker='founder'`) covered iff ≥1 `purpose='reply'` invocation for that
-   message reached `status='consumed'`. Baseline **698**; permitted losses
-   **0**.
+   `speaker='founder'`) covered iff ≥1 `purpose='reply'` invocation whose
+   authoritative claimed delivery range contains that message's sequence
+   reached `status='consumed'`. GH-688 Phase-1 coalescing lets ONE consumed
+   REPLY cover an inclusive sequence range — the immutable range claimed at
+   claim time (`thread_reply_wake_claimed` audit `from_seq..through_seq`,
+   matched by token prefix; floor = the invocation's `triggering_seq`), so a
+   founder message coalesced into an earlier wake is covered by that wake
+   (an exact-`triggering_seq` join would falsely report it uncovered).
+   Baseline **698**; permitted losses **0**.
 3. **G3 — org-wide decline rate (report only).** `declined / all` REPLY
    wakes; expect ≈65%; **not** a gate.
 
@@ -304,7 +310,10 @@ that activated Slice C1 + the decline-doctrine fix + the stdin fix — NOT the
 Slice-B merge). Window = half-open `[epoch, epoch + 1 calendar month)`, the
 same convention as §1. While `as_of < window_end`, every observed value is
 **interim** — mechanism evidence only, never a release result (seq 129); a
-missing/partial window is never reported as a failed release.
+missing/partial window is never reported as a failed release. Every interim
+population is bounded by the half-open observation cutoff
+`min(as_of, window_end)` — a message or wake after `as_of` never enters an
+interim record, so the record is reproducible at its stated instant.
 
 Zero-denominator behavior: a metric whose denominator is 0 is reported as
 "zero population, not measurable" (`null` rate) — never a failure.
@@ -330,6 +339,15 @@ repliers are ALL absent from the reconstructed roster are recorded as
 **artifact candidates**, never as genuine routing failures
 (`genuine = violations − artifact_candidates`). The live window uses the
 persisted write-time signal and is unaffected by this limitation.
+
+Consumed-REPLY coverage (live G2 and replay zero-loss) uses the
+authoritative claimed ranges: a consumed REPLY covers its immutable claimed
+range (`thread_reply_wake_claimed` audit `from_seq..through_seq`, matched by
+token prefix within the same pair), so a founder message coalesced into an
+earlier wake is covered by that wake. A consumed invocation with no claim
+audit (a queued-settled wake that was never claimed, or a legacy
+pre-coalescing row) covers only its own `triggering_seq` — an honest
+under-approximation that never fabricates coverage.
 
 ### 8c. Phase-2 release-record template (operator fills at window completion)
 
