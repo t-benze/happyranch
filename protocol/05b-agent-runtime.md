@@ -886,13 +886,26 @@ and the platform-neutral backend contract is ``runtime/platform/session_backend.
    before any handle, or finishing containment exactly once if the launch was
    already committed. No reason- or window-specific special case.
 
-Slice A wires **exactly one** narrow production producer per the
-founder-approved real-caller amendment (THR-207 seq 41–44): schedule fires run
-through the supervisor with the honest no-enforcement ``PassthroughBackend``
-(``runtime/platform/passthrough_backend.py``; all capabilities unavailable),
-and the daemon drain calls ``supervisor.shutdown()`` in the app lifespan
-finally before producer workers are cancelled. The other producers and both
-Popen bodies in ``runtime/orchestrator/executors.py`` stay on their current
+**Wired producers (THR-207 / TASK-5584 real-caller amendment + task-producer
+slice).** The daemon-wide supervisor is constructed in
+``runtime/daemon/state.py`` with the capability-factory-selected backend and
+run through the **real task producer** (``Orchestrator._run_agent`` — every
+task session owns a real admission lease + cancellation token, transfers
+atomic ownership at grant, launches through the selected capability backend,
+registers an opaque cancellation/cleanup control with ``SessionTracker``
+while the PID stays diagnostic/restart evidence only, and finishes
+containment before exactly-once lease release on every terminal path) and
+**BOTH executor Popen launch bodies** (``executors._run_command`` and
+``CustomAdapterExecutor.run`` receive the backend-created ``RunningHandle``
+and communicate/parse only — no self-Popen, no ``on_started``, no internal
+429 retry; the supervisor owns the 5/15/45 finish/release/sleep/reacquire
+with the original enqueue age and a fresh backend handle). The schedule
+producer (``runtime/daemon/schedule_runner.py``) was wired in Slice A with
+an honest no-enforcement ``PassthroughBackend`` (all capabilities
+unavailable); with the executor bodies now wired it launches the real
+argv through the selected backend too. The app-lifespan drain calls
+``supervisor.shutdown()`` in the app lifespan finally before producer
+workers are cancelled. Thread/dream/wake producers stay on their current
 path; they are wired in later serial slices. ``runtime/platform/isolation.py``
 (canonical-skill-store integrity + same-owner launch) is layered beneath the
 supervisor and is unchanged by this design.

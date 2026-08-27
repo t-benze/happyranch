@@ -2,11 +2,19 @@
 
 The session_id half gates agent callbacks (409 `unknown_session` if the
 caller's session isn't current). The pid half exists so `/tasks/{id}/cancel`
-can send SIGTERM to every live subprocess attached to a cancelled subtree
-without grepping the process table.
+can deliver cancellation to every live subprocess attached to a cancelled
+subtree without grepping the process table.
+
+THR-207 task-producer wiring: the opaque **cancel control** half is the
+cancellation authority for wired (contained) task sessions. The cancel route
+invokes the registered control (which drives the HostSessionSupervisor's
+opaque containment handle) instead of signalling the PID directly; the PID is
+retained as diagnostic/restart evidence only and is never the cancellation
+path for a session that holds a control.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from threading import Lock
 
 
@@ -14,6 +22,12 @@ class SessionTracker:
     def __init__(self) -> None:
         self._active: dict[tuple[str, str], str] = {}
         self._pids: dict[tuple[str, str], int] = {}
+        # Opaque cancellation controls for wired (contained) task sessions
+        # (THR-207): a per-(task_id, agent) callable that cancels the logical
+        # invocation through the HostSessionSupervisor's opaque containment
+        # handle. Invoked by the /tasks/{id}/cancel route; the PID is never the
+        # cancellation authority for a session that holds a control.
+        self._cancel_controls: dict[tuple[str, str], Callable[[], None]] = {}
         # Additive: map session_id → (org_slug, task_id, agent_name) for
         # four-part server-authoritative provenance.  Callers that supply an
         # org_slug on set_active() populate this index; callers that don't
@@ -108,13 +122,44 @@ class SessionTracker:
     def iter_task_pids(self, task_id: str) -> list[tuple[str, int]]:
         """Return (agent, pid) for every live pid under ``task_id``.
 
-        Used by /cancel to SIGTERM the entire task's attached subprocesses.
+        Diagnostic/restart evidence only for wired sessions — cancellation
+        goes through the opaque control (see :meth:`set_cancel_control` /
+        :meth:`iter_task_cancel_controls`), never a bare PID signal.
         Returns a snapshot — safe to iterate without holding the lock.
         """
         with self._lock:
             return [
                 (agent, pid)
                 for (tid, agent), pid in self._pids.items()
+                if tid == task_id
+            ]
+
+    def set_cancel_control(self, task_id: str, agent: str, cancel: Callable[[], None]) -> None:
+        """Register the opaque cancellation control for a wired session.
+
+        ``cancel`` is the logical invocation's ``CancellationToken.cancel``
+        (drives the supervisor's containment handle). Registered BEFORE the
+        invocation enters admission so the cancel route can cancel a queued
+        request without launch. Latest-wins per (task_id, agent), mirroring
+        ``set_active``.
+        """
+        with self._lock:
+            self._cancel_controls[(task_id, agent)] = cancel
+
+    def get_cancel_control(self, task_id: str, agent: str) -> Callable[[], None] | None:
+        with self._lock:
+            return self._cancel_controls.get((task_id, agent))
+
+    def iter_task_cancel_controls(self, task_id: str) -> list[tuple[str, Callable[[], None]]]:
+        """Return (agent, cancel) for every registered control under ``task_id``.
+
+        Used by /cancel to drive containment teardown for the whole subtree.
+        Returns a snapshot — safe to iterate without holding the lock.
+        """
+        with self._lock:
+            return [
+                (agent, cancel)
+                for (tid, agent), cancel in self._cancel_controls.items()
                 if tid == task_id
             ]
 
@@ -128,6 +173,9 @@ class SessionTracker:
             with self._lock:
                 old_session_id = self._active.pop((task_id, agent), None)
                 self._pids.pop((task_id, agent), None)
+                # The opaque cancel control dies with the session — a stale
+                # control must never cancel a later session of the same pair.
+                self._cancel_controls.pop((task_id, agent), None)
                 if old_session_id is not None:
                     # Invalidate the cleared session's context so completed/
                     # cancelled/revoked opaque capabilities cannot create B2 custom skills.

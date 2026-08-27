@@ -1,11 +1,13 @@
 """Task submission and inspection endpoints."""
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import logging
 import os
 import signal
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1486,8 +1488,11 @@ async def cancel_task(
     note = f"cancelled by {actor}: {rationale}" if rationale else f"cancelled by {actor}"
 
     # Phase 1: DB writes + audit under the lock, to serialise with run_step
-    # transitions. Collect PIDs while we hold the lock — we'll SIGTERM outside.
-    pids_to_kill: list[tuple[str, str, int]] = []
+    # transitions. Collect opaque cancel controls AND (defensively) pids
+    # without a registered control while we hold the lock — we invoke them
+    # outside.
+    controls_to_invoke: list[tuple[str, str, Callable[[], None]]] = []
+    pids_without_control: list[tuple[str, str, int]] = []
     audit = AuditLogger(org.db)
     async with org.db_lock:
         for tid in to_cancel:
@@ -1502,8 +1507,18 @@ async def cancel_task(
                 cancelled_at=now,
                 completed_at=now,
             )
+            controls_by_agent = dict(org.sessions.iter_task_cancel_controls(tid))
+            for agent, control in controls_by_agent.items():
+                controls_to_invoke.append((tid, agent, control))
+            # THR-207: a wired session's PID is diagnostic/restart evidence
+            # only — cancellation goes through the opaque control above, never
+            # a bare PID signal. A defensive SIGTERM remains ONLY for a
+            # (task, agent) that has a pid but NO registered control
+            # (non-wired/legacy sessions — impossible in production because
+            # the control is registered before launch).
             for agent, pid in org.sessions.iter_task_pids(tid):
-                pids_to_kill.append((tid, agent, pid))
+                if agent not in controls_by_agent:
+                    pids_without_control.append((tid, agent, pid))
             audit.log_task_cancelled(
                 task_id=tid, rationale=rationale, cascade=body.cascade, actor=actor,
             )
@@ -1538,12 +1553,29 @@ async def cancel_task(
                 status=TaskStatus.FAILED, auto_revisit_spawned=False,
             )
 
-    # Phase 2: deliver SIGTERM to any live subprocesses attached to cancelled
-    # tasks. os.kill runs outside the db_lock so a slow signal delivery can't
+    # Phase 2: deliver cancellation. Wired sessions go through the opaque
+    # containment control, invoked OFF the event loop (backend finish is
+    # blocking: bounded TERM grace + KILL escalation + quiescence verify); the
+    # control freezes CANCELLED on the durable ownership record and drives
+    # containment teardown, and the run-step cancel-race guard drops the late
+    # result. os.kill runs outside the db_lock so a slow signal delivery can't
     # stall concurrent DB writers. ProcessLookupError means the subprocess
     # already exited — fine, the DB row is already in its terminal shape.
     killed: list[dict] = []
-    for tid, agent, pid in pids_to_kill:
+    for tid, agent, control in controls_to_invoke:
+        try:
+            await asyncio.to_thread(control)
+            killed.append({"task_id": tid, "agent": agent})
+        except Exception as exc:
+            logger.warning(
+                "cancel %s: opaque cancel control invocation failed: %s",
+                tid, exc,
+            )
+        # Clear the tracker entry so a parent auto-resume (if one gets
+        # enqueued via run_step's dependent-child check) can't find a stale
+        # pid/control and mis-route a subsequent cancel.
+        org.sessions.clear(tid, agent)
+    for tid, agent, pid in pids_without_control:
         try:
             os.kill(pid, signal.SIGTERM)
             killed.append({"task_id": tid, "agent": agent, "pid": pid})
@@ -1553,9 +1585,6 @@ async def cancel_task(
             logger.warning(
                 "cancel %s: os.kill(%s, SIGTERM) failed: %s", tid, pid, exc,
             )
-        # Clear the tracker entry so a parent auto-resume (if one gets
-        # enqueued via run_step's dependent-child check) can't find a stale
-        # pid and mis-route a subsequent cancel.
         org.sessions.clear(tid, agent)
 
     # Phase 3: publish terminal events for any live SSE tails. EventBus

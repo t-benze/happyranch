@@ -46,16 +46,18 @@ from runtime.orchestrator._paths import OrgPaths
 
 
 def _attach_org_runtime_wiring(state: DaemonState) -> None:
-    """Wire each loaded org's Orchestrator to the global queue + per-org sessions.
+    """Wire each loaded org's Orchestrator to the global queue + per-org
+    sessions + the daemon-wide host supervisor.
 
     The Orchestrator is built inside ``OrgState.load`` so it knows its slug,
-    but its ``_queue`` and ``_sessions`` references are populated separately
-    so unit tests that build an OrgState without a daemon can still inspect
-    the orchestrator before the queue exists.
+    but its ``_queue``/``_sessions``/``_host_supervisor`` references are
+    populated separately so unit tests that build an OrgState without a
+    daemon can still inspect the orchestrator before the queue exists.
     """
     for org in state.orgs.values():
         org.orchestrator.attach_queue(state.queue)
         org.orchestrator.attach_sessions(org.sessions)
+        org.orchestrator.attach_host_supervisor(state.host_supervisor)
 
 
 def ensure_workers_started(state: DaemonState) -> None:

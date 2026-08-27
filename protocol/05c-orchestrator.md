@@ -805,13 +805,23 @@ producers, providers, and profiles. Governing spec:
   durably observed by the attempt's next gate (no launch, or exactly-once
   containment before release).
 
-Slice A wires **exactly one** narrow production producer per the
-founder-approved real-caller amendment (THR-207 seq 41–44): schedule fires
-(`runtime/daemon/schedule_runner.py`) run through the supervisor with the
-honest no-enforcement ``PassthroughBackend``, and the daemon drain calls
-``supervisor.shutdown()`` in the app lifespan finally. The remaining
-producers (task, thread, dream, wake) stay structurally unchanged; later
-serial slices attach them to the same contract.
+**Wired producers.** Schedule fires were wired first per the founder-approved
+real-caller amendment (THR-207 seq 41–44); the task-producer slice then wired
+the real task path. The daemon-wide supervisor is constructed in
+``runtime/daemon/state.py`` with the capability-factory-selected backend and
+the configured 429 retry schedule, and the daemon drain calls
+``supervisor.shutdown()`` in the app lifespan finally. The **task producer**
+(``Orchestrator._run_agent``) runs every task session through the supervisor:
+the invocation owns a real admission lease + cancellation token, ownership
+transfers at grant, the subprocess launches through the selected capability
+backend via BOTH executor Popen launch bodies (``executors._run_command`` and
+``CustomAdapterExecutor.run`` receive the backend-created ``RunningHandle``),
+an opaque cancellation/cleanup control is registered with ``SessionTracker``
+(PID stays diagnostic/restart evidence only) and the ``/tasks/{id}/cancel``
+route invokes it off the event loop, and a 429 attempt fully finishes and
+releases before sleeping and reacquires with the original enqueue age and a
+fresh backend handle. Thread/dream/wake producers stay structurally
+unchanged; later serial slices attach them to the same contract.
 
 **Slice B backend selection (THR-207 / TASK-5637).** The daemon-wide
 supervisor's backend is selected through the capability factory
@@ -829,10 +839,13 @@ it selects by operational probe rather than OS/version strings:
   measurement).
 
 Callers above the factory branch on **capabilities** (`enforcement_guaranteed`
-and the binding-cap logic are unchanged), never on backend names. The wired
-schedule producer's launch body performs its own subprocess launch inside the
-executor, so its truthful selection is the honest fallback until the executor
-launch bodies are wired (a later slice); the real backends are exercised by
+and the binding-cap logic are unchanged), never on backend names. With the
+executor launch bodies wired, the daemon's truthful selection is the real
+Linux/macOS backend when the operational probe is healthy; the honest
+no-enforcement passthrough remains the deterministic default of
+``build_default_host_supervisor()`` (schedule-fire integration suites) and
+the unsupported/unhealthy-environment fallback. The real backends are
+exercised by
 real integration suites gated on the operational probe. Guaranteed-cleanup
 residue from the Linux backend blocks admission until reconciliation;
 best-effort macOS survivors stay censused/charged/visible and block only on

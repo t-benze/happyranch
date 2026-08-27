@@ -44,7 +44,6 @@ from runtime.orchestrator.workspace_adapters import (
     refresh_workspace_repos,
     validate_workspace_skills_integrity,
 )
-from runtime.platform.session_backend import LaunchSpec
 from runtime.skills.system_contracts import SessionContext
 from runtime.orchestrator.prompt_loader import load_agent
 from runtime.orchestrator.schedule_rules import (
@@ -305,25 +304,63 @@ async def run_schedule(
     # ── THR-207 real-caller wiring: schedule fires run through the daemon-
     # wide HostSessionSupervisor (admission + atomic terminal protocol + lease
     # release). The executor + per-provider throttle stay inside the launch
-    # body unchanged; a terminal winner that refuses launch (daemon shutdown
-    # drained at/after grant, cancellation) yields a payload-less outcome and
-    # the row is left FIRING for daemon-restart recovery — identical to the
-    # pre-wiring behavior when a shutdown cancelled the worker mid-run. ──
+    # body; a terminal winner that refuses launch (daemon shutdown drained at/
+    # after grant, cancellation) yields a payload-less outcome and the row is
+    # left FIRING for daemon-restart recovery — identical to the pre-wiring
+    # behavior when a shutdown cancelled the worker mid-run. ──
     if host_supervisor is None:
         raise RuntimeError(
             "run_schedule requires the daemon-wide HostSessionSupervisor "
-            "(schedule fires are the single THR-207 Slice A wired producer)"
+            "(schedule fires are the THR-207 wired producer)"
         )
 
+    # Build the backend LaunchSpec via the executor when it exposes the seam
+    # (real argv — previously a placeholder that no real backend could
+    # execute). The honest passthrough backend ignores the spec entirely
+    # (its launch returns a handle with no process and the launch body falls
+    # back to the executor's uncontained self-launch).
+    launch_spec = None
+    spec_builder = getattr(executor, "build_launch_spec", None)
+    if spec_builder is not None:
+        try:
+            launch_spec = spec_builder(
+                workspace=workspace,
+                prompt=prompt,
+                session_id=None,
+                model=model_name,
+                org_slug=org_state.slug,
+            )
+        except Exception as exc:
+            _failure_transition(
+                store, record, datetime.now(timezone.utc),
+                f"launch_spec_failed: {exc}",
+            )
+            org_state.db.insert_audit_log(
+                task_id=schedule_id,
+                agent=record.agent_name,
+                action="schedule_failed",
+                payload={"reason": f"launch_spec_failed: {exc}"},
+            )
+            return
+    if launch_spec is None:
+        from runtime.platform.session_backend import LaunchSpec as _LaunchSpec
+        launch_spec = _LaunchSpec(argv=(record.agent_name,))
+
     def _launch_body(running) -> LaunchResult:
+        # Real backend: the fire session is launched into containment — the
+        # executor communicates + parses only. Honest passthrough: no
+        # containment capability — the executor self-launches exactly as
+        # before (throttle-internal 429 retry preserved).
+        contained = running.process is not None
         result = executor.run(
             workspace=workspace,
             prompt=prompt,
             session_id=None,
             timeout_seconds=settings.session_timeout_seconds,
-            pre_launch_validator=_pre_launch_validator,
+            pre_launch_validator=_pre_launch_validator if not contained else None,
             org_slug=org_state.slug,
             model=model_name,
+            running=running if contained else None,
         )
         return LaunchResult(
             success=result.success,
@@ -345,8 +382,9 @@ async def run_schedule(
                 executor_profile=executor_name,
                 enqueued_at=time.monotonic(),
             ),
-            launch_spec=LaunchSpec(argv=(record.agent_name,)),
+            launch_spec=launch_spec,
             launch_body=_launch_body,
+            pre_launch_validator=_pre_launch_validator,
         ),
     )
     # ``outcome.payload`` is the launch body's LaunchResult; its own

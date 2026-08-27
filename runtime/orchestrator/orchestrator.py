@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -97,6 +98,11 @@ class Orchestrator:
         self._notifier = None  # wired by daemon
         self._thread_queue = None  # wired by daemon (ThreadQueue)
         self._main_loop = None    # wired by daemon (asyncio event loop for cross-thread enqueues)
+        # Daemon-wide HostSessionSupervisor (THR-207 task-producer wiring):
+        # wired by DaemonState.from_runtime alongside attach_queue/sessions;
+        # None in tests/idle states — where the legacy uncontained launch
+        # path (executor.run self-launch) remains byte-identical.
+        self._host_supervisor = None
 
     @property
     def teams(self) -> TeamsRegistry:
@@ -124,6 +130,15 @@ class Orchestrator:
         completion endpoint rejects every callback as `unknown_session` (409)
         and the task fails silently with note="agent session failed"."""
         self._sessions = tracker
+
+    def attach_host_supervisor(self, supervisor) -> None:
+        """Daemon boot wires the daemon-wide HostSessionSupervisor (THR-207
+        task-producer wiring): task sessions then acquire a real admission
+        lease, transfer atomic ownership at grant, launch through the selected
+        capability backend, and register an opaque cancellation/cleanup
+        control with SessionTracker. Tests/idle states leave it None and
+        ``_run_agent`` keeps the legacy uncontained launch path."""
+        self._host_supervisor = supervisor
 
     def attach_notifier(self, notifier) -> None:
         """Wire a notifier (mirrors attach_queue / attach_sessions)."""
@@ -919,9 +934,12 @@ class Orchestrator:
         self._db.update_task(task_id, assigned_agent=agent_name)
 
         # Capture pid into SessionTracker the moment Popen returns so the
-        # /cancel route can SIGTERM the subprocess mid-session without racing
+        # /cancel route can cancel the subprocess mid-session without racing
         # the set_active() call above. Works for every executor because they
-        # delegate to executors._run_command.
+        # delegate to executors._run_command. THR-207: for wired (contained)
+        # sessions the supervisor binds the RunningHandle BEFORE invoking this
+        # hook (``running.root_pid``), so the PID is diagnostic/restart
+        # evidence only — cancellation goes through the opaque control.
         def _on_started(pid: int) -> None:
             if self._sessions is not None:
                 self._sessions.set_pid(task_id, agent_name, pid)
@@ -937,17 +955,40 @@ class Orchestrator:
         def _on_throttle_event(action: str, payload: dict) -> None:
             self._db.insert_audit_log(task_id, agent_name, action, payload)
 
-        result = executor.run(
-            workspace=workspace,
-            prompt=full_prompt,
-            session_id=session_id,
-            timeout_seconds=self._resolve_session_timeout(agent_name, task_id=task_id),
-            on_started=_on_started,
-            on_throttle_event=_on_throttle_event,
-            model=model_name,
-            pre_launch_validator=_pre_launch_integrity_validator,
-            org_slug=self._slug,
-        )
+        timeout_seconds = self._resolve_session_timeout(agent_name, task_id=task_id)
+        if self._host_supervisor is not None:
+            # THR-207 task-producer wiring: the session runs through the
+            # daemon-wide HostSessionSupervisor (admission lease, atomic
+            # ownership at grant, real backend launch, opaque cancellation,
+            # containment cleanup before lease release).
+            result = self._run_agent_launch_contained(
+                task_id=task_id,
+                agent_name=agent_name,
+                workspace=workspace,
+                provider=provider,
+                model_name=model_name,
+                executor=executor,
+                session_id=session_id,
+                full_prompt=full_prompt,
+                timeout_seconds=timeout_seconds,
+                on_started=_on_started,
+                on_throttle_event=_on_throttle_event,
+                pre_launch_integrity_validator=_pre_launch_integrity_validator,
+            )
+        else:
+            # Legacy uncontained path (tests / idle state): executor
+            # self-launches exactly as before.
+            result = executor.run(
+                workspace=workspace,
+                prompt=full_prompt,
+                session_id=session_id,
+                timeout_seconds=timeout_seconds,
+                on_started=_on_started,
+                on_throttle_event=_on_throttle_event,
+                model=model_name,
+                pre_launch_validator=_pre_launch_integrity_validator,
+                org_slug=self._slug,
+            )
         self._audit.log_session_end(
             task_id=task_id,
             agent=agent_name,
@@ -962,6 +1003,168 @@ class Orchestrator:
 
         report = self._read_completion_from_db(task_id, agent_name, session_id)
         return result, report
+
+    def _run_agent_launch_contained(
+        self,
+        *,
+        task_id: str,
+        agent_name: str,
+        workspace: Path,
+        provider: str,
+        model_name: str | None,
+        executor,
+        session_id: str,
+        full_prompt: str,
+        timeout_seconds: int,
+        on_started: Callable[[int], None],
+        on_throttle_event: "Callable[[str, dict], None] | None",
+        pre_launch_integrity_validator: Callable[[], None],
+    ) -> ExecutorResult:
+        """THR-207 task-producer wiring: run one task session through the
+        daemon-wide ``HostSessionSupervisor``.
+
+        The invocation owns a real ``AdmissionRequest`` lease + cancellation
+        token; ownership transfers atomically at admission grant; the existing
+        supervisor generation/launch gate refuses the blocking body when a
+        shutdown drained at/after grant; the subprocess launches through the
+        selected capability backend; the ``RunningHandle`` is bound before
+        ``on_started`` exposes the diagnostic PID; the opaque cancel control
+        is registered with ``SessionTracker`` (the PID stays diagnostic/restart
+        evidence only); and every terminal path (success/nonzero/timeout/
+        cancel/spawn failure/429/daemon shutdown) finishes containment,
+        reconciles residue, publishes the bounded receipt, and only then
+        releases the lease.
+
+        A rate-limited (429) attempt fully finishes/releases before sleeping
+        and reacquires with the logical invocation's original enqueue age and
+        a fresh backend handle (the supervisor's retry loop). When the
+        selected backend is the honest passthrough (no containment capability)
+        the launch body falls back to the executor's uncontained self-launch
+        with the throttle's internal 429 retry disabled so the supervisor
+        still owns the finish/release/sleep/reacquire.
+        """
+        from runtime.orchestrator.host_supervisor import (
+            AdmissionRequest,
+            CancellationToken,
+            LaunchResult,
+        )
+        from runtime.platform.session_backend import RunningHandle
+
+        token = CancellationToken()
+        # Opaque cancellation/cleanup control registered BEFORE admission so
+        # the cancel route can cancel a queued request (nothing launches) or
+        # drive containment teardown for a running one. The PID is registered
+        # by ``on_started`` (diagnostic/restart evidence only) AFTER the
+        # supervisor binds the RunningHandle.
+        if self._sessions is not None:
+            self._sessions.set_cancel_control(task_id, agent_name, token.cancel)
+
+        # Build the backend LaunchSpec via the executor (argv/stdio/env). A
+        # spec-assembly failure (e.g. the prompt-transport argv gate, or an
+        # executor without the contained-launch seam) fails closed with an
+        # actionable category, mirroring the uncontained path's fail-closed
+        # behavior.
+        spec_builder = getattr(executor, "build_launch_spec", None)
+        if spec_builder is None:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=0,
+                session_id=session_id,
+                error=(
+                    f"executor {type(executor).__name__!r} does not support "
+                    "contained launch (build_launch_spec missing)"
+                ),
+            )
+        try:
+            launch_spec = spec_builder(
+                workspace=workspace,
+                prompt=full_prompt,
+                session_id=session_id,
+                model=model_name,
+                org_slug=self._slug,
+            )
+        except Exception as exc:
+            return ExecutorResult(
+                success=False,
+                duration_seconds=0,
+                session_id=session_id,
+                error=str(exc),
+            )
+
+        # Per-attempt pre-launch validator (runs for supervisor-level 429
+        # retries too): workspace skill integrity + adapter artifact
+        # readiness when the executor exposes it. Runs BEFORE
+        # backend.prepare/launch so a failing check never creates a scope.
+        def _pre_launch_validator() -> None:
+            pre_launch_integrity_validator()
+            adapter_error = getattr(executor, "verify_launch_ready", lambda: None)()
+            if adapter_error:
+                raise RuntimeError(adapter_error)
+
+        def _launch_body(running: RunningHandle) -> LaunchResult:
+            # Real backend: the subprocess is already launched into
+            # containment — the executor communicates + parses only (no
+            # self-Popen, no on_started — the supervisor bound the PID).
+            # Honest passthrough: no containment capability — the executor
+            # self-launches exactly as the legacy path, with the throttle's
+            # internal 429 retry disabled so the supervisor owns the
+            # finish/release/sleep/reacquire lifecycle.
+            contained = running.process is not None
+            result = executor.run(
+                workspace=workspace,
+                prompt=full_prompt,
+                session_id=session_id,
+                timeout_seconds=timeout_seconds,
+                on_started=on_started if not contained else None,
+                on_throttle_event=on_throttle_event,
+                model=model_name,
+                pre_launch_validator=(
+                    pre_launch_integrity_validator if not contained else None
+                ),
+                org_slug=self._slug,
+                running=running if contained else None,
+                throttle_backoff_seconds=() if not contained else None,
+            )
+            return LaunchResult(
+                success=result.success,
+                duration_seconds=float(getattr(result, "duration_seconds", 0) or 0),
+                returncode=getattr(result, "returncode", None),
+                error=getattr(result, "error", None),
+                rate_limited=bool(getattr(result, "rate_limited", False)),
+                timed_out=_executor_result_timed_out(result),
+                payload=result,
+            )
+
+        outcome = self._host_supervisor.run(
+            AdmissionRequest(
+                org=self._slug,
+                invocation_kind="task",
+                logical_id=task_id,
+                executor_profile=provider,
+                enqueued_at=time.monotonic(),
+                # The supervisor binds the RunningHandle before this fires;
+                # the passthrough backend has no real PID (root_pid=0) and the
+                # launch body's uncontained branch exposes the real one.
+                on_started=(lambda pid: on_started(pid) if pid > 0 else None),
+                cancellation=token,
+            ),
+            launch_spec=launch_spec,
+            launch_body=_launch_body,
+            pre_launch_validator=_pre_launch_validator,
+        )
+        launch = outcome.payload
+        if launch is None:
+            # Pre-launch terminal winner (daemon shutdown drained at/after
+            # grant, or cancellation before launch): nothing ran — fail closed
+            # with the durable first-wins reason so run_step's classifier and
+            # the cancel-race guard handle the task exactly as today.
+            return ExecutorResult(
+                success=False,
+                duration_seconds=0,
+                session_id=session_id,
+                error=f"session {outcome.terminal_reason.value} before launch",
+            )
+        return launch.payload
 
     def _log_review_verdicts(self, task_id: str, prior_steps: list[StepRecord]) -> None:
         """Log review verdicts for delegated agents into the audit log.
@@ -1030,6 +1233,15 @@ class Orchestrator:
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
+
+
+def _executor_result_timed_out(result: "ExecutorResult") -> bool:
+    """True when an ExecutorResult is a session timeout (returncode None and
+    the executor's 'timed out' error string). Mirrors ``dream_runner._is_timeout``
+    so the supervisor freezes TIMEOUT (not FAILURE) for contained task
+    sessions."""
+    err = str(getattr(result, "error", "") or "").lower()
+    return "timed out" in err or "timeout" in err
 
 
 def _cleanup_session_attachments(workspace: Path, session_id: str) -> None:

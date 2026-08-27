@@ -21,13 +21,14 @@ Selection rules (honest by construction):
    every capability ``unavailable``). A fallback never fabricates a
    guarantee, a zero measurement, or a cleanup it did not verify.
 
-``session_backend_for_wired_producer`` is the honest selection for the
-daemon's currently-wired producer: schedule fires launch their executor
-subprocess inside the executor's own Popen body (unwired in Slice B), which
-no real containment backend can wrap — so the truthful backend for that
-wiring is the no-enforcement passthrough. The real backends are selected
-for containment-ready callers (integration suites, and the daemon once the
-executor launch bodies are wired in a later slice).
+``session_backend_for_wired_producer`` is the **honest fallback selection**
+used by ``build_default_host_supervisor()`` with no arguments (the schedule-
+fire integration suites and unit fakes): every capability ``unavailable``,
+no containment. The production daemon (``runtime/daemon/state.py``) now
+passes :func:`select_session_backend` explicitly — since the executor launch
+bodies are wired (THR-207 task-producer slice), the daemon's truthful
+selection is the real Linux/macOS backend when the operational probe is
+healthy, and this honest fallback otherwise.
 """
 
 from __future__ import annotations

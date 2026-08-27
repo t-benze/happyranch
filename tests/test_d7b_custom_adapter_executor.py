@@ -1246,7 +1246,7 @@ class TestThrottleIntegration:
         calls = []
 
         class SpyThrottle(ProviderThrottle):
-            def run(self, provider, launch, on_event=None):
+            def run(self, provider, launch, on_event=None, **kwargs):
                 calls.append({"provider": provider, "on_event": on_event})
                 return launch()
 
@@ -1288,7 +1288,7 @@ class TestThrottleIntegration:
         on_event_captured = []
 
         class SpyThrottle(ProviderThrottle):
-            def run(self, provider, launch, on_event=None):
+            def run(self, provider, launch, on_event=None, **kwargs):
                 on_event_captured.append(on_event)
                 return launch()
 
@@ -1537,7 +1537,7 @@ class TestThrottleIntegration:
         calls = []
 
         class SpyThrottle(ProviderThrottle):
-            def run(self, provider, launch, on_event=None):
+            def run(self, provider, launch, on_event=None, **kwargs):
                 calls.append({"provider": provider})
                 return launch()
 

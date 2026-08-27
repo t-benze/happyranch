@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,6 +23,7 @@ from runtime.platform.isolation import (
 
 if TYPE_CHECKING:
     from runtime.orchestrator.throttle import OnThrottleEvent
+    from runtime.platform.session_backend import LaunchSpec, RunningHandle
 
 logger = logging.getLogger(__name__)
 
@@ -705,6 +706,8 @@ def _run_command(
     strict_envelope_validator: Callable[[str], "str | None"] | None = None,
     pre_launch_validator: Callable[[], None] | None = None,
     org_slug: str | None = None,
+    running: "RunningHandle | None" = None,
+    throttle_backoff_seconds: Sequence[float] | None = None,
 ) -> ExecutorResult:
     """Run one agent subprocess under the per-provider throttle (issue #85).
 
@@ -714,67 +717,103 @@ def _run_command(
     sleeps the backoff, and re-launches — ``_launch`` is idempotent because a
     rate-limited attempt did no useful work (never called ``report-completion``)
     and ``on_started`` simply re-stamps the new pid into SessionTracker.
+
+    THR-207 contained wiring: when ``running`` is a backend-created
+    ``RunningHandle`` the subprocess was already launched INTO containment by
+    the ``HostSessionSupervisor`` (``backend.launch``); this body only
+    communicates and parses. It does NOT self-launch, does NOT call
+    ``on_started`` (the supervisor's ``AdmissionRequest.on_started`` exposes
+    the diagnostic PID after bind), does NOT re-run the pre-launch validators
+    (the supervisor ran them before ``backend.launch``), and enters the
+    throttle with NO internal 429 retry so the rate-limited result flows to
+    the supervisor, which fully finishes/releases the attempt, sleeps without
+    capacity, and reacquires with the original enqueue age and a fresh
+    backend handle. ``throttle_backoff_seconds`` overrides the configured 429
+    schedule for the uncontained path (empty tuple = no internal retry).
     """
     sid = session_id or f"sess-{uuid.uuid4().hex}"
     workspace.mkdir(parents=True, exist_ok=True)
 
     def _launch() -> ExecutorResult:
         start_time = time.monotonic()
-        # ── THR-200 pre-spawn prompt-transport guard ───────────────────
-        # When the prompt travels via argv (input_text is None), any element
-        # over the platform-safe per-argument byte limit would raise E2BIG at
-        # execve. Fail deterministically BEFORE Popen with a normalized
-        # category. stdin-capable transports (input_text set) are unbounded.
-        if input_text is None:
-            limit = _max_argv_element_bytes()
-            for elem in cmd:
-                if len(elem.encode("utf-8")) > limit:
-                    logger.warning(
-                        "%s: argv element of %d encoded bytes exceeds "
-                        "platform-safe per-argument limit %d",
-                        _PROMPT_TRANSPORT_TOO_LARGE,
-                        len(elem.encode("utf-8")), limit,
-                    )
-                    return ExecutorResult(
-                        success=False,
-                        duration_seconds=0,
-                        session_id=sid,
-                        error=_prompt_transport_too_large_error(limit),
-                    )
-        # ── Pre-launch integrity validation ──────────────────────────
-        # Caller-provided validator runs BEFORE every Popen attempt,
-        # including throttle retries after rate-limited responses.
-        # Any exception here prevents the executor subprocess from
-        # launching — fail-closed.
-        if pre_launch_validator is not None:
-            pre_launch_validator()
-        # Popen (not subprocess.run) because the daemon needs the pid handed to
-        # SessionTracker BEFORE we block in communicate(), so /cancel can SIGTERM
-        # the process mid-session. stdin=PIPE unconditionally — Codex reads its
-        # prompt from stdin; Claude ignores it when nothing is written.
-        # Launch directly — the executor and daemon share the same OS
-        # identity. Raises PlatformIsolationError on unsupported platform
-        # — fail-closed before any subprocess.
-        isolation = detect_platform_isolation()
-        try:
-            proc = isolation.launch_executor(
-                cmd,
-                cwd=workspace,
-                env=_callee_env(org_slug=org_slug),
-                stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-        except PlatformIsolationError as exc:
-            return ExecutorResult(
-                success=False,
-                duration_seconds=0,
-                session_id=sid,
-                error=f"Platform isolation failure: {exc}",
-            )
-        if on_started is not None:
-            on_started(proc.pid)
+        if running is not None:
+            # ── THR-207 contained launch ──
+            # The backend already launched the subprocess into containment
+            # (backend.launch); this body owns communicate + parse only. The
+            # pre-launch validators ran in the supervisor before launch, and
+            # on_started(pid) is the supervisor's AdmissionRequest hook bound
+            # after the RunningHandle was bound — never re-stamped here.
+            if running.process is None:
+                # Honest passthrough fallback has no process: the caller must
+                # use the uncontained path (running=None) so the executor
+                # self-launches. Never synthesize a fake PID.
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=0,
+                    session_id=sid,
+                    error=(
+                        "contained launch requires a backend-created process; "
+                        "the selected backend provides no containment "
+                        "(passthrough) — retry on the uncontained path"
+                    ),
+                )
+            proc = running.process
+        else:
+            # ── THR-200 pre-spawn prompt-transport guard ───────────────────
+            # When the prompt travels via argv (input_text is None), any element
+            # over the platform-safe per-argument byte limit would raise E2BIG at
+            # execve. Fail deterministically BEFORE Popen with a normalized
+            # category. stdin-capable transports (input_text set) are unbounded.
+            if input_text is None:
+                limit = _max_argv_element_bytes()
+                for elem in cmd:
+                    if len(elem.encode("utf-8")) > limit:
+                        logger.warning(
+                            "%s: argv element of %d encoded bytes exceeds "
+                            "platform-safe per-argument limit %d",
+                            _PROMPT_TRANSPORT_TOO_LARGE,
+                            len(elem.encode("utf-8")), limit,
+                        )
+                        return ExecutorResult(
+                            success=False,
+                            duration_seconds=0,
+                            session_id=sid,
+                            error=_prompt_transport_too_large_error(limit),
+                        )
+            # ── Pre-launch integrity validation ──────────────────────────
+            # Caller-provided validator runs BEFORE every Popen attempt,
+            # including throttle retries after rate-limited responses.
+            # Any exception here prevents the executor subprocess from
+            # launching — fail-closed.
+            if pre_launch_validator is not None:
+                pre_launch_validator()
+            # Popen (not subprocess.run) because the daemon needs the pid handed to
+            # SessionTracker BEFORE we block in communicate(), so /cancel can SIGTERM
+            # the process mid-session. stdin=PIPE unconditionally — Codex reads its
+            # prompt from stdin; Claude ignores it when nothing is written.
+            # Launch directly — the executor and daemon share the same OS
+            # identity. Raises PlatformIsolationError on unsupported platform
+            # — fail-closed before any subprocess.
+            isolation = detect_platform_isolation()
+            try:
+                proc = isolation.launch_executor(
+                    cmd,
+                    cwd=workspace,
+                    env=_callee_env(org_slug=org_slug),
+                    stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            except PlatformIsolationError as exc:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=0,
+                    session_id=sid,
+                    error=f"Platform isolation failure: {exc}",
+                )
+            if on_started is not None:
+                on_started(proc.pid)
         try:
             stdout, stderr = proc.communicate(input=input_text, timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
@@ -886,7 +925,55 @@ def _run_command(
 
     from runtime.orchestrator.throttle import get_throttle
 
-    return get_throttle().run(provider, _launch, on_throttle_event)
+    # Contained sessions defer the 429 retry to the supervisor (the throttle
+    # must not re-communicate a backend-owned process); the uncontained path
+    # honors ``throttle_backoff_seconds`` when the caller supplies it.
+    backoff = () if running is not None else throttle_backoff_seconds
+    return get_throttle().run(provider, _launch, on_throttle_event, backoff_seconds=backoff)
+
+
+def build_command_launch_spec(
+    *,
+    cmd: Sequence[str],
+    workspace: Path,
+    input_text: str | None,
+    org_slug: str | None = None,
+) -> "LaunchSpec":
+    """Assemble the supervisor ``LaunchSpec`` for a ``_run_command``-style
+    executor (THR-207 task-producer wiring).
+
+    Mirrors exactly what the uncontained ``_launch`` passes to
+    ``isolation.launch_executor``: argv/cwd/normalized env/stdio/text. The
+    argv-too-large gate is applied when the prompt travels via argv (the
+    transport that can raise E2BIG at execve); a violation raises
+    :class:`PromptTransportTooLargeError` with the actionable message the
+    uncontained path returns as its normalized category.
+    """
+    if input_text is None:
+        limit = _max_argv_element_bytes()
+        for elem in cmd:
+            if len(elem.encode("utf-8")) > limit:
+                raise PromptTransportTooLargeError(_prompt_transport_too_large_error(limit))
+    from runtime.platform.session_backend import LaunchSpec
+
+    return LaunchSpec(
+        argv=tuple(cmd),
+        cwd=str(workspace),
+        env=_callee_env(org_slug=org_slug),
+        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+class PromptTransportTooLargeError(RuntimeError):
+    """The executor's argv cannot be delivered safely (E2BIG at execve).
+
+    Raised by :func:`build_command_launch_spec` when the prompt travels via
+    argv (``input_text`` is None); the contained caller maps it to the same
+    normalized failure category as the uncontained path.
+    """
 
 
 # Prepended to every executor prompt, regardless of session type. A
@@ -987,7 +1074,9 @@ class ClaudeExecutor:
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
-    org_slug: str | None = None,
+        org_slug: str | None = None,
+        running: "RunningHandle | None" = None,
+        throttle_backoff_seconds: Sequence[float] | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         # The workspace's .claude/settings.json `permissions.allow` list is not
@@ -1022,6 +1111,36 @@ class ClaudeExecutor:
             error_parser=_parse_claude_terminal_error,
             pre_launch_validator=pre_launch_validator,
             org_slug=org_slug,
+            running=running,
+            throttle_backoff_seconds=throttle_backoff_seconds,
+        )
+
+    def build_launch_spec(
+        self,
+        *,
+        workspace: Path,
+        prompt: str,
+        session_id: str | None = None,
+        model: str | None = None,
+        resume_session_id: str | None = None,
+        org_slug: str | None = None,
+    ) -> "LaunchSpec":
+        """The supervisor ``LaunchSpec`` for a contained Claude launch
+        (THR-207 task-producer wiring): argv via the same ``_build_argv`` the
+        uncontained path uses, stdin carries the prompt, stdio PIPE/text.
+        """
+        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
+        from runtime.orchestrator.workspace_adapters import allow_rules_for_agent
+
+        allowed = " ".join(allow_rules_for_agent(self._paths, workspace.name, cli=True))
+        cmd = self._build_argv(
+            prompt=prompt,
+            allowed_tools=allowed,
+            model=model,
+            resume_session_id=resume_session_id,
+        )
+        return build_command_launch_spec(
+            cmd=cmd, workspace=workspace, input_text=prompt, org_slug=org_slug,
         )
 
 
@@ -1095,7 +1214,9 @@ class CodexExecutor:
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
-    org_slug: str | None = None,
+        org_slug: str | None = None,
+        running: "RunningHandle | None" = None,
+        throttle_backoff_seconds: Sequence[float] | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(model=model)
@@ -1110,7 +1231,28 @@ class CodexExecutor:
             provider="codex",
             on_throttle_event=on_throttle_event,
             pre_launch_validator=pre_launch_validator,
-        org_slug=org_slug,
+            org_slug=org_slug,
+            running=running,
+            throttle_backoff_seconds=throttle_backoff_seconds,
+        )
+
+    def build_launch_spec(
+        self,
+        *,
+        workspace: Path,
+        prompt: str,
+        session_id: str | None = None,
+        model: str | None = None,
+        resume_session_id: str | None = None,
+        org_slug: str | None = None,
+    ) -> "LaunchSpec":
+        """The supervisor ``LaunchSpec`` for a contained Codex launch
+        (THR-207 task-producer wiring); stdin carries the prompt.
+        """
+        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
+        cmd = self._build_argv(model=model)
+        return build_command_launch_spec(
+            cmd=cmd, workspace=workspace, input_text=prompt, org_slug=org_slug,
         )
 
 
@@ -1189,7 +1331,9 @@ class OpencodeExecutor:
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
-    org_slug: str | None = None,
+        org_slug: str | None = None,
+        running: "RunningHandle | None" = None,
+        throttle_backoff_seconds: Sequence[float] | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         # opencode >= 1.14.0 rejects --prompt; use positional prompt (issue #216).
@@ -1208,7 +1352,32 @@ class OpencodeExecutor:
             provider="opencode",
             on_throttle_event=on_throttle_event,
             pre_launch_validator=pre_launch_validator,
-        org_slug=org_slug,
+            org_slug=org_slug,
+            running=running,
+            throttle_backoff_seconds=throttle_backoff_seconds,
+        )
+
+    def build_launch_spec(
+        self,
+        *,
+        workspace: Path,
+        prompt: str,
+        session_id: str | None = None,
+        model: str | None = None,
+        resume_session_id: str | None = None,
+        org_slug: str | None = None,
+    ) -> "LaunchSpec":
+        """The supervisor ``LaunchSpec`` for a contained opencode launch
+        (THR-207 task-producer wiring); the prompt travels via argv (opencode
+        rejects ``--prompt``), so the argv-too-large gate applies."""
+        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
+        cmd = self._build_argv(
+            workspace=str(workspace),
+            prompt=prompt,
+            model=model,
+        )
+        return build_command_launch_spec(
+            cmd=cmd, workspace=workspace, input_text=None, org_slug=org_slug,
         )
 
 
@@ -1277,7 +1446,9 @@ class PiExecutor:
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
-    org_slug: str | None = None,
+        org_slug: str | None = None,
+        running: "RunningHandle | None" = None,
+        throttle_backoff_seconds: Sequence[float] | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(prompt=prompt, model=model)
@@ -1293,6 +1464,26 @@ class PiExecutor:
             on_throttle_event=on_throttle_event,
             pre_launch_validator=pre_launch_validator,
             org_slug=org_slug,
+            running=running,
+            throttle_backoff_seconds=throttle_backoff_seconds,
+        )
+
+    def build_launch_spec(
+        self,
+        *,
+        workspace: Path,
+        prompt: str,
+        session_id: str | None = None,
+        model: str | None = None,
+        resume_session_id: str | None = None,
+        org_slug: str | None = None,
+    ) -> "LaunchSpec":
+        """The supervisor ``LaunchSpec`` for a contained Pi launch
+        (THR-207 task-producer wiring); stdin carries the prompt."""
+        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
+        cmd = self._build_argv(prompt=prompt, model=model)
+        return build_command_launch_spec(
+            cmd=cmd, workspace=workspace, input_text=prompt, org_slug=org_slug,
         )
 
 
@@ -1352,7 +1543,9 @@ class GenericCliExecutor:
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
-    org_slug: str | None = None,
+        org_slug: str | None = None,
+        running: "RunningHandle | None" = None,
+        throttle_backoff_seconds: Sequence[float] | None = None,
     ) -> ExecutorResult:
         # model is accepted for signature parity but not used — custom
         # profile model_arg is out of scope per founder gate (THR-067).
@@ -1388,7 +1581,35 @@ class GenericCliExecutor:
             on_throttle_event=on_throttle_event,
             strict_envelope_validator=strict_validator,
             pre_launch_validator=pre_launch_validator,
-        org_slug=org_slug,
+            org_slug=org_slug,
+            running=running,
+            throttle_backoff_seconds=throttle_backoff_seconds,
+        )
+
+    def build_launch_spec(
+        self,
+        *,
+        workspace: Path,
+        prompt: str,
+        session_id: str | None = None,
+        model: str | None = None,
+        resume_session_id: str | None = None,
+        org_slug: str | None = None,
+    ) -> "LaunchSpec":
+        """The supervisor ``LaunchSpec`` for a contained generic-CLI launch
+        (THR-207 task-producer wiring); the prompt travels via the argv
+        template, so the argv-too-large gate applies (input_text is None)."""
+        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
+        from runtime.adapters.generic_cli import GenericCliAdapter
+        cmd = GenericCliAdapter.build_argv(
+            argv_template=self._argv_template,
+            prompt=prompt,
+            workspace=str(workspace),
+            timeout_seconds=timeout_seconds,
+            resolve_binary=_resolve_binary(self._profile_name),
+        )
+        return build_command_launch_spec(
+            cmd=cmd, workspace=workspace, input_text=None, org_slug=org_slug,
         )
 
 
@@ -1474,6 +1695,110 @@ class CustomAdapterExecutor:
             "task_id": task_id,
         }
 
+    def verify_launch_ready(self) -> str | None:
+        """Verify the approved adapter artifact + every declared dependency
+        immediately before an actual launch attempt.
+
+        Returns an actionable error string when the artifact is missing,
+        not a regular file, not executable, hash-mismatched, or a declared
+        dependency fails any of those checks; ``None`` when everything
+        verifies. Runs on BOTH launch paths: inside the uncontained
+        ``_launch`` (before Popen, per THR-107) and via the supervisor's
+        per-attempt pre-launch validator for contained sessions (before the
+        backend creates the scope), and defensively again inside the
+        contained ``_launch``.
+        """
+        from runtime.orchestrator.adapter_store import compute_sha256
+
+        adapter_launch_path = Path(self._adapter_executable)
+        if not adapter_launch_path.exists():
+            return (
+                f"Custom adapter {self._adapter_entry_id!r} executable "
+                f"{self._adapter_executable!r} no longer exists. "
+                f"Re-register the adapter."
+            )
+        if not adapter_launch_path.is_file():
+            return (
+                f"Custom adapter {self._adapter_entry_id!r} path "
+                f"{self._adapter_executable!r} is not a regular file. "
+                f"Re-register the adapter."
+            )
+        if not os.access(adapter_launch_path, os.X_OK):
+            return (
+                f"Custom adapter {self._adapter_entry_id!r} executable "
+                f"{self._adapter_executable!r} is not executable. "
+                f"Re-register the adapter."
+            )
+        current_launch_hash = compute_sha256(self._adapter_executable)
+        if current_launch_hash != self._adapter_hash:
+            return (
+                f"Custom adapter {self._adapter_entry_id!r} hash mismatch: "
+                f"expected {self._adapter_hash[:12]}..., "
+                f"got {current_launch_hash[:12]}... "
+                f"Re-register and re-approve the adapter."
+            )
+        # THR-107 seq244: revalidate every declared dependency (path type /
+        # executability / hash) before EVERY launch attempt.
+        if self._dependency_manifest_version is not None and self._dependencies:
+            for dep in self._dependencies:
+                dep_exe = dep.get("executable", "")
+                dep_hash = dep.get("sha256", "")
+                dep_path = Path(dep_exe)
+                if not dep_path.exists():
+                    return (
+                        f"Declared dependency {dep_exe!r} no longer exists. "
+                        f"Re-submit the adapter with a valid dependency and "
+                        f"obtain founder approval."
+                    )
+                if not dep_path.is_file():
+                    return (
+                        f"Declared dependency {dep_exe!r} is not a regular file. "
+                        f"Re-submit the adapter with a valid dependency and "
+                        f"obtain founder approval."
+                    )
+                if not os.access(dep_path, os.X_OK):
+                    return (
+                        f"Declared dependency {dep_exe!r} is not executable. "
+                        f"Re-submit the adapter with a valid dependency and "
+                        f"obtain founder approval."
+                    )
+                current_dep_hash = compute_sha256(dep_exe)
+                if current_dep_hash != dep_hash:
+                    return (
+                        f"Declared dependency {dep_exe!r} hash mismatch: "
+                        f"expected {dep_hash[:12]}..., got {current_dep_hash[:12]}... "
+                        f"The dependency has been modified since approval. "
+                        f"Re-submit the adapter with the updated dependency "
+                        f"and obtain founder approval."
+                    )
+        return None
+
+    def build_launch_spec(
+        self,
+        *,
+        workspace: Path,
+        prompt: str,
+        session_id: str | None = None,
+        model: str | None = None,
+        resume_session_id: str | None = None,
+        org_slug: str | None = None,
+    ) -> "LaunchSpec":
+        """The supervisor ``LaunchSpec`` for a contained custom-adapter launch
+        (THR-207 task-producer wiring): the absolute, hash-pinned adapter
+        executable with the inherited normalized env; AdapterInput travels on
+        stdin via communicate."""
+        from runtime.platform.session_backend import LaunchSpec
+
+        return LaunchSpec(
+            argv=(self._adapter_executable,),
+            cwd=str(workspace),
+            env=_callee_env(org_slug=org_slug),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
     def run(
         self,
         workspace: Path,
@@ -1484,7 +1809,9 @@ class CustomAdapterExecutor:
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
-    org_slug: str | None = None,
+        org_slug: str | None = None,
+        running: "RunningHandle | None" = None,
+        throttle_backoff_seconds: Sequence[float] | None = None,
     ) -> ExecutorResult:
         """Launch the custom adapter subprocess with AdapterInput on stdin.
 
@@ -1496,6 +1823,13 @@ class CustomAdapterExecutor:
         Rejects: missing/malformed/unknown-version/non-object output,
         identity/version/contract mismatch, success/returncode
         inconsistency, and oversized output.
+
+        THR-207 contained wiring: when ``running`` is a backend-created
+        ``RunningHandle`` the adapter was already launched into containment
+        by the ``HostSessionSupervisor``; this body communicates and parses
+        only (no raw ``Popen``, no ``on_started`` — the supervisor exposes
+        the diagnostic PID — and no internal 429 retry so the rate-limited
+        result flows to the supervisor's finish/release/sleep/reacquire).
         """
         from runtime.orchestrator.adapter_contract import (
             AdapterInput,
@@ -1570,153 +1904,77 @@ class CustomAdapterExecutor:
             start_time = time.monotonic()
 
             # ── Pre-launch integrity validation ────────────────────────
+            # Caller-provided validator runs BEFORE every launch attempt,
+            # including supervisor-level retries after rate-limited responses.
             if pre_launch_validator is not None:
                 pre_launch_validator()
 
             # ── D7B: Verify executable integrity at EVERY actual launch attempt ──
             # This MUST be inside _launch, not pre-throttle: ProviderThrottle
-            # can retry a rate-limited launch, and each retry MUST re-verify
-            # the exact approved artifact (path type, executable bit, SHA-256)
-            # immediately before its own Popen.
-            adapter_launch_path = Path(self._adapter_executable)
-            if not adapter_launch_path.exists():
+            # (and the supervisor retry loop) can re-launch, and each attempt
+            # MUST re-verify the exact approved artifact (path type,
+            # executable bit, SHA-256) immediately before its Popen.
+            verify_error = self.verify_launch_ready()
+            if verify_error is not None:
                 return ExecutorResult(
                     success=False,
                     duration_seconds=int(time.monotonic() - start_time),
                     session_id=sid,
-                    error=(
-                        f"Custom adapter {self._adapter_entry_id!r} executable "
-                        f"{self._adapter_executable!r} no longer exists. "
-                        f"Re-register the adapter."
-                    ),
-                )
-            if not adapter_launch_path.is_file():
-                return ExecutorResult(
-                    success=False,
-                    duration_seconds=int(time.monotonic() - start_time),
-                    session_id=sid,
-                    error=(
-                        f"Custom adapter {self._adapter_entry_id!r} path "
-                        f"{self._adapter_executable!r} is not a regular file. "
-                        f"Re-register the adapter."
-                    ),
-                )
-            if not os.access(adapter_launch_path, os.X_OK):
-                return ExecutorResult(
-                    success=False,
-                    duration_seconds=int(time.monotonic() - start_time),
-                    session_id=sid,
-                    error=(
-                        f"Custom adapter {self._adapter_entry_id!r} executable "
-                        f"{self._adapter_executable!r} is not executable. "
-                        f"Re-register the adapter."
-                    ),
-                )
-            current_launch_hash = compute_sha256(self._adapter_executable)
-            if current_launch_hash != self._adapter_hash:
-                return ExecutorResult(
-                    success=False,
-                    duration_seconds=int(time.monotonic() - start_time),
-                    session_id=sid,
-                    error=(
-                        f"Custom adapter {self._adapter_entry_id!r} hash mismatch: "
-                        f"expected {self._adapter_hash[:12]}..., "
-                        f"got {current_launch_hash[:12]}... "
-                        f"Re-register and re-approve the adapter."
-                    ),
+                    error=verify_error,
                 )
 
-            # ── THR-107 seq244: Revalidate every declared dependency ──
-            # Per-brief requirement 3: revalidate every declared dependency
-            # path type/executability/hash before EVERY launch attempt.
-            # This is inside _launch so throttle retries re-verify.
-            if self._dependency_manifest_version is not None and self._dependencies:
-                for dep in self._dependencies:
-                    dep_exe = dep.get("executable", "")
-                    dep_hash = dep.get("sha256", "")
-                    # Verify path exists, is regular file, is executable
-                    dep_path = Path(dep_exe)
-                    if not dep_path.exists():
-                        return ExecutorResult(
-                            success=False,
-                            duration_seconds=int(time.monotonic() - start_time),
-                            session_id=sid,
-                            error=(
-                                f"Declared dependency {dep_exe!r} no longer exists. "
-                                f"Re-submit the adapter with a valid dependency and "
-                                f"obtain founder approval."
-                            ),
-                        )
-                    if not dep_path.is_file():
-                        return ExecutorResult(
-                            success=False,
-                            duration_seconds=int(time.monotonic() - start_time),
-                            session_id=sid,
-                            error=(
-                                f"Declared dependency {dep_exe!r} is not a regular file. "
-                                f"Re-submit the adapter with a valid dependency and "
-                                f"obtain founder approval."
-                            ),
-                        )
-                    if not os.access(dep_path, os.X_OK):
-                        return ExecutorResult(
-                            success=False,
-                            duration_seconds=int(time.monotonic() - start_time),
-                            session_id=sid,
-                            error=(
-                                f"Declared dependency {dep_exe!r} is not executable. "
-                                f"Re-submit the adapter with a valid dependency and "
-                                f"obtain founder approval."
-                            ),
-                        )
-                    # Verify hash
-                    current_dep_hash = compute_sha256(dep_exe)
-                    if current_dep_hash != dep_hash:
-                        return ExecutorResult(
-                            success=False,
-                            duration_seconds=int(time.monotonic() - start_time),
-                            session_id=sid,
-                            error=(
-                                f"Declared dependency {dep_exe!r} hash mismatch: "
-                                f"expected {dep_hash[:12]}..., got {current_dep_hash[:12]}... "
-                                f"The dependency has been modified since approval. "
-                                f"Re-submit the adapter with the updated dependency "
-                                f"and obtain founder approval."
-                            ),
-                        )
+            if running is not None:
+                # ── THR-207 contained launch ──
+                # The backend already launched the adapter into containment;
+                # this body communicates + parses only. on_started(pid) is the
+                # supervisor's AdmissionRequest hook bound after the
+                # RunningHandle was bound — never re-stamped here.
+                if running.process is None:
+                    return ExecutorResult(
+                        success=False,
+                        duration_seconds=int(time.monotonic() - start_time),
+                        session_id=sid,
+                        error=(
+                            "contained launch requires a backend-created "
+                            "process; the selected backend provides no "
+                            "containment (passthrough) — retry on the "
+                            "uncontained path"
+                        ),
+                    )
+                proc = running.process
+            else:
+                # ── THR-107 seq268 (seq315 correction): inherited normalized PATH ──
+                # The adapter-launched process receives the same inherited
+                # normalized environment as normal launches (_callee_env()).
+                # The adapter wrapper and every declared child dependency remain
+                # explicitly absolute and hash-pinned/revalidated — the runtime
+                # never selects an agentic CLI from ambient PATH.  Pre-Popen
+                # wrapper/dependency validation is retained exactly.
+                launch_env = _callee_env()
 
-            # ── THR-107 seq268 (seq315 correction): inherited normalized PATH ──
-            # The adapter-launched process receives the same inherited
-            # normalized environment as normal launches (_callee_env()).
-            # The adapter wrapper and every declared child dependency remain
-            # explicitly absolute and hash-pinned/revalidated — the runtime
-            # never selects an agentic CLI from ambient PATH.  Pre-Popen
-            # wrapper/dependency validation is retained exactly.
-            launch_env = _callee_env()
+                try:
+                    proc = subprocess.Popen(
+                        [self._adapter_executable],
+                        cwd=str(workspace),
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env=launch_env,
+                    )
+                except (FileNotFoundError, OSError, PermissionError) as exc:
+                    return ExecutorResult(
+                        success=False,
+                        duration_seconds=int(time.monotonic() - start_time),
+                        session_id=sid,
+                        error=(
+                            f"Failed to launch custom adapter "
+                            f"{self._adapter_executable!r}: {exc}"
+                        ),
+                    )
 
-            try:
-                proc = subprocess.Popen(
-                    [self._adapter_executable],
-                    cwd=str(workspace),
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    env=launch_env,
-                )
-            except (FileNotFoundError, OSError, PermissionError) as exc:
-                return ExecutorResult(
-                    success=False,
-                    duration_seconds=int(time.monotonic() - start_time),
-                    session_id=sid,
-                    error=(
-                        f"Failed to launch custom adapter "
-                        f"{self._adapter_executable!r}: {exc}"
-                    ),
-                )
-
-            if on_started is not None:
-                on_started(proc.pid)
+                if on_started is not None:
+                    on_started(proc.pid)
 
             try:
                 stdout, stderr = proc.communicate(
@@ -1929,8 +2187,14 @@ class CustomAdapterExecutor:
                 rate_limited=output.rate_limited,
             )
 
+        # Contained sessions defer the 429 retry to the supervisor (the throttle
+        # must not re-communicate a backend-owned process); the uncontained path
+        # honors ``throttle_backoff_seconds`` when the caller supplies it.
+        backoff = () if running is not None else throttle_backoff_seconds
         from runtime.orchestrator.throttle import get_throttle
-        return get_throttle().run(self._provider, _launch, on_throttle_event)
+        return get_throttle().run(
+            self._provider, _launch, on_throttle_event, backoff_seconds=backoff
+        )
 
 
 AgentExecutor = ClaudeExecutor

@@ -17,10 +17,15 @@
 > every terminal path, cgroup-emptiness verification, authoritative
 > counters, guaranteed-cleanup residue as admission-blocking), and the
 > honestly capped macOS process-group/census backend (TERM/KILL bounded
-> cleanup, identity-safe survivor accounting, sampled peaks). The remaining
-> producers and the executor launch bodies are wired in later slices against
-> the same contract; `runtime/platform/isolation.py` (canonical-skill-store
-> integrity + same-owner launch) is deliberately untouched by this design.
+> cleanup, identity-safe survivor accounting, sampled peaks). The
+> task-producer slice (TASK-5810/TASK-5811) wires the daemon-wide supervisor
+> through the real task producer and BOTH executor Popen launch bodies
+> (`runtime/orchestrator/executors.py`), so real task sessions launch into
+> the selected capability backend with opaque cancellation and supervisor-
+> owned 429 retry; thread/dream/wake producers are wired in later slices
+> against the same contract; `runtime/platform/isolation.py`
+> (canonical-skill-store integrity + same-owner launch) is deliberately
+> untouched by this design.
 
 ## Decision in one page
 
@@ -169,10 +174,12 @@ concurrency (1 worker) and row lifecycle.
   backend; otherwise a healthy process-group/census probe selects the macOS
   backend; anything else selects the honest no-capability fallback
   (`PassthroughBackend`, all capabilities `unavailable`). Callers above the
-  factory branch on capabilities, never OS names. The daemon's wired
-  producer (schedule fires) performs its own subprocess launch inside the
-  executor body, so its truthful selection is the honest fallback until the
-  executor launch bodies are wired.
+  factory branch on capabilities, never OS names. The daemon's production
+  construction passes `select_session_backend()` — the real Linux/macOS
+  backend when the operational probe is healthy — because the executor
+  launch bodies are wired (task-producer slice); `build_default_host_supervisor()`
+  with no arguments keeps the honest passthrough as the deterministic
+  default for the schedule-fire integration suites.
 - Tests — deterministic fake seams (probe degradation, launch failure,
   finish ordering/status mapping, residue, abandon, recover, PID-reuse
   safety) plus real integration suites gated on the operational probe with
@@ -277,13 +284,25 @@ PIDs / 2800% CPU` remain unapproved measurement candidates.
   through the supervisor with the honest no-enforcement passthrough backend
   and the daemon drain calls `shutdown()`; no enforcement, provider/producer,
   or other-producer changes.
-- **B — lifecycle containment (THIS PR):** the real Linux systemd/cgroup-v2
+- **B — lifecycle containment (PR #719):** the real Linux systemd/cgroup-v2
   and macOS process-group/census backends behind the capability factory,
   portable identity-safe sampling, and the mandatory success-path descendant
   test gating the canary. Linux ceiling 11 stays non-binding shadow; macOS
   starts at binding cap 4. The wired schedule producer keeps the honest
-  no-enforcement passthrough because its executor subprocess cannot be
-  contained until the executor launch bodies are wired.
+  no-enforcement passthrough because its executor subprocess could not be
+  contained until the executor launch bodies were wired.
+- **B′ — real task sessions (TASK-5810/TASK-5811):** wire the daemon-wide
+  supervisor through the actual task producer and BOTH executor Popen launch
+  bodies. Task sessions now launch into the selected capability backend
+  (real Linux/macOS when the operational probe is healthy, honest passthrough
+  otherwise), own a real admission lease + cancellation token, register an
+  opaque cancellation/cleanup control with `SessionTracker` (PID stays
+  diagnostic/restart evidence only), defer the 429 retry to the supervisor
+  (finish/release/sleep/reacquire with original enqueue age + fresh backend
+  handle), and finish containment before exactly-once lease release on every
+  terminal path. The schedule producer's launch body adapts to the contained
+  mode (real argv) while keeping its behavior. Thread/dream/wake producers
+  remain unwired.
 - **C — bounded enforcement:** canary Linux limits chosen from measured
   receipts; macOS remains honestly capped.
 - **D — evidence-based policy proposal:** only then propose session/resource
