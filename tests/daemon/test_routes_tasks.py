@@ -2602,3 +2602,54 @@ def test_list_roots_direct_revisits_empty_when_no_revisits(
     task = r.json()["tasks"][0]
     assert "direct_revisits" in task
     assert task["direct_revisits"] == []
+
+
+def test_completion_lands_result_but_row_stays_in_progress_thr211(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """THR-211 completion-status-lag contract: the completion POST durably
+    persists the session-scoped task_results row but does NOT terminalize the
+    tasks row — in_progress with block_kind NULL still represents a live
+    executor and the status transition is deferred to session finalization.
+    The durable result is the landing proof and stays readable during the lag
+    window (the same evidence the guarded-merge recall path consumes)."""
+    from runtime.orchestrator.run_step import _child_has_landed_terminal_result
+
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-1")
+    # Simulate a claimed live session (run_step sets in_progress + session).
+    org_state.db.update_task(
+        task_id, status="in_progress",
+        assigned_agent="dev_agent", current_session_id="sess-1",
+    )
+
+    r = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={"session_id": "sess-1", "agent": "dev_agent",
+              "status": "completed", "confidence": 90, "output_summary": "ok",
+              "verdict": "APPROVE"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+
+    task = org_state.db.get_task(task_id)
+    # The row is NOT terminalized by the POST.
+    assert task.status == "in_progress"
+    assert task.block_kind is None
+    # The durable result is the landing proof and is session-scoped readable.
+    row = org_state.db.get_latest_task_result(task_id, "dev_agent", "sess-1")
+    assert row is not None and row["status"] == "completed" and row["verdict"] == "APPROVE"
+    # The dispatch/gate recognizer sees the landed result while the row is
+    # still in_progress.
+    assert _child_has_landed_terminal_result(org_state.orchestrator, task) is True
+
+    # Detail/read surface stays honest: in_progress + the result present.
+    detail = TestClient(app).get(
+        f"/api/v1/orgs/alpha/tasks/{task_id}", headers=auth_headers,
+    )
+    assert detail.status_code == 200
+    assert detail.json()["task"]["status"] == "in_progress"
+    assert len(detail.json()["results"]) == 1

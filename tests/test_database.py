@@ -519,6 +519,28 @@ def test_get_recall_payload_includes_verdict_from_task_results(db):
     assert payload["verdict"] == "APPROVE"
 
 
+def test_get_recall_payload_verdict_durable_while_task_row_in_progress(db):
+    """THR-211: the guarded-merge evidence path reads the structured verdict
+    from task_results even while the tasks row still reads in_progress (the
+    completion-status-lag window between the POST and session-finalization
+    consumption). The recall payload must never gate the verdict on the task
+    row being terminal."""
+    db.insert_task(TaskRecord(id="TASK-VL", brief="review task"))
+    db.update_task(
+        "TASK-VL", status=TaskStatus.IN_PROGRESS,
+        current_session_id="sess-lag", assigned_agent="code_reviewer",
+    )
+    db.insert_task_result(
+        task_id="TASK-VL", agent="code_reviewer", session_id="sess-lag",
+        status="completed", output_summary="approved",
+        confidence_score=90, verdict="APPROVE",
+    )
+    payload = db.get_recall_payload("TASK-VL")
+    assert payload is not None
+    assert payload["status"] == "in_progress"
+    assert payload["verdict"] == "APPROVE"
+
+
 def test_get_recall_payload_null_verdict_when_no_task_results(db):
     """When no task_results rows exist, verdict is None in the payload."""
     db.insert_task(TaskRecord(id="TASK-V2", brief="no completion"))
@@ -2688,3 +2710,111 @@ def test_get_latest_completion_report_returns_latest_row_local_ci(db):
     assert report is not None
     assert report.local_ci is not None
     assert report.output_summary == "second with local_ci"
+
+
+def test_get_latest_completion_report_scoped_by_agent_session(db):
+    """THR-211: the (agent, session_id) scoped lookup returns the exact
+    fingerprint row even when a newer unrelated row exists — the authority the
+    chain gate relies on. The unscoped lookup keeps the newest-row contract
+    for the non-chain readers, and an unknown fingerprint fails closed."""
+    db.insert_task_result(
+        task_id="TASK-MIX", agent="dev_agent", session_id="sess-auth",
+        status="completed", output_summary="auth ok", confidence_score=90,
+        verdict="APPROVE",
+    )
+    db.insert_task_result(
+        task_id="TASK-MIX", agent="other_agent", session_id="sess-other",
+        status="completed", output_summary="intruder", confidence_score=10,
+        verdict="REQUEST_CHANGES",
+    )
+    scoped = db.get_latest_completion_report("TASK-MIX", "dev_agent", "sess-auth")
+    assert scoped is not None
+    assert scoped.verdict == "APPROVE"
+    assert scoped.output_summary == "auth ok"
+    # Unscoped keeps the newest-row contract (used by non-chain readers).
+    unscoped = db.get_latest_completion_report("TASK-MIX")
+    assert unscoped is not None
+    assert unscoped.verdict == "REQUEST_CHANGES"
+    # Unknown fingerprint fails closed.
+    assert db.get_latest_completion_report("TASK-MIX", "dev_agent", "nope") is None
+    # A newer row within the SAME fingerprint still wins (retry semantics).
+    db.insert_task_result(
+        task_id="TASK-MIX", agent="dev_agent", session_id="sess-auth",
+        status="completed", output_summary="auth retry", confidence_score=95,
+        verdict="APPROVE",
+    )
+    scoped2 = db.get_latest_completion_report("TASK-MIX", "dev_agent", "sess-auth")
+    assert scoped2 is not None
+    assert scoped2.output_summary == "auth retry"
+    assert scoped2.verdict == "APPROVE"
+
+
+# ── TASK-5823: exact-scoped reader fail-closes on structural malformation ──
+
+def _insert_malformed_exact_result(db, *, column: str, raw) -> None:
+    db.insert_task_result(
+        task_id="TASK-MAL", agent="code_reviewer", session_id="sess-cur",
+        status="completed", output_summary="exact completed row",
+        confidence_score=90, verdict="APPROVE",
+    )
+    db._conn.execute(
+        f"UPDATE task_results SET {column} = ? "
+        "WHERE task_id = ? AND session_id = ?",
+        (raw, "TASK-MAL", "sess-cur"),
+    )
+    db._conn.commit()
+
+
+def test_get_latest_completion_report_scoped_malformed_risks_json_returns_none(db):
+    """TASK-5823: a modern exact-fingerprint row whose persisted risks_flagged
+    is invalid JSON has NO acceptable authenticated report — the scoped read
+    returns None (fail-closed) instead of raising."""
+    _insert_malformed_exact_result(db, column="risks_flagged", raw="not-json{{[")
+    assert db.get_latest_completion_report("TASK-MAL", "code_reviewer", "sess-cur") is None
+
+
+def test_get_latest_completion_report_scoped_wrong_shape_returns_none(db):
+    """Valid JSON of the wrong container shape (dict instead of list) fails the
+    strict CompletionReport contract and fail-closes to None on the scoped read."""
+    _insert_malformed_exact_result(db, column="risks_flagged", raw='{"not": "a list"}')
+    assert db.get_latest_completion_report("TASK-MAL", "code_reviewer", "sess-cur") is None
+
+
+def test_get_latest_completion_report_scoped_non_string_elements_returns_none(db):
+    """A list with invalid element types (list[int] instead of list[str])
+    fail-closes to None on the scoped read."""
+    _insert_malformed_exact_result(db, column="risks_flagged", raw="[1, 2, 3]")
+    assert db.get_latest_completion_report("TASK-MAL", "code_reviewer", "sess-cur") is None
+
+
+def test_get_latest_completion_report_scoped_confidence_out_of_range_returns_none(db):
+    """confidence_score outside the strict CompletionReport range (0..100) is a
+    structural validation failure — fail-closes to None on the scoped read."""
+    _insert_malformed_exact_result(db, column="confidence_score", raw=150)
+    assert db.get_latest_completion_report("TASK-MAL", "code_reviewer", "sess-cur") is None
+
+
+def test_get_latest_completion_report_unscoped_malformed_still_raises(db):
+    """Legacy unscoped read keeps its prior behavior: a structurally malformed
+    newest row still surfaces as JSONDecodeError — the TASK-5823 fail-closed
+    conversion applies ONLY to the modern exact-fingerprint scope."""
+    _insert_malformed_exact_result(db, column="risks_flagged", raw="not-json{{[")
+    with pytest.raises(ValueError):
+        db.get_latest_completion_report("TASK-MAL")
+
+
+def test_get_latest_completion_report_scoped_valid_row_round_trips_structured_fields(db):
+    """Positive control at the reader seam: a VALID exact row round-trips its
+    structured fields through the strict contract — the fail-closed conversion
+    must never degrade a well-formed authenticated report."""
+    db.insert_task_result(
+        task_id="TASK-OK", agent="code_reviewer", session_id="sess-cur",
+        status="completed", output_summary="approved", confidence_score=90,
+        verdict="APPROVE", risks_flagged=["risk one", "risk two"],
+        waiting_on_job_ids=["JOB-1"],
+    )
+    report = db.get_latest_completion_report("TASK-OK", "code_reviewer", "sess-cur")
+    assert report is not None
+    assert report.risks_flagged == ["risk one", "risk two"]
+    assert report.waiting_on_job_ids == ["JOB-1"]
+    assert report.verdict == "APPROVE"
