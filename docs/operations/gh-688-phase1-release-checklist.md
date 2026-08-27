@@ -305,6 +305,18 @@ re-derived):
    minted at settlement, a legacy pre-audit row) fall back to
    `triggering_seq` — production-faithful for follow-ons (the retained
    range contains only arrivals that woke the agent).
+
+   **Evidence ownership and fail-closed parsing.** Every audit lookup is
+   scoped by the production ownership tuple — `thread_id` + `agent_name`
+   (the wake owner recorded in `audit_log.agent`) + the 8-char
+   `token_prefix` — never a weaker key, so an unrelated same-thread,
+   same-prefix audit owned by a different agent can never reattribute an
+   invocation. All seq/range fields are parsed fail-closed: a missing,
+   non-integer, boolean-like, float, string, non-positive, or internally
+   inverted range payload is skipped without exception — the measurement
+   never crashes and never fabricates an attribution. `retained_queued`
+   recoveries and `thread_reply_wake_coalesced` arrivals are never
+   re-attributed.
 2. **G2 — founder-message coverage (gate).** Founder messages (kind=message,
    `speaker='founder'`) covered iff ≥1 `purpose='reply'` invocation whose
    authoritative claimed delivery range contains that message's sequence

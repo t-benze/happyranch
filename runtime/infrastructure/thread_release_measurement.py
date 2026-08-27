@@ -51,6 +51,16 @@ Design contract:
   row) fall back to ``triggering_seq`` — production-faithful for follow-ons
   (the retained range contains only arrivals that woke the agent).
 
+  Every audit evidence lookup is scoped by the production ownership tuple
+  — ``thread_id`` + ``agent_name`` (the wake owner recorded in
+  ``audit_log.agent``) + the 8-char ``token_prefix`` — never a weaker key,
+  so an unrelated same-thread/same-prefix audit owned by a DIFFERENT agent
+  can never reattribute an invocation. All seq/range fields are parsed
+  fail-closed: a missing, non-integer, boolean-like, float, string,
+  non-positive, or internally inverted range payload is skipped without
+  exception — the measurement never crashes and never fabricates an
+  attribution.
+
 Ratified gates (THR-198 seq 87/88/108):
 
 * G1 mentioned-message saving (gate): baseline 293/499 = 58.7% August 2026;
@@ -259,6 +269,43 @@ def _seq_covered(
     )
 
 
+def _parse_positive_seq(value: Any) -> int | None:
+    """Parse an audit payload sequence field fail-closed.
+
+    Returns the value only when it is a positive JSON integer (``int`` but
+    not ``bool``); ``None`` for a missing, non-integer (string, float),
+    boolean-like, zero, or negative value. Production payloads always carry
+    ``int`` seqs (the mint/claim/recovery code ``json.dumps`` the message
+    seq directly), so anything else is out-of-shape data — the caller skips
+    the payload entirely rather than crash or fabricate an attribution.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    return None
+
+
+def _valid_range(from_seq: Any, through_seq: Any) -> tuple[int, int] | None:
+    """Validate an inclusive ``[from_seq, through_seq]`` range fail-closed.
+
+    Returns ``(from_seq, through_seq)`` only when both are positive
+    non-boolean ints AND ``from_seq <= through_seq`` (an internally valid
+    inclusive range — every production path writes
+    ``from_seq = acknowledged + 1 <= through_seq = required``). ``None`` for
+    a missing, non-integer, boolean-like, float, string, non-positive, or
+    inverted range — the caller skips the payload (never fabricates
+    attribution/coverage).
+    """
+    lo = _parse_positive_seq(from_seq)
+    hi = _parse_positive_seq(through_seq)
+    if lo is None or hi is None:
+        return None
+    if lo > hi:
+        return None
+    return lo, hi
+
+
 def _creating_arrival_seqs(
     conn: sqlite3.Connection,
     invocations: list[sqlite3.Row],
@@ -287,10 +334,20 @@ def _creating_arrival_seqs(
     (a follow-on minted at settlement — whose floor IS a genuine wake-causing
     arrival, since the retained range contains only arrivals that raised the
     pair's required watermark — or a legacy pre-audit row).
+
+    Evidence is keyed by the production ownership tuple
+    ``(thread_id, agent_name, token_prefix)`` — the created audit's
+    ``audit_log.agent`` column IS the wake owner — never a weaker key: an
+    unrelated same-thread audit with the same 8-char prefix but a different
+    owner cannot reattribute an invocation. Payloads are parsed fail-closed
+    (missing/non-8-char ``token_prefix``, or a missing/non-integer/
+    boolean-like/non-positive/inverted ``from_seq``/``through_seq``) and
+    skipped without exception — never a crash, never a fabricated
+    attribution.
     """
-    created_by_token: dict[tuple[str, str], int] = {}
+    created_by_owner: dict[tuple[str, str, str], int] = {}
     for row in conn.execute(
-        "SELECT task_id, payload FROM audit_log "
+        "SELECT task_id, agent, payload FROM audit_log "
         "WHERE action = 'thread_reply_wake_created'",
     ).fetchall():
         if not row["payload"]:
@@ -300,17 +357,21 @@ def _creating_arrival_seqs(
         except json.JSONDecodeError:
             continue
         prefix = payload.get("token_prefix")
-        through_seq = payload.get("through_seq")
-        if not prefix or through_seq is None:
+        if not isinstance(prefix, str) or len(prefix) != 8:
             continue
-        created_by_token[(row["task_id"], str(prefix))] = int(through_seq)
+        rng = _valid_range(payload.get("from_seq"), payload.get("through_seq"))
+        if rng is None:
+            continue
+        created_by_owner[(row["task_id"], row["agent"], prefix)] = rng[1]
     return {
-        row["invocation_token"]: created_by_token[
-            (row["thread_id"], (row["invocation_token"] or "")[:8])
+        row["invocation_token"]: created_by_owner[
+            (row["thread_id"], row["agent_name"],
+             (row["invocation_token"] or "")[:8])
         ]
         for row in invocations
-        if (row["thread_id"], (row["invocation_token"] or "")[:8])
-        in created_by_token
+        if (row["thread_id"], row["agent_name"],
+            (row["invocation_token"] or "")[:8])
+        in created_by_owner
     }
 
 
@@ -342,15 +403,25 @@ def _recovered_replacement_seqs(
     receipt was minted by a real arrival (it carries its own created audit,
     which callers consult with higher precedence), and re-attributing it to
     the recovery-time watermark would point at a coalesced arrival that
-    "mints nothing". Malformed payloads, a missing
-    ``token_prefix``/``through_seq``/``kind``, or any non-``replacement_queued``
-    kind are skipped — never fabricated. Invocations absent from the map keep
-    their caller fallback (``triggering_seq``) for genuinely unattributable
-    rows (follow-on, retained/legacy).
+    "mints nothing".
+
+    Evidence is keyed by the production ownership tuple
+    ``(thread_id, agent_name, token_prefix)`` — the recovery audit's
+    ``audit_log.agent`` column IS the wake owner — never a weaker key: an
+    unrelated same-thread audit with the same 8-char prefix owned by a
+    DIFFERENT agent can never reattribute the target agent's invocation (the
+    invocation lookup uses the identical tuple from its ``agent_name``).
+    Payloads are parsed fail-closed: a missing kind, any non-
+    ``replacement_queued`` kind, a missing/non-8-char ``token_prefix``,
+    or a missing/non-integer/boolean-like/non-positive/inverted
+    ``from_seq``/``through_seq`` is skipped without exception — never a
+    crash, never a fabricated attribution. Invocations absent from the map
+    keep their caller fallback (``triggering_seq``) for genuinely
+    unattributable rows (follow-on, retained/legacy).
     """
-    recovered_by_pair_prefix: dict[tuple[str, str], int] = {}
+    recovered_by_owner: dict[tuple[str, str, str], int] = {}
     for row in conn.execute(
-        "SELECT task_id, payload FROM audit_log "
+        "SELECT task_id, agent, payload FROM audit_log "
         "WHERE action = 'thread_reply_wake_recovered'",
     ).fetchall():
         if not row["payload"]:
@@ -362,17 +433,21 @@ def _recovered_replacement_seqs(
         if payload.get("kind") != "replacement_queued":
             continue
         prefix = payload.get("token_prefix")
-        through_seq = payload.get("through_seq")
-        if not prefix or through_seq is None:
+        if not isinstance(prefix, str) or len(prefix) != 8:
             continue
-        recovered_by_pair_prefix[(row["task_id"], str(prefix))] = int(through_seq)
+        rng = _valid_range(payload.get("from_seq"), payload.get("through_seq"))
+        if rng is None:
+            continue
+        recovered_by_owner[(row["task_id"], row["agent"], prefix)] = rng[1]
     return {
-        row["invocation_token"]: recovered_by_pair_prefix[
-            (row["thread_id"], (row["invocation_token"] or "")[:8])
+        row["invocation_token"]: recovered_by_owner[
+            (row["thread_id"], row["agent_name"],
+             (row["invocation_token"] or "")[:8])
         ]
         for row in invocations
-        if (row["thread_id"], (row["invocation_token"] or "")[:8])
-        in recovered_by_pair_prefix
+        if (row["thread_id"], row["agent_name"],
+            (row["invocation_token"] or "")[:8])
+        in recovered_by_owner
     }
 
 
@@ -397,9 +472,13 @@ def _consumed_reply_ranges(
     (the audit deliberately stores only the prefix). The range floor equals
     the invocation's ``triggering_seq`` (every mint path seeds it as
     ``acknowledged + 1`` and the watermark cannot move between mint and
-    claim). A consumed invocation with no matching claim audit — a
-    queued-settled wake that was never claimed, or a legacy pre-coalescing
-    row — covers only its own ``triggering_seq``: an honest
+    claim). Claimed payloads are parsed fail-closed (missing/non-8-char
+    ``token_prefix``, or missing/non-integer/boolean-like/non-positive/
+    inverted range fields are skipped without exception — never a crash, and
+    an out-of-shape row simply contributes no coverage). A consumed
+    invocation with no matching claim audit — a queued-settled wake that was
+    never claimed, a legacy pre-coalescing row, or a skipped malformed claim
+    — covers only its own ``triggering_seq``: an honest
     under-approximation that never fabricates coverage.
     """
     claimed_by_pair_prefix: dict[tuple[str, str, str], tuple[int, int]] = {}
@@ -414,14 +493,12 @@ def _consumed_reply_ranges(
         except json.JSONDecodeError:
             continue
         prefix = payload.get("token_prefix")
-        from_seq = payload.get("from_seq")
-        through_seq = payload.get("through_seq")
-        if not prefix or from_seq is None or through_seq is None:
+        if not isinstance(prefix, str) or len(prefix) != 8:
             continue
-        claimed_by_pair_prefix[(row["task_id"], row["agent"], str(prefix))] = (
-            int(from_seq),
-            int(through_seq),
-        )
+        rng = _valid_range(payload.get("from_seq"), payload.get("through_seq"))
+        if rng is None:
+            continue
+        claimed_by_pair_prefix[(row["task_id"], row["agent"], prefix)] = rng
 
     ranges: list[tuple[str, str, int, int]] = []
     for row in invocations:

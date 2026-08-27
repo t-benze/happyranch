@@ -708,6 +708,262 @@ def test_live_recovery_payload_never_leaks_across_threads_or_tokens() -> None:
     assert live.org_declines == 1
 
 
+def test_live_recovery_non_integer_through_seq_fails_closed() -> None:
+    """[adversarial regression — TASK-5893 HIGH finding #1] A syntactically
+    valid ``replacement_queued`` payload whose ``through_seq`` is NOT a
+    positive JSON integer must never crash the measurement: the row is
+    skipped (fail closed) and the replacement keeps the genuine legacy
+    fallback (``triggering_seq``). Variants: non-integer string (the
+    reviewer's probe), numeric string, float, boolean, zero, negative,
+    missing."""
+    malformed = ["not-an-int", "11", 11.0, True, 0, -5, None]
+    for through_seq in malformed:
+        conn = _conn()
+        _add_thread(conn, "T1")
+        _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+        _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                     mentions='["alice"]')
+        _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:02:00Z",
+                        token="rrr11111", status="declined",
+                        consumed_at="2026-08-27T00:03:00Z")
+        payload = {"agent_name": "alice", "kind": "replacement_queued",
+                   "from_seq": 10, "token_prefix": "rrr11111"}
+        if through_seq is not None:
+            payload["through_seq"] = through_seq
+        conn.execute(
+            "INSERT INTO audit_log (task_id, agent, action, payload, "
+            "timestamp) VALUES ('T1', 'alice', "
+            "'thread_reply_wake_recovered', ?, '2026-08-27T00:02:00Z')",
+            (json.dumps(payload),),
+        )
+        # Must not raise; the malformed recovery evidence is skipped and the
+        # replacement keeps the floor fallback (seq 10 IS mentioned).
+        live = m.measure_live_window(conn, epoch=EPOCH,
+                                     as_of="2026-08-27T12:00:00Z")
+        assert live.mentioned_wakes == 1, f"through_seq={through_seq!r}"
+        assert live.mentioned_declines == 1, f"through_seq={through_seq!r}"
+        assert live.mentioned_decline_rate_pct == 100.0
+        assert live.org_wakes == 1
+        assert live.org_declines == 1
+
+
+def test_live_recovery_invalid_range_shape_fails_closed() -> None:
+    """[adversarial regression — TASK-5893 HIGH finding #1] ``replacement_queued``
+    payloads whose range is internally invalid (inverted ``from_seq >
+    through_seq``), non-positive, or carries a non-integer/boolean boundary
+    are skipped without exception — the replacement keeps the floor
+    fallback, never a fabricated attribution, and the measurement never
+    crashes."""
+    variants = [
+        (12, 11),     # inverted range
+        (0, 11),      # non-positive from_seq
+        (10, 0),      # non-positive through_seq
+        ("oops", 11),  # non-integer from_seq
+        (True, 11),   # boolean-like from_seq
+        (10, None),   # missing through_seq
+    ]
+    for from_seq, through_seq in variants:
+        conn = _conn()
+        _add_thread(conn, "T1")
+        _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+        _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                     mentions='["alice"]')
+        _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:02:00Z",
+                        token="rrr11111", status="declined",
+                        consumed_at="2026-08-27T00:03:00Z")
+        payload = {"agent_name": "alice", "kind": "replacement_queued",
+                   "token_prefix": "rrr11111"}
+        if from_seq is not None:
+            payload["from_seq"] = from_seq
+        if through_seq is not None:
+            payload["through_seq"] = through_seq
+        conn.execute(
+            "INSERT INTO audit_log (task_id, agent, action, payload, "
+            "timestamp) VALUES ('T1', 'alice', "
+            "'thread_reply_wake_recovered', ?, '2026-08-27T00:02:00Z')",
+            (json.dumps(payload),),
+        )
+        live = m.measure_live_window(conn, epoch=EPOCH,
+                                     as_of="2026-08-27T12:00:00Z")
+        assert live.mentioned_wakes == 1, f"{from_seq=} {through_seq=}"
+        assert live.mentioned_declines == 1, f"{from_seq=} {through_seq=}"
+        assert live.org_wakes == 1
+
+
+def test_live_created_malformed_payload_fails_closed() -> None:
+    """[adversarial regression] The created-audit map parses fail-closed too:
+    a ``thread_reply_wake_created`` payload with a non-integer ``through_seq``
+    or an internally invalid range is skipped without crashing — the wake
+    keeps the genuine floor fallback (no fabricated attribution)."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:01:00Z",
+                    token="aaa11111", status="declined",
+                    consumed_at="2026-08-27T00:02:00Z")
+    # Non-integer through_seq AND an inverted-range variant, same token.
+    for payload in (
+        {"agent_name": "alice", "from_seq": 10, "through_seq": "nope",
+         "token_prefix": "aaa11111"},
+        {"agent_name": "alice", "from_seq": 12, "through_seq": 10,
+         "token_prefix": "aaa11111"},
+    ):
+        conn.execute(
+            "INSERT INTO audit_log (task_id, agent, action, payload, "
+            "timestamp) VALUES ('T1', 'alice', "
+            "'thread_reply_wake_created', ?, '2026-08-27T00:01:00Z')",
+            (json.dumps(payload),),
+        )
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_wakes == 1  # floor fallback: seq 10 IS mentioned
+    assert live.mentioned_declines == 1
+    assert live.mentioned_decline_rate_pct == 100.0
+    assert live.org_wakes == 1
+
+
+def test_live_ownership_tuple_resolves_same_prefix_cross_agent_collision() -> None:
+    """[adversarial regression — TASK-5893 HIGH finding #2, positive
+    ownership] Ownership is the production tuple ``(thread_id, agent_name,
+    token_prefix)``: TWO agents in the SAME thread with the SAME 8-char
+    prefix are attributed ONLY by their own audit evidence. alice's wake
+    (created audit at mentioned seq 10) is unaffected by bob's recovery
+    audit naming the same prefix with a broadcast ``through_seq`` 11, and
+    bob's own wake (no created audit) is attributed to HIS recovered
+    ``through_seq`` 11 (broadcast → not mentioned). No weaker key may merge
+    the two ownerships."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_participant(conn, "T1", "bob", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_message(conn, "T1", 11, "founder", "2026-08-27T00:00:30Z",
+                 mentions="[]")
+    # alice's wake: minted by the seq-10 mention; created audit [10,10].
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:01:00Z",
+                    token="abc12345-a1", status="declined",
+                    consumed_at="2026-08-27T00:02:00Z")
+    _add_created_audit(conn, "T1", "alice", "abc12345-a1", 10, 10,
+                       "2026-08-27T00:01:00Z")
+    # bob's replacement: SAME 8-char prefix, recovered through_seq 11.
+    _add_invocation(conn, "T1", "bob", 10, "2026-08-27T00:03:00Z",
+                    token="abc12345-b2", status="declined",
+                    consumed_at="2026-08-27T00:04:00Z")
+    _add_recovered_audit(conn, "T1", "bob", "abc12345-b2",
+                         "replacement_queued", 10, 11,
+                         "2026-08-27T00:03:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_messages == 1
+    # alice's wake stays attributed to the seq-10 mention; bob's wake is
+    # attributed to HIS recovered through_seq 11 (broadcast → not mentioned).
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 1
+    assert live.mentioned_decline_rate_pct == 100.0
+    assert live.org_wakes == 2
+    assert live.org_declines == 2
+    assert live.org_decline_rate_pct == 100.0
+
+
+def test_live_same_prefix_other_agent_recovery_audit_does_not_reattribute() -> None:
+    """[adversarial regression — the reviewer's Bob-changes-Alice probe] A
+    recovery audit owned by a DIFFERENT agent in the same thread with the
+    same 8-char prefix must NOT reattribute the target agent's wake: alice's
+    replacement (no audits of her own) keeps the genuine floor fallback
+    (mentioned seq 10), even though bob's audit names the same prefix with a
+    broadcast ``through_seq`` 11. The pre-fix ``(thread_id, token_prefix)``
+    key let bob's audit flip alice's G1 wake out of the mentioned
+    population."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_participant(conn, "T1", "bob", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    # alice's replacement: no created audit, no recovered audit of her own.
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:02:00Z",
+                    token="def45678-a1", status="declined",
+                    consumed_at="2026-08-27T00:03:00Z")
+    # bob's unrelated recovery audit with the SAME 8-char prefix.
+    _add_recovered_audit(conn, "T1", "bob", "def45678-b2",
+                         "replacement_queued", 10, 11,
+                         "2026-08-27T00:02:30Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_messages == 1
+    # alice keeps her floor fallback: seq 10 IS mentioned → counted in G1.
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 1
+    assert live.mentioned_decline_rate_pct == 100.0
+    assert live.org_wakes == 1
+    assert live.org_declines == 1
+
+
+def test_live_same_prefix_other_agent_created_audit_does_not_reattribute() -> None:
+    """[adversarial regression — created-map ownership] The created map is
+    scoped by the same ownership tuple: a ``thread_reply_wake_created`` audit
+    owned by a DIFFERENT agent in the same thread with the same 8-char
+    prefix cannot reattribute alice's wake. alice's wake (no own audits)
+    keeps the floor fallback (mentioned seq 10) despite bob's created audit
+    pointing at broadcast seq 11."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_participant(conn, "T1", "bob", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:01:00Z",
+                    token="abc12345-a1", status="declined",
+                    consumed_at="2026-08-27T00:02:00Z")
+    _add_created_audit(conn, "T1", "bob", "abc12345-b2", 10, 11,
+                       "2026-08-27T00:01:30Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_messages == 1
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 1
+    assert live.org_wakes == 1
+    assert live.org_declines == 1
+
+
+def test_live_claimed_malformed_range_fails_closed() -> None:
+    """[adversarial regression — coverage path] A ``thread_reply_wake_claimed``
+    payload with a non-integer range boundary or an internally inverted
+    range is skipped without crashing: the consumed invocation then covers
+    ONLY its own ``triggering_seq`` (the honest under-approximation) — the
+    malformed row contributes no fabricated coverage to G2."""
+    for payload in (
+        {"agent_name": "alice", "from_seq": 1, "through_seq": "oops",
+         "token_prefix": "aaa11111"},
+        {"agent_name": "alice", "from_seq": 5, "through_seq": 1,
+         "token_prefix": "aaa11111"},
+    ):
+        conn = _conn()
+        _add_thread(conn, "T1")
+        _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+        _add_message(conn, "T1", 1, "founder", "2026-08-27T00:00:00Z")
+        _add_message(conn, "T1", 2, "founder", "2026-08-27T00:01:00Z")
+        _add_message(conn, "T1", 3, "founder", "2026-08-27T00:02:00Z")
+        _add_invocation(conn, "T1", "alice", 1, "2026-08-27T00:03:00Z",
+                        token="aaa11111", status="consumed",
+                        consumed_at="2026-08-27T00:04:00Z")
+        conn.execute(
+            "INSERT INTO audit_log (task_id, agent, action, payload, "
+            "timestamp) VALUES ('T1', 'alice', "
+            "'thread_reply_wake_claimed', ?, '2026-08-27T00:03:30Z')",
+            (json.dumps(payload),),
+        )
+        live = m.measure_live_window(conn, epoch=EPOCH,
+                                     as_of="2026-08-27T12:00:00Z")
+        # Only seq 1 (the fallback triggering_seq) is covered — no fabricated
+        # coverage from the malformed claim, no crash.
+        assert live.founder_messages == 3
+        assert live.founder_covered == 1
+        assert live.founder_uncovered == 2
+
+
 def test_live_followon_wake_with_mentioned_floor_is_counted() -> None:
     """[fallback semantics] A follow-on wake minted at settlement has NO
     ``thread_reply_wake_created`` audit — it is referenced only by the
