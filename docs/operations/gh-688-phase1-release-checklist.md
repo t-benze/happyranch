@@ -283,9 +283,45 @@ Three gates (baseline constants are quoted founder-approved inputs, never
 re-derived):
 
 1. **G1 — mentioned-message saving (gate).** Mentioned-message decline
-   rate = `declined / all` REPLY wakes whose triggering message
-   `@`-names ≥1 co-participant. Baseline 293/499 = **58.7%** (August 2026,
-   happyranch); expectation ~24/204 ≈ **12%** among retained wakes.
+   rate = `declined / all` REPLY wakes attributed to a mentioned message
+   (one whose persisted `mentions_json` is a non-empty JSON array). Baseline
+   293/499 = **58.7%** (August 2026, happyranch); expectation ~24/204 ≈
+   **12%** among retained wakes.
+
+   **Attribution semantics (live window):** each wake is attributed to the
+   conversational arrival that **minted** it — the `thread_reply_wake_created`
+   audit's `through_seq` (both production mint paths record it as the message
+   seq being processed) — **never** to `triggering_seq`. GH-688 Phase-1
+   coalescing makes `triggering_seq` the retained range floor
+   (`acknowledged + 1`), which can be an earlier message that never woke the
+   agent (a gap in the pair's coverage): a later unmentioned broadcast wake
+   would otherwise be falsely attributed to an earlier mention. A
+   `thread_reply_wake_coalesced` arrival mints nothing and never
+   re-attributes. A replacement minted by restart recovery has no created
+   audit and is attributed to its `thread_reply_wake_recovered`
+   (`replacement_queued`) audit's `through_seq` — the pair's required
+   watermark at recovery, i.e. the actual wake-causing arrival (never the
+   retained range floor). Only genuinely unattributable rows (a follow-on
+   minted at settlement, a legacy pre-audit row) fall back to
+   `triggering_seq` — production-faithful for follow-ons (the retained
+   range contains only arrivals that woke the agent).
+
+   **Evidence ownership and fail-closed parsing.** Every audit lookup is
+   scoped by the production ownership tuple — `thread_id` + `agent_name`
+   (the wake owner recorded in `audit_log.agent`) + the 8-char
+   `token_prefix` — never a weaker key, so an unrelated same-thread,
+   same-prefix audit owned by a different agent can never reattribute an
+   invocation. Every audit payload is decoded by ONE shared fail-closed
+   decoder that returns only JSON objects: a NULL/empty payload,
+   undecodable JSON, JSON null, a scalar (string/number/boolean), or a
+   list is skipped before any field access — a malformed row can never
+   abort a run or fabricate/reassign an attribution. All seq/range fields
+   are then parsed fail-closed: a missing,
+   non-integer, boolean-like, float, string, non-positive, or internally
+   inverted range payload is skipped without exception — the measurement
+   never crashes and never fabricates an attribution. `retained_queued`
+   recoveries and `thread_reply_wake_coalesced` arrivals are never
+   re-attributed.
 2. **G2 — founder-message coverage (gate).** Founder messages (kind=message,
    `speaker='founder'`) covered iff ≥1 `purpose='reply'` invocation whose
    authoritative claimed delivery range contains that message's sequence

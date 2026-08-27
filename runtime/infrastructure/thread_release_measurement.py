@@ -34,6 +34,32 @@ Design contract:
   immutable claimed range (the ``thread_reply_wake_claimed`` audit's
   ``from_seq..through_seq``, floor = the invocation's ``triggering_seq``),
   never an exact-``triggering_seq`` join.
+* CREATING-ARRIVAL ATTRIBUTION (G1). A live mentioned wake is attributed to
+  the conversational arrival that MINTED it — the ``thread_reply_wake_created``
+  audit's ``through_seq`` (both production mint paths record it as the message
+  seq being processed) — never to ``triggering_seq``. GH-688 Phase-1
+  coalescing makes ``triggering_seq`` the retained range floor
+  (``acknowledged + 1``), which can be an earlier message that never woke the
+  agent: a later unmentioned broadcast wake would otherwise be falsely
+  attributed to an earlier mention. A ``thread_reply_wake_coalesced`` arrival
+  mints nothing and never re-attributes. A replacement minted by restart
+  recovery has no created audit and is attributed to its
+  ``thread_reply_wake_recovered`` (``replacement_queued``) audit's
+  ``through_seq`` — the pair's required watermark at recovery, i.e. the
+  actual wake-causing arrival (never the retained floor). Only genuinely
+  unattributable rows (a follow-on minted at settlement, a legacy pre-audit
+  row) fall back to ``triggering_seq`` — production-faithful for follow-ons
+  (the retained range contains only arrivals that woke the agent).
+
+  Every audit evidence lookup is scoped by the production ownership tuple
+  — ``thread_id`` + ``agent_name`` (the wake owner recorded in
+  ``audit_log.agent``) + the 8-char ``token_prefix`` — never a weaker key,
+  so an unrelated same-thread/same-prefix audit owned by a DIFFERENT agent
+  can never reattribute an invocation. All seq/range fields are parsed
+  fail-closed: a missing, non-integer, boolean-like, float, string,
+  non-positive, or internally inverted range payload is skipped without
+  exception — the measurement never crashes and never fabricates an
+  attribution.
 
 Ratified gates (THR-198 seq 87/88/108):
 
@@ -243,6 +269,215 @@ def _seq_covered(
     )
 
 
+def _parse_positive_seq(value: Any) -> int | None:
+    """Parse an audit payload sequence field fail-closed.
+
+    Returns the value only when it is a positive JSON integer (``int`` but
+    not ``bool``); ``None`` for a missing, non-integer (string, float),
+    boolean-like, zero, or negative value. Production payloads always carry
+    ``int`` seqs (the mint/claim/recovery code ``json.dumps`` the message
+    seq directly), so anything else is out-of-shape data — the caller skips
+    the payload entirely rather than crash or fabricate an attribution.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    return None
+
+
+def _valid_range(from_seq: Any, through_seq: Any) -> tuple[int, int] | None:
+    """Validate an inclusive ``[from_seq, through_seq]`` range fail-closed.
+
+    Returns ``(from_seq, through_seq)`` only when both are positive
+    non-boolean ints AND ``from_seq <= through_seq`` (an internally valid
+    inclusive range — every production path writes
+    ``from_seq = acknowledged + 1 <= through_seq = required``). ``None`` for
+    a missing, non-integer, boolean-like, float, string, non-positive, or
+    inverted range — the caller skips the payload (never fabricates
+    attribution/coverage).
+    """
+    lo = _parse_positive_seq(from_seq)
+    hi = _parse_positive_seq(through_seq)
+    if lo is None or hi is None:
+        return None
+    if lo > hi:
+        return None
+    return lo, hi
+
+
+def _decode_audit_payload(raw: Any) -> dict[str, Any] | None:
+    """Decode an ``audit_log.payload`` value to the object its consumer reads.
+
+    This is the SINGLE shared decoder for every audit_log payload consumer in
+    this module (created / recovered / claimed maps). It returns the parsed
+    payload only when it is a JSON **object** (``dict``); it safely skips a
+    ``NULL``/empty payload, undecodable JSON, JSON ``null``, strings, numbers,
+    booleans, and lists — ``None`` in every case. Consumers therefore never
+    call ``.get`` on anything but a real object, so one malformed audit row
+    can never abort a measurement run and never fabricates or reassigns an
+    attribution (the row simply contributes no evidence; the caller keeps its
+    documented fallback/under-approximation).
+    """
+    if not isinstance(raw, str):
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
+
+
+def _creating_arrival_seqs(
+    conn: sqlite3.Connection,
+    invocations: list[sqlite3.Row],
+) -> dict[str, int]:
+    """Map each REPLY invocation token to the seq of the conversational
+    arrival that MINTED it, from the authoritative
+    ``thread_reply_wake_created`` audit trail (GH-688 Phase 1 Slice C emits
+    exactly one immutable created audit per mint).
+
+    Production semantics (``Database._apply_arrival_uncommitted``): a wake is
+    minted only when a message arrival finds no queued/running ownership for
+    the pair; BOTH mint paths record ``through_seq = the message seq being
+    processed`` — the creating arrival. ``triggering_seq`` is the minted
+    range's FLOOR (``acknowledged + 1``), which can be an earlier message
+    that NEVER woke this agent (a gap in the pair's coverage): the live
+    mentioned-wake attribution must use the creating arrival, never the
+    floor. A ``thread_reply_wake_coalesced`` audit carries NO token and mints
+    NOTHING — a coalescing arrival never creates or re-attributes a wake.
+
+    Invocations with no created audit are absent from this map. Callers
+    consult ``_recovered_replacement_seqs`` next — a restart-minted
+    replacement carries no created audit, but its
+    ``thread_reply_wake_recovered`` (``replacement_queued``) audit identifies
+    the wake-causing arrival (the recovered ``through_seq``). Only then do
+    callers fall back to ``triggering_seq`` for genuinely unattributable rows
+    (a follow-on minted at settlement — whose floor IS a genuine wake-causing
+    arrival, since the retained range contains only arrivals that raised the
+    pair's required watermark — or a legacy pre-audit row).
+
+    Evidence is keyed by the production ownership tuple
+    ``(thread_id, agent_name, token_prefix)`` — the created audit's
+    ``audit_log.agent`` column IS the wake owner — never a weaker key: an
+    unrelated same-thread audit with the same 8-char prefix but a different
+    owner cannot reattribute an invocation. Payloads are decoded through the
+    shared ``_decode_audit_payload`` (objects only — ``NULL``/empty,
+    undecodable, JSON ``null``, scalar, and list payloads are skipped before
+    any field access), then parsed fail-closed
+    (missing/non-8-char ``token_prefix``, or a missing/non-integer/
+    boolean-like/non-positive/inverted ``from_seq``/``through_seq``) and
+    skipped without exception — never a crash, never a fabricated
+    attribution.
+    """
+    created_by_owner: dict[tuple[str, str, str], int] = {}
+    for row in conn.execute(
+        "SELECT task_id, agent, payload FROM audit_log "
+        "WHERE action = 'thread_reply_wake_created'",
+    ).fetchall():
+        payload = _decode_audit_payload(row["payload"])
+        if payload is None:
+            continue
+        prefix = payload.get("token_prefix")
+        if not isinstance(prefix, str) or len(prefix) != 8:
+            continue
+        rng = _valid_range(payload.get("from_seq"), payload.get("through_seq"))
+        if rng is None:
+            continue
+        created_by_owner[(row["task_id"], row["agent"], prefix)] = rng[1]
+    return {
+        row["invocation_token"]: created_by_owner[
+            (row["thread_id"], row["agent_name"],
+             (row["invocation_token"] or "")[:8])
+        ]
+        for row in invocations
+        if (row["thread_id"], row["agent_name"],
+            (row["invocation_token"] or "")[:8])
+        in created_by_owner
+    }
+
+
+def _recovered_replacement_seqs(
+    conn: sqlite3.Connection,
+    invocations: list[sqlite3.Row],
+) -> dict[str, int]:
+    """Map each REPLY invocation token that restart recovery MINTED to the
+    authoritative recovered ``through_seq`` — the pair's required watermark
+    at recovery, i.e. the LAST conversational arrival that woke the agent
+    before the daemon restart.
+
+    Production semantics (``Database.recover_thread_reply_delivery_state``):
+    when an interrupted in-flight attempt is recoverable, the pending receipt
+    is terminalized as ``failed/daemon_restart`` and EXACTLY ONE replacement
+    REPLY is minted with ``triggering_seq = acknowledged + 1`` (the retained
+    range floor), while the ``thread_reply_wake_recovered`` audit records
+    ``kind='replacement_queued'``, ``from_seq = acknowledged + 1``,
+    ``through_seq = required``, and the replacement's 8-char
+    ``token_prefix``. The replacement has NO ``thread_reply_wake_created``
+    audit (recovery mints outside ``_apply_arrival_uncommitted``), so without
+    this map its only attribution evidence would be the floor — which can be
+    an earlier MENTIONED message that never woke the agent while the actual
+    wake-causing arrival (the recovered ``through_seq``) was an unmentioned
+    broadcast. The live mentioned-wake attribution must therefore use the
+    recovered ``through_seq`` for restart-minted replacements.
+
+    ``retained_queued`` recoveries are deliberately EXCLUDED: the retained
+    receipt was minted by a real arrival (it carries its own created audit,
+    which callers consult with higher precedence), and re-attributing it to
+    the recovery-time watermark would point at a coalesced arrival that
+    "mints nothing".
+
+    Evidence is keyed by the production ownership tuple
+    ``(thread_id, agent_name, token_prefix)`` — the recovery audit's
+    ``audit_log.agent`` column IS the wake owner — never a weaker key: an
+    unrelated same-thread audit with the same 8-char prefix owned by a
+    DIFFERENT agent can never reattribute the target agent's invocation (the
+    invocation lookup uses the identical tuple from its ``agent_name``).
+    Payloads are decoded through the shared ``_decode_audit_payload``
+    (objects only — ``NULL``/empty, undecodable, JSON ``null``, scalar, and
+    list payloads are skipped before any field access), then parsed
+    fail-closed: a missing kind, any non-
+    ``replacement_queued`` kind, a missing/non-8-char ``token_prefix``,
+    or a missing/non-integer/boolean-like/non-positive/inverted
+    ``from_seq``/``through_seq`` is skipped without exception — never a
+    crash, never a fabricated attribution. Invocations absent from the map
+    keep their caller fallback (``triggering_seq``) for genuinely
+    unattributable rows (follow-on, retained/legacy).
+    """
+    recovered_by_owner: dict[tuple[str, str, str], int] = {}
+    for row in conn.execute(
+        "SELECT task_id, agent, payload FROM audit_log "
+        "WHERE action = 'thread_reply_wake_recovered'",
+    ).fetchall():
+        payload = _decode_audit_payload(row["payload"])
+        if payload is None:
+            continue
+        if payload.get("kind") != "replacement_queued":
+            continue
+        prefix = payload.get("token_prefix")
+        if not isinstance(prefix, str) or len(prefix) != 8:
+            continue
+        rng = _valid_range(payload.get("from_seq"), payload.get("through_seq"))
+        if rng is None:
+            continue
+        recovered_by_owner[(row["task_id"], row["agent"], prefix)] = rng[1]
+    return {
+        row["invocation_token"]: recovered_by_owner[
+            (row["thread_id"], row["agent_name"],
+             (row["invocation_token"] or "")[:8])
+        ]
+        for row in invocations
+        if (row["thread_id"], row["agent_name"],
+            (row["invocation_token"] or "")[:8])
+        in recovered_by_owner
+    }
+
+
 def _consumed_reply_ranges(
     conn: sqlite3.Connection,
     invocations: list[sqlite3.Row],
@@ -264,9 +499,16 @@ def _consumed_reply_ranges(
     (the audit deliberately stores only the prefix). The range floor equals
     the invocation's ``triggering_seq`` (every mint path seeds it as
     ``acknowledged + 1`` and the watermark cannot move between mint and
-    claim). A consumed invocation with no matching claim audit — a
-    queued-settled wake that was never claimed, or a legacy pre-coalescing
-    row — covers only its own ``triggering_seq``: an honest
+    claim). Claimed payloads are decoded through the shared
+    ``_decode_audit_payload`` (objects only — ``NULL``/empty, undecodable,
+    JSON ``null``, scalar, and list payloads are skipped before any field
+    access), then parsed fail-closed (missing/non-8-char
+    ``token_prefix``, or missing/non-integer/boolean-like/non-positive/
+    inverted range fields are skipped without exception — never a crash, and
+    an out-of-shape row simply contributes no coverage). A consumed
+    invocation with no matching claim audit — a queued-settled wake that was
+    never claimed, a legacy pre-coalescing row, or a skipped malformed claim
+    — covers only its own ``triggering_seq``: an honest
     under-approximation that never fabricates coverage.
     """
     claimed_by_pair_prefix: dict[tuple[str, str, str], tuple[int, int]] = {}
@@ -274,21 +516,16 @@ def _consumed_reply_ranges(
         "SELECT task_id, agent, payload FROM audit_log "
         "WHERE action = 'thread_reply_wake_claimed'",
     ).fetchall():
-        if not row["payload"]:
-            continue
-        try:
-            payload = json.loads(row["payload"])
-        except json.JSONDecodeError:
+        payload = _decode_audit_payload(row["payload"])
+        if payload is None:
             continue
         prefix = payload.get("token_prefix")
-        from_seq = payload.get("from_seq")
-        through_seq = payload.get("through_seq")
-        if not prefix or from_seq is None or through_seq is None:
+        if not isinstance(prefix, str) or len(prefix) != 8:
             continue
-        claimed_by_pair_prefix[(row["task_id"], row["agent"], str(prefix))] = (
-            int(from_seq),
-            int(through_seq),
-        )
+        rng = _valid_range(payload.get("from_seq"), payload.get("through_seq"))
+        if rng is None:
+            continue
+        claimed_by_pair_prefix[(row["task_id"], row["agent"], prefix)] = rng
 
     ranges: list[tuple[str, str, int, int]] = []
     for row in invocations:
@@ -403,6 +640,12 @@ def measure_live_window(
         if row["purpose"] == _PURPOSE_REPLY
         and window_start <= parse_timestamp(row["enqueued_at"]) < observation_end
     ]
+    # G1 mentioned-wake attribution: each wake is attributed to the message
+    # arrival that MINTED it (the authoritative created-audit through_seq), NOT
+    # its triggering_seq — GH-688 Phase-1 coalescing makes triggering_seq the
+    # retained range floor, which can be an earlier never-waking message.
+    creating = _creating_arrival_seqs(conn, reply_in_window)
+    recovered = _recovered_replacement_seqs(conn, reply_in_window)
     org_wakes = len(reply_in_window)
     # Terminal declines are observable at the observation instant only when
     # consumed_at is non-null and strictly earlier than the half-open cutoff
@@ -415,7 +658,29 @@ def measure_live_window(
 
     mentioned_wakes = [
         row for row in reply_in_window
-        if mentioned.get((row["thread_id"], row["triggering_seq"]), False)
+        if mentioned.get(
+            (
+                row["thread_id"],
+                # GH-688 Phase-1 coalescing makes triggering_seq the retained
+                # range floor (acknowledged+1), which can be an earlier
+                # message that NEVER woke this agent — a later broadcast wake
+                # would be falsely attributed to an earlier mention. Attribute
+                # each wake to the arrival that MINTED it, with explicit
+                # precedence: (1) the created audit's through_seq (the
+                # authoritative minting arrival); (2) a recovery replacement's
+                # recovered through_seq (the wake-causing arrival for a
+                # restart-minted replacement, which has no created audit);
+                # (3) triggering_seq — genuinely unattributable rows
+                # (follow-on minted at settlement, retained/legacy pre-audit).
+                creating.get(
+                    row["invocation_token"],
+                    recovered.get(
+                        row["invocation_token"], row["triggering_seq"],
+                    ),
+                ),
+            ),
+            False,
+        )
     ]
     mentioned_declines = sum(
         1 for row in mentioned_wakes
