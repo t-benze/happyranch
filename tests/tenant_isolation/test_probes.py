@@ -10,12 +10,16 @@ mismatch, or leaked detail.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from labs.tenant_isolation.harness.contract import Contract
-from labs.tenant_isolation.harness.models import ObservedOutcome
+from labs.tenant_isolation.harness.models import (
+    ObservedOutcome,
+    build_lab_spec,
+)
 from labs.tenant_isolation.harness.probes import (
     RECIPE_FOR_CATEGORY,
     DEFERRED_TO_UNIT_C,
@@ -68,19 +72,19 @@ def test_cell_isolation_categories_are_runtime_probes() -> None:
         assert RECIPE_FOR_CATEGORY[cat]["kind"] == "probe", cat
 
 
-def test_relay_categories_are_not_executed_with_prerequisite() -> None:
-    """DERP isolation must NOT be claimed while DERP is disabled.
+def test_relay_categories_are_executed_probes() -> None:
+    """The forced-DERP categories must now be GENUINELY executed probes.
 
-    The pinned tailscale tarball ships no derper and headscale v0.25.1 embedded
-    DERP requires TLS termination, so a deterministic real forced-relay path is
-    not available on the authorized isolated runner without adding a pinned
-    derper dependency or TLS infrastructure — the exact prerequisite is
-    recorded, never weakened or fabricated.
+    The pinned headscale v0.25.1 embedded DERP server (plain http) plus the
+    pinned tailscale client's built-in TS_DEBUG_USE_DERP_HTTP=true knob make a
+    deterministic real relay path available on the authorized isolated runner
+    (direct WireGuard/disco UDP suppressed via sudo iptables). DERP isolation
+    must never be inferred from disabled DERP — it is proven by execution.
     """
     for cat in ("forced_derp_denied", "derp_cannot_bypass_headscale_policy"):
         entry = RECIPE_FOR_CATEGORY[cat]
-        assert entry["kind"] == "not-executed", cat
-        assert "derper" in entry["reason"] and "not claimed" in entry["reason"].lower()
+        assert entry["kind"] == "probe", cat
+        assert entry["recipe"] in ("forced_derp_denied", "derp_no_bypass"), cat
 
 
 def test_policy_epoch_categories_are_deferred_to_unit_c() -> None:
@@ -352,20 +356,190 @@ def test_all_tailscale_invocations_use_pinned_binary(tmp_path: Path) -> None:
                 raise AssertionError(f"{recipe}: bare tailscale command used: {cmd}")
 
 
-def test_relay_cases_never_claim_proof(contract: Contract) -> None:
-    """run_case for relay categories produces passed=False with disposition
-    not-executed and the exact prerequisite — never a fabricated pass."""
+def test_relay_probe_records_real_relay_evidence_and_denies_cross_cell(
+    contract: Contract, tmp_path: Path
+) -> None:
+    """CROSS-011 forced-derp: with the direct-block applied AND the node's own
+    status showing a real DERP region (Self.Relay), the probe records
+    route_evidence=relay, authorized same-cell ciphertext traverses, and the
+    tenant-B connector stays denied. After the probe the block is removed."""
+    from labs.tenant_isolation.harness.backend import CmdResult, FakeBackend
+    from labs.tenant_isolation.harness.probes import run_case
+
+    fake = FakeBackend()
+    spec = build_lab_spec("run-relay-1", tmp_path, 38000, 990)
+    a1 = spec.node("a1")
+    a_home = spec.connector("a")
+    a2 = spec.node("a2")
+    b_home = spec.connector("b")
+    # real relay session: a1's own status reports DERP region "lab"
+    fake.script[
+        "tailscale --socket " + str(a1.socket_path) + " status --json"
+    ] = CmdResult(0, stdout='{"Self": {"Relay": "lab", "TailscaleIPs": ["100.64.0.1"]}, "Peer": {}}')
+    # same-cell authorized path allowed; cross-cell + client-to-client denied
+    fake.node_probe_results[
+        f"127.0.0.1 {a1.socks5_port} 100.64.0.3 {a_home.connector_port}"
+    ] = True
+    fake.node_probe_results[
+        f"127.0.0.1 {a1.socks5_port} 100.64.0.6 {b_home.connector_port}"
+    ] = False
+    fake.node_probe_results[
+        f"127.0.0.1 {a1.socks5_port} 100.64.0.2 {a_home.connector_port}"
+    ] = False
+    env = _probe_env(tmp_path, fake)
+    env.spec = spec
+    case = next(c for c in contract.threat_cases if c["id"] == "CROSS-011")
+    result = run_case(case, env)
+    assert result.passed is True, result
+    assert result.disposition == "probe"
+    assert result.route_evidence == "relay", result.route_evidence
+    assert result.observed_deny_category == "relay"
+    assert result.observed_audit_category == "derp_relay_denied"
+    # the block must be removed after the probe (cleanup/residue discipline)
+    assert fake.relay_block_applied == []
+
+
+def test_relay_probe_fails_closed_without_real_relay_session(
+    contract: Contract, tmp_path: Path
+) -> None:
+    """A forced-relay probe whose node shows NO real DERP session must fail
+    closed: a relay claim without a real relay session is never recorded as
+    proof (fixture category mismatch => passed=False)."""
     from labs.tenant_isolation.harness.backend import FakeBackend
     from labs.tenant_isolation.harness.probes import run_case
 
     fake = FakeBackend()
-    env = _probe_env(Path("/tmp/x"), fake)
-    for cid in ("CROSS-011", "CROSS-012"):
-        case = next(c for c in contract.threat_cases if c["id"] == cid)
-        result = run_case(case, env)
-        assert result.passed is False, cid
-        assert result.disposition == "not-executed", cid
-        assert "derper" in (result.limitation or ""), cid
+    env = _probe_env(tmp_path, fake)
+    case = next(c for c in contract.threat_cases if c["id"] == "CROSS-011")
+    result = run_case(case, env)
+    assert result.passed is False, result
+    assert result.disposition == "probe"
+    assert "no relay claim" in result.detail.lower()
+
+
+def test_relay_probe_fails_closed_when_block_unavailable(
+    contract: Contract, tmp_path: Path
+) -> None:
+    from labs.tenant_isolation.harness.backend import FakeBackend
+    from labs.tenant_isolation.harness.probes import run_case
+
+    fake = FakeBackend()
+    fake.relay_block_available = False
+    env = _probe_env(tmp_path, fake)
+    case = next(c for c in contract.threat_cases if c["id"] == "CROSS-011")
+    result = run_case(case, env)
+    assert result.passed is False, result
+    assert result.disposition == "probe"
+    assert "no relay claim" in result.detail.lower()
+
+
+def test_derp_no_bypass_probe_enforces_policy_over_relay(
+    contract: Contract, tmp_path: Path
+) -> None:
+    """CROSS-012: even with a real relay session, cell policy still denies
+    every non-granted path (cross-cell AND client-to-client)."""
+    from labs.tenant_isolation.harness.backend import CmdResult, FakeBackend
+    from labs.tenant_isolation.harness.probes import run_case
+
+    fake = FakeBackend()
+    spec = build_lab_spec("run-relay-2", tmp_path, 38000, 990)
+    a1 = spec.node("a1")
+    a_home = spec.connector("a")
+    b_home = spec.connector("b")
+    fake.script[
+        "tailscale --socket " + str(a1.socket_path) + " status --json"
+    ] = CmdResult(0, stdout='{"Self": {"Relay": "lab", "TailscaleIPs": ["100.64.0.1"]}, "Peer": {}}')
+    fake.node_probe_results[
+        f"127.0.0.1 {a1.socks5_port} 100.64.0.3 {a_home.connector_port}"
+    ] = True
+    fake.node_probe_results[
+        f"127.0.0.1 {a1.socks5_port} 100.64.0.6 {b_home.connector_port}"
+    ] = False
+    fake.node_probe_results[
+        f"127.0.0.1 {a1.socks5_port} 100.64.0.2 {a_home.connector_port}"
+    ] = False
+    env = _probe_env(tmp_path, fake)
+    env.spec = spec
+    case = next(c for c in contract.threat_cases if c["id"] == "CROSS-012")
+    result = run_case(case, env)
+    assert result.passed is True, result
+    assert result.route_evidence == "relay"
+    assert result.observed_audit_category == "derp_no_bypass"
+    assert fake.relay_block_applied == []
+
+
+def test_relay_positive_control_records_relay_route_when_blocked(
+    contract: Contract, tmp_path: Path
+) -> None:
+    """The same-cell positive control executed while the forced-relay block is
+    active must record route_evidence=relay (a genuine relayed authorized
+    path), never a direct-path claim."""
+    from labs.tenant_isolation.harness.backend import FakeBackend
+    from labs.tenant_isolation.harness.probes import run_case
+
+    fake = FakeBackend()
+    spec = build_lab_spec("run-relay-pos", tmp_path, 38000, 990)
+    a1 = spec.node("a1")
+    a_home = spec.connector("a")
+    fake.apply_relay_block([n.udp_port for n in spec.nodes])
+    fake.node_probe_results[
+        f"127.0.0.1 {a1.socks5_port} 100.64.0.3 {a_home.connector_port}"
+    ] = True
+    env = _probe_env(tmp_path, fake)
+    env.spec = spec
+    case = next(c for c in contract.threat_cases if c["id"] == "POS-001")
+    result = run_case(case, env)
+    assert result.passed is True, result
+    assert result.route_evidence == "relay", result.route_evidence
+
+
+def test_policy_variant_probe_restores_when_apply_fails(
+    contract: Contract, tmp_path: Path
+) -> None:
+    """Regression (real lab run 33007544328): a policy-variant restart failure
+    must still restore the current policy — the run must never continue with a
+    cell carrying the empty/error variant policy."""
+    from labs.tenant_isolation.harness.backend import CmdResult, FakeBackend
+    from labs.tenant_isolation.harness.orchestrator import Bounds, Orchestrator
+    from labs.tenant_isolation.harness.probes import run_case
+
+    fake = FakeBackend(script={
+        "docker run": CmdResult(125, stderr="docker run failed"),
+    })
+    manifest = {
+        "fixtures": {},
+        "artifacts": {
+            "headscale": "sha256:a7a8ae9616bb964a3eed8101ebb020213f73668142a84806ec37a5eeb2c1fceb",
+            "tailscale": "sha256:36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5",
+            "tailscale_version": "1.102.3",
+        },
+        "policy_current_revision": 7,
+    }
+    orch = Orchestrator(
+        contract=Contract(CONTRACT_DIR),
+        manifest=manifest,
+        spec=build_lab_spec("run-polrestore", tmp_path, 38000, 990),
+        backend=fake,
+        out_dir=tmp_path / "results",
+        bounds=Bounds(per_probe=5.0, total=120.0, port_min=38000, port_max=38999),
+        runtime_kind="mock",
+    )
+    orch._materialize_policy_states()
+    from labs.tenant_isolation.harness.orchestrator import ProbeEnv
+
+    env = ProbeEnv(
+        spec=orch.spec,
+        backend=fake,
+        contract=orch.contract,
+        bounds=orch.bounds,
+        runtime_kind="mock",
+        orchestrator=orch,
+    )
+    case = next(c for c in contract.threat_cases if c["id"] == "POLICY-001")
+    with pytest.raises(RuntimeError):
+        run_case(case, env)
+    restored = json.loads(orch.spec.cell("b").policy_path.read_text(encoding="utf-8"))
+    assert restored["acls"], "current policy must be restored after apply failure"
 
 
 def test_run_case_deferred_unit_c_never_counts_as_proof(contract: Contract) -> None:

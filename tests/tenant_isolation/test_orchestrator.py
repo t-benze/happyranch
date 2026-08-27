@@ -931,7 +931,7 @@ def test_cell_launch_uses_absolute_bind_mount_sources(tmp_path: Path) -> None:
     orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-absmount-1", runtime_kind="real")
     orch.preflight()
     cell = orch.spec.cell("a")
-    cell.state_dir.mkdir(parents=True, exist_ok=True)
+    orch._materialize_policy_states()
     orch._launch_cell(cell, require_running=True)
     run_calls = [c for c in fake.calls if c[0] == "docker" and "run" in c[:2]]
     assert run_calls, "docker run must be invoked"
@@ -962,6 +962,109 @@ def test_cell_policy_path_carries_raw_policy_body_not_versioned_wrapper(
         assert "grants" not in raw, cell.cell_id
         assert "acls" in raw, cell.cell_id
         assert raw["acls"], "current policy must carry the cell-scoped accept rule"
+
+
+def test_initial_launch_rejects_empty_policy_before_docker_run(tmp_path: Path) -> None:
+    """Regression (real lab runs 33006603624 / 33007544328): a cell whose RAW
+    policy file is empty/zero makes headscale v0.25.1 refuse to boot
+    (ErrEmptyPolicy). The initial bring-up must fail closed BEFORE docker run
+    with a precise diagnostic — never a 6-minute launch hang on the lab runner.
+    """
+    from labs.tenant_isolation.harness.backend import CmdResult
+
+    fake = FakeBackend(script={"docker run": CmdResult(0, stdout="cid\n")})
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-init-empty-policy")
+    orch._materialize_policy_states()
+    cell = orch.spec.cell("b")
+    cell.policy_path.write_text(json.dumps({"acls": []}), encoding="utf-8")
+    before = len(fake.calls)
+    with pytest.raises(PreflightError):
+        orch._launch_cell(cell, require_running=True)
+    docker_runs = [
+        c for c in fake.calls[before:] if c[:1] == ["docker"] and "run" in c[:2]
+    ]
+    assert not docker_runs, "empty policy must abort BEFORE docker run"
+
+
+def test_materialize_reads_back_and_rejects_zero_policy(tmp_path: Path) -> None:
+    """Read-back guard: materialize must fail closed if the RAW policy body
+    it wrote is empty/zero (a pre-seeded broken current state is a mutation)."""
+    fake = FakeBackend()
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-mat-zero-1")
+    cell = orch.spec.cell("a")
+    states = cell.state_dir / "policies"
+    states.mkdir(parents=True, exist_ok=True)
+    (states / "current.json").write_text(
+        json.dumps(
+            {
+                "revision": 7,
+                "checksum": "sha256:" + "0" * 64,
+                "policy": {"acls": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PreflightError):
+        orch._materialize_policy_states()
+
+
+def test_policy_variant_restart_does_not_wait_full_health_timeout(tmp_path: Path) -> None:
+    """Regression (real lab run 33007544328): a policy-variant restart of a
+    cell that REFUSES to start (empty policy) previously went through
+    ``_launch_cell``'s full ``bounds.total/4`` health wait (375s) and ABORTED
+    the run. Variant restarts must skip the launch health wait and return so
+    the probe's bounded ``cell_healthy`` classifies the fail-closed state.
+    """
+    import time as _time
+
+    fake = FakeBackend()
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-variant-1")
+    orch._materialize_policy_states()
+    start = _time.monotonic()
+    orch.apply_policy_variant("b", "empty")
+    elapsed = _time.monotonic() - start
+    assert elapsed < 30, (
+        f"variant restart must not wait for the full launch health timeout "
+        f"(took {elapsed:.1f}s)"
+    )
+
+
+def test_cleanup_removes_relay_block_rules(tmp_path: Path) -> None:
+    """Outcome-bearing cleanup: forced-relay iptables rules are removed on the
+    cleanup path; a removal failure is a cleanup failure and residue."""
+    fake = FakeBackend()
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-relayclean-1")
+    orch._node_udp_ports = {n.node_id: n.udp_port for n in orch.spec.nodes}
+    fake.apply_relay_block([n.udp_port for n in orch.spec.nodes])
+    ok = orch.cleanup()
+    assert ok is True
+    assert fake.relay_block_applied == []
+    assert orch.residue_check() == []
+
+
+def test_residue_detects_leftover_relay_block(tmp_path: Path) -> None:
+    fake = FakeBackend()
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-relayres-1")
+    orch._node_udp_ports = {n.node_id: n.udp_port for n in orch.spec.nodes}
+    fake.apply_relay_block([n.udp_port for n in orch.spec.nodes])
+    fake.relay_block_remove_failures = [n.udp_port for n in orch.spec.nodes]
+    orch.cleanup()
+    residue = orch.residue_check()
+    assert any(r.startswith("iptables:") for r in residue), residue
+    assert any(r.startswith("cleanup:iptables:") for r in residue), residue
+
+
+def test_real_preflight_requires_relay_tooling(tmp_path: Path) -> None:
+    """The forced-relay proof needs sudo+iptables on the isolated runner; when
+    it is unavailable the REAL preflight declines with the exact prerequisite
+    instead of fabricating or weakening the relay claim."""
+    fake = FakeBackend()
+    fake.relay_block_available = False
+    orch, _ = _orchestrator(tmp_path, backend=fake, run_id="run-realtool-1", runtime_kind="real")
+    with pytest.raises(PreflightError) as excinfo:
+        orch.preflight()
+    assert "forced-relay" in str(excinfo.value)
+    assert "iptables" in str(excinfo.value)
 
 
 def test_policy_variant_empty_writes_raw_deny_by_default_body(tmp_path: Path) -> None:

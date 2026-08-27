@@ -105,6 +105,37 @@ class Backend:
 
     def stop_daemon(self, pid: int) -> None:
         raise NotImplementedError
+
+    def check_relay_tooling(self) -> tuple[bool, str]:
+        """(available, reason) for the forced-relay direct-block tooling.
+
+        The real relay proof needs to suppress direct (WireGuard/disco UDP)
+        paths so the pinned tailscale client genuinely relays through the
+        embedded headscale DERP. On the authorized isolated runner this is
+        passwordless ``sudo iptables`` (a standard GitHub-hosted runner
+        capability) — never production infrastructure. Unavailable => the
+        harness stops with the exact prerequisite instead of weakening proof.
+        """
+        raise NotImplementedError
+
+    def apply_relay_block(self, ports: list[int]) -> None:
+        """Force relay: drop UDP egress from every node's fixed port so no
+        direct path exists; only the real DERP relay (TCP) remains. Fail
+        closed (raises) unless every rule is verifiably applied."""
+        raise NotImplementedError
+
+    def remove_relay_block(self, ports: list[int]) -> list[str]:
+        """Remove the relay-block rules; return the list of ports whose rule
+        removal FAILED (outcome-bearing; cleanup treats any non-empty as
+        failure)."""
+        raise NotImplementedError
+
+    def relay_block_active(self, ports: list[int]) -> list[str]:
+        """Return the ports whose relay-block rule is CURRENTLY ACTIVE.
+
+        Used for residue detection: any active rule after cleanup is residue
+        that fails the evidence closed."""
+        raise NotImplementedError
     # -- shared ----------------------------------------------------------------
 
     def wait_for(
@@ -347,21 +378,85 @@ class DockerBackend(Backend):
             )
         tmp.rename(dest)
 
-    def start_daemon(self, cmd: list[str], log_path: Path, timeout: float = 30.0) -> int:
+    def start_daemon(
+        self,
+        cmd: list[str],
+        log_path: Path,
+        timeout: float = 30.0,
+        env: dict[str, str] | None = None,
+    ) -> int:
         import os
 
         self._record(["start_daemon"] + [str(c) for c in cmd], timeout)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = open(log_path, "ab")
+        full_env = dict(os.environ)
+        if env:
+            full_env.update(env)
         proc = subprocess.Popen(
             [str(c) for c in cmd],
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=full_env,
         )
         self._daemons[proc.pid] = proc
         self._daemon_pids.append(proc.pid)
         return proc.pid
+
+    def check_relay_tooling(self) -> tuple[bool, str]:
+        """Passwordless sudo + iptables on the isolated runner (standard
+        GitHub-hosted runner capability). Anything less stops the run with the
+        exact prerequisite; no relay claim is ever fabricated."""
+        probe = self.run(["sudo", "-n", "iptables", "-L", "-n"], timeout=30.0)
+        if not probe.ok():
+            return False, (
+                "sudo -n iptables unavailable: "
+                f"{bounded_redacted_stderr(probe.stderr)}"
+            )
+        return True, ""
+
+    def _iptables(self, args: list[str]) -> CmdResult:
+        return self.run(["sudo", "iptables"] + args, timeout=30.0)
+
+    def apply_relay_block(self, ports: list[int]) -> None:
+        from .redact import bounded_redacted_stderr as _red
+
+        for port in sorted(set(ports)):
+            r = self._iptables(
+                ["-I", "OUTPUT", "-p", "udp", "--sport", str(port), "-j", "DROP"]
+            )
+            if not r.ok():
+                raise RuntimeError(
+                    f"relay block apply failed for UDP port {port}: "
+                    f"{_red(r.stderr)}"
+                )
+        active = self.relay_block_active(ports)
+        if set(active) != set(str(p) for p in ports):
+            raise RuntimeError(
+                f"relay block not fully applied; active rules: {sorted(active)}"
+            )
+
+    def remove_relay_block(self, ports: list[int]) -> list[str]:
+        failures: list[str] = []
+        for port in sorted(set(ports)):
+            r = self._iptables(
+                ["-D", "OUTPUT", "-p", "udp", "--sport", str(port), "-j", "DROP"]
+            )
+            if not r.ok() and "Bad rule" not in r.stderr:
+                failures.append(str(port))
+        return failures
+
+    def relay_block_active(self, ports: list[int]) -> list[str]:
+        r = self._iptables(["-S", "OUTPUT"])
+        if not r.ok():
+            # cannot inspect => fail closed (treat every port as possibly active)
+            return [str(p) for p in ports]
+        present = {
+            str(p) for p in ports if f"--sport {p}" in (r.stdout + r.stderr)
+        }
+        return [str(p) for p in ports if str(p) in present]
+
 
     def stop_daemon(self, pid: int) -> bool:
         """Terminate the daemon's process group, AWAIT termination, escalate to
@@ -469,6 +564,11 @@ class FakeBackend(Backend):
         self.stop_daemon_outcomes: dict[int, bool] = {}
         self.stop_daemon_default: bool = True
         self.alive_pids: set[int] = set()
+        # forced-relay direct-block state (iptables emulation)
+        self.relay_block_applied: list[int] = []
+        self.relay_block_available: bool = True
+        self.relay_block_inspect_error: bool = False
+        self.relay_block_remove_failures: list[int] = []
 
     def _lookup(self, cmd: list[str]) -> CmdResult | None:
         for n in range(12, 0, -1):
@@ -575,7 +675,13 @@ class FakeBackend(Backend):
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(f"fake artifact {sha256[:12]}", encoding="utf-8")
 
-    def start_daemon(self, cmd: list[str], log_path: Path, timeout: float = 30.0) -> int:
+    def start_daemon(
+        self,
+        cmd: list[str],
+        log_path: Path,
+        timeout: float = 30.0,
+        env: dict[str, str] | None = None,
+    ) -> int:
         self._record(["start_daemon"] + [str(c) for c in cmd], timeout)
         # Emulate tailscaled creating its socket so the readiness predicate passes.
         if "--socket" in cmd:
@@ -586,6 +692,35 @@ class FakeBackend(Backend):
         self.started_pids.append(pid)
         self.alive_pids.add(pid)
         return pid
+
+    def check_relay_tooling(self) -> tuple[bool, str]:
+        self._record(["check_relay_tooling"], 30.0)
+        if self.relay_block_available:
+            return True, ""
+        return False, "sudo -n iptables unavailable (fake)"
+
+    def apply_relay_block(self, ports: list[int]) -> None:
+        self._record(["apply_relay_block"] + [str(p) for p in ports], 30.0)
+        if not self.relay_block_available:
+            raise RuntimeError("relay block unavailable (no sudo/iptables on this host)")
+        self.relay_block_applied = sorted(set(self.relay_block_applied) | set(ports))
+        if self.relay_block_inspect_error:
+            raise RuntimeError("relay block inspect failed (fail closed)")
+
+    def remove_relay_block(self, ports: list[int]) -> list[str]:
+        self._record(["remove_relay_block"] + [str(p) for p in ports], 30.0)
+        failed = [p for p in ports if p in self.relay_block_remove_failures]
+        self.relay_block_applied = [
+            p for p in self.relay_block_applied if p not in ports or p in failed
+        ]
+        return [str(p) for p in failed]
+
+    def relay_block_active(self, ports: list[int]) -> list[str]:
+        self._record(["relay_block_active"], 30.0)
+        if self.relay_block_inspect_error:
+            return [str(p) for p in ports]
+        return [str(p) for p in ports if p in self.relay_block_applied]
+
     def stop_daemon(self, pid: int) -> bool:
         self._record(["stop_daemon", str(pid)], 30.0)
         outcome = self.stop_daemon_outcomes.get(pid, self.stop_daemon_default)

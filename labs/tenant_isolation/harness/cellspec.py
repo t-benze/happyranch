@@ -47,12 +47,13 @@ def headscale_config_text(
     All identity paths are container-mapped (the run state dir is bind-mounted
     at ``/var/lib/headscale``). The embedded DERP server is ENABLED: headscale
     v0.25.1 refuses to boot with an empty DERPMap ("initial DERPMap is empty,
-    Headscale requires at least one entry"), so every cell advertises a
+    Headscale requires at least one entry"), so every cell advertises its
     loopback-only embedded DERP region (per-cell STUN listener, per-cell DERP
-    private key, auto-added to the map). Clients cannot relay through it —
-    tailscale always connects to DERP over TLS while the lab ``server_url`` is
-    loopback http — so no relay path is established, DERP isolation is never
-    claimed, and relay-forced cases stay ``not-executed-prerequisite``.
+    private key, auto-added to the map) — this is the REAL lab relay: the
+    region node's host/port come from ``server_url`` and HTTPS is unset
+    (plain http), and the pinned tailscale client dials it over plain HTTP
+    with the built-in ``TS_DEBUG_USE_DERP_HTTP=true`` knob, so a genuine
+    relayed data path is exercised by the forced-relay probes.
     """
     derp_block = ""
     if derp_enabled:

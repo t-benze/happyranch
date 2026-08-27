@@ -125,6 +125,7 @@ class Orchestrator:
         self._assert_placeholder_hygiene()
         if self.runtime_kind == "real":
             self._assert_runtime_available()
+            self._assert_relay_tooling_available()
 
     def _assert_fixture_digests_match(self) -> None:
         pinned = self.manifest.get("fixtures", {})
@@ -189,6 +190,9 @@ class Orchestrator:
         node_socks = [str(n.socket_path) for n in self.spec.nodes]
         if len(node_socks) != len(set(node_socks)):
             raise PreflightError("collapsed node identity: nodes share a socket path")
+        udp_ports = [n.udp_port for n in self.spec.nodes]
+        if len(udp_ports) != len(set(udp_ports)):
+            raise PreflightError("collapsed node identity: nodes share a UDP port")
         for cell_id in ("a", "b"):
             if len(self.spec.nodes_in(cell_id)) < 3:
                 raise PreflightError(
@@ -217,6 +221,35 @@ class Orchestrator:
             current = json.loads((states_dir / "current.json").read_text(encoding="utf-8"))
             cell.policy_path.write_text(
                 json.dumps(current["policy"], indent=1), encoding="utf-8"
+            )
+            self._assert_policy_ready(cell)
+
+    def _assert_policy_ready(self, cell) -> None:
+        """Read-back guard: the RAW policy body headscale will read must be
+        present, parseable, and carry a NON-EMPTY ``acls`` list. An empty/
+        malformed/absent file means headscale v0.25.1 refuses to start
+        (``ErrEmptyPolicy``) — fail closed HERE with precise diagnostics
+        instead of a 6-minute launch hang on the lab runner."""
+        from .redact import bounded_redacted_stderr
+
+        if not cell.policy_path.exists():
+            raise PreflightError(
+                f"policy file missing at launch for cell {cell.cell_id}: "
+                f"{cell.policy_path}"
+            )
+        raw = cell.policy_path.read_text(encoding="utf-8")
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise PreflightError(
+                f"policy file unparseable for cell {cell.cell_id}: {exc}"
+            ) from exc
+        acls = body.get("acls") if isinstance(body, dict) else None
+        if not isinstance(acls, list) or not acls:
+            raise PreflightError(
+                f"policy file for cell {cell.cell_id} is EMPTY/zero at launch "
+                "(headscale v0.25.1 refuses to boot: ErrEmptyPolicy); content="
+                f"{bounded_redacted_stderr(raw, limit=500)}"
             )
 
     def _mint_preauth_keys(self) -> dict[str, str]:
@@ -279,6 +312,20 @@ class Orchestrator:
             )
         self._runtime_versions = versions
 
+    def _assert_relay_tooling_available(self) -> None:
+        """The forced-relay proof needs to suppress direct paths on the
+        isolated runner via passwordless sudo + iptables (a standard
+        GitHub-hosted runner capability). Unavailable => stop with the exact
+        prerequisite; never simulate or weaken the relay claim."""
+        ok, reason = self.backend.check_relay_tooling()
+        if not ok:
+            raise PreflightError(
+                "forced-relay (real DERP) proof prerequisite unavailable: "
+                f"{reason} (required: passwordless sudo + iptables on the "
+                "isolated runner to suppress direct WireGuard/disco UDP paths "
+                "so the pinned tailscale client genuinely relays)"
+            )
+
     # ------------------------------------------------------------------ lifecycle
 
     def run(self) -> RunSummary:
@@ -288,6 +335,7 @@ class Orchestrator:
         self._daemon_pids: list[int] = []
         self._tailscaled_logs: dict = {}
         self._enroll_results: dict = {}
+        self._node_udp_ports: dict[str, int] = {}
         try:
             self.preflight()
             if self.runtime_kind == "real":
@@ -426,16 +474,28 @@ class Orchestrator:
         for cell in self.spec.cells:
             self._launch_cell(cell, require_running=True)
 
-    def _launch_cell(self, cell, require_running: bool = True) -> str | None:
+    def _launch_cell(
+        self,
+        cell,
+        require_running: bool = True,
+        wait_healthy: bool = True,
+    ) -> str | None:
         """Launch one cell container with IMMEDIATE result checking.
 
         ``docker run``'s result is checked right away; the container's
         existence and state are verified immediately after launch; on any
         launch failure the bounded/redacted stderr and container logs are
         written to a diagnostics file and the run aborts BEFORE any enrollment
-        or probe can execute against a cell that does not exist.
+        or probe can execute against a cell that does not exist. For the
+        INITIAL bring-up (``require_running=True``) the RAW policy file is
+        also verified before ``docker run`` so an empty/zero policy can never
+        cause a 6-minute launch hang. ``wait_healthy=False`` is used for
+        policy-variant restarts where the probe itself classifies the cell
+        state with a bounded health check.
         """
         name = f"{self.spec.run_id}-cell-{cell.cell_id}"
+        if require_running:
+            self._assert_policy_ready(cell)
         config = self._cell_config_text(cell)
         config_path = cell.state_dir / "config.yaml"
         config_path.write_text(config, encoding="utf-8")
@@ -479,11 +539,12 @@ class Orchestrator:
                 f"{self.out_dir / f'cell-{cell.cell_id}-launch-failure.txt'}"
             )
         try:
-            self.backend.wait_for(
-                lambda: self._cell_healthy(cell),
-                timeout=self.bounds.total / 4,
-                desc=f"cell {cell.cell_id} health",
-            )
+            if wait_healthy:
+                self.backend.wait_for(
+                    lambda: self._cell_healthy(cell),
+                    timeout=self.bounds.total / 4,
+                    desc=f"cell {cell.cell_id} health",
+                )
         except TimeoutError as exc:
             diagnostics = self._cell_diagnostics(cell)
             self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -645,7 +706,7 @@ class Orchestrator:
         cell = self.spec.cell(cell_id)
         name = f"{self.spec.run_id}-cell-{cell_id}"
         self.backend.docker_rm(name)
-        self._launch_cell(cell, require_running=False)
+        self._launch_cell(cell, require_running=False, wait_healthy=False)
 
     # -- node lifecycle ---------------------------------------------------------
 
@@ -659,12 +720,14 @@ class Orchestrator:
                 log_path = cell.state_dir / f"tailscaled-{node.node_id}.log"
                 pid = self.backend.start_daemon(
                     [tsd, "--tun=userspace-networking", "--state=mem:",
-                     "--socket", str(node.socket_path), "--port=0",
+                     "--socket", str(node.socket_path), "--port", str(node.udp_port),
                      "--socks5-server", f"127.0.0.1:{node.socks5_port}"],
                     log_path,
                     timeout=self.bounds.per_probe,
+                    env={"TS_DEBUG_USE_DERP_HTTP": "true"},
                 )
                 self._daemon_pids.append(pid)
+                self._node_udp_ports[node.node_id] = node.udp_port
                 self._tailscaled_logs[node.node_id] = log_path
                 self.backend.wait_for(
                     lambda: (node.socket_path).exists(),
@@ -875,7 +938,15 @@ class Orchestrator:
             r = self.backend.docker_rm(name)
             if r.returncode != 0 and "No such container" not in r.stderr:
                 failures.append(f"container:{name}")
-        # 4. remove run state; verify removal actually happened
+        # 4. remove any forced-relay iptables rules (outcome-bearing)
+        ports = list(getattr(self, "_node_udp_ports", {}).values())
+        if ports:
+            try:
+                failed = self.backend.remove_relay_block(ports)
+                failures.extend(f"iptables:{p}" for p in failed)
+            except Exception as exc:  # noqa: BLE001 - cleanup must not silently pass
+                failures.append(f"iptables:remove:{type(exc).__name__}")
+        # 5. remove run state; verify removal actually happened
         shutil.rmtree(self.spec.run_dir, ignore_errors=True)
         if self.spec.run_dir.exists():
             failures.append(f"state:{self.spec.run_dir}")
@@ -902,6 +973,13 @@ class Orchestrator:
         for pid in list(getattr(self, "_daemon_pids", [])):
             if self.backend.daemon_alive(pid):
                 residue.append(f"process:{pid}")
+        ports = list(getattr(self, "_node_udp_ports", {}).values())
+        if ports:
+            try:
+                active = self.backend.relay_block_active(ports)
+                residue.extend(f"iptables:{p}" for p in active)
+            except Exception:  # noqa: BLE001 - uninspectable rules are residue
+                residue.append("iptables:uninspectable")
         residue.extend(f"cleanup:{f}" for f in self._cleanup_failures)
         return residue
 
@@ -911,13 +989,12 @@ class Orchestrator:
         from .cellspec import headscale_config_text, validate_config_schema
 
         # headscale v0.25.1 refuses to boot with an empty DERPMap, so every
-        # cell runs the embedded DERP server (loopback-only, per-cell STUN).
-        # Tailscale always connects to DERP over TLS while the lab server_url
-        # is loopback http, so no relay path is ever established: DERP
-        # isolation is NOT claimed, relay-forced cases stay
-        # not-executed-prerequisite (exact prerequisite recorded). The config
-        # is schema-validated here so a regression (e.g. embedded DERP
-        # disabled) fails closed BEFORE docker launch, never on the lab runner.
+        # cell runs the embedded DERP server (loopback-only, per-cell STUN) —
+        # the REAL lab relay: plain http, advertised host/port from
+        # server_url, dialed by the pinned tailscale client over plain HTTP
+        # (TS_DEBUG_USE_DERP_HTTP=true). The config is schema-validated here
+        # so a regression (e.g. embedded DERP disabled) fails closed BEFORE
+        # docker launch, never on the lab runner.
         config = headscale_config_text(cell, cell.policy_path, derp_enabled=True)
         validate_config_schema(config)
         return config
@@ -941,14 +1018,22 @@ class Orchestrator:
         return versions
 
     def _limitations(self) -> list[str]:
-        from .probes import DERP_PREREQUISITE, POLICY_EPOCH_UNIT_C
+        from .probes import POLICY_EPOCH_UNIT_C
 
         limits = [
             "mock/unit-only runs are NOT proof of tenant isolation (runtime_kind != real)",
         ]
         if self.runtime_kind != "real":
             limits.append("no isolated lab runtime executed; hostile proof not claimed")
-        limits.append(DERP_PREREQUISITE)
+        limits.append(
+            "real DERP relay: each cell's headscale v0.25.1 embedded DERP server "
+            "(plain http, reachable via the pinned tailscale client's "
+            "TS_DEBUG_USE_DERP_HTTP=true) is the lab relay; relay-forced probes "
+            "suppress direct WireGuard/disco UDP via sudo iptables on the "
+            "isolated runner and record the node's actual DERP region from "
+            "tailscale status (route_evidence=relay) — no relay claim is ever "
+            "inferred from disabled DERP or control-plane TCP"
+        )
         limits.append(POLICY_EPOCH_UNIT_C)
         limits.append("connector-level cases (unit C) are deferred, not executed")
         limits.append("no production SLA, capacity, DERP share, or pricing inferred")
@@ -988,6 +1073,7 @@ class Orchestrator:
     _minted_keys: dict = {}  # type: ignore[assignment]
     _tailscaled_logs: dict = {}  # type: ignore[assignment]
     _enroll_results: dict = {}  # type: ignore[assignment]
+    _node_udp_ports: dict = {}  # type: ignore[assignment]
 
 
 def _non_executed_result(case: dict, entry: dict, disposition: str) -> ProbeResult:

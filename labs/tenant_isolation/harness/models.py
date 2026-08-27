@@ -76,6 +76,7 @@ class NodeSpec:
     is_connector: bool
     connector_port: int
     socks5_port: int
+    udp_port: int
     cell: CellSpec
 
 
@@ -120,11 +121,12 @@ class ProbeResult:
     """Outcome of one threat-case probe (redacted, category-level only).
 
     ``disposition`` records what actually happened so the evidence is
-    machine-checkable: ``probe`` = genuinely executed against the live cells;
-    ``deferred`` = connector-level request-decision logic owned by merge unit
-    C; ``not-executed`` = would be a cell/data-plane probe here but the
-    authorized isolated runner cannot provide the prerequisite (e.g. a real
-    DERP relay) without adding dependencies/infrastructure — never claimed.
+    machine-checkable: ``probe`` = genuinely executed against the live cells
+    (including the forced-relay/DERP cases, which are real probes with
+    ``route_evidence=relay``); ``deferred`` = connector-level
+    request-decision logic owned by merge unit C; ``not-executed`` = would be
+    a cell/data-plane probe here but the authorized isolated runner cannot
+    provide the prerequisite — never claimed.
 
     ``route_evidence`` distinguishes the actual transport the probe used
     (``direct`` / ``relay`` / ``none``) so a relay claim can never be confused
@@ -313,6 +315,7 @@ def build_lab_spec(
                     is_connector=is_connector,
                     connector_port=CONNECTOR_PORT if is_connector else 0,
                     socks5_port=socks_base + cell_idx * 100 + idx,
+                    udp_port=41640 + cell_idx * 10 + idx,
                     cell=cell,
                 )
             )

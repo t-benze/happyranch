@@ -18,27 +18,28 @@ the two-cell topology runs deterministically with outcome-bearing cleanup —
 all with **tenant-neutral category-level results and zero secret/raw-exception
 leakage**.
 
-**DERP relay isolation is NOT claimed in this lab.** Every cell runs the
-headscale v0.25.1 **embedded DERP server** (loopback-only, per-cell STUN
-listener) solely because headscale refuses to boot with an empty DERPMap
-("initial DERPMap is empty, Headscale requires at least one entry") — the
-region is advertised to clients, but tailscale always connects to DERP over
-TLS while the lab's `server_url` is loopback http (headscale's embedded DERP
-serves plain http), so **no real relay path is ever established**. A
-deterministic real forced-relay path needs a DERP relay server reachable by
-both cells; the pinned tailscale tarball ships no `derper` binary, so the
-already-authorized isolated runner cannot provide one without adding a pinned
-`derper` dependency or TLS infrastructure. The relay-forced cases are
-recorded as **not executed with the exact prerequisite** (`coverage.json`
-disposition `not-executed-prerequisite`, limitations in `summary.json`) —
-never weakened or fabricated, and DERP isolation is never claimed.
+**DERP relay isolation is genuinely PROVEN via a real relay path.** Each cell
+runs the headscale v0.25.1 **embedded DERP server** (plain http, served on the
+headscale control listener; host/port advertised from `server_url`), and the
+pinned tailscale client (1.102.3) dials it over plain HTTP using its built-in
+`TS_DEBUG_USE_DERP_HTTP=true` knob — no new dependency, no TLS
+infrastructure, no secrets. The forced-relay probes suppress direct
+WireGuard/disco UDP paths (passwordless `sudo iptables` on the isolated
+runner) so the client **genuinely relays**; the node's actual DERP region is
+read from `tailscale status` (`Self.Relay`) and recorded as
+`route_evidence=relay` in every result. DERP isolation is never inferred from
+disabled DERP or control-plane TCP.
 
 ## Honest runtime status (read first)
 
 - **Real hostile proof requires the isolated CI/lab runtime** — GitHub Actions
   `ubuntu-latest` (the repo's existing authorized CI runtime) via the
   path-scoped workflow `.github/workflows/lab-tenant-isolation.yml`. It has
-  Docker preinstalled; the harness pins its artifacts by digest/sha256.
+  Docker preinstalled **and passwordless sudo + iptables** (a standard
+  GitHub-hosted runner capability) used solely to suppress direct
+  WireGuard/disco UDP inside the disposable lab runner; the harness pins its
+  artifacts by digest/sha256. If the relay tooling is unavailable, the REAL
+  preflight declines with the exact prerequisite — proof is never weakened.
 - **The manager/authoring host has no Docker/Podman/Go/Headscale/Tailscale.**
   `--runtime mock` and the unit tests exercise orchestration/parsing/assertion
   logic only. **A mocked/unit-only pass is NOT proof of tenant isolation** and
@@ -56,10 +57,10 @@ The harness reads `tests/contract/managed_remote_access/*.json` at runtime
 - expected deny/audit categories for every threat case come **from the
   fixtures**, never duplicated in harness code;
 - every one of the 56 threat cases is accounted for in `coverage.json`:
-  `probe` (genuinely executed on the lab runner), `deferred-unit-c`
+  `probe` (genuinely executed on the lab runner), or `deferred-unit-c`
   (connector-level request-decision / policy-epoch logic owned by merge unit
-  C), or `not-executed-prerequisite` (relay-forced cases whose real DERP path
-  the authorized runner cannot provide) — never silently dropped;
+  C) — never silently dropped; the forced-relay (DERP) hostile cases are
+  EXECUTED probes with a real relay path (see DERP section above);
 - hostile ⇒ denied with a `deny_category`; positive controls ⇒ allowed;
   existence-guard pairs (absent vs consumed/replayed) must produce **byte
   identical** visible detail (no cross-tenant existence oracle);
@@ -98,7 +99,10 @@ mutations **fails for its intended reason**:
 | skip cleanup | residue check (containers/state) | `test_residue_check_detects_leftover_containers` |
 | target a non-lab endpoint | preflight endpoint allow-range | `test_preflight_rejects_non_lab_port` / `_public_hostname` |
 | runner-host control-plane TCP probe in transport recipes | node-context SOCKS5 probe (never 127.0.0.1:control-port) | `test_transport_probes_use_node_context_socks5_not_control_port` |
-| DERP isolation claimed while DERP disabled | not-executed disposition + exact prerequisite | `test_relay_categories_are_not_executed_with_prerequisite` |
+| DERP isolation claimed while DERP disabled | relay cases are EXECUTED probes that fail closed unless the node's own status shows a real DERP region (`Self.Relay`) + route_evidence=relay | `test_relay_categories_are_executed_probes`, `test_relay_probe_fails_closed_without_real_relay_session`, `test_relay_probe_records_real_relay_evidence_and_denies_cross_cell` |
+| relay block / iptables rule left behind | cleanup removes rules; residue detects leftover | `test_cleanup_removes_relay_block_rules`, `test_residue_detects_leftover_relay_block` |
+| policy-variant restart hangs on full health wait / aborts run | variant restarts skip the launch health wait; bounded `cell_healthy` classifies; restore always runs | `test_policy_variant_restart_does_not_wait_full_health_timeout`, `test_policy_variant_probe_restores_when_apply_fails` |
+| empty/zero RAW policy at initial launch | read-back + pre-launch guard fails closed BEFORE docker run (headscale v0.25.1 ErrEmptyPolicy) | `test_initial_launch_rejects_empty_policy_before_docker_run`, `test_materialize_reads_back_and_rejects_zero_policy` |
 | empty DERPMap config (embedded DERP disabled) | config schema validation fails closed before launch (headscale v0.25.1 refuses to boot with an empty DERPMap) | `test_config_without_derp_map_is_invalid` / `test_cell_config_without_derp_map_fails_validation` |
 | one pre-auth key per cell reused for two nodes | one single-use key minted per node; reuse rejected | `test_mint_preauth_keys_issues_one_key_per_node`, `test_run_aborts_before_probes_when_key_reuse_rejected` |
 | missing/offline node | pre-probe readiness gate (every node online) | `test_node_ready_false_when_record_missing_from_cell`, `test_run_aborts_before_probes_when_node_offline` |
@@ -171,11 +175,11 @@ writes `summary.json` + `results.jsonl` + `coverage.json`.
   path and pinned digests, per-probe results (with `disposition`,
   `route_evidence`, `target_kind`), `proof_scope` (executed / deferred-unit-c
   / not-executed-prerequisite), `cleanup_ok`/`cleanup_failures`, residue,
-  limitations (incl. the DERP prerequisite), `hostile_proof`.
+  limitations (incl. the real-relay mechanism used), `hostile_proof`.
 - `results.jsonl` — one redacted record per threat case (executed, deferred,
   or not-executed with its reason).
 - `coverage.json` — every threat case → `probe` | `deferred-unit-c` |
-  `not-executed-prerequisite`.
+  `not-executed-prerequisite` (the forced-DERP cases are `probe`).
 - `manifest-consumed.json` — the exact pinned manifest used.
 - `no-run-evidence.json` — exact prerequisite evidence when the runtime is
   absent (never fabricated proof).

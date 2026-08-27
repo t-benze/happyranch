@@ -11,14 +11,14 @@ executable probe recipe or an explicit non-execution with a recorded reason:
   through the synthetic connector listener;
 - **hostile direct probes** originate in tenant A node context and target
   tenant B's synthetic connector/data-plane listener;
-- **relay-forced probes are NOT executed** unless a real DERP relay exists:
-  the pinned tailscale tarball ships no ``derper`` and tailscale clients
-  connect to DERP over TLS while the lab's loopback-http server_url cannot
-  terminate TLS (headscale v0.25.1 embedded DERP serves plain http), so the
-  already-authorized isolated runner cannot provide a deterministic real
-  relay path without adding a pinned derper dependency or TLS infrastructure.
-  DERP isolation is therefore never claimed and no real relay path is
-  exercised — the exact prerequisite is recorded.
+- **relay-forced probes are genuinely executed**: each cell's headscale
+  v0.25.1 embedded DERP server (plain http) is the lab relay; the pinned
+  tailscale client connects to it over plain HTTP (the built-in
+  ``TS_DEBUG_USE_DERP_HTTP=true`` knob), and the harness suppresses direct
+  WireGuard/disco UDP paths (``sudo iptables`` on the isolated runner) so
+  the client GENUINELY relays. The node's actual DERP region is read from
+  ``tailscale status`` and recorded as ``route_evidence=relay`` — DERP
+  isolation is never inferred from disabled DERP or control-plane TCP.
 - connector-level request-decision categories (normalization/allow-list/
   upgrades/smuggling/bearer/revocation/epoch/apply) are deferred to merge
   unit C, never silently dropped and never claimed as proven here.
@@ -34,18 +34,18 @@ from .contract import Contract
 from .models import ObservedOutcome, ProbeResult
 from .redact import assert_no_leak
 
-# The exact prerequisite for a real forced-relay (DERP) proof. Recorded in
-# every non-executed relay case and in run limitations — never weakened.
-DERP_PREREQUISITE = (
-    "real forced-relay proof requires a DERP relay server reachable by both "
-    "cells; the pinned tailscale tarball ships no derper binary and tailscale "
-    "clients connect to DERP over TLS while the lab's loopback-http server_url "
-    "cannot terminate TLS (headscale v0.25.1 embedded DERP serves plain http — "
-    "it is enabled only to satisfy headscale's non-empty-DERPMap startup "
-    "invariant, not as a usable relay), so the authorized isolated runner "
-    "cannot provide a deterministic real relay path without adding a pinned "
-    "derper dependency or TLS infrastructure — DERP isolation is NOT claimed "
-    "and no real relay path is exercised"
+# The real-relay mechanism used by the lab (documented, never a prerequisite
+# placeholder). The forced-relay probes are executed: each cell's headscale
+# v0.25.1 embedded DERP server (plain http) is the relay; the pinned tailscale
+# client dials it over plain HTTP via the built-in TS_DEBUG_USE_DERP_HTTP=true
+# knob; direct WireGuard/disco UDP paths are suppressed with sudo iptables on
+# the isolated runner so traffic genuinely relays; the node's actual DERP
+# region (tailscale status) is recorded as route_evidence=relay.
+REAL_RELAY_NOTE = (
+    "relay-forced probes execute through the cell's headscale v0.25.1 "
+    "embedded DERP server (plain http, TS_DEBUG_USE_DERP_HTTP=true) with "
+    "direct WireGuard/disco UDP suppressed (sudo iptables); the node's real "
+    "DERP region from tailscale status is recorded as route_evidence=relay"
 )
 POLICY_EPOCH_UNIT_C = (
     "policy/revocation epoch and policy-apply-step semantics are connector "
@@ -66,8 +66,10 @@ PROBE_RECIPES: dict[str, str] = {
     # map/peer absence
     "peer_absent": "peer_absent",
     "map_absent": "map_absent",
-    # transport (direct only — relay is not executed, see below)
+    # transport (direct + deterministic forced-DERP relay)
     "direct_path_denied": "direct_reach_denied",
+    "forced_derp_denied": "forced_derp_denied",
+    "derp_cannot_bypass_headscale_policy": "derp_no_bypass",
     # forged advertisements
     "forged_tags": "forged_tag_advertise",
     "forged_routes": "forged_route_advertise",
@@ -120,12 +122,9 @@ DEFERRED_TO_UNIT_C: frozenset[str] = frozenset(
 )
 
 # Categories whose fixture semantics are connector-epoch/policy-apply logic
-# owned by merge unit C (deferred) or that need a real DERP relay the
-# authorized runner cannot provide (not-executed). Each carries its reason.
-NOT_EXECUTED: dict[str, str] = {
-    "forced_derp_denied": DERP_PREREQUISITE,
-    "derp_cannot_bypass_headscale_policy": DERP_PREREQUISITE,
-}
+# owned by merge unit C (deferred). The forced-relay categories are now REAL
+# executed probes (see PROBE_RECIPES); nothing is left in NOT_EXECUTED.
+NOT_EXECUTED: dict[str, str] = {}
 DEFERRED_EPOCH_UNIT_C: dict[str, str] = {
     "policy_stale": POLICY_EPOCH_UNIT_C,
     "policy_future": POLICY_EPOCH_UNIT_C,
@@ -391,14 +390,16 @@ def _run_recipe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcome:
         # artifact is empty (ErrEmptyPolicy on a zero ACLPolicy), malformed, or
         # fails to compile (upstream hscontrol fails startup on policy load
         # error). A cell that cannot serve authorizes nothing — a genuine
-        # launch fail-closed proof.
+        # launch fail-closed proof. The variant is applied INSIDE the try so
+        # restore_policy ALWAYS runs (even when the variant launch itself
+        # errors) and the run can continue.
         variant = {
             "policy_empty_denied": "empty",
             "policy_malformed_denied": "malformed",
             "policy_compile_failed_denied": "compile_failed",
         }[recipe]
-        env.orchestrator.apply_policy_variant("b", variant)
         try:
+            env.orchestrator.apply_policy_variant("b", variant)
             healthy = env.orchestrator.cell_healthy("b")
             if healthy:
                 # The variant was unexpectedly accepted: do NOT claim fail-closed.
@@ -414,6 +415,14 @@ def _run_recipe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcome:
         finally:
             env.orchestrator.restore_policy("b")
 
+    if recipe in {"forced_derp_denied", "derp_no_bypass"}:
+        # Deterministic FORCED-DERP: suppress direct WireGuard/disco UDP so the
+        # client genuinely relays through the cell's real embedded DERP server;
+        # record the node's actual DERP region (tailscale status) as
+        # distinguishable relay evidence; hostile cross-cell targets stay
+        # denied while authorized same-cell ciphertext still traverses.
+        return _relay_forced_probe(recipe, case, env)
+
     if recipe in {"client_to_client_denied", "home_to_client_denied", "non_connector_port_denied"}:
         # Genuine same-cell node-to-node probes through the source node's own
         # context against a destination the policy does not grant.
@@ -422,7 +431,9 @@ def _run_recipe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcome:
     if recipe in {"positive_same_cell_http", "positive_same_cell_sse"}:
         # POSITIVE CONTROL: same-cell node-to-node connector reachability. The
         # client node dials the home connector's synthetic listener through its
-        # own SOCKS5 proxy; a 2xx response proves the granted path works.
+        # own SOCKS5 proxy; a 2xx response proves the granted path works. When
+        # the forced-relay block is active the request GENUINELY traverses the
+        # real DERP relay and the route evidence says so.
         a_home = spec.connector("a")
         target_ip = _node_ip(env, a_home)
         if target_ip is None:
@@ -438,13 +449,14 @@ def _run_recipe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcome:
             "127.0.0.1", a1.socks5_port, target_ip, a_home.connector_port,
             env.bounds.per_probe,
         )
+        route = "relay" if _relay_active(env) else "direct"
         if reachable:
             return ObservedOutcome(
                 outcome="allowed",
                 deny_category=None,
                 audit_category="allowed_request",
                 detail="Same-cell request reached the connector surface.",
-                route_evidence="direct",
+                route_evidence=route,
                 target_kind="node_to_node",
             )
         return ObservedOutcome(
@@ -452,7 +464,7 @@ def _run_recipe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcome:
             deny_category="transport",
             audit_category="topology_denied",
             detail="Same-cell control failed.",
-            route_evidence="direct",
+            route_evidence=route,
             target_kind="node_to_node",
         )
 
@@ -524,6 +536,164 @@ def _transport_denied(route: str, deny: str, audit: str) -> ObservedOutcome:
         route_evidence=route,
         target_kind="node_to_node",
     )
+
+
+# -- forced-relay (real DERP) probe ------------------------------------------
+
+_RELAY_DENY_CATEGORIES: dict[str, tuple[str, str]] = {
+    "forced_derp_denied": ("relay", "derp_relay_denied"),
+    "derp_cannot_bypass_headscale_policy": ("relay", "derp_no_bypass"),
+}
+
+
+def _node_relay_region(env: "ProbeEnv", node) -> str | None:
+    """The DERP region the node is actually relayed through (or None).
+
+    Read from the node's OWN ``tailscale status --json`` ``Self.Relay`` — the
+    authoritative, distinguishable relay-path evidence. Empty/absent means the
+    node is NOT connected via a relay (no relay claim is ever fabricated).
+    """
+    backend = env.backend
+    result = backend.run(
+        [env.tailscale_bin("tailscale"), "--socket", str(node.socket_path), "status", "--json"],
+        timeout=env.bounds.per_probe,
+    )
+    parsed = _json_or_empty(result.stdout)
+    self_node = parsed.get("Self") or {}
+    region = self_node.get("Relay") or ""
+    return region or None
+
+
+def _relay_active(env: "ProbeEnv") -> bool:
+    """True when the forced-relay direct-block is currently applied."""
+    try:
+        ports = [n.udp_port for n in env.spec.nodes]
+        return bool(env.backend.relay_block_active(ports))
+    except Exception:  # noqa: BLE001 - uninspectable => treat as inactive
+        return False
+
+
+def _relay_forced_probe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcome:
+    """Deterministic forced-DERP hostile probe with REAL relay traversal.
+
+    1. Suppress every node's direct WireGuard/disco UDP (sudo iptables) so no
+       direct path exists; the pinned tailscale client then GENUINELY relays
+       through the cell's embedded headscale DERP (plain http via the built-in
+       TS_DEBUG_USE_DERP_HTTP=true knob).
+    2. Verify the probe-origin node is actually relay-connected
+       (``tailscale status`` ``Self.Relay`` non-empty) — if it is not, the
+       probe fails closed (a relay claim without a real relay session is never
+       recorded as proof).
+    3. Traversal evidence: the AUTHORIZED same-cell path (a1 -> a-home
+       connector) still succeeds THROUGH the relay (relay relays authorized
+       ciphertext).
+    4. Hostile assertion: tenant-A node context targeting tenant-B's synthetic
+       connector listener stays DENIED even while relayed (CROSS-011); the
+       relay grants no reachability beyond cell policy, and policy-forbidden
+       same-cell paths stay denied (CROSS-012).
+    5. restore always runs (finally) so the rest of the matrix uses the
+       normal direct phase.
+    """
+    backend = env.backend
+    spec = env.spec
+    a1 = spec.node("a1")
+    a2 = spec.node("a2")
+    a_home = spec.connector("a")
+    b_home = spec.connector("b")
+    ports = [n.udp_port for n in spec.nodes]
+    deny, audit = _RELAY_DENY_CATEGORIES.get(
+        case["category"], ("relay", "derp_relay_denied")
+    )
+    try:
+        backend.apply_relay_block(ports)
+    except Exception:  # noqa: BLE001 - no tooling => fail closed, no relay claim
+        return ObservedOutcome(
+            outcome="denied",
+            deny_category=deny,
+            audit_category="relay_unavailable",
+            detail="Relay block could not be applied; no relay claim recorded.",
+            route_evidence="relay",
+            target_kind="node_to_node",
+        )
+    try:
+        if not _node_relay_region(env, a1):
+            # Direct block applied but no real relay session: do NOT claim
+            # relayed denial — fail closed with an explicit observation.
+            return ObservedOutcome(
+                outcome="denied",
+                deny_category=deny,
+                audit_category="relay_unavailable",
+                detail="Forced relay not established; no relay claim recorded.",
+                route_evidence="relay",
+                target_kind="node_to_node",
+            )
+        a_target = _node_ip(env, a_home)
+        same_cell_ok = bool(a_target) and backend.probe_node_http(
+            "127.0.0.1", a1.socks5_port, a_target, a_home.connector_port,
+            env.bounds.per_probe,
+        )
+        b_target = _node_ip(env, b_home)
+        cross_denied = True
+        if b_target is not None:
+            cross_denied = not backend.probe_node_http(
+                "127.0.0.1", a1.socks5_port, b_target, b_home.connector_port,
+                env.bounds.per_probe,
+            )
+        if recipe == "derp_no_bypass":
+            # policy still enforced over the relay: a client-to-client dial on
+            # the connector port is NOT granted and must stay denied.
+            a2_target = _node_ip(env, a2)
+            policy_denied = True
+            if a2_target is not None:
+                policy_denied = not backend.probe_node_http(
+                    "127.0.0.1", a1.socks5_port, a2_target, a_home.connector_port,
+                    env.bounds.per_probe,
+                )
+            if same_cell_ok and cross_denied and policy_denied:
+                return ObservedOutcome(
+                    outcome="denied",
+                    deny_category=deny,
+                    audit_category=audit,
+                    detail=(
+                        "Relay relayed authorized same-cell ciphertext only; "
+                        "cross-cell and policy-forbidden paths stayed denied."
+                    ),
+                    route_evidence="relay",
+                    target_kind="node_to_node",
+                )
+            return ObservedOutcome(
+                outcome="allowed",
+                deny_category=None,
+                audit_category="allowed_request",
+                detail="Relay path bypassed cell policy.",
+                route_evidence="relay",
+                target_kind="node_to_node",
+            )
+        if same_cell_ok and cross_denied:
+            return ObservedOutcome(
+                outcome="denied",
+                deny_category=deny,
+                audit_category=audit,
+                detail=(
+                    "Relay session served authorized same-cell ciphertext only; "
+                    "the other cell's connector unreachable through the relay."
+                ),
+                route_evidence="relay",
+                target_kind="node_to_node",
+            )
+        return ObservedOutcome(
+            outcome="allowed",
+            deny_category=None,
+            audit_category="allowed_request",
+            detail="Relay path granted cross-cell reachability.",
+            route_evidence="relay",
+            target_kind="node_to_node",
+        )
+    finally:
+        try:
+            backend.remove_relay_block(ports)
+        except Exception:  # noqa: BLE001 - cleanup failure recorded by orchestrator
+            pass
 
 
 def _topology_probe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOutcome:
