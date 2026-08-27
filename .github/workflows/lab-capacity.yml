@@ -15,8 +15,9 @@ name: Lab capacity (managed remote access, unit D)
 #      commits (results/**) do NOT re-trigger the run.
 #
 # The runner is disposable and isolated: it cannot target non-lab
-# endpoints (all URLs are internal to the run's docker network; DERP and
-# DNS are disabled) and is destroyed after the job.
+# endpoints (all URLs are internal to the run's docker network; each cell
+# runs its own embedded lab DERP relay — never a public or production share
+# — and DNS is disabled) and is destroyed after the job.
 
 on:
   workflow_dispatch:

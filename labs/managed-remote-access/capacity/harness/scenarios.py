@@ -159,6 +159,29 @@ class Runner:
         self.docker.cell_start(cell, cfg_path, metrics, http)
         return {"metrics_port": metrics, "http_port": http}
 
+    def _wait_cells_healthy(self, cells: list[int], timeout_s: int = 60) -> None:
+        """Fail closed: raise if any cell does not become healthy in time.
+
+        Headscale exits immediately on invalid config (e.g. v0.25.1's
+        "initial DERPMap is empty" fatal); proceeding to measurement against a
+        dead control plane would record garbage samples. Raising aborts the
+        scenario before any apikey/measurement step, and the scenario's
+        exception handler captures cell logs and tears down with a residue
+        check (see ``_dump_failure_evidence``).
+        """
+        deadline = time.monotonic() + timeout_s
+        last: dict[int, bool] = {}
+        while time.monotonic() < deadline:
+            last = {c: self.docker.cell_health(c) for c in cells}
+            if all(last.values()):
+                return
+            time.sleep(2)
+        unhealthy = sorted(c for c, ok in last.items() if not ok)
+        raise RuntimeError(
+            f"cell(s) {unhealthy} did not become healthy within {timeout_s}s "
+            "(headscale startup/config failure; no measurements taken)"
+        )
+
     def _enroll(self, cell: int, node: int, *, ephemeral: bool) -> tuple[float, bool]:
         """Start one synthetic client; returns (latency_ms, ok)."""
         hostname = f"n{node}"
@@ -233,12 +256,10 @@ class Runner:
                     ports[c] = info
                     cell_names.append(c)
                     started.append(c)
-                # wait for healthy
-                deadline = time.monotonic() + 60
-                while time.monotonic() < deadline:
-                    if all(self.docker.cell_health(c) for c in cell_names):
-                        break
-                    time.sleep(2)
+                # wait for healthy (fail closed: raise if any cell never
+                # becomes healthy so no measurement runs after a
+                # configuration/startup failure)
+                self._wait_cells_healthy(cell_names)
                 for c in cell_names:
                     api_keys[c] = self.docker.apikey_create(c)
                 time.sleep(WARMUP_S)
@@ -277,11 +298,7 @@ class Runner:
                     info = self._start_cell(c)
                     ports[c] = info
                     self.docker.users_create(c, LAB_USER)
-                deadline = time.monotonic() + 60
-                while time.monotonic() < deadline:
-                    if all(self.docker.cell_health(c) for c in cell_names):
-                        break
-                    time.sleep(2)
+                self._wait_cells_healthy(cell_names)
                 for c in cell_names:
                     api_keys[c] = self.docker.apikey_create(c)
                 fails = 0
@@ -331,11 +348,7 @@ class Runner:
             cell = 1
             info = self._start_cell(cell)
             self.docker.users_create(cell, LAB_USER)
-            deadline = time.monotonic() + 60
-            while time.monotonic() < deadline:
-                if self.docker.cell_health(cell):
-                    break
-                time.sleep(2)
+            self._wait_cells_healthy([cell])
             db_before = self.docker.volume_size_bytes(cell)
             api_key = self.docker.apikey_create(cell)
             for wave, (nodes, waves) in enumerate(plan_churn_waves(), start=1):
@@ -385,11 +398,7 @@ class Runner:
             cell = 1
             info = self._start_cell(cell)
             self.docker.users_create(cell, LAB_USER)
-            deadline = time.monotonic() + 60
-            while time.monotonic() < deadline:
-                if self.docker.cell_health(cell):
-                    break
-                time.sleep(2)
+            self._wait_cells_healthy([cell])
             n = restart_node_count()
             for node in range(1, n + 1):
                 _lat, ok = self._enroll(cell, node, ephemeral=False)
@@ -434,11 +443,7 @@ class Runner:
             cell = 1
             info = self._start_cell(cell)
             self.docker.users_create(cell, LAB_USER)
-            deadline = time.monotonic() + 60
-            while time.monotonic() < deadline:
-                if self.docker.cell_health(cell):
-                    break
-                time.sleep(2)
+            self._wait_cells_healthy([cell])
             for node in range(1, 9):
                 _lat, ok = self._enroll(cell, node, ephemeral=False)
                 if not ok:

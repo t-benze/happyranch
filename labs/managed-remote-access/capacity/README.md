@@ -10,7 +10,9 @@ non-production resources only**.
 It is **not** a product capacity model. It infers **no** real DERP traffic
 share, production SLA, customer capacity, unit economics, or price. Relay
 bandwidth/abuse behavior and production topology remain **unmeasured**
-(see REPORT.md).
+(see REPORT.md). The embedded lab DERP relay is exercised for control-plane
+compatibility only (headscale v0.25.1 refuses to boot with an empty DERP
+map); relay throughput is not measured.
 
 ## What it measures
 
@@ -34,8 +36,13 @@ runners** (disposable VMs that ship Docker). That is the
 - **Isolated & disposable** — fresh VM per job, destroyed afterwards; no
   shared or production resource is ever touched.
 - **Cannot target non-lab endpoints** — every URL in the experiment is
-  internal to the run's own docker network; DERP and DNS are disabled;
-  only the metrics endpoint is published, bound to `127.0.0.1`.
+  internal to the run's own docker network; each cell runs its own embedded
+  lab DERP relay (`derp.server.enabled: true`, region 999, auto-added to the
+  DERP map) and synthetic clients dial it over plain HTTP on the internal
+  network (`TS_DEBUG_USE_DERP_HTTP=true`, the same built-in knob the merged
+  unit-B harness uses) — the relay is never disabled, bypassed, or pointed at
+  a public/production share; DNS is disabled; only the metrics endpoint is
+  published, bound to `127.0.0.1`.
 - **No secrets, no provisioning, no new dependencies** — public images
   pinned by digest; stdlib-only Python harness.
 
@@ -79,7 +86,7 @@ digest at runtime and records it in `env.json`.
 
 | Image | Ref (digest-pinned) | amd64 digest |
 |---|---|---|
-| Headscale (matches `deploy/remote-access` pin) | `headscale/headscale:0.25@sha256:ae91e47e…` | `sha256:ae91e47e0a8ab481e41bc83b72dc2bc9f7bca2b5dbe5448414c8ae9511f33541` |
+| Headscale (matches `deploy/remote-access` pin; `:0.25` resolves to v0.25.1) | `headscale/headscale:0.25@sha256:ae91e47e…` | `sha256:ae91e47e0a8ab481e41bc83b72dc2bc9f7bca2b5dbe5448414c8ae9511f33541` |
 | Synthetic client (era-matched with headscale 0.25) | `tailscale/tailscale:v1.80.0@sha256:5d36f589…` | `sha256:5d36f58996def4b60e943ee6c15b4f3ad040299565f9971d8f541b250dd72f03` |
 
 ## Safety properties (enforced by the harness)
@@ -92,9 +99,11 @@ digest at runtime and records it in `env.json`.
 3. **Deterministic cleanup** — teardown + residue check after **every**
    scenario and at the end of the run (containers, networks, volumes,
    host processes, state dirs). Nonzero exit if any residue remains.
-4. **Cannot target non-lab endpoints** — internal server URLs only,
-   DERP/DNS disabled, metrics on loopback; unit tests assert generated
-   configs never contain external hostnames.
+4. **Cannot target non-lab endpoints** — internal server URLs only, each
+   cell's embedded DERP relay stays on the internal network (clients dial it
+   over plain HTTP via the tailscale `TS_DEBUG_USE_DERP_HTTP` knob), DNS
+   disabled, metrics on loopback; unit tests assert generated configs never
+   contain external hostnames or external DERP maps.
 5. **Honest evidence** — every command + exit status recorded in
    `transcript.jsonl`; raw samples in `samples.jsonl`/`enroll.jsonl`;
    environment facts in `env.json`.
@@ -122,6 +131,7 @@ uv run pytest tests/labs/capacity -v
 ```
 
 Covered: run-id/naming rules, headscale v0.25 config generation (lab-safe
-URLs only), quantiles/baseline subtraction, Prometheus parsing +
+URLs only, non-empty embedded-DERP map, fail-closed validation), the
+startup-health gate, quantiles/baseline subtraction, Prometheus parsing +
 histogram quantile math, abort-gate thresholds, residue parsers, and load
 step bounds.

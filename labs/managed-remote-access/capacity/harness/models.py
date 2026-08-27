@@ -63,3 +63,29 @@ def node_online(record: dict, hostname: str) -> bool:
     camelCase (``givenName``).
     """
     return bool(record.get("online")) and record.get("given_name") == hostname
+
+
+def derp_region_count(cfg: dict) -> int:
+    """Model headscale v0.25.1's initial DERPMap region count.
+
+    Mirrors ``hscontrol/derp.GetDERPMap`` (regions merged from ``derp.urls``
+    and ``derp.paths`` sources) plus the startup-time embedded-region add in
+    ``hscontrol/app.go``: when ``derp.server.enabled`` is true and
+    ``automatically_add_embedded_derp_region`` is not false (v0.25.1 viper
+    default true), the embedded server's region is added to the map. Headscale
+    fatals at startup with "initial DERPMap is empty, Headscale requires at
+    least one entry" when this count is 0 — the lab reproduces that failure
+    in unit tests and fails closed at config-generation time.
+    """
+    derp = cfg.get("derp") if isinstance(cfg, dict) else None
+    if not isinstance(derp, dict):
+        return 0
+    # Each configured external map source loads as a (non-empty) DERP map.
+    # The lab forbids both, but the model counts them so a malformed config
+    # can never pass the empty-map gate.
+    count = len(derp.get("urls") or []) + len(derp.get("paths") or [])
+    server = derp.get("server")
+    if isinstance(server, dict) and server.get("enabled"):
+        if server.get("automatically_add_embedded_derp_region", True):
+            count += 1
+    return count

@@ -1,4 +1,5 @@
-"""Unit tests for lab models: synthetic run-id and resource naming rules.
+"""Unit tests for lab models: synthetic run-id, resource naming, and the
+headscale v0.25.1 DERP-map construction model.
 
 Every rerun must use unique synthetic IDs and every disposable resource
 (containers, networks, volumes, state dirs) must be namespaced by the run
@@ -14,6 +15,7 @@ import pytest
 from models import (
     RUN_ID_RE,
     client_container_name,
+    derp_region_count,
     headscale_container_name,
     make_run_id,
     network_name,
@@ -96,3 +98,68 @@ def test_resource_names_embed_only_valid_chars():
     ):
         # Docker names/networks/volumes: [a-zA-Z0-9][a-zA-Z0-9_.-]*
         assert re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", name), name
+
+
+# ── headscale v0.25.1 DERPMap construction model ───────────────────────────
+# Models hscontrol/derp.GetDERPMap + app.go's startup check: regions come
+# from derp.urls / derp.paths sources plus the embedded server region
+# (auto-added when derp.server.enabled and automatically_add_embedded_derp_region).
+
+
+def test_derp_region_count_empty_map():
+    """The pre-fix lab shape (embedded server disabled, no urls/paths) yields
+    0 regions — exactly headscale v0.25.1's "initial DERPMap is empty" fatal."""
+    cfg = {
+        "derp": {
+            "server": {"enabled": False, "region_id": 999, "region_code": "lab"},
+            "urls": [],
+            "auto_update_enabled": False,
+        }
+    }
+    assert derp_region_count(cfg) == 0
+
+
+def test_derp_region_count_embedded_region():
+    cfg = {
+        "derp": {
+            "server": {
+                "enabled": True,
+                "region_id": 999,
+                "region_code": "lab",
+                "stun_listen_addr": "0.0.0.0:3478",
+                "automatically_add_embedded_derp_region": True,
+            },
+            "urls": [],
+            "paths": [],
+            "auto_update_enabled": False,
+        }
+    }
+    assert derp_region_count(cfg) == 1
+
+
+def test_derp_region_count_auto_add_defaults_true():
+    """v0.25.1 viper defaults automatically_add_embedded_derp_region to true;
+    the model must assume the same default when the key is absent."""
+    cfg = {
+        "derp": {
+            "server": {"enabled": True, "stun_listen_addr": "0.0.0.0:3478"},
+            "urls": [],
+            "auto_update_enabled": False,
+        }
+    }
+    assert derp_region_count(cfg) == 1
+
+
+def test_derp_region_count_external_sources_count():
+    """A configured urls/paths source contributes its (non-empty) region set.
+    The lab forbids external sources; the model still counts them so a
+    malformed config can never pass the empty-map gate."""
+    cfg = {
+        "derp": {
+            "server": {"enabled": False},
+            "urls": ["https://example.invalid/derp-map.json"],
+            "paths": ["/etc/headscale/derp.yaml"],
+            "auto_update_enabled": False,
+        }
+    }
+    assert derp_region_count(cfg) == 2

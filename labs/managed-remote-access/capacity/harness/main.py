@@ -10,7 +10,8 @@ tailscale v1.80 synthetic client containers on an isolated docker host,
 applies bounded load steps with abort gates, records machine-readable raw
 results, and tears everything down with residue checks. It never touches
 production, and it cannot target non-lab endpoints (all URLs are internal
-to the run's docker network; DERP and DNS are disabled).
+to the run's docker network; each cell runs its own embedded lab DERP
+relay — never a public or production share — and DNS is disabled).
 """
 
 from __future__ import annotations

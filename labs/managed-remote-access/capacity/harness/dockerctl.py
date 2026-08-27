@@ -175,6 +175,11 @@ class Docker:
                 "-e", f"TS_HOSTNAME={hostname}",
                 "-e", "TS_USERSPACE=true",
                 "-e", "TS_STATE_DIR=/tmp/ts",
+                # Dial the cell's embedded lab DERP relay over plain HTTP on
+                # the internal docker network (tailscale's built-in debug knob;
+                # the same pattern as the merged THR-097 unit-B harness). The
+                # relay is never disabled or bypassed; it stays internal-only.
+                "-e", "TS_DEBUG_USE_DERP_HTTP=true",
                 "-e", f"TS_EXTRA_ARGS=--login-server=http://hs-{self.run_id}-c{cell}:8080",
                 TAILSCALE_IMAGE,
             ]

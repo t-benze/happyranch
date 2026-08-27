@@ -1,8 +1,9 @@
 """Unit tests for headscale cell config generation (v0.25 schema).
 
 The lab generates one headscale config per cell. It must be valid v0.25
-config, use only internal lab hostnames, disable DERP/DNS, and be fully
-deterministic per (run_id, cell).
+config, use only internal lab hostnames, carry a valid lab-only embedded
+DERP region (headscale v0.25.1 fatals on an empty DERP map), disable DNS,
+and be fully deterministic per (run_id, cell).
 """
 
 from __future__ import annotations
@@ -19,7 +20,9 @@ from cellspec import (
     lab_ports,
     client_login_url,
     server_url,
+    validate_headscale_config,
 )
+from models import derp_region_count
 
 
 def test_images_pinned_by_digest():
@@ -57,11 +60,24 @@ def test_config_is_valid_yaml_and_canonical_keys():
     assert cfg["randomize_client_port"] is False
 
 
-def test_config_disables_derp_and_dns():
+def test_config_enables_embedded_lab_derp_and_disables_dns():
     run_id = "cap-20260826T120000Z-ab12"
     cfg = yaml.safe_load(headscale_config(run_id, 1))
-    assert cfg["derp"]["server"]["enabled"] is False
+    # headscale v0.25.1 fatals at startup with an empty DERP map ("initial
+    # DERPMap is empty, Headscale requires at least one entry"), so every
+    # lab cell runs its own embedded DERP server (region 999, auto-added).
+    server = cfg["derp"]["server"]
+    assert server["enabled"] is True
+    assert server["region_id"] == 999
+    assert server["region_code"] == "lab"
+    assert server["region_name"] == "HappyRanch Lab DERP"
+    assert server["stun_listen_addr"] == "0.0.0.0:3478"
+    assert server["private_key_path"] == "/var/lib/headscale/derp_server_private.key"
+    assert server["automatically_add_embedded_derp_region"] is True
+    # Lab-only relay: no external DERP maps, no auto-update (no production
+    # DERP share, no third-party fetch).
     assert cfg["derp"]["urls"] == []
+    assert cfg["derp"]["paths"] == []
     assert cfg["derp"]["auto_update_enabled"] is False
     # MagicDNS is disabled: headscale v0.25 defaults `dns.magic_dns` to true
     # and then fatals without `dns.base_domain`; the lab sets it false so no
@@ -73,6 +89,64 @@ def test_config_disables_derp_and_dns():
     assert "base_domain" not in cfg["dns"]
     # v0.25 deprecates `dns_config.override_local_dns`; it must not be emitted.
     assert "override_local_dns" not in cfg["dns"]
+
+
+def test_derp_map_is_nonempty():
+    """Green proof of the final-SHA blocker fix.
+
+    Mirrors headscale v0.25.1 startup: the initial DERPMap (embedded region
+    auto-added when the server is enabled) must have >= 1 region, otherwise
+    headscale exits with "initial DERPMap is empty, Headscale requires at
+    least one entry" (observed in lab run 32989032467 idle.failure.log).
+    """
+    run_id = "cap-20260826T120000Z-ab12"
+    cfg = yaml.safe_load(headscale_config(run_id, 1))
+    assert derp_region_count(cfg) >= 1
+
+
+def test_validate_rejects_empty_derp_map():
+    """Fail-closed: a config that yields an empty DERPMap is rejected with
+    the exact headscale v0.25.1 startup fatal message."""
+    run_id = "cap-20260826T120000Z-ab12"
+    cfg = yaml.safe_load(headscale_config(run_id, 1))
+    # Simulate the pre-fix shape: embedded server disabled, no urls/paths.
+    cfg["derp"]["server"]["enabled"] = False
+    cfg["derp"].pop("paths", None)
+    errs = validate_headscale_config(cfg)
+    assert any("DERPMap is empty" in e and "at least one entry" in e for e in errs), errs
+
+
+def test_validate_rejects_missing_stun_addr():
+    run_id = "cap-20260826T120000Z-ab12"
+    cfg = yaml.safe_load(headscale_config(run_id, 1))
+    del cfg["derp"]["server"]["stun_listen_addr"]
+    errs = validate_headscale_config(cfg)
+    assert any("stun_listen_addr" in e for e in errs), errs
+
+
+def test_validate_rejects_external_derp_urls():
+    """Fail-closed: no external DERP map may ever be configured — the lab
+    relay is the cell's own embedded server; a production DERP share is not
+    claimed and public relays must never be bypassed/used."""
+    run_id = "cap-20260826T120000Z-ab12"
+    cfg = yaml.safe_load(headscale_config(run_id, 1))
+    cfg["derp"]["urls"] = ["https://derp.tailscale.com"]
+    errs = validate_headscale_config(cfg)
+    assert any("derp.urls" in e for e in errs), errs
+
+
+def test_validate_rejects_derp_auto_update():
+    run_id = "cap-20260826T120000Z-ab12"
+    cfg = yaml.safe_load(headscale_config(run_id, 1))
+    cfg["derp"]["auto_update_enabled"] = True
+    errs = validate_headscale_config(cfg)
+    assert any("auto_update_enabled" in e for e in errs), errs
+
+
+def test_validate_accepts_lab_config():
+    run_id = "cap-20260826T120000Z-ab12"
+    cfg = yaml.safe_load(headscale_config(run_id, 1))
+    assert validate_headscale_config(cfg) == []
 
 
 def test_config_contains_no_external_urls():

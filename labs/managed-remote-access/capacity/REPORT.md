@@ -3,9 +3,13 @@
 **Merge unit D (TASK-5772) · lab-only capacity spike**
 **Baseline:** `happyranch` `origin/main` = `df107ae1bea23adcc2aaed207ff4a109b82881b9`
 **Status:** pre-committed protocol (this document, sections 1–6) precedes the first
-experimental run; measured results (section 7) are appended after the run from raw
-machine-readable evidence. Sections 1–6 are the **experimental contract** — they were
-committed before the run and were not edited afterwards.
+successful experimental run; measured results (section 7) are appended after the run
+from raw machine-readable evidence. Sections 1–6 are the **experimental contract**.
+One protocol amendment was made before the final run (TASK-5820 fix-forward): the
+original lab config disabled DERP entirely, which headscale v0.25.1 rejects at startup
+("initial DERPMap is empty, Headscale requires at least one entry"). §1/§2/§3/§4 below
+now describe the corrected protocol actually used: each cell runs its own embedded lab
+DERP relay (lab-only, ciphertext-only, never a public/production share).
 
 ---
 
@@ -24,8 +28,14 @@ committed before the run and were not edited afterwards.
 - Failure modes and leftover processes / containers / networks / volumes / state.
 
 ### Explicitly NOT measured (no inference permitted)
-- **DERP relay bandwidth and abuse behavior** — unmeasured; DERP is disabled in the
-  lab config. No real DERP traffic share is inferred.
+- **DERP relay bandwidth and abuse behavior** — unmeasured. Each lab cell
+  runs its own **embedded lab DERP relay** (region 999, auto-added to the
+  DERP map) so the relay is never disabled or bypassed and headscale
+  v0.25.1's empty-map startup fatal is avoided; synthetic clients dial it
+  over plain HTTP on the internal docker network (`TS_DEBUG_USE_DERP_HTTP`
+  knob). Relay throughput/abuse is not load-measured, and **no real DERP
+  traffic share, public/production relay, or production DERP topology is
+  claimed or inferred**.
 - **Production topology** — unmeasured. Cells run on one disposable runner, not the
   planned multi-region topology.
 - **End-to-end WireGuard data-path latency / throughput** — the lab exercises the
@@ -65,9 +75,20 @@ a mismatch between resolved and pinned digest fails the run's residue gate.
   `http://hs-<run_id>-c<N>:8080`.
 - No cell ever publishes its control plane to the host; only the metrics endpoint
   is published, bound to `127.0.0.1`.
-- **Cannot target non-lab endpoints:** DERP disabled (`derp.urls: []`), DNS disabled
-  (no third-party resolvers), `server_url` internal-only; unit tests assert the
-  generated config contains no external hostnames.
+- **Cannot target non-lab endpoints:** each cell runs its own embedded lab
+  DERP server (region 999 `lab`, auto-added to the map — headscale v0.25.1
+  refuses to boot with an empty DERP map), `derp.urls`/`derp.paths` empty and
+  `auto_update_enabled: false` (no external/production DERP share, no
+  third-party fetch), DNS disabled (no third-party resolvers), `server_url`
+  internal-only; unit tests assert the generated config contains no external
+  hostnames or DERP maps.
+- **DERP versions:** DERP is the embedded server shipped inside the pinned
+  headscale image (`headscale/headscale:0.25`, resolves to v0.25.1 — see
+  `env.json`); there is no separate DERP binary or version. Synthetic
+  clients dial it over plain HTTP via the built-in `TS_DEBUG_USE_DERP_HTTP`
+  knob (same pattern as the merged THR-097 unit-B harness), so the relay is
+  exercised on the internal network without TLS termination or any
+  public endpoint.
 
 ## 4. Lab acceptance gates (exploratory thresholds — NOT product SLOs)
 
@@ -85,7 +106,7 @@ They bound the experiment so a pathological step aborts deterministically. They 
 | per-cell RSS | > 1.5 GiB for 3 consecutive samples | pathological cell growth |
 | enrollment failure | > 10 % of attempts in a step | control-plane enrollment collapse |
 | connected ratio | < 90 % at steady state | nodes dropping offline unexpectedly |
-| health | `headscale nodes list` rc != 0 twice in a row | control plane unhealthy |
+| health | any cell not healthy (`headscale nodes list` rc != 0) within 60 s of start | startup/config failure — fail closed, no measurement |
 
 On any gate trip the current scenario is torn down (with residue check) and the run
 fails loudly — the harness never continues past an aborted step.
