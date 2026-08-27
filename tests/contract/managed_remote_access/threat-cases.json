@@ -1020,6 +1020,28 @@
       }
     },
     {
+      "id": "REV-004",
+      "class": "hostile",
+      "category": "revoked_mid_stream",
+      "scenario": "Revocation seals the connector while a request admission is in flight. Admission and revocation share one atomic ownership boundary: an admission fully registered before the seal is included in the revocation snapshot and closed with it; an admission not fully registered before the seal fails closed and never returns a usable stream.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/{slug}/jobs/{job_id}/tail",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "revocation",
+        "audit_category": "revocation_stream_closed",
+        "failure_detail": "Stream closed on revocation; no post-seal admission returns a usable stream.",
+        "proves": "the revocation seal is the linearization point before the live-stream snapshot; no admission can return usable after the seal"
+      }
+    },
+    {
       "id": "ROUTE-001",
       "class": "hostile",
       "category": "forbidden_route",

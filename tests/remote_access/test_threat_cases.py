@@ -24,7 +24,11 @@ from .conftest import make_request
 from .fake_daemon import FakeDaemon, assert_daemon_received
 from .harness import BEARER, CaseBuilder, CLASSIFICATION, classify_all
 
-LIVE_STREAM_CASES = {"REV-002", "REV-003"}
+LIVE_STREAM_CASES = {"REV-002", "REV-003", "REV-004"}
+# REV-004 (admission racing the seal) is driven deterministically by the
+# dedicated admission/seal ownership battery
+# (tests/remote_access/test_admission_revocation_ownership.py) — it is a
+# concurrency/lifecycle ordering, not a plain single-request drive.
 
 
 def test_classification_is_exhaustive(threat_cases_fixture) -> None:
@@ -34,8 +38,8 @@ def test_classification_is_exhaustive(threat_cases_fixture) -> None:
     all_ids = {c["id"] for c in threat_cases_fixture["cases"]}
     assert core | control == all_ids
     assert not (core & control)
-    assert len(all_ids) == 56
-    assert len(core) == 35  # 32 hostile + 3 positive controls
+    assert len(all_ids) == 57
+    assert len(core) == 36  # 33 hostile + 3 positive controls
     assert len(control) == 21
 
 
@@ -328,7 +332,7 @@ def test_all_hostile_cases_deny_even_under_mutation(threat_cases_fixture, route_
         for c in threat_cases_fixture["cases"]
         if c["class"] == "hostile" and CLASSIFICATION[c["id"]][0] == "core" and c["id"] not in LIVE_STREAM_CASES
     ]
-    assert len(hostile_core) == 30  # 32 core-hostile minus the 2 live-stream cases
+    assert len(hostile_core) == 30  # 33 core-hostile minus the 3 live-stream cases
     for case in hostile_core:
         decision = _run_case(case, builder)
         assert decision.allowed is False, f"{case['id']} must be denied"

@@ -354,10 +354,11 @@ class ConnectorGateway:
             try:
                 tracked = ctx.stream_registry.open(stream_id, handle)
             except StreamClosed:
-                # Revocation won the race between open and registration: the
-                # handle is closed deterministically and the denial is the
+                # The seal already linearized: the admission was NOT fully
+                # registered before it, so the registry failed it closed —
+                # the allocated transport is owned and already closed by the
+                # registry (never leaked, never returned). The denial is the
                 # normative revocation category.
-                _close_partial(handle)
                 return self._redact(_deny("revocation", "revocation_stream_closed", "revoked"))
             if request.stream_type == "http":
                 try:

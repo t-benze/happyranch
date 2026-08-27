@@ -69,6 +69,7 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "REV-001": ("core", "revoked before request"),
     "REV-002": ("core", "revoked mid HTTP stream"),
     "REV-003": ("core", "revoked mid SSE stream"),
+    "REV-004": ("core", "admission racing the revocation seal (atomic ownership boundary)"),
     # Route / method / upgrade semantics.
     "ROUTE-001": ("core", "forbidden agent-callback route"),
     "ROUTE-002": ("core", "method not allowed on surface"),
