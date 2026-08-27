@@ -961,8 +961,10 @@ class TestSkillsValidation:
 class TestValidationGuard:
     """Unit tests for the _validate_skill_package function (business logic)."""
 
+    _VALID_MD = "---\nname: My Skill\ndescription: test\n---\n\n# My Skill\n\nA test skill.\n"
+
     def test_valid_skill_passes_all_checks(self, tmp_home, app, org_state):
-        """A well-formed skill with all required fields passes validation."""
+        """A well-formed frontmatter-first skill passes validation."""
         from runtime.daemon.routes.skills import _validate_skill_package
 
         result = _validate_skill_package(
@@ -972,7 +974,7 @@ class TestValidationGuard:
             name="My Skill",
             version="1.0.0",
             policy_class="standard_operational",
-            skill_md="# My Skill\n\nA test skill.\n",
+            skill_md=self._VALID_MD,
         )
         assert result["ok"] is True
         assert result["errors"] == []
@@ -1004,7 +1006,7 @@ class TestValidationGuard:
             name="",
             version="",
             policy_class="standard_operational",
-            skill_md="# Test",
+            skill_md=self._VALID_MD,
         )
         assert result["ok"] is False
         assert "missing_slug" in result["reason_codes"]
@@ -1023,7 +1025,7 @@ class TestValidationGuard:
             name="My Skill",
             version="1.0.0",
             policy_class="standard_operational",
-            skill_md="# Test",
+            skill_md=self._VALID_MD,
         )
         assert result["ok"] is False
         assert "slug_collision" in result["reason_codes"]
@@ -1039,13 +1041,13 @@ class TestValidationGuard:
             name="My Skill",
             version="1.0.0",
             policy_class="system_contract",
-            skill_md="# Test",
+            skill_md=self._VALID_MD,
         )
         assert result["ok"] is False
         assert "system_contract_forbidden" in result["reason_codes"]
 
-    def test_no_heading_fails(self, tmp_home, app, org_state):
-        """Skill without markdown heading fails validation."""
+    def test_heading_first_legacy_body_is_rejected_for_new_authoring(self, tmp_home, app, org_state):
+        """Heading-first bodies are legacy-only; new authoring must be frontmatter-first."""
         from runtime.daemon.routes.skills import _validate_skill_package
 
         result = _validate_skill_package(
@@ -1058,7 +1060,39 @@ class TestValidationGuard:
             skill_md="just some text without a heading",
         )
         assert result["ok"] is False
+        assert "skill_md_no_frontmatter" in result["reason_codes"]
+
+    def test_missing_post_frontmatter_heading_fails(self, tmp_home, app, org_state):
+        """Frontmatter without a following Markdown heading fails validation."""
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="---\nname: My Skill\n---\njust some text without a heading",
+        )
+        assert result["ok"] is False
         assert "skill_md_no_heading" in result["reason_codes"]
+
+    def test_malformed_frontmatter_fails(self, tmp_home, app, org_state):
+        """Malformed YAML inside the frontmatter fence fails validation."""
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="---\nname: [unclosed\n---\n# My Skill\n",
+        )
+        assert result["ok"] is False
+        assert "skill_md_malformed_frontmatter" in result["reason_codes"]
 
     def test_dry_materialize_succeeds(self, tmp_home, app, org_state):
         """Dry materialization succeeds for a valid skill."""
@@ -1087,7 +1121,7 @@ class TestValidationGuard:
             name="My Skill",
             version="1.0.0",
             policy_class="standard_operational",
-            skill_md="# Test Skill\n",
+            skill_md=self._VALID_MD,
             references={"/etc/passwd": "bad"},
         )
         assert result["ok"] is False
@@ -1105,7 +1139,7 @@ class TestValidationGuard:
             name="My Skill",
             version="1.0.0",
             policy_class="standard_operational",
-            skill_md="# Test Skill\n",
+            skill_md=self._VALID_MD,
             references={"../escape.txt": "bad"},
         )
         assert result["ok"] is False
@@ -1123,7 +1157,7 @@ class TestValidationGuard:
             name="My Skill",
             version="1.0.0",
             policy_class="standard_operational",
-            skill_md="# Test Skill\n",
+            skill_md=self._VALID_MD,
             assets={"": "bad"},
         )
         assert result["ok"] is False
@@ -1141,7 +1175,7 @@ class TestValidationGuard:
             name="My Skill",
             version="1.0.0",
             policy_class="standard_operational",
-            skill_md="# Test Skill\n",
+            skill_md=self._VALID_MD,
             assets={"subdir/evil.txt": "bad"},
         )
         assert result["ok"] is False

@@ -72,6 +72,11 @@ const REASON_COPY: Record<string, string> = {
   missing_name: 'The skill is missing a name.',
   missing_version: 'The skill guide is missing a version.',
   skill_md_no_heading: 'The skill guide needs a top-level heading.',
+  skill_md_no_frontmatter: 'The skill guide must start with YAML frontmatter.',
+  skill_md_unclosed_frontmatter:
+    'The skill guide frontmatter is missing its closing fence.',
+  skill_md_malformed_frontmatter: 'The skill guide frontmatter is not valid YAML.',
+  skill_md_frontmatter_not_mapping: 'The skill guide frontmatter must be a mapping.',
   invalid_references_type: 'The references section is not formatted correctly.',
   invalid_reference_value: 'A reference entry has an invalid value.',
   invalid_reference_filename: 'A reference points to an invalid file name.',

@@ -64,6 +64,23 @@ describe('reasonCodeLabel', () => {
       'This slug is already used by another skill.',
     );
   });
+  test('maps the THR-169 frontmatter-first authoring codes to plain language', () => {
+    expect(reasonCodeLabel('skill_md_no_frontmatter')).toBe(
+      'The skill guide must start with YAML frontmatter.',
+    );
+    expect(reasonCodeLabel('skill_md_unclosed_frontmatter')).toBe(
+      'The skill guide frontmatter is missing its closing fence.',
+    );
+    expect(reasonCodeLabel('skill_md_malformed_frontmatter')).toBe(
+      'The skill guide frontmatter is not valid YAML.',
+    );
+    expect(reasonCodeLabel('skill_md_frontmatter_not_mapping')).toBe(
+      'The skill guide frontmatter must be a mapping.',
+    );
+    expect(reasonCodeLabel('skill_md_no_heading')).toBe(
+      'The skill guide needs a top-level heading.',
+    );
+  });
   test('materialization / contract-predicate codes avoid forbidden tokens', () => {
     const mat = reasonCodeLabel('materialization_error');
     const pred = reasonCodeLabel('contract_predicate_error');
