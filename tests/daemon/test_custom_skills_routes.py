@@ -54,6 +54,43 @@ def _empty_artifact_dirs(org) -> list[str]:
     )
 
 
+def _artifact_bytes_state(org) -> dict:
+    """Per-artifact bytes + file metadata for the custom-skills artifact tree.
+
+    Proves zero artifact REWRITE on a duplicate replay: if the request never
+    invokes the write seam, every artifact keeps byte-for-byte identical
+    content and unchanged stat metadata (size, mtime).
+    """
+    from runtime.infrastructure.artifact_store import ArtifactStore
+    from runtime.orchestrator._paths import OrgPaths
+    store = ArtifactStore(OrgPaths(org.root).artifacts_dir)
+    state = {}
+    for info in store.list_artifacts():
+        if not info.name.startswith("custom-skills/"):
+            continue
+        path = store.path_for(info.name)
+        stat = path.stat()
+        state[info.name] = {
+            "bytes": path.read_bytes(),
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        }
+    return state
+
+
+def _no_write_artifact_seam(monkeypatch) -> list:
+    """Instrumented no-write seam: replace the route's artifact writer with a
+    recorder. THR-210 PR 3: a byte-identical replay must never attempt an
+    artifact write — the recorder stays empty after the replayed request.
+    """
+    from runtime.daemon.routes import custom_skills as routes
+    calls = []
+    def _recorder(org, key, content):
+        calls.append((key, content))
+    monkeypatch.setattr(routes, "_write_artifact", _recorder)
+    return calls
+
+
 def _residue_snapshot(org, skill_id: str, conn=None) -> dict:
     """Snapshot every zero-residue dimension for one skill: table counts
     (version/event/eligibility/materialization rows), current pointer,
@@ -687,12 +724,12 @@ def test_add_version_accepts_heading_first_successor_advancing_current(
     assert detail["version_id"] == payload["version_id"]
 
 
-def test_heading_first_duplicate_content_conflicts_atomically(client_with_runtime):
-    """PR 3 is NOT implemented: a byte-identical heading-first body replay
-    still conflicts with the append-only UNIQUE (skill_id, content_hash)
-    invariant as HTTP 409 `duplicate_content` with zero residue — the
-    duplicate-replay contract is unchanged (no version_content_exists rename,
-    no artifact rewrite, no pointer change)."""
+def test_heading_first_replay_conflicts_as_version_content_exists(client_with_runtime, monkeypatch):
+    """THR-210 PR 3: a byte-identical heading-first body replay conflicts
+    with the append-only UNIQUE (skill_id, content_hash) invariant as HTTP
+    409 `version_content_exists` — zero artifact rewrite (instrumented
+    no-write seam stays empty; artifact bytes/metadata unchanged), zero new
+    version row, zero new event row, zero current_version_id change."""
     client, org = client_with_runtime
     created = _create(client)
     skill_id = created["skill_id"]
@@ -700,10 +737,14 @@ def test_heading_first_duplicate_content_conflicts_atomically(client_with_runtim
     first = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": heading_first})
     assert first.status_code == 201 and first.json()["validation_state"] == "valid"
     before = _residue_snapshot(org, skill_id)
+    before_bytes = _artifact_bytes_state(org)
+    write_calls = _no_write_artifact_seam(monkeypatch)
     response = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": heading_first})
     assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "duplicate_content"
+    assert response.json()["detail"]["code"] == "version_content_exists"
+    assert write_calls == []
     assert _residue_snapshot(org, skill_id) == before
+    assert _artifact_bytes_state(org) == before_bytes
 
 
 def test_heading_first_initial_creation_is_valid_and_materializable(
@@ -858,18 +899,24 @@ def test_malformed_heading_like_initial_candidate_is_invalid_evidence(client_wit
     ).fetchone()["current_version_id"] == advanced.json()["version_id"]
 
 
-def test_add_version_duplicate_content_conflicts_atomically(client_with_runtime):
-    """A byte-identical body (TASK-5741 failure mode) conflicts with zero
-    durable residue — the append-only (skill_id, content_hash) uniqueness
+def test_add_version_replay_conflicts_as_version_content_exists(client_with_runtime, monkeypatch):
+    """THR-210 PR 3 (human add-version surface): a byte-identical body replay
+    (TASK-5741 failure mode) conflicts as HTTP 409 `version_content_exists`
+    with zero durable residue — no artifact rewrite, no new version/event row,
+    no pointer change; the append-only (skill_id, content_hash) uniqueness
     invariant is preserved, never relaxed."""
     client, org = client_with_runtime
     created = _create(client)
     skill_id = created["skill_id"]
     before = _residue_snapshot(org, skill_id)
+    before_bytes = _artifact_bytes_state(org)
+    write_calls = _no_write_artifact_seam(monkeypatch)
     response = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": _FM_BODY})
     assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "duplicate_content"
+    assert response.json()["detail"]["code"] == "version_content_exists"
+    assert write_calls == []
     assert _residue_snapshot(org, skill_id) == before
+    assert _artifact_bytes_state(org) == before_bytes
 
 
 def test_create_with_invalid_first_version_creates_skill_with_evidence(client_with_runtime):
@@ -998,10 +1045,12 @@ def test_agent_update_appends_invalid_body_as_evidence_retaining_current(client_
 #        zero partial residue
 # ═══════════════════════════════════════════════════════════════════════════
 
-def test_invalid_duplicate_content_conflicts_atomically(client_with_runtime):
-    """A byte-identical INVALID body still conflicts with the append-only
-    UNIQUE (skill_id, content_hash) invariant as 409 duplicate_content with
-    zero additional residue — the same evidence is never appended twice."""
+def test_invalid_replay_conflicts_as_version_content_exists(client_with_runtime, monkeypatch):
+    """THR-210 PR 3: a byte-identical INVALID body replay still conflicts
+    with the append-only UNIQUE (skill_id, content_hash) invariant as HTTP
+    409 `version_content_exists` with zero additional residue — the same
+    evidence is never appended twice, and the invalid evidence artifact is
+    never rewritten."""
     client, org = client_with_runtime
     created = _create(client)
     skill_id = created["skill_id"]
@@ -1009,10 +1058,112 @@ def test_invalid_duplicate_content_conflicts_atomically(client_with_runtime):
     first = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": invalid_md})
     assert first.status_code == 201 and first.json()["validation_state"] == "invalid"
     before = _residue_snapshot(org, skill_id)
+    before_bytes = _artifact_bytes_state(org)
+    write_calls = _no_write_artifact_seam(monkeypatch)
     response = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": invalid_md})
     assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "duplicate_content"
+    assert response.json()["detail"]["code"] == "version_content_exists"
+    assert write_calls == []
     assert _residue_snapshot(org, skill_id) == before
+    assert _artifact_bytes_state(org) == before_bytes
+
+
+def test_agent_create_replay_conflicts_as_version_content_exists(client_with_runtime, monkeypatch):
+    """THR-210 PR 3 (agent create/update surface): an agent re-submitting an
+    identical create body for its own already-created skill conflicts as HTTP
+    409 `version_content_exists` — zero residue: no new version/event row, no
+    artifact write, no current_version_id change."""
+    client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="TASK-R1", brief="create a custom skill"))
+    org.sessions.set_active("TASK-R1", "dev_agent", "sess-r1", org_slug="alpha")
+    client.headers.pop("Authorization", None)
+    first = client.post(
+        f"{BASE}/agent-create", params={"session_id": "sess-r1"}, json=_body("replay-agent")
+    )
+    assert first.status_code == 201, first.text
+    skill_id = first.json()["skill"]["id"]
+    before = _residue_snapshot(org, skill_id)
+    before_bytes = _artifact_bytes_state(org)
+    write_calls = _no_write_artifact_seam(monkeypatch)
+    response = client.post(
+        f"{BASE}/agent-create", params={"session_id": "sess-r1"}, json=_body("replay-agent")
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "version_content_exists"
+    assert write_calls == []
+    assert _residue_snapshot(org, skill_id) == before
+    assert _artifact_bytes_state(org) == before_bytes
+
+
+def test_agent_update_replay_conflicts_as_version_content_exists(client_with_runtime, monkeypatch):
+    """THR-210 PR 3 (agent update surface): after an agent advances its own
+    skill to body B, re-submitting the identical body B conflicts as HTTP 409
+    `version_content_exists` — the pointer stays at B's version, and no new
+    version/event row or artifact write appears."""
+    client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="TASK-R2", brief="create a custom skill"))
+    org.sessions.set_active("TASK-R2", "dev_agent", "sess-r2", org_slug="alpha")
+    client.headers.pop("Authorization", None)
+    first = client.post(
+        f"{BASE}/agent-create", params={"session_id": "sess-r2"}, json=_body("replay-update")
+    )
+    assert first.status_code == 201, first.text
+    skill_id = first.json()["skill"]["id"]
+    body_b = "---\nname: Replay\n---\n\n# Replay\n\nTwo\n"
+    updated = client.post(
+        f"{BASE}/agent-create", params={"session_id": "sess-r2"},
+        json=_body("replay-update", body_b),
+    )
+    assert updated.status_code == 201, updated.text
+    v2 = updated.json()["version"]["id"]
+    conn = getattr(org.db, "_conn", org.db)
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"] == v2
+    before = _residue_snapshot(org, skill_id)
+    before_bytes = _artifact_bytes_state(org)
+    write_calls = _no_write_artifact_seam(monkeypatch)
+    response = client.post(
+        f"{BASE}/agent-create", params={"session_id": "sess-r2"},
+        json=_body("replay-update", body_b),
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "version_content_exists"
+    assert write_calls == []
+    assert _residue_snapshot(org, skill_id) == before
+    assert _artifact_bytes_state(org) == before_bytes
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"] == v2
+
+
+def test_replay_of_noncurrent_historical_version_conflicts_without_residue(client_with_runtime, monkeypatch):
+    """THR-210 PR 3: the uniqueness conflict applies against ANY stored
+    version of the skill, not just the current one. Replaying a body identical
+    to a NON-current historical version still returns HTTP 409
+    `version_content_exists` with zero residue — the current pointer and every
+    version/event/artifact stay exactly as they were."""
+    client, org = client_with_runtime
+    created = _create(client)
+    skill_id = created["skill_id"]
+    successor = "---\nname: Test skill\ndescription: test\n---\n\n# Test\n\nTwo\n"
+    advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": successor})
+    assert advanced.status_code == 201 and advanced.json()["validation_state"] == "valid"
+    v2 = advanced.json()["version_id"]
+    before = _residue_snapshot(org, skill_id)
+    before_bytes = _artifact_bytes_state(org)
+    write_calls = _no_write_artifact_seam(monkeypatch)
+    # _FM_BODY is now the NON-current historical v1
+    response = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": _FM_BODY})
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "version_content_exists"
+    assert write_calls == []
+    assert _residue_snapshot(org, skill_id) == before
+    assert _artifact_bytes_state(org) == before_bytes
+    conn = getattr(org.db, "_conn", org.db)
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"] == v2
 
 
 def test_invalid_append_then_valid_successor_advances_current_with_lineage(client_with_runtime):
@@ -1160,7 +1311,7 @@ def test_invalid_successor_keeps_prior_valid_eligible_and_materializable(client_
 # Each stage below is injected at the shared stage the routes actually reach;
 # the assertions drive the PUBLIC HTTP routes (never the helper directly) and
 # verify the correct failure mapping: only the version INSERT's UNIQUE
-# (skill_id, content_hash) violation is duplicate_content (409); every later
+# (skill_id, content_hash) violation is version_content_exists (409); every later
 # failure (artifact write, current-pointer update, either event append) must
 # map to a NON-duplicate error (500), compensate the artifact this request
 # wrote, and leave zero durable residue in every dimension.
@@ -1275,14 +1426,14 @@ def test_authoring_persistence_fault_leaves_zero_residue_and_no_false_409(
 ):
     """Every post-validation persistence stage, driven through every public
     authoring route: the version INSERT's IntegrityError is the ONLY stage
-    mapped to 409 duplicate_content; all later failures return a non-duplicate
-    error (500) and compensate the artifact + empty dirs this request created,
-    with zero durable residue in version rows, events, current_version_id,
-    parent/current lineage, artifacts, empty directories, materialization,
-    and any temporary parent. The `commit` stage (TASK-5803) fails the final
-    conn.commit() — compensation must stay armed through successful commit
-    so a commit failure rolls back the DB AND removes the request-written
-    artifact, not just the DB rows."""
+    mapped to 409 version_content_exists; all later failures return a
+    non-duplicate error (500) and compensate the artifact + empty dirs this
+    request created, with zero durable residue in version rows, events,
+    current_version_id, parent/current lineage, artifacts, empty directories,
+    materialization, and any temporary parent. The `commit` stage (TASK-5803)
+    fails the final conn.commit() — compensation must stay armed through
+    successful commit so a commit failure rolls back the DB AND removes the
+    request-written artifact, not just the DB rows."""
     client, org = client_with_runtime
     real_conn = getattr(org.db, "_conn", org.db)
     body_two = "---\nname: Test skill\ndescription: test\n---\n\n# Test\n\nTwo\n"
@@ -1337,12 +1488,12 @@ def test_authoring_persistence_fault_leaves_zero_residue_and_no_false_409(
 
     if stage == "version-insert":
         assert response.status_code == 409, response.text
-        assert response.json()["detail"]["code"] == "duplicate_content"
+        assert response.json()["detail"]["code"] == "version_content_exists"
     else:
         # A post-INSERT integrity failure or artifact-write crash must NOT be
-        # reported as duplicate_content, and must leave zero durable residue.
+        # reported as version_content_exists, and must leave zero durable residue.
         assert response.status_code == 500, response.text
-        assert "duplicate_content" not in response.text
+        assert "version_content_exists" not in response.text
     assert _residue_snapshot(org, skill_id, conn=real_conn) == before
 
 
@@ -1359,7 +1510,7 @@ def test_invalid_candidate_persistence_fault_leaves_zero_residue(
     """THR-210 PR 1 (E): an INVALID candidate flows through the SAME shared
     persistence helper as valid ones, so every post-validation fault still
     maps correctly (only the version INSERT's IntegrityError is 409
-    duplicate_content; everything later is 500) and rolls back with full
+    version_content_exists; everything later is 500) and rolls back with full
     artifact compensation — zero partial version/event/pointer/artifact
     residue in every dimension."""
     client, org = client_with_runtime
@@ -1416,10 +1567,10 @@ def test_invalid_candidate_persistence_fault_leaves_zero_residue(
 
     if stage == "version-insert":
         assert response.status_code == 409, response.text
-        assert response.json()["detail"]["code"] == "duplicate_content"
+        assert response.json()["detail"]["code"] == "version_content_exists"
     else:
         assert response.status_code == 500, response.text
-        assert "duplicate_content" not in response.text
+        assert "version_content_exists" not in response.text
     assert _residue_snapshot(org, skill_id, conn=real_conn) == before
 
 

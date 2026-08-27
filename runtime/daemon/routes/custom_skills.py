@@ -70,9 +70,10 @@ def _persist_validated_version(
     Validation completed before this helper runs. The version row is inserted
     FIRST and the content artifact is written only after that insert succeeds:
     a byte-identical body (UNIQUE (skill_id, content_hash)) fails the insert
-    and is rejected as 409 duplicate_content with zero residue and no artifact
-    write — a concurrent duplicate can never delete a committed artifact.
-    Duplicate-content translation is scoped strictly to that version INSERT:
+    and is rejected as 409 version_content_exists with zero residue and no
+    artifact write — a concurrent duplicate can never delete a committed
+    artifact. Duplicate-content translation is scoped strictly to that version
+    INSERT:
     an integrity failure from ANY later stage (current-pointer update or
     either event append) is NOT a duplicate — it propagates to the generic
     handler below, which compensates only the artifact (and empty directories)
@@ -121,7 +122,7 @@ def _persist_validated_version(
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "code": "duplicate_content",
+                    "code": "version_content_exists",
                     "detail": "A version with this exact content already exists for this skill",
                 },
             ) from exc

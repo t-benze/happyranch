@@ -157,6 +157,10 @@ the entire transaction rolls back with zero residue.
 - Authorization header present → HTTP 401 `bearer_not_accepted`.
 - Body contains trusted identity key → HTTP 403 `body_identity_rejected`.
 - Protected slug collision → HTTP 409 `protected_slug`.
+- Byte-identical content replay (a version with this exact body already
+  exists for this skill, current or historical) → HTTP 409
+  `version_content_exists` with zero residue: no artifact write or rewrite,
+  no new version row, no new event/audit row, no current-version change.
 - Missing/empty required metadata (`slug`, `name`, `skill_md`) → HTTP 422 with structured error codes.
 - Document-contract validation failure → the candidate is appended as immutable invalid-version evidence (HTTP 201, `validation_state: invalid`); it never becomes the current version when a valid one exists.
 - Server error → HTTP 500 with detail.
