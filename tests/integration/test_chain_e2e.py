@@ -478,3 +478,117 @@ def test_chain_aborts_on_founder_cancel_e2e(
     assert "qa_engineer" not in child_agents, (
         f"qa_engineer should not have been spawned, but found: {child_agents}"
     )
+
+
+def test_chain_advance_at_most_once_with_delayed_session_exit_e2e(
+    live_daemon,
+    runtime,
+    fake_claude_plan_env,
+) -> None:
+    """THR-211 callback/exit-ordering invariant: a chain leg whose completion
+    report lands BEFORE its session process exits (the completion-status-lag
+    window) must still advance the chain EXACTLY ONCE when the session finally
+    exits — no duplicate next leg, no premature chain clear, no re-attestation
+    dispatch.
+
+    The reviewer (payment_agent) reports completion and then deliberately
+    holds its session open for 2s, so the result row is durable while the
+    task row still reads in_progress. The chain must reach the same final
+    state as the clean happy path: exactly 2 chain_auto_advance rows, 3
+    children, orchestration_step_count == 2, active_chain cleared.
+    """
+    port = live_daemon
+    base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
+
+    seed_workspace(runtime, "engineering_head")
+    seed_workspace(runtime, "dev_agent")
+    seed_workspace(runtime, "payment_agent")
+    seed_workspace(runtime, "qa_engineer")
+
+    eh_state = fake_claude_plan_env.parent / "eh_chain_delay_step.txt"
+
+    fake_claude_plan_env.write_text(
+        '#!/usr/bin/env bash\n'
+        'set -e\n'
+        'task_id="$1"; session_id="$2"; agent="$3"; org_slug="$4"\n'
+        f'eh_state="{eh_state}"\n'
+        '\n'
+        'if [[ "$agent" == "engineering_head" ]]; then\n'
+        '    if [[ -f "$eh_state" ]]; then\n'
+        '        step=$(cat "$eh_state")\n'
+        '    else\n'
+        '        step=0\n'
+        '    fi\n'
+        '    next=$((step+1))\n'
+        '    echo "$next" > "$eh_state"\n'
+        '\n'
+        '    tmpfile=$(mktemp)\n'
+        '    if [[ "$step" -eq 0 ]]; then\n'
+        '        cat > "$tmpfile" << \'__JSON__\'\n'
+        '{"task_id":"__TID__","session_id":"__SID__","agent":"engineering_head","status":"completed","summary":"chain declared","confidence":90,"decision":{"action":"delegate","agent":"dev_agent","prompt":"implement the feature","then":[{"agent":"payment_agent","prompt":"review the implementation","expect_verdict":"APPROVE"},{"agent":"qa_engineer","prompt":"qa the implementation","expect_verdict":"PASS"}]}}\n'
+        '__JSON__\n'
+        '    else\n'
+        '        cat > "$tmpfile" << \'__JSON__\'\n'
+        '{"task_id":"__TID__","session_id":"__SID__","agent":"engineering_head","status":"completed","summary":"chain ran to completion","confidence":90,"decision":{"action":"done","summary":"chain ran to completion"}}\n'
+        '__JSON__\n'
+        '    fi\n'
+        '    sed -i "" "s/__TID__/$task_id/g" "$tmpfile" 2>/dev/null || sed -i "s/__TID__/$task_id/g" "$tmpfile"\n'
+        '    sed -i "" "s/__SID__/$session_id/g" "$tmpfile" 2>/dev/null || sed -i "s/__SID__/$session_id/g" "$tmpfile"\n'
+        '    happyranch report-completion --org "$org_slug" --from-file "$tmpfile"\n'
+        '    rm -f "$tmpfile"\n'
+        '\n'
+        'elif [[ "$agent" == "dev_agent" ]]; then\n'
+        '    tmpfile=$(mktemp)\n'
+        '    printf \'{"task_id":"%s","session_id":"%s","agent":"dev_agent","status":"completed","summary":"feature implemented","confidence":85}\' "$task_id" "$session_id" > "$tmpfile"\n'
+        '    happyranch report-completion --org "$org_slug" --from-file "$tmpfile"\n'
+        '    rm -f "$tmpfile"\n'
+        '\n'
+        'elif [[ "$agent" == "payment_agent" ]]; then\n'
+        # Report completion FIRST (durable result lands), then hold the
+        # session open so the task row stays in_progress during the lag
+        # window; the orchestrator consumes only after this process exits.
+        '    tmpfile=$(mktemp)\n'
+        '    printf \'{"task_id":"%s","session_id":"%s","agent":"payment_agent","status":"completed","summary":"code looks good","confidence":90,"verdict":"APPROVE"}\' "$task_id" "$session_id" > "$tmpfile"\n'
+        '    happyranch report-completion --org "$org_slug" --from-file "$tmpfile"\n'
+        '    rm -f "$tmpfile"\n'
+        '    sleep 2\n'
+        '\n'
+        'elif [[ "$agent" == "qa_engineer" ]]; then\n'
+        '    tmpfile=$(mktemp)\n'
+        '    printf \'{"task_id":"%s","session_id":"%s","agent":"qa_engineer","status":"completed","summary":"qa passed","confidence":95,"verdict":"PASS"}\' "$task_id" "$session_id" > "$tmpfile"\n'
+        '    happyranch report-completion --org "$org_slug" --from-file "$tmpfile"\n'
+        '    rm -f "$tmpfile"\n'
+        '\n'
+        'else\n'
+        '    echo "Unknown agent: $agent" >&2\n'
+        '    exit 1\n'
+        'fi\n'
+    )
+    fake_claude_plan_env.chmod(0o755)
+
+    task_id = _submit_task(base, brief="implement and review a feature (delayed exit)")
+    body = _wait_for_terminal(base, task_id, timeout=90.0)
+    task = body["task"]
+
+    assert task["status"] == "completed", (
+        f"expected completed, got {task['status']!r} (note={task.get('note')!r})"
+    )
+    assert task["orchestration_step_count"] == 2, (
+        f"expected step_count=2, got {task['orchestration_step_count']}"
+    )
+    advance_count = _count_audit_rows(body, "chain_auto_advance")
+    assert advance_count == 2, (
+        f"expected exactly 2 chain_auto_advance rows, got {advance_count}. "
+        f"audit={body.get('audit_log')}"
+    )
+    assert task.get("active_chain") is None
+
+    all_tasks = httpx.get(f"{base}/tasks", headers=_auth_headers(), timeout=5.0).json()["tasks"]
+    children = [t for t in all_tasks if t.get("parent_task_id") == task_id]
+    child_agents = {c["assigned_agent"] for c in children}
+    assert child_agents == {"dev_agent", "payment_agent", "qa_engineer"}, (
+        f"unexpected child agents: {child_agents}"
+    )
+    # No duplicate QA leg — the delayed-exit reviewer advanced exactly once.
+    qa_children = [c for c in children if c["assigned_agent"] == "qa_engineer"]
+    assert len(qa_children) == 1, f"duplicate QA leg spawned: {qa_children}"

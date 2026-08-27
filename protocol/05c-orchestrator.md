@@ -613,6 +613,58 @@ class where a lost HTTP response drove a duplicate POST into
 (`_is_already_terminal`) remains the single point that applies a decision
 at most once across the inline, boot-sweep, and reaper paths.
 
+#### Completion-status lag (THR-211)
+
+**Actual contract.** The completion POST (`submit_completion`) durably
+persists the session-scoped `task_results` row and clears the session
+tracker, but intentionally does **not** terminalize the `tasks.status` row:
+`in_progress` with `block_kind IS NULL` still represents a live executor,
+and the status transition (`COMPLETED` / `FAILED` / blocked-on-job park)
+is applied only when the orchestrator consumes the report at
+executor/session finalization (inline `run_step_impl` tail, daemon boot
+sweep §Daemon restart recovery, or ongoing zombie reaper). A `200` from
+the completion route therefore means *the result has landed*, not *the
+status row has transitioned* — the durable `task_results` row is the
+landing proof and the read surfaces (`happyranch details`, `/tasks/{id}`,
+`/recall`) keep showing the honest row state (`in_progress` + the landed
+result) until consumption.
+
+**Dispatch/gate recognition.** The parent-dispatch seams that previously
+keyed strictly on `child.status` now also recognize a durably-landed
+structured terminal report during the lag window, so a landed verdict can
+never be masked by the deferred status transition:
+
+- `_enqueue_parent_if_waiting` sibling-terminal check and `run_step_impl`
+  step-1 delegated-parent eligibility treat a child as dispatch-terminal
+  when its **current** session has landed a report (see authority below) —
+  the fan-out barrier and bounded parent wake unblock as soon as the last
+  child's result is durable, without waiting for session finalization.
+- `_enqueue_parent_if_waiting` chain-advance branch may auto-advance a
+  chain from a landed report while the leg row is still `in_progress`.
+  Recognition is **at-most-once**: the advance is gated to the parent's
+  newest child (the current chain leg), so the delayed session-finalization
+  consumption of the same child can neither spawn a duplicate next leg nor
+  prematurely clear the chain. The atomic `try_advance_chain` transaction
+  (rollback on write failure) and the run-step claim CAS preserve the
+  single eventual advance/wake.
+
+**Authority (session-safe, fail-closed).** Recognition uses exactly the
+same fingerprint the boot sweep and zombie reaper use: the exact
+`(task_id, assigned_agent, current_session_id)` triple via
+`get_latest_task_result`, with report `status == "completed"`. It fails
+closed on absent agent/session, no row, prior-session or wrong-agent rows,
+`blocked` reports (the blocked-on-job park is a live state owned by the
+resume flow), unknown statuses, and malformed rows. It never infers
+terminality from prose, never suppresses a genuinely-running task with no
+terminal result, and never terminalizes the task row early.
+
+**Required contract.** Do NOT set `tasks.status` terminal inside the
+completion POST: early transition risks lifecycle/restart/session races.
+Keep the deferred-transition design and the session-scoped authority above;
+any new consumer of a task's outcome must read the durable structured
+result (or use the dispatch recognition), never assume the row status is
+the outcome.
+
 #### Ongoing zombie reaper (THR-090 Track B)
 
 The daemon runs a periodic zombie reaper loop (``zombie_reaper_loop``,

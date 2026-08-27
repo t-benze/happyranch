@@ -519,6 +519,28 @@ def test_get_recall_payload_includes_verdict_from_task_results(db):
     assert payload["verdict"] == "APPROVE"
 
 
+def test_get_recall_payload_verdict_durable_while_task_row_in_progress(db):
+    """THR-211: the guarded-merge evidence path reads the structured verdict
+    from task_results even while the tasks row still reads in_progress (the
+    completion-status-lag window between the POST and session-finalization
+    consumption). The recall payload must never gate the verdict on the task
+    row being terminal."""
+    db.insert_task(TaskRecord(id="TASK-VL", brief="review task"))
+    db.update_task(
+        "TASK-VL", status=TaskStatus.IN_PROGRESS,
+        current_session_id="sess-lag", assigned_agent="code_reviewer",
+    )
+    db.insert_task_result(
+        task_id="TASK-VL", agent="code_reviewer", session_id="sess-lag",
+        status="completed", output_summary="approved",
+        confidence_score=90, verdict="APPROVE",
+    )
+    payload = db.get_recall_payload("TASK-VL")
+    assert payload is not None
+    assert payload["status"] == "in_progress"
+    assert payload["verdict"] == "APPROVE"
+
+
 def test_get_recall_payload_null_verdict_when_no_task_results(db):
     """When no task_results rows exist, verdict is None in the payload."""
     db.insert_task(TaskRecord(id="TASK-V2", brief="no completion"))

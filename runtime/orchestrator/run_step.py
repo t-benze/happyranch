@@ -77,7 +77,18 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         pass  # eligible
     elif task.status in _PARKED_CARRIER_STATUSES and task.block_kind == BlockKind.DELEGATED:
         children = [db.get_task(cid) for cid in db.get_children(task_id)]
-        if any(c is None or c.status not in TERMINAL_STATES for c in children):
+        # THR-211: a child whose current session has durably landed a
+        # structured terminal report counts as terminal for parent admission
+        # even while its row reads in_progress (the status transition is
+        # deferred to session finalization). A genuinely-running child with no
+        # landed result still blocks the parent — never suppress live work.
+        if any(
+            c is None or (
+                c.status not in TERMINAL_STATES
+                and not _child_has_landed_terminal_result(orch, c)
+            )
+            for c in children
+        ):
             logger.debug("run_step %s: child still running, skipping", task_id)
             return
     elif task.status in _PARKED_CARRIER_STATUSES and task.block_kind == BlockKind.BLOCKED_ON_JOB:
@@ -2082,6 +2093,27 @@ def _format_slice_retry_exhausted_reason(
     )
 
 
+def _child_has_landed_terminal_result(orch: "Orchestrator", child: "TaskRecord") -> bool:
+    """THR-211: True when the child's CURRENT session has durably landed a
+    structured terminal completion report even though the task row still reads
+    ``in_progress`` (the status transition is deferred to executor/session
+    finalization by ``_consume_completion_report``).
+
+    Authority is deliberately narrow and session-safe: the exact
+    ``(task_id, assigned_agent, current_session_id)`` triple — the same
+    fingerprint the daemon boot sweep and zombie reaper use — with report
+    status == ``completed``.  Fails closed on absent agent/session, no row,
+    blocked reports (the blocked_on_job park is a live state owned by the
+    resume flow), or any other status.  Never infers terminality from prose.
+    """
+    if child is None or not child.assigned_agent or not child.current_session_id:
+        return False
+    row = orch._db.get_latest_task_result(
+        child.id, child.assigned_agent, child.current_session_id,
+    )
+    return row is not None and row.get("status") == "completed"
+
+
 def _enqueue_parent_if_waiting(
     orch: "Orchestrator",
     task_id: str,
@@ -2148,24 +2180,40 @@ def _enqueue_parent_if_waiting(
     # the whole carrier immediately — no partial-chain completion.
     child = orch._db.get_task(task_id)
     if child is not None and parent.active_chain is not None:
-        if child.status == TaskStatus.COMPLETED:
-            # Snapshot the chain BEFORE advance (which may clear it).
-            chain_snapshot = parent.active_chain
-            outcome = _advance_chain_for_completed_child(
-                orch=orch, parent_task_id=parent.id, child_task_id=task_id,
-            )
-            if outcome == "advance":
-                return  # next leg spawned; parent stays in_progress(delegated)
-            # outcome == "wake" → chain cleared; carrier fail-closed?
-            if _carrier_fail_on_verdict_mismatch(
-                orch, parent, task_id, chain_snapshot,
-            ):
-                return  # carrier failed; outer _enqueue_parent_if_waiting skipped
-            # Chain complete + verdict matched → carrier auto-completes
-            # directly (no _run_agent session, no manager-wake).
-            if _carrier_complete_on_chain_complete(orch, parent):
-                return  # carrier completed; outer _enqueue_parent_if_waiting skipped
-            # Non-carrier: fall through to sibling-check + parent-wake path below.
+        # THR-211: a child whose current session has durably landed a
+        # structured terminal report is dispatch-terminal even while its row
+        # reads in_progress (status transition deferred to session
+        # finalization).  The newest-child guard keeps the recognition
+        # at-most-once: after the chain advances, the next leg child is the
+        # parent's newest child, so a late re-trigger from the already-
+        # recognized child (e.g. its delayed session-finalization
+        # consumption) can neither re-enter the advance path nor prematurely
+        # clear the chain.
+        is_chain_trigger = (
+            child.status == TaskStatus.COMPLETED
+            or _child_has_landed_terminal_result(orch, child)
+        )
+        if is_chain_trigger:
+            children_ids = orch._db.get_children(parent.id)
+            if children_ids and child.id == children_ids[-1]:
+                # Snapshot the chain BEFORE advance (which may clear it).
+                chain_snapshot = parent.active_chain
+                outcome = _advance_chain_for_completed_child(
+                    orch=orch, parent_task_id=parent.id, child_task_id=task_id,
+                )
+                if outcome == "advance":
+                    return  # next leg spawned; parent stays in_progress(delegated)
+                # outcome == "wake" → chain cleared; carrier fail-closed?
+                if _carrier_fail_on_verdict_mismatch(
+                    orch, parent, task_id, chain_snapshot,
+                ):
+                    return  # carrier failed; outer _enqueue_parent_if_waiting skipped
+                # Chain complete + verdict matched → carrier auto-completes
+                # directly (no _run_agent session, no manager-wake).
+                if _carrier_complete_on_chain_complete(orch, parent):
+                    return  # carrier completed; outer _enqueue_parent_if_waiting skipped
+            # Stale re-trigger for a leg the chain already advanced past, or a
+            # non-newest child: fall through to sibling-check + parent-wake.
         else:
             # FAILED chain leg: do NOT clear active_chain here. A recovery or
             # startup-style caller may invoke this on a historical FAILED
@@ -2178,7 +2226,13 @@ def _enqueue_parent_if_waiting(
             pass
 
     siblings = [orch._db.get_task(cid) for cid in orch._db.get_children(parent.id)]
-    if any(s is None or s.status not in TERMINAL_STATES for s in siblings):
+    if any(
+        s is None or (
+            s.status not in TERMINAL_STATES
+            and not _child_has_landed_terminal_result(orch, s)
+        )
+        for s in siblings
+    ):
         return
 
     failed = [s for s in siblings if s.status == TaskStatus.FAILED]

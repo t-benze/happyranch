@@ -287,3 +287,97 @@ async def test_approve_agent_uses_provider_specific_workspace_bootstrap(
     # THR-095: approve_agent no longer writes executor to agent.yaml.
     # The provider comes from AgentDef.executor (.md frontmatter).
     assert mock_ctx.ensure_workspace_ready.call_args.kwargs["provider"] == "codex"
+
+
+@pytest.mark.asyncio
+async def test_parallel_parent_admitted_when_child_result_landed_thr211(
+    tmp_path: Path, monkeypatch,
+):
+    """THR-211: a delegated parent whose last child's result has durably
+    landed (row still in_progress) is ADMITTED by run_step_impl's eligibility
+    gate, so a recognition-based parent wake is not lost. Without the fix the
+    parent would be skipped as 'child still running' and stay parked."""
+    from runtime.daemon.queue import TaskQueue
+    from runtime.infrastructure.database import Database
+    from runtime.models import BlockKind, TaskRecord, TaskStatus
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.teams import TeamsRegistry
+
+    rt, paths = _make_org_paths(tmp_path)
+    _seed_teams(paths)
+    for agent in ("engineering_head", "dev_agent"):
+        (paths.workspaces_dir / agent / ".claude" / "skills" / "start-task").mkdir(parents=True)
+        (paths.workspaces_dir / agent / ".claude" / "skills" / "start-task" / "SKILL.md").touch()
+    db = Database(paths.db_path)
+
+    orch = Orchestrator(
+        db=db,
+        settings=Settings(max_orchestration_steps=10),
+        paths=paths,
+        slug="test",
+        teams=TeamsRegistry.load(paths.root),
+    )
+    queue = TaskQueue()
+    orch.attach_queue(queue)
+    dispatcher = _LocalDispatcher(orch)
+
+    parent_sessions: list[str] = []
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        from runtime.models import CompletionReport
+        from runtime.orchestrator.executors import ExecutorResult
+        parent_sessions.append(agent)
+        return (
+            ExecutorResult(success=True, session_id="s", duration_seconds=1),
+            CompletionReport(
+                task_id=task_id, agent=agent, status="completed",
+                confidence=80,
+                output_summary=json.dumps(
+                    {"action": "done", "summary": "join done"},
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+
+    # Parent parked on two children: A terminal, B with a durably-landed
+    # result but a row still reading in_progress (the THR-211 lag window).
+    db.insert_task(TaskRecord(id="TASK-P", team="engineering", brief="p"))
+    db.update_task("TASK-P", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED)
+    db.insert_task(TaskRecord(
+        id="TASK-A", team="engineering", brief="a",
+        parent_task_id="TASK-P", assigned_agent="dev_agent",
+    ))
+    db.update_task("TASK-A", status=TaskStatus.COMPLETED)
+    db.insert_task(TaskRecord(
+        id="TASK-B", team="engineering", brief="b",
+        parent_task_id="TASK-P", assigned_agent="dev_agent",
+    ))
+    db.update_task(
+        "TASK-B", status=TaskStatus.IN_PROGRESS,
+        current_session_id="sess-b",
+    )
+    db.insert_task_result(
+        task_id="TASK-B", agent="dev_agent", session_id="sess-b",
+        status="completed", confidence_score=80, output_summary="b done",
+    )
+
+    queue.enqueue("test", "TASK-P")
+    await queue.drain_sync(dispatcher)
+
+    parent = db.get_task("TASK-P")
+    assert parent.status == TaskStatus.COMPLETED, (
+        f"parent was not admitted (status={parent.status})"
+    )
+    # Exactly one manager session — the delayed child consumption must not
+    # spawn a second wake that re-runs the manager.
+    assert parent_sessions == ["engineering_head"], parent_sessions
+
+    # Late consumption of B: all siblings now terminal — enqueuing the parent
+    # again must not re-run the manager (terminal task is skipped).
+    db.update_task("TASK-B", status=TaskStatus.COMPLETED)
+    queue.enqueue("test", "TASK-P")
+    await queue.drain_sync(dispatcher)
+    assert parent_sessions == ["engineering_head"], parent_sessions
+    assert db.get_task("TASK-P").status == TaskStatus.COMPLETED
