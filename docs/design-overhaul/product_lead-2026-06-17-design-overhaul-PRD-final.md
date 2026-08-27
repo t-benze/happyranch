@@ -162,6 +162,10 @@ must implement; where the prototype already implements it, it is marked
 - **Left rail, two groups + footer** (P4). Primary: `Home · Threads · Tasks ·
   Agents · Knowledge · Artifacts`. "Operate": `Spend · Dreams · Work Hours · Audit`. *(THR-035: Schedule consolidated into Work Hours as its Wakes view — the standalone Schedule nav item no longer exists.)*
   Footer: `Settings` + founder identity block + theme toggle + org switcher.
+  *(Current state — THR-140 seq 208 / PR #644: the grouped-rail presentation
+  was piloted in PR #633 (#577 Slice 1), then intentionally superseded by a
+  flat primary navigation list with Settings pinned to the footer, because the
+  grouped sidebar overflowed the viewport at 1440×700.)*
 - **Active item** driven by the surface's `data-active`; nav counts (Threads/Tasks/
   Agents) and the Dreams attention dot are **real stored counts** (P1), not static.
 - **"Soon"/disabled nav items** render `aria-disabled="true"` and suppress
@@ -244,6 +248,10 @@ four states honestly:
 - **Primary group:** `Home · Threads · Tasks · Agents · Knowledge · Artifacts`
 - **"Operate" group:** `Spend · Dreams · Work Hours · Audit`
 - **Footer:** `Settings` (+ founder block, theme toggle, org switcher)
+- *(Current state — THR-140 seq 208 / PR #644: the grouped presentation above
+  was piloted in PR #633 (#577 Slice 1), then intentionally superseded by a
+  flat primary navigation list with Settings pinned to the footer, because the
+  grouped sidebar overflowed the viewport at 1440×700.)*
 - **Assistant is NOT a tab** — omnipresent ⌘K dock (§4.10).
 - **Jobs is NOT a tab** — retired; reached contextually + Home rollup + Audit
   history (Q6; §4.13). **[prototype nav-verified]**
