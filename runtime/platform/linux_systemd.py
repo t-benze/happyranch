@@ -81,6 +81,10 @@ _BACKEND_NAME = "linux-systemd-cgroup-v2"
 _BACKEND_VERSION = "0.1"
 _UNIT_PREFIX = "happyranch-session-"
 _PROBE_UNIT_PREFIX = "happyranch-probe-"
+# PID counts the kernel reports are always non-negative; a negative parseable
+# value is semantically invalid and must be treated as absent (see
+# ``_read_counters``) rather than trusted as authoritative evidence.
+_NON_NEGATIVE_PID_COUNTERS = frozenset({"pids.current", "pids.peak"})
 _ENFORCEMENT_PROPERTIES = (
     # 16M / 4 tasks / 10% CPU: small enough to prove the property applies,
     # large enough that the probe's own `sleep` pair is never OOM-killed
@@ -410,7 +414,14 @@ class LinuxSystemdBackend:
             return None
 
     def _read_counters(self, cg: str) -> dict[str, object]:
-        """Authoritative cgroup counters for *cg* (empty when unreadable)."""
+        """Authoritative cgroup counters for *cg* (empty when unreadable).
+
+        Semantically invalid negative PID counts are treated as absent: the
+        kernel never reports a negative membership/peak, and a negative value
+        must never masquerade as authoritative KERNEL evidence (a
+        ``pids.peak`` of ``-1`` must not earn KERNEL provenance nor a
+        ``pids.current`` of ``-1`` contaminate the best-effort fallback).
+        """
         counters: dict[str, object] = {}
         for name in (
             "memory.current",
@@ -420,11 +431,15 @@ class LinuxSystemdBackend:
             "pids.max",
         ):
             raw = self._read_file(cg, name)
-            if raw is not None:
-                try:
-                    counters[name] = int(raw)
-                except ValueError:
-                    pass
+            if raw is None:
+                continue
+            try:
+                value = int(raw)
+            except ValueError:
+                continue
+            if name in _NON_NEGATIVE_PID_COUNTERS and value < 0:
+                continue
+            counters[name] = value
         stat = self._read_file(cg, "cpu.stat")
         if stat is not None:
             usage = None
