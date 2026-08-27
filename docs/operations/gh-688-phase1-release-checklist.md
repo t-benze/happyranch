@@ -261,7 +261,94 @@ settled rows after replies/declines/failures. No `task_id` semantics changed.
   opens a dialog whose switch truthfully renders the thread's
   current state, persists explicit changes through the same strict-boolean
   API, prevents duplicate mutation in flight, and rolls back + surfaces a
-  visible error on failure. **Analytics validation remains a later slice
-  (D).** Mention **priority/fairness, autocomplete, and
+  visible error on failure. **Slice D (merged) ships the read-only Phase-2
+  release-measurement harness and release-record format** (§8 below); it
+  performs no production observation — the founder-approved acceptance
+  measurement remains **pending** at the Phase-2 epoch and is recorded only
+  when the window completes. Mention **priority/fairness, autocomplete, and
   active-respondent fallback remain out of scope**; `addressed_to_json`
   remains unwritten/unread with its separate cleanup plan.
+
+## 8. Phase-2 mention-routing release measurement (THR-198 Slice D)
+
+> **Status:** the measurement **harness** and **release-record format** are
+> shipped; the **observation** is explicitly **pending** at the Phase-2
+> epoch. No production observation is claimed by this document or by the
+> PR that ships it. A diagnostic feature is not proof of its population
+> outcome — a shipped harness does not constitute a passed release.
+
+### 8a. Ratified measurement contract (THR-198 seq 87/88/108; epoch seq 128/129)
+
+Three gates (baseline constants are quoted founder-approved inputs, never
+re-derived):
+
+1. **G1 — mentioned-message saving (gate).** Mentioned-message decline
+   rate = `declined / all` REPLY wakes whose triggering message
+   `@`-names ≥1 co-participant. Baseline 293/499 = **58.7%** (August 2026,
+   happyranch); expectation ~24/204 ≈ **12%** among retained wakes.
+2. **G2 — founder-message coverage (gate).** Founder messages (kind=message,
+   `speaker='founder'`) covered iff ≥1 `purpose='reply'` invocation for that
+   message reached `status='consumed'`. Baseline **698**; permitted losses
+   **0**.
+3. **G3 — org-wide decline rate (report only).** `declined / all` REPLY
+   wakes; expect ≈65%; **not** a gate.
+
+Populations: `purpose='reply'` only — **TASK_FOLLOWUP and BOOTSTRAP are
+isolated and never enter any population**. A mentioned message is one whose
+persisted `mentions_json` is a non-empty JSON array (`[]` = zero valid →
+broadcast; `NULL` = legacy/system → not mentioned; malformed JSON is
+counted in a diagnostic and treated as not mentioned).
+
+Epoch/window: **Phase-2 epoch = `2026-08-26T14:25:23Z`** (the daemon restart
+that activated Slice C1 + the decline-doctrine fix + the stdin fix — NOT the
+Slice-B merge). Window = half-open `[epoch, epoch + 1 calendar month)`, the
+same convention as §1. While `as_of < window_end`, every observed value is
+**interim** — mechanism evidence only, never a release result (seq 129); a
+missing/partial window is never reported as a failed release.
+
+Zero-denominator behavior: a metric whose denominator is 0 is reported as
+"zero population, not measurable" (`null` rate) — never a failure.
+
+### 8b. Harness invocation (read-only, stdlib-only, isolated)
+
+```bash
+DB=<DAEMON_HOME>/orgs/happyranch/happyranch.db   # repeat for tourism-org
+uv run python -m runtime.infrastructure.thread_release_measurement \
+    --db "$DB" --epoch 2026-08-26T14:25:23Z --mode all \
+    --out-json /tmp/phase2-record.json --out-md /tmp/phase2-record.md
+```
+
+Opens the DB with `sqlite3 mode=ro`; writes nothing. `--mode live` = the
+post-change window measurement; `--mode replay` = baseline reproduction +
+Phase-2 projection + zero-loss over the August 2026 baseline window.
+
+The replay's write-time roster is reconstructed from current
+`thread_participants` (`added_at <= created_at`) — a documented
+**under-approximation**: removed participants are deleted, so mentions of
+them classify as invalid → broadcast. Zero-loss violations whose baseline
+repliers are ALL absent from the reconstructed roster are recorded as
+**artifact candidates**, never as genuine routing failures
+(`genuine = violations − artifact_candidates`). The live window uses the
+persisted write-time signal and is unaffected by this limitation.
+
+### 8c. Phase-2 release-record template (operator fills at window completion)
+
+```markdown
+# THR-198 Phase-2 release record — <org>
+
+- phase2_epoch (UTC): 2026-08-26T14:25:23Z (or later restart, re-pinned)
+- deployed_version: <git rev-parse HEAD>; deployed_commit_short: <abbrev>
+- restart_evidence: PID <n>, lstart <...>, /health {"status":"ok",...}
+- topology_conclusion: <shared_daemon | separate_epochs — with evidence>
+- query window: <epoch .. epoch + 1 calendar month> (UTC, half-open)
+- G1 saving: wakes=<n>, declines=<n>, rate=<x>% — required: 58.7% → ~12%
+  among retained wakes; population <n> mentioned messages
+- G2 coverage: covered=<n>/<founder messages> — required: 0 losses vs the
+  698 baseline
+- G3 org-wide: declines=<n>/<wakes> (<x>%) — report only (expect ≈65%)
+- replay projection (baseline window): retained=<n>, projected declines=<n>
+  (<x>%), zero-loss violations=<n> (artifacts=<n>)
+- interim: <true/false> — true ⇒ values are not a release result
+- malformed mentions_json: <n>
+- operator: <name/role>; noted anomalies: <none | ...>
+```
