@@ -203,16 +203,17 @@ This contract deliberately does **not** select a persistence schema (that is a f
 - Removal of Swift `HomeConnector`/`RealPairingStore` and obsolete tests happens in a dedicated retirement PR after conformance, migration/re-pairing evidence, and rollback evidence.
 - Never copy raw legacy `hrpair_` values into the managed verifier store by default; explicit re-pairing is safer unless a reviewed migration proves binding and revocation semantics.
 
-## 16. Merge units B/C/D exclusion
+## 16. Implementation status and out-of-scope merge units
 
-This PR covers **merge unit A only** (normative contracts, threat fixtures, validator tests, doc parity). The following remain **outside this PR and unimplemented**:
+This contract PR covered **merge unit A** (normative contracts, threat fixtures, validator tests, doc parity). Subsequent implementation status (tranche lettering per TASK-5766; phase-unit numbering per TASK-5724 §18):
 
-- **Unit B:** portable connector core / loopback test harness (parser, allow-list, credential-provider seam, authorization verifier, persistence abstraction).
-- **Unit C:** Linux supervised connector packaging (systemd lifecycle, permissions, diagnostics, lab-only provider adapter).
-- **Unit D:** lab capacity spike (synthetic Headscale cells, density/overhead measurement).
+- **Portable connector core (TASK-5724 phase unit 2 = tranche merge unit C) — IMPLEMENTED** by merge unit C (TASK-5842): `runtime/remote_access/` (strict parser/normalization, versioned route-policy consumer with schema/digest/version/staleness fail-closed drift, connector identity + device-proof verifier seam, current authorization/revocation with live-stream closure, allow-list enforcement, remote-auth/hop-by-hop stripping, daemon-credential-provider seam, and a loopback-only forwarding abstraction) plus `tests/remote_access/` (focused, adversarial, and checked-in mutation tests consuming the Unit-A fixtures; loopback-only test harness; in-memory persistence abstraction only). It adds **no** tailnet or externally reachable bind, **no** Headscale/DERP/Services integration, **no** durable persistence schema/migration, and **no** packaging/service installation.
+- **Hostile tenant-isolation runtime harness (tranche merge unit B)** — IMPLEMENTED at `labs/tenant_isolation/` (see §18); it consumes the same fixtures and shares the fail-closed contract.
+- **Linux supervised connector packaging (TASK-5724 phase unit 3)** — outside and unimplemented: systemd lifecycle, permissions, diagnostics, lab-only provider adapter.
+- **Lab capacity spike (phase unit 4 / tranche unit D)** — deferred by founder THR-097 seq108; its retained PR #733 is closed-unmerged and its partial CI-runner artifacts support no capacity, SLA, DERP-share, economics, or pricing claim.
 - Services domain/API design + additive schema, tenant-cell orchestrator, macOS managed enrollment, managed trust sync, DERP operations slice, signed end-to-end beta, macOS-home/Windows-home conformance, Swift retirement, production readiness.
 
-No production provisioning, deployment, dependency, schema, auth, or permission change is authorized by this contract.
+No production provisioning, deployment, dependency, schema, auth, or permission change is authorized by this contract or by the connector-core skeleton.
 
 ## 17. Fixture inventory and validation
 
@@ -228,6 +229,8 @@ Validators are semantic, not tautological snapshots: the normative invariants ar
 
 ## 18. Parity pointers
 
-- `CLAUDE.md` — "Managed remote access (normative contract)" Essentials bullet (load-bearing invariants).
+- `CLAUDE.md` — "Managed remote access (normative contract)" Essentials bullet (load-bearing invariants + implementation status).
 - `docs/superpowers/specs/README.md` — this spec is indexed as `current`.
+- Connector core implementation: `runtime/remote_access/` (portable supervised Python connector skeleton, loopback-only harness) with `tests/remote_access/`.
+- Hostile tenant-isolation runtime harness: `labs/tenant_isolation/`.
 - The web OpenAPI coverage test (`web/src/test/openapi-coverage.test.ts`), the Swift drift-guard, and `tests/contract/route-classification.json` are **unchanged** consumers/inputs; this contract reads them but does not modify them.
