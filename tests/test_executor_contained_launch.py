@@ -382,3 +382,25 @@ def test_builtin_executors_build_launch_spec(tmp_path, monkeypatch):
         )
         assert isinstance(spec.argv, tuple) and spec.argv
         assert spec.cwd == str(tmp_path)
+
+
+def test_generic_cli_build_launch_spec_substitutes_timeout(tmp_path, monkeypatch):
+    """GenericCliExecutor.build_launch_spec substitutes {timeout_seconds} into
+    the argv template (the prompt travels via argv) — the contained seam must
+    carry the session timeout the uncontained path bakes into argv."""
+    from runtime.orchestrator import executors as exec_mod
+    from runtime.orchestrator.executors import GenericCliExecutor
+
+    monkeypatch.setattr(exec_mod, "_resolve_binary", lambda _n: "/bin/echo")
+    executor = GenericCliExecutor(
+        profile_name="g", argv_template=["echo", "{prompt}", "{timeout_seconds}"],
+        provider="g",
+    )
+    spec = executor.build_launch_spec(
+        workspace=tmp_path, prompt="p", timeout_seconds=42,
+    )
+    assert spec.argv[0] == "/bin/echo"
+    assert spec.argv[-1] == "42"
+    assert "p" in spec.argv[1]
+    # Prompt via argv -> stdin is DEVNULL (no prompt transport via stdin).
+    assert spec.stdin == subprocess.DEVNULL

@@ -1595,10 +1595,12 @@ class GenericCliExecutor:
         model: str | None = None,
         resume_session_id: str | None = None,
         org_slug: str | None = None,
+        timeout_seconds: int = 1800,
     ) -> "LaunchSpec":
         """The supervisor ``LaunchSpec`` for a contained generic-CLI launch
         (THR-207 task-producer wiring); the prompt travels via the argv
-        template, so the argv-too-large gate applies (input_text is None)."""
+        template (with ``{timeout_seconds}`` substitution), so the argv-too-
+        large gate applies (input_text is None)."""
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         from runtime.adapters.generic_cli import GenericCliAdapter
         cmd = GenericCliAdapter.build_argv(

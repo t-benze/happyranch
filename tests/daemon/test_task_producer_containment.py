@@ -204,7 +204,7 @@ class _RecordingExecutor:
     def set_invocation_context(self, **kwargs):
         pass
 
-    def build_launch_spec(self, *, workspace, prompt, session_id=None, model=None, org_slug=None) -> LaunchSpec:
+    def build_launch_spec(self, *, workspace, prompt, session_id=None, model=None, org_slug=None, timeout_seconds=1800) -> LaunchSpec:
         return LaunchSpec(argv=("fake-cli",), cwd=str(workspace), env={})
 
     def verify_launch_ready(self) -> str | None:

@@ -1082,6 +1082,7 @@ class Orchestrator:
                 session_id=session_id,
                 model=model_name,
                 org_slug=self._slug,
+                timeout_seconds=timeout_seconds,
             )
         except Exception as exc:
             return ExecutorResult(

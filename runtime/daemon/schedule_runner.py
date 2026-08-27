@@ -329,6 +329,7 @@ async def run_schedule(
                 session_id=None,
                 model=model_name,
                 org_slug=org_state.slug,
+                timeout_seconds=settings.session_timeout_seconds,
             )
         except Exception as exc:
             _failure_transition(
