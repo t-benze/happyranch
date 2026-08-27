@@ -30,7 +30,9 @@ export interface LoopStats {
  *  `http` includes a stable aggregate bucket keyed `"__all__"`.
  *  `format_version` is the snapshot-payload format marker: `2` = route-template
  *  labels (`METHOD <matched FastAPI template>`). It is ABSENT on legacy rows
- *  (raw-URL-path labels), so it is optional to keep both shapes parseable. */
+ *  (raw-URL-path labels), so it is optional to keep both shapes parseable.
+ *  `host_sessions` (THR-207) is the bounded host-session observability block
+ *  present on live snapshots and newer persisted rows; legacy rows may lack it. */
 export interface MetricsSnapshot {
   uptime_seconds: number;
   loops: Record<string, LoopStats>;
@@ -40,6 +42,100 @@ export interface MetricsSnapshot {
   executor_sessions_active: number;
   run_step_queue_depth: number;
   format_version?: number;
+  host_sessions?: HostSessionBlock;
+}
+
+/* --------------------------------------------------------------------- */
+/*  Bounded host-session observability block (THR-207).                    */
+/*  Mirrors compose_host_sessions_block in runtime/daemon/host_session_store.py. */
+/* --------------------------------------------------------------------- */
+
+/** Backend capability probe summary (three-state capability levels). */
+export interface HostSessionBackend {
+  name: string | null;
+  version: string | null;
+  healthy: boolean;
+  probed_at: number;
+  capabilities: Record<string, string>;
+  evidence: string | null;
+}
+
+/** Live admission / backpressure state from the daemon-wide controller. */
+export interface HostSessionAdmission {
+  cap: number | null;
+  active: number;
+  queue_depth: number;
+  oldest_wait_seconds: number;
+  head_stall_reason: string | null;
+  shutdown: boolean;
+  admitted_total: number;
+  released_total: number;
+  cancelled_queued_total: number;
+}
+
+/** Live residue census/gate (survivor identities only on authed surfaces). */
+export interface HostSessionResidue {
+  admission_blocked: boolean;
+  block_reason: string | null;
+  survivors_count: number;
+  survivors?: Array<{
+    pid: number;
+    start_identity: string;
+    backend: string;
+    last_seen_at: number;
+  }>;
+}
+
+/** Per-provenance peak aggregate (kernel values never blended with sampled). */
+export interface HostSessionPeakBucket {
+  kernel: { max: number | null; count: number };
+  sampled: { max: number | null; count: number };
+  unavailable_count: number;
+}
+
+/** Bounded receipt aggregates + newest-first recent window. */
+export interface HostSessionReceipts {
+  published_total: number;
+  window_size: number;
+  by_terminal_reason: Record<string, number>;
+  by_cleanup_status: Record<string, number>;
+  quiescent_count: number;
+  with_residue_count: number;
+  cleanup_duration_seconds: { max: number | null; last: number | null };
+  peaks: {
+    memory_peak_bytes: HostSessionPeakBucket;
+    cpu_total_seconds: HostSessionPeakBucket;
+    process_peak: HostSessionPeakBucket;
+  };
+  recent?: HostSessionReceiptSummary[];
+}
+
+/** One bounded per-receipt summary (measured values WITH provenance). */
+export interface HostSessionReceiptSummary {
+  backend: string;
+  terminal_reason: string;
+  cleanup_status: string;
+  cleanup_duration_seconds: number;
+  quiescent: boolean;
+  wall_time_seconds: number;
+  memory_peak_bytes: number | null;
+  memory_peak_provenance: string;
+  cpu_total_seconds: number | null;
+  cpu_total_provenance: string;
+  process_peak: number | null;
+  process_peak_provenance: string;
+  sample_gap_span_seconds: number;
+  enforcement_events: string[];
+  survivors_count: number;
+}
+
+/** The full `host_sessions` block on /metrics (authed). */
+export interface HostSessionBlock {
+  wired: boolean;
+  backend: HostSessionBackend;
+  admission: HostSessionAdmission;
+  residue: HostSessionResidue;
+  receipts: HostSessionReceipts;
 }
 
 /** One persisted history row. `snapshot_json` is a JSON-encoded

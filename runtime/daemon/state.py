@@ -9,6 +9,7 @@ from pathlib import Path
 from runtime.config import Settings
 from runtime.daemon.headless_assistant import HeadlessAssistantManager
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+from runtime.daemon.host_session_store import HostSessionStore
 from runtime.daemon.metrics import MetricsRegistry
 from runtime.daemon.metrics_store import MetricsStore
 from runtime.daemon.org_state import OrgState
@@ -49,6 +50,13 @@ class DaemonState:
     # fires run through it; the app lifespan drain calls its ``shutdown()``.
     # Constructed in ``from_runtime``; ``None`` for idle/test states.
     host_supervisor: "HostSessionSupervisor | None" = None
+    # Bounded in-memory receipt + health store (THR-207 observability slice):
+    # the supervisor's receipt publisher lands here, and the existing
+    # /metrics + /health surfaces compose the bounded ``host_sessions`` block
+    # from it plus the supervisor's live admission/backpressure view.
+    # Always constructed (idle and runtime states) so the payload shape is
+    # deterministic.
+    host_session_store: HostSessionStore = field(default_factory=HostSessionStore)
 
     @classmethod
     def idle(cls, settings: Settings) -> "DaemonState":
@@ -94,6 +102,7 @@ class DaemonState:
         from runtime.platform.backend_factory import select_session_backend
         state.host_supervisor = build_default_host_supervisor(
             backend=select_session_backend(),
+            publisher=state.host_session_store.publish,
             max_retry_attempts=len(settings.executor_rate_limit_backoff_seconds),
             backoff_seconds=tuple(settings.executor_rate_limit_backoff_seconds),
         )

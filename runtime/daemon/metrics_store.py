@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from runtime.daemon.host_session_store import compose_host_sessions_block
+
 if TYPE_CHECKING:
     from runtime.daemon.state import DaemonState
 
@@ -340,7 +342,10 @@ def compose_metrics_snapshot(state: DaemonState) -> dict[str, Any]:
     """Return the full composed /metrics payload dict.
 
     Aggregates the in-memory registry snapshot + live pull-gauges
-    (tasks, jobs, sessions, queue depth) across all loaded orgs.
+    (tasks, jobs, sessions, queue depth) across all loaded orgs, plus the
+    bounded ``host_sessions`` observability block (THR-207): receipt
+    aggregates/recent window from the daemon's HostSessionStore and the
+    live supervisor admission/backpressure/capability view.
     """
     snap = state.metrics_registry.snapshot()
 
@@ -356,6 +361,7 @@ def compose_metrics_snapshot(state: DaemonState) -> dict[str, Any]:
     snap["jobs_in_flight"] = job_count
     snap["executor_sessions_active"] = session_count
     snap["run_step_queue_depth"] = state.queue._queue.qsize()
+    snap["host_sessions"] = compose_host_sessions_block(state)
     snap[_SNAPSHOT_FORMAT_FIELD] = _SNAPSHOT_FORMAT_VERSION
 
     return snap
