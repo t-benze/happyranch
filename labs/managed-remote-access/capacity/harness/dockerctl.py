@@ -214,22 +214,30 @@ class Docker:
             return -1
 
     def volume_size_bytes(self, cell: int) -> int:
+        """Per-cell state volume bytes via a read-only `du` sidecar.
+
+        The docker volume's host path sits under the root-only
+        ``/var/lib/docker`` tree, so a host-side walk fails on the runner
+        with PermissionError (observed in lab run 33038215874). A one-shot
+        read-only container using the already-pinned tailscale image (Alpine
+        base: busybox `du`) measures the volume content through the docker
+        daemon, which the runner user can reach.
+        """
         out = self.run(
-            ["docker", "volume", "inspect", "--format", "{{.Mountpoint}}", volume_name(self.run_id, cell)],
+            [
+                "docker", "run", "--rm",
+                "--entrypoint", "du",
+                "-v", f"{volume_name(self.run_id, cell)}:/data:ro",
+                TAILSCALE_IMAGE,
+                "-sb", "/data",
+            ],
             check=False,
+            timeout=60,
         )
-        mount = out.stdout.strip()
-        if not mount or not Path(mount).exists():
+        try:
+            return int(out.stdout.strip().split()[0])
+        except (ValueError, IndexError):
             return -1
-        total = 0
-        for root, _dirs, files in os.walk(mount):
-            for f in files:
-                p = Path(root) / f
-                try:
-                    total += p.stat().st_size
-                except OSError:
-                    continue
-        return total
 
     def cell_process_count(self, cell: int) -> int:
         name = headscale_container_name(self.run_id, cell)
