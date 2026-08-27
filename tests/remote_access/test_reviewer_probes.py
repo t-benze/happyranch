@@ -7,13 +7,15 @@ import datetime as dt
 import json
 from datetime import timedelta
 
+import pytest
+
 from runtime.remote_access import identity
 from runtime.remote_access.authorization import AuthorizationVerifier, TrustState
 from runtime.remote_access.credentials import StaticDaemonCredentialProvider
 from runtime.remote_access.forwarding import LOOPBACK_HOST, HttpLoopbackForwarder, LoopbackTarget
 from runtime.remote_access.gateway import ConnectorGateway, GatewayContext
 from runtime.remote_access.policy import PolicyEnvelope, RoutePolicyConsumer
-from runtime.remote_access.revocation import RevocationCoordinator
+from runtime.remote_access.revocation import RevocationCoordinator, RevocationIncomplete
 from runtime.remote_access.stripping import CredentialScanner
 from runtime.remote_access.streams import StreamClosed, StreamRegistry
 
@@ -170,6 +172,85 @@ def test_reviewer_probes() -> None:
             print("  -", f)
         raise SystemExit(1)
     print("PROBE OK: all three TASK-5852 findings closed at the public seam")
+
+
+def test_reviewer_critical_probe_close_failure_retained_handle() -> None:
+    """TASK-5858 [CRITICAL] exact public-seam probe: when a transport
+    ``close()`` raises, the coordinator reports incomplete as appropriate,
+    state still denies, registry semantics are honest, and the retained
+    ``handle.receive()`` cannot return still-live bytes.
+
+    The retained handle must irrevocably reject receive/send — a failing
+    underlying close is reported (RevocationIncomplete) but never leaves the
+    externally retained handle readable, writable, or untracked.
+    """
+    from .conftest import default_authorization_state, make_request
+
+    class _ExplodingStream:
+        stream_id = "s-explode"
+
+        def receive(self) -> bytes | None:
+            return b"still-live"
+
+        def close(self) -> None:
+            raise OSError("transport close exploded")
+
+        @property
+        def closed(self) -> bool:
+            return False
+
+    class _ExplodingForwarder:
+        target = type("T", (), {"host": LOOPBACK_HOST, "port": 0})()
+
+        def open_stream(self, method, path, query, headers, body, bearer, stream_id):
+            return _ExplodingStream()
+
+    state = default_authorization_state()
+    registry = StreamRegistry()
+    c = ctx(_ExplodingForwarder(), registry, state)
+    decision = ConnectorGateway().decide(
+        make_request(
+            "GET",
+            "/api/v1/orgs/acme/threads/T-1/tail",
+            headers=[("accept", "text/event-stream")],
+            stream_type="sse",
+        ),
+        c,
+    )
+    assert decision.allowed and decision.stream is not None
+    handle = decision.stream
+    assert handle.receive() == b"still-live"  # live before revocation
+
+    with pytest.raises(RevocationIncomplete) as excinfo:
+        RevocationCoordinator(state, registry).revoke(epoch=2)
+    assert excinfo.value.applied_epoch == 2
+    assert excinfo.value.stream_ids == (handle.stream_id,)
+
+    # State denies.
+    assert state.revocation_epoch == 2
+    # Registry semantics are honest: no longer tracked, sealed.
+    assert registry.is_open(handle.stream_id) is False
+    # The retained handle irrevocably rejects reads — no still-live bytes.
+    assert handle.closed is True
+    with pytest.raises(StreamClosed):
+        handle.receive()
+
+
+def test_reviewer_high_probe_contradictory_non_empty_percent_encoding() -> None:
+    """TASK-5858 [HIGH] exact probe: a contradictory non-empty
+    ``percent_encoding`` value must fail closed at load — non-empty prose is
+    not a substitute for canonical semantic equality."""
+    mutated = {**FIXTURE}
+    mutated["normalization"] = {
+        **FIXTURE["normalization"],
+        "percent_encoding": "ALLOW invalid encoding",
+    }
+    with pytest.raises(Exception) as excinfo:  # noqa: BLE001 - probe
+        consumer(mutated)
+    assert getattr(excinfo.value, "outcome", None) is not None, (
+        f"non-PolicyError rejection: {type(excinfo.value).__name__}"
+    )
+    assert excinfo.value.outcome.audit_category == "policy_malformed"
 
 
 if __name__ == "__main__":

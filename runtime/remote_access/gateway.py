@@ -341,14 +341,18 @@ class ConnectorGateway:
             return self._redact(_deny("internal", "internal_error", "internal"))
         stream_id = f"connector-{uuid.uuid4().hex[:16]}"
         handle = None
+        tracked = None
         try:
             # Every request/stream opens through the registry so revocation can
-            # close in-flight HTTP/SSE/WebSocket exchanges immediately.
+            # close in-flight HTTP/SSE/WebSocket exchanges immediately. The
+            # registry returns its tracked wrapper — the only stream surface
+            # that ever escapes the gateway — so a revocation can seal it
+            # irrevocably even if the underlying transport close raises.
             handle = ctx.forwarder.open_stream(
                 target.method, target.path, target.query, state.headers, request.body, bearer, stream_id
             )
             try:
-                ctx.stream_registry.open(stream_id, handle)
+                tracked = ctx.stream_registry.open(stream_id, handle)
             except StreamClosed:
                 # Revocation won the race between open and registration: the
                 # handle is closed deterministically and the denial is the
@@ -359,11 +363,11 @@ class ConnectorGateway:
                 try:
                     chunks: list[bytes] = []
                     while True:
-                        chunk = handle.receive()
+                        chunk = tracked.receive()
                         if chunk is None:
                             break
                         chunks.append(chunk)
-                    response = ForwardedResponse(status=handle.status, headers=handle.headers, body=b"".join(chunks))
+                    response = ForwardedResponse(status=tracked.status, headers=tracked.headers, body=b"".join(chunks))
                     ctx.stream_registry.close(stream_id)
                     return Decision(
                         allowed=True,
@@ -387,7 +391,7 @@ class ConnectorGateway:
                 allowed=True,
                 audit_category="allowed_request",
                 audit_detail=ALLOWED_DETAIL,
-                stream=handle,
+                stream=tracked,
             )
         except OutboundLeakError:
             return self._redact(_deny("local_daemon", "local_daemon_denied", "credential_shaped"))

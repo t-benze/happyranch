@@ -318,6 +318,60 @@ def test_forbidden_classes_mutations_fail_closed(route_policy_fixture, forbidden
     assert_policy_denied(excinfo.value, "policy", "policy_malformed")
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        ("normalization", {"percent_encoding": "ALLOW invalid encoding"}),
+        ("normalization", {"dot_segments": "ALLOW dot-dot traversal to escape the daemon root"}),
+        ("normalization", {"duplicate_slashes": "ALLOW collapsing to change the template match outcome"}),
+        ("normalization", {"query_separation": "ALLOW query strings to participate in route identity"}),
+        ("normalization", {"unicode_control_bytes": "ALLOW CRLF injection and NUL in method/path/headers"}),
+        ("normalization", {"absolute_form_authority": "ALLOW absolute-form request targets"}),
+        ("header_stripping", {"daemon_bearer_injection_hop": "connector_to_any_hop"}),
+        ("upgrade_semantics", {"allowed": ["sse"]}),
+        ("upgrade_semantics", {"allowed": ["websocket", "http"]}),
+        ("upgrade_semantics", {"sse": {"allowed_templates": ["GET /admin/*"]}}),
+        ("upgrade_semantics", {"websocket": {"allowed_templates": ["GET /api/v1/health"]}}),
+        ("upgrade_semantics", {"sse": {"allowed_templates": ["DELETE /api/v1/orgs/{slug}/threads/{thread_id}/tail"]}}),
+        ("normalization", {"percent_encoding": 123}),
+        ("normalization", {"percent_encoding": True}),
+        ("normalization", {"dot_segments": []}),
+        ("upgrade_semantics", {"sse": {"allowed_templates": "GET /api/v1/orgs/{slug}/threads/{thread_id}/tail"}}),
+        ("upgrade_semantics", {"websocket": {"allowed_templates": [123]}}),
+    ],
+)
+def test_nested_canonical_semantic_mutations_fail_closed(route_policy_fixture, mutation) -> None:
+    """Contradictory NON-EMPTY mutations of every peer nested semantic value
+    fail closed at load: canonical equality, not mere non-empty prose, is the
+    binding check for the Unit-A security semantics."""
+    section, change = mutation
+    artifact = _mutated(route_policy_fixture)
+    current = artifact[section]
+    if isinstance(current, dict) and isinstance(change, dict) and section == "upgrade_semantics":
+        artifact[section] = {**current, **change}
+    else:
+        artifact[section] = {**current, **change} if isinstance(current, dict) else change
+    with pytest.raises(PolicyError) as excinfo:
+        build_consumer(artifact)
+    assert_policy_denied(excinfo.value, "policy", "policy_malformed")
+
+
+def test_canonical_locked_semantics_match_fixture(route_policy_fixture) -> None:
+    """No-fork guard: the locked canonical semantics embedded in the consumer
+    are exactly the Unit-A fixture's values — the consumer never maintains a
+    second, drifting copy of the security contract."""
+    from runtime.remote_access import policy as policy_mod
+
+    norm = route_policy_fixture["normalization"]
+    for key, canonical in policy_mod.LOCKED_NORMALIZATION_SEMANTICS.items():
+        assert norm[key] == canonical, f"canonical normalization.{key} drifted from fixture"
+    stripping = route_policy_fixture["header_stripping"]
+    assert stripping["daemon_bearer_injection_hop"] == policy_mod.LOCKED_BEARER_INJECTION_HOP
+    upgrade = route_policy_fixture["upgrade_semantics"]
+    assert tuple(upgrade["sse"]["allowed_templates"]) == policy_mod.LOCKED_SSE_ALLOWED_TEMPLATES
+    assert tuple(upgrade["websocket"]["allowed_templates"]) == policy_mod.LOCKED_WEBSOCKET_ALLOWED_TEMPLATES
+
+
 @pytest.mark.parametrize("state", ["active-ish", "suspended", "revoked", "expired", "", "ACTIVE"])
 def test_unknown_policy_states_fail_closed_at_load(route_policy_fixture, state) -> None:
     with pytest.raises(PolicyError) as excinfo:

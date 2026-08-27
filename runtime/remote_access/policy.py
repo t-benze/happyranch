@@ -79,6 +79,45 @@ LOCKED_UPGRADE_KEYS = frozenset(
         "unsupported_bodies_denied",
     }
 )
+# Canonical Unit-A nested security semantics: every security-relevant nested
+# value must EXACTLY equal the normative fixture value — a contradictory
+# non-empty prose string or an altered allowed-template list is drift, not
+# documentation. The values ARE the fixture's values (no-fork: the checked-in
+# canonical-consistency test re-derives them from the fixture so the consumer
+# never maintains a second, drifting copy of the contract).
+LOCKED_NORMALIZATION_SEMANTICS: dict[str, str] = {
+    "percent_encoding": (
+        "decode once with strict validation; reject invalid or overlong "
+        "percent-encoded octets; reject double-encoding that changes the "
+        "decoded segment set"
+    ),
+    "dot_segments": (
+        "resolve dot and dot-dot segments after decoding; deny any result "
+        "that escapes the daemon path root or changes the matched template"
+    ),
+    "duplicate_slashes": (
+        "collapse consecutive slashes deterministically and re-evaluate "
+        "against templates; deny when collapsing changes template match "
+        "outcome"
+    ),
+    "query_separation": (
+        "split path at the first '?' for allow-list matching; query strings "
+        "never participate in route identity"
+    ),
+    "unicode_control_bytes": (
+        "reject control bytes, NUL, CR/LF injection, and overlong UTF-8 "
+        "forms in method, path, or headers"
+    ),
+    "absolute_form_authority": (
+        "reject absolute-form request targets (scheme://authority/path) and "
+        "any authority/host ambiguity"
+    ),
+}
+LOCKED_SSE_ALLOWED_TEMPLATES: tuple[str, ...] = (
+    "GET /api/v1/orgs/{slug}/threads/{thread_id}/tail",
+    "GET /api/v1/orgs/{slug}/jobs/{job_id}/tail",
+)
+LOCKED_WEBSOCKET_ALLOWED_TEMPLATES: tuple[str, ...] = ()
 LOCKED_FORBIDDEN_CLASS_IDS = frozenset(
     {
         "auth_bootstrap_registration",
@@ -276,18 +315,29 @@ class RoutePolicyConsumer:
             for flag in flags:
                 if section.get(flag) is not True:
                     raise malformed()
-        # Prose semantics must be present (non-empty strings) — an emptied or
-        # missing normative rule is drift, not documentation.
-        for prose_key in LOCKED_NORMALIZATION_KEYS - _LOCKED_ENABLED_FLAGS:
-            value = normalization.get(prose_key)
-            if not isinstance(value, str) or not value.strip():
+        # Canonical semantic equality: each security-relevant nested value
+        # must EXACTLY match the normative Unit-A contract. Non-empty prose is
+        # NOT sufficient — a contradictory value such as "ALLOW invalid
+        # encoding" is drift and fails closed here.
+        for prose_key, canonical in LOCKED_NORMALIZATION_SEMANTICS.items():
+            if normalization.get(prose_key) != canonical:
                 raise malformed()
         if set(upgrade_semantics.get("allowed")) != {"sse", "websocket"}:
             raise malformed()
-        for surface in ("sse", "websocket"):
+        for surface, canonical_templates in (
+            ("sse", LOCKED_SSE_ALLOWED_TEMPLATES),
+            ("websocket", LOCKED_WEBSOCKET_ALLOWED_TEMPLATES),
+        ):
             surface_cfg = upgrade_semantics.get(surface)
-            if not isinstance(surface_cfg, dict) or not isinstance(
-                surface_cfg.get("allowed_templates"), list
+            templates = (
+                surface_cfg.get("allowed_templates")
+                if isinstance(surface_cfg, dict)
+                else None
+            )
+            if (
+                not isinstance(templates, list)
+                or any(not isinstance(t, str) for t in templates)
+                or tuple(templates) != canonical_templates
             ):
                 raise malformed()
         forbidden_classes = artifact["forbidden_classes"]

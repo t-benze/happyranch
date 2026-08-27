@@ -316,3 +316,135 @@ class _RecordingHandle:
     @property
     def is_closed(self) -> bool:
         return self.closed
+
+
+def test_revoke_http_sse_websocket_handles_all_sealed(route_policy_fixture) -> None:
+    """The authoritative transaction seals retained HTTP-, SSE-, and
+    WebSocket-shaped handles — nothing readable or writable survives, and
+    WebSocket send() rejects after revocation."""
+    state = default_authorization_state()
+    registry = StreamRegistry()
+    coordinator = RevocationCoordinator(state, registry)
+
+    # HTTP-shaped handle (receive-only, status/headers surface).
+    http = _WsHandle("http-1")
+    http_tracked = registry.open("http-1", http)
+    # SSE-shaped handle opened through the real gateway (POS-003 shape).
+    ctx, decision = _open_sse(route_policy_fixture, state=state, registry=registry)
+    sse_tracked = decision.stream
+    # WebSocket-shaped handle (receive + send).
+    ws = _WsHandle("ws-1")
+    ws_tracked = registry.open("ws-1", ws)
+
+    coordinator.revoke(epoch=2)
+
+    for tracked in (http_tracked, sse_tracked, ws_tracked):
+        assert tracked.closed is True
+        assert registry.is_open(tracked.stream_id) is False
+        with pytest.raises(StreamClosed):
+            tracked.receive()
+        with pytest.raises(StreamClosed):
+            tracked.send(b"data: late\n\n")
+    assert state.revocation_epoch == 2
+
+
+def test_revoke_repeated_and_idempotent(route_policy_fixture) -> None:
+    """Repeated revocation: re-revoking at the same epoch is rejected as
+    rollback; a later higher epoch still seals (idempotent close_all never
+    raises); retained handles stay sealed across both."""
+    state = default_authorization_state()
+    registry = StreamRegistry()
+    coordinator = RevocationCoordinator(state, registry)
+    handle = _WsHandle("s1")
+    tracked = registry.open("s1", handle)
+
+    coordinator.revoke(epoch=2)
+    with pytest.raises(ValueError):
+        coordinator.revoke(epoch=2)  # same epoch: not an advance
+    coordinator.revoke(epoch=3)  # higher epoch: still applies
+
+    assert state.revocation_epoch == 3
+    assert tracked.closed is True
+    with pytest.raises(StreamClosed):
+        tracked.receive()
+    with pytest.raises(StreamClosed):
+        registry.open("late", _WsHandle("late"))
+
+
+def test_concurrent_revoke_with_failing_handle_seals_all(route_policy_fixture) -> None:
+    """Under concurrent revocation with a failing transport close, every
+    retained wrapper is sealed, state advances to the maximum epoch, and only
+    rollback rejections surface — never a live retained handle."""
+    state = default_authorization_state()
+    registry = StreamRegistry()
+
+    class _Exploding:
+        def __init__(self, stream_id: str) -> None:
+            self.stream_id = stream_id
+
+        def receive(self) -> bytes | None:
+            return b"still-live"
+
+        def close(self) -> None:
+            raise OSError("boom")
+
+        @property
+        def closed(self) -> bool:
+            return False
+
+    good_inner = _RecordingHandle("good")
+    good_tracked = registry.open("good", good_inner)
+    bad_tracked = registry.open("bad", _Exploding("bad"))
+    coordinator = RevocationCoordinator(state, registry)
+
+    results: list[tuple[int, str | None]] = []
+    barrier = threading.Barrier(2)
+
+    def worker(epoch: int) -> None:
+        barrier.wait()
+        try:
+            coordinator.revoke(epoch=epoch)
+            results.append((epoch, None))
+        except (ValueError, RevocationIncomplete):
+            results.append((epoch, "rejected"))
+
+    t1 = threading.Thread(target=worker, args=(1,))
+    t2 = threading.Thread(target=worker, args=(2,))
+    t1.start()
+    t2.start()
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+
+    assert state.revocation_epoch == 2
+    assert registry._revoked is True
+    assert good_inner.closed is True
+    assert good_tracked.closed is True
+    assert bad_tracked.closed is True
+    with pytest.raises(StreamClosed):
+        good_tracked.receive()
+    with pytest.raises(StreamClosed):
+        bad_tracked.receive()
+
+
+class _WsHandle:
+    """WebSocket-shaped handle: receive + send, closeable."""
+
+    def __init__(self, stream_id: str) -> None:
+        self.stream_id = stream_id
+        self._closed = False
+
+    def receive(self) -> bytes | None:
+        if self._closed:
+            raise StreamClosed(self.stream_id)
+        return b"frame"
+
+    def send(self, payload: bytes) -> None:
+        if self._closed:
+            raise StreamClosed(self.stream_id)
+
+    def close(self) -> None:
+        self._closed = True
+
+    @property
+    def closed(self) -> bool:
+        return self._closed

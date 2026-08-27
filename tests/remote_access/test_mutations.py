@@ -315,6 +315,165 @@ def test_mutation_strip_disabled_allows_auth_header_forward(route_policy_fixture
         fake.stop()
 
 
+def test_mutation_close_all_deletes_without_sealing_is_detected(route_policy_fixture) -> None:
+    """Guard removal: if close_all merely deleted the handle from the map
+    without sealing the retained wrapper (the reviewer's anti-pattern), the
+    retained handle would still serve bytes after revocation — the invariant
+    battery catches it."""
+    from runtime.remote_access.streams import StreamCloseError, StreamRegistry
+
+    def invariant(registry, handle) -> None:
+        try:
+            registry.close_all()
+        except Exception:
+            pass  # closure imperfect/exploded — the retained handle must still reject
+        try:
+            handle.receive()
+        except Exception:  # noqa: BLE001 - sealed wrapper rejects reads
+            return
+        raise AssertionError("retained handle still serves reads after revocation")
+
+    class _Exploding:
+        def __init__(self, stream_id: str) -> None:
+            self.stream_id = stream_id
+
+        def receive(self) -> bytes | None:
+            return b"still-live"
+
+        def close(self) -> None:
+            raise OSError("boom")
+
+        @property
+        def closed(self) -> bool:
+            return False
+
+    registry = StreamRegistry()
+    tracked = registry.open("s1", _Exploding("s1"))
+    invariant(registry, tracked)  # guard present: sealed wrapper rejects
+
+    # Mutation: close_all deletes the handles without sealing (old behavior).
+    original = StreamRegistry.close_all
+
+    def _delete_only(self) -> None:
+        self._revoked = True
+        self._streams.clear()
+
+    try:
+        StreamRegistry.close_all = _delete_only  # type: ignore[method-assign]
+        registry2 = StreamRegistry()
+        tracked2 = registry2.open("s2", _Exploding("s2"))
+        with pytest.raises(AssertionError):
+            invariant(registry2, tracked2)
+    finally:
+        StreamRegistry.close_all = original
+
+
+def test_mutation_open_returns_raw_handle_is_detected(route_policy_fixture) -> None:
+    """Guard removal: if the registry handed out the raw transport handle
+    instead of its tracked wrapper, a failed close would leave the retained
+    handle readable — the invariant battery catches it."""
+    from runtime.remote_access.streams import StreamCloseError, StreamRegistry
+
+    def invariant(registry, handle) -> None:
+        try:
+            registry.close_all()
+        except Exception:
+            pass  # closure imperfect/exploded — the retained handle must still reject
+        try:
+            handle.receive()
+        except Exception:  # noqa: BLE001 - sealed wrapper rejects reads
+            return
+        raise AssertionError("retained handle still serves reads after revocation")
+
+    class _Exploding:
+        def __init__(self, stream_id: str) -> None:
+            self.stream_id = stream_id
+
+        def receive(self) -> bytes | None:
+            return b"still-live"
+
+        def close(self) -> None:
+            raise OSError("boom")
+
+        @property
+        def closed(self) -> bool:
+            return False
+
+    registry = StreamRegistry()
+    tracked = registry.open("s1", _Exploding("s1"))
+    invariant(registry, tracked)  # guard present: wrapper is the retained surface
+
+    original = StreamRegistry.open
+
+    def _raw_open(self, stream_id: str, handle):
+        if self._revoked:
+            from runtime.remote_access.streams import StreamClosed
+
+            raise StreamClosed(stream_id)
+        self._streams[stream_id] = handle
+        return handle  # bypass: retain the raw handle, no tracked wrapper
+
+    try:
+        StreamRegistry.open = _raw_open  # type: ignore[method-assign]
+        registry2 = StreamRegistry()
+        raw = registry2.open("s2", _Exploding("s2"))
+        with pytest.raises(AssertionError):
+            invariant(registry2, raw)
+    finally:
+        StreamRegistry.open = original
+
+
+def test_mutation_wrapper_receive_ignores_seal_is_detected(route_policy_fixture) -> None:
+    """Guard removal: if the tracked wrapper's receive() stopped consulting the
+    sealed flag, a failed transport close would leave the retained handle
+    serving still-live bytes after revocation — the invariant battery catches
+    it."""
+    from runtime.remote_access.streams import StreamCloseError, StreamRegistry, _TrackedStream
+
+    def invariant(registry, handle) -> None:
+        try:
+            registry.close_all()
+        except Exception:
+            pass  # closure imperfect/exploded — the retained handle must still reject
+        try:
+            handle.receive()
+        except Exception:  # noqa: BLE001 - sealed wrapper rejects reads
+            return
+        raise AssertionError("retained handle still serves reads after revocation")
+
+    class _Exploding:
+        def __init__(self, stream_id: str) -> None:
+            self.stream_id = stream_id
+
+        def receive(self) -> bytes | None:
+            return b"still-live"
+
+        def close(self) -> None:
+            raise OSError("boom")
+
+        @property
+        def closed(self) -> bool:
+            return False
+
+    registry = StreamRegistry()
+    tracked = registry.open("s1", _Exploding("s1"))
+    invariant(registry, tracked)  # guard present: sealed receive rejects
+
+    original = _TrackedStream.receive
+
+    def _ignore_seal(self):
+        return self._inner.receive()
+
+    try:
+        _TrackedStream.receive = _ignore_seal  # type: ignore[method-assign]
+        registry2 = StreamRegistry()
+        tracked2 = registry2.open("s2", _Exploding("s2"))
+        with pytest.raises(AssertionError):
+            invariant(registry2, tracked2)
+    finally:
+        _TrackedStream.receive = original
+
+
 class _FakeHandle:
     def __init__(self, stream_id: str) -> None:
         self.stream_id = stream_id
