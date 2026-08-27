@@ -2,8 +2,8 @@
  * THR-198 Slice C — per-thread mention-routing web control tests.
  *
  * Covers the founder-facing acceptance surface: the control appears only on
- * the founder-authorized settings surface (thread-detail header ⋯ overflow
- * menu → dialog), truthfully renders enabled/disabled, persists explicit
+ * the founder-authorized settings surface (direct thread-detail header button
+ * → dialog), truthfully renders enabled/disabled, persists explicit
  * changes through the strict-boolean POST /mention-routing wire, treats the
  * idempotent same-state no-op as success, prevents duplicate mutation while
  * in flight, rolls back + surfaces the error on failure, and is keyboard /
@@ -138,9 +138,7 @@ async function openRoutingDialog(thread: ReturnType<typeof mkThread>) {
   await waitFor(() =>
     expect(screen.getByRole('heading', { name: new RegExp(thread.subject) })).toBeInTheDocument(),
   );
-  await userEvent.click(screen.getByRole('button', { name: /Thread actions/i }));
-  const menu = screen.getByRole('menu');
-  await userEvent.click(within(menu).getByRole('menuitem', { name: /Mention routing/i }));
+  await userEvent.click(screen.getByRole('button', { name: 'Mention routing' }));
   const dialog = await screen.findByRole('dialog', { name: /Mention routing/i });
   return dialog;
 }
@@ -150,7 +148,7 @@ async function openRoutingDialog(thread: ReturnType<typeof mkThread>) {
 /* ------------------------------------------------------------------ */
 
 describe('THR-198 Slice C — visibility on the founder settings surface', () => {
-  test('the mention-routing control appears only in the detail header overflow menu (founder settings surface)', async () => {
+  test('the detail header exposes direct actions without Audit or an overflow menu', async () => {
     const thread = mkThread('THR-1', 'Routing subject');
     stubList([thread]);
     stubDetail(thread);
@@ -159,13 +157,23 @@ describe('THR-198 Slice C — visibility on the founder settings surface', () =>
       expect(screen.getByRole('heading', { name: /Routing subject/i })).toBeInTheDocument(),
     );
 
-    // Not rendered inline anywhere on the detail header (only via the menu).
     expect(screen.queryByRole('switch', { name: /Route replies/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Mention routing' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rename' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Archive/i })).toBeInTheDocument();
+    // Global Audit navigation remains; only the former participant-filtered
+    // thread-header deep link is removed.
+    expect(document.querySelector('a[href*="/audit?agent="]')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Thread actions/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem')).not.toBeInTheDocument();
 
-    const overflow = screen.getByRole('button', { name: /Thread actions/i });
-    await userEvent.click(overflow);
-    const menu = screen.getByRole('menu');
-    expect(within(menu).getByRole('menuitem', { name: /Mention routing/i })).toBeInTheDocument();
+    const mentionRouting = screen.getByRole('button', { name: 'Mention routing' });
+    mentionRouting.focus();
+    expect(mentionRouting).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    expect(await screen.findByRole('dialog', { name: /Mention routing/i })).toBeInTheDocument();
   });
 
   test('no mention-routing control on the inbox list rows (outside the founder settings surface)', async () => {
@@ -176,6 +184,25 @@ describe('THR-198 Slice C — visibility on the founder settings surface', () =>
     // thread-detail founder settings surface.
     expect(screen.queryByRole('switch')).not.toBeInTheDocument();
     expect(screen.queryByRole('menuitem', { name: /Mention routing/i })).not.toBeInTheDocument();
+  });
+
+  test('an archived thread retains direct Rename, Unpin, Archive, Resume, and Mention routing actions', async () => {
+    const thread = mkThread('THR-ARCHIVED', 'Archived routing', {
+      status: 'archived',
+      pinned: true,
+    });
+    stubList([thread]);
+    stubDetail(thread);
+    mountAt(`/orgs/${SLUG}/threads/${thread.thread_id}`);
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Archived routing/i })).toBeInTheDocument(),
+    );
+
+    expect(screen.getByRole('button', { name: 'Rename' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Archive/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Resume/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Mention routing' })).toBeInTheDocument();
   });
 });
 
@@ -227,9 +254,7 @@ describe('THR-198 Slice C — truthful enabled/disabled rendering', () => {
     await waitFor(() =>
       expect(screen.getByRole('heading', { name: /Legacy thread/i })).toBeInTheDocument(),
     );
-    await userEvent.click(screen.getByRole('button', { name: /Thread actions/i }));
-    const menu = screen.getByRole('menu');
-    await userEvent.click(within(menu).getByRole('menuitem', { name: /Mention routing/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Mention routing' }));
     const dialog = await screen.findByRole('dialog', { name: /Mention routing/i });
     const sw = within(dialog).getByRole('switch', { name: /Route replies/i });
     // Absent field → the durable schema default (enabled) is the honest state.

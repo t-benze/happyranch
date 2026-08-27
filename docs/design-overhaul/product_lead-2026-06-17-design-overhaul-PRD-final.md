@@ -60,7 +60,7 @@
 > wakes **exactly that set** (speaker excluded); **zero valid mentions**
 > (none/invalid/nonparticipant-only/self-only) **broadcasts**; a **disabled** thread
 > broadcasts; **TASK_FOLLOWUP/BOOTSTRAP are isolated and never mention-routed**; the
-> toggle is **founder-only** (thread-detail ⋯ menu "Mention routing…",
+> toggle is **founder-only** (direct thread-detail header button "Mention routing",
 > `POST /threads/{id}/mention-routing`, `happyranch threads mention-routing`);
 > routing is **not** priority/fairness, and there is **no new routing-feature
 > autocomplete or active-respondent fallback** (the composer's pre-existing

@@ -256,7 +256,7 @@ function collectThreadArtifacts(messages: ThreadMessage[]): ThreadAttachment[] {
 }
 
 /* ------------------------------------------------------------------ */
-/*  THR-209 pin / overflow helpers                                      */
+/*  THR-209 pin helpers                                                 */
 /* ------------------------------------------------------------------ */
 
 function PinIcon({ pinned }: { pinned: boolean }): JSX.Element {
@@ -268,73 +268,6 @@ function PinIcon({ pinned }: { pinned: boolean }): JSX.Element {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
       <path d="M16 3l5 5-3.5 1.5-3 3L13 19l-2-2-4 4-2-2 4-4-2-2 6.5-.5 3-3L16 3z" />
     </svg>
-  );
-}
-
-/**
- * THR-209 overflow menu — compact, keyboard-accessible actions for the
- * thread detail header. Native buttons, Escape closes, outside-click closes,
- * aria-haspopup/expanded announce state.
- */
-function ThreadOverflowMenu({
-  items,
-}: {
-  items: { label: string; onSelect: () => void; disabled?: boolean }[];
-}): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    function onDocMouseDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    function onDocKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false);
-    }
-    document.addEventListener('mousedown', onDocMouseDown);
-    document.addEventListener('keydown', onDocKey);
-    return () => {
-      document.removeEventListener('mousedown', onDocMouseDown);
-      document.removeEventListener('keydown', onDocKey);
-    };
-  }, [open]);
-  const close = () => setOpen(false);
-  return (
-    <div className="relative" ref={ref}>
-      <Button
-        variant="ghost"
-        size="sm"
-        aria-label={S.threadActionsMenu}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-        title="Thread actions"
-      >
-        ⋯
-      </Button>
-      {open && (
-        <div
-          role="menu"
-          className="border-border-default bg-surface shadow-pasture-sm absolute right-0 z-20 mt-1 flex min-w-40 flex-col rounded-md border p-1"
-        >
-          {items.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              role="menuitem"
-              disabled={item.disabled}
-              onClick={() => {
-                close();
-                item.onSelect();
-              }}
-              className="text-text-primary hover:bg-surface-raised disabled:text-text-disabled rounded px-2 py-1.5 text-left text-xs transition-colors disabled:cursor-not-allowed"
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -547,8 +480,8 @@ export function ThreadsPage(): JSX.Element {
   // Send mutation lives at the page level so the Composer pattern is pure.
   const sendFollowUp = useSendFollowUp(threadId ?? '');
   const abortReplies = useAbortReplies(threadId ?? '');
-  // THR-209 rename + pin mutations live at the page level; the detail header,
-  // the overflow menu, and the list rows all drive them.
+  // THR-209 rename + pin mutations live at the page level; the detail header
+  // and list rows drive them.
   const renameMutation = useRenameThread(threadId ?? '');
   const pinMutation = useSetThreadPinned(threadId ?? '');
   const [pinError, setPinError] = useState<string | null>(null);
@@ -1162,7 +1095,8 @@ function DetailColumn({
           <div className="flex flex-wrap items-center gap-1">
             {/* Invite moved into the Participants rail (a-thread-detail);
                 the header carries only Archive + archived-thread affordances.
-                THR-209 adds Rename + Pin/Unpin + a compact overflow menu. */}
+                THR-209 adds Rename + Pin/Unpin; THR-198 exposes Mention
+                routing directly without duplicating actions in a menu. */}
             <Button
               variant="ghost"
               size="sm"
@@ -1184,27 +1118,9 @@ function DetailColumn({
             </Button>
             <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title="Archive (A)">Archive</Button>
             {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
-            {slug && thread.participants[0] && (
-              <Link
-                to={`/orgs/${slug}/audit?agent=${encodeURIComponent(thread.participants[0])}`}
-                className="text-accent self-center text-xs hover:underline"
-                title="View audit log for the lead participant"
-              >
-                Audit ↗
-              </Link>
-            )}
-            <ThreadOverflowMenu
-              items={[
-                { label: S.renameAction, onSelect: onRenameStart, disabled: renaming },
-                {
-                  label: thread.pinned ? S.unpinAction : S.pinAction,
-                  onSelect: () => onTogglePin(!thread.pinned),
-                  disabled: pinPending,
-                },
-                { label: S.mentionRoutingAction, onSelect: onOpenMentionRouting },
-                { label: S.archiveAction, onSelect: onArchive, disabled: !open },
-              ]}
-            />
+            <Button variant="ghost" size="sm" onClick={onOpenMentionRouting}>
+              {S.mentionRoutingAction}
+            </Button>
           </div>
         }
       />

@@ -199,9 +199,9 @@ The umbrella spec calls out deep links from Tasks, Agents, and Threads. URL shap
 | ----------------------- | ------------------------------------------------------------------- | --------------------------- |
 | `TaskDetailPane`        | `/orgs/:slug/audit?task_id=<task_id>`                               | "View audit →" link in the action row |
 | `AgentsPage` row        | `/orgs/:slug/audit?agent=<agent_name>`                              | **deferred** — PR 8 not yet merged    |
-| `ThreadsPage` detail    | `/orgs/:slug/audit?agent=<participants[0]>`                         | "Audit ↗" link in the header actions  |
+| `ThreadsPage` detail    | `/orgs/:slug/audit?agent=<participants[0]>`                         | Removed from the thread header; global Audit remains available |
 
-Threads ↔ audit is intentionally narrow: thread events are not in `audit_log` v1, so we filter by the **lead participant** as a useful approximation rather than fabricating a thread-level filter the daemon doesn't support. The Agents row link is gated on PR 8 landing — the placeholder page has no rows to attach a link to. A follow-up commit adds it once the scorecard table is in place.
+The former Threads → Audit deep link filtered by the **lead participant** as an approximation; its header affordance is removed, while the underlying Audit route and agent filter remain intact. The Agents row link is gated on PR 8 landing — the placeholder page has no rows to attach a link to. A follow-up commit adds it once the scorecard table is in place.
 
 `AuditPage` reads `useSearchParams()` on mount; the filters initialize from there. `useEffect` syncs filter-state changes back to search params via `setSearchParams({ replace: true })` so the back button skips intermediate filter states.
 

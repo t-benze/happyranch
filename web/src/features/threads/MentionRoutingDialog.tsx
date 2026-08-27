@@ -1,8 +1,8 @@
 /**
  * THR-198 Slice C — per-thread mention-routing control.
  *
- * Founder-only settings surface (the thread-detail header's ⋯ overflow
- * menu opens this dialog). The switch truthfully renders the server's
+ * Founder-only settings surface (the thread-detail header's direct Mention
+ * routing button opens this dialog). The switch truthfully renders the server's
  * durable ``threads.mention_routing_enabled`` via the loaded thread record:
  * the page passes the live value as ``enabled`` and the optimistic mutation
  * (``useSetThreadMentionRouting``) flips the cache on success, rolls it

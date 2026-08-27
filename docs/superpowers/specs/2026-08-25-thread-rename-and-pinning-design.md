@@ -143,7 +143,7 @@ sentences) to stay in parity with the audit row shapes.
 
 - `ThreadHeader` gains a controlled inline rename mode (`renaming`,
   `renameDraft`, save/cancel/error props) — edit state lives in the page so
-  the overflow-menu Rename item shares it.
+  the direct header Rename action shares it.
 - `InboxRow` gains an optional sibling `pinControl` slot (never nested inside
   the `<a>` — interactive-inside-interactive is invalid HTML).
 - `useSetThreadPinned` (real provider) is optimistic: flips the cached list
@@ -151,8 +151,8 @@ sentences) to stay in parity with the audit row shapes.
   failure, and invalidates on settle. `useRenameThread` patches the detail
   cache and invalidates the list.
 - List renders a "Pinned" section header when any filtered thread is pinned;
-  rows carry per-row pin toggles; the detail header carries Rename +
-  Pin/Unpin buttons and a ⋯ overflow menu (Rename / Pin·Unpin / Archive / Mention routing…),
+  rows carry per-row pin toggles; the detail header carries direct Rename,
+  Pin/Unpin, Archive, and Mention routing buttons (plus Resume when archived),
   all keyboard-accessible with accessible labels.
 
 ## Tests
