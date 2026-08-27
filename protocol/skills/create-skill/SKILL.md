@@ -85,7 +85,14 @@ persistence.
   `hr:manage-agent`, `hr:manage-repo`, `hr:frontend-development`,
   `hr:product-manager-prd`).
 - `name` — human-readable name.
-- `skill_md` — the SKILL.md body as a string. Must be **YAML-frontmatter-first**: a valid opening `---` YAML fence containing a YAML mapping, a closing `---` fence, then a Markdown heading. Example below. Heading-first bodies (no frontmatter) are legacy-only and are **not** accepted for new authoring.
+- `skill_md` — the SKILL.md body as a string. It must be one of the two
+  supported authoring shapes: (a) **heading-first** — the body starts at
+  column zero with a Markdown ATX heading (1–6 `#` markers followed by
+  whitespace or end of line) — or
+  (b) **YAML-frontmatter-first** — a valid opening `---` YAML fence at
+  column zero containing a YAML mapping, a closing `---` fence, then a
+  Markdown heading (the same ATX boundary). Leading BOM/whitespace before
+  either shape is not accepted (no silent healing). Example below.
 
 ### Optional fields
 
@@ -99,13 +106,16 @@ persistence.
 
 The server runs deterministic validation before persistence. Validation checks:
 
-1. `skill_md` is YAML-frontmatter-first: a valid opening `---` fence, a YAML
-   mapping inside, a closing `---` fence, then a Markdown heading. Malformed,
-   unclosed, non-mapping, or missing-heading bodies are classified invalid
-   under the authoring contract and persisted as immutable validation/
-   provenance evidence — they are not accepted as valid or materializable
-   versions. Heading-first bodies are legacy-only and not accepted for new
-   authoring.
+1. `skill_md` matches the supported authoring grammar (THR-210 PR 2): either
+   a column-zero Markdown ATX heading (1–6 `#` markers followed by whitespace
+   or end of line; heading-first) or a valid opening `---`
+   fence, a YAML mapping inside, a closing `---` fence, then a Markdown
+   heading (the same ATX boundary). Malformed, unclosed, non-mapping, or
+   missing-heading bodies — and bodies with neither a column-zero heading nor
+   frontmatter, including hash-prefixed lines that are not ATX headings — are
+   classified invalid under the authoring contract and persisted as
+   immutable validation/provenance evidence; they are not accepted as valid
+   or materializable versions.
 2. Required metadata (`slug`, `name`, `skill_md`) is present and non-empty.
 3. `slug` does not collide with any protected slug (system contracts +
    release-managed skills, loaded from the canonical release registry).

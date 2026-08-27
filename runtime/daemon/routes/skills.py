@@ -635,7 +635,10 @@ def _validate_skill_package(
     (a) parses / well-formed — skill_md is non-empty string
     (b) required metadata present — id, slug, name, version must all be
         non-empty strings
-    (c) SKILL.md present — YAML-frontmatter-first, then a Markdown heading
+    (c) SKILL.md present — either heading-first (column-zero Markdown
+        ATX heading: 1–6 ``#`` markers followed by whitespace or
+        end-of-line) or YAML-frontmatter-first with a Markdown body
+        heading (the same ATX boundary)
     (d) references + assets resolve — if provided, must be dicts of
         string→string
     (e) NO bundled-slug collision — custom slug must not collide with
@@ -652,9 +655,10 @@ def _validate_skill_package(
     reason_codes: list[str] = []
 
     # (a)+(c) well-formed + supported authoring contract — one canonical
-    # shape validator (YAML-frontmatter-first, then a Markdown heading) shared
-    # by every custom-skill authoring route. Heading-first bodies are legacy
-    # only and are never re-accepted for new authoring.
+    # shape validator shared by every custom-skill authoring route: either a
+    # column-zero Markdown ATX heading (1–6 hashes + whitespace/EOL,
+    # heading-first) or YAML frontmatter (valid opening/closing fences, a
+    # YAML mapping, then a Markdown body heading under the same ATX boundary).
     from runtime.skills.skill_md import skill_md_contract_violations
     for code, message in skill_md_contract_violations(skill_md):
         errors.append(message)
