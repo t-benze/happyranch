@@ -1124,10 +1124,14 @@ class ClaudeExecutor:
         model: str | None = None,
         resume_session_id: str | None = None,
         org_slug: str | None = None,
+        timeout_seconds: int = 1800,
     ) -> "LaunchSpec":
         """The supervisor ``LaunchSpec`` for a contained Claude launch
         (THR-207 task-producer wiring): argv via the same ``_build_argv`` the
         uncontained path uses, stdin carries the prompt, stdio PIPE/text.
+        ``timeout_seconds`` is accepted for seam uniformity (the session
+        timeout is applied at communicate-time in contained mode; only the
+        generic-CLI argv template substitutes it into argv).
         """
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         from runtime.orchestrator.workspace_adapters import allow_rules_for_agent
@@ -1245,9 +1249,12 @@ class CodexExecutor:
         model: str | None = None,
         resume_session_id: str | None = None,
         org_slug: str | None = None,
+        timeout_seconds: int = 1800,
     ) -> "LaunchSpec":
         """The supervisor ``LaunchSpec`` for a contained Codex launch
         (THR-207 task-producer wiring); stdin carries the prompt.
+        ``timeout_seconds`` is accepted for seam uniformity (the session
+        timeout is applied at communicate-time in contained mode).
         """
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(model=model)
@@ -1366,10 +1373,14 @@ class OpencodeExecutor:
         model: str | None = None,
         resume_session_id: str | None = None,
         org_slug: str | None = None,
+        timeout_seconds: int = 1800,
     ) -> "LaunchSpec":
         """The supervisor ``LaunchSpec`` for a contained opencode launch
         (THR-207 task-producer wiring); the prompt travels via argv (opencode
-        rejects ``--prompt``), so the argv-too-large gate applies."""
+        rejects ``--prompt``), so the argv-too-large gate applies.
+        ``timeout_seconds`` is accepted for seam uniformity (applied at
+        communicate-time in contained mode).
+        """
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(
             workspace=str(workspace),
@@ -1477,9 +1488,13 @@ class PiExecutor:
         model: str | None = None,
         resume_session_id: str | None = None,
         org_slug: str | None = None,
+        timeout_seconds: int = 1800,
     ) -> "LaunchSpec":
         """The supervisor ``LaunchSpec`` for a contained Pi launch
-        (THR-207 task-producer wiring); stdin carries the prompt."""
+        (THR-207 task-producer wiring); stdin carries the prompt.
+        ``timeout_seconds`` is accepted for seam uniformity (the session
+        timeout is applied at communicate-time in contained mode).
+        """
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(prompt=prompt, model=model)
         return build_command_launch_spec(
@@ -1784,11 +1799,14 @@ class CustomAdapterExecutor:
         model: str | None = None,
         resume_session_id: str | None = None,
         org_slug: str | None = None,
+        timeout_seconds: int = 1800,
     ) -> "LaunchSpec":
         """The supervisor ``LaunchSpec`` for a contained custom-adapter launch
         (THR-207 task-producer wiring): the absolute, hash-pinned adapter
         executable with the inherited normalized env; AdapterInput travels on
-        stdin via communicate."""
+        stdin via communicate. ``timeout_seconds`` is accepted for seam
+        uniformity (applied at communicate-time in contained mode).
+        """
         from runtime.platform.session_backend import LaunchSpec
 
         return LaunchSpec(

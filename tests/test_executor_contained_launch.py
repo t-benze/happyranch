@@ -350,6 +350,7 @@ def test_custom_adapter_build_launch_spec(tmp_path):
     adapter = _make_adapter_executor(tmp_path)
     spec = adapter.build_launch_spec(
         workspace=tmp_path, prompt="do it", org_slug="test",
+        timeout_seconds=1800,
     )
     assert spec.argv == (adapter._adapter_executable,)
     assert spec.cwd == str(tmp_path)
@@ -360,7 +361,10 @@ def test_custom_adapter_build_launch_spec(tmp_path):
 
 def test_builtin_executors_build_launch_spec(tmp_path, monkeypatch):
     """Every built-in executor exposes the contained-launch spec seam with the
-    same signature (prompt via stdin where the transport uses stdin)."""
+    same signature (prompt via stdin where the transport uses stdin) and
+    accepts the ``timeout_seconds`` seam kwarg the task/schedule producers pass
+    unconditionally — a non-GenericCli executor that rejects it fails every
+    wired launch closed (TASK-5821 regression fix)."""
     from runtime.config import Settings
     from runtime.orchestrator.executor_registry import build_executor
     from runtime.orchestrator import executors as exec_mod
@@ -379,6 +383,7 @@ def test_builtin_executors_build_launch_spec(tmp_path, monkeypatch):
         assert hasattr(executor, "build_launch_spec")
         spec = executor.build_launch_spec(
             workspace=tmp_path, prompt="prompt", org_slug="test",
+            timeout_seconds=1800,
         )
         assert isinstance(spec.argv, tuple) and spec.argv
         assert spec.cwd == str(tmp_path)
