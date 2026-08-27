@@ -666,7 +666,13 @@ terminality from prose, never suppresses a genuinely-running task with no
 terminal result, and never terminalizes the task row early. The unscoped
 `get_latest_completion_report(task_id)` newest-row read remains available
 for non-chain readers (status/display, fan-out join context) and as the
-fallback when no agent/session fingerprint exists (legacy rows).
+fallback when no agent/session fingerprint exists (legacy rows). When a
+modern fingerprint EXISTS but the exact authenticated report is missing or
+unacceptable (exact-row miss, or an exact row that is malformed/unknown/
+blocked/nonterminal), the chain/gate consumers fail closed: the chain is
+cleared and the parent wakes, and task-wide evidence is NEVER consulted for
+chain advancement — only a genuinely legacy child (no fingerprint) may use
+the unscoped newest-row fallback.
 
 **Required contract.** Do NOT set `tasks.status` terminal inside the
 completion POST: early transition risks lifecycle/restart/session races.

@@ -17,6 +17,7 @@ and genuinely-running tasks with no terminal result all fail closed.
 """
 from __future__ import annotations
 
+import pytest
 from unittest.mock import MagicMock
 
 from runtime.infrastructure.audit_logger import AuditLogger
@@ -710,3 +711,464 @@ def test_mixed_rows_failed_advance_rolls_back_then_retry_advances_once(tmp_path,
     chain = ChainState.deserialize(db.get_task("TASK-P").active_chain)
     assert chain.step_index == 2
     assert q.items == ["TASK-P", children[1]]
+
+
+# ---------------------------------------------------------------------------
+# TASK-5818 fix-forward: fingerprint availability vs exact authenticated report.
+# A modern child (assigned_agent + current_session_id present) whose exact
+# authenticated report is missing or unacceptable (exact-row miss, wrong
+# agent/session, malformed/unknown/blocked/nonterminal) must FAIL CLOSED for
+# chain advancement — it must NEVER consult the task-wide newest-row read.
+# Only a genuinely legacy child (no fingerprint) may use the unscoped
+# fallback.  The authenticated exact report threading is unchanged.
+# ---------------------------------------------------------------------------
+
+def _seed_completed_child_with_fingerprint(
+    db: Database, *, child_id: str, parent_id: str, agent: str, session_id: str,
+) -> None:
+    """Seed an already-COMPLETED child that carries a modern (assigned_agent,
+    current_session_id) fingerprint — the TASK-5818 case where the row is
+    terminal but the exact authenticated report is missing/unacceptable."""
+    db.insert_task(TaskRecord(
+        id=child_id, team="engineering", brief=child_id,
+        parent_task_id=parent_id, assigned_agent=agent,
+    ))
+    db.update_task(
+        child_id,
+        status=TaskStatus.COMPLETED,
+        current_session_id=session_id,
+    )
+
+
+def _assert_chain_failed_closed(db: Database, q: _FakeQueue) -> None:
+    """The fail-closed outcome for a chain whose leg outcome is unverifiable:
+    no next leg spawned, chain cleared, parent woken for the manager decision."""
+    assert db.get_children("TASK-P") == ["TASK-R"]
+    assert db.get_task("TASK-P").active_chain is None
+    assert q.items == ["TASK-P"]
+
+
+def test_modern_fingerprint_no_exact_row_wrong_agent_passing_row_must_not_spawn(tmp_path) -> None:
+    """A COMPLETED child with a modern fingerprint but NO exact-row report must
+    fail closed: an unrelated newest row (wrong agent AND wrong session,
+    PASSING) must never spawn the next QA leg."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_completed_child_with_fingerprint(
+        db, child_id="TASK-R", parent_id="TASK-P",
+        agent="code_reviewer", session_id="sess-current",
+    )
+    # The ONLY task_results row is unrelated (wrong agent/session) and passing.
+    db.insert_task_result(
+        task_id="TASK-R", agent="intruder_agent", session_id="sess-intruder",
+        status="completed", confidence_score=90,
+        output_summary="unrelated passing row", verdict="APPROVE",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    _assert_chain_failed_closed(db, q)
+
+
+def test_modern_fingerprint_no_exact_row_wrong_agent_failing_row_must_not_spawn(tmp_path) -> None:
+    """Same as above with a FAILING unrelated row: the task-wide evidence is
+    never consulted in either verdict direction."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_completed_child_with_fingerprint(
+        db, child_id="TASK-R", parent_id="TASK-P",
+        agent="code_reviewer", session_id="sess-current",
+    )
+    db.insert_task_result(
+        task_id="TASK-R", agent="intruder_agent", session_id="sess-intruder",
+        status="completed", confidence_score=10,
+        output_summary="unrelated failing row", verdict="REQUEST_CHANGES",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    _assert_chain_failed_closed(db, q)
+
+
+def test_modern_fingerprint_no_exact_row_wrong_session_passing_row_must_not_spawn(tmp_path) -> None:
+    """A newer row from the SAME agent but a DIFFERENT session is equally
+    unrelated — the exact (task_id, assigned_agent, current_session_id)
+    fingerprint is the only acceptable evidence; a wrong-session PASSING row
+    must not advance the chain."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_completed_child_with_fingerprint(
+        db, child_id="TASK-R", parent_id="TASK-P",
+        agent="code_reviewer", session_id="sess-current",
+    )
+    db.insert_task_result(
+        task_id="TASK-R", agent="code_reviewer", session_id="sess-foreign",
+        status="completed", confidence_score=90,
+        output_summary="wrong-session passing row", verdict="APPROVE",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    _assert_chain_failed_closed(db, q)
+
+
+def test_modern_fingerprint_no_exact_row_wrong_session_failing_row_must_not_spawn(tmp_path) -> None:
+    """Wrong-session FAILING row: fail closed, never consulted."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_completed_child_with_fingerprint(
+        db, child_id="TASK-R", parent_id="TASK-P",
+        agent="code_reviewer", session_id="sess-current",
+    )
+    db.insert_task_result(
+        task_id="TASK-R", agent="code_reviewer", session_id="sess-foreign",
+        status="completed", confidence_score=10,
+        output_summary="wrong-session failing row", verdict="REQUEST_CHANGES",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    _assert_chain_failed_closed(db, q)
+
+
+def test_modern_fingerprint_exact_blocked_row_plus_unrelated_passing_row_fails_closed(tmp_path) -> None:
+    """The exact fingerprint row EXISTS but is a blocked report (the
+    blocked_on_job park is a live state, never dispatch-terminal).  Even with
+    an unrelated passing newest row, the chain must fail closed — no spawn."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_completed_child_with_fingerprint(
+        db, child_id="TASK-R", parent_id="TASK-P",
+        agent="code_reviewer", session_id="sess-current",
+    )
+    db.insert_task_result(
+        task_id="TASK-R", agent="code_reviewer", session_id="sess-current",
+        status="blocked", confidence_score=10,
+        output_summary="blocked exact row", verdict=None,
+    )
+    db.insert_task_result(
+        task_id="TASK-R", agent="intruder_agent", session_id="sess-intruder",
+        status="completed", confidence_score=90,
+        output_summary="unrelated passing row", verdict="APPROVE",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    _assert_chain_failed_closed(db, q)
+
+
+def test_modern_fingerprint_exact_nonterminal_row_plus_unrelated_passing_row_fails_closed(tmp_path) -> None:
+    """The exact fingerprint row EXISTS but with a nonterminal/unknown status
+    (malformed report) — fail closed even with an unrelated passing row."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_completed_child_with_fingerprint(
+        db, child_id="TASK-R", parent_id="TASK-P",
+        agent="code_reviewer", session_id="sess-current",
+    )
+    db.insert_task_result(
+        task_id="TASK-R", agent="code_reviewer", session_id="sess-current",
+        status="mystery-status", confidence_score=10,
+        output_summary="malformed exact row", verdict=None,
+    )
+    db.insert_task_result(
+        task_id="TASK-R", agent="intruder_agent", session_id="sess-intruder",
+        status="completed", confidence_score=90,
+        output_summary="unrelated passing row", verdict="APPROVE",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    _assert_chain_failed_closed(db, q)
+
+
+def test_exact_current_passing_report_still_advances_once_across_delayed_calls(tmp_path) -> None:
+    """The authenticated exact passing report keeps its authority: with an
+    unrelated newer failing row present, repeated consumer calls (including
+    the delayed-finalization re-trigger) advance exactly once — never from
+    the unrelated row, never a duplicate leg."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_child_with_landed_result(
+        db, child_id="TASK-R", parent_id="TASK-P", agent="code_reviewer",
+        session_id="sess-r", verdict="APPROVE",
+    )
+    db.insert_task_result(
+        task_id="TASK-R", agent="intruder_agent", session_id="sess-intruder",
+        status="completed", confidence_score=10,
+        output_summary="unrelated newer row", verdict="REQUEST_CHANGES",
+    )
+    q = _FakeQueue()
+    orch = _make_orch(db, q)
+
+    # Lag-window recognition advance (row still in_progress).
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+    # Delayed finalization re-trigger (row now COMPLETED).
+    db.update_task("TASK-R", status=TaskStatus.COMPLETED)
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+
+    children = db.get_children("TASK-P")
+    assert len(children) == 2, f"expected exactly one advance, got {children}"
+    assert db.get_task(children[1]).assigned_agent == "qa_engineer"
+    chain = ChainState.deserialize(db.get_task("TASK-P").active_chain)
+    assert chain.step_index == 2
+    assert q.items == [children[1]]
+
+
+def test_exact_current_failing_report_still_clears_and_wakes_once(tmp_path) -> None:
+    """The authenticated exact failing report keeps its authority: the chain
+    is cleared and the parent woken — and a repeated call (delayed
+    finalization) never spawns a leg and never revives the chain."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_child_with_landed_result(
+        db, child_id="TASK-R", parent_id="TASK-P", agent="code_reviewer",
+        session_id="sess-r", verdict="REQUEST_CHANGES",
+    )
+    db.insert_task_result(
+        task_id="TASK-R", agent="intruder_agent", session_id="sess-intruder",
+        status="completed", confidence_score=90,
+        output_summary="unrelated newer row", verdict="APPROVE",
+    )
+    q = _FakeQueue()
+    orch = _make_orch(db, q)
+    db.update_task("TASK-R", status=TaskStatus.COMPLETED)
+
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+    _assert_chain_failed_closed(db, q)
+    # Delayed re-trigger: no leg spawn, chain stays cleared; the second
+    # parent put is absorbed by the run-step claim CAS (at-most-once wake).
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+    assert db.get_children("TASK-P") == ["TASK-R"]
+    assert db.get_task("TASK-P").active_chain is None
+    assert q.items == ["TASK-P", "TASK-P"]
+
+
+def test_genuinely_legacy_no_fingerprint_completed_row_keeps_documented_fallback(tmp_path) -> None:
+    """A genuinely legacy completed child (NO assigned_agent / NO
+    current_session_id on the task row) retains the documented unscoped
+    newest-row fallback: a passing newest row advances the chain."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    # Legacy child: no agent, no session — only the result row carries one.
+    db.insert_task(TaskRecord(
+        id="TASK-R", team="engineering", brief="legacy",
+        parent_task_id="TASK-P",
+    ))
+    db.update_task("TASK-R", status=TaskStatus.COMPLETED)
+    db.insert_task_result(
+        task_id="TASK-R", agent="dev_agent", session_id="sess-legacy",
+        status="completed", confidence_score=90,
+        output_summary="legacy passing row", verdict="APPROVE",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+
+    # Documented fallback: newest-row read advances the chain.
+    children = db.get_children("TASK-P")
+    assert len(children) == 2
+    assert db.get_task(children[1]).assigned_agent == "qa_engineer"
+    assert q.items == [children[1]]
+
+
+def test_genuinely_legacy_no_fingerprint_completed_row_failing_newest_row_fails_closed(tmp_path) -> None:
+    """Legacy fallback in the failing direction: the newest-row read is a
+    REQUEST_CHANGES → chain cleared + parent woken (documented behavior)."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    db.insert_task(TaskRecord(
+        id="TASK-R", team="engineering", brief="legacy",
+        parent_task_id="TASK-P",
+    ))
+    db.update_task("TASK-R", status=TaskStatus.COMPLETED)
+    db.insert_task_result(
+        task_id="TASK-R", agent="dev_agent", session_id="sess-legacy",
+        status="completed", confidence_score=10,
+        output_summary="legacy failing row", verdict="REQUEST_CHANGES",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    _assert_chain_failed_closed(db, q)
+
+
+def test_genuinely_legacy_no_fingerprint_completed_row_without_any_result_clears_chain(tmp_path) -> None:
+    """Legacy completed child with NO result rows at all: the fallback read
+    returns None → chain cleared + parent woken (no spawn, no crash)."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    db.insert_task(TaskRecord(
+        id="TASK-R", team="engineering", brief="legacy",
+        parent_task_id="TASK-P",
+    ))
+    db.update_task("TASK-R", status=TaskStatus.COMPLETED)
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+    _assert_chain_failed_closed(db, q)
+
+
+def test_modern_fingerprint_fail_closed_delayed_finalization_spawns_no_leg(tmp_path) -> None:
+    """Delayed-finalization no-duplicate proof for the fail-closed case: after
+    the first fail-closed wake (chain cleared, no leg), a second consumer call
+    spawns no leg and does not revive the chain; the extra parent put is
+    absorbed by the run-step claim CAS (at-most-once wake)."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_completed_child_with_fingerprint(
+        db, child_id="TASK-R", parent_id="TASK-P",
+        agent="code_reviewer", session_id="sess-current",
+    )
+    db.insert_task_result(
+        task_id="TASK-R", agent="intruder_agent", session_id="sess-intruder",
+        status="completed", confidence_score=90,
+        output_summary="unrelated passing row", verdict="APPROVE",
+    )
+    q = _FakeQueue()
+    orch = _make_orch(db, q)
+
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+    _assert_chain_failed_closed(db, q)
+    # Delayed finalization re-trigger (child already COMPLETED).
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+    assert db.get_children("TASK-P") == ["TASK-R"]
+    assert db.get_task("TASK-P").active_chain is None
+    assert q.items == ["TASK-P", "TASK-P"]
+
+
+def test_modern_fingerprint_fail_closed_exception_rolls_back_then_retry_wakes_once(tmp_path, monkeypatch) -> None:
+    """Exception/retry proof for the fail-closed case: a transient DB failure
+    while clearing the chain leaves NO partial state (no leg, no wake), and a
+    retry completes the fail-closed wake exactly once."""
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_completed_child_with_fingerprint(
+        db, child_id="TASK-R", parent_id="TASK-P",
+        agent="code_reviewer", session_id="sess-current",
+    )
+    db.insert_task_result(
+        task_id="TASK-R", agent="intruder_agent", session_id="sess-intruder",
+        status="completed", confidence_score=90,
+        output_summary="unrelated passing row", verdict="APPROVE",
+    )
+    real_update = Database.update_task_active_chain
+    state = {"fail": True}
+
+    def _flaky(*args, **kwargs):
+        if state["fail"]:
+            raise RuntimeError("simulated transient DB failure")
+        return real_update(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "runtime.infrastructure.database.Database.update_task_active_chain",
+        _flaky,
+    )
+    q = _FakeQueue()
+    orch = _make_orch(db, q)
+
+    # First attempt raises → no partial state: no leg, chain intact, no wake.
+    with pytest.raises(RuntimeError):
+        _enqueue_parent_if_waiting(orch, "TASK-R")
+    assert db.get_children("TASK-P") == ["TASK-R"]
+    assert db.get_task("TASK-P").active_chain is not None
+    assert q.items == []
+
+    # Retry succeeds → fail-closed wake once, no leg ever spawned.
+    state["fail"] = False
+    _enqueue_parent_if_waiting(orch, "TASK-R")
+    _assert_chain_failed_closed(db, q)
+
+
+def test_mutation_force_legacy_fallback_reproduces_unauthorized_spawn(tmp_path, monkeypatch) -> None:
+    """Mutation-guard: forcing the fingerprint distinction wrong (treating a
+    modern child as genuine legacy absence) reproduces the TASK-5817 HIGH
+    finding — the unrelated passing row advances the chain and spawns the QA
+    leg.  This test pins the sensitivity of the fail-closed sibling tests:
+    the TASK-5818 fix is exactly the distinction that prevents this spawn."""
+    from runtime.orchestrator.run_step import _child_has_modern_fingerprint
+
+    monkeypatch.setattr(
+        "runtime.orchestrator.run_step._child_has_modern_fingerprint",
+        lambda child: False,  # force the fallback distinction wrong
+    )
+    db = Database(tmp_path / "x.db")
+    _seed_chain_parent(
+        db,
+        legs=[("code_reviewer", "review brief", "APPROVE"),
+              ("qa_engineer", "qa brief", "PASS")],
+        step_index=1,
+    )
+    _seed_completed_child_with_fingerprint(
+        db, child_id="TASK-R", parent_id="TASK-P",
+        agent="code_reviewer", session_id="sess-current",
+    )
+    db.insert_task_result(
+        task_id="TASK-R", agent="intruder_agent", session_id="sess-intruder",
+        status="completed", confidence_score=90,
+        output_summary="unrelated passing row", verdict="APPROVE",
+    )
+    q = _FakeQueue()
+    _enqueue_parent_if_waiting(_make_orch(db, q), "TASK-R")
+
+    # Under the mutation the newest-row fallback advances from the unrelated
+    # passing row — the exact unauthorized spawn the fix must prevent.
+    children = db.get_children("TASK-P")
+    assert len(children) == 2
+    assert db.get_task(children[1]).assigned_agent == "qa_engineer"

@@ -1769,9 +1769,13 @@ def _advance_chain_for_completed_child(
     THR-211: ``report`` carries the exact authenticated CompletionReport for
     the child's current session (``_child_landed_terminal_report``). When it
     is provided it is authoritative — a newer unrelated row can never advance
-    or clear the chain. When None (no fingerprint exists, e.g. legacy rows
-    without agent/session), the most-recent-row read is kept for
-    compatibility.
+    or clear the chain. When it is ``None`` (a genuinely legacy child with no
+    agent/session fingerprint, or a direct caller that does not scope), the
+    most-recent-row read is kept for compatibility. When it is the
+    ``_NO_AUTHENTICATED_REPORT`` sentinel (a modern child whose exact report
+    is missing or unacceptable — exact-row miss, wrong agent/session,
+    malformed/unknown/blocked/nonterminal) the chain FAILS CLOSED: it is
+    cleared and the parent wakes, and task-wide evidence is never consulted.
     """
     from runtime.models import TaskRecord
     from runtime.orchestrator.chain import (
@@ -1785,6 +1789,13 @@ def _advance_chain_for_completed_child(
         return "wake"
 
     chain = ChainState.deserialize(parent.active_chain)
+    if report is _NO_AUTHENTICATED_REPORT:
+        # TASK-5818: a modern fingerprint exists but the exact authenticated
+        # report is missing/unacceptable — fail closed.  Never consult the
+        # task-wide newest-row read: a wrong-agent/wrong-session (or any
+        # unrelated) row must not gate chain advancement.
+        orch._db.update_task_active_chain(parent_task_id, None)
+        return "wake"
     if report is None:
         report = orch._db.get_latest_completion_report(child_task_id)
     if report is None:
@@ -1895,7 +1906,10 @@ def _carrier_fail_on_verdict_mismatch(
     THR-211: ``report`` carries the exact authenticated CompletionReport for
     the child's current session when one exists; it is authoritative over the
     most-recent-row read, which remains the fallback when no fingerprint
-    exists (compatibility with pre-THR-211 behavior).
+    exists (compatibility with pre-THR-211 behavior).  The
+    ``_NO_AUTHENTICATED_REPORT`` sentinel (modern fingerprint, no acceptable
+    exact report) fails the carrier closed — an unverifiable leg outcome must
+    never complete or advance a carrier on task-wide evidence.
     """
     if chain_snapshot is None:
         return False
@@ -1903,6 +1917,22 @@ def _carrier_fail_on_verdict_mismatch(
         return False
     from runtime.orchestrator.chain import ChainState, compute_advance_action
     chain = ChainState.deserialize(chain_snapshot)
+    if report is _NO_AUTHENTICATED_REPORT:
+        # TASK-5818: the child has a modern fingerprint but no acceptable
+        # exact authenticated report — the leg's outcome cannot be verified.
+        # Fail the carrier closed rather than complete or advance it on
+        # task-wide evidence.
+        expected = chain.current_expect_verdict()
+        note = (
+            f"carrier leg {child_task_id} outcome unverifiable: "
+            "no exact authenticated report"
+        )
+        if expected is not None:
+            note += f" (expected {expected!r})"
+        _fail(orch, parent.id, note=note)
+        # Feed carrier failure into the fan-out parent's barrier.
+        _enqueue_parent_if_waiting(orch, parent.id)
+        return True
     if report is None:
         report = orch._db.get_latest_completion_report(child_task_id)
     if report is None:
@@ -2109,6 +2139,40 @@ def _format_slice_retry_exhausted_reason(
     )
 
 
+# THR-211 (TASK-5818 fix-forward): ``_child_landed_terminal_report`` returns
+# None for BOTH a genuinely legacy child (no agent/session fingerprint) and a
+# modern child whose exact authenticated report is missing or unacceptable
+# (exact-row miss, or an exact row whose status is not ``completed`` — blocked,
+# unknown, nonterminal).  Chain advancement may fall back to the task-wide
+# newest-row read ONLY for the former; for the latter it must fail closed and
+# never consult task-wide evidence (a wrong-agent/wrong-session row must never
+# gate the chain).  This sentinel marks the modern-but-unverifiable case.
+class _NoAuthenticatedReport:
+    """Sentinel: the child carries a modern ``(assigned_agent,
+    current_session_id)`` fingerprint but has no acceptable exact authenticated
+    completion report.  Chain advancement MUST fail closed on this value — it
+    must never fall back to the task-wide newest-row read."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # debugging aid
+        return "_NO_AUTHENTICATED_REPORT"
+
+
+_NO_AUTHENTICATED_REPORT = _NoAuthenticatedReport()
+
+
+def _child_has_modern_fingerprint(child: "TaskRecord") -> bool:
+    """True when ``child`` carries the modern ``(assigned_agent,
+    current_session_id)`` fingerprint the historical completion contract
+    requires.  Legacy rows (pre-THR-211) may lack either field."""
+    return (
+        child is not None
+        and bool(child.assigned_agent)
+        and bool(child.current_session_id)
+    )
+
+
 def _child_landed_terminal_report(orch: "Orchestrator", child: "TaskRecord"):
     """THR-211: return the exact authenticated CompletionReport for the
     child's CURRENT session, or None when it is not dispatch-terminal.
@@ -2122,6 +2186,14 @@ def _child_landed_terminal_report(orch: "Orchestrator", child: "TaskRecord"):
 
     The returned report is the one the chain/gate consumers must use: a newer
     unrelated (wrong-agent/wrong-session) row can never substitute for it.
+
+    NOTE (TASK-5818): a None return is ambiguous — it covers both a genuinely
+    legacy child with no ``(assigned_agent, current_session_id)`` fingerprint
+    and a modern child whose exact report is missing/unacceptable.  Callers
+    that decide between the legacy newest-row fallback and fail-closed
+    behavior MUST distinguish via ``_child_has_modern_fingerprint``; only a
+    genuine fingerprint absence may ever consult task-wide evidence for chain
+    advancement.
     """
     if child is None or not child.assigned_agent or not child.current_session_id:
         return None
@@ -2229,9 +2301,20 @@ def _enqueue_parent_if_waiting(
                 # THR-211: carry the EXACT authenticated report (the
                 # (task_id, assigned_agent, current_session_id) fingerprint
                 # scoped row) through the chain gate so a newer unrelated
-                # row can never advance or clear the chain.  Falls back to
-                # the newest-row read only when no fingerprint exists.
+                # row can never advance or clear the chain.
                 authenticated_report = _child_landed_terminal_report(orch, child)
+                # TASK-5818: None is ambiguous.  A GENUINELY legacy child
+                # (no agent/session fingerprint) may still use the unscoped
+                # newest-row fallback inside _advance_chain_for_completed_child;
+                # a MODERN child whose exact report is missing or unacceptable
+                # (exact-row miss, wrong agent/session, malformed/unknown/
+                # blocked/nonterminal) must fail closed and must NEVER consult
+                # task-wide evidence for chain advancement.
+                if (
+                    authenticated_report is None
+                    and _child_has_modern_fingerprint(child)
+                ):
+                    authenticated_report = _NO_AUTHENTICATED_REPORT
                 # Snapshot the chain BEFORE advance (which may clear it).
                 chain_snapshot = parent.active_chain
                 outcome = _advance_chain_for_completed_child(
