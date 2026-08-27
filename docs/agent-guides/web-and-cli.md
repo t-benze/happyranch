@@ -9,9 +9,9 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 - Python: `tests/contract/test_openapi_snapshot.py` pins OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
 - TypeScript: `web/src/test/openapi-coverage.test.ts` asserts every documented path is either included with a TS mirror or excluded with justification.
 
-### Settings dialog
+### Settings
 
-The Settings dialog opens from the TopBar gear button. It shows:
+The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with left sub-nav panels (Assistant · System · Organization · Agents · Executors). (The TopBar gear button and `SettingsDialog` are prototype/design-preview surfaces only — not production entry points.) It shows:
 
 - **System** (read-only) — daemon-wide settings (CLI name / default command metadata — not a launch path; executor launch uses registered binary pins — plus session timeout default, orchestration limits) with restart-required badges.
 - **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), threads config (enabled, default turn cap, invocation timeout), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
@@ -31,7 +31,7 @@ The serializer is an allow-list: no secret fields (permission_mode, codex_sandbo
 
 **Hot-reload:** Changes apply on next consumer read — dreaming scheduler picks up changes within ~1 min; threads/compose read on next request; session timeout applies to next session spawn. No daemon restart required.
 
-The frontend surface lives in `web/src/features/settings/SettingsDialog.tsx` with `lib/api/settings.ts`, `hooks/settings.ts`, and a `settings` domain in `DataContext`.
+The shipped frontend surface is `web/src/features/settings/SettingsPage.tsx` (left sub-nav + field panel per sub-route) with `lib/api/settings.ts`, `hooks/settings.ts`, and a `settings` domain in `DataContext`; the older `SettingsDialog.tsx` remains in use only inside prototype/design-preview surfaces.
 
 ### Agents page
 
