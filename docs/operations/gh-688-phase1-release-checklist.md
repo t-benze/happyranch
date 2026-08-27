@@ -256,7 +256,12 @@ settled rows after replies/declines/failures. No `task_id` semantics changed.
   `happyranch threads mention-routing` CLI (audited
   `thread_mention_routing_changed`). TASK_FOLLOWUP/BOOTSTRAP stay isolated;
   GH-688 per-pair coalescing/claim/settlement/follow-on/rollback semantics
-  are preserved. **Web control and analytics validation remain later
-  slices (C/D).** Mention **priority/fairness, autocomplete, and
+  are preserved. **Slice C (merged) adds the per-thread web control** — a
+  founder-only "Mention routing…" item in the thread-detail header settings
+  surface opens a dialog whose switch truthfully renders the thread's
+  current state, persists explicit changes through the same strict-boolean
+  API, prevents duplicate mutation in flight, and rolls back + surfaces a
+  visible error on failure. **Analytics validation remains a later slice
+  (D).** Mention **priority/fairness, autocomplete, and
   active-respondent fallback remain out of scope**; `addressed_to_json`
   remains unwritten/unread with its separate cleanup plan.
