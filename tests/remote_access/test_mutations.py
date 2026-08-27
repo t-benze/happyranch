@@ -474,6 +474,351 @@ def test_mutation_wrapper_receive_ignores_seal_is_detected(route_policy_fixture)
         _TrackedStream.receive = original
 
 
+def test_mutation_close_all_idempotent_success_loses_race_failure_is_detected(route_policy_fixture) -> None:
+    """Guard removal (TASK-5867): if close_all reverts to publishing
+    revoked/sealed state before the first caller's transport cleanup reaches a
+    terminal result and treats later calls as successful idempotent no-ops, a
+    racing higher-epoch revoke returns false success and the failed stream id
+    is lost — the race invariant battery must detect it."""
+    import threading
+
+    from runtime.remote_access.revocation import RevocationCoordinator, RevocationIncomplete
+    from runtime.remote_access.streams import StreamCloseError, StreamRegistry
+
+    def invariant() -> None:
+        state = default_authorization_state()
+        registry = StreamRegistry()
+        coordinator = RevocationCoordinator(state, registry)
+        release = threading.Event()
+        entered = threading.Event()
+
+        class _Blocking:
+            stream_id = "s-race"
+
+            def receive(self) -> bytes | None:
+                return b"still-live"
+
+            def close(self) -> None:
+                entered.set()
+                assert release.wait(timeout=15), "test: close never released"
+                raise OSError("boom")
+
+            @property
+            def closed(self) -> bool:
+                return False
+
+        registry.open("s-race", _Blocking())
+        results: dict = {}
+
+        def worker(tag: str, epoch: int) -> None:
+            try:
+                results[tag] = ("ok", coordinator.revoke(epoch))
+            except RevocationIncomplete as exc:
+                results[tag] = ("incomplete", exc.applied_epoch, exc.stream_ids)
+            except ValueError:
+                results[tag] = ("rollback",)
+
+        t1 = threading.Thread(target=worker, args=("lower", 1))
+        t2 = threading.Thread(target=worker, args=("higher", 2))
+        t1.start()
+        assert entered.wait(timeout=15), "lower revoke must reach the blocked close"
+        t2.start()
+        release.set()
+        t1.join(timeout=15)
+        t2.join(timeout=15)
+        assert not t1.is_alive() and not t2.is_alive()
+        # No caller returns success while a cleanup failure relevant to the
+        # sealed generation is in flight or completed-but-unreported, and the
+        # failed stream id stays observable.
+        assert results["lower"][0] != "ok", f"lower returned success: {results}"
+        assert results["higher"][0] != "ok", f"higher returned success: {results}"
+        assert any(r[0] == "incomplete" and "s-race" in r[2] for r in results.values()), (
+            f"failed stream id lost: {results}"
+        )
+        assert state.revocation_epoch == 2
+
+    invariant()  # guard present: both callers report; no false success
+
+    original = StreamRegistry.close_all
+
+    def _broken_close_all(self) -> None:
+        # The TASK-5867 anti-pattern: publish revoked state before cleanup
+        # reaches terminal, and treat every later call as a successful
+        # idempotent no-op.
+        if self._revoked:
+            return
+        self._revoked = True
+        for tracked in list(self._streams.values()):
+            tracked.seal()
+        failed: list[str] = []
+        for stream_id, tracked in list(self._streams.items()):
+            del self._streams[stream_id]
+            try:
+                tracked._close_inner()
+            except Exception:
+                failed.append(stream_id)
+        if failed:
+            raise StreamCloseError(failed)
+
+    try:
+        StreamRegistry.close_all = _broken_close_all  # type: ignore[method-assign]
+        with pytest.raises(AssertionError):
+            invariant()
+    finally:
+        StreamRegistry.close_all = original
+
+
+def test_mutation_close_all_forgets_persisted_failure_is_detected(route_policy_fixture) -> None:
+    """Guard removal: if close_all surfaces a cleanup failure once but forgets
+    to persist the terminal result, a LATER revoke at a higher epoch returns
+    false success — the repeated-call invariant battery must detect it."""
+    from runtime.remote_access.revocation import RevocationCoordinator, RevocationIncomplete
+    from runtime.remote_access.streams import StreamCloseError, StreamRegistry
+
+    def invariant() -> None:
+        state = default_authorization_state()
+        registry = StreamRegistry()
+        coordinator = RevocationCoordinator(state, registry)
+
+        class _Exploding:
+            stream_id = "s-bad"
+
+            def receive(self) -> bytes | None:
+                return b"still-live"
+
+            def close(self) -> None:
+                raise OSError("boom")
+
+            @property
+            def closed(self) -> bool:
+                return False
+
+        registry.open("s-bad", _Exploding())
+        with pytest.raises(RevocationIncomplete) as e1:
+            coordinator.revoke(epoch=2)
+        assert e1.value.stream_ids == ("s-bad",)
+        # A later higher-epoch revoke must NOT return success while the
+        # completed cleanup failure relevant to the sealed generation stands.
+        try:
+            coordinator.revoke(epoch=3)
+        except RevocationIncomplete as e2:
+            assert e2.applied_epoch == 3
+            assert e2.stream_ids == ("s-bad",)
+            return
+        raise AssertionError("later revoke returned success after a completed cleanup failure")
+
+    invariant()  # guard present: the persisted failure is re-surfaced
+
+    original = StreamRegistry.close_all
+
+    def _forgetful_close_all(self) -> None:
+        # Seals and raises once, but forgets to persist the terminal result.
+        if getattr(self, "_revoked", False):
+            return
+        self._revoked = True
+        for tracked in list(self._streams.values()):
+            tracked.seal()
+        failed: list[str] = []
+        for stream_id, tracked in list(self._streams.items()):
+            del self._streams[stream_id]
+            try:
+                tracked._close_inner()
+            except Exception:
+                failed.append(stream_id)
+        if failed:
+            raise StreamCloseError(failed)
+
+    try:
+        StreamRegistry.close_all = _forgetful_close_all  # type: ignore[method-assign]
+        with pytest.raises(AssertionError):
+            invariant()
+    finally:
+        StreamRegistry.close_all = original
+
+
+def test_mutation_reentrant_revoke_guard_removed_is_detected(route_policy_fixture) -> None:
+    """Guard removal: without the coordinator's same-thread re-entrancy
+    guard, a transport-close callback that calls revoke() re-entrantly
+    deadlocks on the transaction lock instead of failing closed — the
+    bounded-join invariant battery must detect the hang."""
+    import threading
+
+    from runtime.remote_access.revocation import RevocationCoordinator, RevocationIncomplete
+    from runtime.remote_access.streams import StreamRegistry
+
+    def invariant() -> None:
+        state = default_authorization_state()
+        registry = StreamRegistry()
+        coordinator = RevocationCoordinator(state, registry)
+        events: list[str] = []
+
+        class _Reentrant:
+            stream_id = "reentrant"
+
+            def receive(self) -> bytes | None:
+                return None
+
+            def close(self) -> None:
+                try:
+                    coordinator.revoke(epoch=5)
+                except RuntimeError:
+                    events.append("rejected")
+                raise OSError("boom")
+
+            @property
+            def closed(self) -> bool:
+                return False
+
+        registry.open("reentrant", _Reentrant())
+        with pytest.raises(RevocationIncomplete) as excinfo:
+            coordinator.revoke(epoch=2)
+        assert excinfo.value.applied_epoch == 2
+        assert excinfo.value.stream_ids == ("reentrant",)
+        assert events == ["rejected"]
+        assert state.revocation_epoch == 2
+
+    invariant()  # guard present: re-entrant revoke fails closed, no deadlock
+
+    original = RevocationCoordinator.revoke
+
+    def _no_guard_revoke(self, epoch: int) -> int:
+        # The transaction WITHOUT the same-thread re-entrancy guard: the
+        # inner revoke blocks on the non-reentrant _tx_lock forever.
+        if epoch <= self.state.revocation_epoch:
+            raise ValueError("revocation epoch rollback rejected")
+        with self._tx_lock:
+            failures: tuple[str, ...] = ()
+            try:
+                self.registry.close_all()
+            except StreamCloseError as exc:
+                failures = exc.stream_ids
+            self.state._apply_revocation(epoch)
+            if self.signal is not None:
+                self.signal.fire(epoch)
+        if failures:
+            raise RevocationIncomplete(epoch, failures)
+        return epoch
+
+    try:
+        RevocationCoordinator.revoke = _no_guard_revoke  # type: ignore[method-assign]
+        done = threading.Event()
+
+        def run() -> None:
+            try:
+                invariant()
+            finally:
+                done.set()
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        # The guard is what makes the same-thread re-entrant call fail closed
+        # instead of self-deadlocking on the transaction lock: with it
+        # removed, the invariant can never complete.
+        assert not done.wait(timeout=3), (
+            "guard removal not detected: re-entrant revoke completed without the guard"
+        )
+    finally:
+        RevocationCoordinator.revoke = original
+
+
+def test_mutation_close_all_reentrancy_guard_removed_is_detected(route_policy_fixture) -> None:
+    """Guard removal: without the registry's same-thread re-entrancy guard, a
+    transport-close callback that re-enters close_all() waits on its own
+    completion event forever — the bounded-join invariant battery must detect
+    the hang."""
+    import threading
+
+    from runtime.remote_access.streams import StreamCloseError, StreamRegistry
+
+    def invariant() -> None:
+        registry = StreamRegistry()
+        events: list[str] = []
+
+        class _Reentrant:
+            stream_id = "reentrant"
+
+            def receive(self) -> bytes | None:
+                return None
+
+            def close(self) -> None:
+                registry.close_all()
+                events.append("inner-returned")
+                raise OSError("boom")
+
+            @property
+            def closed(self) -> bool:
+                return False
+
+        registry.open("reentrant", _Reentrant())
+        with pytest.raises(StreamCloseError) as excinfo:
+            registry.close_all()
+        assert excinfo.value.stream_ids == ("reentrant",)
+        assert events == ["inner-returned"]
+
+    invariant()  # guard present: re-entrant close_all returns, no deadlock
+
+    original = StreamRegistry.close_all
+
+    def _no_guard_close_all(self) -> None:
+        # The real lifecycle WITHOUT the thread-local re-entrancy guard: the
+        # inner close_all waits on _cleanup_done, which only the outer run
+        # can set — a self-deadlock.
+        with self._lock:
+            if self._cleanup_done.is_set():
+                failures = self._cleanup_failed_ids
+                role = "observe"
+            elif self._cleanup_started:
+                role = "wait"
+            else:
+                self._revoked = True
+                for tracked in list(self._streams.values()):
+                    tracked.seal()
+                pending = list(self._streams.items())
+                self._streams.clear()
+                self._cleanup_started = True
+                role = "run"
+        if role == "wait":
+            self._cleanup_done.wait()
+            with self._lock:
+                failures = self._cleanup_failed_ids
+        elif role == "run":
+            failed: list[str] = []
+            for stream_id, tracked in pending:
+                try:
+                    tracked._close_inner()
+                except Exception:
+                    failed.append(stream_id)
+            with self._lock:
+                self._cleanup_failed_ids = tuple(failed)
+                self._cleanup_done.set()
+            if failed:
+                raise StreamCloseError(failed)
+            return
+        if failures:
+            raise StreamCloseError(failures)
+
+    try:
+        StreamRegistry.close_all = _no_guard_close_all  # type: ignore[method-assign]
+        done = threading.Event()
+
+        def run() -> None:
+            try:
+                invariant()
+            finally:
+                done.set()
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        # The guard is what makes the same-thread re-entrant close_all return
+        # instead of waiting on its own completion event: with it removed,
+        # the invariant can never complete.
+        assert not done.wait(timeout=3), (
+            "guard removal not detected: re-entrant close_all completed without the guard"
+        )
+    finally:
+        StreamRegistry.close_all = original
+
+
 class _FakeHandle:
     def __init__(self, stream_id: str) -> None:
         self.stream_id = stream_id

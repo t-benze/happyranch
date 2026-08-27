@@ -253,5 +253,77 @@ def test_reviewer_high_probe_contradictory_non_empty_percent_encoding() -> None:
     assert excinfo.value.outcome.audit_category == "policy_malformed"
 
 
+def test_reviewer_high_probe_racing_higher_epoch_loses_no_failure_evidence() -> None:
+    """TASK-5867 [HIGH] exact public-seam probe: with a barrier-controlled
+    blocked close, a racing higher-epoch revoke must NOT return success and
+    the failed stream id stays observable. The old code produced
+    ``[(1, ValueError, None), (2, return, 2)]`` with state epoch 2 and
+    ``cleanup_failed=True`` — no caller reported ``RevocationIncomplete`` or
+    the failed id. The corrected transaction serializes and shares/persists
+    the cleanup terminal result across concurrent revocations."""
+    import threading
+
+    from runtime.remote_access.revocation import RevocationCoordinator, RevocationIncomplete
+    from runtime.remote_access.streams import StreamRegistry
+
+    from .conftest import default_authorization_state
+
+    state = default_authorization_state()
+    registry = StreamRegistry()
+    coordinator = RevocationCoordinator(state, registry)
+    release = threading.Event()
+    entered = threading.Event()
+
+    class _Blocking:
+        stream_id = "s-race"
+
+        def receive(self) -> bytes | None:
+            return b"still-live"
+
+        def close(self) -> None:
+            entered.set()
+            assert release.wait(timeout=15), "probe: close never released"
+            raise OSError("transport close exploded after barrier")
+
+        @property
+        def closed(self) -> bool:
+            return False
+
+    registry.open("s-race", _Blocking())
+    results: dict = {}
+
+    def worker(tag: str, epoch: int) -> None:
+        try:
+            results[tag] = ("ok", coordinator.revoke(epoch))
+        except RevocationIncomplete as exc:
+            results[tag] = ("incomplete", exc.applied_epoch, exc.stream_ids)
+        except ValueError:
+            results[tag] = ("rollback",)
+
+    t1 = threading.Thread(target=worker, args=("lower", 1))
+    t2 = threading.Thread(target=worker, args=("higher", 2))
+    t1.start()
+    assert entered.wait(timeout=15), "lower revoke must reach the blocked close"
+    t2.start()
+    release.set()
+    t1.join(timeout=15)
+    t2.join(timeout=15)
+    assert not t1.is_alive() and not t2.is_alive()
+    # The old broken tuple [(1, ValueError, None), (2, return, 2)] must be
+    # impossible: no caller returns success while a cleanup failure relevant
+    # to the sealed generation is in flight or completed-but-unreported, and
+    # the failed stream id / RevocationIncomplete stays observable.
+    assert results["lower"][0] != "ok", f"lower returned success: {results}"
+    assert results["higher"][0] != "ok", f"higher returned success: {results}"
+    incomplete = [r for r in results.values() if r[0] == "incomplete"]
+    assert incomplete and any("s-race" in r[2] for r in incomplete), (
+        f"failed stream id / RevocationIncomplete lost: {results}"
+    )
+    assert state.revocation_epoch == 2
+    assert registry.is_open("s-race") is False
+    assert results["higher"][1] == 2  # type: ignore[index]
+    assert results["higher"][2] == ("s-race",)  # type: ignore[index]
+
+
 if __name__ == "__main__":
     main()

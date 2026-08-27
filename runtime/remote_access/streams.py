@@ -3,9 +3,18 @@
 
 A closed stream refuses further frames; new streams are refused after a
 revocation has closed the registry.
+
+The registry owns the cleanup lifecycle as a one-shot state machine: the
+first ``close_all`` seals and runs the transport cleanup exactly once, and
+the terminal result is shared/persisted so that NO caller may return success
+while an in-flight or completed cleanup failure relevant to the sealed
+generation is unreported (TASK-5867). Transport-close callbacks never run
+under the lifecycle lock, and same-thread re-entrant ``close_all`` returns
+immediately — there is no lock-across-callback deadlock.
 """
 from __future__ import annotations
 
+import threading
 from typing import Protocol
 
 
@@ -25,6 +34,12 @@ class StreamCloseError(Exception):
     The registry is still sealed (fail closed): every handle was dropped and
     no new stream can open, so a revoked device never retains a live
     registry-tracked stream. The failed ids are exposed for diagnostics only.
+
+    The failure is PERSISTED on the registry: every subsequent ``close_all``
+    — from a concurrent or a later revocation — re-raises the same failed ids
+    rather than reporting a successful idempotent no-op, so the cleanup
+    failure relevant to the sealed generation is never lost behind a
+    higher-epoch race (TASK-5867).
     """
 
     def __init__(self, stream_ids: list[str] | tuple[str, ...]) -> None:
@@ -149,6 +164,12 @@ class StreamRegistry:
     def __init__(self) -> None:
         self._streams: dict[str, _TrackedStream] = {}
         self._revoked = False
+        # ── cleanup lifecycle (one-shot; terminal result shared/persisted) ──
+        self._lock = threading.Lock()  # guards lifecycle state, NOT callbacks
+        self._cleanup_started = False
+        self._cleanup_done = threading.Event()
+        self._cleanup_failed_ids: tuple[str, ...] = ()
+        self._in_cleanup = threading.local()  # same-thread re-entrancy guard
 
     def open(self, stream_id: str, handle: StreamHandle) -> _TrackedStream:
         """Track ``handle`` under ``stream_id`` and return the registry-owned
@@ -171,32 +192,81 @@ class StreamRegistry:
             tracked.close()
 
     def close_all(self) -> None:
-        """Seal the registry and close every open handle (idempotent).
+        """Seal the registry and close every open handle exactly once, sharing
+        the terminal cleanup result across concurrent callers (contract §9;
+        TASK-5867).
 
-        Fail-closed ordering — seal FIRST, close AFTER:
+        Lifecycle:
 
-        1. every retained wrapper is sealed (``receive``/``send`` now reject,
-           ``closed`` reports True) before any transport close is attempted;
-        2. handles are dropped from the map and each underlying ``close()`` is
-           attempted even when an earlier one raises;
-        3. close failures are surfaced as ``StreamCloseError`` AFTER the
-           registry is sealed, naming the failed ids — a revoked device never
-           retains a live handle and the denial state is unambiguous.
+        1. the FIRST caller seals the registry and every retained wrapper
+           (fail-closed byte safety), snapshots the streams, and marks the
+           cleanup started — all under the lifecycle lock;
+        2. transport closes run OUTSIDE the lock (callbacks never run under
+           it; a same-thread re-entrant ``close_all`` from inside a callback
+           returns immediately via the thread-local guard);
+        3. concurrent callers WAIT on ``_cleanup_done`` without holding any
+           lock and then observe the SAME persisted terminal result — a
+           racing revoke can never treat an in-flight cleanup as a
+           successful idempotent no-op;
+        4. every subsequent caller re-raises the persisted failures as
+           ``StreamCloseError`` — a completed cleanup failure relevant to the
+           sealed generation is never silently forgotten.
+
+        Fail-closed ordering is preserved: every retained wrapper is sealed
+        BEFORE any transport close is attempted, so a raising close can never
+        leave the externally retained handle readable, writable, or
+        untracked.
         """
-        if self._revoked:
-            return  # idempotent
-        self._revoked = True
-        for tracked in list(self._streams.values()):
-            tracked.seal()
-        failed: list[str] = []
-        for stream_id, tracked in list(self._streams.items()):
-            del self._streams[stream_id]
+        if getattr(self._in_cleanup, "active", False):
+            # Same-thread re-entrancy from within a transport-close callback:
+            # the outer cleanup run owns the terminal result; return now (no
+            # event wait — waiting would deadlock on our own completion).
+            return
+        pending: list[tuple[str, _TrackedStream]] = []
+        role = "observe"
+        failures: tuple[str, ...] = ()
+        with self._lock:
+            if self._cleanup_done.is_set():
+                # Terminal result already published: observe it.
+                failures = self._cleanup_failed_ids
+                role = "observe"
+            elif self._cleanup_started:
+                # Cleanup in flight by another caller: wait outside the lock.
+                role = "wait"
+            else:
+                # First caller: seal first, snapshot, mark started.
+                self._revoked = True
+                for tracked in list(self._streams.values()):
+                    tracked.seal()
+                pending = list(self._streams.items())
+                self._streams.clear()
+                self._cleanup_started = True
+                role = "run"
+        if role == "wait":
+            # No lock is held while waiting: the cleanup runner can publish
+            # the terminal result and set the event without deadlocking.
+            self._cleanup_done.wait()
+            with self._lock:
+                failures = self._cleanup_failed_ids
+        elif role == "run":
+            failed: list[str] = []
+            self._in_cleanup.active = True
             try:
-                tracked._close_inner()
-            except Exception:
-                failed.append(stream_id)
-        if failed:
-            raise StreamCloseError(failed)
+                for stream_id, tracked in pending:
+                    try:
+                        tracked._close_inner()
+                    except Exception:
+                        failed.append(stream_id)
+            finally:
+                with self._lock:
+                    self._cleanup_failed_ids = tuple(failed)
+                    self._cleanup_done.set()
+                self._in_cleanup.active = False
+            if failed:
+                raise StreamCloseError(failed)
+            return
+        if failures:
+            raise StreamCloseError(failures)
 
     def is_open(self, stream_id: str) -> bool:
         return stream_id in self._streams
