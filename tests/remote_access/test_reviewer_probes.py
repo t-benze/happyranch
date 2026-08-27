@@ -1,0 +1,176 @@
+"""Checked-in regression battery replicating the exact TASK-5852 reviewer
+probes
+against the fix-forward head. Each probe must now close its finding."""
+from __future__ import annotations
+
+import datetime as dt
+import json
+from datetime import timedelta
+
+from runtime.remote_access import identity
+from runtime.remote_access.authorization import AuthorizationVerifier, TrustState
+from runtime.remote_access.credentials import StaticDaemonCredentialProvider
+from runtime.remote_access.forwarding import LOOPBACK_HOST, HttpLoopbackForwarder, LoopbackTarget
+from runtime.remote_access.gateway import ConnectorGateway, GatewayContext
+from runtime.remote_access.policy import PolicyEnvelope, RoutePolicyConsumer
+from runtime.remote_access.revocation import RevocationCoordinator
+from runtime.remote_access.stripping import CredentialScanner
+from runtime.remote_access.streams import StreamClosed, StreamRegistry
+
+NOW = dt.datetime(2026, 8, 27, 12, 0, tzinfo=dt.timezone.utc)
+BEARER = "daemon-bearer-test-token-42"
+CONTRACT = "tests/contract/managed_remote_access/route-policy.json"
+
+with open(CONTRACT) as fh:
+    FIXTURE = json.load(fh)
+
+
+def make_envelope(artifact, **kw):
+    return PolicyEnvelope(
+        schema_version=1,
+        artifact=artifact,
+        artifact_version=1,
+        issued_at=NOW - timedelta(seconds=60),
+        max_age_seconds=3600,
+        revision=1,
+        state="active",
+        **kw,
+    )
+
+
+def consumer(artifact, **kw):
+    return RoutePolicyConsumer.from_envelope(make_envelope(artifact, **kw), now=NOW)
+
+
+def ctx(forwarder=None, registry=None, state=None):
+    from .conftest import default_authorization_state, default_identity
+
+    state = state or default_authorization_state()
+    return GatewayContext(
+        connector_identity=default_identity(),
+        proof=identity.DeviceProof(
+            device_id="device-a", tenant_id="tenant-a", home_id="home-a",
+            nonce="n1", issued_at=NOW - timedelta(minutes=1),
+            expires_at=NOW + timedelta(minutes=5),
+        ),
+        proof_verifier=identity.StaticProofVerifier(identity.ProofVerdict(ok=True)),
+        single_use_guard=identity.SingleUseGuard(),
+        authorization=AuthorizationVerifier(state),
+        policy=consumer(FIXTURE),
+        credential_provider=StaticDaemonCredentialProvider(BEARER),
+        forwarder=forwarder,
+        stream_registry=registry or StreamRegistry(),
+        scanner=CredentialScanner(),
+        now=NOW,
+    )
+
+
+def test_reviewer_probes() -> None:
+    failures = []
+
+    # ── Finding 1 (CRITICAL): revocation must close live streams ──────────
+    from .fake_daemon import FakeDaemon
+    from .conftest import default_authorization_state, make_request
+
+    state = default_authorization_state()
+    registry = StreamRegistry()
+    fake = FakeDaemon(expected_bearer=BEARER, hold_open=True)
+    fake.start()
+    try:
+        c = ctx(HttpLoopbackForwarder(LoopbackTarget(LOOPBACK_HOST, fake.port)), registry, state)
+        decision = ConnectorGateway().decide(
+            make_request("GET", "/api/v1/orgs/acme/threads/T-1/tail",
+                         headers=[("accept", "text/event-stream")], stream_type="sse"),
+            c,
+        )
+        assert decision.allowed and decision.stream is not None
+        handle = decision.stream
+        assert fake.started.wait(timeout=5)
+        assert handle.receive() is not None
+        # The old public bypass no longer exists.
+        try:
+            state.apply_revocation(2)
+            failures.append("F1: old public apply_revocation still callable")
+        except AttributeError:
+            pass
+        RevocationCoordinator(state, registry).revoke(epoch=2)
+        if handle.closed is not True:
+            failures.append("F1: stream not closed by revocation transaction")
+        if registry.is_open(handle.stream_id):
+            failures.append("F1: stream still registered after revocation")
+        if state.revocation_epoch != 2:
+            failures.append("F1: trust state not applied")
+        try:
+            handle.receive()
+            failures.append("F1: closed stream still serves frames")
+        except StreamClosed:
+            pass
+    finally:
+        fake.stop()
+
+    # ── Finding 2 (HIGH): locked decision order / nested values / states ──
+    reversed_order = list(reversed(FIXTURE["decision_order"]))
+    try:
+        consumer({**FIXTURE, "decision_order": reversed_order})
+        failures.append("F2: reversed decision_order accepted")
+    except Exception as exc:
+        if getattr(exc, "outcome", None) is None:
+            failures.append(f"F2: non-PolicyError rejection: {type(exc).__name__}")
+
+    for state_name in ("suspended", "active-ish", "revoked"):
+        try:
+            consumer(FIXTURE, state=state_name)
+            failures.append(f"F2: unknown state {state_name!r} accepted")
+        except Exception:
+            pass
+
+    for section, key in (
+        ("normalization", "normalize_once"),
+        ("header_stripping", "strip_authorization"),
+        ("upgrade_semantics", "unsupported_upgrades_denied"),
+    ):
+        mutated = {**FIXTURE}
+        mutated[section] = {**FIXTURE[section], key: False}
+        try:
+            consumer(mutated)
+            failures.append(f"F2: nested flag {section}.{key}=False accepted")
+        except Exception:
+            pass
+
+    # ── Finding 3 (HIGH): forward boundary normalization ──────────────────
+    from .conftest import make_request
+
+    refused = HttpLoopbackForwarder(LoopbackTarget(LOOPBACK_HOST, 1))
+    decision = ConnectorGateway().decide(make_request(), ctx(refused))
+    if decision.allowed:
+        failures.append("F3: connection refused still allowed")
+    if decision.denied is None or decision.denied.audit_category != "daemon_unavailable":
+        failures.append(f"F3: wrong category {getattr(decision.denied, 'audit_category', None)}")
+    if "ConnectionRefusedError" in (decision.denied.detail if decision.denied else "") or \
+       "Errno" in (decision.denied.detail if decision.denied else ""):
+        failures.append("F3: raw exception text leaked in detail")
+
+    class _Hostile:
+        target = type("T", (), {"host": LOOPBACK_HOST, "port": 0})()
+
+        def open_stream(self, *a, **k):
+            raise RuntimeError(f"Bearer {BEARER} tenant-b home-42 device-7 boom")
+
+    decision = ConnectorGateway().decide(make_request(), ctx(_Hostile()))
+    if decision.denied is None or decision.denied.audit_category != "internal_error":
+        failures.append(f"F3: hostile exception category wrong: {getattr(decision.denied, 'audit_category', None)}")
+    blob = (decision.denied.detail if decision.denied else "") + decision.audit_detail
+    for secret in (BEARER, "tenant-b", "home-42", "device-7", "boom"):
+        if secret in blob:
+            failures.append(f"F3: secret leaked: {secret!r}")
+
+    if failures:
+        print("PROBE FAILURES:")
+        for f in failures:
+            print("  -", f)
+        raise SystemExit(1)
+    print("PROBE OK: all three TASK-5852 findings closed at the public seam")
+
+
+if __name__ == "__main__":
+    main()

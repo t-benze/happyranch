@@ -56,6 +56,7 @@ def _gateway_context(
     provider: StaticDaemonCredentialProvider | None = None,
     forwarder=None,
     policy=None,
+    stream_registry=None,
     now=NOW(),
 ) -> GatewayContext:
     from .conftest import build_consumer
@@ -72,7 +73,7 @@ def _gateway_context(
         policy=policy or build_consumer(route_policy_fixture),
         credential_provider=provider or StaticDaemonCredentialProvider(BEARER),
         forwarder=forwarder or ForwardingHarness(),
-        stream_registry=StreamRegistry(),
+        stream_registry=stream_registry or StreamRegistry(),
         scanner=CredentialScanner(),
         now=now,
     )
@@ -163,8 +164,11 @@ def test_denied_when_proof_expired(route_policy_fixture) -> None:
 
 
 def test_denied_when_revoked_device(route_policy_fixture) -> None:
+    from runtime.remote_access.revocation import RevocationCoordinator
+    from runtime.remote_access.streams import StreamRegistry
+
     state = default_authorization_state()
-    state.apply_revocation(epoch=2)
+    RevocationCoordinator(state, StreamRegistry()).revoke(epoch=2)
     ctx = _gateway_context(route_policy_fixture, authz=AuthorizationVerifier(state))
     decision = ConnectorGateway().decide(make_request(), ctx)
     assert decision.denied.deny_category == "revocation"
@@ -436,3 +440,167 @@ def test_denied_detail_never_contains_bearer(route_policy_fixture) -> None:
     assert decision.denied is not None
     assert BEARER not in decision.denied.detail
     assert BEARER not in decision.audit_detail
+
+
+# ── forwarding boundary: every open/forward/stream failure is normalized ──
+#
+# The gateway's forwarding boundary must catch and normalize every
+# forward/open/stream failure (including ConnectionRefusedError and hostile
+# exception text) into a stable Unit-A-category, tenant-neutral, secret-free
+# denial, and deterministically close partial response/stream resources.
+
+
+def test_connection_refused_normalized_to_daemon_unavailable(route_policy_fixture) -> None:
+    """Literal loopback connection refusal must produce a stable denial, not
+    escape decide() as a raw ConnectionRefusedError."""
+    forwarder = HttpLoopbackForwarder(LoopbackTarget(LOOPBACK_HOST, 1))
+    ctx = _gateway_context(route_policy_fixture, forwarder=forwarder)
+    decision = ConnectorGateway().decide(make_request(), ctx)
+    assert decision.allowed is False
+    assert decision.denied is not None
+    assert decision.denied.deny_category == "local_daemon"
+    assert decision.denied.audit_category == "daemon_unavailable"
+    assert "ConnectionRefusedError" not in decision.denied.detail
+    assert "Errno" not in decision.denied.detail
+
+
+def test_forwarder_raw_oserror_denied_and_secret_free(route_policy_fixture) -> None:
+    """A forwarder raising a hostile OSError (raw exception text with secret
+    material) is redacted to the stable daemon-unavailable denial."""
+    class _Hostile(ForwardingHarness):
+        def open_stream(self, method, path, query, headers, body, bearer, stream_id):
+            raise ConnectionRefusedError(
+                f"[Errno 111] tenant-b home-42 device-7 {BEARER} Connection refused"
+            )
+
+    ctx = _gateway_context(route_policy_fixture, forwarder=_Hostile())
+    decision = ConnectorGateway().decide(make_request(), ctx)
+    assert decision.allowed is False
+    assert decision.denied is not None
+    assert decision.denied.deny_category == "local_daemon"
+    assert decision.denied.audit_category == "daemon_unavailable"
+    blob = decision.denied.detail + decision.audit_detail
+    for secret in (BEARER, "tenant-b", "home-42", "device-7", "Errno", "Connection refused"):
+        assert secret not in blob
+
+
+def test_forwarder_hostile_exception_redacted_to_internal(route_policy_fixture) -> None:
+    """Arbitrary forwarder exceptions are redacted to the internal category;
+    raw exception text never reaches any decision surface."""
+    class _Hostile(ForwardingHarness):
+        def open_stream(self, method, path, query, headers, body, bearer, stream_id):
+            raise RuntimeError(f"boom at /home/user/.happyranch with {BEARER} for tenant-b")
+
+    ctx = _gateway_context(route_policy_fixture, forwarder=_Hostile())
+    decision = ConnectorGateway().decide(make_request(), ctx)
+    assert decision.allowed is False
+    assert decision.denied is not None
+    assert decision.denied.deny_category == "internal"
+    assert decision.denied.audit_category == "internal_error"
+    blob = decision.denied.detail + decision.audit_detail
+    for secret in (BEARER, "boom", "/home/user", "tenant-b"):
+        assert secret not in blob
+
+
+def test_forwarder_open_stream_raises_connection_refused(route_policy_fixture) -> None:
+    """open_stream failure is normalized the same way as forward failure."""
+    from types import SimpleNamespace
+
+    class _Hostile(ForwardingHarness):
+        def open_stream(self, method, path, query, headers, body, bearer, stream_id):
+            raise ConnectionRefusedError("[Errno 111] Connection refused")
+
+    ctx = _gateway_context(route_policy_fixture, forwarder=_Hostile())
+    decision = ConnectorGateway().decide(
+        make_request("GET", "/api/v1/orgs/acme/threads/T-1/tail", stream_type="sse"), ctx
+    )
+    assert decision.allowed is False
+    assert decision.denied is not None
+    assert decision.denied.deny_category == "local_daemon"
+    assert decision.denied.audit_category == "daemon_unavailable"
+    assert "Errno" not in decision.denied.detail
+
+
+def test_stream_receive_failure_normalized_and_resources_closed(route_policy_fixture) -> None:
+    """A mid-stream receive failure on an HTTP exchange denies with the stable
+    category and deterministically closes the partial stream resources."""
+    from types import SimpleNamespace
+
+    class _BrokenHandle:
+        stream_id = "s-broken"
+        status = 200
+        headers: tuple = ()
+
+        def receive(self) -> bytes | None:
+            raise ConnectionResetError("[Errno 104] connection reset by peer")
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _Broken(ForwardingHarness):
+        def open_stream(self, method, path, query, headers, body, bearer, stream_id):
+            handle = _BrokenHandle()
+            handle.closed = False
+            return handle
+
+    registry = StreamRegistry()
+    ctx = _gateway_context(route_policy_fixture, forwarder=_Broken(), stream_registry=registry)
+    decision = ConnectorGateway().decide(make_request(), ctx)
+    assert decision.allowed is False
+    assert decision.denied is not None
+    assert decision.denied.deny_category == "local_daemon"
+    assert decision.denied.audit_category == "daemon_unavailable"
+    assert "Errno" not in decision.denied.detail
+    assert registry.is_open("s-broken") is False, "partial stream must be dropped from the registry"
+
+
+def test_registry_revoked_race_closes_opened_handle(route_policy_fixture) -> None:
+    """If the registry is revoked between open_stream and registration, the
+    handle is closed and the denial is the normative revocation category."""
+    from types import SimpleNamespace
+
+    class _Handle:
+        stream_id = "s-race"
+        status = 200
+        headers: tuple = ()
+
+        def receive(self) -> bytes | None:
+            return b"data: hello\n\n"
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _Racy(ForwardingHarness):
+        def open_stream(self, method, path, query, headers, body, bearer, stream_id):
+            handle = _Handle()
+            handle.closed = False
+            return handle
+
+    registry = StreamRegistry()
+    registry.close_all()  # sealed before the forward attempt
+    ctx = _gateway_context(route_policy_fixture, forwarder=_Racy(), stream_registry=registry)
+    decision = ConnectorGateway().decide(
+        make_request("GET", "/api/v1/orgs/acme/threads/T-1/tail", stream_type="sse"), ctx
+    )
+    assert decision.allowed is False
+    assert decision.denied is not None
+    assert decision.denied.deny_category == "revocation"
+    assert decision.denied.audit_category == "revocation_stream_closed"
+
+
+def test_sse_open_stream_exception_never_reaches_client(route_policy_fixture) -> None:
+    """Hostile exception text from stream open cannot escape to the stream
+    decision surface (SSE path)."""
+    class _Hostile(ForwardingHarness):
+        def open_stream(self, method, path, query, headers, body, bearer, stream_id):
+            raise RuntimeError(f"Bearer {BEARER} leaked for tenant-b/home-42")
+
+    ctx = _gateway_context(route_policy_fixture, forwarder=_Hostile())
+    decision = ConnectorGateway().decide(
+        make_request("GET", "/api/v1/orgs/acme/threads/T-1/tail", stream_type="sse"), ctx
+    )
+    assert decision.allowed is False
+    assert decision.denied is not None
+    blob = decision.denied.detail + decision.audit_detail
+    for secret in (BEARER, "leaked", "tenant-b", "home-42"):
+        assert secret not in blob

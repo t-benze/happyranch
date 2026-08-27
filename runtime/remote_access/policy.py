@@ -25,6 +25,96 @@ SUPPORTED_SCHEMA_VERSION = 1
 SUPPORTED_ARTIFACT_VERSION = 1
 MAX_CLOCK_SKEW_SECONDS = 300
 
+# Locked Unit-A security schema: the consumer trusts the complete normative
+# contract. Any drift in the locked nine-step decision order, the default
+# behavior, nested security-relevant controls, the artifact status, or the
+# operational state fails closed at load (policy_malformed) — reversed,
+# missing, or duplicated order, flipped controls, and unknown states are
+# never treated as active.
+LOCKED_DECISION_ORDER: tuple[str, ...] = (
+    "authenticate",
+    "bind",
+    "proof",
+    "policy",
+    "normalize",
+    "allowlist",
+    "strip",
+    "bearer",
+    "redact",
+)
+LOCKED_DEFAULT_BEHAVIOR = "deny_unclassified"
+LOCKED_ARTIFACT_STATUS = "normative-contract"
+LOCKED_BEARER_INJECTION_HOP = "connector_to_127.0.0.1_only"
+LOCKED_NORMALIZATION_KEYS = frozenset(
+    {
+        "normalize_once",
+        "percent_encoding",
+        "dot_segments",
+        "duplicate_slashes",
+        "query_separation",
+        "unicode_control_bytes",
+        "absolute_form_authority",
+        "ambiguity_denied",
+    }
+)
+LOCKED_HEADER_STRIPPING_KEYS = frozenset(
+    {
+        "strip_authorization",
+        "strip_forwarding",
+        "strip_hop_by_hop",
+        "strip_cookies",
+        "strip_host",
+        "daemon_bearer_injection_hop",
+        "inject_only_on_loopback",
+        "reject_duplicate_critical_headers",
+        "reject_smuggling",
+    }
+)
+LOCKED_UPGRADE_KEYS = frozenset(
+    {
+        "allowed",
+        "sse",
+        "websocket",
+        "unsupported_upgrades_denied",
+        "unsupported_bodies_denied",
+    }
+)
+LOCKED_FORBIDDEN_CLASS_IDS = frozenset(
+    {
+        "auth_bootstrap_registration",
+        "agent_callbacks",
+        "management",
+        "founder_as_founder",
+        "memory_learning_writes",
+        "artifact_upload_agent_only",
+        "adapter_administration",
+        "executor_registration",
+        "portability_reconciliation",
+        "unclassified_default_deny",
+    }
+)
+KNOWN_POLICY_STATES = frozenset(
+    {"active", "empty", "malformed", "compiler_failed", "apply_failed"}
+)
+
+# Flags that must be enabled for the Unit-A security contract to hold.
+_LOCKED_ENABLED_FLAGS = frozenset(
+    {
+        "normalize_once",
+        "ambiguity_denied",
+        "strip_authorization",
+        "strip_forwarding",
+        "strip_hop_by_hop",
+        "strip_cookies",
+        "strip_host",
+        "inject_only_on_loopback",
+        "reject_duplicate_critical_headers",
+        "reject_smuggling",
+        "unsupported_upgrades_denied",
+        "unsupported_bodies_denied",
+    }
+)
+
 _REQUIRED_ARTIFACT_KEYS = frozenset(
     {
         "version",
@@ -151,6 +241,62 @@ class RoutePolicyConsumer:
         if envelope.artifact_version != SUPPORTED_ARTIFACT_VERSION:
             raise malformed()
 
+        # Locked security schema: the complete Unit-A contract is trusted only
+        # when every security-relevant value matches the normative fixture.
+        # Reversed/missing/duplicated decision order, altered defaults, flipped
+        # nested controls, unknown states, and unknown/duplicate forbidden
+        # classes all fail closed as policy_malformed — never treated as active.
+        decision_order = tuple(str(x) for x in artifact["decision_order"])
+        if decision_order != LOCKED_DECISION_ORDER:
+            raise malformed()
+        if str(artifact["default_behavior"]) != LOCKED_DEFAULT_BEHAVIOR:
+            raise malformed()
+        if str(artifact["status"]) != LOCKED_ARTIFACT_STATUS:
+            raise malformed()
+        if not isinstance(envelope.state, str) or envelope.state not in KNOWN_POLICY_STATES:
+            raise malformed()
+        normalization = artifact["normalization"]
+        if not isinstance(normalization, dict) or set(normalization) != LOCKED_NORMALIZATION_KEYS:
+            raise malformed()
+        header_stripping = artifact["header_stripping"]
+        if not isinstance(header_stripping, dict) or set(header_stripping) != LOCKED_HEADER_STRIPPING_KEYS:
+            raise malformed()
+        if str(header_stripping["daemon_bearer_injection_hop"]) != LOCKED_BEARER_INJECTION_HOP:
+            raise malformed()
+        upgrade_semantics = artifact["upgrade_semantics"]
+        if not isinstance(upgrade_semantics, dict) or set(upgrade_semantics) != LOCKED_UPGRADE_KEYS:
+            raise malformed()
+        if not isinstance(upgrade_semantics.get("allowed"), list) or not upgrade_semantics["allowed"]:
+            raise malformed()
+        for section, flags in (
+            (normalization, _LOCKED_ENABLED_FLAGS & LOCKED_NORMALIZATION_KEYS),
+            (header_stripping, _LOCKED_ENABLED_FLAGS & LOCKED_HEADER_STRIPPING_KEYS),
+            (upgrade_semantics, _LOCKED_ENABLED_FLAGS & LOCKED_UPGRADE_KEYS),
+        ):
+            for flag in flags:
+                if section.get(flag) is not True:
+                    raise malformed()
+        # Prose semantics must be present (non-empty strings) — an emptied or
+        # missing normative rule is drift, not documentation.
+        for prose_key in LOCKED_NORMALIZATION_KEYS - _LOCKED_ENABLED_FLAGS:
+            value = normalization.get(prose_key)
+            if not isinstance(value, str) or not value.strip():
+                raise malformed()
+        if set(upgrade_semantics.get("allowed")) != {"sse", "websocket"}:
+            raise malformed()
+        for surface in ("sse", "websocket"):
+            surface_cfg = upgrade_semantics.get(surface)
+            if not isinstance(surface_cfg, dict) or not isinstance(
+                surface_cfg.get("allowed_templates"), list
+            ):
+                raise malformed()
+        forbidden_classes = artifact["forbidden_classes"]
+        if not isinstance(forbidden_classes, list) or not forbidden_classes:
+            raise malformed()
+        class_ids = [str(c["id"]) if isinstance(c, dict) else "" for c in forbidden_classes]
+        if set(class_ids) != LOCKED_FORBIDDEN_CLASS_IDS or len(class_ids) != len(set(class_ids)):
+            raise malformed()
+
         digest = hashlib.sha256(canonical_json(artifact)).hexdigest()
         if pinned_digest is not None and digest != pinned_digest:
             raise malformed()
@@ -185,6 +331,17 @@ class RoutePolicyConsumer:
 
     def require_current(self, now: datetime) -> None:
         """Require present, well-formed, current policy/revocation state."""
+        if not isinstance(self._state, str) or self._state not in KNOWN_POLICY_STATES:
+            # Unknown operational states are never treated as active: an
+            # unrecognized state fails closed as malformed.
+            raise PolicyError(
+                DeniedOutcome(
+                    deny_category="policy",
+                    audit_category="policy_malformed",
+                    detail=detail_for("policy", "policy_malformed"),
+                    reason="malformed",
+                )
+            )
         state_outcome = {
             "empty": ("policy", "policy_missing"),
             "malformed": ("policy", "policy_malformed"),

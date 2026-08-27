@@ -3,8 +3,10 @@
 The authorization verifier enforces the (tenant, home, device) binding,
 current pairing, current-device identity, and revocation state. Trust
 updates apply monotonically: revocation and pairing epochs can only move
-forward; rollback is rejected. A ``RevocationSignal`` closes live streams
-before or atomically with durable desired-state application.
+forward; rollback is rejected. Revocation is applied through the
+authoritative ``RevocationCoordinator`` transaction (``revocation`` module),
+which closes live streams before or atomically with trust-state application;
+``TrustState._apply_revocation`` is private and must not be called directly.
 """
 from __future__ import annotations
 
@@ -46,8 +48,15 @@ class TrustState:
         self.devices[device.device_id] = device
         self.current_device_id = device.device_id
 
-    def apply_revocation(self, epoch: int) -> None:
-        """Revoke at a monotonic epoch; every device is marked revoked."""
+    def _apply_revocation(self, epoch: int) -> None:
+        """Apply trust-state revocation at a monotonic epoch; every device is
+        marked revoked.
+
+        PRIVATE: state revocation must only ever be applied through the
+        authoritative ``RevocationCoordinator`` transaction (contract §9),
+        which closes every live stream before or atomically with this
+        application. Calling this directly would bypass live-stream closure.
+        """
         if epoch <= self.revocation_epoch:
             raise ValueError("revocation epoch rollback rejected")
         self.revocation_epoch = epoch

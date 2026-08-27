@@ -8,11 +8,17 @@ Every request/stream runs these steps in this exact order:
   bearer (read daemon bearer) -> forward solely to 127.0.0.1
 
 Any step failure denies fail-closed with a stable, tenant-neutral category.
+The forwarding boundary additionally normalizes every forward/open/stream
+failure (connection refused, timeouts, HTTP parse errors, hostile exception
+text) into the stable Unit-A categories and deterministically closes partial
+response/stream resources — raw exception strings, the daemon bearer, and
+tenant/home/device identifiers can never escape to any decision surface.
 Ordering mutations and guard removals change the security outcome — the
 checked-in mutation battery proves it.
 """
 from __future__ import annotations
 
+import http.client
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -49,6 +55,31 @@ def _deny(deny_category: str, audit_category: str, reason: str | None = None) ->
         detail=detail_for(deny_category, audit_category, reason),
         reason=reason,
     )
+
+
+def _forward_failure(exc: BaseException) -> DeniedOutcome:
+    """Map forward/open/stream failures to stable, tenant-neutral denials.
+
+    Transport failures at the loopback boundary (connection refused/reset,
+    timeouts, HTTP parse errors) map to the normative local-daemon unavailable
+    category; credential-shaped outbound material is its own category; any
+    other failure is redacted to internal. Raw exception text never survives.
+    """
+    if isinstance(exc, OutboundLeakError):
+        return _deny("local_daemon", "local_daemon_denied", "credential_shaped")
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError, http.client.HTTPException)):
+        return _deny("local_daemon", "daemon_unavailable", "unavailable")
+    return redact_exception(exc)
+
+
+def _close_partial(handle) -> None:
+    """Deterministically close a partially opened stream/resource; close
+    failures are swallowed (the denial is already determined and the handle is
+    dropped from the registry, so no live stream survives)."""
+    try:
+        handle.close()
+    except Exception:
+        pass
 
 
 @dataclass(frozen=True)
@@ -308,14 +339,22 @@ class ConnectorGateway:
         bearer = state.bearer
         if target is None or bearer is None:
             return self._redact(_deny("internal", "internal_error", "internal"))
+        stream_id = f"connector-{uuid.uuid4().hex[:16]}"
+        handle = None
         try:
             # Every request/stream opens through the registry so revocation can
             # close in-flight HTTP/SSE/WebSocket exchanges immediately.
-            stream_id = f"connector-{uuid.uuid4().hex[:16]}"
             handle = ctx.forwarder.open_stream(
                 target.method, target.path, target.query, state.headers, request.body, bearer, stream_id
             )
-            ctx.stream_registry.open(stream_id, handle)
+            try:
+                ctx.stream_registry.open(stream_id, handle)
+            except StreamClosed:
+                # Revocation won the race between open and registration: the
+                # handle is closed deterministically and the denial is the
+                # normative revocation category.
+                _close_partial(handle)
+                return self._redact(_deny("revocation", "revocation_stream_closed", "revoked"))
             if request.stream_type == "http":
                 try:
                     chunks: list[bytes] = []
@@ -334,6 +373,16 @@ class ConnectorGateway:
                     )
                 except StreamClosed:
                     return self._redact(_deny("revocation", "revocation_stream_closed", "revoked"))
+                except Exception as exc:
+                    # Mid-stream receive failure (connection reset, HTTP parse
+                    # error, ...): drop the partial stream deterministically and
+                    # normalize the denial.
+                    try:
+                        ctx.stream_registry.close(stream_id)
+                    except Exception:
+                        pass
+                    _close_partial(handle)
+                    return self._redact(_forward_failure(exc))
             return Decision(
                 allowed=True,
                 audit_category="allowed_request",
@@ -342,6 +391,13 @@ class ConnectorGateway:
             )
         except OutboundLeakError:
             return self._redact(_deny("local_daemon", "local_daemon_denied", "credential_shaped"))
+        except Exception as exc:
+            # Forward/open failure (connection refused, timeout, HTTP parse
+            # error, hostile exception text, ...): normalize to a stable
+            # category and close any partially opened resources.
+            if handle is not None:
+                _close_partial(handle)
+            return self._redact(_forward_failure(exc))
 
     def _redact(self, outcome: DeniedOutcome) -> Decision:
         return Decision(

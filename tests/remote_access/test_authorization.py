@@ -17,8 +17,15 @@ from runtime.remote_access.authorization import (
     RevocationSignal,
     TrustState,
 )
+from runtime.remote_access.revocation import RevocationCoordinator
+from runtime.remote_access.streams import StreamRegistry
 
 from .conftest import NOW, default_authorization_state, default_identity
+
+
+def _revoke(state, epoch: int) -> None:
+    """Revoke through the authoritative public transaction (contract §9)."""
+    RevocationCoordinator(state, StreamRegistry()).revoke(epoch=epoch)
 
 
 def _authz() -> AuthorizationVerifier:
@@ -80,7 +87,7 @@ def test_expired_pairing_denied_pairing() -> None:
 
 def test_revoked_device_denied_before_request() -> None:
     state = default_authorization_state()
-    state.apply_revocation(epoch=2)
+    _revoke(state, epoch=2)
     verdict = AuthorizationVerifier(state).check("tenant-a", "home-a", "device-a", now=NOW())
     assert verdict.ok is False
     assert verdict.reason == "revocation"
@@ -88,10 +95,10 @@ def test_revoked_device_denied_before_request() -> None:
 
 def test_revocation_epoch_monotonic() -> None:
     state = default_authorization_state()
-    state.apply_revocation(epoch=1)
-    state.apply_revocation(epoch=2)
+    _revoke(state, epoch=1)
+    _revoke(state, epoch=2)
     with pytest.raises(ValueError):
-        state.apply_revocation(epoch=1)  # rollback
+        _revoke(state, epoch=1)  # rollback
 
 
 def test_pairing_epoch_monotonic() -> None:

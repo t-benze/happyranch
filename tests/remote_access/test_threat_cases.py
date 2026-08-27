@@ -142,9 +142,10 @@ def test_revoked_mid_http_stream(threat_cases_fixture, route_policy_fixture) -> 
     import threading
 
     from runtime.remote_access import identity
-    from runtime.remote_access.authorization import AuthorizationVerifier, RevocationSignal
+    from runtime.remote_access.authorization import AuthorizationVerifier
     from runtime.remote_access.gateway import GatewayContext
     from runtime.remote_access.credentials import StaticDaemonCredentialProvider
+    from runtime.remote_access.revocation import RevocationCoordinator
     from runtime.remote_access.stripping import CredentialScanner
     from runtime.remote_access.streams import StreamRegistry
     from .conftest import default_authorization_state, default_identity
@@ -153,8 +154,8 @@ def test_revoked_mid_http_stream(threat_cases_fixture, route_policy_fixture) -> 
     fake.start()
     try:
         registry = StreamRegistry()
-        signal = RevocationSignal()
-        signal.subscribe(lambda epoch: registry.close_all())
+        state = default_authorization_state()
+        coordinator = RevocationCoordinator(state, registry)
         ctx = GatewayContext(
             connector_identity=default_identity(),
             proof=identity.DeviceProof(
@@ -167,7 +168,7 @@ def test_revoked_mid_http_stream(threat_cases_fixture, route_policy_fixture) -> 
             ),
             proof_verifier=identity.StaticProofVerifier(identity.ProofVerdict(ok=True)),
             single_use_guard=identity.SingleUseGuard(),
-            authorization=AuthorizationVerifier(default_authorization_state()),
+            authorization=AuthorizationVerifier(state),
             policy=CaseBuilder(route_policy_fixture)._consumer(),
             credential_provider=StaticDaemonCredentialProvider(BEARER),
             forwarder=HttpLoopbackForwarder(LoopbackTarget(LOOPBACK_HOST, fake.port)),
@@ -184,7 +185,7 @@ def test_revoked_mid_http_stream(threat_cases_fixture, route_policy_fixture) -> 
         worker = threading.Thread(target=lambda: result.update(decision=gateway.decide(request, ctx)))
         worker.start()
         assert fake.started.wait(timeout=5), "fake daemon never saw the request"
-        signal.fire(epoch=3)  # revocation lands mid-flight
+        coordinator.revoke(epoch=3)  # authoritative transaction lands mid-flight
         worker.join(timeout=5)
         assert not worker.is_alive(), "in-flight HTTP exchange must abort on revocation"
         decision = result["decision"]
@@ -203,9 +204,10 @@ def test_revoked_mid_sse_stream(threat_cases_fixture, route_policy_fixture) -> N
     import datetime as dt
 
     from runtime.remote_access import identity
-    from runtime.remote_access.authorization import AuthorizationVerifier, RevocationSignal
+    from runtime.remote_access.authorization import AuthorizationVerifier
     from runtime.remote_access.gateway import GatewayContext
     from runtime.remote_access.credentials import StaticDaemonCredentialProvider
+    from runtime.remote_access.revocation import RevocationCoordinator
     from runtime.remote_access.stripping import CredentialScanner
     from runtime.remote_access.streams import StreamClosed, StreamRegistry
     from .conftest import default_authorization_state, default_identity
@@ -214,8 +216,8 @@ def test_revoked_mid_sse_stream(threat_cases_fixture, route_policy_fixture) -> N
     fake.start()
     try:
         registry = StreamRegistry()
-        signal = RevocationSignal()
-        signal.subscribe(lambda epoch: registry.close_all())
+        state = default_authorization_state()
+        coordinator = RevocationCoordinator(state, registry)
         ctx = GatewayContext(
             connector_identity=default_identity(),
             proof=identity.DeviceProof(
@@ -228,7 +230,7 @@ def test_revoked_mid_sse_stream(threat_cases_fixture, route_policy_fixture) -> N
             ),
             proof_verifier=identity.StaticProofVerifier(identity.ProofVerdict(ok=True)),
             single_use_guard=identity.SingleUseGuard(),
-            authorization=AuthorizationVerifier(default_authorization_state()),
+            authorization=AuthorizationVerifier(state),
             policy=CaseBuilder(route_policy_fixture)._consumer(),
             credential_provider=StaticDaemonCredentialProvider(BEARER),
             forwarder=HttpLoopbackForwarder(LoopbackTarget(LOOPBACK_HOST, fake.port)),
@@ -250,7 +252,7 @@ def test_revoked_mid_sse_stream(threat_cases_fixture, route_policy_fixture) -> N
         assert fake.started.wait(timeout=5)
         first = decision.stream.receive()
         assert first is not None
-        signal.fire(epoch=3)
+        coordinator.revoke(epoch=3)
         assert registry.is_open(decision.stream.stream_id) is False
         with pytest.raises(StreamClosed):
             decision.stream.receive()

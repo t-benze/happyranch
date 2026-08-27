@@ -45,6 +45,7 @@ from runtime.remote_access.models import (
     NormalizedTarget,
     RemoteRequest,
 )
+from runtime.remote_access.revocation import RevocationCoordinator, RevocationIncomplete
 from runtime.remote_access.state import InMemoryTrustStateStore, TrustStateStore
 from runtime.remote_access.streams import StreamClosed, StreamHandle, StreamRegistry
 
@@ -69,6 +70,8 @@ __all__ = [
     "ProofVerdict",
     "RemoteRequest",
     "ReplayGuardingVerifier",
+    "RevocationCoordinator",
+    "RevocationIncomplete",
     "RevocationSignal",
     "SingleUseGuard",
     "StaticDaemonCredentialProvider",

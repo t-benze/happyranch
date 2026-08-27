@@ -204,3 +204,169 @@ def test_upgrade_semantics_websocket_empty(route_policy_fixture) -> None:
         "/api/v1/orgs/{slug}/threads/{thread_id}/tail",
         "/api/v1/orgs/{slug}/jobs/{job_id}/tail",
     )
+
+
+# ── locked security schema: decision order / nested values / state ────────
+#
+# The consumer must trust the complete Unit-A security contract: the locked
+# nine-step decision_order, every nested security-relevant value, and the
+# operational state. Reversed/missing/duplicated order, nested-field
+# mutations, and unknown states must all fail closed (policy_malformed).
+
+
+LOCKED_ORDER = (
+    "authenticate",
+    "bind",
+    "proof",
+    "policy",
+    "normalize",
+    "allowlist",
+    "strip",
+    "bearer",
+    "redact",
+)
+
+
+def _mutated(route_policy_fixture, **changes) -> dict:
+    artifact = dict(route_policy_fixture)
+    for key, value in changes.items():
+        artifact[key] = value
+    return artifact
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        tuple(reversed(LOCKED_ORDER)),  # reversed
+        LOCKED_ORDER[:-1],  # missing step (redact)
+        LOCKED_ORDER[1:],  # missing step (authenticate)
+        (LOCKED_ORDER[0],) * 2 + LOCKED_ORDER[1:],  # duplicated step
+        LOCKED_ORDER + ("sneak",),  # unknown step
+        ("normalize",) + LOCKED_ORDER[:-1],  # first step moved to front
+    ],
+)
+def test_decision_order_mutations_fail_closed(route_policy_fixture, order) -> None:
+    with pytest.raises(PolicyError) as excinfo:
+        build_consumer(_mutated(route_policy_fixture, decision_order=list(order)))
+    assert_policy_denied(excinfo.value, "policy", "policy_malformed")
+
+
+def test_default_behavior_mutation_fails_closed(route_policy_fixture) -> None:
+    with pytest.raises(PolicyError) as excinfo:
+        build_consumer(_mutated(route_policy_fixture, default_behavior="allow_unclassified"))
+    assert_policy_denied(excinfo.value, "policy", "policy_malformed")
+
+
+def test_status_mutation_fails_closed(route_policy_fixture) -> None:
+    with pytest.raises(PolicyError) as excinfo:
+        build_consumer(_mutated(route_policy_fixture, status="draft"))
+    assert_policy_denied(excinfo.value, "policy", "policy_malformed")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        ("normalization", {"normalize_once": False}),
+        ("normalization", {"ambiguity_denied": False}),
+        ("normalization", {"percent_encoding": ""}),
+        ("normalization", {"extra_flag": True}),
+        ("header_stripping", {"strip_authorization": False}),
+        ("header_stripping", {"strip_hop_by_hop": False}),
+        ("header_stripping", {"reject_smuggling": False}),
+        ("header_stripping", {"reject_duplicate_critical_headers": False}),
+        ("header_stripping", {"inject_only_on_loopback": False}),
+        ("header_stripping", {"daemon_bearer_injection_hop": "anywhere"}),
+        ("header_stripping", {"strip_cookies": False}),
+        ("header_stripping", {"strip_host": False}),
+        ("upgrade_semantics", {"unsupported_upgrades_denied": False}),
+        ("upgrade_semantics", {"unsupported_bodies_denied": False}),
+        ("upgrade_semantics", {"allowed": []}),
+    ],
+)
+def test_nested_security_value_mutations_fail_closed(route_policy_fixture, mutation) -> None:
+    section, change = mutation
+    artifact = _mutated(route_policy_fixture)
+    artifact[section] = {**artifact[section], **change}
+    with pytest.raises(PolicyError) as excinfo:
+        build_consumer(artifact)
+    assert_policy_denied(excinfo.value, "policy", "policy_malformed")
+
+
+def test_normalization_missing_key_fails_closed(route_policy_fixture) -> None:
+    """A missing nested key is structural drift and fails closed."""
+    artifact = _mutated(route_policy_fixture)
+    artifact["normalization"] = {
+        k: v for k, v in artifact["normalization"].items() if k != "ambiguity_denied"
+    }
+    with pytest.raises(PolicyError) as excinfo:
+        build_consumer(artifact)
+    assert_policy_denied(excinfo.value, "policy", "policy_malformed")
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        [{"id": "not_a_locked_class", "examples": []}],
+        [{"id": "agent_callbacks", "examples": []}, {"id": "agent_callbacks", "examples": []}],
+        [],
+        [{"id": "auth_bootstrap_registration", "examples": []}],
+    ],
+)
+def test_forbidden_classes_mutations_fail_closed(route_policy_fixture, forbidden) -> None:
+    with pytest.raises(PolicyError) as excinfo:
+        build_consumer(_mutated(route_policy_fixture, forbidden_classes=forbidden))
+    assert_policy_denied(excinfo.value, "policy", "policy_malformed")
+
+
+@pytest.mark.parametrize("state", ["active-ish", "suspended", "revoked", "expired", "", "ACTIVE"])
+def test_unknown_policy_states_fail_closed_at_load(route_policy_fixture, state) -> None:
+    with pytest.raises(PolicyError) as excinfo:
+        build_consumer(route_policy_fixture, state=state)
+    assert_policy_denied(excinfo.value, "policy", "policy_malformed")
+
+
+def test_unknown_state_fails_closed_when_constructed_directly(route_policy_fixture) -> None:
+    """Even a directly constructed consumer with an unknown state denies at
+    require_current — unknown states are never treated as active."""
+    from runtime.remote_access.allowlist import AllowEntry
+
+    consumer = RoutePolicyConsumer(
+        artifact=dict(route_policy_fixture),
+        decision_order=LOCKED_ORDER,
+        default_behavior="deny_unclassified",
+        normalization=dict(route_policy_fixture["normalization"]),
+        header_stripping=dict(route_policy_fixture["header_stripping"]),
+        upgrade_semantics=dict(route_policy_fixture["upgrade_semantics"]),
+        forbidden_classes=list(route_policy_fixture["forbidden_classes"]),
+        allow=tuple(
+            AllowEntry(str(e["method"]), str(e["path_template"]))
+            for e in route_policy_fixture["allow"]
+        ),
+        issued_at=NOW() - timedelta(seconds=60),
+        max_age_seconds=3600,
+        revision=1,
+        last_revision=None,
+        state="mystery",
+        digest="x",
+    )
+    with pytest.raises(PolicyError) as excinfo:
+        consumer.require_current(now=NOW())
+    assert_policy_denied(excinfo.value, "policy", "policy_malformed")
+
+
+def test_mutation_reversed_order_changes_digest_and_is_rejected(route_policy_fixture) -> None:
+    """Checked-in mutation: reversing the order also changes the pinned digest
+    — both the locked-schema check and the digest drift reject it."""
+    artifact = _mutated(route_policy_fixture, decision_order=list(reversed(LOCKED_ORDER)))
+    digest = hashlib.sha256(canonical_json(route_policy_fixture)).hexdigest()
+    with pytest.raises(PolicyError) as excinfo:
+        build_consumer(artifact, pinned_digest=digest)
+    assert_policy_denied(excinfo.value, "policy", "policy_malformed")
+
+
+def test_decision_order_locked_tuple_exposed(route_policy_fixture) -> None:
+    from runtime.remote_access.policy import LOCKED_DECISION_ORDER
+
+    assert LOCKED_DECISION_ORDER == LOCKED_ORDER
+    assert len(LOCKED_DECISION_ORDER) == 9
+    assert len(set(LOCKED_DECISION_ORDER)) == 9

@@ -12,11 +12,12 @@ from datetime import timedelta
 import pytest
 
 from runtime.remote_access import identity
-from runtime.remote_access.authorization import AuthorizationVerifier
+from runtime.remote_access.authorization import AuthorizationVerifier, DeviceAuthorization, TrustState
 from runtime.remote_access.credentials import StaticDaemonCredentialProvider
 from runtime.remote_access.forwarding import ForwardingHarness
 from runtime.remote_access.gateway import ConnectorGateway, GatewayContext
 from runtime.remote_access.policy import RoutePolicyConsumer
+from runtime.remote_access.revocation import RevocationCoordinator
 from runtime.remote_access.stripping import CredentialScanner
 from runtime.remote_access.streams import StreamRegistry
 
@@ -111,8 +112,11 @@ def test_mutation_allowlist_disabled_allows_forbidden_route(route_policy_fixture
 
 
 def test_mutation_revocation_check_disabled_allows_revoked_device(route_policy_fixture) -> None:
+    from runtime.remote_access.revocation import RevocationCoordinator
+    from runtime.remote_access.streams import StreamRegistry
+
     state = default_authorization_state()
-    state.apply_revocation(epoch=2)
+    RevocationCoordinator(state, StreamRegistry()).revoke(epoch=2)
     ctx = _ctx(route_policy_fixture, authorization=AuthorizationVerifier(state))
     gateway = ConnectorGateway()
 
@@ -225,6 +229,66 @@ def test_mutation_stream_revocation_ignored_is_detected(route_policy_fixture) ->
             invariant(registry2, handle2)
     finally:
         StreamRegistry.close_all = original
+
+
+def test_mutation_revocation_transaction_skips_close_is_detected(route_policy_fixture) -> None:
+    """The authoritative revocation transaction must compose registry closure:
+    a mutation that applies state without closing streams leaves the revoked
+    device's live stream open — the checked-in invariant catches it."""
+    from runtime.remote_access.authorization import TrustState
+    from runtime.remote_access.revocation import RevocationCoordinator, RevocationIncomplete
+    from runtime.remote_access.streams import StreamRegistry
+
+    def invariant(coordinator, registry, handle) -> None:
+        coordinator.revoke(epoch=2)
+        assert handle.closed is True, "revocation must close every open stream"
+        assert registry.is_open(handle.stream_id) is False
+
+    state = TrustState(
+        connector_identity=identity.ConnectorIdentity(
+            tenant_id="tenant-a", home_id="home-a", connector_id="connector-a"
+        ),
+        pairing_epoch=1,
+        revocation_epoch=0,
+    )
+    state.devices["device-a"] = DeviceAuthorization(
+        device_id="device-a",
+        tenant_id="tenant-a",
+        home_id="home-a",
+        authorization_epoch=1,
+        expires_at=NOW() + timedelta(days=30),
+    )
+    registry = StreamRegistry()
+    handle = _FakeHandle("s1")
+    registry.open("s1", handle)
+    coordinator = RevocationCoordinator(state, registry)
+    invariant(coordinator, registry, handle)  # guard present
+
+    # Mutation: the transaction applies state but never closes streams.
+    original = RevocationCoordinator.revoke
+
+    def _state_only(self, epoch: int) -> int:
+        if epoch <= self.state.revocation_epoch:
+            raise ValueError("revocation epoch rollback rejected")
+        self.state._apply_revocation(epoch)
+        return epoch
+
+    try:
+        RevocationCoordinator.revoke = _state_only  # type: ignore[method-assign]
+        fresh_state = TrustState(
+            connector_identity=state.connector_identity,
+            pairing_epoch=state.pairing_epoch,
+            revocation_epoch=0,
+        )
+        fresh_state.devices["device-a"] = state.devices["device-a"]
+        handle2 = _FakeHandle("s2")
+        registry2 = StreamRegistry()
+        registry2.open("s2", handle2)
+        coordinator2 = RevocationCoordinator(fresh_state, registry2)
+        with pytest.raises(AssertionError):
+            invariant(coordinator2, registry2, handle2)
+    finally:
+        RevocationCoordinator.revoke = original
 
 
 def test_mutation_strip_disabled_allows_auth_header_forward(route_policy_fixture) -> None:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from runtime.remote_access.streams import StreamClosed, StreamRegistry
+from runtime.remote_access.streams import StreamCloseError, StreamClosed, StreamRegistry
 
 
 class _FakeHandle:
@@ -92,3 +92,79 @@ def test_registry_refuses_open_after_revocation() -> None:
     reg.close_all()
     with pytest.raises(StreamClosed):
         reg.open("late", _FakeHandle("late"))
+
+
+class _ExplodingHandle:
+    """A handle whose close() raises — the registry must still seal."""
+
+    def __init__(self, stream_id: str) -> None:
+        self.stream_id = stream_id
+
+    def close(self) -> None:
+        raise OSError("cannot close")
+
+    def receive(self) -> bytes | None:
+        return None
+
+    @property
+    def closed(self) -> bool:
+        return False
+
+
+def test_close_all_fail_closed_when_handle_close_raises() -> None:
+    """A raising handle close still drops the handle and seals the registry;
+    the failure is surfaced after the registry is sealed."""
+    reg = StreamRegistry()
+    good = _FakeHandle("good")
+    reg.open("good", good)
+    reg.open("bad", _ExplodingHandle("bad"))
+
+    with pytest.raises(StreamCloseError) as excinfo:
+        reg.close_all()
+    assert excinfo.value.stream_ids == ("bad",)
+
+    # Fail closed: no live registry-tracked stream survives; new opens refused.
+    assert reg.is_open("good") is False
+    assert reg.is_open("bad") is False
+    assert good.closed is True
+    with pytest.raises(StreamClosed):
+        reg.open("late", _FakeHandle("late"))
+
+
+def test_close_all_is_idempotent() -> None:
+    """A second close_all after sealing is a no-op and never raises."""
+    reg = StreamRegistry()
+    handle = _FakeHandle("s1")
+    reg.open("s1", handle)
+    reg.close_all()
+    reg.close_all()  # must not raise
+    assert reg.is_open("s1") is False
+    with pytest.raises(StreamClosed):
+        reg.open("s2", _FakeHandle("s2"))
+
+
+def test_close_all_seals_before_closing() -> None:
+    """The registry is sealed first: even a close that re-enters cannot open a
+    new stream on a revoked registry."""
+    reg = StreamRegistry()
+    events: list[str] = []
+
+    class _Reentrant:
+        stream_id = "reentrant"
+
+        def close(self) -> None:
+            try:
+                reg.open("late", _FakeHandle("late"))
+            except StreamClosed:
+                events.append("refused")
+
+        def receive(self) -> bytes | None:
+            return None
+
+        @property
+        def closed(self) -> bool:
+            return True
+
+    reg.open("reentrant", _Reentrant())
+    reg.close_all()
+    assert events == ["refused"]

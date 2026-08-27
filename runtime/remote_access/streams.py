@@ -18,6 +18,22 @@ class StreamClosed(Exception):
         self.stream_id = stream_id
 
 
+class StreamCloseError(Exception):
+    """Raised by ``StreamRegistry.close_all`` when one or more handles failed
+    to close.
+
+    The registry is still sealed (fail closed): every handle was dropped and
+    no new stream can open, so a revoked device never retains a live
+    registry-tracked stream. The failed ids are exposed for diagnostics only.
+    """
+
+    def __init__(self, stream_ids: list[str] | tuple[str, ...]) -> None:
+        self.stream_ids: tuple[str, ...] = tuple(stream_ids)
+        super().__init__(
+            f"stream close failed for {len(self.stream_ids)} stream(s)"
+        )
+
+
 class StreamHandle(Protocol):
     stream_id: str
 
@@ -51,10 +67,29 @@ class StreamRegistry:
             handle.close()
 
     def close_all(self) -> None:
+        """Seal the registry and close every open handle (idempotent).
+
+        Fail-closed ordering: the registry is sealed FIRST so no new stream
+        can open and no dropped handle can be re-served; each handle's
+        ``close()`` is still attempted even when an earlier one raises. Any
+        close failures are surfaced as ``StreamCloseError`` AFTER the registry
+        is sealed — a revoked device never retains a live registry-tracked
+        stream and the denial state is unambiguous.
+        """
+        if self._revoked:
+            return  # idempotent
         self._revoked = True
+        failed: list[str] = []
         for stream_id in list(self._streams):
-            self._streams[stream_id].close()
-        self._streams.clear()
+            handle = self._streams.pop(stream_id, None)
+            if handle is None:
+                continue
+            try:
+                handle.close()
+            except Exception:
+                failed.append(stream_id)
+        if failed:
+            raise StreamCloseError(failed)
 
     def is_open(self, stream_id: str) -> bool:
         return stream_id in self._streams

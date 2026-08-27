@@ -17,6 +17,7 @@ from runtime.remote_access.credentials import CredentialUnavailable, StaticDaemo
 from runtime.remote_access.forwarding import ForwardingHarness
 from runtime.remote_access.gateway import ConnectorGateway, GatewayContext
 from runtime.remote_access.policy import PolicyError, RoutePolicyConsumer
+from runtime.remote_access.revocation import RevocationCoordinator
 from runtime.remote_access.stripping import CredentialScanner
 from runtime.remote_access.streams import StreamRegistry
 
@@ -286,7 +287,7 @@ class CaseBuilder:
             policy_kwargs["state"] = "apply_failed"
         elif case_id == "REV-001":
             state = default_authorization_state()
-            state.apply_revocation(epoch=2)
+            RevocationCoordinator(state, StreamRegistry()).revoke(epoch=2)
             authz = AuthorizationVerifier(state)
         elif case_id in {"REV-002", "REV-003"}:
             # handled by the dedicated live-stream tests; not built here.

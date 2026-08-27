@@ -263,6 +263,12 @@ class HttpLoopbackForwarder:
         target = path if query is None else f"{path}?{query}"
         outbound = tuple(headers) + (Header("Authorization", f"Bearer {bearer}"),)
         conn = self._connect()
-        conn.request(method, target, body=body, headers={h.name: h.value for h in outbound})
-        response = conn.getresponse()
+        try:
+            conn.request(method, target, body=body, headers={h.name: h.value for h in outbound})
+            response = conn.getresponse()
+        except Exception:
+            # Deterministic cleanup: a partially connected socket is closed
+            # before the failure propagates to the gateway boundary.
+            conn.close()
+            raise
         return HttpStreamHandle(stream_id, response, conn)
