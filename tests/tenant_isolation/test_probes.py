@@ -283,7 +283,7 @@ def test_transport_probes_use_node_context_socks5_not_control_port(
         # every node-context probe originates at 127.0.0.1:<source socks5> and
         # carries a destination tailnet IP:port pair
         assert "probe_node_http 127.0.0.1" in joined, recipe
-        assert "100.64.0." in joined, recipe
+        assert ("100.64.0." in joined) or ("100.65.0." in joined), recipe
 
 
 def test_direct_reach_denied_originates_in_tenant_a_and_targets_tenant_b_listener(
@@ -298,7 +298,7 @@ def test_direct_reach_denied_originates_in_tenant_a_and_targets_tenant_b_listene
 
     fake = FakeBackend()
     env = _probe_env(tmp_path, fake)
-    fake.node_probe_results["127.0.0.1 37001 100.64.0.6 48080"] = False
+    fake.node_probe_results["127.0.0.1 37001 100.65.0.3 48080"] = False
     observed = _run_recipe("direct_reach_denied", {"category": "direct_path_denied"}, env)
     assert observed.outcome == "denied"
     assert observed.deny_category == "direct"
@@ -306,7 +306,7 @@ def test_direct_reach_denied_originates_in_tenant_a_and_targets_tenant_b_listene
     assert observed.route_evidence == "direct"
     assert observed.target_kind == "node_to_node"
     # the probe actually targeted the tenant-B connector listener
-    assert any("probe_node_http" in c[0] and "100.64.0.6" in c and "48080" in c for c in fake.calls)
+    assert any("probe_node_http" in c[0] and "100.65.0.3" in c and "48080" in c for c in fake.calls)
 
 
 def test_positive_control_is_same_cell_node_to_node(tmp_path: Path) -> None:
@@ -381,7 +381,7 @@ def test_relay_probe_records_real_relay_evidence_and_denies_cross_cell(
         f"127.0.0.1 {a1.socks5_port} 100.64.0.3 {a_home.connector_port}"
     ] = True
     fake.node_probe_results[
-        f"127.0.0.1 {a1.socks5_port} 100.64.0.6 {b_home.connector_port}"
+        f"127.0.0.1 {a1.socks5_port} 100.65.0.3 {b_home.connector_port}"
     ] = False
     fake.node_probe_results[
         f"127.0.0.1 {a1.socks5_port} 100.64.0.2 {a_home.connector_port}"
@@ -453,7 +453,7 @@ def test_derp_no_bypass_probe_enforces_policy_over_relay(
         f"127.0.0.1 {a1.socks5_port} 100.64.0.3 {a_home.connector_port}"
     ] = True
     fake.node_probe_results[
-        f"127.0.0.1 {a1.socks5_port} 100.64.0.6 {b_home.connector_port}"
+        f"127.0.0.1 {a1.socks5_port} 100.65.0.3 {b_home.connector_port}"
     ] = False
     fake.node_probe_results[
         f"127.0.0.1 {a1.socks5_port} 100.64.0.2 {a_home.connector_port}"

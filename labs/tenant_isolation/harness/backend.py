@@ -177,8 +177,9 @@ def _node_ip_from_socket(cmd: list[str]) -> str:
     m = re.search(r"tailscaled-([ab])([123])\.sock", joined)
     if m:
         cell, idx = m.group(1), int(m.group(2))
-        base = {"a": 0, "b": 3}[cell]
-        return f"100.64.0.{base + idx}"
+        # disjoint per-cell tailnet prefixes (100.64.0.0/24 vs 100.65.0.0/24)
+        base = {"a": "100.64.0.", "b": "100.65.0."}[cell]
+        return f"{base}{idx}"
     return "100.64.0.1"
 
 
@@ -332,9 +333,12 @@ class DockerBackend(Backend):
                 if b"\r\n\r\n" in response:
                     break
             status_line = response.split(b"\r\n", 1)[0] if response else b""
-            if status_line.startswith(b"HTTP/1.") and b" 2" in status_line[:12]:
-                return True
-            return False
+            # Reachability through the source node's context is the proof: the
+            # synthetic connector backend is ``python -m http.server``, which
+            # answers 404 for unknown paths. ANY well-formed HTTP response
+            # means the connection + request traversed the node's data plane
+            # (content semantics are not part of the isolation assertion).
+            return status_line.startswith(b"HTTP/1.")
         except OSError:
             return False
         finally:

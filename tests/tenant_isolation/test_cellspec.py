@@ -29,7 +29,7 @@ def test_config_has_v025_map_form_prefixes() -> None:
     cell = _cell_a()
     text = headscale_config_text(cell, cell.policy_path)
     assert "prefixes:" in text
-    assert "  v4: 100.64.0.0/10" in text
+    assert "  v4: 100.64.0.0/24" in text
     assert "  v6: fd7a:115c:a1e0::/48" in text
     assert "  allocation: sequential" in text
     validate_config_schema(text)
@@ -128,7 +128,7 @@ def test_validate_config_schema_rejects_deprecated_shapes() -> None:
     cell = _cell_a()
     text = headscale_config_text(cell, cell.policy_path)
     # Simulate the deprecated/absent keys that must never pass.
-    mutated = text.replace("  v4: 100.64.0.0/10", "  - 100.64.0.0/10")
+    mutated = text.replace("  v4: 100.64.0.0/24", "  - 100.64.0.0/24")
     with pytest.raises(AssertionError):
         validate_config_schema(mutated)
     with pytest.raises(AssertionError):

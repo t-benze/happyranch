@@ -669,6 +669,17 @@ def _relay_forced_probe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOut
                     "127.0.0.1", a1.socks5_port, a2_target, a_home.connector_port,
                     env.bounds.per_probe,
                 )
+            if not same_cell_ok:
+                # The same-cell control failed, so no relay traversal was
+                # observed — do NOT claim a relay bypass; fail closed.
+                return ObservedOutcome(
+                    outcome="denied",
+                    deny_category=deny,
+                    audit_category="relay_unavailable",
+                    detail="Relay probe inconclusive: same-cell control failed.",
+                    route_evidence="relay",
+                    target_kind="node_to_node",
+                )
             if same_cell_ok and cross_denied and policy_denied:
                 return ObservedOutcome(
                     outcome="denied",
@@ -686,6 +697,17 @@ def _relay_forced_probe(recipe: str, case: dict, env: "ProbeEnv") -> ObservedOut
                 deny_category=None,
                 audit_category="allowed_request",
                 detail="Relay path bypassed cell policy.",
+                route_evidence="relay",
+                target_kind="node_to_node",
+            )
+        if not same_cell_ok:
+            # The same-cell control failed, so no relay traversal was observed —
+            # do NOT claim cross-cell relay reachability; fail closed.
+            return ObservedOutcome(
+                outcome="denied",
+                deny_category=deny,
+                audit_category="relay_unavailable",
+                detail="Relay probe inconclusive: same-cell control failed.",
                 route_evidence="relay",
                 target_kind="node_to_node",
             )

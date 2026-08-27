@@ -118,6 +118,8 @@ def test_preflight_rejects_shared_stun_ports(tmp_path: Path) -> None:
         server_url=b.server_url,
         derp_region_id=b.derp_region_id,
         stun_port=a.stun_port,  # shared STUN port -> same network identity
+        v4_prefix=b.v4_prefix,
+        v6_prefix=b.v6_prefix,
     )
     spec = spec.__class__(spec.run_id, spec.run_dir, list(spec.cells)[0:1] + [collapsed_b], spec.nodes, spec.port_min, spec.port_max, spec.derp_region_id)
     orch, _ = _orchestrator(tmp_path, spec=spec)
@@ -157,6 +159,8 @@ def test_preflight_rejects_non_lab_port(tmp_path: Path) -> None:
         server_url="http://127.0.0.1:8443",
         derp_region_id=b.derp_region_id,
         stun_port=b.stun_port,
+        v4_prefix=b.v4_prefix,
+        v6_prefix=b.v6_prefix,
     )
     spec = spec.__class__(spec.run_id, spec.run_dir, cells, spec.nodes, spec.port_min, spec.port_max, spec.derp_region_id)
     orch, _ = _orchestrator(tmp_path, spec=spec)
@@ -179,6 +183,8 @@ def test_preflight_rejects_public_hostname(tmp_path: Path) -> None:
         server_url="https://headscale.example.com",
         derp_region_id=a.derp_region_id,
         stun_port=a.stun_port,
+        v4_prefix=a.v4_prefix,
+        v6_prefix=a.v6_prefix,
     )
     spec = spec.__class__(spec.run_id, spec.run_dir, cells, spec.nodes, spec.port_min, spec.port_max, spec.derp_region_id)
     orch, _ = _orchestrator(tmp_path, spec=spec)
@@ -206,6 +212,8 @@ def test_preflight_rejects_collapsed_cells(tmp_path: Path) -> None:
         server_url=a.server_url,
         derp_region_id=a.derp_region_id,
         stun_port=a.stun_port,
+        v4_prefix=a.v4_prefix,  # same tailnet prefix → collapsed network
+        v6_prefix=a.v6_prefix,
     )
     spec = spec.__class__(spec.run_id, spec.run_dir, [a, collapsed_b], spec.nodes, spec.port_min, spec.port_max, spec.derp_region_id)
     orch, _ = _orchestrator(tmp_path, spec=spec)

@@ -54,6 +54,8 @@ class CellSpec:
     policy_path: Path
     server_url: str
     derp_region_id: int
+    v4_prefix: str
+    v6_prefix: str
 
 
 @dataclass(frozen=True)
@@ -284,6 +286,14 @@ def build_lab_spec(
             policy_path=state_dir / "policy.json",
             server_url=f"http://127.0.0.1:{port}",
             derp_region_id=derp_region_id,
+            # DISJOINT per-cell tailnet prefixes: both cells must live in the
+            # lab CGNAT space (100.64.0.0/10) but in separate subnets so no IP
+            # can ever be shared/overlap across cells (the leak guards and the
+            # hostile map/peer probes depend on this disjointness).
+            v4_prefix=("100.64.0.0/24" if cell_id == "a" else "100.65.0.0/24"),
+            v6_prefix=(
+                "fd7a:115c:a1e0::/48" if cell_id == "a" else "fd7a:115c:a1e1::/48"
+            ),
         )
         cells.append(cell)
 

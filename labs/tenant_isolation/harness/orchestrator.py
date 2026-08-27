@@ -186,6 +186,13 @@ class Orchestrator:
                     f"collapsed cell identity: cells share a {label} "
                     "(A and B must be independent cells)"
                 )
+        v4 = [c.v4_prefix for c in cells]
+        v6 = [c.v6_prefix for c in cells]
+        if len(v4) != len(set(v4)) or len(v6) != len(set(v6)):
+            raise PreflightError(
+                "collapsed cell identity: cells share a tailnet IP prefix "
+                "(A and B must use disjoint prefixes)"
+            )
         # every node must belong to exactly one cell and carry a distinct socket
         node_socks = [str(n.socket_path) for n in self.spec.nodes]
         if len(node_socks) != len(set(node_socks)):

@@ -78,8 +78,8 @@ noise:
   private_key_path: {container_path(cell.key_path, cell.state_dir)}
 
 prefixes:
-  v4: 100.64.0.0/10
-  v6: fd7a:115c:a1e0::/48
+  v4: {cell.v4_prefix}
+  v6: {cell.v6_prefix}
   allocation: sequential
 
 database:
