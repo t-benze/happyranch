@@ -101,8 +101,11 @@ The server runs deterministic validation before persistence. Validation checks:
 
 1. `skill_md` is YAML-frontmatter-first: a valid opening `---` fence, a YAML
    mapping inside, a closing `---` fence, then a Markdown heading. Malformed,
-   unclosed, non-mapping, or missing-heading bodies are rejected. Heading-first
-   bodies are legacy-only and not accepted for new authoring.
+   unclosed, non-mapping, or missing-heading bodies are classified invalid
+   under the authoring contract and persisted as immutable validation/
+   provenance evidence — they are not accepted as valid or materializable
+   versions. Heading-first bodies are legacy-only and not accepted for new
+   authoring.
 2. Required metadata (`slug`, `name`, `skill_md`) is present and non-empty.
 3. `slug` does not collide with any protected slug (system contracts +
    release-managed skills, loaded from the canonical release registry).
