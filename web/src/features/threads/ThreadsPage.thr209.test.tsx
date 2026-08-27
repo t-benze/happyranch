@@ -5,10 +5,10 @@
  * Save/Cancel, Enter/Escape, trim, 120-char boundary, failure retention +
  * inline error), durable pin/unpin with optimistic update + rollback + visible
  * error, the Pinned section ranking above the ordinary list (including under
- * the active filter), archived-pin eligibility, row + header + overflow
- * controls, and keyboard/accessibility assertions.
+ * the active filter), archived-pin eligibility, direct row + header controls,
+ * and keyboard/accessibility assertions.
  */
-import { screen, waitFor, within } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterEach, describe, expect, test, vi } from 'vitest';
@@ -418,7 +418,7 @@ describe('THR-209 — pin from detail', () => {
     );
   });
 
-  test('overflow menu offers Pin/Unpin with accessible labels', async () => {
+  test('header keeps Pin/Unpin direct and does not duplicate it in an overflow menu', async () => {
     const state = mountDetail(false);
     await waitFor(() => expect(screen.getByText(/Subject/i)).toBeInTheDocument());
     server.use(
@@ -429,31 +429,12 @@ describe('THR-209 — pin from detail', () => {
       }),
     );
 
-    const overflow = screen.getByRole('button', { name: /Thread actions/i });
-    expect(overflow).toHaveAttribute('aria-haspopup', 'menu');
-    expect(overflow).toHaveAttribute('aria-expanded', 'false');
-
-    await userEvent.click(overflow);
-    expect(overflow).toHaveAttribute('aria-expanded', 'true');
-    const menu = screen.getByRole('menu');
-    expect(within(menu).getByRole('menuitem', { name: 'Pin' })).toBeInTheDocument();
-    expect(within(menu).getByRole('menuitem', { name: 'Rename' })).toBeInTheDocument();
-
-    await userEvent.click(within(menu).getByRole('menuitem', { name: 'Pin' }));
+    expect(screen.queryByRole('button', { name: /Thread actions/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument(),
     );
-    // Menu closes after selection.
-    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
-  });
-
-  test('overflow menu Escape closes', async () => {
-    mountDetail(false);
-    await waitFor(() => expect(screen.getByText(/Subject/i)).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('button', { name: /Thread actions/i }));
-    expect(screen.getByRole('menu')).toBeInTheDocument();
-    await userEvent.keyboard('{Escape}');
-    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
 
   test('pin failure shows banner and rolls back the header control', async () => {

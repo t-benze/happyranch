@@ -16,8 +16,8 @@ the thread setting is enabled (default), per the ratified matrix
 (disabled/zero-valid → broadcast; valid mentions → exactly that set),
 while `thread_messages.addressed_to_json` stays unwritten/unread with its
 separate cleanup plan intact. **Slice C (merged) ships the per-thread web
-control** (founder-only "Mention routing…" item in the thread-detail
-header settings surface → a dialog with a truthful switch, optimistic
+control** (founder-only direct "Mention routing" thread-detail header button
+→ a dialog with a truthful switch, optimistic
 persist through the strict-boolean `POST /threads/{id}/mention-routing`
 API, in-flight duplicate prevention, failure rollback + visible error,
 and keyboard/switch accessibility). **Analytics validation remains a

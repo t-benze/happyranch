@@ -63,12 +63,10 @@ export const THREADS_STRINGS = {
   pinFailed: 'Pin change failed — restored to previous state.',
   pinThread: (id: string) => `Pin thread ${id}`,
   unpinThread: (id: string) => `Unpin thread ${id}`,
-  threadActionsMenu: 'Thread actions',
-  archiveAction: 'Archive',
   resumeAction: 'Resume',
 
   /* THR-198 Slice C — per-thread mention routing control */
-  mentionRoutingAction: 'Mention routing…',
+  mentionRoutingAction: 'Mention routing',
   mentionRoutingDialogTitle: 'Mention routing',
   mentionRoutingToggleLabel: 'Route replies to mentioned participants',
   mentionRoutingDescription:
