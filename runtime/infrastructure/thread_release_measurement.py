@@ -34,6 +34,19 @@ Design contract:
   immutable claimed range (the ``thread_reply_wake_claimed`` audit's
   ``from_seq..through_seq``, floor = the invocation's ``triggering_seq``),
   never an exact-``triggering_seq`` join.
+* CREATING-ARRIVAL ATTRIBUTION (G1). A live mentioned wake is attributed to
+  the conversational arrival that MINTED it — the ``thread_reply_wake_created``
+  audit's ``through_seq`` (both production mint paths record it as the message
+  seq being processed) — never to ``triggering_seq``. GH-688 Phase-1
+  coalescing makes ``triggering_seq`` the retained range floor
+  (``acknowledged + 1``), which can be an earlier message that never woke the
+  agent: a later unmentioned broadcast wake would otherwise be falsely
+  attributed to an earlier mention. A ``thread_reply_wake_coalesced`` arrival
+  mints nothing and never re-attributes. Wakes with no created audit (follow-on
+  minted at settlement, recovery replacement, legacy pre-audit row) fall back
+  to ``triggering_seq`` — production-faithful for follow-ons (the retained
+  range contains only arrivals that woke the agent), an honest approximation
+  for restart-minted replacements.
 
 Ratified gates (THR-198 seq 87/88/108):
 
@@ -243,6 +256,58 @@ def _seq_covered(
     )
 
 
+def _creating_arrival_seqs(
+    conn: sqlite3.Connection,
+    invocations: list[sqlite3.Row],
+) -> dict[str, int]:
+    """Map each REPLY invocation token to the seq of the conversational
+    arrival that MINTED it, from the authoritative
+    ``thread_reply_wake_created`` audit trail (GH-688 Phase 1 Slice C emits
+    exactly one immutable created audit per mint).
+
+    Production semantics (``Database._apply_arrival_uncommitted``): a wake is
+    minted only when a message arrival finds no queued/running ownership for
+    the pair; BOTH mint paths record ``through_seq = the message seq being
+    processed`` — the creating arrival. ``triggering_seq`` is the minted
+    range's FLOOR (``acknowledged + 1``), which can be an earlier message
+    that NEVER woke this agent (a gap in the pair's coverage): the live
+    mentioned-wake attribution must use the creating arrival, never the
+    floor. A ``thread_reply_wake_coalesced`` audit carries NO token and mints
+    NOTHING — a coalescing arrival never creates or re-attributes a wake.
+
+    Invocations with no created audit (a follow-on minted at settlement, a
+    recovery replacement, or a legacy pre-audit row) are absent from the map
+    — callers fall back to ``triggering_seq``, which for follow-on wakes IS a
+    genuine wake-causing arrival (the retained range contains only arrivals
+    that raised the pair's required watermark), documented as an honest
+    approximation for restart-minted replacements.
+    """
+    created_by_token: dict[tuple[str, str], int] = {}
+    for row in conn.execute(
+        "SELECT task_id, payload FROM audit_log "
+        "WHERE action = 'thread_reply_wake_created'",
+    ).fetchall():
+        if not row["payload"]:
+            continue
+        try:
+            payload = json.loads(row["payload"])
+        except json.JSONDecodeError:
+            continue
+        prefix = payload.get("token_prefix")
+        through_seq = payload.get("through_seq")
+        if not prefix or through_seq is None:
+            continue
+        created_by_token[(row["task_id"], str(prefix))] = int(through_seq)
+    return {
+        row["invocation_token"]: created_by_token[
+            (row["thread_id"], (row["invocation_token"] or "")[:8])
+        ]
+        for row in invocations
+        if (row["thread_id"], (row["invocation_token"] or "")[:8])
+        in created_by_token
+    }
+
+
 def _consumed_reply_ranges(
     conn: sqlite3.Connection,
     invocations: list[sqlite3.Row],
@@ -403,6 +468,11 @@ def measure_live_window(
         if row["purpose"] == _PURPOSE_REPLY
         and window_start <= parse_timestamp(row["enqueued_at"]) < observation_end
     ]
+    # G1 mentioned-wake attribution: each wake is attributed to the message
+    # arrival that MINTED it (the authoritative created-audit through_seq), NOT
+    # its triggering_seq — GH-688 Phase-1 coalescing makes triggering_seq the
+    # retained range floor, which can be an earlier never-waking message.
+    creating = _creating_arrival_seqs(conn, reply_in_window)
     org_wakes = len(reply_in_window)
     # Terminal declines are observable at the observation instant only when
     # consumed_at is non-null and strictly earlier than the half-open cutoff
@@ -415,7 +485,20 @@ def measure_live_window(
 
     mentioned_wakes = [
         row for row in reply_in_window
-        if mentioned.get((row["thread_id"], row["triggering_seq"]), False)
+        if mentioned.get(
+            (
+                row["thread_id"],
+                # GH-688 Phase-1 coalescing makes triggering_seq the retained
+                # range floor (acknowledged+1), which can be an earlier
+                # message that NEVER woke this agent — a later broadcast wake
+                # would be falsely attributed to an earlier mention. Attribute
+                # each wake to the arrival that MINTED it (the created audit's
+                # through_seq), falling back to the floor only for wakes the
+                # audit trail cannot attribute (follow-on/legacy rows).
+                creating.get(row["invocation_token"], row["triggering_seq"]),
+            ),
+            False,
+        )
     ]
     mentioned_declines = sum(
         1 for row in mentioned_wakes

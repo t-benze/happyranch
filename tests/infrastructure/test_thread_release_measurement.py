@@ -146,6 +146,74 @@ def _add_claim_audit(
     )
 
 
+def _add_created_audit(
+    conn, thread_id: str, agent: str, token: str, from_seq: int, through_seq: int,
+    timestamp: str,
+) -> None:
+    """Insert a ``thread_reply_wake_created`` mint audit (mirrors
+    ``Database._apply_arrival_uncommitted``: agent, from_seq, through_seq,
+    8-char token_prefix). In production ``through_seq`` is the seq of the
+    message arrival that minted the wake — the creating arrival."""
+    conn.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES (?, ?, 'thread_reply_wake_created', ?, ?)",
+        (thread_id, agent,
+         json.dumps({
+             "agent_name": agent,
+             "from_seq": from_seq,
+             "through_seq": through_seq,
+             "token_prefix": token[:8],
+         }),
+         timestamp),
+    )
+
+
+def _add_coalesced_audit(
+    conn, thread_id: str, agent: str, from_seq: int, through_seq: int,
+    timestamp: str,
+) -> None:
+    """Insert a ``thread_reply_wake_coalesced`` audit (mirrors
+    ``Database._apply_arrival_uncommitted``: NO token_prefix, NO mint — the
+    arrival only raised the pair's required watermark on the existing wake)."""
+    conn.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES (?, ?, 'thread_reply_wake_coalesced', ?, ?)",
+        (thread_id, agent,
+         json.dumps({
+             "agent_name": agent,
+             "from_seq": from_seq,
+             "through_seq": through_seq,
+         }),
+         timestamp),
+    )
+
+
+def _add_settled_audit(
+    conn, thread_id: str, agent: str, token: str, outcome: str,
+    acked: int, required: int, follow_on_token: str | None, timestamp: str,
+) -> None:
+    """Insert a ``thread_reply_wake_settled`` audit (mirrors
+    ``Database._settle_reply_uncommitted``). A follow-on wake minted at
+    settlement is referenced ONLY by ``follow_on_token_prefix`` — it has no
+    ``thread_reply_wake_created`` audit."""
+    conn.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES (?, ?, 'thread_reply_wake_settled', ?, ?)",
+        (thread_id, agent,
+         json.dumps({
+             "agent_name": agent,
+             "outcome": outcome,
+             "acknowledged_through_seq": acked,
+             "required_through_seq": required,
+             "retry_required": follow_on_token is None and required > acked,
+             "follow_on_token_prefix": (
+                 follow_on_token[:8] if follow_on_token else None
+             ),
+         }),
+         timestamp),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Time helpers
 # ---------------------------------------------------------------------------
@@ -194,6 +262,245 @@ def test_live_mentioned_wake_counts_and_rate() -> None:
     assert live.org_declines == 1
     assert live.org_decline_rate_pct == 50.0
     assert live.malformed_mentions_json == 0
+
+
+def test_live_mentioned_attribution_uses_creating_arrival_not_range_floor() -> None:
+    """[adversarial regression — the confirmed live-measurement defect]
+    GH-688 Phase-1 coalescing makes ``triggering_seq`` the retained range
+    floor (``acknowledged+1``), so a later unmentioned broadcast wake can be
+    falsely attributed to an earlier mentioned arrival. A mention-routed
+    message is immediately followed by an unmentioned broadcast; the
+    non-mentioned agent's later wake has the mentioned seq as its retained
+    range floor but was MINTED by the broadcast arrival — it must be EXCLUDED
+    from the live mentioned population (its decline never counts in G1),
+    while the mention-minted wake stays counted and the broadcast decline
+    stays org-wide."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_participant(conn, "T1", "bob", "2026-08-01T00:00:00Z")
+    # seq 10: mention-routed message (@alice) — wakes ONLY alice.
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    # seq 11: unmentioned broadcast — wakes everyone, including bob.
+    _add_message(conn, "T1", 11, "founder", "2026-08-27T00:00:30Z",
+                 mentions="[]")
+    # alice's wake: minted by the seq-10 mention arrival, covering [10,10].
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:01:00Z",
+                    token="aaa11111", status="consumed")
+    _add_created_audit(conn, "T1", "alice", "aaa11111", 10, 10,
+                       "2026-08-27T00:01:00Z")
+    # bob's wake: minted by the seq-11 broadcast arrival covering [10,11];
+    # triggering_seq = 10 = the retained range floor (the mentioned seq).
+    _add_invocation(conn, "T1", "bob", 10, "2026-08-27T00:01:30Z",
+                    token="bbb22222", status="declined",
+                    consumed_at="2026-08-27T00:02:00Z")
+    _add_created_audit(conn, "T1", "bob", "bbb22222", 10, 11,
+                       "2026-08-27T00:01:30Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_messages == 1
+    # bob's broadcast-created wake is NOT in the mentioned population.
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 0
+    assert live.mentioned_decline_rate_pct == 0.0
+    # Both wakes stay in the org-wide population; bob's decline counts there.
+    assert live.org_wakes == 2
+    assert live.org_declines == 1
+    assert live.org_decline_rate_pct == 50.0
+
+
+def test_live_mint_at_mentioned_arrival_with_broadcast_floor_included() -> None:
+    """[created semantics] A wake minted by a MENTIONED arrival whose range
+    floor is an earlier unmentioned broadcast message is INCLUDED in the live
+    mentioned population — the creating arrival (the mention) is the
+    attribution key, never the floor. The pre-fix code under-attributed it."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    # seq 10: unmentioned broadcast (alice's pair ack still at 9).
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions="[]")
+    # seq 11: mention-routed message (@alice).
+    _add_message(conn, "T1", 11, "founder", "2026-08-27T00:00:30Z",
+                 mentions='["alice"]')
+    # alice's wake: minted by the seq-11 mention, floor = acknowledged+1 = 10.
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:01:00Z",
+                    token="aaa11111", status="declined",
+                    consumed_at="2026-08-27T00:02:00Z")
+    _add_created_audit(conn, "T1", "alice", "aaa11111", 10, 11,
+                       "2026-08-27T00:01:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_messages == 1  # only seq 11
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 1
+    assert live.mentioned_decline_rate_pct == 100.0
+    assert live.org_wakes == 1
+
+
+def test_live_coalesced_broadcast_does_not_reattribute_existing_wake() -> None:
+    """[coalesced semantics] A ``thread_reply_wake_coalesced`` audit carries
+    no token and mints nothing: an unmentioned broadcast coalescing onto an
+    existing mentioned wake neither adds a second wake nor flips the wake's
+    attribution — the wake stays attributed to the mention that minted it."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_message(conn, "T1", 11, "founder", "2026-08-27T00:00:30Z",
+                 mentions="[]")
+    # alice's wake minted by the seq-10 mention [10,10], then the seq-11
+    # broadcast only RAISED required (coalesced audit, no new invocation).
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:01:00Z",
+                    token="aaa11111", status="declined",
+                    consumed_at="2026-08-27T00:02:00Z")
+    _add_created_audit(conn, "T1", "alice", "aaa11111", 10, 10,
+                       "2026-08-27T00:01:00Z")
+    _add_coalesced_audit(conn, "T1", "alice", 10, 11,
+                         "2026-08-27T00:00:31Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_messages == 1
+    # Exactly ONE wake exists; it is the mention-minted wake, still counted.
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 1
+    assert live.org_wakes == 1
+
+
+def test_live_mention_coalesced_onto_broadcast_wake_stays_broadcast() -> None:
+    """[coalesced semantics] A mention that coalesces onto an already-pending
+    broadcast wake does NOT make that wake a mentioned wake — the wake's
+    existence traces to the broadcast arrival that minted it; the later
+    mention only raised the required watermark (no new wake, no
+    re-attribution)."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 9, "founder", "2026-08-27T00:00:00Z",
+                 mentions="[]")
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:30Z",
+                 mentions='["alice"]')
+    # alice's wake minted by the seq-9 broadcast [9,9]; the seq-10 mention
+    # coalesced onto it (coalesced audit [9,10]) — no second invocation.
+    _add_invocation(conn, "T1", "alice", 9, "2026-08-27T00:01:00Z",
+                    token="aaa11111", status="declined",
+                    consumed_at="2026-08-27T00:02:00Z")
+    _add_created_audit(conn, "T1", "alice", "aaa11111", 9, 9,
+                       "2026-08-27T00:01:00Z")
+    _add_coalesced_audit(conn, "T1", "alice", 9, 10,
+                         "2026-08-27T00:00:31Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_messages == 1  # seq 10 IS a mentioned message
+    # ...but the only wake was minted by the seq-9 broadcast: not mentioned.
+    assert live.mentioned_wakes == 0
+    assert live.mentioned_decline_rate_pct is None
+    assert live.org_wakes == 1
+    assert live.org_declines == 1
+
+
+def test_live_followon_wake_with_mentioned_floor_is_counted() -> None:
+    """[fallback semantics] A follow-on wake minted at settlement has NO
+    ``thread_reply_wake_created`` audit — it is referenced only by the
+    settled audit's ``follow_on_token_prefix``. Its floor (``triggering_seq``
+    = running_through + 1) is a genuine wake-causing arrival (the retained
+    range contains only arrivals that raised the pair's required watermark),
+    so attribution falls back to the floor: a mentioned floor is counted."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    # seq 5: mention-routed (@alice). Its arrival raised required during a run.
+    _add_message(conn, "T1", 5, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    # The follow-on wake minted at settlement covers [5,5]; no created audit.
+    _add_invocation(conn, "T1", "alice", 5, "2026-08-27T00:01:00Z",
+                    token="fff55555", status="consumed",
+                    consumed_at="2026-08-27T00:02:00Z")
+    _add_settled_audit(conn, "T1", "alice", "eee44444", "reply",
+                       4, 5, "fff55555", "2026-08-27T00:01:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_messages == 1
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 0
+    assert live.org_wakes == 1
+
+
+def test_live_followon_wake_with_broadcast_floor_not_counted() -> None:
+    """[fallback negative] A follow-on wake whose floor is an unmentioned
+    broadcast message is not a mentioned wake (its retained arrivals were all
+    broadcasts) — the floor fallback correctly keeps it out of G1."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 5, "founder", "2026-08-27T00:00:00Z",
+                 mentions="[]")
+    _add_invocation(conn, "T1", "alice", 5, "2026-08-27T00:01:00Z",
+                    token="fff55555", status="declined",
+                    consumed_at="2026-08-27T00:02:00Z")
+    _add_settled_audit(conn, "T1", "alice", "eee44444", "reply",
+                       4, 5, "fff55555", "2026-08-27T00:01:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_wakes == 0
+    assert live.mentioned_decline_rate_pct is None
+    assert live.org_wakes == 1
+    assert live.org_declines == 1
+
+
+def test_live_legacy_wake_without_any_audit_falls_back_to_floor() -> None:
+    """[negative/fallback] A REPLY wake with NO created audit (legacy
+    pre-audit row) falls back to ``triggering_seq`` — preserving the prior
+    harness behavior for rows the audit trail cannot attribute. This is the
+    documented approximation, never a fabrication."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 1, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    # No audits at all for this wake (legacy row): floor attribution.
+    _add_invocation(conn, "T1", "alice", 1, "2026-08-27T00:01:00Z",
+                    status="declined")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 1
+    assert live.mentioned_decline_rate_pct == 100.0
+
+
+def test_live_creating_arrival_not_mentioned_never_fabricates() -> None:
+    """[negative] A wake whose creating arrival carries a malformed
+    mentions_json (or no in-window message at all) is never counted as a
+    mentioned wake — the malformed signal is a diagnostic, never fabricated
+    into a mention; a missing creating message is simply not mentioned."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    # seq 7: malformed mentions_json (creating arrival for wake A).
+    _add_message(conn, "T1", 7, "founder", "2026-08-27T00:00:00Z",
+                 mentions="not-json")
+    # wake A: minted at seq 7, floor 7 — creating arrival malformed.
+    _add_invocation(conn, "T1", "alice", 7, "2026-08-27T00:01:00Z",
+                    token="aaa11111", status="declined",
+                    consumed_at="2026-08-27T00:02:00Z")
+    _add_created_audit(conn, "T1", "alice", "aaa11111", 7, 7,
+                       "2026-08-27T00:01:00Z")
+    # wake B: created audit points to seq 99 — no in-window message there.
+    _add_invocation(conn, "T1", "alice", 98, "2026-08-27T00:03:00Z",
+                    token="bbb22222", status="declined",
+                    consumed_at="2026-08-27T00:04:00Z")
+    _add_created_audit(conn, "T1", "alice", "bbb22222", 98, 99,
+                       "2026-08-27T00:03:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.malformed_mentions_json == 1
+    assert live.mentioned_messages == 0
+    assert live.mentioned_wakes == 0
+    assert live.mentioned_decline_rate_pct is None
+    assert live.org_wakes == 2
+    assert live.org_declines == 2
 
 
 def test_live_broadcast_fallback_not_mentioned() -> None:

@@ -283,9 +283,25 @@ Three gates (baseline constants are quoted founder-approved inputs, never
 re-derived):
 
 1. **G1 — mentioned-message saving (gate).** Mentioned-message decline
-   rate = `declined / all` REPLY wakes whose triggering message
-   `@`-names ≥1 co-participant. Baseline 293/499 = **58.7%** (August 2026,
-   happyranch); expectation ~24/204 ≈ **12%** among retained wakes.
+   rate = `declined / all` REPLY wakes attributed to a mentioned message
+   (one whose persisted `mentions_json` is a non-empty JSON array). Baseline
+   293/499 = **58.7%** (August 2026, happyranch); expectation ~24/204 ≈
+   **12%** among retained wakes.
+
+   **Attribution semantics (live window):** each wake is attributed to the
+   conversational arrival that **minted** it — the `thread_reply_wake_created`
+   audit's `through_seq` (both production mint paths record it as the message
+   seq being processed) — **never** to `triggering_seq`. GH-688 Phase-1
+   coalescing makes `triggering_seq` the retained range floor
+   (`acknowledged + 1`), which can be an earlier message that never woke the
+   agent (a gap in the pair's coverage): a later unmentioned broadcast wake
+   would otherwise be falsely attributed to an earlier mention. A
+   `thread_reply_wake_coalesced` arrival mints nothing and never
+   re-attributes. Wakes with no created audit (a follow-on minted at
+   settlement, a recovery replacement, or a legacy pre-audit row) fall back
+   to `triggering_seq` — production-faithful for follow-ons (the retained
+   range contains only arrivals that woke the agent), an honest
+   approximation for restart-minted replacements.
 2. **G2 — founder-message coverage (gate).** Founder messages (kind=message,
    `speaker='founder'`) covered iff ≥1 `purpose='reply'` invocation whose
    authoritative claimed delivery range contains that message's sequence
