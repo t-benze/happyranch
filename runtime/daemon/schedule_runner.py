@@ -351,7 +351,11 @@ async def run_schedule(
         # Real backend: the fire session is launched into containment — the
         # executor communicates + parses only. Honest passthrough: no
         # containment capability — the executor self-launches exactly as
-        # before (throttle-internal 429 retry preserved).
+        # before, with the throttle's internal 429 retry DISABLED so the
+        # supervisor is the single 429 retry owner (each attempt fully
+        # finishes, publishes its bounded receipt, releases the lease, sleeps
+        # without capacity, and reacquires with the original enqueue age and
+        # a fresh handle) — mirroring the task producer's passthrough seam.
         contained = running.process is not None
         result = executor.run(
             workspace=workspace,
@@ -362,6 +366,7 @@ async def run_schedule(
             org_slug=org_state.slug,
             model=model_name,
             running=running if contained else None,
+            throttle_backoff_seconds=() if not contained else None,
         )
         return LaunchResult(
             success=result.success,

@@ -202,6 +202,8 @@ concurrency (1 worker) and row lifecycle.
 | user/task cancellation | cancellation route invokes opaque handle, not PID-only signal; idempotent with the executor's own finish |
 | 429 retry | fully finish attempt; release; sleep without capacity; requeue with original enqueue age and a fresh containment handle |
 | daemon shutdown | stop admission, cancel queued, finish all active handles within bounded drain |
+| task-producer terminal cleanup | every final terminal path (pre-launch/admission failure, prepare/spawn/partial-setup failure, nonzero/no-callback exit, cancel, timeout, 429-final, shutdown) clears the `SessionTracker` opaque cancel control, PID diagnostic, and active-session record AFTER supervisor finalization/receipt/residue reconciliation and BEFORE lease release; generation/ownership-safe (an old attempt never clears a newer session of the same (task, agent)); the first terminal reason survives a failing cleanup |
+| schedule passthrough 429 | exactly ONE retry owner: the supervisor owns finish/release/sleep/reacquire with the original enqueue age; the executor's internal 429 retry is disabled on the supervisor-owned passthrough seam (no provider ceiling/backoff/global-default change) |
 
 ## Admission
 
@@ -300,9 +302,13 @@ PIDs / 2800% CPU` remain unapproved measurement candidates.
   diagnostic/restart evidence only), defer the 429 retry to the supervisor
   (finish/release/sleep/reacquire with original enqueue age + fresh backend
   handle), and finish containment before exactly-once lease release on every
-  terminal path. The schedule producer's launch body adapts to the contained
-  mode (real argv) while keeping its behavior. Thread/dream/wake producers
-  remain unwired.
+  terminal path — the supervisor's terminal hook clears the SessionTracker
+  control/PID/session on the final path (after finalization, before lease
+  release; ownership-safe against a newer session). The schedule producer's
+  launch body adapts to the contained mode (real argv) while keeping its
+  behavior, and its honest-passthrough branch disables executor-internal 429
+  retry so the supervisor is the single retry owner (same values, no
+  multiplication). Thread/dream/wake producers remain unwired.
 - **C — bounded enforcement:** canary Linux limits chosen from measured
   receipts; macOS remains honestly capped.
 - **D — evidence-based policy proposal:** only then propose session/resource

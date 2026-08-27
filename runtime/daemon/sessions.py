@@ -180,3 +180,32 @@ class SessionTracker:
                     # Invalidate the cleared session's context so completed/
                     # cancelled/revoked opaque capabilities cannot create B2 custom skills.
                     self._context_by_session.pop(old_session_id, None)
+
+    def clear_if_active_session(self, task_id: str, agent: str, session_id: str) -> bool:
+        """Clear the session binding only when it still belongs to ``session_id``.
+
+        THR-207 task-producer terminal cleanup: the supervisor's terminal hook
+        calls this on every final terminal path so the opaque cancel control,
+        PID diagnostic, and active-session record die with the invocation.
+        Ownership/generation-safe: a NEWER logical invocation for the same
+        (task_id, agent) supersedes ``set_active`` with its own session_id, so
+        this guard refuses to clear a newer session — an old attempt can never
+        wipe a newer attempt's control/pid/session. Returns True when the
+        binding was cleared, False when it was absent or owned by a different
+        (newer) session.
+        """
+        binding_lease = self._get_binding_lease(task_id, agent)
+        with binding_lease:
+            with self._lock:
+                if self._active.get((task_id, agent)) != session_id:
+                    return False
+                old_session_id = self._active.pop((task_id, agent), None)
+                self._pids.pop((task_id, agent), None)
+                # The opaque cancel control dies with the session — a stale
+                # control must never cancel a later session of the same pair.
+                self._cancel_controls.pop((task_id, agent), None)
+                if old_session_id is not None:
+                    # Invalidate the cleared session's context so completed/
+                    # cancelled/revoked opaque capabilities cannot create B2 custom skills.
+                    self._context_by_session.pop(old_session_id, None)
+                return True

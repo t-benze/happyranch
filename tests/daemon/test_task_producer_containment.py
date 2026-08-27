@@ -39,7 +39,9 @@ from runtime.models import TaskRecord, TaskStatus, TokenUsage
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executors import ExecutorResult
 from runtime.orchestrator.host_supervisor import (
+    AdmissionRequest,
     HostSessionSupervisor,
+    LaunchResult,
     canary_policy,
 )
 from runtime.orchestrator.orchestrator import Orchestrator
@@ -118,12 +120,14 @@ class _FakeBackend:
         capabilities: dict | None = None,
         launch_barrier: threading.Event | None = None,
         auto_exit_after: float = 0.05,
+        launch_error: str | None = None,
     ) -> None:
         self.name = "fake"
         self.version = "1.0"
         self.capabilities = dict(capabilities or {})
         self.launch_barrier = launch_barrier
         self.auto_exit_after = auto_exit_after
+        self.launch_error = launch_error
         self.calls: dict[str, int] = {"prepare": 0, "launch": 0, "finish": 0, "abandon": 0}
         self.finish_reasons: list[str] = []
         self.requests: list = []
@@ -147,6 +151,9 @@ class _FakeBackend:
         with self._lock:
             self.calls["launch"] += 1
             n = self.calls["launch"]
+        if self.launch_error is not None:
+            from runtime.platform.session_backend import BackendLaunchError
+            raise BackendLaunchError(self.launch_error)
         if self.launch_barrier is not None:
             self.launch_barrier.set()
         proc = _FakeProcess(pid=7000 + n, auto_exit_after=self.auto_exit_after)
@@ -191,13 +198,19 @@ class _RecordingExecutor:
     """Fake executor with the contained-launch seam: records whether it was
     handed a backend RunningHandle and whether on_started was wired."""
 
-    def __init__(self, *, results: list[ExecutorResult] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        results: list[ExecutorResult] | None = None,
+        observer: "Callable[[], dict] | None" = None,
+    ) -> None:
         self._results = list(results) if results is not None else [
             ExecutorResult(
                 success=True, duration_seconds=1, session_id="sess-x",
                 token_usage=TokenUsage(input_tokens=1, output_tokens=1, model="claude-opus"),
             )
         ]
+        self._observer = observer
         self.calls: list[dict] = []
         self.lock = threading.Lock()
 
@@ -219,6 +232,7 @@ class _RecordingExecutor:
                 "on_started": on_started,
                 "throttle_backoff_seconds": throttle_backoff_seconds,
                 "pre_launch_validator": pre_launch_validator,
+                "tracker": dict(self._observer()) if self._observer is not None else None,
             })
         if running is not None and running.process is not None:
             # Containment mode: the body blocks on the live process (like
@@ -226,6 +240,24 @@ class _RecordingExecutor:
             running.process.wait(timeout=max(timeout_seconds, 1))
         result = self._results.pop(0) if len(self._results) > 1 else self._results[0]
         return result
+
+
+class _NoSpecExecutor:
+    """Fake executor WITHOUT the contained-launch seam (no
+    ``build_launch_spec``) — the wired producer fails closed before
+    admission and must still clear the SessionTracker control/session."""
+
+    def run(self, *, workspace, prompt, session_id, timeout_seconds, **kwargs):
+        raise AssertionError("a spec-less executor must never run")
+
+
+class _RaisingSpecExecutor(_RecordingExecutor):
+    """Fake executor whose ``build_launch_spec`` raises (prompt-transport
+    argv gate etc.) — the producer fails closed and must still clear the
+    SessionTracker control/session."""
+
+    def build_launch_spec(self, *, workspace, prompt, session_id=None, model=None, org_slug=None, timeout_seconds=1800) -> LaunchSpec:
+        raise RuntimeError("argv gate refused")
 
 
 # ── harness ───────────────────────────────────────────────────────────
@@ -305,10 +337,19 @@ def test_task_producer_contained_success_lifecycle(tmp_path, monkeypatch):
     backend = _FakeBackend(capabilities={
         Capability.KILLS_TREE_GUARANTEED: CapabilityLevel.GUARANTEED,
     })
-    executor = _RecordingExecutor()
-    orch, supervisor, tracker, db = _make_orch(tmp_path, backend, executor, monkeypatch)
+    orch, supervisor, tracker, db = _make_orch(
+        tmp_path, backend, _RecordingExecutor(), monkeypatch,
+    )
     task_id = _seed_task(db)
 
+    def _observe() -> dict:
+        return {
+            "pid": tracker.get_pid(task_id, _AGENT),
+            "control": tracker.get_cancel_control(task_id, _AGENT) is not None,
+        }
+
+    executor = _RecordingExecutor(observer=_observe)
+    monkeypatch.setattr(orch, "_build_executor", lambda _provider: executor)
     orch.run_step(task_id)
 
     # Supervisor lifecycle: admitted -> prepared -> launched -> finished -> released.
@@ -327,21 +368,48 @@ def test_task_producer_contained_success_lifecycle(tmp_path, monkeypatch):
     assert call["on_started"] is None
     # (The contained throttle no-internal-retry contract is asserted at the
     # throttle seam in tests/test_executor_contained_launch.py.)
-    # Diagnostic PID stamped AFTER the RunningHandle was bound.
-    assert tracker.get_pid(task_id, _AGENT) == backend.last_running.root_pid
-    # Opaque cancel control registered with SessionTracker.
-    assert tracker.get_cancel_control(task_id, _AGENT) is not None
+    # Diagnostic PID stamped AFTER the RunningHandle was bound and the opaque
+    # control live DURING the run (observed inside the launch body).
+    assert call["tracker"]["pid"] == backend.last_running.root_pid
+    assert call["tracker"]["control"] is True
+    # Opaque cancel control registered with SessionTracker during the run.
     # The task reached its terminal state through run_step (no completion
     # report -> failed, the realistic no-callback outcome).
     task = db.get_task(task_id)
     assert task.status in (TaskStatus.FAILED, TaskStatus.COMPLETED)
+    # THR-207 terminal cleanup: the supervisor's terminal hook cleared the
+    # tracker AFTER finalization and BEFORE lease release — NO residue (no
+    # opaque control / PID / active-session record) after the logical
+    # invocation ended without a completion callback. (The reviewer-flagged
+    # line that asserted residue here was removed.)
+    assert tracker.get_cancel_control(task_id, _AGENT) is None
+    assert tracker.get_pid(task_id, _AGENT) is None
+    assert tracker.get_active(task_id, _AGENT) is None
 
 
 def test_task_producer_429_retry_reacquires_fresh_handle(tmp_path, monkeypatch):
     """A rate-limited contained attempt fully finishes and releases before the
     supervisor sleeps and reacquires with a FRESH backend handle (same
-    logical invocation, original enqueue age)."""
+    logical invocation, original enqueue age).
+
+    Single 429 retry owner: exact launches/attempts and releases prove the
+    supervisor loop (not the executor throttle) owns the retry; the opaque
+    cancel control survives the retry boundary (still cancelable during
+    backoff) and is cleared only on the FINAL terminal path."""
     backend = _FakeBackend()
+    orch, supervisor, tracker, db = _make_orch(
+        tmp_path, backend, _RecordingExecutor(), monkeypatch,
+        max_retry_attempts=1, backoff_seconds=(0.0,),
+    )
+    task_id = _seed_task(db)
+
+    def _observe() -> dict:
+        return {
+            "control": tracker.get_cancel_control(task_id, _AGENT) is not None,
+            "active": tracker.get_active(task_id, _AGENT),
+            "pid": tracker.get_pid(task_id, _AGENT),
+        }
+
     executor = _RecordingExecutor(results=[
         ExecutorResult(
             success=False, duration_seconds=1, session_id="sess-1",
@@ -351,12 +419,8 @@ def test_task_producer_429_retry_reacquires_fresh_handle(tmp_path, monkeypatch):
             success=True, duration_seconds=1, session_id="sess-2",
             token_usage=TokenUsage(input_tokens=1, output_tokens=1, model="m"),
         ),
-    ])
-    orch, supervisor, tracker, db = _make_orch(
-        tmp_path, backend, executor, monkeypatch,
-        max_retry_attempts=1, backoff_seconds=(0.0,),
-    )
-    task_id = _seed_task(db)
+    ], observer=_observe)
+    monkeypatch.setattr(orch, "_build_executor", lambda _provider: executor)
     orch.run_step(task_id)
 
     assert backend.calls["prepare"] == 2
@@ -372,6 +436,17 @@ def test_task_producer_429_retry_reacquires_fresh_handle(tmp_path, monkeypatch):
     # Original enqueue age preserved across the retry (identical enqueued_at).
     assert backend.requests[0].enqueued_at == backend.requests[1].enqueued_at
     assert backend.requests[1].retry_attempt == 1
+    # THR-207 terminal cleanup across a retry: at the START of BOTH attempts
+    # the opaque cancel control and active-session record were live (the
+    # logical invocation survives the retry sleep — the cancel route must
+    # still reach it during backoff); only after the FINAL terminal path is
+    # the tracker fully cleared. The PID is (re)stamped per attempt.
+    assert all(c["tracker"]["control"] for c in executor.calls)
+    assert all(c["tracker"]["active"] is not None for c in executor.calls)
+    assert all(c["tracker"]["pid"] is not None for c in executor.calls)
+    assert tracker.get_cancel_control(task_id, _AGENT) is None
+    assert tracker.get_pid(task_id, _AGENT) is None
+    assert tracker.get_active(task_id, _AGENT) is None
 
 
 def test_task_producer_shutdown_before_launch_launches_nothing(tmp_path, monkeypatch):
@@ -398,6 +473,12 @@ def test_task_producer_shutdown_before_launch_launches_nothing(tmp_path, monkeyp
     task = db.get_task(task_id)
     assert task.status == TaskStatus.FAILED
     assert "before launch" in (task.note or "")
+    # THR-207 terminal cleanup on the cancelled-while-queued path: the
+    # pre-admission cancel control + active-session record are cleared even
+    # though nothing ever launched (no completion callback, no cancel route).
+    assert tracker.get_cancel_control(task_id, _AGENT) is None
+    assert tracker.get_pid(task_id, _AGENT) is None
+    assert tracker.get_active(task_id, _AGENT) is None
 
 
 def test_task_producer_shutdown_mid_body_finishes_containment(tmp_path, monkeypatch):
@@ -436,6 +517,11 @@ def test_task_producer_shutdown_mid_body_finishes_containment(tmp_path, monkeypa
     # terminal freeze; the task is not COMPLETED.
     task = db.get_task(task_id)
     assert task.status != TaskStatus.COMPLETED
+    # Shutdown terminal path also clears the SessionTracker control/PID/
+    # session after finalization (no completion callback ran).
+    assert tracker.get_cancel_control(task_id, _AGENT) is None
+    assert tracker.get_pid(task_id, _AGENT) is None
+    assert tracker.get_active(task_id, _AGENT) is None
 
 
 def test_session_tracker_cancel_control_lifecycle():
@@ -502,3 +588,261 @@ async def test_cancel_route_invokes_control_and_skips_pid_kill(client_with_runti
     assert org.sessions.get_cancel_control("T-1", "dev_agent") is None
     assert org.sessions.get_pid("T-1", "dev_agent") is None
     assert org.sessions.get_active("T-1", "dev_agent") is None
+
+
+# ── THR-207 terminal cleanup: deterministic failure paths ─────────────
+
+
+def test_task_producer_spec_builder_missing_clears_tracker(tmp_path, monkeypatch):
+    """Pre-admission failure (executor without the contained-launch seam)
+    fails closed AND clears the SessionTracker cancel control + active
+    session — the task can never be re-cancelled or re-attributed through a
+    stale binding."""
+    backend = _FakeBackend()
+    orch, supervisor, tracker, db = _make_orch(
+        tmp_path, backend, _NoSpecExecutor(), monkeypatch,
+    )
+    task_id = _seed_task(db)
+
+    orch.run_step(task_id)
+
+    # Fails closed before admission: nothing prepared/launched.
+    assert backend.calls["prepare"] == 0
+    assert backend.calls["launch"] == 0
+    assert len(orch._sessions._cancel_controls) == 0
+    task = db.get_task(task_id)
+    assert task.status == TaskStatus.FAILED
+    assert "build_launch_spec" in (task.note or "")
+    # No residue: the pre-admission control + active session were cleared.
+    assert tracker.get_cancel_control(task_id, _AGENT) is None
+    assert tracker.get_pid(task_id, _AGENT) is None
+    assert tracker.get_active(task_id, _AGENT) is None
+
+
+def test_task_producer_spec_builder_raise_clears_tracker(tmp_path, monkeypatch):
+    """Pre-admission failure (spec assembly raises — prompt-transport argv
+    gate) fails closed AND clears the SessionTracker control + active
+    session."""
+    backend = _FakeBackend()
+    orch, supervisor, tracker, db = _make_orch(
+        tmp_path, backend, _RaisingSpecExecutor(), monkeypatch,
+    )
+    task_id = _seed_task(db)
+
+    orch.run_step(task_id)
+
+    assert backend.calls["prepare"] == 0
+    assert backend.calls["launch"] == 0
+    task = db.get_task(task_id)
+    assert task.status == TaskStatus.FAILED
+    assert "argv gate refused" in (task.note or "")
+    assert tracker.get_cancel_control(task_id, _AGENT) is None
+    assert tracker.get_pid(task_id, _AGENT) is None
+    assert tracker.get_active(task_id, _AGENT) is None
+
+
+def test_task_producer_spawn_failure_clears_tracker(tmp_path, monkeypatch):
+    """Spawn failure (backend.launch raises) abandons partial containment,
+    fails the task, and clears the SessionTracker control/PID/session after
+    finalization."""
+    backend = _FakeBackend(launch_error="scope create failed")
+    executor = _RecordingExecutor()
+    orch, supervisor, tracker, db = _make_orch(tmp_path, backend, executor, monkeypatch)
+    task_id = _seed_task(db)
+
+    orch.run_step(task_id)
+
+    assert backend.calls["prepare"] == 1
+    assert backend.calls["launch"] == 1
+    assert backend.calls["abandon"] == 1
+    assert supervisor.active_count() == 0
+    task = db.get_task(task_id)
+    assert task.status == TaskStatus.FAILED
+    # The durable first-wins terminal reason (spawn_failure) is surfaced by
+    # the pre-launch terminal-winner branch; the task fails closed.
+    assert "spawn_failure" in (task.note or "")
+    # No residue after the terminal path.
+    assert tracker.get_cancel_control(task_id, _AGENT) is None
+    assert tracker.get_pid(task_id, _AGENT) is None
+    assert tracker.get_active(task_id, _AGENT) is None
+
+
+def test_task_producer_timeout_clears_tracker(tmp_path, monkeypatch):
+    """Timeout terminal path clears the SessionTracker control/PID/session."""
+    backend = _FakeBackend()
+    executor = _RecordingExecutor(results=[
+        ExecutorResult(
+            success=False, duration_seconds=30, session_id="sess-t",
+            error="session timed out after 1800s",
+        ),
+    ])
+    orch, supervisor, tracker, db = _make_orch(tmp_path, backend, executor, monkeypatch)
+    task_id = _seed_task(db)
+
+    orch.run_step(task_id)
+
+    task = db.get_task(task_id)
+    assert task.status == TaskStatus.FAILED
+    assert "timed out" in (task.note or "").lower()
+    assert tracker.get_cancel_control(task_id, _AGENT) is None
+    assert tracker.get_pid(task_id, _AGENT) is None
+    assert tracker.get_active(task_id, _AGENT) is None
+
+
+def test_task_producer_nonzero_exit_clears_tracker(tmp_path, monkeypatch):
+    """Nonzero/no-callback exit terminal path clears the SessionTracker
+    control/PID/session (the executor returned failure, no completion
+    callback ran)."""
+    backend = _FakeBackend()
+    executor = _RecordingExecutor(results=[
+        ExecutorResult(
+            success=False, duration_seconds=1, session_id="sess-nz",
+            returncode=2, error="executor crashed",
+        ),
+    ])
+    orch, supervisor, tracker, db = _make_orch(tmp_path, backend, executor, monkeypatch)
+    task_id = _seed_task(db)
+
+    orch.run_step(task_id)
+
+    task = db.get_task(task_id)
+    assert task.status == TaskStatus.FAILED
+    assert tracker.get_cancel_control(task_id, _AGENT) is None
+    assert tracker.get_pid(task_id, _AGENT) is None
+    assert tracker.get_active(task_id, _AGENT) is None
+
+
+def test_session_tracker_clear_if_active_session_ownership_safe():
+    """Generation/ownership-safe cleanup: an OLD attempt's terminal cleanup
+    must never clear a NEWER attempt of the same (task, agent). The guard
+    refuses when the binding is owned by a different session_id."""
+    tracker = SessionTracker()
+    old_cancel = lambda: None  # noqa: E731
+    new_cancel = lambda: None  # noqa: E731
+
+    # Old invocation registers, then a newer invocation supersedes it.
+    tracker.set_active("T-1", "dev_agent", "sess-old", org_slug="test")
+    tracker.set_pid("T-1", "dev_agent", 1111)
+    tracker.set_cancel_control("T-1", "dev_agent", old_cancel)
+    tracker.set_active("T-1", "dev_agent", "sess-new", org_slug="test")
+    tracker.set_pid("T-1", "dev_agent", 2222)
+    tracker.set_cancel_control("T-1", "dev_agent", new_cancel)
+
+    # The old attempt finalizes and tries to clear — refused (ownership-safe).
+    assert tracker.clear_if_active_session("T-1", "dev_agent", "sess-old") is False
+    assert tracker.get_active("T-1", "dev_agent") == "sess-new"
+    assert tracker.get_pid("T-1", "dev_agent") == 2222
+    assert tracker.get_cancel_control("T-1", "dev_agent") is new_cancel
+    # The newer attempt's own cleanup clears the binding.
+    assert tracker.clear_if_active_session("T-1", "dev_agent", "sess-new") is True
+    assert tracker.get_active("T-1", "dev_agent") is None
+    assert tracker.get_pid("T-1", "dev_agent") is None
+    assert tracker.get_cancel_control("T-1", "dev_agent") is None
+    # Clearing an absent binding is a harmless no-op (idempotent).
+    assert tracker.clear_if_active_session("T-1", "dev_agent", "sess-new") is False
+
+
+def test_supervisor_on_terminal_fires_before_lease_release_final_only():
+    """The supervisor's ``on_terminal`` hook fires AFTER finalization and
+    BEFORE lease release (the ownership record is still active inside the
+    hook), never between 429 retry attempts, and a hook exception never
+    replaces the terminal reason nor breaks the exactly-once release."""
+    from runtime.platform.passthrough_backend import PassthroughBackend
+
+    hook_calls: list = []
+    seen_active: list[int] = []
+    released_before_hook = [True]
+
+    def _hook(outcome):
+        hook_calls.append(outcome)
+        # BEFORE lease release the ownership record is still registered.
+        seen_active.append(supervisor.active_count())
+
+    supervisor = HostSessionSupervisor(
+        backend=PassthroughBackend(),
+        policy=canary_policy(sample_interval_seconds=0.0),
+        publisher=lambda receipt: None,
+        max_retry_attempts=1,
+        backoff_seconds=(0.0,),
+    )
+    # A raising hook must be swallowed (logged) — terminal reason survives.
+    def _raising_hook(outcome):
+        raise RuntimeError("hook boom")
+
+    class _Body:
+        def __init__(self, results):
+            self._results = list(results)
+
+        def __call__(self, running):
+            return self._results.pop(0)
+
+    body = _Body([
+        LaunchResult(success=False, duration_seconds=0.1, rate_limited=True, error="429"),
+        LaunchResult(success=True, duration_seconds=0.1),
+    ])
+
+    # Case 1: retry-worthy attempt does NOT fire the hook; final attempt does,
+    # while the lease is still held.
+    supervisor._max_retry_attempts = 1
+    outcome = supervisor.run(
+        AdmissionRequest(
+            org="test", invocation_kind="task", logical_id="T-1",
+            executor_profile="claude", enqueued_at=123.0,
+        ),
+        launch_spec=LaunchSpec(argv=("x",)),
+        launch_body=body,
+        on_terminal=_hook,
+    )
+    assert outcome.terminal_reason.value == "success"
+    assert len(hook_calls) == 1  # only the FINAL terminal path
+    assert seen_active == [1]  # ownership record still active -> hook ran BEFORE release
+    assert supervisor.active_count() == 0
+    assert supervisor._admission.admitted_total() == 2
+    assert supervisor._admission.released_total() == 2
+
+    # Case 2: a raising hook never replaces the terminal reason and the lease
+    # still releases exactly once.
+    supervisor2 = HostSessionSupervisor(
+        backend=PassthroughBackend(),
+        policy=canary_policy(sample_interval_seconds=0.0),
+        publisher=lambda receipt: None,
+    )
+    out2 = supervisor2.run(
+        AdmissionRequest(
+            org="test", invocation_kind="task", logical_id="T-2",
+            executor_profile="claude",
+        ),
+        launch_spec=LaunchSpec(argv=("x",)),
+        launch_body=lambda running: LaunchResult(success=True, duration_seconds=0.1),
+        on_terminal=_raising_hook,
+    )
+    assert out2.terminal_reason.value == "success"
+    assert supervisor2.active_count() == 0
+    assert supervisor2._admission.released_total() == 1
+
+
+def test_supervisor_on_terminal_fires_on_cancelled_while_queued():
+    """A queued request cancelled by shutdown (or by a fired token before
+    admission) also fires the terminal hook — the caller's per-invocation
+    state is cleared even though nothing ever launched."""
+    from runtime.platform.passthrough_backend import PassthroughBackend
+
+    hook_calls: list = []
+    supervisor = HostSessionSupervisor(
+        backend=PassthroughBackend(),
+        policy=canary_policy(sample_interval_seconds=0.0),
+        publisher=lambda receipt: None,
+    )
+    supervisor.shutdown()
+    outcome = supervisor.run(
+        AdmissionRequest(
+            org="test", invocation_kind="task", logical_id="T-3",
+            executor_profile="claude",
+        ),
+        launch_spec=LaunchSpec(argv=("x",)),
+        launch_body=lambda running: LaunchResult(success=True, duration_seconds=0.1),
+        on_terminal=hook_calls.append,
+    )
+    assert outcome.cancelled_while_queued is True
+    assert len(hook_calls) == 1
+    assert hook_calls[0] is outcome

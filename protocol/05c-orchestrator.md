@@ -820,8 +820,14 @@ an opaque cancellation/cleanup control is registered with ``SessionTracker``
 (PID stays diagnostic/restart evidence only) and the ``/tasks/{id}/cancel``
 route invokes it off the event loop, and a 429 attempt fully finishes and
 releases before sleeping and reacquires with the original enqueue age and a
-fresh backend handle. Thread/dream/wake producers stay structurally
-unchanged; later serial slices attach them to the same contract.
+fresh backend handle. Every final terminal path (pre-launch/admission
+failure, prepare/spawn failure, nonzero/no-callback exit, cancel, timeout,
+429-final, shutdown) clears the control/PID/session after supervisor
+finalization and before lease release (ownership-safe — an old attempt never
+clears a newer session of the same (task, agent)). The schedule producer's
+honest-passthrough branch disables the executor's internal 429 retry so the
+supervisor is the single retry owner. Thread/dream/wake producers stay
+structurally unchanged; later serial slices attach them to the same contract.
 
 **Slice B backend selection (THR-207 / TASK-5637).** The daemon-wide
 supervisor's backend is selected through the capability factory

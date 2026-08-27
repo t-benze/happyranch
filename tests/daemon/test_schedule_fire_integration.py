@@ -39,6 +39,7 @@ from runtime.orchestrator.host_supervisor import (
 )
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
+from runtime.platform.passthrough_backend import PassthroughBackend
 from runtime.platform.session_backend import CleanupStatus
 from runtime.runtime import RuntimeDir
 
@@ -51,7 +52,15 @@ _AGENT_FILE = (
 
 
 class _FakeResult:
-    def __init__(self, success: bool = True, error: str | None = None) -> None:
+    def __init__(
+        self,
+        success: bool = True,
+        error: str | None = None,
+        *,
+        rate_limited: bool = False,
+        duration_seconds: float = 1.0,
+        returncode: int | None = 0,
+    ) -> None:
         self.success = success
         self.token_usage = TokenUsage(
             input_tokens=100, output_tokens=40, model="claude-opus",
@@ -59,6 +68,9 @@ class _FakeResult:
         self.agent_session_id = "sess-schedule-1"
         self.session_id = "sess-schedule-1"
         self.error = error
+        self.rate_limited = rate_limited
+        self.duration_seconds = duration_seconds
+        self.returncode = returncode
 
 
 class _SpawningExecutor:
@@ -93,6 +105,53 @@ class _FailingExecutor:
     """A fake executor that returns failure — the runner should mark FAULT."""
     def run(self, *, workspace, prompt, session_id, timeout_seconds, **_kwargs):
         return _FakeResult(success=False, error="executor crashed")
+
+
+class _RateLimitedExecutor:
+    """A fake executor that yields rate_limited results N times then success,
+    recording every launch-body call (exact launches/attempts + the
+    throttle-backoff seam the caller wired)."""
+
+    def __init__(self, results: list[_FakeResult]) -> None:
+        self._results = list(results)
+        self.calls: list[dict] = []
+
+    def run(self, *, workspace, prompt, session_id, timeout_seconds, **_kwargs):
+        self.calls.append({
+            "running": _kwargs.get("running"),
+            "throttle_backoff_seconds": _kwargs.get("throttle_backoff_seconds"),
+            "timeout_seconds": timeout_seconds,
+        })
+        result = self._results.pop(0)
+        return result
+
+
+class _RecordingPassthroughBackend(PassthroughBackend):
+    """Passthrough backend that records every admission request + lifecycle
+    call so the test can assert exact attempts, releases/reacquisitions, and
+    the original enqueue age across the supervisor's retry loop."""
+
+    def __init__(self) -> None:
+        self.requests: list = []
+        self.calls: dict[str, int] = {"prepare": 0, "launch": 0, "finish": 0}
+
+    def prepare(self, request, policy):
+        self.calls["prepare"] += 1
+        self.requests.append(request)
+        return super().prepare(request, policy)
+
+    def launch(self, pending, spec):
+        self.calls["launch"] += 1
+        return super().launch(pending, spec)
+
+    def finish(
+        self, running, terminal_reason, grace_seconds,
+        samples=None, sample_prefix_gap=0.0,
+    ):
+        self.calls["finish"] += 1
+        return super().finish(
+            running, terminal_reason, grace_seconds, samples, sample_prefix_gap,
+        )
 
 
 class _FakeOrch:
@@ -992,3 +1051,87 @@ async def test_schedule_fire_acceptance_shutdown_mid_body_finishes_exactly_once(
     assert supervisor._admission.released_total() == 1
     assert supervisor._admission.active_count() == 0
     assert supervisor.active_count() == 0
+
+
+# ── THR-207: schedule passthrough single 429 retry owner ─────────────
+
+
+@pytest.mark.asyncio
+async def test_schedule_passthrough_429_single_retry_owner(tmp_path, monkeypatch):
+    """Schedule passthrough (unsupported/unhealthy host -> honest
+    no-capability backend): the executor's internal 429 retry is DISABLED
+    (``throttle_backoff_seconds=()``) so the supervisor is the SINGLE 429
+    retry owner — exact launches/attempts, per-attempt bounded receipts,
+    exactly-once releases, reacquisition with the original enqueue age, and
+    no launch multiplication (up to 16 launches before this fix)."""
+    settings = Settings()
+    db = Database(tmp_path / "test.db")
+    org_dir = _setup_org(tmp_path, db)
+    _insert_one_shot(db, "SCHEDULE-429")
+
+    from runtime.daemon.org_state import OrgState
+    from runtime.orchestrator.host_supervisor import (
+        HostSessionSupervisor,
+        canary_policy,
+    )
+
+    teams = TeamsRegistry.load(org_dir)
+    org_state = OrgState(
+        slug="test-org", root=org_dir, db=db, teams=teams,
+        settings=settings, orchestrator=_FakeOrch(),
+    )
+    receipts: list = []
+    backend = _RecordingPassthroughBackend()  # no capabilities -> passthrough
+    supervisor = HostSessionSupervisor(
+        backend=backend,
+        policy=canary_policy(sample_interval_seconds=0.0),
+        publisher=receipts.append,
+        max_retry_attempts=2,
+        backoff_seconds=(0.0, 0.0),
+    )
+    executor = _RateLimitedExecutor(results=[
+        _FakeResult(success=False, error="rate limit hit", rate_limited=True),
+        _FakeResult(success=False, error="rate limit hit", rate_limited=True),
+        _FakeResult(success=True),
+    ])
+
+    await run_schedule(
+        org_state=org_state,
+        schedule_id="SCHEDULE-429",
+        settings=settings,
+        executor_factory=lambda name, settings, paths: executor,
+        host_supervisor=supervisor,
+    )
+
+    # SINGLE retry owner: every launch-body call was the honest passthrough
+    # branch (running=None) with the executor's internal 429 retry disabled —
+    # the supervisor's 5/15/45 loop owns finish/release/sleep/reacquire.
+    assert len(executor.calls) == 3
+    assert all(c["running"] is None for c in executor.calls)
+    assert all(c["throttle_backoff_seconds"] == () for c in executor.calls)
+    # Exact attempts: 3 prepares/launches/finishes, 3 admissions, 3 releases.
+    assert backend.calls == {"prepare": 3, "launch": 3, "finish": 3}
+    assert supervisor._admission.admitted_total() == 3
+    assert supervisor._admission.released_total() == 3
+    assert supervisor.active_count() == 0
+    # Bounded receipt published exactly once per attempt (3 receipts, one per
+    # attempt's terminal reason).
+    assert len(receipts) == 3
+    assert [r.terminal_reason for r in receipts] == [
+        "rate_limited", "rate_limited", "success",
+    ]
+    # Reacquisition preserves the logical invocation's ORIGINAL enqueue age
+    # and increments the retry attempt on a fresh request.
+    assert len(backend.requests) == 3
+    assert backend.requests[0].enqueued_at is not None
+    assert (
+        backend.requests[0].enqueued_at
+        == backend.requests[1].enqueued_at
+        == backend.requests[2].enqueued_at
+    )
+    assert [r.retry_attempt for r in backend.requests] == [0, 1, 2]
+    # The final success never called the spawn callback -> no_callback failure
+    # (the row lifecycle is unchanged by the single-owner retry).
+    record = db.schedules.get("SCHEDULE-429")
+    assert record.status == ScheduleStatus.FAILED
+    assert record.error == "no_callback"

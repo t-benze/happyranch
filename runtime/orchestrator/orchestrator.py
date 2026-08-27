@@ -1059,6 +1059,20 @@ class Orchestrator:
         if self._sessions is not None:
             self._sessions.set_cancel_control(task_id, agent_name, token.cancel)
 
+        # THR-207 task-producer terminal cleanup: every final terminal path
+        # of this invocation clears the SessionTracker opaque cancel control,
+        # PID diagnostic, and active-session record — after the supervisor
+        # finalized/reconciled/published and before the lease releases (the
+        # ``on_terminal`` hook below), or immediately for pre-admission
+        # failures that never reach the supervisor. Ownership-safe: only the
+        # binding still owned by THIS session_id is cleared, so an older
+        # invocation can never wipe a newer session of the same (task, agent).
+        def _clear_tracker() -> None:
+            if self._sessions is not None:
+                self._sessions.clear_if_active_session(
+                    task_id, agent_name, session_id
+                )
+
         # Build the backend LaunchSpec via the executor (argv/stdio/env). A
         # spec-assembly failure (e.g. the prompt-transport argv gate, or an
         # executor without the contained-launch seam) fails closed with an
@@ -1066,6 +1080,7 @@ class Orchestrator:
         # behavior.
         spec_builder = getattr(executor, "build_launch_spec", None)
         if spec_builder is None:
+            _clear_tracker()
             return ExecutorResult(
                 success=False,
                 duration_seconds=0,
@@ -1085,6 +1100,7 @@ class Orchestrator:
                 timeout_seconds=timeout_seconds,
             )
         except Exception as exc:
+            _clear_tracker()
             return ExecutorResult(
                 success=False,
                 duration_seconds=0,
@@ -1152,6 +1168,7 @@ class Orchestrator:
             launch_spec=launch_spec,
             launch_body=_launch_body,
             pre_launch_validator=_pre_launch_validator,
+            on_terminal=lambda _outcome: _clear_tracker(),
         )
         launch = outcome.payload
         if launch is None:

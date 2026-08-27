@@ -1305,6 +1305,7 @@ class HostSessionSupervisor:
         grace_seconds: float | None = None,
         timeout: float | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
+        on_terminal: "Callable[[SessionOutcome | None], None] | None" = None,
     ) -> SessionOutcome:
         """Run one logical invocation to a terminal outcome.
 
@@ -1319,19 +1320,36 @@ class HostSessionSupervisor:
         ``pre_launch_validator`` (when provided) runs **per attempt** —
         including supervisor-level 429 retries — after the grant-to-
         registration ownership gate and before ``backend.prepare``/launch, so
-        a failing integrity check never creates a containment handle."""
+        a failing integrity check never creates a containment handle.
+
+        ``on_terminal`` is an optional caller-owned hook invoked on the
+        invocation's **final** terminal path — AFTER the attempt's
+        finalization (finish/receipt/residue reconciliation/publish) and
+        BEFORE the lease releases — so the caller can clear its own
+        per-invocation state (e.g. the task producer's SessionTracker opaque
+        cancel control / PID / active-session record) without leaving
+        residue. It is deliberately NOT invoked between 429 retry attempts
+        (the logical invocation is still live: a retry re-enters admission
+        with the same cancellation token). It is also invoked with ``None``
+        when the invocation ended without an outcome (unexpected exception)
+        and on the cancelled-while-queued path. Hook exceptions are
+        swallowed (logged) — they never replace the terminal reason and
+        never break the exactly-once lease release."""
 
         grace = self._policy.cleanup_grace_seconds if grace_seconds is None else grace_seconds
         attempt = 0
         while True:
             lease = self._admission.acquire(request, timeout=timeout)
             if lease is None:
-                return SessionOutcome(
+                outcome = SessionOutcome(
                     request=request,
                     terminal_reason=TerminalReason.CANCELLED,
                     attempt=attempt,
                     cancelled_while_queued=True,
                 )
+                if on_terminal is not None:
+                    self._invoke_terminal_hook(on_terminal, outcome)
+                return outcome
             try:
                 outcome = self._execute_attempt(
                     request,
@@ -1342,6 +1360,24 @@ class HostSessionSupervisor:
                     attempt=attempt,
                     pre_launch_validator=pre_launch_validator,
                 )
+            except BaseException:
+                # Unexpected exception: the lease still releases exactly
+                # once; run the caller's terminal hook (best-effort, with
+                # None — no outcome exists) so per-invocation state is
+                # never left behind, then re-raise unchanged.
+                if on_terminal is not None:
+                    self._invoke_terminal_hook(on_terminal, None)
+                raise
+            else:
+                # Final terminal path only: NOT invoked for a retry-worthy
+                # attempt that still has budget (the invocation continues
+                # and the caller-owned control must survive the retry sleep
+                # and re-acquire). Fires AFTER ``_execute_attempt`` finished
+                # containment/reconcile/publish and BEFORE lease release.
+                if on_terminal is not None and not (
+                    outcome.retry_worthy and attempt < self._max_retry_attempts
+                ):
+                    self._invoke_terminal_hook(on_terminal, outcome)
             finally:
                 lease.release()
             if outcome.retry_worthy and attempt < self._max_retry_attempts:
@@ -1353,6 +1389,21 @@ class HostSessionSupervisor:
                 request = request.with_retry_attempt(attempt)
                 continue
             return outcome
+
+    @staticmethod
+    def _invoke_terminal_hook(
+        hook: "Callable[[SessionOutcome | None], None]",
+        outcome: "SessionOutcome | None",
+    ) -> None:
+        """Invoke the caller's terminal hook without letting a hook failure
+        replace the primary terminal reason or break the exactly-once lease
+        release."""
+        try:
+            hook(outcome)
+        except Exception as exc:  # noqa: BLE001 — best-effort caller cleanup
+            logger.warning(
+                "HostSessionSupervisor on_terminal hook raised: %s", exc,
+            )
 
     # ── attempt execution ─────────────────────────────────────────
 

@@ -894,7 +894,10 @@ task session owns a real admission lease + cancellation token, transfers
 atomic ownership at grant, launches through the selected capability backend,
 registers an opaque cancellation/cleanup control with ``SessionTracker``
 while the PID stays diagnostic/restart evidence only, and finishes
-containment before exactly-once lease release on every terminal path) and
+containment before exactly-once lease release on every terminal path — the
+supervisor's terminal hook clears the control/PID/session on the final path
+after finalization and before lease release, ownership-safe against a newer
+session of the same (task, agent)) and
 **BOTH executor Popen launch bodies** (``executors._run_command`` and
 ``CustomAdapterExecutor.run`` receive the backend-created ``RunningHandle``
 and communicate/parse only — no self-Popen, no ``on_started``, no internal
@@ -903,7 +906,9 @@ with the original enqueue age and a fresh backend handle). The schedule
 producer (``runtime/daemon/schedule_runner.py``) was wired in Slice A with
 an honest no-enforcement ``PassthroughBackend`` (all capabilities
 unavailable); with the executor bodies now wired it launches the real
-argv through the selected backend too. The app-lifespan drain calls
+argv through the selected backend too, and its honest-passthrough branch
+disables the executor's internal 429 retry so the supervisor is the single
+retry owner (no launch multiplication). The app-lifespan drain calls
 ``supervisor.shutdown()`` in the app lifespan finally before producer
 workers are cancelled. Thread/dream/wake producers stay on their current
 path; they are wired in later serial slices. ``runtime/platform/isolation.py``
