@@ -306,6 +306,33 @@ def _valid_range(from_seq: Any, through_seq: Any) -> tuple[int, int] | None:
     return lo, hi
 
 
+def _decode_audit_payload(raw: Any) -> dict[str, Any] | None:
+    """Decode an ``audit_log.payload`` value to the object its consumer reads.
+
+    This is the SINGLE shared decoder for every audit_log payload consumer in
+    this module (created / recovered / claimed maps). It returns the parsed
+    payload only when it is a JSON **object** (``dict``); it safely skips a
+    ``NULL``/empty payload, undecodable JSON, JSON ``null``, strings, numbers,
+    booleans, and lists — ``None`` in every case. Consumers therefore never
+    call ``.get`` on anything but a real object, so one malformed audit row
+    can never abort a measurement run and never fabricates or reassigns an
+    attribution (the row simply contributes no evidence; the caller keeps its
+    documented fallback/under-approximation).
+    """
+    if not isinstance(raw, str):
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
+
+
 def _creating_arrival_seqs(
     conn: sqlite3.Connection,
     invocations: list[sqlite3.Row],
@@ -339,7 +366,10 @@ def _creating_arrival_seqs(
     ``(thread_id, agent_name, token_prefix)`` — the created audit's
     ``audit_log.agent`` column IS the wake owner — never a weaker key: an
     unrelated same-thread audit with the same 8-char prefix but a different
-    owner cannot reattribute an invocation. Payloads are parsed fail-closed
+    owner cannot reattribute an invocation. Payloads are decoded through the
+    shared ``_decode_audit_payload`` (objects only — ``NULL``/empty,
+    undecodable, JSON ``null``, scalar, and list payloads are skipped before
+    any field access), then parsed fail-closed
     (missing/non-8-char ``token_prefix``, or a missing/non-integer/
     boolean-like/non-positive/inverted ``from_seq``/``through_seq``) and
     skipped without exception — never a crash, never a fabricated
@@ -350,11 +380,8 @@ def _creating_arrival_seqs(
         "SELECT task_id, agent, payload FROM audit_log "
         "WHERE action = 'thread_reply_wake_created'",
     ).fetchall():
-        if not row["payload"]:
-            continue
-        try:
-            payload = json.loads(row["payload"])
-        except json.JSONDecodeError:
+        payload = _decode_audit_payload(row["payload"])
+        if payload is None:
             continue
         prefix = payload.get("token_prefix")
         if not isinstance(prefix, str) or len(prefix) != 8:
@@ -411,7 +438,10 @@ def _recovered_replacement_seqs(
     unrelated same-thread audit with the same 8-char prefix owned by a
     DIFFERENT agent can never reattribute the target agent's invocation (the
     invocation lookup uses the identical tuple from its ``agent_name``).
-    Payloads are parsed fail-closed: a missing kind, any non-
+    Payloads are decoded through the shared ``_decode_audit_payload``
+    (objects only — ``NULL``/empty, undecodable, JSON ``null``, scalar, and
+    list payloads are skipped before any field access), then parsed
+    fail-closed: a missing kind, any non-
     ``replacement_queued`` kind, a missing/non-8-char ``token_prefix``,
     or a missing/non-integer/boolean-like/non-positive/inverted
     ``from_seq``/``through_seq`` is skipped without exception — never a
@@ -424,11 +454,8 @@ def _recovered_replacement_seqs(
         "SELECT task_id, agent, payload FROM audit_log "
         "WHERE action = 'thread_reply_wake_recovered'",
     ).fetchall():
-        if not row["payload"]:
-            continue
-        try:
-            payload = json.loads(row["payload"])
-        except json.JSONDecodeError:
+        payload = _decode_audit_payload(row["payload"])
+        if payload is None:
             continue
         if payload.get("kind") != "replacement_queued":
             continue
@@ -472,7 +499,10 @@ def _consumed_reply_ranges(
     (the audit deliberately stores only the prefix). The range floor equals
     the invocation's ``triggering_seq`` (every mint path seeds it as
     ``acknowledged + 1`` and the watermark cannot move between mint and
-    claim). Claimed payloads are parsed fail-closed (missing/non-8-char
+    claim). Claimed payloads are decoded through the shared
+    ``_decode_audit_payload`` (objects only — ``NULL``/empty, undecodable,
+    JSON ``null``, scalar, and list payloads are skipped before any field
+    access), then parsed fail-closed (missing/non-8-char
     ``token_prefix``, or missing/non-integer/boolean-like/non-positive/
     inverted range fields are skipped without exception — never a crash, and
     an out-of-shape row simply contributes no coverage). A consumed
@@ -486,11 +516,8 @@ def _consumed_reply_ranges(
         "SELECT task_id, agent, payload FROM audit_log "
         "WHERE action = 'thread_reply_wake_claimed'",
     ).fetchall():
-        if not row["payload"]:
-            continue
-        try:
-            payload = json.loads(row["payload"])
-        except json.JSONDecodeError:
+        payload = _decode_audit_payload(row["payload"])
+        if payload is None:
             continue
         prefix = payload.get("token_prefix")
         if not isinstance(prefix, str) or len(prefix) != 8:

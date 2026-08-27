@@ -311,7 +311,12 @@ re-derived):
    (the wake owner recorded in `audit_log.agent`) + the 8-char
    `token_prefix` — never a weaker key, so an unrelated same-thread,
    same-prefix audit owned by a different agent can never reattribute an
-   invocation. All seq/range fields are parsed fail-closed: a missing,
+   invocation. Every audit payload is decoded by ONE shared fail-closed
+   decoder that returns only JSON objects: a NULL/empty payload,
+   undecodable JSON, JSON null, a scalar (string/number/boolean), or a
+   list is skipped before any field access — a malformed row can never
+   abort a run or fabricate/reassign an attribution. All seq/range fields
+   are then parsed fail-closed: a missing,
    non-integer, boolean-like, float, string, non-positive, or internally
    inverted range payload is skipped without exception — the measurement
    never crashes and never fabricates an attribution. `retained_queued`

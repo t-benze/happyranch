@@ -21,6 +21,24 @@ WINDOW_END = "2026-09-26T14:25:23Z"  # epoch + 1 calendar month
 AUG_START = "2026-08-01T00:00:00Z"
 AUG_END = "2026-09-01T00:00:00Z"
 
+#: Raw ``audit_log.payload`` values that must be skipped by the shared
+#: fail-closed decoder (TASK-5895 HIGH finding): every category of
+#: non-object payload — SQL NULL / empty / whitespace, undecodable JSON,
+#: JSON null, scalar (number, float, string, boolean), and list.
+NON_OBJECT_PAYLOADS: list[str | None] = [
+    None,        # SQL NULL
+    "",          # empty string
+    "   ",       # whitespace-only
+    "{oops",     # undecodable JSON
+    "null",      # JSON null
+    "42",        # JSON number
+    "3.14",      # JSON float
+    '"scalar"',  # JSON string
+    "true",      # JSON boolean
+    "[]",        # JSON empty list
+    "[1, 2]",    # JSON non-empty list
+]
+
 
 def _conn() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
@@ -962,6 +980,176 @@ def test_live_claimed_malformed_range_fails_closed() -> None:
         assert live.founder_messages == 3
         assert live.founder_covered == 1
         assert live.founder_uncovered == 2
+
+
+def test_live_created_non_object_payloads_fail_closed() -> None:
+    """[adversarial regression — TASK-5895 HIGH finding, created consumer]
+    A ``thread_reply_wake_created`` audit whose payload is NULL/empty,
+    undecodable JSON, JSON null, a scalar (number/float/string/boolean), or
+    a list must be skipped BEFORE any field access: the measurement never
+    crashes and the wake keeps the genuine legacy fallback
+    (``triggering_seq``) — malformed evidence never fabricates or reassigns
+    an attribution. Control: a VALID created payload (through_seq 11,
+    broadcast) excludes the same wake — proving the malformed rows really
+    contribute no evidence."""
+    for raw in NON_OBJECT_PAYLOADS:
+        conn = _conn()
+        _add_thread(conn, "T1")
+        _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+        # seq 10 mentioned; seq 11 unmentioned broadcast.
+        _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                     mentions='["alice"]')
+        _add_message(conn, "T1", 11, "founder", "2026-08-27T00:00:30Z",
+                     mentions="[]")
+        _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:01:00Z",
+                        token="aaa11111", status="declined",
+                        consumed_at="2026-08-27T00:02:00Z")
+        conn.execute(
+            "INSERT INTO audit_log (task_id, agent, action, payload, "
+            "timestamp) VALUES ('T1', 'alice', "
+            "'thread_reply_wake_created', ?, '2026-08-27T00:01:00Z')",
+            (raw,),
+        )
+        live = m.measure_live_window(conn, epoch=EPOCH,
+                                     as_of="2026-08-27T12:00:00Z")
+        # Malformed created evidence skipped → floor fallback (10 IS
+        # mentioned) → counted in G1, never a crash, never fabricated.
+        assert live.mentioned_wakes == 1, f"created raw={raw!r}"
+        assert live.mentioned_declines == 1, f"created raw={raw!r}"
+        assert live.mentioned_decline_rate_pct == 100.0
+        assert live.org_wakes == 1
+
+    # Control: a VALID created audit (through_seq 11 = broadcast) excludes
+    # the wake from G1 — the malformed rows must NOT behave like this.
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_message(conn, "T1", 11, "founder", "2026-08-27T00:00:30Z",
+                 mentions="[]")
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:01:00Z",
+                    token="aaa11111", status="declined",
+                    consumed_at="2026-08-27T00:02:00Z")
+    _add_created_audit(conn, "T1", "alice", "aaa11111", 10, 11,
+                       "2026-08-27T00:01:00Z")
+    live = m.measure_live_window(conn, epoch=EPOCH,
+                                 as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_wakes == 0
+    assert live.mentioned_declines == 0
+    assert live.mentioned_decline_rate_pct is None
+    assert live.org_wakes == 1
+
+
+def test_live_recovered_non_object_payloads_fail_closed() -> None:
+    """[adversarial regression — TASK-5895 HIGH finding, recovered consumer]
+    A ``thread_reply_wake_recovered`` audit whose payload is NULL/empty,
+    undecodable JSON, JSON null, a scalar, or a list must be skipped BEFORE
+    any field access — the reviewer's exact-head probe (payload='[]')
+    aborted the whole measurement with AttributeError. The replacement keeps
+    the genuine legacy fallback (``triggering_seq``) and the run never
+    crashes. Control: a VALID recovered payload (through_seq 11, broadcast)
+    excludes the same replacement from G1."""
+    for raw in NON_OBJECT_PAYLOADS:
+        conn = _conn()
+        _add_thread(conn, "T1")
+        _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+        _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                     mentions='["alice"]')
+        _add_message(conn, "T1", 11, "founder", "2026-08-27T00:00:30Z",
+                     mentions="[]")
+        _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:02:00Z",
+                        token="rrr11111", status="declined",
+                        consumed_at="2026-08-27T00:03:00Z")
+        conn.execute(
+            "INSERT INTO audit_log (task_id, agent, action, payload, "
+            "timestamp) VALUES ('T1', 'alice', "
+            "'thread_reply_wake_recovered', ?, '2026-08-27T00:02:00Z')",
+            (raw,),
+        )
+        live = m.measure_live_window(conn, epoch=EPOCH,
+                                     as_of="2026-08-27T12:00:00Z")
+        # Malformed recovery evidence skipped → floor fallback (mentioned)
+        # → counted in G1, never a crash, never a fabricated attribution.
+        assert live.mentioned_wakes == 1, f"recovered raw={raw!r}"
+        assert live.mentioned_declines == 1, f"recovered raw={raw!r}"
+        assert live.mentioned_decline_rate_pct == 100.0
+        assert live.org_wakes == 1
+        assert live.org_declines == 1
+
+    # Control: a VALID recovered audit (through_seq 11 = broadcast) excludes
+    # the replacement from G1 while G3 still includes it.
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_message(conn, "T1", 11, "founder", "2026-08-27T00:00:30Z",
+                 mentions="[]")
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:02:00Z",
+                    token="rrr11111", status="declined",
+                    consumed_at="2026-08-27T00:03:00Z")
+    _add_recovered_audit(conn, "T1", "alice", "rrr11111",
+                         "replacement_queued", 10, 11,
+                         "2026-08-27T00:02:00Z")
+    live = m.measure_live_window(conn, epoch=EPOCH,
+                                 as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_wakes == 0
+    assert live.mentioned_declines == 0
+    assert live.mentioned_decline_rate_pct is None
+    assert live.org_wakes == 1
+    assert live.org_declines == 1
+
+
+def test_live_claimed_non_object_payloads_contribute_no_coverage() -> None:
+    """[adversarial regression — TASK-5895 HIGH finding, claimed consumer]
+    A ``thread_reply_wake_claimed`` audit whose payload is NULL/empty,
+    undecodable JSON, JSON null, a scalar, or a list must be skipped BEFORE
+    any field access: the consumed invocation then covers ONLY its own
+    ``triggering_seq`` (the honest under-approximation) — the malformed row
+    contributes no fabricated coalesced coverage, and the run never crashes.
+    Control: a VALID claim [1,3] covers all three founder messages."""
+    for raw in NON_OBJECT_PAYLOADS:
+        conn = _conn()
+        _add_thread(conn, "T1")
+        _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+        _add_message(conn, "T1", 1, "founder", "2026-08-27T00:00:00Z")
+        _add_message(conn, "T1", 2, "founder", "2026-08-27T00:01:00Z")
+        _add_message(conn, "T1", 3, "founder", "2026-08-27T00:02:00Z")
+        _add_invocation(conn, "T1", "alice", 1, "2026-08-27T00:03:00Z",
+                        token="aaa11111", status="consumed",
+                        consumed_at="2026-08-27T00:04:00Z")
+        conn.execute(
+            "INSERT INTO audit_log (task_id, agent, action, payload, "
+            "timestamp) VALUES ('T1', 'alice', "
+            "'thread_reply_wake_claimed', ?, '2026-08-27T00:03:30Z')",
+            (raw,),
+        )
+        live = m.measure_live_window(conn, epoch=EPOCH,
+                                     as_of="2026-08-27T12:00:00Z")
+        # Malformed claim contributes NO coverage: only seq 1 (own trigger)
+        # is covered — never fabricated, never a crash.
+        assert live.founder_messages == 3, f"claimed raw={raw!r}"
+        assert live.founder_covered == 1, f"claimed raw={raw!r}"
+        assert live.founder_uncovered == 2
+        assert live.org_wakes == 1
+
+    # Control: a VALID claim [1,3] covers all three founder messages.
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 1, "founder", "2026-08-27T00:00:00Z")
+    _add_message(conn, "T1", 2, "founder", "2026-08-27T00:01:00Z")
+    _add_message(conn, "T1", 3, "founder", "2026-08-27T00:02:00Z")
+    _add_invocation(conn, "T1", "alice", 1, "2026-08-27T00:03:00Z",
+                    token="aaa11111", status="consumed",
+                    consumed_at="2026-08-27T00:04:00Z")
+    _add_claim_audit(conn, "T1", "alice", "aaa11111", 1, 3,
+                     "2026-08-27T00:03:30Z")
+    live = m.measure_live_window(conn, epoch=EPOCH,
+                                 as_of="2026-08-27T12:00:00Z")
+    assert live.founder_covered == 3
+    assert live.founder_uncovered == 0
 
 
 def test_live_followon_wake_with_mentioned_floor_is_counted() -> None:
