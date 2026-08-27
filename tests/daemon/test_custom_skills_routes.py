@@ -535,6 +535,13 @@ _INVALID_BODIES = [
     ("---\nname: x\n---\nplain text without a heading\n", "skill_md_no_heading"),
     ("---\nname: x\n---\n\n", "skill_md_no_heading"),
     ("plain text without frontmatter", "skill_md_no_frontmatter"),
+    # malformed heading-LIKE candidates: hash-prefixed but NOT ATX headings
+    # (1-6 hashes followed by whitespace/EOL) — invalid evidence, same rules
+    ("#not-a-heading\n", "skill_md_no_frontmatter"),
+    ("####### Too many hashes\n", "skill_md_no_frontmatter"),
+    # the post-frontmatter body heading uses the identical ATX boundary
+    ("---\nname: x\n---\n#not-a-heading\n", "skill_md_no_heading"),
+    ("---\nname: x\n---\n####### Seven hashes\n", "skill_md_no_heading"),
 ]
 
 # THR-210 PR 2: heading-first SKILL.md bodies with a column-zero Markdown
@@ -544,6 +551,10 @@ _VALID_HEADING_FIRST_BODIES = [
     "# Heading-first body\n\nBody text.\n",
     "## Heading-first level two\n\nBody text.\n",
     "# Heading without trailing newline",
+    "#\n",                                         # ATX boundary: 1 hash + EOL
+    "###### Level-six heading\n\nBody text.\n",   # ATX boundary: 6 hashes + space
+    "######\n",                                    # ATX boundary: 6 hashes + EOL
+    "#\tTab-separated heading\n\nBody text.\n",   # ATX: whitespace after hashes
 ]
 
 
@@ -753,6 +764,98 @@ def test_agent_create_accepts_heading_first_body_with_provenance(client_with_run
         "SELECT current_version_id FROM custom_skills WHERE id=?",
         (payload["skill"]["id"],),
     ).fetchone()["current_version_id"] == payload["version"]["id"]
+
+
+def test_malformed_heading_like_successor_never_eligible_or_materializable(
+    client_with_runtime, monkeypatch,
+):
+    """THR-210 PR 2 (reviewer lock): a hash-prefixed body that is NOT an ATX
+    heading (e.g. '#not-a-heading', no whitespace/EOL after the hashes) is
+    classified invalid evidence under PR 1 rules — it never displaces the
+    existing valid current pointer, and eligibility/materialization stay
+    bound to the retained valid version, exactly like any other invalid
+    successor."""
+    from runtime.skills.canonical_store import CanonicalSkillStore
+    from runtime.orchestrator.workspace_adapters import _build_custom_skill_canonical_specs
+
+    client, org = client_with_runtime
+    _add_agent(org)
+    created = _create(
+        client, slug="heading-like-b2",
+        skill_md="---\nname: M\n---\n\n# M\n\nOne\n",
+    )
+    skill_id, v1 = created["skill_id"], created["version_id"]
+    rules = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
+    assert client.put(
+        f"{BASE}/{skill_id}/eligibility", json=rules, headers={"If-Match": str(v1)}
+    ).status_code == 200
+    invalid = client.post(
+        f"{BASE}/{skill_id}/versions", json={"skill_md": "#not-a-heading\n"}
+    )
+    assert invalid.status_code == 201 and invalid.json()["validation_state"] == "invalid"
+    # pointer retained; eligibility still writes against the retained valid revision
+    conn = getattr(org.db, "_conn", org.db)
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"] == v1
+    assert client.put(
+        f"{BASE}/{skill_id}/eligibility", json=rules, headers={"If-Match": str(v1)}
+    ).status_code == 200
+    # materialization resolves the RETAINED valid v1, never the malformed evidence
+    monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(org.root / "canonical-store"))
+    specs = _build_custom_skill_canonical_specs(
+        store=CanonicalSkillStore(), org_root=org.root, db=org.db, slug="alpha",
+        agent_name="dev_agent", team="engineering", task_id="TASK-HLM",
+        session_id="sess-hlm", session_context="task",
+    )
+    spec = next(s for s in specs if s["slug"] == "heading-like-b2")
+    assert spec["version"] == str(v1)
+    explain = client.get(f"{BASE}/{skill_id}/eligibility/explain", params={"agent": "dev_agent"})
+    assert explain.json()["visible"] is True
+
+
+def test_malformed_heading_like_initial_candidate_is_invalid_evidence(client_with_runtime):
+    """THR-210 PR 2 (reviewer lock): on INITIAL creation a malformed
+    heading-like body ('#not-a-heading') is an invalid FIRST version —
+    persisted as immutable evidence (current pointer = the invalid first
+    version, per PR 1's B-shape), never eligible or materializable — and a
+    later TRUE ATX heading-first successor validates and advances the
+    pointer normally."""
+    client, org = client_with_runtime
+    malformed = "#not-a-heading\n\nBody text.\n"
+    response = client.post(
+        BASE,
+        json={"slug": "bad-heading-like", "name": "Bad", "skill_md": malformed},
+    )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["validation_state"] == "invalid"
+    skill_id = payload["skill_id"]
+    conn = getattr(org.db, "_conn", org.db)
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"] == payload["version_id"]
+    # inspectable evidence, never eligible
+    assert client.get(f"{BASE}/{skill_id}").json()["validation_state"] == "invalid"
+    rules = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
+    assert client.put(
+        f"{BASE}/{skill_id}/eligibility", json=rules,
+        headers={"If-Match": str(payload["version_id"])},
+    ).status_code == 422
+    _add_agent(org)
+    explain = client.get(f"{BASE}/{skill_id}/eligibility/explain", params={"agent": "dev_agent"})
+    assert explain.json()["visible"] is False
+    assert explain.json()["hidden_reason"] == "current_version_invalid"
+    digest = hashlib.sha256(malformed.encode()).hexdigest()
+    assert f"custom-skills/bad-heading-like/{digest}/SKILL.md" in _artifact_keys(org)
+    # a true ATX heading-first successor is valid and advances the pointer
+    valid_md = "# Now a real heading\n\nBody.\n"
+    advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": valid_md})
+    assert advanced.status_code == 201, advanced.text
+    assert advanced.json()["validation_state"] == "valid"
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"] == advanced.json()["version_id"]
 
 
 def test_add_version_duplicate_content_conflicts_atomically(client_with_runtime):

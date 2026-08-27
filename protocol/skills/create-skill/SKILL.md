@@ -87,11 +87,12 @@ persistence.
 - `name` — human-readable name.
 - `skill_md` — the SKILL.md body as a string. It must be one of the two
   supported authoring shapes: (a) **heading-first** — the body starts at
-  column zero with a Markdown heading (`# …`, any level) — or
+  column zero with a Markdown ATX heading (1–6 `#` markers followed by
+  whitespace or end of line) — or
   (b) **YAML-frontmatter-first** — a valid opening `---` YAML fence at
   column zero containing a YAML mapping, a closing `---` fence, then a
-  Markdown heading. Leading BOM/whitespace before either shape is not
-  accepted (no silent healing). Example below.
+  Markdown heading (the same ATX boundary). Leading BOM/whitespace before
+  either shape is not accepted (no silent healing). Example below.
 
 ### Optional fields
 
@@ -106,10 +107,12 @@ persistence.
 The server runs deterministic validation before persistence. Validation checks:
 
 1. `skill_md` matches the supported authoring grammar (THR-210 PR 2): either
-   a column-zero Markdown heading (heading-first) or a valid opening `---`
+   a column-zero Markdown ATX heading (1–6 `#` markers followed by whitespace
+   or end of line; heading-first) or a valid opening `---`
    fence, a YAML mapping inside, a closing `---` fence, then a Markdown
-   heading. Malformed, unclosed, non-mapping, or missing-heading bodies —
-   and bodies with neither a column-zero heading nor frontmatter — are
+   heading (the same ATX boundary). Malformed, unclosed, non-mapping, or
+   missing-heading bodies — and bodies with neither a column-zero heading nor
+   frontmatter, including hash-prefixed lines that are not ATX headings — are
    classified invalid under the authoring contract and persisted as
    immutable validation/provenance evidence; they are not accepted as valid
    or materializable versions.
