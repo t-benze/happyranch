@@ -263,10 +263,12 @@ Data sources: orchestrator audit log (session/step/completion events), LLM usage
 
 ---
 
-### Settings Dialog
+### Settings
 
-The Settings dialog (Phase 2) opens from the TopBar gear button
-(`web/src/features/settings/SettingsDialog.tsx`). Renders:
+The Settings surface ships as a full page
+(`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*`
+route, entered from the sidebar footer "Settings" item, with left sub-nav
+panels (Assistant · System · Organization · Agents · Executors). Renders:
 
 - **System** — daemon-wide settings (CLI name / default command metadata
   — not a launch path; executor launch uses registered binary pins — plus

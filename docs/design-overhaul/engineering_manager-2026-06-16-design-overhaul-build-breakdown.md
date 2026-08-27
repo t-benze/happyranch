@@ -97,6 +97,14 @@ this build**.
 | IA-2 | **Default landing = Home** (was Threads). Repoint `RootRedirect` and the per-org index redirect (`NavigateToThreads`) to the Home/Dashboard route. | RENDER-ONLY (S) | S | None | **AC1** (build-spec §4.1): default route resolves to Home. **Behavior change → doc-parity** (`features-and-invariants.md`) in the same PR. |
 | IA-10 | **Nav grouping** (primary / Operate) — cosmetic once IA-1 lands. | RENDER-ONLY (S) | S | IA-1 | Grouping only; no logic. |
 
+> **Current-state note (THR-140 seq 208 / PR #644, merged 2026-08-12):** the
+> grouped sidebar presentation specified above (IA-1 grouping / IA-10 nav
+> grouping) shipped as the #577 Slice 1 pilot in PR #633, then was
+> **intentionally superseded** by founder-approved flat primary navigation with
+> Settings pinned to the footer — the grouped rail overflowed the viewport at
+> 1440×700 (PR #644). The shipped sidebar is therefore the flat list + footer
+> Settings, not grouped.
+
 **Scope decisions for Phase 1b (stated to prevent rework):**
 - **Home == the existing `DashboardPage`** (`features/dashboard`). Phase 1b only
   makes it the **default landing** and re-parents it into the new shell; the
