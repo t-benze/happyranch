@@ -106,7 +106,14 @@ def _add_invocation(
     token: str | None = None, consumed_at: str | None = None,
 ) -> None:
     invocation_token = token or f"tok-{thread_id}-{agent}-{triggering_seq}-{enqueued_at}"
-    if consumed_at is None and status == "consumed":
+    if consumed_at is None and status in ("consumed", "declined"):
+        # Production stamps consumed_at in the SAME UPDATE that settles an
+        # invocation — the reply path (status='consumed') and every decline
+        # path (status='declined') alike; the schema has no separate
+        # declined_at column. Default to enqueued_at so a fixture that only
+        # says "settled immediately at enqueue" is production-faithful
+        # (consumed_at non-null). Tests that exercise the pre-cutoff-wake /
+        # declined-at-or-after-cutoff seam pass consumed_at explicitly.
         consumed_at = enqueued_at
     conn.execute(
         "INSERT INTO thread_invocations (thread_id, agent_name, invocation_token, "
@@ -435,6 +442,103 @@ def test_as_of_cutoff_is_half_open() -> None:
     # declined 11:59:58 wake); the wake exactly AT as_of is excluded.
     assert live.org_wakes == 2
     assert live.org_declines == 1
+
+
+def test_live_pre_cutoff_wake_declined_exactly_at_cutoff() -> None:
+    """[MEDIUM regression, G1+G3] The shipping seam: a REPLY wake enqueued
+    strictly before observation_end stays in the G1/G3 denominator even when
+    its terminal decline landed exactly AT the cutoff — the decline is not
+    observable at that instant and must not retrospectively enter the interim
+    record. A later as_of deterministically admits the terminal outcome."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_participant(conn, "T1", "bob", "2026-08-01T00:00:00Z")
+    # Mentioned message → alice's wake is a G1 mentioned wake.
+    _add_message(conn, "T1", 1, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    # Broadcast message → bob's wake is G3-only (never a mentioned wake).
+    _add_message(conn, "T1", 2, "founder", "2026-08-27T00:00:30Z",
+                 mentions="[]")
+    # Both wakes: enqueued strictly BEFORE the cutoff, declined exactly AT it.
+    _add_invocation(conn, "T1", "alice", 1, "2026-08-27T00:01:00Z",
+                    token="aaa11111", status="declined",
+                    consumed_at="2026-08-27T12:00:00Z")
+    _add_invocation(conn, "T1", "bob", 2, "2026-08-27T00:01:30Z",
+                    token="bbb22222", status="declined",
+                    consumed_at="2026-08-27T12:00:00Z")
+
+    early = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert early.interim is True
+    # Wakes remain in the denominators...
+    assert early.mentioned_wakes == 1  # alice
+    assert early.org_wakes == 2  # alice + bob
+    # ...but declines exactly at the cutoff are not observable at it.
+    assert early.mentioned_declines == 0
+    assert early.mentioned_decline_rate_pct == 0.0
+    assert early.org_declines == 0
+    assert early.org_decline_rate_pct == 0.0
+
+    later = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T13:00:00Z")
+    assert later.mentioned_wakes == 1
+    assert later.mentioned_declines == 1
+    assert later.mentioned_decline_rate_pct == 100.0
+    assert later.org_wakes == 2
+    assert later.org_declines == 2
+    assert later.org_decline_rate_pct == 100.0
+
+
+def test_live_pre_cutoff_wake_declined_after_cutoff() -> None:
+    """[MEDIUM regression, G1+G3] Same seam with the decline strictly AFTER
+    the cutoff: the wake stays in the denominator at the earlier as_of; the
+    terminal outcome is admitted only by a later as_of that observes it."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_participant(conn, "T1", "bob", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 1, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_message(conn, "T1", 2, "founder", "2026-08-27T00:00:30Z",
+                 mentions="[]")
+    _add_invocation(conn, "T1", "alice", 1, "2026-08-27T00:01:00Z",
+                    token="aaa11111", status="declined",
+                    consumed_at="2026-08-27T18:00:00Z")
+    _add_invocation(conn, "T1", "bob", 2, "2026-08-27T00:01:30Z",
+                    token="bbb22222", status="declined",
+                    consumed_at="2026-08-27T18:00:00Z")
+
+    early = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert early.mentioned_wakes == 1
+    assert early.org_wakes == 2
+    assert early.mentioned_declines == 0
+    assert early.org_declines == 0
+
+    later = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T19:00:00Z")
+    assert later.mentioned_declines == 1
+    assert later.org_declines == 2
+    assert later.mentioned_decline_rate_pct == 100.0
+
+
+def test_live_pre_cutoff_decline_control_still_counted() -> None:
+    """[MEDIUM regression control] A wake enqueued AND declined strictly
+    before the cutoff remains counted in both the denominator and the decline
+    numerator — the cutoff fix must not drop genuinely settled declines."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 1, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_invocation(conn, "T1", "alice", 1, "2026-08-27T00:01:00Z",
+                    token="aaa11111", status="declined",
+                    consumed_at="2026-08-27T11:00:00Z")  # before the cutoff
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 1
+    assert live.mentioned_decline_rate_pct == 100.0
+    assert live.org_wakes == 1
+    assert live.org_declines == 1
+    assert live.org_decline_rate_pct == 100.0
 
 
 def test_completed_window_still_caps_at_window_end() -> None:

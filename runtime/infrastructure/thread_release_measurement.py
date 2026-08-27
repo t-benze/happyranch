@@ -24,7 +24,11 @@ Design contract:
   never inside the measurement functions). Every population that claims the
   observation instant is bounded by the half-open cutoff
   ``min(as_of, window_end)`` — an interim record never contains rows after
-  its stated ``as_of``.
+  its stated ``as_of``. A terminal decline outcome is observable at that
+  instant only when its ``consumed_at`` (the schema's single terminal-time
+  stamp) is strictly earlier than the cutoff: a wake enqueued before the
+  cutoff but declined at or after it stays in the wake denominator, never
+  the decline numerator, at the earlier observation instant.
 * RANGE-AWARE COVERAGE. GH-688 Phase-1 coalescing lets ONE consumed REPLY
   cover an inclusive sequence range; coverage uses the authoritative
   immutable claimed range (the ``thread_reply_wake_claimed`` audit's
@@ -201,6 +205,31 @@ def _pct(part: int, total: int) -> float | None:
     return round(100.0 * part / total, 1)
 
 
+def _terminal_decline_before(row: sqlite3.Row, cutoff: datetime) -> bool:
+    """True when the row is a terminal decline observable by the half-open
+    cutoff: ``status == 'declined'`` AND ``consumed_at`` non-null AND
+    strictly earlier than ``cutoff``.
+
+    ``consumed_at`` is the schema's single terminal-time stamp — every
+    production decline path (``Database.mark_invocation_declined``, the
+    per-agent bulk decline, the runner settle paths) sets
+    ``status='declined'`` and stamps ``consumed_at`` in the SAME UPDATE, and
+    there is no separate ``declined_at`` column (see
+    ``Database.list_invocations_for_thread_grouped_by_seq``). A wake enqueued
+    before the cutoff but declined at or after it stays in the wake
+    denominator (its ``enqueued_at`` is inside the window) yet never
+    retrospectively counts as a decline in an interim record claiming the
+    earlier observation instant; a later ``as_of`` deterministically admits
+    the settled outcome.
+    """
+    if row["status"] != _STATUS_DECLINED:
+        return False
+    consumed_at = row["consumed_at"]
+    if not consumed_at:
+        return False
+    return parse_timestamp(consumed_at) < cutoff
+
+
 def _seq_covered(
     ranges: list[tuple[str, str, int, int]], thread_id: str, seq: int,
 ) -> bool:
@@ -375,14 +404,22 @@ def measure_live_window(
         and window_start <= parse_timestamp(row["enqueued_at"]) < observation_end
     ]
     org_wakes = len(reply_in_window)
-    org_declines = sum(1 for row in reply_in_window if row["status"] == _STATUS_DECLINED)
+    # Terminal declines are observable at the observation instant only when
+    # consumed_at is non-null and strictly earlier than the half-open cutoff
+    # (see _terminal_decline_before) — a wake enqueued before the cutoff but
+    # declined at/after it stays in the denominator, never the numerator.
+    org_declines = sum(
+        1 for row in reply_in_window
+        if _terminal_decline_before(row, observation_end)
+    )
 
     mentioned_wakes = [
         row for row in reply_in_window
         if mentioned.get((row["thread_id"], row["triggering_seq"]), False)
     ]
     mentioned_declines = sum(
-        1 for row in mentioned_wakes if row["status"] == _STATUS_DECLINED
+        1 for row in mentioned_wakes
+        if _terminal_decline_before(row, observation_end)
     )
 
     # G2 coverage: founder message covered iff a consumed REPLY's authoritative

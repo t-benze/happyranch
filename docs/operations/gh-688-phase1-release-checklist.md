@@ -313,7 +313,14 @@ same convention as §1. While `as_of < window_end`, every observed value is
 missing/partial window is never reported as a failed release. Every interim
 population is bounded by the half-open observation cutoff
 `min(as_of, window_end)` — a message or wake after `as_of` never enters an
-interim record, so the record is reproducible at its stated instant.
+interim record, so the record is reproducible at its stated instant. A
+terminal decline outcome is observable at that instant only when its
+`consumed_at` (the schema's single terminal-time stamp — every decline path
+stamps it in the same UPDATE that sets `status='declined'`; there is no
+separate `declined_at` column) is strictly earlier than the cutoff: a wake
+enqueued before the cutoff but declined at or after it stays in the G1/G3
+denominator, never the decline numerator, at the earlier observation
+instant — a later `as_of` deterministically admits the settled outcome.
 
 Zero-denominator behavior: a metric whose denominator is 0 is reported as
 "zero population, not measurable" (`null` rate) — never a failure.
