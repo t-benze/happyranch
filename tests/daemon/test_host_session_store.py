@@ -220,6 +220,56 @@ def test_peaks_are_grouped_by_provenance_and_never_mixed() -> None:
     assert snap["peaks"]["process_peak"]["unavailable_count"] == 1
 
 
+def test_process_peak_zero_with_sampled_provenance_never_lands_in_kernel_bucket() -> None:
+    """Adversarial shipping-seam regression (TASK-5910): the defective Linux
+    finish could emit process_peak == 0 with KERNEL provenance from an
+    empty-tree teardown pids.current. The aggregation must keep any
+    best-effort 0 in the sampled bucket — the kernel bucket stays empty — so
+    fabricated authoritative zeros cannot recur in /metrics or /health."""
+    store = HostSessionStore()
+    store.publish(
+        make_receipt(
+            process_peak_provenance=MeasurementProvenance.SAMPLED,
+            process_peak=0,
+        )
+    )
+    snap = store.snapshot()
+    peaks = snap["peaks"]["process_peak"]
+    assert peaks["kernel"] == {"max": None, "count": 0}
+    assert peaks["sampled"] == {"max": 0, "count": 1}
+    assert peaks["unavailable_count"] == 0
+
+
+def test_process_peak_kernel_bucket_reflects_only_kernel_peak_receipts() -> None:
+    """A receipt whose process peak carries KERNEL provenance (pids.peak)
+    aggregates into the kernel bucket independently of any sampled values;
+    the corrected Linux provenance flows through unchanged."""
+    store = HostSessionStore()
+    store.publish(
+        make_receipt(
+            process_peak_provenance=MeasurementProvenance.KERNEL,
+            process_peak=7,
+        )
+    )
+    store.publish(
+        make_receipt(
+            process_peak_provenance=MeasurementProvenance.SAMPLED,
+            process_peak=50,
+        )
+    )
+    store.publish(
+        make_receipt(
+            process_peak_provenance=MeasurementProvenance.UNAVAILABLE,
+            process_peak=None,
+        )
+    )
+    snap = store.snapshot()
+    peaks = snap["peaks"]["process_peak"]
+    assert peaks["kernel"] == {"max": 7, "count": 1}
+    assert peaks["sampled"] == {"max": 50, "count": 1}
+    assert peaks["unavailable_count"] == 1
+
+
 def test_recent_summary_carries_provenance_and_bounded_fields() -> None:
     store = HostSessionStore(max_receipts=2)
     store.publish(
@@ -328,6 +378,41 @@ def test_compose_metrics_reflects_published_receipts(daemon_state) -> None:
     # Backend capability view comes from the wired supervisor's cached probe.
     assert hs["backend"]["name"] is not None
     assert hs["backend"]["probed_at"] >= 0
+
+
+def test_metrics_process_peak_aggregates_never_mix_provenance(
+    tmp_home, app, auth_headers
+) -> None:
+    """Shipping-seam aggregation: corrected Linux receipts (pids.peak -> kernel
+    bucket; best-effort fallback -> sampled bucket) flow into /metrics without
+    blending; a best-effort 0 never lands in the kernel bucket."""
+    client = TestClient(app)
+    state = client.app.state.daemon
+    state.host_session_store.publish(
+        make_receipt(
+            terminal_reason=TerminalReason.SUCCESS.value,
+            process_peak=7,
+            process_peak_provenance=MeasurementProvenance.KERNEL,
+        )
+    )
+    state.host_session_store.publish(
+        make_receipt(
+            terminal_reason=TerminalReason.SUCCESS.value,
+            process_peak=0,
+            process_peak_provenance=MeasurementProvenance.SAMPLED,
+        )
+    )
+    r = client.get("/api/v1/metrics", headers=auth_headers)
+    assert r.status_code == 200
+    peaks = r.json()["host_sessions"]["receipts"]["peaks"]["process_peak"]
+    assert peaks["kernel"] == {"max": 7, "count": 1}
+    assert peaks["sampled"] == {"max": 0, "count": 1}
+    # The recent window carries the corrected per-receipt provenance.
+    recent = r.json()["host_sessions"]["receipts"]["recent"]
+    assert {row["process_peak_provenance"] for row in recent} == {
+        MeasurementProvenance.KERNEL.value,
+        MeasurementProvenance.SAMPLED.value,
+    }
 
 
 def test_metrics_route_includes_host_sessions(tmp_home, app_idle, auth_headers) -> None:

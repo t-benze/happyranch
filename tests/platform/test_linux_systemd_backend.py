@@ -198,6 +198,7 @@ def test_read_counters_parses_authoritative_files():
             "memory.current": "1048576",
             "memory.peak": "2097152",
             "pids.current": "3",
+            "pids.peak": "7",
             "cpu.stat": "usage_usec 1500000\nuser_usec 1000000\nsystem_usec 500000\n",
         },
     )
@@ -205,6 +206,7 @@ def test_read_counters_parses_authoritative_files():
     assert counters["memory.current"] == 1048576
     assert counters["memory.peak"] == 2097152
     assert counters["pids.current"] == 3
+    assert counters["pids.peak"] == 7
     assert counters["cpu.stat"] == 1.5  # usage_usec -> seconds
 
 
@@ -212,6 +214,50 @@ def test_read_counters_empty_when_unreadable():
     backend = LinuxSystemdBackend()
     _install_fake_read_file(backend, {})
     assert backend._read_counters("/cg") == {}
+
+
+def test_read_counters_rejects_negative_pid_counters():
+    """Semantically invalid negative PID counts are dropped at the read
+    boundary (the kernel never reports a negative membership/peak): a
+    negative pids.peak or pids.current must never reach the provenance
+    paths as authoritative evidence."""
+    backend = LinuxSystemdBackend()
+    _install_fake_read_file(
+        backend,
+        {
+            "memory.current": "1048576",
+            "memory.peak": "2097152",
+            "pids.current": "-1",
+            "pids.peak": "-1",
+            "pids.max": "4",
+            "cpu.stat": "usage_usec 1500000\n",
+        },
+    )
+    counters = backend._read_counters("/cg")
+    # Negative PID counters are treated as absent; valid non-negative
+    # counters (including the stored-but-unconsumed pids.max) still parse.
+    assert "pids.current" not in counters
+    assert "pids.peak" not in counters
+    assert counters["pids.max"] == 4
+    assert counters["memory.current"] == 1048576
+    assert counters["memory.peak"] == 2097152
+    assert counters["cpu.stat"] == 1.5
+
+
+def test_read_counters_keeps_non_negative_pid_counters():
+    """Valid non-negative pids.current/pids.peak (including zero, which a
+    live cgroup can legitimately read) are still parsed and exposed."""
+    backend = LinuxSystemdBackend()
+    _install_fake_read_file(
+        backend,
+        {
+            "pids.current": "0",
+            "pids.peak": "3",
+        },
+    )
+    counters = backend._read_counters("/cg")
+    assert counters["pids.current"] == 0
+    assert counters["pids.peak"] == 3
 
 
 # ── prepare / launch ─────────────────────────────────────────────────
@@ -376,6 +422,7 @@ def test_finish_merges_authoritative_counters():
         backend,
         {
             "memory.peak": "3000000",
+            "pids.peak": "9",
             "pids.current": "5",
             "cpu.stat": "usage_usec 2500000\n",
         },
@@ -387,7 +434,10 @@ def test_finish_merges_authoritative_counters():
     assert receipt.memory_peak_provenance is MeasurementProvenance.KERNEL
     assert receipt.cpu_total_seconds == 2.5
     assert receipt.cpu_total_provenance is MeasurementProvenance.KERNEL
-    assert receipt.process_peak == 5
+    # The kernel pids.peak is the authoritative process peak; the live
+    # pids.current never replaces it.
+    assert receipt.process_peak == 9
+    assert receipt.process_peak_provenance is MeasurementProvenance.KERNEL
 
 
 def test_finish_merges_sampled_values_when_no_kernel_counters():
@@ -528,6 +578,275 @@ def test_finish_partial_absent_counters_unavailable():
     assert receipt.cpu_total_provenance is MeasurementProvenance.UNAVAILABLE
     assert receipt.process_peak is None
     assert receipt.process_peak_provenance is MeasurementProvenance.UNAVAILABLE
+
+
+# ── process-peak provenance corrective (TASK-5910/TASK-5911) ──────────
+
+
+def test_finish_clean_success_empty_tree_teardown_uses_kernel_pids_peak():
+    """The shipped regression: a clean-success empty-tree teardown reads
+    pids.current == 0 (the tree already exited) while the kernel's
+    pids.peak still holds the true lifetime high-water mark. The receipt
+    MUST report the pids.peak value with KERNEL provenance — a fabricated
+    authoritative zero must never recur."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(
+        backend,
+        {
+            "pids.peak": "5",  # lifetime high-water mark, read pre-teardown
+            "pids.current": "0",  # empty tree at finish time
+        },
+    )
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sh", "-c", "exit 0")))
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt.process_peak == 5
+    assert receipt.process_peak_provenance is MeasurementProvenance.KERNEL
+
+
+def test_finish_kernel_pids_peak_is_authoritative_over_live_count():
+    """A nonzero pids.peak is the authoritative process peak; the live
+    pids.current at finish time never replaces or relabels it."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(
+        backend,
+        {
+            "pids.peak": "7",
+            "pids.current": "3",
+        },
+    )
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "60")))
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt.process_peak == 7
+    assert receipt.process_peak_provenance is MeasurementProvenance.KERNEL
+
+
+def test_finish_missing_pids_peak_falls_back_to_sampled_merged_with_current():
+    """Kernels without pids.peak: the sampled peak is the honest cap, merged
+    with the best-effort live count (max); provenance is SAMPLED — never
+    KERNEL. An empty-tree teardown pids.current == 0 must not drag the peak
+    down."""
+    from runtime.platform.session_backend import ResourceSample
+
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(
+        backend,
+        {
+            "pids.current": "0",
+        },
+    )
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "60")))
+    samples = (
+        ResourceSample(sampled_at=1.0, process_count=2),
+        ResourceSample(sampled_at=2.0, process_count=4),
+    )
+    receipt = backend.finish(running, "success", grace_seconds=0.1, samples=samples)
+    assert receipt.process_peak == 4  # sampled peak, not the teardown 0
+    assert receipt.process_peak_provenance is MeasurementProvenance.SAMPLED
+
+
+def test_finish_missing_pids_peak_with_only_live_count_is_best_effort_sampled():
+    """Absent/invalid pids.peak with ONLY pids.current: the live count is an
+    explicit best-effort fallback labeled SAMPLED — it must never be labeled
+    KERNEL (a teardown live count can undercount the true peak)."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(
+        backend,
+        {
+            "pids.current": "5",
+        },
+    )
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "60")))
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt.process_peak == 5
+    assert receipt.process_peak_provenance is MeasurementProvenance.SAMPLED
+    assert receipt.process_peak_provenance is not MeasurementProvenance.KERNEL
+
+
+def test_finish_invalid_pids_peak_falls_back_honestly():
+    """An unparsable pids.peak file is treated as absent (never a fabricated
+    value); the fallback path applies with SAMPLED provenance."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(
+        backend,
+        {
+            "pids.peak": "not-an-int",
+            "pids.current": "2",
+        },
+    )
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "60")))
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt.process_peak == 2
+    assert receipt.process_peak_provenance is MeasurementProvenance.SAMPLED
+
+
+def test_finish_negative_pids_peak_falls_back_to_live_count_sampled():
+    """A parseable but semantically invalid negative pids.peak is rejected
+    (treated as absent), so finish() falls back to the valid non-negative
+    pids.current with SAMPLED provenance — it can never earn KERNEL."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(
+        backend,
+        {
+            "pids.peak": "-1",
+            "pids.current": "2",
+        },
+    )
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "60")))
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt.process_peak == 2
+    assert receipt.process_peak_provenance is MeasurementProvenance.SAMPLED
+    assert receipt.process_peak_provenance is not MeasurementProvenance.KERNEL
+
+
+def test_finish_negative_pids_peak_with_samples_uses_sampled_merged():
+    """A negative pids.peak cannot suppress the honest sampled-evidence
+    fallback: the sampled peak merged with the valid live count is reported
+    with SAMPLED provenance, never KERNEL."""
+    from runtime.platform.session_backend import ResourceSample
+
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(
+        backend,
+        {
+            "pids.peak": "-1",
+            "pids.current": "2",
+        },
+    )
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "60")))
+    samples = (
+        ResourceSample(sampled_at=1.0, process_count=4),
+        ResourceSample(sampled_at=2.0, process_count=3),
+    )
+    receipt = backend.finish(running, "success", grace_seconds=0.1, samples=samples)
+    assert receipt.process_peak == 4  # sampled peak; the negative peak is inert
+    assert receipt.process_peak_provenance is MeasurementProvenance.SAMPLED
+
+
+def test_finish_negative_pids_current_cannot_contaminate_fallback():
+    """A negative pids.current is rejected too, so it cannot contaminate the
+    fallback: with samples it is simply skipped (the sampled peak stands)
+    and with no other evidence the receipt is truthful UNAVAILABLE — a
+    fabricated negative live count is never reported."""
+    from runtime.platform.session_backend import ResourceSample
+
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(
+        backend,
+        {
+            "pids.current": "-1",
+        },
+    )
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "60")))
+    samples = (
+        ResourceSample(sampled_at=1.0, process_count=4),
+        ResourceSample(sampled_at=2.0, process_count=3),
+    )
+    receipt = backend.finish(running, "success", grace_seconds=0.1, samples=samples)
+    assert receipt.process_peak == 4  # only the samples are usable evidence
+    assert receipt.process_peak_provenance is MeasurementProvenance.SAMPLED
+    # With NO other evidence the negative live count is absent: UNAVAILABLE,
+    # never a reported negative value.
+    receipt_unavailable = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt_unavailable.process_peak is None
+    assert (
+        receipt_unavailable.process_peak_provenance
+        is MeasurementProvenance.UNAVAILABLE
+    )
+
+
+def test_finish_empty_tree_teardown_zero_is_never_kernel_provenance():
+    """The shipped defect's exact shape: a clean-success empty-tree teardown
+    with no pids.peak and no samples must NOT yield process_peak == 0 with
+    KERNEL provenance. The best-effort live count stays SAMPLED (an explicit
+    fallback); truthful UNAVAILABLE applies only when no evidence exists at
+    all."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(
+        backend,
+        {
+            "pids.current": "0",
+        },
+    )
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sh", "-c", "exit 0")))
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt.process_peak == 0
+    assert receipt.process_peak_provenance is MeasurementProvenance.SAMPLED
+    assert receipt.process_peak_provenance is not MeasurementProvenance.KERNEL
+
+
+def test_probe_process_peak_capability_tracks_pids_peak():
+    """The probe declares REPORTS_PROCESS_PEAK guaranteed only when the
+    kernel exposes pids.peak; an old kernel (live-count fallback only) keeps
+    the capability best_effort."""
+    backend = LinuxSystemdBackend()
+
+    class _FakeProc:
+        pid = 9999
+
+        def terminate(self) -> None:
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
+            return None
+
+    backend._systemd_run_scope = lambda *a, **k: _FakeProc()
+    backend._wait_for_cgroup = lambda unit, proc, timeout=None: "/cg"
+    backend._applied_limits = lambda cg: {
+        "memory.max": True, "pids.max": True, "cpu.max": True,
+    }
+    backend._cgroup_members = lambda cg: {1: "x", 2: "y"}
+    backend._teardown_and_verify = lambda unit, cg, grace: (True, "cgroup-empty")
+    backend._cleanup_probe_slice = lambda slice_name: None
+    backend._systemctl = lambda *a, **k: (0, "running")
+    backend._cgroup_v2_controllers = lambda: {"memory", "pids", "cpu"}
+
+    # Kernel exposes pids.peak -> authoritative process peak capability.
+    backend._read_counters = lambda cg: {
+        "pids.peak": 2, "pids.current": 1, "memory.peak": 1, "cpu.stat": 0.1,
+    }
+    report = backend.probe()
+    assert (
+        report.level(Capability.REPORTS_PROCESS_PEAK) is CapabilityLevel.GUARANTEED
+    )
+
+    # Old kernel without pids.peak -> best-effort live-count fallback.
+    backend._read_counters = lambda cg: {
+        "pids.current": 1, "memory.peak": 1, "cpu.stat": 0.1,
+    }
+    report = backend.probe()
+    assert (
+        report.level(Capability.REPORTS_PROCESS_PEAK) is CapabilityLevel.BEST_EFFORT
+    )
 
 
 # ── abandon / recover ────────────────────────────────────────────────

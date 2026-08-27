@@ -160,8 +160,12 @@ concurrency (1 worker) and row lifecycle.
   residue semantics; verified residue is reported as `SurvivorRecord`
   (guaranteed-cleanup residue blocks admission). Counters are read before
   teardown: `memory.peak` (kernel peak), `cpu.stat` `usage_usec` (kernel
-  cumulative), `pids.current` (exact live count; peak over samples is
-  `sampled` — no kernel pids-peak counter exists). An absent counter falls
+  cumulative), `pids.peak` (authoritative kernel process peak, read
+  before teardown while the cgroup scope exists). `pids.current` is only a
+  best-effort live count: without `pids.peak` it is merged honestly with
+  the sampled peak under `sampled` provenance, never labeled
+  authoritative — an empty-tree teardown value of 0 must not masquerade as
+  a kernel peak. An absent counter falls
   back to the sampled value with `sampled` provenance only when a sample
   exists; otherwise it is `unavailable` — never a fabricated zero.
   Session scopes apply **no resource limits** in Slice B (no approved limit
@@ -266,7 +270,11 @@ both backends:
 
 - Linux counters are authoritative where the kernel exposes them:
   `memory.peak` (kernel peak), `cpu.stat` `usage_usec` (kernel cumulative),
-  `pids.current` (exact live count at sample time). `memory.peak`'s absence
+  `pids.peak` (kernel process peak, read before teardown while the cgroup
+  scope exists). `pids.current` is only a best-effort live count: without
+  `pids.peak` it is merged honestly with the sampled peak under `sampled`
+  provenance and is never labeled authoritative — an empty-tree teardown
+  value of 0 must not masquerade as a kernel peak. `memory.peak`'s absence
   on older kernels degrades the receipt to the sampled peak with `sampled`
   provenance **only when a sampled value exists**; a wholly or partially
   absent counter with no sample behind it is `unavailable`, never a

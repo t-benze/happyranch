@@ -7,7 +7,7 @@ operations** — no OS/version inference:
   limits (``MemoryMax``/``TasksMax``/``CPUQuota``), verifies the unit's
   ``ControlGroup``, the applied limit files (``memory.max``/``pids.max``/
   ``cpu.max``), live membership, and the authoritative counters
-  (``memory.current``/``memory.peak``/``pids.current``/``cpu.stat``), then
+  (``memory.current``/``memory.peak``/``pids.peak``/``pids.current``/``cpu.stat``), then
   explicitly stops the scope, verifies cgroup emptiness, and removes the
   probe slice. It reports a capability as ``guaranteed`` **only** for what
   was actually created, applied, and verified; anything else stays
@@ -26,9 +26,11 @@ operations** — no OS/version inference:
 * Counters are read **before** teardown (the cgroup disappears once the
   scope is stopped): ``memory.peak`` (authoritative peak when the kernel
   exposes it), ``cpu.stat`` ``usage_usec`` (authoritative cumulative CPU),
-  and ``pids.current`` (exact live membership count; the peak over samples
-  is reported with ``sampled`` provenance because no kernel peak counter
-  exists for pids).
+  and ``pids.peak`` (authoritative process peak when the kernel exposes
+  it). ``pids.current`` is only a best-effort live membership count —
+  never labeled an authoritative kernel peak (an empty-tree teardown value
+  of 0 must not masquerade as one); without ``pids.peak`` it is merged
+  honestly with sampled evidence under ``sampled`` provenance.
 
 Slice B applies **no resource limits** to session scopes (the policy
 snapshot carries no approved limit values — 16/64/72/4096/2800 remain
@@ -79,6 +81,10 @@ _BACKEND_NAME = "linux-systemd-cgroup-v2"
 _BACKEND_VERSION = "0.1"
 _UNIT_PREFIX = "happyranch-session-"
 _PROBE_UNIT_PREFIX = "happyranch-probe-"
+# PID counts the kernel reports are always non-negative; a negative parseable
+# value is semantically invalid and must be treated as absent (see
+# ``_read_counters``) rather than trusted as authoritative evidence.
+_NON_NEGATIVE_PID_COUNTERS = frozenset({"pids.current", "pids.peak"})
 _ENFORCEMENT_PROPERTIES = (
     # 16M / 4 tasks / 10% CPU: small enough to prove the property applies,
     # large enough that the probe's own `sleep` pair is never OOM-killed
@@ -300,7 +306,9 @@ class LinuxSystemdBackend:
                 caps[Capability.REPORTS_MEMORY_PEAK] = CapabilityLevel.BEST_EFFORT
             if counters.get("cpu.stat") is not None:
                 caps[Capability.REPORTS_CPU_TOTAL] = CapabilityLevel.GUARANTEED
-            if counters.get("pids.current") is not None:
+            if counters.get("pids.peak") is not None:
+                caps[Capability.REPORTS_PROCESS_PEAK] = CapabilityLevel.GUARANTEED
+            elif counters.get("pids.current") is not None:
                 caps[Capability.REPORTS_PROCESS_PEAK] = CapabilityLevel.BEST_EFFORT
             evidence = (
                 f"probe scope {unit}: cg={cg}, limits applied="
@@ -406,15 +414,32 @@ class LinuxSystemdBackend:
             return None
 
     def _read_counters(self, cg: str) -> dict[str, object]:
-        """Authoritative cgroup counters for *cg* (empty when unreadable)."""
+        """Authoritative cgroup counters for *cg* (empty when unreadable).
+
+        Semantically invalid negative PID counts are treated as absent: the
+        kernel never reports a negative membership/peak, and a negative value
+        must never masquerade as authoritative KERNEL evidence (a
+        ``pids.peak`` of ``-1`` must not earn KERNEL provenance nor a
+        ``pids.current`` of ``-1`` contaminate the best-effort fallback).
+        """
         counters: dict[str, object] = {}
-        for name in ("memory.current", "memory.peak", "pids.current", "pids.max"):
+        for name in (
+            "memory.current",
+            "memory.peak",
+            "pids.current",
+            "pids.peak",
+            "pids.max",
+        ):
             raw = self._read_file(cg, name)
-            if raw is not None:
-                try:
-                    counters[name] = int(raw)
-                except ValueError:
-                    pass
+            if raw is None:
+                continue
+            try:
+                value = int(raw)
+            except ValueError:
+                continue
+            if name in _NON_NEGATIVE_PID_COUNTERS and value < 0:
+                continue
+            counters[name] = value
         stat = self._read_file(cg, "cpu.stat")
         if stat is not None:
             usage = None
@@ -627,9 +652,36 @@ class LinuxSystemdBackend:
             counters["memory.peak"] if "memory.peak" in counters else None
         )
         cpu_total_kernel = counters.get("cpu.stat")
+        # Deterministic process-peak precedence (an authoritative zero must
+        # never be fabricated from an empty-tree teardown pids.current):
+        #   1. a valid kernel ``pids.peak`` (read above, before teardown) is
+        #      the authoritative peak — KERNEL provenance;
+        #   2. absent/invalid ``pids.peak`` with sampled evidence: the
+        #      sampled peak merged honestly with the best-effort live
+        #      ``pids.current`` (max — a live count can only be a lower
+        #      bound on the true peak) — SAMPLED provenance;
+        #   3. absent/invalid ``pids.peak`` with ONLY ``pids.current``: the
+        #      live count is an explicit best-effort fallback — SAMPLED
+        #      provenance, never KERNEL;
+        #   4. no usable evidence at all: UNAVAILABLE (None), never a
+        #      fabricated 0.
+        process_peak_kernel = counters.get("pids.peak")
         process_now = counters.get("pids.current")
-        process_candidates = [v for v in (process_peak, process_now) if v is not None]
-        process_peak_value = max(process_candidates) if process_candidates else None
+        if process_peak_kernel is not None:
+            process_peak_value = process_peak_kernel
+            process_peak_provenance = MeasurementProvenance.KERNEL
+        elif process_peak is not None:
+            merged = process_peak
+            if process_now is not None:
+                merged = max(merged, process_now)
+            process_peak_value = merged
+            process_peak_provenance = MeasurementProvenance.SAMPLED
+        elif process_now is not None:
+            process_peak_value = process_now
+            process_peak_provenance = MeasurementProvenance.SAMPLED
+        else:
+            process_peak_value = None
+            process_peak_provenance = MeasurementProvenance.UNAVAILABLE
         gaps = sample_gaps(samples)
         if sample_prefix_gap:
             gaps = (round(sample_prefix_gap, 6),) + gaps
@@ -661,15 +713,7 @@ class LinuxSystemdBackend:
                 )
             ),
             process_peak=process_peak_value,
-            process_peak_provenance=(
-                MeasurementProvenance.KERNEL
-                if process_now is not None
-                else (
-                    MeasurementProvenance.SAMPLED
-                    if process_peak is not None
-                    else MeasurementProvenance.UNAVAILABLE
-                )
-            ),
+            process_peak_provenance=process_peak_provenance,
             sample_gaps=gaps,
             enforcement_events=(
                 ("cgroup_procs_unreadable",) if members_unknown else ()
