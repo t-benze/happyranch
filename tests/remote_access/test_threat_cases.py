@@ -1,6 +1,6 @@
 """Consumes the normative Unit-A threat matrix through the connector core.
 
-- The classification of all 56 cases is exhaustive and checked in.
+- The classification of all 57 cases is exhaustive and checked in.
 - Every core-applicable hostile case produces exactly the fixture's deny and
   audit categories through the gateway; positive controls forward over real
   loopback 127.0.0.1.
