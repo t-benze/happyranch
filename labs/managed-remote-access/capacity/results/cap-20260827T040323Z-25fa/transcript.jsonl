@@ -1,0 +1,34 @@
+{"seq": 1, "cmd": ["nproc"], "rc": 0, "dur_ms": 2, "stderr_tail": ""}
+{"seq": 2, "cmd": ["uname", "-a"], "rc": 0, "dur_ms": 2, "stderr_tail": ""}
+{"seq": 3, "cmd": ["cat", "/etc/os-release"], "rc": 0, "dur_ms": 2, "stderr_tail": ""}
+{"seq": 4, "cmd": ["docker", "version", "--format", "{{json .}}"], "rc": 0, "dur_ms": 94, "stderr_tail": ""}
+{"seq": 5, "cmd": ["docker", "pull", "headscale/headscale:0.25@sha256:ae91e47e0a8ab481e41bc83b72dc2bc9f7bca2b5dbe5448414c8ae9511f33541"], "rc": 0, "dur_ms": 4178, "stderr_tail": ""}
+{"seq": 6, "cmd": ["docker", "pull", "tailscale/tailscale:v1.80.0@sha256:5d36f58996def4b60e943ee6c15b4f3ad040299565f9971d8f541b250dd72f03"], "rc": 0, "dur_ms": 1603, "stderr_tail": ""}
+{"seq": 7, "cmd": ["docker", "inspect", "--format", "{{index .RepoDigests 0}}", "headscale/headscale:0.25@sha256:ae91e47e0a8ab481e41bc83b72dc2bc9f7bca2b5dbe5448414c8ae9511f33541"], "rc": 0, "dur_ms": 16, "stderr_tail": ""}
+{"seq": 8, "cmd": ["docker", "inspect", "--format", "{{index .RepoDigests 0}}", "tailscale/tailscale:v1.80.0@sha256:5d36f58996def4b60e943ee6c15b4f3ad040299565f9971d8f541b250dd72f03"], "rc": 0, "dur_ms": 15, "stderr_tail": ""}
+{"seq": 9, "cmd": ["docker", "network", "create", "--label", "lab.run=cap-20260827T040323Z-25fa", "net-cap-20260827T040323Z-25fa"], "rc": 0, "dur_ms": 51, "stderr_tail": ""}
+{"seq": 10, "cmd": ["docker", "volume", "create", "--label", "lab.run=cap-20260827T040323Z-25fa", "vol-cap-20260827T040323Z-25fa-c1"], "rc": 0, "dur_ms": 14, "stderr_tail": ""}
+{"seq": 11, "cmd": ["docker", "run", "-d", "--name", "hs-cap-20260827T040323Z-25fa-c1", "--network", "net-cap-20260827T040323Z-25fa", "--label", "lab.run=cap-20260827T040323Z-25fa", "--memory", "512m", "--cpus", "0.5", "-v", "vol-cap-20260827T040323Z-25fa-c1:/var/lib/headscale", "-v", "/home/runner/work/happyranch/happyranch/labs/managed-remote-access/capacity/results/cap-20260827T040323Z-25fa/config-c1.yaml:/etc/headscale/config.yaml:ro", "-p", "127.0.0.1:49001:9090", "-p", "127.0.0.1:48001:8080", "headscale/headscale:0.25@sha256:ae91e47e0a8ab481e41bc83b72dc2bc9f7bca2b5dbe5448414c8ae9511f33541", "serve"], "rc": 0, "dur_ms": 277, "stderr_tail": ""}
+{"seq": 12, "cmd": ["docker", "exec", "hs-cap-20260827T040323Z-25fa-c1", "headscale", "nodes", "list"], "rc": 0, "dur_ms": 1178, "stderr_tail": "2026-08-27T04:04:05Z WRN An updated version of Headscale has been found (1.0.0-ogen-backup-0e77a212b vs. your current v0.25.1). Check it out https://github.com/juanfont/headscale/releases\n\n"}
+{"seq": 13, "cmd": ["docker", "exec", "hs-cap-20260827T040323Z-25fa-c1", "headscale", "apikeys", "create", "--expiration", "1h", "--output", "json"], "rc": 0, "dur_ms": 181, "stderr_tail": ""}
+{"seq": 14, "cmd": ["docker", "stats", "--no-stream", "--format", "{{json .}}", "hs-cap-20260827T040323Z-25fa-c1"], "rc": 0, "dur_ms": 1521, "stderr_tail": ""}
+{"seq": 15, "cmd": ["docker", "top", "hs-cap-20260827T040323Z-25fa-c1"], "rc": 0, "dur_ms": 23, "stderr_tail": ""}
+{"seq": 16, "cmd": ["docker", "inspect", "--format", "{{.SizeRw}}", "hs-cap-20260827T040323Z-25fa-c1"], "rc": 0, "dur_ms": 13, "stderr_tail": ""}
+{"seq": 17, "cmd": ["docker", "volume", "inspect", "--format", "{{.Mountpoint}}", "vol-cap-20260827T040323Z-25fa-c1"], "rc": 0, "dur_ms": 12, "stderr_tail": ""}
+{"seq": 18, "cmd": ["docker", "ps", "-a", "--filter", "label=lab.run=cap-20260827T040323Z-25fa", "--format", "{{json .}}"], "rc": 0, "dur_ms": 69, "stderr_tail": ""}
+{"seq": 19, "cmd": ["docker", "logs", "--tail", "30", "hs-cap-20260827T040323Z-25fa-c1"], "rc": 0, "dur_ms": 16, "stderr_tail": "7T04:04:05Z INF STUN server started at [::]:3478\n2026-08-27T04:04:05Z INF listening and serving HTTP on: 0.0.0.0:8080\n2026-08-27T04:04:05Z INF listening and serving debug and metrics on: 0.0.0.0:9090\n"}
+{"seq": 20, "cmd": ["docker", "ps", "-aq", "--filter", "label=lab.run=cap-20260827T040323Z-25fa"], "rc": 0, "dur_ms": 12, "stderr_tail": ""}
+{"seq": 21, "cmd": ["docker", "ps", "-aq", "--filter", "label=lab.run=cap-20260827T040323Z-25fa"], "rc": 0, "dur_ms": 12, "stderr_tail": ""}
+{"seq": 22, "cmd": ["docker", "rm", "-f", "744512e03e06"], "rc": 0, "dur_ms": 171, "stderr_tail": ""}
+{"seq": 23, "cmd": ["docker", "network", "rm", "net-cap-20260827T040323Z-25fa"], "rc": 0, "dur_ms": 118, "stderr_tail": ""}
+{"seq": 24, "cmd": ["docker", "volume", "ls", "-q", "--filter", "label=lab.run=cap-20260827T040323Z-25fa"], "rc": 0, "dur_ms": 13, "stderr_tail": ""}
+{"seq": 25, "cmd": ["docker", "volume", "ls", "-q", "--filter", "label=lab.run=cap-20260827T040323Z-25fa"], "rc": 0, "dur_ms": 12, "stderr_tail": ""}
+{"seq": 26, "cmd": ["docker", "volume", "rm", "-f", "vol-cap-20260827T040323Z-25fa-c1"], "rc": 0, "dur_ms": 14, "stderr_tail": ""}
+{"seq": 27, "cmd": ["docker", "ps", "-a", "--filter", "label=lab.run=cap-20260827T040323Z-25fa", "--format", "{{json .}}"], "rc": 0, "dur_ms": 13, "stderr_tail": ""}
+{"seq": 28, "cmd": ["docker", "network", "ls", "--filter", "label=lab.run=cap-20260827T040323Z-25fa", "--format", "{{.Name}}"], "rc": 0, "dur_ms": 12, "stderr_tail": ""}
+{"seq": 29, "cmd": ["docker", "volume", "ls", "--filter", "label=lab.run=cap-20260827T040323Z-25fa", "--format", "{{.Name}}"], "rc": 0, "dur_ms": 12, "stderr_tail": ""}
+{"seq": 30, "cmd": ["pgrep", "-f", "cap-20260827T040323Z-25fa"], "rc": 0, "dur_ms": 38, "stderr_tail": ""}
+{"seq": 31, "cmd": ["docker", "ps", "-a", "--filter", "label=lab.run=cap-20260827T040323Z-25fa", "--format", "{{json .}}"], "rc": 0, "dur_ms": 13, "stderr_tail": ""}
+{"seq": 32, "cmd": ["docker", "network", "ls", "--filter", "label=lab.run=cap-20260827T040323Z-25fa", "--format", "{{.Name}}"], "rc": 0, "dur_ms": 13, "stderr_tail": ""}
+{"seq": 33, "cmd": ["docker", "volume", "ls", "--filter", "label=lab.run=cap-20260827T040323Z-25fa", "--format", "{{.Name}}"], "rc": 0, "dur_ms": 12, "stderr_tail": ""}
+{"seq": 34, "cmd": ["pgrep", "-f", "cap-20260827T040323Z-25fa"], "rc": 0, "dur_ms": 13, "stderr_tail": ""}

@@ -1,0 +1,35 @@
+server_url: http://hs-cap-20260827T040323Z-25fa-c1:8080
+listen_addr: 0.0.0.0:8080
+grpc_listen_addr: 0.0.0.0:50443
+metrics_listen_addr: 0.0.0.0:9090
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+derp:
+  server:
+    enabled: true
+    region_id: 999
+    region_code: lab
+    region_name: HappyRanch Lab DERP
+    stun_listen_addr: 0.0.0.0:3478
+    private_key_path: /var/lib/headscale/derp_server_private.key
+    automatically_add_embedded_derp_region: true
+  urls: []
+  paths: []
+  auto_update_enabled: false
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+    write_ahead_log: true
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+dns:
+  magic_dns: false
+policy:
+  path: ''
+log:
+  format: text
+  level: info
+ephemeral_node_inactivity_timeout: 75s
+randomize_client_port: false

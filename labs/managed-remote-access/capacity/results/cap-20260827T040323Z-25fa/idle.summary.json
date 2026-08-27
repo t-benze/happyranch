@@ -1,0 +1,10 @@
+{
+  "aborts": [],
+  "finished_utc": "2026-08-27T04:04:41Z",
+  "ok": false,
+  "run_id": "cap-20260827T040323Z-25fa",
+  "scenario": "idle",
+  "summary": {
+    "error": "PermissionError: [Errno 13] Permission denied: '/var/lib/docker/volumes/vol-cap-20260827T040323Z-25fa-c1/_data'"
+  }
+}

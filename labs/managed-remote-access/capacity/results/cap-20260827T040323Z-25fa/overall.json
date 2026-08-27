@@ -1,0 +1,21 @@
+{
+  "all_ok": false,
+  "finished_utc": "2026-08-27T04:04:41Z",
+  "residue_final": {
+    "containers": [],
+    "networks": [],
+    "ok": true,
+    "pids": [],
+    "run_id": "cap-20260827T040323Z-25fa",
+    "state_entries": [],
+    "volumes": []
+  },
+  "run_id": "cap-20260827T040323Z-25fa",
+  "scenarios": {
+    "idle": {
+      "aborts": [],
+      "elapsed_s": 72.8,
+      "ok": false
+    }
+  }
+}
