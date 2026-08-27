@@ -188,6 +188,31 @@ def _add_coalesced_audit(
     )
 
 
+def _add_recovered_audit(
+    conn, thread_id: str, agent: str, token: str, kind: str,
+    from_seq: int, through_seq: int, timestamp: str,
+) -> None:
+    """Insert a ``thread_reply_wake_recovered`` recovery audit (mirrors
+    ``Database.recover_thread_reply_delivery_state``: agent, kind
+    ``replacement_queued`` or ``retained_queued``, from_seq, through_seq,
+    8-char token_prefix). A ``replacement_queued`` recovery MINTED the token
+    at restart (it has no created audit); a ``retained_queued`` recovery kept
+    the pre-existing queued receipt (which carries its own created audit)."""
+    conn.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES (?, ?, 'thread_reply_wake_recovered', ?, ?)",
+        (thread_id, agent,
+         json.dumps({
+             "agent_name": agent,
+             "kind": kind,
+             "from_seq": from_seq,
+             "through_seq": through_seq,
+             "token_prefix": token[:8],
+         }),
+         timestamp),
+    )
+
+
 def _add_settled_audit(
     conn, thread_id: str, agent: str, token: str, outcome: str,
     acked: int, required: int, follow_on_token: str | None, timestamp: str,
@@ -398,6 +423,288 @@ def test_live_mention_coalesced_onto_broadcast_wake_stays_broadcast() -> None:
     assert live.mentioned_wakes == 0
     assert live.mentioned_decline_rate_pct is None
     assert live.org_wakes == 1
+    assert live.org_declines == 1
+
+
+def test_live_recovery_replacement_uses_recovered_through_seq_not_floor() -> None:
+    """[adversarial recovery regression — the blocking review finding]
+    A replacement minted by restart recovery has NO created audit; its only
+    authoritative evidence is the ``thread_reply_wake_recovered``
+    (``replacement_queued``) audit, whose ``through_seq`` is the pair's
+    required watermark at recovery — the actual wake-causing arrival. In the
+    production-faithful case the retained floor seq 10 is a MENTIONED message
+    while the later wake-causing seq 11 is an unmentioned broadcast: the
+    replacement (triggering_seq/from_seq 10, recovered through_seq 11) must be
+    EXCLUDED from G1 (its decline never counts) while G3 still includes it."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    # seq 10: mentioned message (the retained range floor).
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    # seq 11: unmentioned broadcast — the actual wake-causing arrival.
+    _add_message(conn, "T1", 11, "founder", "2026-08-27T00:00:30Z",
+                 mentions="[]")
+    # Recovery replacement: triggering_seq = 10 (floor), recovered 10..11.
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:02:00Z",
+                    token="rrr11111", status="declined",
+                    consumed_at="2026-08-27T00:03:00Z")
+    _add_recovered_audit(conn, "T1", "alice", "rrr11111", "replacement_queued",
+                         10, 11, "2026-08-27T00:02:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    # Attributed to the recovered through_seq 11 (broadcast) → not mentioned.
+    assert live.mentioned_messages == 1  # seq 10 IS mentioned...
+    assert live.mentioned_wakes == 0  # ...but the wake's creating arrival is 11
+    assert live.mentioned_decline_rate_pct is None
+    # The replacement still counts org-wide; its decline counts in G3.
+    assert live.org_wakes == 1
+    assert live.org_declines == 1
+    assert live.org_decline_rate_pct == 100.0
+
+
+def test_live_recovery_replacement_with_mentioned_through_seq_included() -> None:
+    """[converse recovery regression] The recovered through_seq is the
+    authoritative wake-causing arrival: when it IS a mentioned message, the
+    recovery replacement is a mentioned wake — even though the retained floor
+    is an unmentioned broadcast. The pre-fix floor fallback would have
+    excluded it."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    # seq 10: unmentioned broadcast (the retained range floor).
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions="[]")
+    # seq 11: mentioned message — the actual wake-causing arrival.
+    _add_message(conn, "T1", 11, "founder", "2026-08-27T00:00:30Z",
+                 mentions='["alice"]')
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:02:00Z",
+                    token="sss22222", status="declined",
+                    consumed_at="2026-08-27T00:03:00Z")
+    _add_recovered_audit(conn, "T1", "alice", "sss22222", "replacement_queued",
+                         10, 11, "2026-08-27T00:02:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_messages == 1
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 1
+    assert live.mentioned_decline_rate_pct == 100.0
+    assert live.org_wakes == 1
+    assert live.org_declines == 1
+
+
+def test_live_recovered_retained_queued_never_reattributes_created_wake() -> None:
+    """[retained precedence] A ``retained_queued`` recovery keeps the
+    pre-existing receipt — which carries its own created audit. The recovered
+    audit's ``through_seq`` (the recovery-time required watermark) must NOT
+    re-attribute the wake to a later coalesced arrival: created evidence wins,
+    so the wake stays attributed to the mention that minted it."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_message(conn, "T1", 11, "founder", "2026-08-27T00:00:30Z",
+                 mentions="[]")
+    # Wake minted by the seq-10 mention [10,10]; a seq-11 broadcast coalesced
+    # onto it (required 10->11), then the daemon restarted and the queued
+    # receipt was RETAINED (recovered audit [10,11], same token).
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:01:00Z",
+                    token="ttt33333", status="declined",
+                    consumed_at="2026-08-27T00:04:00Z")
+    _add_created_audit(conn, "T1", "alice", "ttt33333", 10, 10,
+                       "2026-08-27T00:01:00Z")
+    _add_recovered_audit(conn, "T1", "alice", "ttt33333", "retained_queued",
+                         10, 11, "2026-08-27T00:02:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    # Still attributed to the seq-10 mention (created audit): a mentioned wake.
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 1
+    assert live.mentioned_decline_rate_pct == 100.0
+    assert live.org_wakes == 1
+
+
+def test_live_recovery_created_evidence_takes_precedence_over_recovered() -> None:
+    """[precedence boundary] When BOTH a created audit and a recovery audit
+    name the same token prefix, the created audit's through_seq is the
+    attribution key (the authoritative minting arrival) — recovery evidence
+    is consulted only for wakes the created trail cannot attribute."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_message(conn, "T1", 11, "founder", "2026-08-27T00:00:30Z",
+                 mentions="[]")
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:01:00Z",
+                    token="uuu44444", status="declined",
+                    consumed_at="2026-08-27T00:04:00Z")
+    _add_created_audit(conn, "T1", "alice", "uuu44444", 10, 10,
+                       "2026-08-27T00:01:00Z")
+    # Double-evidence row (defensive; production mints replacements with no
+    # created audit): created says minted at 10 (mentioned), recovery
+    # watermark at 11 (broadcast) — created wins.
+    _add_recovered_audit(conn, "T1", "alice", "uuu44444", "replacement_queued",
+                         10, 11, "2026-08-27T00:02:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 1
+    assert live.mentioned_decline_rate_pct == 100.0
+    assert live.org_wakes == 1
+
+
+def test_live_recovery_replacement_malformed_payload_falls_back_to_floor() -> None:
+    """[malformed boundary] A recovery audit with an unparseable payload
+    attributes nothing — the replacement keeps the genuine legacy fallback
+    (``triggering_seq``), never a fabricated seq. Production emits
+    well-formed payloads; this guards the harness against data defects."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:02:00Z",
+                    token="vvv55555", status="declined",
+                    consumed_at="2026-08-27T00:03:00Z")
+    conn.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES ('T1', 'alice', 'thread_reply_wake_recovered', ?, "
+        "'2026-08-27T00:02:00Z')",
+        ("{not-json",),
+    )
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    # Unattributable → floor fallback (pre-fix behavior preserved).
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 1
+    assert live.mentioned_decline_rate_pct == 100.0
+
+
+def test_live_recovery_replacement_missing_fields_falls_back_to_floor() -> None:
+    """[missing-field boundary] Recovery payloads missing ``kind``,
+    ``token_prefix``, or ``through_seq`` never fabricate an attribution — the
+    replacement keeps the legacy ``triggering_seq`` fallback. A
+    ``retained_queued`` kind is never consumed as mint evidence."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:02:00Z",
+                    token="www66666", status="declined",
+                    consumed_at="2026-08-27T00:03:00Z")
+    # retained_queued kind (not a mint): must NOT be consumed as evidence.
+    _add_recovered_audit(conn, "T1", "alice", "www66666", "retained_queued",
+                         10, 11, "2026-08-27T00:02:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 1
+
+    # Missing token_prefix: no attribution.
+    conn2 = _conn()
+    _add_thread(conn2, "T1")
+    _add_participant(conn2, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn2, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_invocation(conn2, "T1", "alice", 10, "2026-08-27T00:02:00Z",
+                    token="xxx77777", status="declined",
+                    consumed_at="2026-08-27T00:03:00Z")
+    conn2.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES ('T1', 'alice', 'thread_reply_wake_recovered', ?, "
+        "'2026-08-27T00:02:00Z')",
+        (json.dumps({"agent_name": "alice", "kind": "replacement_queued",
+                     "from_seq": 10, "through_seq": 11}),),
+    )
+    live2 = m.measure_live_window(conn2, epoch=EPOCH,
+                                  as_of="2026-08-27T12:00:00Z")
+    assert live2.mentioned_wakes == 1
+
+    # Missing through_seq: no attribution.
+    conn3 = _conn()
+    _add_thread(conn3, "T1")
+    _add_participant(conn3, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn3, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_invocation(conn3, "T1", "alice", 10, "2026-08-27T00:02:00Z",
+                    token="yyy88888", status="declined",
+                    consumed_at="2026-08-27T00:03:00Z")
+    conn3.execute(
+        "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+        "VALUES ('T1', 'alice', 'thread_reply_wake_recovered', ?, "
+        "'2026-08-27T00:02:00Z')",
+        (json.dumps({"agent_name": "alice", "kind": "replacement_queued",
+                     "from_seq": 10, "token_prefix": "yyy88888"}),),
+    )
+    live3 = m.measure_live_window(conn3, epoch=EPOCH,
+                                  as_of="2026-08-27T12:00:00Z")
+    assert live3.mentioned_wakes == 1
+
+
+def test_live_recovered_retained_queued_legacy_row_keeps_floor_fallback() -> None:
+    """[legacy boundary] A ``retained_queued`` recovery whose receipt has NO
+    created audit (a legacy pre-audit row) is genuinely unattributable: the
+    recovered audit is NOT consumed for attribution, so the row keeps the
+    documented ``triggering_seq`` fallback (a mentioned floor is counted)."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_message(conn, "T1", 10, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_invocation(conn, "T1", "alice", 10, "2026-08-27T00:02:00Z",
+                    token="qqq00000", status="declined",
+                    consumed_at="2026-08-27T00:03:00Z")
+    _add_recovered_audit(conn, "T1", "alice", "qqq00000", "retained_queued",
+                         10, 11, "2026-08-27T00:02:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    assert live.mentioned_wakes == 1  # floor fallback: seq 10 IS mentioned
+    assert live.mentioned_declines == 1
+    assert live.mentioned_decline_rate_pct == 100.0
+    assert live.org_wakes == 1
+
+
+def test_live_recovery_payload_never_leaks_across_threads_or_tokens() -> None:
+    """[unrelated boundary] A recovery audit only ever attributes the token
+    it names within its own thread: a same-prefix audit in a DIFFERENT thread
+    never re-attributes another wake, and a follow-on row in the same thread
+    keeps its genuine floor fallback (follow-on semantics are not
+    reattributed)."""
+    conn = _conn()
+    _add_thread(conn, "T1")
+    _add_thread(conn, "T2")
+    _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
+    _add_participant(conn, "T2", "alice", "2026-08-01T00:00:00Z")
+    # T1: mentioned seq 5; follow-on wake minted at settlement (no created,
+    # no recovered audit) — floor fallback, counted.
+    _add_message(conn, "T1", 5, "founder", "2026-08-27T00:00:00Z",
+                 mentions='["alice"]')
+    _add_invocation(conn, "T1", "alice", 5, "2026-08-27T00:01:00Z",
+                    token="zzz9999a-1", status="consumed",
+                    consumed_at="2026-08-27T00:02:00Z")
+    _add_settled_audit(conn, "T1", "alice", "eee44444", "reply",
+                       4, 5, "zzz9999a-1", "2026-08-27T00:01:00Z")
+    # T2: a recovery replacement whose 8-char prefix collides with T1's
+    # follow-on token prefix — must NOT attribute T1's wake (audits are
+    # thread-scoped). Its own attribution is the recovered through_seq 1
+    # (broadcast → not mentioned).
+    _add_message(conn, "T2", 1, "founder", "2026-08-27T00:00:00Z",
+                 mentions="[]")
+    _add_invocation(conn, "T2", "alice", 1, "2026-08-27T00:02:00Z",
+                    token="zzz9999a-2", status="declined",
+                    consumed_at="2026-08-27T00:03:00Z")
+    _add_recovered_audit(conn, "T2", "alice", "zzz9999a-2", "replacement_queued",
+                         1, 1, "2026-08-27T00:02:00Z")
+
+    live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
+    # T1's follow-on wake is unaffected by T2's same-prefix recovery audit
+    # (thread-scoped keying): floor fallback → mentioned → counted.
+    assert live.mentioned_wakes == 1
+    assert live.mentioned_declines == 0
+    assert live.org_wakes == 2  # T1 follow-on + T2 replacement
     assert live.org_declines == 1
 
 

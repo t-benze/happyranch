@@ -297,11 +297,14 @@ re-derived):
    agent (a gap in the pair's coverage): a later unmentioned broadcast wake
    would otherwise be falsely attributed to an earlier mention. A
    `thread_reply_wake_coalesced` arrival mints nothing and never
-   re-attributes. Wakes with no created audit (a follow-on minted at
-   settlement, a recovery replacement, or a legacy pre-audit row) fall back
-   to `triggering_seq` — production-faithful for follow-ons (the retained
-   range contains only arrivals that woke the agent), an honest
-   approximation for restart-minted replacements.
+   re-attributes. A replacement minted by restart recovery has no created
+   audit and is attributed to its `thread_reply_wake_recovered`
+   (`replacement_queued`) audit's `through_seq` — the pair's required
+   watermark at recovery, i.e. the actual wake-causing arrival (never the
+   retained range floor). Only genuinely unattributable rows (a follow-on
+   minted at settlement, a legacy pre-audit row) fall back to
+   `triggering_seq` — production-faithful for follow-ons (the retained
+   range contains only arrivals that woke the agent).
 2. **G2 — founder-message coverage (gate).** Founder messages (kind=message,
    `speaker='founder'`) covered iff ≥1 `purpose='reply'` invocation whose
    authoritative claimed delivery range contains that message's sequence
