@@ -16,14 +16,17 @@ ships the real backends behind the capability factory:
   grant; the launch gate and bind-time observation read the same record; the
   daemon drain iterates the same registry — so a shutdown that fires when or
   immediately after admission is granted can never miss an admitted attempt;
-* schedule fires (``runtime/daemon/schedule_runner.py``) run through the
-  supervisor; the backend is selected by the capability factory
-  (``runtime/platform/backend_factory.py``) — the wired producer's launch
-  body performs its own subprocess launch, so the truthful selection is the
-  honest no-enforcement passthrough until the executor launch bodies are
-  wired (a later slice). The daemon drain calls ``shutdown()`` in the app
-  lifespan finally. Task, thread, dream, and wake producers stay structurally
-  unchanged.
+* schedule fires (``runtime/daemon/schedule_runner.py``) and every task
+  session (``runtime/orchestrator/orchestrator.py`` ``_run_agent``) run
+  through the supervisor; the production daemon selects the backend via the
+  capability factory (``runtime/platform/backend_factory.py``). The executor
+  Popen launch bodies (``runtime/orchestrator/executors.py`` ``_run_command``
+  and ``CustomAdapterExecutor.run``) launch into the selected backend
+  (contained mode); the honest no-enforcement passthrough remains the
+  deterministic default of ``build_default_host_supervisor()`` and the
+  unsupported/unhealthy-environment fallback. The daemon drain calls
+  ``shutdown()`` in the app lifespan finally. Thread, dream, and wake
+  producers stay structurally unchanged.
 
 Slice B backends (``runtime/platform/linux_systemd.py``,
 ``runtime/platform/macos_process_group.py``) implement the same contract with
@@ -1301,6 +1304,8 @@ class HostSessionSupervisor:
         launch_body: Callable[[RunningHandle], LaunchResult],
         grace_seconds: float | None = None,
         timeout: float | None = None,
+        pre_launch_validator: Callable[[], None] | None = None,
+        on_terminal: "Callable[[SessionOutcome | None], None] | None" = None,
     ) -> SessionOutcome:
         """Run one logical invocation to a terminal outcome.
 
@@ -1310,19 +1315,41 @@ class HostSessionSupervisor:
         (exactly once, in ``finally``). A retry-worthy (429) result finishes
         the attempt fully, releases the lease, sleeps **without capacity**,
         then re-enters admission with the original enqueue age and a fresh
-        containment handle."""
+        containment handle.
+
+        ``pre_launch_validator`` (when provided) runs **per attempt** —
+        including supervisor-level 429 retries — after the grant-to-
+        registration ownership gate and before ``backend.prepare``/launch, so
+        a failing integrity check never creates a containment handle.
+
+        ``on_terminal`` is an optional caller-owned hook invoked on the
+        invocation's **final** terminal path — AFTER the attempt's
+        finalization (finish/receipt/residue reconciliation/publish) and
+        BEFORE the lease releases — so the caller can clear its own
+        per-invocation state (e.g. the task producer's SessionTracker opaque
+        cancel control / PID / active-session record) without leaving
+        residue. It is deliberately NOT invoked between 429 retry attempts
+        (the logical invocation is still live: a retry re-enters admission
+        with the same cancellation token). It is also invoked with ``None``
+        when the invocation ended without an outcome (unexpected exception)
+        and on the cancelled-while-queued path. Hook exceptions are
+        swallowed (logged) — they never replace the terminal reason and
+        never break the exactly-once lease release."""
 
         grace = self._policy.cleanup_grace_seconds if grace_seconds is None else grace_seconds
         attempt = 0
         while True:
             lease = self._admission.acquire(request, timeout=timeout)
             if lease is None:
-                return SessionOutcome(
+                outcome = SessionOutcome(
                     request=request,
                     terminal_reason=TerminalReason.CANCELLED,
                     attempt=attempt,
                     cancelled_while_queued=True,
                 )
+                if on_terminal is not None:
+                    self._invoke_terminal_hook(on_terminal, outcome)
+                return outcome
             try:
                 outcome = self._execute_attempt(
                     request,
@@ -1331,7 +1358,26 @@ class HostSessionSupervisor:
                     launch_body=launch_body,
                     grace_seconds=grace,
                     attempt=attempt,
+                    pre_launch_validator=pre_launch_validator,
                 )
+            except BaseException:
+                # Unexpected exception: the lease still releases exactly
+                # once; run the caller's terminal hook (best-effort, with
+                # None — no outcome exists) so per-invocation state is
+                # never left behind, then re-raise unchanged.
+                if on_terminal is not None:
+                    self._invoke_terminal_hook(on_terminal, None)
+                raise
+            else:
+                # Final terminal path only: NOT invoked for a retry-worthy
+                # attempt that still has budget (the invocation continues
+                # and the caller-owned control must survive the retry sleep
+                # and re-acquire). Fires AFTER ``_execute_attempt`` finished
+                # containment/reconcile/publish and BEFORE lease release.
+                if on_terminal is not None and not (
+                    outcome.retry_worthy and attempt < self._max_retry_attempts
+                ):
+                    self._invoke_terminal_hook(on_terminal, outcome)
             finally:
                 lease.release()
             if outcome.retry_worthy and attempt < self._max_retry_attempts:
@@ -1344,6 +1390,21 @@ class HostSessionSupervisor:
                 continue
             return outcome
 
+    @staticmethod
+    def _invoke_terminal_hook(
+        hook: "Callable[[SessionOutcome | None], None]",
+        outcome: "SessionOutcome | None",
+    ) -> None:
+        """Invoke the caller's terminal hook without letting a hook failure
+        replace the primary terminal reason or break the exactly-once lease
+        release."""
+        try:
+            hook(outcome)
+        except Exception as exc:  # noqa: BLE001 — best-effort caller cleanup
+            logger.warning(
+                "HostSessionSupervisor on_terminal hook raised: %s", exc,
+            )
+
     # ── attempt execution ─────────────────────────────────────────
 
     def _execute_attempt(
@@ -1355,6 +1416,7 @@ class HostSessionSupervisor:
         launch_body: Callable[[RunningHandle], LaunchResult],
         grace_seconds: float,
         attempt: int,
+        pre_launch_validator: Callable[[], None] | None = None,
     ) -> SessionOutcome:
         """Run one granted attempt to a terminal outcome under its ownership
         record.
@@ -1372,6 +1434,18 @@ class HostSessionSupervisor:
         # froze on the ownership record: refuse before any handle exists.
         if ctx.terminal_reason() is not None:
             return self._outcome(request, ctx, attempt)
+        # ── pre-launch integrity validation (per attempt, incl. 429 retries) ──
+        # Runs BEFORE ``backend.prepare``/launch so a failing check never
+        # creates a containment handle (fail-closed; the supervisor re-runs it
+        # on every retry, mirroring the executors' pre-Popen validator
+        # contract). An exception freezes FAILURE with the actionable error.
+        if pre_launch_validator is not None:
+            try:
+                pre_launch_validator()
+            except Exception as exc:
+                ctx.freeze_terminal(TerminalReason.FAILURE)
+                ctx.set_error(f"pre-launch validation failed: {exc}")
+                return self._outcome(request, ctx, attempt)
         # ── prepare (never before admission) ──
         try:
             pending = self._backend.prepare(request, self._policy)
@@ -1555,19 +1629,21 @@ def build_default_host_supervisor(
     backend: SessionBackend | None = None,
     policy: PolicySnapshot | None = None,
     publisher: Callable[[Receipt], None] | None = None,
+    max_retry_attempts: int = 0,
+    backoff_seconds: Sequence[float] = (),
 ) -> HostSessionSupervisor:
     """Daemon-wide supervisor for the real-caller wiring (THR-207 Slice B).
 
-    Exactly ONE production producer — schedule fires — runs through the
-    returned supervisor; task/thread/dream/wake producers stay structurally
-    unchanged. The backend is selected through the capability factory
-    (:func:`runtime.platform.backend_factory.session_backend_for_wired_producer`):
-    the wired producer's launch body performs its own subprocess launch
-    inside the executor, which no real containment backend can wrap until
-    the executor launch bodies are wired (a later slice), so the truthful
-    selection is the honest no-enforcement passthrough (all capabilities
-    unavailable; missing enforcement tightens admission via the binding
-    macOS canary cap of 4, which never binds the single schedule worker).
+    The daemon's production construction (``runtime/daemon/state.py``) passes
+    the capability-factory-selected real backend
+    (:func:`runtime.platform.backend_factory.select_session_backend`) and the
+    configured 429 retry schedule so a rate-limited attempt fully finishes,
+    releases its lease, sleeps **without capacity**, then re-enters admission
+    with the original enqueue age and a fresh containment handle. The default
+    (no arguments) stays the honest no-enforcement passthrough with no
+    supervisor-level retry — the exact Slice A/B default that the schedule-
+    fire integration suites and unit fakes rely on, with the executor's
+    own throttle-internal 429 retry inside the launch body.
     The publisher logs bounded receipts — no metrics/audit/health payload
     expansion.
     """
@@ -1577,6 +1653,8 @@ def build_default_host_supervisor(
         backend=backend or session_backend_for_wired_producer(),
         policy=policy or canary_policy(),
         publisher=publisher or _log_bounded_receipt,
+        max_retry_attempts=max_retry_attempts,
+        backoff_seconds=backoff_seconds,
     )
 
 

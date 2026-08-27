@@ -78,14 +78,25 @@ class DaemonState:
         state = cls(runtime=runtime, settings=settings)
         # __post_init__ constructs metrics_store at runtime.root/metrics.db
 
-        # THR-207 Slice A real-caller wiring: construct the daemon-wide
-        # supervisor (honest no-enforcement passthrough backend + canary
-        # policy + bounded-receipt logging). Exactly ONE producer — schedule
-        # fires — is wired through it; task/thread/dream/wake stay unchanged.
+        # THR-207 task-producer wiring: construct the daemon-wide supervisor
+        # with the capability-factory-selected REAL backend (Linux
+        # systemd/cgroup-v2 when the operational probe is healthy, macOS
+        # process-group otherwise, honest no-enforcement passthrough as the
+        # fallback) and the configured 429 retry schedule owned by the
+        # supervisor (finish/release/sleep/reacquire with original enqueue
+        # age + fresh backend handle). The same 5/15/45 values the executor
+        # throttle used — no policy-default change. Task and schedule
+        # sessions run through it; thread/dream/wake producers stay on their
+        # current uncontained path.
         from runtime.orchestrator.host_supervisor import (
             build_default_host_supervisor,
         )
-        state.host_supervisor = build_default_host_supervisor()
+        from runtime.platform.backend_factory import select_session_backend
+        state.host_supervisor = build_default_host_supervisor(
+            backend=select_session_backend(),
+            max_retry_attempts=len(settings.executor_rate_limit_backoff_seconds),
+            backoff_seconds=tuple(settings.executor_rate_limit_backoff_seconds),
+        )
 
         # THR-107: one-shot lift of any legacy per-org executor_profiles
         # config blocks into the machine-global runtime store BEFORE the
@@ -143,12 +154,15 @@ class DaemonState:
                 state.broken_orgs[slug] = str(exc)
                 logger.error("org %r failed consistency check: %s", slug, exc)
                 continue
-            # Attach the global queue + per-org sessions so the orchestrator can
-            # re-enqueue tasks (e.g. parent wake-up after a child resolves).
-            # The lifespan wiring also does this, but `from_runtime` is used by
-            # tests that bypass lifespan, so we do it here too — idempotent.
+            # Attach the global queue + per-org sessions + daemon-wide host
+            # supervisor so the orchestrator can re-enqueue tasks (e.g. parent
+            # wake-up after a child resolves) and run task sessions through
+            # admission/containment. The lifespan wiring also does this, but
+            # `from_runtime` is used by tests that bypass lifespan, so we do
+            # it here too — idempotent.
             org.orchestrator.attach_queue(state.queue)
             org.orchestrator.attach_sessions(org.sessions)
+            org.orchestrator.attach_host_supervisor(state.host_supervisor)
             state.orgs[slug] = org
         return state
 
@@ -181,6 +195,7 @@ class DaemonState:
             org = OrgState.load(slug=slug, root=root, settings=self.settings)
             org.orchestrator.attach_queue(self.queue)
             org.orchestrator.attach_sessions(org.sessions)
+            org.orchestrator.attach_host_supervisor(self.host_supervisor)
             self.orgs[slug] = org
             self.broken_orgs.pop(slug, None)
             # Wire the thread queue + main loop so run_step workers can

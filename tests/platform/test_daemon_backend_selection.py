@@ -47,13 +47,35 @@ def test_build_default_host_supervisor_accepts_explicit_backend():
 
 
 def test_state_from_runtime_constructs_supervisor(tmp_path, monkeypatch):
-    """The daemon's state construction wires the daemon-wide supervisor."""
+    """The daemon's state construction wires the daemon-wide supervisor with
+    the capability-factory-selected backend and the configured 429 retry
+    schedule (THR-207 task-producer wiring)."""
     from runtime.config import Settings
     from runtime.daemon.state import DaemonState
+    from runtime.platform.passthrough_backend import PassthroughBackend
     from runtime.runtime import RuntimeDir
 
+    # Deterministic backend selection: the honest no-enforcement passthrough
+    # (a real Linux/macOS backend is selected on capable hosts; the wiring
+    # contract is that the factory choice flows through unchanged).
+    import runtime.platform.backend_factory as backend_factory_mod
+
+    monkeypatch.setattr(
+        backend_factory_mod, "select_session_backend", PassthroughBackend,
+    )
     runtime = RuntimeDir.init(tmp_path / "rt")
-    state = DaemonState.from_runtime(runtime, Settings())
+    settings = Settings()
+    state = DaemonState.from_runtime(runtime, settings)
     assert state.host_supervisor is not None
-    report = state.host_supervisor.probe()
-    assert report.capabilities == {}  # honest fallback for the wired producer
+    assert isinstance(state.host_supervisor._backend, PassthroughBackend)
+    # The configured 429 schedule is wired as the supervisor-level retry
+    # (finish/release/sleep/reacquire with original age + fresh handle).
+    assert state.host_supervisor._max_retry_attempts == len(
+        settings.executor_rate_limit_backoff_seconds
+    )
+    assert state.host_supervisor._backoff_seconds == tuple(
+        settings.executor_rate_limit_backoff_seconds
+    )
+    # Every loaded org's orchestrator is wired to the daemon-wide supervisor.
+    for org in state.orgs.values():
+        assert org.orchestrator._host_supervisor is state.host_supervisor

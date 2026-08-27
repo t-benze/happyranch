@@ -1,20 +1,21 @@
-"""Honest no-enforcement :class:`SessionBackend` for the real-caller wiring.
+"""Honest no-enforcement :class:`SessionBackend` (fallback + test default).
 
-THR-207 / TASK-5584 real-caller amendment wires ``HostSessionSupervisor``
-through **exactly one** narrow production producer (schedule fires) so the
-atomic ownership protocol is proven end to end against a real caller, real
-daemon drain, and real cancellation observation. No Linux/macOS containment
-backend ships in this slice (those are later backend slices), so the wired
-supervisor runs against this platform-neutral passthrough:
+THR-207 real-caller wiring: ``HostSessionSupervisor`` runs the daemon's
+production producers through a real backend (Linux systemd/cgroup-v2 or
+macOS process-group/census selected by the capability factory); this
+passthrough is the truthful selection when the operational probe is
+unsupported/unhealthy AND the deterministic default of
+``build_default_host_supervisor()`` with no arguments (schedule-fire
+integration suites and unit fakes):
 
 * ``probe`` declares **no** capability — every value is ``unavailable``.
   This is the truthful capability contract, never a fabricated guarantee:
   missing enforcement tightens admission (the binding macOS canary cap of 4
   applies) exactly as the governing spec requires.
 * ``prepare``/``launch``/``finish`` perform no containment. Subprocess
-  control stays entirely inside the executor launch body (unchanged), which
-  still routes through the per-provider throttle and
-  ``runtime/platform/isolation.py`` exactly as before.
+  control stays entirely inside the executor launch body (the uncontained
+  path, which still routes through the per-provider throttle and
+  ``runtime/platform/isolation.py`` exactly as before).
 * ``finish`` reports ``CLEAN``/``quiescent`` **about the absence of
   containment state** (there is no tree this backend manages and nothing it
   can verify) — it never claims a descendant-tree quiescence it did not

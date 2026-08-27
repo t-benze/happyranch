@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -117,6 +117,8 @@ class ProviderThrottle:
         provider: str,
         launch: Launch,
         on_event: OnThrottleEvent | None = None,
+        *,
+        backoff_seconds: "Sequence[float] | None" = None,
     ) -> Any:
         """Acquire a provider slot, honor spacing, run ``launch``, and absorb
         transient 429s with backoff before returning the result.
@@ -125,6 +127,15 @@ class ProviderThrottle:
         did **not** succeed; a successful session is never relaunched (idempotent
         re-launch is safe only because a failed rate-limited attempt did no
         useful work and never called ``report-completion``).
+
+        ``backoff_seconds`` overrides the configured schedule for THIS call only
+        (the instance's configured schedule is never mutated). An empty tuple
+        disables the internal 429 retry entirely — the caller (the
+        ``HostSessionSupervisor``'s launch body for contained sessions) then
+        receives the rate-limited result unchanged so the supervisor owns the
+        429 retry as finish/release/sleep/reacquire-with-fresh-handle. Slot
+        acquisition, spacing, and release-in-``finally`` semantics are
+        identical in every mode.
 
         The slot is released in a ``finally`` so it is freed on success, error,
         timeout, AND exception. During a backoff sleep the slot is explicitly
@@ -148,7 +159,10 @@ class ProviderThrottle:
             )
 
         try:
-            attempts = 1 + len(self._backoff_seconds)
+            schedule = (
+                self._backoff_seconds if backoff_seconds is None else tuple(backoff_seconds)
+            )
+            attempts = 1 + len(schedule)
             result: Any = None
             for attempt in range(attempts):
                 self._spacing_gate(provider)
@@ -170,7 +184,7 @@ class ProviderThrottle:
                 )
                 if not retry_worthy or attempt == attempts - 1:
                     return result
-                backoff = self._backoff_seconds[attempt]
+                backoff = schedule[attempt]
                 if on_event is not None:
                     self._emit(
                         on_event,

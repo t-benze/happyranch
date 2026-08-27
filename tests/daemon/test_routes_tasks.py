@@ -1533,7 +1533,7 @@ def test_cancel_sigterms_live_pids_and_returns_them(client_with_runtime, monkeyp
     client, state = client_with_runtime
     state.db.insert_task(TaskRecord(id="T-1", brief="x"))
     state.sessions.set_active("T-1", "dev_agent", "sess-1")
-    state.sessions.set_pid("T-1", "dev_agent", 99999)
+    state.sessions.set_pid("T-1", "dev_agent", "sess-1", 99999)
 
     kills: list[tuple[int, int]] = []
 
