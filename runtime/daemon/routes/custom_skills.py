@@ -21,18 +21,6 @@ _FORBIDDEN_IDENTITY = frozenset({"task_id","session_id","proposer_agent","agent"
 def _error(code: str, status_code: int, detail: str | None = None):
     raise HTTPException(status_code=status_code, detail={"code": code, "detail": detail or code})
 
-def _validation_error(validation: dict):
-    """Reject invalid input before any persistence (zero durable residue)."""
-    raise HTTPException(
-        status_code=422,
-        detail={
-            "code": "validation_failed",
-            "detail": "SKILL.md does not satisfy the supported authoring contract",
-            "errors": validation["errors"],
-            "reason_codes": validation["reason_codes"],
-        },
-    )
-
 def _remove_artifact_from_store(store, key: str) -> None:
     """Best-effort compensation: delete a newly-created artifact and any
     now-empty parent directories so a failed write leaves no residue."""
@@ -76,7 +64,7 @@ def _persist_validated_version(
     parent_id: int | None = None, task_id: str | None = None,
     session_id: str | None = None, brief_digest: str | None = None,
     event: str = "version_saved",
-) -> tuple[int, str, str, str]:
+) -> tuple[int, str, str, str, int | None]:
     """Append one validated version inside the caller's BEGIN IMMEDIATE block.
 
     Validation completed before this helper runs. The version row is inserted
@@ -95,12 +83,25 @@ def _persist_validated_version(
     artifact residue. The append-only uniqueness invariant is preserved,
     never relaxed.
 
-    Returns ``(version, content_hash, state, key)`` — the last element is the
-    deterministic content-addressed artifact key. The key crosses the helper
-    boundary so the CALLER keeps artifact compensation armed through its own
-    ``conn.commit()``: the artifact written by this request is removed if the
-    commit itself fails, and compensation is disarmed only by a successful
-    commit (see ``_commit_compensating_artifact``).
+    Current-pointer selection (THR-210 PR 1, founder-approved): a VALID
+    version always advances ``current_version_id``. An INVALID candidate is
+    appended as immutable validation/provenance evidence but never displaces
+    an existing ``current_version_id`` — the pointer is retained, so a
+    malformed edit cannot darken a skill whose last valid version still
+    exists. The one exception is initial creation (no prior pointer): the
+    first version becomes current regardless of validity, because a NULL
+    pointer is unreadable by every JOIN-based list/detail consumer and
+    uneditable through the version route; the skill then darkens as
+    ``current_version_invalid`` until a valid successor advances the pointer.
+    The events appended are unchanged (``created``/``version_saved`` then
+    ``validated``); version rows and events are never rewritten.
+
+    Returns ``(version, content_hash, state, key, current_version_id)`` — the
+    artifact key crosses the helper boundary so the CALLER keeps artifact
+    compensation armed through its own ``conn.commit()`` (see
+    ``_commit_compensating_artifact``), and the final element is the pointer
+    after this write (equal to ``version`` for valid appends and for initial
+    creation; the retained prior pointer for invalid evidence appends).
     """
     key = _artifact_key(slug, skill_md)
     artifact_written = False
@@ -126,13 +127,21 @@ def _persist_validated_version(
             ) from exc
         _write_artifact(org, key, skill_md)
         artifact_written = True
+        current_row = conn.execute(
+            "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+        ).fetchone()
+        existing_current = current_row["current_version_id"] if current_row else None
+        if validation["ok"] or existing_current is None:
+            new_current = version
+        else:
+            new_current = existing_current
         conn.execute(
             "UPDATE custom_skills SET current_version_id=? WHERE id=?",
-            (version, skill_id),
+            (new_current, skill_id),
         )
         service.append_event(conn, skill_id, event, actor, version, task_id=task_id, session_id=session_id)
         service.append_event(conn, skill_id, "validated", actor, version, task_id=task_id, session_id=session_id)
-        return version, content_hash, state, key
+        return version, content_hash, state, key, new_current
     except Exception:
         if artifact_written:
             _remove_artifact(org, key)
@@ -204,8 +213,9 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
         )
         if "slug_collision" in validation_result["reason_codes"]:
             _error("protected_slug", 409)
-        if not validation_result["ok"]:
-            _validation_error(validation_result)
+        # THR-210 PR 1: a document-contract validation failure is appended as
+        # immutable evidence, never silently discarded — but a protected-slug
+        # candidate is still hard-rejected above (policy gate, not evidence).
         conn = getattr(org.db, "_conn", org.db); existing = conn.execute("SELECT * FROM custom_skills WHERE org_slug=? AND slug=?", (slug, skill_slug)).fetchone()
         if existing and (existing["origin_kind"] != "agent" or existing["origin_agent"] != agent): _error("not_origin_owner", 403)
         task = org.db.get_task(task_id)
@@ -216,7 +226,7 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
         try:
             if existing:
                 skill_id = existing["id"]
-                version, digest_hash, validation, key = _persist_validated_version(
+                version, digest_hash, validation, key, current = _persist_validated_version(
                     conn, org=org, slug=skill_slug, skill_id=skill_id,
                     skill_md=skill_md, actor_kind="agent", actor=agent,
                     validation=validation_result, parent_id=existing["current_version_id"],
@@ -224,7 +234,7 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
                 )
             else:
                 skill_id = f"custom:{uuid.uuid4()}"; conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,origin_agent,created_at,created_by) VALUES (?,?,?,?,?,'agent',?,?,?)", (skill_id, slug, skill_slug, body["name"], body.get("description", ""), agent, service.now(), agent))
-                version, digest_hash, validation, key = _persist_validated_version(
+                version, digest_hash, validation, key, current = _persist_validated_version(
                     conn, org=org, slug=skill_slug, skill_id=skill_id,
                     skill_md=skill_md, actor_kind="agent", actor=agent,
                     validation=validation_result, task_id=task_id,
@@ -272,21 +282,19 @@ def create_human(slug: str, body: dict = Body(...), org: OrgDep = None, _: None 
     )
     if "slug_collision" in validation_result["reason_codes"]:
         _error("protected_slug", 409)
-    if not validation_result["ok"]:
-        _validation_error(validation_result)
     conn = getattr(org.db, "_conn", org.db)
     if conn.execute("SELECT 1 FROM custom_skills WHERE org_slug=? AND slug=?", (slug, skill_slug)).fetchone(): _error("slug_exists", 409)
     skill_id = f"custom:{uuid.uuid4()}"; conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,created_at,created_by) VALUES (?,?,?,?,?,'human',?,?)", (skill_id,slug,skill_slug,body["name"],body.get("description", ""),service.now(),"founder"))
-        version, content_hash, validation, key = _persist_validated_version(
+        version, content_hash, validation, key, current = _persist_validated_version(
             conn, org=org, slug=skill_slug, skill_id=skill_id,
             skill_md=skill_md, actor_kind="human", actor="founder",
             validation=validation_result, event="created",
         )
         _commit_compensating_artifact(conn, org, key)
     except Exception: conn.rollback(); raise
-    return {"skill_id":skill_id,"version_id":version,"content_hash":content_hash,"validation_state":validation,"hidden_reason":"no_eligibility_policy"}
+    return {"skill_id":skill_id,"version_id":version,"content_hash":content_hash,"validation_state":validation,"hidden_reason":"no_eligibility_policy","current_version_id":current}
 
 @router.get("/{skill_id}")
 def detail(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
@@ -319,18 +327,16 @@ def add_version(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: No
     )
     if "slug_collision" in validation_result["reason_codes"]:
         _error("protected_slug", 409)
-    if not validation_result["ok"]:
-        _validation_error(validation_result)
     conn=getattr(org.db,"_conn",org.db); conn.execute("BEGIN IMMEDIATE")
     try:
-        version,content_hash,validation,key = _persist_validated_version(
+        version,content_hash,validation,key,current = _persist_validated_version(
             conn, org=org, slug=row["slug"], skill_id=skill_id,
             skill_md=skill_md, actor_kind="human", actor="founder",
             validation=validation_result, parent_id=row["version_id"],
         )
         _commit_compensating_artifact(conn, org, key)
     except Exception: conn.rollback(); raise
-    return {"skill_id":skill_id,"version_id":version,"content_hash":content_hash,"validation_state":validation}
+    return {"skill_id":skill_id,"version_id":version,"content_hash":content_hash,"validation_state":validation,"current_version_id":current}
 
 @router.get("/{skill_id}/versions")
 def versions(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
