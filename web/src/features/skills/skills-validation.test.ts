@@ -64,9 +64,9 @@ describe('reasonCodeLabel', () => {
       'This slug is already used by another skill.',
     );
   });
-  test('maps the THR-169 frontmatter-first authoring codes to plain language', () => {
+  test('maps the SKILL.md authoring-contract codes to plain language', () => {
     expect(reasonCodeLabel('skill_md_no_frontmatter')).toBe(
-      'The skill guide must start with YAML frontmatter.',
+      'The skill guide must start with YAML frontmatter or a Markdown heading.',
     );
     expect(reasonCodeLabel('skill_md_unclosed_frontmatter')).toBe(
       'The skill guide frontmatter is missing its closing fence.',

@@ -1,16 +1,24 @@
 """Canonical SKILL.md authoring-contract validation (founder-approved, THR-169).
 
-The supported authoring contract: a newly authored SKILL.md body is
-YAML-frontmatter-first — a valid opening ``---`` fence, a YAML mapping, a
-closing ``---`` fence, then a Markdown heading. This module is the single
-authoritative shape check; every custom-skill write route (and any other
-caller) reaches it through ``_validate_skill_package``.
+The supported authoring contract (THR-210 PR 2 grammar): a newly authored
+SKILL.md body is accepted when it is either (a) heading-first — its first
+line at column zero is a Markdown heading (``#``…, any ATX level) — or
+(b) YAML-frontmatter-first — a valid opening ``---`` fence at column zero, a
+YAML mapping, a closing ``---`` fence, then a Markdown body heading. This
+module is the single authoritative shape check; every custom-skill write
+route (and any other caller) reaches it through ``_validate_skill_package``.
 
-Heading-first bodies are NOT accepted for new authoring. Pre-existing valid
-legacy versions (validated heading-first under THR-055/1.0.0) remain
-resolvable and materializable because their stored ``validation_state`` is
-authoritative at the resolver/materialization seams — this module never
-re-validates stored content and never broadens new-authoring acceptance.
+Leading BOM/whitespace before either opening shape is NOT tolerated: the
+accepted shapes must start the document at column zero (the codebase-wide
+frontmatter convention), so a BOM-prefixed or leading-blank-line document is
+classified invalid rather than silently healed. Malformed YAML frontmatter,
+unclosed frontmatter, non-mapping frontmatter, and frontmatter without a
+Markdown body heading remain invalid under the stable reason codes below.
+Stored ``validation_state`` remains authoritative at the resolver/
+materialization seams — this module never re-validates stored content, so
+pre-PR-2 records (including heading-first versions stored valid, and
+PR-1-era heading-first candidates stored as invalid evidence) keep reading
+exactly as persisted, without rewriting or silent healing.
 """
 
 from __future__ import annotations
@@ -30,7 +38,7 @@ SKILL_MD_NO_HEADING = "skill_md_no_heading"
 
 _MESSAGES: dict[str, str] = {
     SKILL_MD_EMPTY: "SKILL.md content is empty or missing",
-    SKILL_MD_NO_FRONTMATTER: "SKILL.md must start with a YAML frontmatter fence",
+    SKILL_MD_NO_FRONTMATTER: "SKILL.md must start with a YAML frontmatter fence or a Markdown heading",
     SKILL_MD_UNCLOSED_FRONTMATTER: "SKILL.md YAML frontmatter is missing its closing fence",
     SKILL_MD_MALFORMED_FRONTMATTER: "SKILL.md YAML frontmatter is malformed",
     SKILL_MD_FRONTMATTER_NOT_MAPPING: "SKILL.md YAML frontmatter must be a mapping",
@@ -60,11 +68,21 @@ def _split_frontmatter(skill_md: str) -> tuple[str, str] | None:
 def skill_md_contract_violations(skill_md: object) -> list[tuple[str, str]]:
     """Return ``(reason_code, message)`` pairs for contract violations.
 
-    Returns an empty list when the body satisfies the supported contract.
+    Returns an empty list when the body satisfies the supported contract:
+    either a column-zero Markdown heading (heading-first) or YAML
+    frontmatter (valid opening ``---`` fence at column zero, a YAML mapping,
+    a closing fence, then a Markdown body heading).
     """
     if not isinstance(skill_md, str) or not skill_md.strip():
         return [(SKILL_MD_EMPTY, _MESSAGES[SKILL_MD_EMPTY])]
     if not skill_md.startswith(_OPEN_FENCE):
+        # THR-210 PR 2: heading-first bodies whose FIRST line is a Markdown
+        # heading at column zero are accepted for new authoring. Leading
+        # BOM/whitespace is not stripped — the heading must open the document
+        # at column zero, mirroring the frontmatter fence rule (no silent
+        # healing of documents that start with other content).
+        if skill_md.startswith("#"):
+            return []
         return [(SKILL_MD_NO_FRONTMATTER, _MESSAGES[SKILL_MD_NO_FRONTMATTER])]
     split = _split_frontmatter(skill_md)
     if split is None:

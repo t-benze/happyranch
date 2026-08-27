@@ -1046,8 +1046,10 @@ class TestValidationGuard:
         assert result["ok"] is False
         assert "system_contract_forbidden" in result["reason_codes"]
 
-    def test_heading_first_legacy_body_is_rejected_for_new_authoring(self, tmp_home, app, org_state):
-        """Heading-first bodies are legacy-only; new authoring must be frontmatter-first."""
+    def test_plain_text_without_frontmatter_or_heading_is_invalid(self, tmp_home, app, org_state):
+        """A body with neither a column-zero Markdown heading nor YAML
+        frontmatter is outside the supported authoring grammar (THR-210
+        PR 2): classified skill_md_no_frontmatter, never accepted."""
         from runtime.daemon.routes.skills import _validate_skill_package
 
         result = _validate_skill_package(
@@ -1058,6 +1060,42 @@ class TestValidationGuard:
             version="1.0.0",
             policy_class="standard_operational",
             skill_md="just some text without a heading",
+        )
+        assert result["ok"] is False
+        assert "skill_md_no_frontmatter" in result["reason_codes"]
+
+    def test_heading_first_body_is_valid_for_new_authoring(self, tmp_home, app, org_state):
+        """THR-210 PR 2: a heading-first SKILL.md (column-zero Markdown
+        heading) is now accepted for NEW authoring — it validates OK and
+        is materializable, no longer legacy-only."""
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="# My Skill\n\nGuidance content here.\n",
+        )
+        assert result["ok"] is True
+        assert result["errors"] == []
+
+    def test_leading_whitespace_before_heading_is_not_silently_healed(self, tmp_home, app, org_state):
+        """The documented column-zero contract (no BOM/whitespace tolerance,
+        no silent healing): a leading blank line before the heading keeps the
+        document outside the accepted grammar."""
+        from runtime.daemon.routes.skills import _validate_skill_package
+
+        result = _validate_skill_package(
+            org=org_state,
+            slug="my-skill",
+            skill_id="hr:my-skill",
+            name="My Skill",
+            version="1.0.0",
+            policy_class="standard_operational",
+            skill_md="\n# My Skill\n\nGuidance content here.\n",
         )
         assert result["ok"] is False
         assert "skill_md_no_frontmatter" in result["reason_codes"]

@@ -534,8 +534,16 @@ _INVALID_BODIES = [
     ("---\njust a string\n---\n# Test\n\nOne\n", "skill_md_frontmatter_not_mapping"),
     ("---\nname: x\n---\nplain text without a heading\n", "skill_md_no_heading"),
     ("---\nname: x\n---\n\n", "skill_md_no_heading"),
-    ("# Legacy heading-first body\n", "skill_md_no_frontmatter"),
     ("plain text without frontmatter", "skill_md_no_frontmatter"),
+]
+
+# THR-210 PR 2: heading-first SKILL.md bodies with a column-zero Markdown
+# heading are now ACCEPTED for new authoring (same grammar the frontmatter
+# path requires for its body heading).
+_VALID_HEADING_FIRST_BODIES = [
+    "# Heading-first body\n\nBody text.\n",
+    "## Heading-first level two\n\nBody text.\n",
+    "# Heading without trailing newline",
 ]
 
 
@@ -629,6 +637,122 @@ def test_add_version_accepts_frontmatter_first_successor(client_with_runtime):
         (payload["version_id"],),
     ).fetchone()
     assert stored["skill_md_cache"] == successor
+
+
+@pytest.mark.parametrize("successor", _VALID_HEADING_FIRST_BODIES)
+def test_add_version_accepts_heading_first_successor_advancing_current(
+    client_with_runtime, successor,
+):
+    """THR-210 PR 2: a heading-first successor (H1/H2, column-zero heading)
+    is now VALID for new authoring — it advances current_version_id
+    normally (A/D), appends the usual version_saved+validated events, stores
+    its content-addressed artifact, and detail resolves it as valid."""
+    client, org = client_with_runtime
+    created = _create(client)
+    skill_id, prior_revision = created["skill_id"], created["version_id"]
+    response = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": successor})
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["validation_state"] == "valid"
+    conn = getattr(org.db, "_conn", org.db)
+    # pointer advanced to the new valid version
+    assert payload["current_version_id"] == payload["version_id"]
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"] == payload["version_id"]
+    events = [
+        r["event_type"]
+        for r in conn.execute(
+            "SELECT event_type FROM custom_skill_events WHERE skill_id=? ORDER BY id",
+            (skill_id,),
+        )
+    ]
+    assert events == ["created", "validated", "version_saved", "validated"]
+    # content-addressed artifact stored; detail resolves the new valid version
+    digest = hashlib.sha256(successor.encode()).hexdigest()
+    assert f"custom-skills/test-skill/{digest}/SKILL.md" in _artifact_keys(org)
+    detail = client.get(f"{BASE}/{skill_id}").json()
+    assert detail["validation_state"] == "valid"
+    assert detail["version_id"] == payload["version_id"]
+
+
+def test_heading_first_duplicate_content_conflicts_atomically(client_with_runtime):
+    """PR 3 is NOT implemented: a byte-identical heading-first body replay
+    still conflicts with the append-only UNIQUE (skill_id, content_hash)
+    invariant as HTTP 409 `duplicate_content` with zero residue — the
+    duplicate-replay contract is unchanged (no version_content_exists rename,
+    no artifact rewrite, no pointer change)."""
+    client, org = client_with_runtime
+    created = _create(client)
+    skill_id = created["skill_id"]
+    heading_first = "# Heading-first body\n\nBody text.\n"
+    first = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": heading_first})
+    assert first.status_code == 201 and first.json()["validation_state"] == "valid"
+    before = _residue_snapshot(org, skill_id)
+    response = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": heading_first})
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "duplicate_content"
+    assert _residue_snapshot(org, skill_id) == before
+
+
+def test_heading_first_initial_creation_is_valid_and_materializable(
+    client_with_runtime, monkeypatch,
+):
+    """THR-210 PR 2: a heading-first body on INITIAL creation is a valid
+    first version (B over PR 2), becomes the current pointer, is eligible,
+    and materializes through the canonical store — it is no longer treated
+    as legacy-only evidence."""
+    from runtime.skills.canonical_store import CanonicalSkillStore
+    from runtime.orchestrator.workspace_adapters import _build_custom_skill_canonical_specs
+
+    client, org = client_with_runtime
+    _add_agent(org)
+    heading_first = "# Heading-first create\n\nBody text.\n"
+    created = _create(client, slug="heading-create", skill_md=heading_first)
+    assert created["validation_state"] == "valid"
+    skill_id = created["skill_id"]
+    conn = getattr(org.db, "_conn", org.db)
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?", (skill_id,)
+    ).fetchone()["current_version_id"] == created["version_id"]
+    rules = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
+    assert client.put(
+        f"{BASE}/{skill_id}/eligibility", json=rules,
+        headers={"If-Match": str(created["version_id"])},
+    ).status_code == 200
+    monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(org.root / "canonical-store"))
+    specs = _build_custom_skill_canonical_specs(
+        store=CanonicalSkillStore(), org_root=org.root, db=org.db, slug="alpha",
+        agent_name="dev_agent", team="engineering", task_id="TASK-HF",
+        session_id="sess-hf", session_context="task",
+    )
+    spec = next(s for s in specs if s["slug"] == "heading-create")
+    assert spec["version"] == str(created["version_id"])
+    assert spec["content_hash"] == created["content_hash"]
+
+
+def test_agent_create_accepts_heading_first_body_with_provenance(client_with_runtime):
+    """Agent path under PR 2: heading-first body creates a VALID first
+    version with verified task/session provenance and advances the pointer."""
+    client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="TASK-HF2", brief="create a custom skill"))
+    org.sessions.set_active("TASK-HF2", "dev_agent", "sess-hf2", org_slug="alpha")
+    client.headers.pop("Authorization", None)
+    heading_first = "# Agent heading-first\n\nBody.\n"
+    response = client.post(
+        f"{BASE}/agent-create", params={"session_id": "sess-hf2"},
+        json={"slug": "agent-heading", "name": "Agent Heading", "skill_md": heading_first},
+    )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["version"]["validation_state"] == "valid"
+    assert payload["version"]["source_task_id"] == "TASK-HF2"
+    assert payload["version"]["source_session_id"] == "sess-hf2"
+    conn = getattr(org.db, "_conn", org.db)
+    assert conn.execute(
+        "SELECT current_version_id FROM custom_skills WHERE id=?",
+        (payload["skill"]["id"],),
+    ).fetchone()["current_version_id"] == payload["version"]["id"]
 
 
 def test_add_version_duplicate_content_conflicts_atomically(client_with_runtime):
@@ -1262,3 +1386,62 @@ def test_legacy_heading_first_valid_version_stays_resolvable_and_materializable(
         session_context="task",
     )
     assert any(spec["slug"] == "legacy" for spec in specs)
+
+
+def test_pr1_era_heading_first_invalid_evidence_is_not_rewritten_or_healed(
+    client_with_runtime,
+):
+    """THR-210 PR 2 compatibility (C): a PR-1-era heading-first candidate was
+    persisted as immutable INVALID evidence (findings carry the old
+    `skill_md_no_frontmatter` message, before heading-first was accepted).
+    Under PR 2 that stored row must remain byte-identical and read as invalid
+    — no silent healing, no rewrite — while NEW heading-first bodies validate
+    as valid. Legacy evidence is never retrofitted to the new grammar."""
+    from runtime.skills.custom import service as custom_service
+    client, org = client_with_runtime
+    created = _create(client, slug="pr1-heading-evidence")
+    skill_id, v1 = created["skill_id"], created["version_id"]
+    conn = getattr(org.db, "_conn", org.db)
+    pr1_heading_first = "# Heading-first body\n\nBody text.\n"
+    conn.execute(
+        """INSERT INTO custom_skill_versions
+           (skill_id,parent_version_id,content_hash,content_artifact_key,skill_md_cache,
+            validation_state,validator_version,validation_findings,created_at,
+            author_kind,author_identity)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?) """,
+        (skill_id, v1, hashlib.sha256(pr1_heading_first.encode()).hexdigest(),
+         "custom-skills/pr1-heading-evidence/pr1/SKILL.md", pr1_heading_first,
+         "invalid", "THR-055/1.0.0",
+         '["SKILL.md must start with a YAML frontmatter fence"]',
+         custom_service.now(), "human", "founder"),
+    )
+    v_pr1 = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "UPDATE custom_skills SET current_version_id=? WHERE id=?", (v_pr1, skill_id)
+    )
+    conn.commit()
+    # reads the PR-1-era evidence as invalid, without healing
+    assert client.get(f"{BASE}/{skill_id}").json()["validation_state"] == "invalid"
+    rows_before = [
+        dict(r) for r in conn.execute(
+            "SELECT id, validation_state, content_hash, skill_md_cache, "
+            "validation_findings, validator_version FROM custom_skill_versions "
+            "WHERE skill_id=? ORDER BY id", (skill_id,)
+        )
+    ]
+    # a NEW heading-first successor is valid and advances the pointer
+    successor = "# New heading-first\n\nAccepted under PR 2.\n"
+    advanced = client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": successor})
+    assert advanced.status_code == 201, advanced.text
+    assert advanced.json()["validation_state"] == "valid"
+    assert advanced.json()["current_version_id"] == advanced.json()["version_id"]
+    # the PR-1-era evidence row is byte-identical after the append
+    rows_after = [
+        dict(r) for r in conn.execute(
+            "SELECT id, validation_state, content_hash, skill_md_cache, "
+            "validation_findings, validator_version FROM custom_skill_versions "
+            "WHERE skill_id=? ORDER BY id", (skill_id,)
+        )
+    ]
+    assert rows_before == rows_after[: len(rows_before)]
+    assert rows_after[len(rows_before)]["validation_state"] == "valid"
