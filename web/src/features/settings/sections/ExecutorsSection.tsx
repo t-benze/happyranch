@@ -105,7 +105,6 @@ export function ExecutorsSection(): JSX.Element {
           {/* The single "Connect a CLI" entry into the shared connect flow. */}
           <Button
             type="button"
-            variant="secondary"
             onClick={() => setConnecting(true)}
             data-testid="connect-a-cli"
           >

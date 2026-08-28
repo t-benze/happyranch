@@ -1015,7 +1015,7 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     ).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /connect a cli/i }),
-    ).toBeInTheDocument();
+    ).toHaveClass('bg-primary', 'text-primary-foreground');
 
     // The connect form is gated behind that button — not shown yet.
     expect(screen.queryByTestId('executors-connect')).not.toBeInTheDocument();
