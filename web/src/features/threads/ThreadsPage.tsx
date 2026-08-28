@@ -405,18 +405,13 @@ export function ThreadsPage(): JSX.Element {
         ? openThreads
         : bucket === 'done'
           ? archivedThreads
-          : [...openThreads, ...archivedThreads].sort((a, b) => {
-              // THR-209 pinned-first merge: pinned threads rank above unpinned;
-              // within pinned, most recent activity (fallback started_at);
-              // unpinned keep the ordinary started_at DESC order.
-              if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-              if (a.pinned) {
-                return (b.last_activity_at ?? b.started_at).localeCompare(
-                  a.last_activity_at ?? a.started_at,
-                );
-              }
-              return b.started_at.localeCompare(a.started_at);
-            });
+          : // THR-209 msg 9 (TASK-5976): the 'all' bucket merges open AND
+            // archived threads, so it is NOT the open-thread list and carries
+            // NO pin presentation — the exact pre-THR-209 ordinary merge
+            // (started_at DESC), so archived pin state can never leak here.
+            [...openThreads, ...archivedThreads].sort((a, b) =>
+              b.started_at.localeCompare(a.started_at),
+            );
     if (!filter.trim()) return base;
     const needle = filter.toLowerCase();
     return base.filter(
@@ -425,10 +420,23 @@ export function ThreadsPage(): JSX.Element {
         t.thread_id.toLowerCase().includes(needle),
     );
   }, [bucket, openQuery.data, archivedQuery.data, filter]);
-  // THR-209: the server already returns pinned-first per status bucket, and the
-  // 'all' merge above preserves it — group client-side for the Pinned section.
-  const pinnedThreads = useMemo(() => threads.filter((t) => t.pinned), [threads]);
-  const unpinnedThreads = useMemo(() => threads.filter((t) => !t.pinned), [threads]);
+  // THR-209 msg 9 (TASK-5976): the Pinned section is an OPEN-list concept
+  // only. The server returns the open bucket pinned-first, ordered by
+  // immutable numeric thread id DESC (THR-10 above THR-2) then unpinned in
+  // ordinary order; we split ONLY there for the section header, preserving
+  // server order. Archived ('done') and 'all' buckets render ONE flat
+  // ordinary list — pin has zero presentation effect there — while rows in
+  // every bucket keep their per-row pin toggle (a mutation control, not
+  // presentation).
+  const showPinnedSection = bucket === 'open';
+  const pinnedThreads = useMemo(
+    () => (showPinnedSection ? threads.filter((t) => t.pinned) : []),
+    [threads, showPinnedSection],
+  );
+  const unpinnedThreads = useMemo(
+    () => (showPinnedSection ? threads.filter((t) => !t.pinned) : threads),
+    [threads, showPinnedSection],
+  );
 
   // Active-thread data
   const activeThread = useThread(threadId);
@@ -739,9 +747,12 @@ export function ThreadsPage(): JSX.Element {
             />
           )}
 
-          {/* Populated list — THR-209: pinned threads form a Pinned section
-              above the ordinary list; both groups honor the active
-              query/filter. Each row carries a sibling pin toggle. */}
+          {/* Populated list — THR-209 msg 9: the Pinned section header + split
+              render ONLY in the Open bucket (pinned ranked by numeric thread
+              id desc from the server; unpinned in ordinary order). Archived
+              and All buckets render one flat ordinary list — pin has zero
+              presentation effect there — while every row keeps its per-row
+              pin toggle and the active query/filter still governs inclusion. */}
           {!bucketLoading && !bucketError && threads.length > 0 && (
             <div className="flex flex-col gap-1">
               {pinnedThreads.length > 0 && (

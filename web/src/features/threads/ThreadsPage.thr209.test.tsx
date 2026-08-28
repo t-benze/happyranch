@@ -4,9 +4,12 @@
  * Covers the founder-facing acceptance surface: inline rename (prefill,
  * Save/Cancel, Enter/Escape, trim, 120-char boundary, failure retention +
  * inline error), durable pin/unpin with optimistic update + rollback + visible
- * error, the Pinned section ranking above the ordinary list (including under
- * the active filter), archived-pin eligibility, direct row + header controls,
- * and keyboard/accessibility assertions.
+ * error, the Pinned section ranking above the ordinary list by immutable
+ * numeric thread ID desc (THR-209 msg 9 correction: never activity, never
+ * lexicographic; including under the active filter), archived/closed views
+ * with zero pin presentation (no section, no rank), the 'all' merged bucket
+ * with no pin leak, direct row + header controls, and keyboard/accessibility
+ * assertions.
  */
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -155,6 +158,64 @@ describe('THR-209 — Pinned section', () => {
     expect(screen.queryByRole('heading', { name: /Pinned/i })).not.toBeInTheDocument();
   });
 
+  test('open list renders pinned threads in numeric thread-id descending order', async () => {
+    // Server order (what GET /threads?status=open returns): pinned first,
+    // immutable NUMERIC id descending — THR-10 above THR-3 above THR-2 (a
+    // lexicographic server sort would give 3 > 2 > 10). The page must render
+    // that order verbatim.
+    stubList([
+      mkThread('THR-10', 'Ten pinned', { pinned: true, pinned_at: '2026-05-20T00:00:00Z' }),
+      mkThread('THR-3', 'Three pinned', { pinned: true, pinned_at: '2026-05-21T00:00:00Z' }),
+      mkThread('THR-2', 'Two pinned', { pinned: true, pinned_at: '2026-05-22T00:00:00Z' }),
+      mkThread('THR-1', 'One ordinary'),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => expect(screen.getByText(/Ten pinned/i)).toBeInTheDocument());
+
+    const rows = screen.getAllByRole('link').filter((el) =>
+      /Ten pinned|Three pinned|Two pinned|One ordinary/.test(el.textContent ?? ''),
+    );
+    expect(rows.map((r) => r.textContent)).toEqual([
+      expect.stringContaining('Ten pinned'),
+      expect.stringContaining('Three pinned'),
+      expect.stringContaining('Two pinned'),
+      expect.stringContaining('One ordinary'),
+    ]);
+    // Both section headings present (pinned section + ordinary section).
+    expect(screen.getByRole('heading', { name: /Pinned/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Threads' })).toBeInTheDocument();
+  });
+
+  test('pinned order is numeric id desc, never activity', async () => {
+    // The higher-id thread has the OLDEST activity; the page must preserve the
+    // server's numeric-id-desc order instead of re-sorting by activity.
+    stubList([
+      mkThread('THR-10', 'Older activity, higher id', {
+        pinned: true,
+        pinned_at: '2026-05-20T00:00:00Z',
+        started_at: '2026-05-01T00:00:00Z',
+        last_activity_at: '2026-05-01T00:00:00Z',
+      }),
+      mkThread('THR-2', 'Newer activity, lower id', {
+        pinned: true,
+        pinned_at: '2026-05-21T00:00:00Z',
+        started_at: '2026-05-14T00:00:00Z',
+        last_activity_at: '2026-05-30T00:00:00Z',
+      }),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() =>
+      expect(screen.getByText(/Older activity, higher id/i)).toBeInTheDocument(),
+    );
+    const rows = screen.getAllByRole('link').filter((el) =>
+      /Older activity|Newer activity/.test(el.textContent ?? ''),
+    );
+    expect(rows.map((r) => r.textContent)).toEqual([
+      expect.stringContaining('Older activity, higher id'), // THR-10 first
+      expect.stringContaining('Newer activity, lower id'),
+    ]);
+  });
+
   test('filter qualifies Pinned section inclusion (matching pinned above matching unpinned)', async () => {
     stubList([
       mkThread('THR-A', 'Alpha pinned', { pinned: true }),
@@ -175,14 +236,45 @@ describe('THR-209 — Pinned section', () => {
     expect(screen.getByRole('heading', { name: /Pinned/i })).toBeInTheDocument();
   });
 
-  test('archived pinned thread appears only in the Archived bucket', async () => {
+  test('open search/filter retains pinned-first numeric-id-desc order', async () => {
+    stubList([
+      mkThread('THR-10', 'Alpha ten pinned', { pinned: true }),
+      mkThread('THR-2', 'Alpha two pinned', { pinned: true }),
+      mkThread('THR-3', 'Alpha three ordinary'),
+      mkThread('THR-4', 'Beta other'),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => expect(screen.getByText(/Alpha ten pinned/i)).toBeInTheDocument());
+
+    await userEvent.type(screen.getByRole('textbox', { name: /Filter threads/i }), 'Alpha');
+    await waitFor(() => {
+      expect(screen.getByText(/Alpha three ordinary/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Beta other/i)).not.toBeInTheDocument();
+
+    const rows = screen.getAllByRole('link').filter((el) =>
+      /Alpha/.test(el.textContent ?? ''),
+    );
+    expect(rows.map((r) => r.textContent)).toEqual([
+      expect.stringContaining('Alpha ten pinned'), // THR-10 above THR-2
+      expect.stringContaining('Alpha two pinned'),
+      expect.stringContaining('Alpha three ordinary'),
+    ]);
+  });
+
+  test('archived pinned thread appears only in the Archived bucket, with no Pinned section', async () => {
     const archivedPinned = mkThread('THR-D', 'Archived pinned', {
       status: 'archived',
       pinned: true,
     });
+    const archivedOrdinary = mkThread('THR-E', 'Archived ordinary', {
+      status: 'archived',
+      pinned: false,
+    });
     stubList([
       mkThread('THR-A', 'Open one'),
       archivedPinned,
+      archivedOrdinary,
     ]);
     mountAt(`/orgs/${SLUG}/threads`);
     await waitFor(() => expect(screen.getByText(/Open one/i)).toBeInTheDocument());
@@ -190,9 +282,123 @@ describe('THR-209 — Pinned section', () => {
     // Open bucket: archived thread not eligible.
     expect(screen.queryByText(/Archived pinned/i)).not.toBeInTheDocument();
 
+    // Archived bucket: ONE flat list — pinned and unpinned interleave under
+    // the ordinary archived order with NO Pinned section and NO pin rank
+    // (THR-209 msg 9 correction).
     await userEvent.click(screen.getByRole('tab', { name: /Archived/i }));
     await waitFor(() => expect(screen.getByText(/Archived pinned/i)).toBeInTheDocument());
+    expect(screen.getByText(/Archived ordinary/i)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /Pinned/i })).not.toBeInTheDocument();
+    // Ordinary archived server order preserved (pinned row NOT ranked first
+    // just because it is pinned).
+    const rows = screen.getAllByRole('link').filter((el) =>
+      /Archived/.test(el.textContent ?? ''),
+    );
+    expect(rows.map((r) => r.textContent)).toEqual([
+      expect.stringContaining('Archived pinned'),
+      expect.stringContaining('Archived ordinary'),
+    ]);
+  });
+
+  test("'all' bucket merges open+archived in ordinary order with no Pinned section", async () => {
+    // Archived pin state must never surface a Pinned section in the 'all'
+    // merged view (it is not the open-thread list).
+    stubList([
+      mkThread('THR-1', 'Open pinned', { pinned: true }),
+      mkThread('THR-2', 'Open ordinary'),
+      mkThread('THR-3', 'Archived pinned', {
+        status: 'archived',
+        pinned: true,
+        started_at: '2026-05-13T00:00:00Z',
+      }),
+      mkThread('THR-4', 'Archived ordinary', {
+        status: 'archived',
+        started_at: '2026-05-12T00:00:00Z',
+      }),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => expect(screen.getByText(/Open pinned/i)).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole('tab', { name: /All/i }));
+    await waitFor(() => expect(screen.getByText(/Archived ordinary/i)).toBeInTheDocument());
+    // All four rows present in ONE flat list; no Pinned section anywhere.
+    expect(screen.getByText(/Open pinned/i)).toBeInTheDocument();
+    expect(screen.getByText(/Archived pinned/i)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /Pinned/i })).not.toBeInTheDocument();
+    // Ordinary started_at DESC merge: newest started_at first.
+    const rows = screen.getAllByRole('link').filter((el) =>
+      /Open|Archived/.test(el.textContent ?? ''),
+    );
+    expect(rows.map((r) => r.textContent)).toEqual([
+      expect.stringContaining('Open pinned'),
+      expect.stringContaining('Open ordinary'),
+      expect.stringContaining('Archived pinned'),
+      expect.stringContaining('Archived ordinary'),
+    ]);
+  });
+
+  test('single pinned thread renders in the Pinned section', async () => {
+    stubList([
+      mkThread('THR-1', 'Only pinned', { pinned: true, pinned_at: '2026-05-20T00:00:00Z' }),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => expect(screen.getByText(/Only pinned/i)).toBeInTheDocument());
     expect(screen.getByRole('heading', { name: /Pinned/i })).toBeInTheDocument();
+    // No ordinary section heading when there are no unpinned rows.
+    expect(screen.queryByRole('heading', { name: 'Threads' })).not.toBeInTheDocument();
+  });
+
+  test('empty list renders no sections', async () => {
+    stubList([]);
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: /Pinned/i })).not.toBeInTheDocument(),
+    );
+  });
+
+  test('pinned section headings and controls are keyboard-accessible with clear labels', async () => {
+    stubList([
+      mkThread('THR-1', 'Pinned accessible', { pinned: true, pinned_at: '2026-05-20T00:00:00Z' }),
+      mkThread('THR-2', 'Ordinary accessible'),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => expect(screen.getByText(/Pinned accessible/i)).toBeInTheDocument());
+
+    // Section headings are real h2 elements in document order.
+    const headings = screen.getAllByRole('heading', { level: 2 });
+    expect(headings.map((h) => h.textContent)).toEqual(['Pinned', 'Threads']);
+    // Every row exposes a keyboard-reachable pin toggle with a labelled name.
+    expect(
+      screen.getByRole('button', { name: /Unpin thread THR-1/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Pin thread THR-2/i }),
+    ).toBeInTheDocument();
+    // The per-row pin buttons are focusable controls (tabbable).
+    for (const b of screen.getAllByRole('button', { name: /Pin thread|Unpin thread/i })) {
+      expect(b).toHaveAttribute('type', 'button');
+    }
+  });
+
+  test('Pinned section renders identically when the open list is the sole qualifying view', async () => {
+    // Regression: switching away from Open and back must restore the section
+    // (bucket state drives the split; the fetch cache is unchanged).
+    stubList([
+      mkThread('THR-1', 'Pinned again', { pinned: true, pinned_at: '2026-05-20T00:00:00Z' }),
+      mkThread('THR-2', 'Ordinary again'),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => expect(screen.getByText(/Pinned again/i)).toBeInTheDocument());
+    expect(screen.getByRole('heading', { name: /Pinned/i })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('tab', { name: /Archived/i }));
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: /Pinned/i })).not.toBeInTheDocument(),
+    );
+    await userEvent.click(screen.getByRole('tab', { name: /Open/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: /Pinned/i })).toBeInTheDocument(),
+    );
   });
 
   test('row pin toggle updates list optimistically and calls POST /pin', async () => {

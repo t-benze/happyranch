@@ -1,8 +1,8 @@
 # Thread Rename and Pinning (THR-209, Phase 1)
 
-> Status: implemented
-> Current Source: `docs/agent-guides/features-and-invariants.md` (Threads), `runtime/daemon/routes/threads.py` (rename + pin routes), `runtime/infrastructure/database.py` (pinned_at), `web/src/features/threads/ThreadsPage.tsx` (Pinned section + inline rename)
-> Provenance: THR-209 (founder request + product spec), TASK-5618 / TASK-5621
+> Status: implemented (rev 2 — THR-209 message-9 correction, TASK-5976)
+> Current Source: `docs/agent-guides/features-and-invariants.md` (Threads), `runtime/daemon/routes/threads.py` (rename + pin routes), `runtime/infrastructure/database.py` (pinned_at + list ordering), `web/src/features/threads/ThreadsPage.tsx` (Pinned section + inline rename)
+> Provenance: THR-209 (founder request + product spec; messages 9–10 correction), TASK-5618 / TASK-5621 / TASK-5976
 > Date: 2026-08-25
 
 ## Summary
@@ -22,12 +22,24 @@ changes its identity, participants, routing, unread state, or lifecycle.
   inline error and retry).
 - Pin/unpin from the list row, the detail header, and a compact overflow
   menu; optimistic update with rollback and a visible error banner.
-- Pinned threads form a **Pinned** section above the ordinary list on every
-  qualifying founder-dashboard list/search/filter view; the active
-  query/filter still governs inclusion; pinned ordering uses most recent
-  existing thread activity; ordinary (unpinned) order is unchanged.
-- Archived/closed threads may remain pinned and are shown only in views where
-  they otherwise qualify (status bucket / search filter).
+- Pinned threads form a **Pinned** section above the ordinary list on
+  **open-thread views only**; the active query/filter still governs inclusion;
+  within Pinned, ordering is **immutable numeric thread ID descending**
+  (THR-10 above THR-2 — never lexicographic subject/display text, never
+  activity); ordinary (unpinned) order is unchanged.
+- **Archived/closed views have ZERO pin presentation** (THR-209 msg 9): one
+  unified list with no Pinned/Unpinned split and no pin-based ranking — all
+  qualifying rows use that view's ordinary existing ordering. A thread may
+  retain its stored pin state while archived so restoring/reopening it
+  recovers its prior pin behavior, but pin state has no visual or ordering
+  effect in archived views.
+- The **status-less backend query** (`GET /threads` with no `status`) and the
+  web **"all" bucket** merge open AND archived threads, so they are **not**
+  the open-thread list that message 10 limits pin-first behavior to; they are
+  ordinary unified views (`started_at DESC`, the exact pre-THR-209 merged
+  order) with no pin rank and no Pinned section — archived pin state can
+  never leak into a mixed/archived presentation while open pinned semantics
+  stay correct in the Open bucket (the only pin-qualifying view).
 - Audit rows (`thread_renamed`, `thread_pinned`, `thread_unpinned`) record
   actor, timestamp, immutable thread id, and old/new values using the
   existing `audit_log.task_id` = THR-* scope convention. They never appear as
@@ -65,26 +77,33 @@ changes its identity, participants, routing, unread state, or lifecycle.
   required for pins.
 - Wire: `GET /threads` and `GET /threads/{id}` rows carry `pinned` (bool,
   derived `pinned_at IS NOT NULL`), `pinned_at`, and `last_activity_at`
-  (most recent message `created_at`, derived in the list SQL; used for the
-  pinned-section activity ranking).
+  (most recent message `created_at`, derived in the list SQL; informational
+  only — pinned ranking uses the numeric thread ID, not activity).
 
 ## Ordering semantics
 
-`Database.list_threads` orders:
+`Database.list_threads` orders (THR-209 msg 9 correction):
 
-1. Pinned threads first (rank 0), then unpinned (rank 1).
-2. Within pinned: most recent thread activity
-   (`MAX(thread_messages.created_at)`, falling back to `started_at`).
-3. Within unpinned: the **exact existing order** (open → `started_at DESC`;
-   archived → `archived_at DESC`). The activity sort is conditional on
-   `pinned_at` being set, so unpinned rows tie on it and fall through to the
-   existing key — ordinary order is byte-for-byte unchanged when no pins
-   exist (regression-tested).
+1. **`status='open'` (the only pin-qualifying view):** pinned threads first
+   (rank 0), ordered by immutable **numeric thread ID descending**
+   (`CAST(SUBSTR(t.id, 5) AS INTEGER)` — THR-10 above THR-2), then unpinned
+   (rank 1) in the exact existing order (`started_at DESC`). The numeric key
+   is conditional on `pinned_at` being set, so unpinned rows tie on it and
+   fall through to the existing key — ordinary order is byte-for-byte
+   unchanged when no pins exist (regression-tested). Thread activity never
+   influences pinned rank.
+2. **`status='archived'`:** ZERO pin presentation — `COALESCE(archived_at,
+   started_at) DESC` only, no pin rank and no pinned/unpinned split.
+3. **status-less (`GET /threads` no status):** ZERO pin presentation —
+   `started_at DESC` (the pre-THR-209 mixed-query order); it is not the
+   open-thread list, so pin-first ranking does not apply.
 
-The web list groups client-side by the `pinned` flag (a "Pinned" section
-header) after the active status-bucket + search filter is applied; the "all"
-bucket merge re-sorts pinned-first with the same activity rule so the
-semantics hold there too.
+The web list renders the Pinned section header + pinned/unpinned split
+**only in the Open bucket** (server returns pinned-first numeric-ID-desc;
+the page groups preserving server order); the Archived and All buckets render
+one flat ordinary list (All = the pre-THR-209 `started_at DESC` merge of
+open + archived). Search/filter retains ordinary eligibility first, then the
+open bucket's pinned-first + numeric-ID-desc ordering.
 
 ## Mutation contract
 
@@ -150,7 +169,9 @@ sentences) to stay in parity with the audit row shapes.
   rows + detail row before the write, rolls back the exact snapshot on
   failure, and invalidates on settle. `useRenameThread` patches the detail
   cache and invalidates the list.
-- List renders a "Pinned" section header when any filtered thread is pinned;
+- List renders a "Pinned" section header only in the **Open** bucket when
+  any qualifying (filtered) thread is pinned; Archived and All buckets are
+  single flat lists (no section headers, no pin rank);
   rows carry per-row pin toggles; the detail header carries direct Rename,
   Pin/Unpin, Archive, and Mention routing buttons (plus Resume when archived),
   all keyboard-accessible with accessible labels.
@@ -159,15 +180,23 @@ sentences) to stay in parity with the audit row shapes.
 
 - `tests/test_thread_rename_pin_db.py` — storage/migration/ordering + atomic
   rename/pin-with-audit transactions (rollback on audit failure, uncommitted
-  helpers never commit independently).
+  helpers never commit independently). Msg-9 ordering: open pinned numeric-ID
+  desc (multi-digit THR-10-vs-THR-2 proves numeric not lexicographic),
+  activity independence, unpinned order unchanged, archived + status-less
+  queries ignore pin state entirely, empty list.
 - `tests/daemon/test_thread_rename_pin_routes.py` — routes/validation/auth/
   audit/non-effects + deterministic audit-fault rollback tests and
   overlapping-request interleavings (rename truthful chain, same-state pin
   single audit, opposite-state pin truthful history) through the real
-  `db_lock` + transaction path.
+  `db_lock` + transaction path. Msg-9: wire ordering for open (numeric ID
+  desc), archived (pin ignored, ordinary archived order), and status-less
+  (pin ignored) lists.
 - `web/src/features/threads/ThreadsPage.thr209.test.tsx` — UI behaviors
   (rename flow, pin optimistic/rollback, Pinned section, filter, archived
-  eligibility, overflow accessibility).
+  eligibility, overflow accessibility). Msg-9: open numeric-ID-desc render
+  order, activity never re-ranks, filtered pinned-first numeric order, no
+  Pinned section in Archived/All buckets, empty/single, keyboard/accessible
+  section + control semantics.
 - `web/src/design-system/providers/_real-threads.test.ts` — optimistic cache
   update + rollback at the provider level.
 - `web/src/lib/api/threads.test.ts` — client mirror functions.
@@ -182,6 +211,7 @@ sentences) to stay in parity with the audit row shapes.
   prevents `"yes"`/`1` from silently pinning.
 - `last_activity_at` is derived (never stored), keeping the schema additive
   and the "no activity-timestamp change" invariant provable (pin writes only
-  `pinned_at`).
+  `pinned_at`). It is carried on the wire for informational/detail use but no
+  longer ranks the pinned section (numeric thread ID desc does).
 - No thread-message or SSE event is emitted for rename/pin; the thread-tail
   SSE consumers are deliberately untouched.
