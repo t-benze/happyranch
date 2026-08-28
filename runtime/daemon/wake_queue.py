@@ -55,7 +55,10 @@ async def wake_worker_loop(state, settings: Settings) -> None:
             except asyncio.TimeoutError:
                 continue
             try:
-                await run_wake(org_state=org, work_hour_id=job.work_hour_id, settings=settings)
+                await run_wake(
+                    org_state=org, work_hour_id=job.work_hour_id, settings=settings,
+                    host_supervisor=state.host_supervisor,
+                )
             except Exception:
                 logger.exception("wake_worker_loop: wake %s crashed", job.work_hour_id)
         await asyncio.sleep(0.05)

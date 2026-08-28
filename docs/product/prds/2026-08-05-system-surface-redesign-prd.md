@@ -64,7 +64,7 @@ The navigation may use these labels and grouping only after an approved delivery
 ### Governance placement rules
 
 1. **Settings → Organization → Operating controls** holds organization-wide gates and eligibility policies whose change governs whether a domain can run at all. Each control shows scope, effective state, impact, validation outcome, and a link to the affected functional surface.
-2. **Settings → System** remains for restart-bound/read-only runtime facts and controls only when a supported system contract exists. It is not a catch-all for live organization switches.
+2. **Settings** contains only Assistant, Organization, and Executors. The retired System rail and its read-only runtime facts have no replacement prerequisite; queue-worker and maximum-orchestration-step diagnostics may be reconsidered only when Health is independently touched. This THR-140 correction supersedes the former System-placement rule without changing runtime contracts.
 3. **Functional domain surfaces** own in-context configuration, effective resolution, workflow execution, and evidence. They may summarize a governing control and deep-link to it, but must not duplicate a mutable control or derive a divergent state.
 4. **Custom Skills** preserve version/provenance, technical validation, eligibility, and materialization as distinct dimensions; technical validation is not a permission grant.
 5. **Evidence and assistant surfaces** may hand off to the authoritative record but never make an unsupported approval, authorization, retention, cost or freshness claim.

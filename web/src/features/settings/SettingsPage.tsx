@@ -1,7 +1,7 @@
 /**
  * SettingsPage — full page (not dialog) with sticky left sub-nav + field panel.
  *
- * Sub-nav: Assistant · System · Organization · Agents · Executors.
+ * Sub-nav: Assistant · Organization · Executors.
  * (THR-061 seq79: the Usage sub-tab was removed — token usage now lives on
  * the standalone /usage page.)
  * Each sub-nav item routes to /orgs/:slug/settings/:section.
@@ -22,9 +22,7 @@ import {
 } from 'react-router-dom';
 import {
   Sparkles,
-  LayoutGrid,
   Home as HomeIcon,
-  Users,
   Terminal,
   type LucideIcon,
 } from 'lucide-react';
@@ -33,9 +31,7 @@ import { PageHeader } from '@/design-system/patterns/PageHeader';
 
 const SECTIONS = [
   { key: 'assistant', label: 'Assistant', icon: Sparkles },
-  { key: 'system', label: 'System', icon: LayoutGrid },
   { key: 'organization', label: 'Organization', icon: HomeIcon },
-  { key: 'agents', label: 'Agents', icon: Users },
   { key: 'executors', label: 'Executors', icon: Terminal },
 ] as const satisfies ReadonlyArray<{
   key: string;
@@ -85,12 +81,12 @@ export function SettingsPage(): JSX.Element {
             <Routes>
               <Route index element={<Navigate to={`/orgs/${slug}/settings/assistant`} replace />} />
               <Route path="assistant" element={<AssistantPanel />} />
-              <Route path="system" element={<SystemPanel sys={settingsQuery.data.system} />} />
+              <Route path="system" element={<Navigate to={`/orgs/${slug}/settings`} replace />} />
               <Route
                 path="organization"
                 element={<OrganizationPanel org={settingsQuery.data.org} />}
               />
-              <Route path="agents" element={<AgentsPanel />} />
+              <Route path="agents" element={<Navigate to={`/orgs/${slug}/settings`} replace />} />
               <Route path="executors" element={<ExecutorsPanel />} />
               <Route path="*" element={<Navigate to={`/orgs/${slug}/settings/assistant`} replace />} />
             </Routes>
@@ -144,30 +140,15 @@ function SettingsSubNav(): JSX.Element {
 // ----------------------------------------------------------------
 
 import { AssistantSection } from './sections/AssistantSection';
-import { SystemSection } from './sections/SystemSection';
 import { OrganizationSection } from './sections/OrganizationSection';
-import { AgentsSection } from './sections/AgentsSection';
 import { ExecutorsSection } from './sections/ExecutorsSection';
-import type { SystemSettings, OrgSettings } from '@/lib/api/types';
+import type { OrgSettings } from '@/lib/api/types';
 
 function AssistantPanel(): JSX.Element {
   return (
     <div className="max-w-2xl p-6">
       <h2 className="font-display mb-4 text-lg font-semibold">System Assistant</h2>
       <AssistantSection />
-    </div>
-  );
-}
-
-function SystemPanel({ sys }: { sys: SystemSettings }): JSX.Element {
-  return (
-    <div className="max-w-2xl p-6">
-      <h2 className="font-display mb-4 text-lg font-semibold">System</h2>
-      <p className="text-text-secondary mb-4 text-sm">
-        Daemon-wide settings. These are read-only — changes require a restart and
-        must be made in the daemon config file.
-      </p>
-      <SystemSection sys={sys} />
     </div>
   );
 }
@@ -181,15 +162,6 @@ function OrganizationPanel({ org }: { org: OrgSettings }): JSX.Element {
         automatically.
       </p>
       <OrganizationSection org={org} />
-    </div>
-  );
-}
-
-function AgentsPanel(): JSX.Element {
-  return (
-    <div className="max-w-2xl p-6">
-      <h2 className="font-display mb-4 text-lg font-semibold">Agents</h2>
-      <AgentsSection />
     </div>
   );
 }

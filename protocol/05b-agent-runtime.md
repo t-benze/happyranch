@@ -913,10 +913,21 @@ an honest no-enforcement ``PassthroughBackend`` (all capabilities
 unavailable); with the executor bodies now wired it launches the real
 argv through the selected backend too, and its honest-passthrough branch
 disables the executor's internal 429 retry so the supervisor is the single
-retry owner (no launch multiplication). The app-lifespan drain calls
+retry owner (no launch multiplication). Thread/dream/wake producers run
+through the same daemon-wide supervisor (THR-207 producer wiring):
+``thread_runner.run_invocation``, ``dream_runner.run_dream``, and
+``wake_runner.run_wake`` each own a real admission lease + atomic ownership
+at grant, launch through the selected capability backend, finish containment
+before exactly-once lease release on every terminal path
+(finish → residue → publish → release), and a daemon drain/cancellation that
+interrupts a producer leaves its row for the existing daemon-restart recovery
+(threads reaped/replaced, dreams ``recover_running_dreams``, wakes
+``recover_running``) instead of settling it. Thread-specific semantics are
+preserved: the Claude session-not-found eviction fallback and the THR-071
+no-callback nudge re-invoke run as additional supervised phases, each
+publishing its own honest bounded receipt. The app-lifespan drain calls
 ``supervisor.shutdown()`` in the app lifespan finally before producer
-workers are cancelled. Thread/dream/wake producers stay on their current
-path; they are wired in later serial slices. ``runtime/platform/isolation.py``
+workers are cancelled. ``runtime/platform/isolation.py``
 (canonical-skill-store integrity + same-owner launch) is layered beneath the
 supervisor and is unchanged by this design.
 
@@ -1030,11 +1041,10 @@ Callers above the factory branch on **capabilities**, never OS names; the
 factory is the single OS-name site and even it selects by operational probe,
 never by OS/version strings. Unsupported or unhealthy environments select the
 honest no-capability fallback (``PassthroughBackend``). The daemon's wired
-schedule producer performs its own subprocess launch inside the executor
-body, so its truthful selection remains the honest fallback until the
-executor launch bodies are wired; the real backends are exercised by real
-integration suites gated on the operational probe (explicit skip reason
-thereafter).
+schedule, task, thread, dream, and wake producers all launch through the
+selected capability backend (the executor bodies and the producer seams are
+wired); the real backends are exercised by real integration suites gated on
+the operational probe (explicit skip reason thereafter).
 
 ### Executor binary-path resolution (THR-085 / THR-107 seq155)
 

@@ -60,6 +60,7 @@ async def thread_worker_loop(state, settings: Settings) -> None:
                     org_state=org,
                     invocation_token=job.invocation_token,
                     settings=settings,
+                    host_supervisor=state.host_supervisor,
                 )
             except Exception:
                 logger.exception(

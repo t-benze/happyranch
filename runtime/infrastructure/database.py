@@ -5053,32 +5053,34 @@ class Database:
             " WHERE tm.thread_id = t.id) AS last_activity_at "
             "FROM threads t "
         )
-        # THR-209 pinning: pinned threads rank above unpinned, ordered by most
-        # recent thread activity (last message created_at, falling back to
-        # started_at). Unpinned threads keep their EXACT existing order — the
-        # activity sort is conditional on pinned_at being set, so it is a no-op
-        # (NULL for every row → tie) for unpinned rows.
+        # THR-209 message-9 correction (TASK-5976): pinned threads rank above
+        # unpinned ONLY in the OPEN list, ordered by immutable NUMERIC thread
+        # ID descending (THR-10 above THR-2 — never lexicographic subject/text
+        # and never activity). The numeric key is conditional on pinned_at
+        # being set, so unpinned rows tie on it (NULL → 0) and fall through to
+        # the exact existing ordinary key — ordinary order is byte-for-byte
+        # unchanged when no pins exist. ARCHIVED and status-less views have
+        # ZERO pin presentation: no pin rank at all, ordinary ordering only
+        # (archived → archived_at DESC; status-less → started_at DESC), so
+        # archived pin state can never leak into a mixed view.
         pinned_rank = "CASE WHEN t.pinned_at IS NOT NULL THEN 0 ELSE 1 END"
-        pinned_activity = (
-            "CASE WHEN t.pinned_at IS NOT NULL THEN COALESCE("
-            "(SELECT MAX(tm.created_at) FROM thread_messages tm "
-            " WHERE tm.thread_id = t.id), t.started_at) END DESC"
+        pinned_numeric_id = (
+            "CASE WHEN t.pinned_at IS NOT NULL THEN "
+            "CAST(SUBSTR(t.id, 5) AS INTEGER) END DESC"
         )
         params: tuple
-        if status:
-            if status == "archived":
-                base_order = "COALESCE(t.archived_at, t.started_at) DESC"
-            else:
-                base_order = "t.started_at DESC"
+        if status == "archived":
+            base_order = "COALESCE(t.archived_at, t.started_at) DESC"
+            query += f"WHERE t.status = ? ORDER BY {base_order} LIMIT ?"
+            params = (status, limit)
+        elif status:
             query += (
-                f"WHERE t.status = ? ORDER BY {pinned_rank}, {pinned_activity}, "
-                f"{base_order} LIMIT ?"
+                f"WHERE t.status = ? ORDER BY {pinned_rank}, {pinned_numeric_id}, "
+                f"t.started_at DESC LIMIT ?"
             )
             params = (status, limit)
         else:
-            query += (
-                f"ORDER BY {pinned_rank}, {pinned_activity}, t.started_at DESC LIMIT ?"
-            )
+            query += f"ORDER BY t.started_at DESC LIMIT ?"
             params = (limit,)
         cursor = self._conn.execute(query, params)
         return [self._row_to_thread(r) for r in cursor.fetchall()]

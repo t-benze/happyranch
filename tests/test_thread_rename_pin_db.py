@@ -1,8 +1,10 @@
 """THR-209 thread rename + pin storage layer tests.
 
 Covers: durable subject rename, durable pin state (additive ``pinned_at``),
-idempotent additive migration on legacy DBs, pinned-first list ordering by
-most recent activity, and the unchanged ordinary order of unpinned threads.
+idempotent additive migration on legacy DBs, pinned-first open-list ordering
+by immutable numeric thread id DESC (msg-9 correction), zero pin
+presentation in archived/status-less views, and the unchanged ordinary order
+of unpinned threads.
 
 Atomicity (TASK-5644): the rename/pin WITH-audit methods are ONE rollback-safe
 transaction — authoritative read + conditional decision + uncommitted write +
@@ -123,27 +125,119 @@ def test_legacy_threads_table_gets_additive_pinned_column(tmp_path) -> None:
 
 
 def test_list_threads_pins_first_then_unpinned_unchanged(tmp_path) -> None:
-    """Pinned threads rank above unpinned; within pinned, most recent thread
-    activity wins; unpinned keep the existing started_at DESC order."""
+    """Pinned threads rank above unpinned; within pinned, immutable NUMERIC
+    thread ID descending (THR-010 above THR-002 above THR-001 — never
+    lexicographic, never activity); unpinned keep the existing started_at
+    DESC order (THR-209 message-9 correction)."""
     db = _db(tmp_path)
-    _insert(db, "THR-A", datetime(2026, 1, 1, tzinfo=timezone.utc))
-    _insert(db, "THR-B", datetime(2026, 1, 5, tzinfo=timezone.utc))
-    _insert(db, "THR-C", datetime(2026, 1, 3, tzinfo=timezone.utc))
-    # Messages: THR-A has the most recent activity; THR-B has older activity.
-    _append_message(db, "THR-A", datetime(2026, 1, 10, tzinfo=timezone.utc))
-    _append_message(db, "THR-B", datetime(2026, 1, 8, tzinfo=timezone.utc))
+    _insert(db, "THR-001", datetime(2026, 1, 1, tzinfo=timezone.utc))
+    _insert(db, "THR-002", datetime(2026, 1, 5, tzinfo=timezone.utc))
+    _insert(db, "THR-010", datetime(2026, 1, 3, tzinfo=timezone.utc))
+    _insert(db, "THR-100", datetime(2026, 1, 2, tzinfo=timezone.utc))
+    # Activity must NOT influence pinned rank: THR-001 has the most recent
+    # message, THR-002 older activity, THR-010/THR-100 none.
+    _append_message(db, "THR-001", datetime(2026, 1, 10, tzinfo=timezone.utc))
+    _append_message(db, "THR-002", datetime(2026, 1, 8, tzinfo=timezone.utc))
 
-    db.set_thread_pinned("THR-A", pinned=True)
-    db.set_thread_pinned("THR-C", pinned=True)
+    db.set_thread_pinned("THR-002", pinned=True)
+    db.set_thread_pinned("THR-010", pinned=True)
+    db.set_thread_pinned("THR-001", pinned=True)
 
-    rows = db.list_threads(limit=10)
+    rows = db.list_threads(status="open", limit=10)
     ids = [r.id for r in rows]
-    # Pinned section first, activity-ordered (THR-A activity > THR-C none→started);
-    # unpinned (THR-B) after, in existing started_at DESC order.
-    assert ids[0] == "THR-A"
-    assert ids[1] == "THR-C"
-    assert ids[2] == "THR-B"
-    assert [r.pinned_at is not None for r in rows] == [True, True, False]
+    # Pinned section first, numeric descending: THR-010(10) > THR-002(2) >
+    # THR-001(1); then the unpinned row THR-100 in ordinary started_at DESC.
+    # Activity (THR-001 has the newest message) does NOT affect pinned rank.
+    assert ids == ["THR-010", "THR-002", "THR-001", "THR-100"]
+    assert [r.pinned_at is not None for r in rows] == [True, True, True, False]
+
+
+def test_list_threads_pinned_numeric_not_lexicographic(tmp_path) -> None:
+    """Multi-digit IDs prove NUMERIC (THR-10 above THR-2) rather than
+    lexicographic (THR-2 above THR-10) pinned comparison — THR-209 msg 9."""
+    db = _db(tmp_path)
+    _insert(db, "THR-2", datetime(2026, 1, 1, tzinfo=timezone.utc))
+    _insert(db, "THR-10", datetime(2026, 1, 2, tzinfo=timezone.utc))
+    _insert(db, "THR-3", datetime(2026, 1, 3, tzinfo=timezone.utc))
+    for tid in ("THR-2", "THR-10", "THR-3"):
+        db.set_thread_pinned(tid, pinned=True)
+    rows = db.list_threads(status="open", limit=10)
+    ids = [r.id for r in rows]
+    # Numeric desc: 10 > 3 > 2. Lexicographic desc would be 3 > 2 > 10.
+    assert ids == ["THR-10", "THR-3", "THR-2"]
+
+
+def test_list_threads_pinned_order_ignores_activity(tmp_path) -> None:
+    """A pinned thread with OLDER activity but a HIGHER id ranks above a
+    pinned thread with NEWER activity — pinned rank is ID-desc only."""
+    db = _db(tmp_path)
+    _insert(db, "THR-001", datetime(2026, 1, 1, tzinfo=timezone.utc))
+    _insert(db, "THR-002", datetime(2026, 1, 1, tzinfo=timezone.utc))
+    # THR-001 has the most recent activity by far.
+    _append_message(db, "THR-001", datetime(2026, 1, 20, tzinfo=timezone.utc))
+    _append_message(db, "THR-002", datetime(2026, 1, 2, tzinfo=timezone.utc))
+    db.set_thread_pinned("THR-001", pinned=True)
+    db.set_thread_pinned("THR-002", pinned=True)
+    assert [r.id for r in db.list_threads(status="open", limit=10)] == ["THR-002", "THR-001"]
+
+
+def test_list_archived_ignores_pin_state(tmp_path) -> None:
+    """Archived views must have ZERO pin presentation: pinned and unpinned
+    archived threads interleave in the ordinary archived_at DESC order with
+    no pinned-first rank (THR-209 message-9 correction)."""
+    import time
+
+    db = _db(tmp_path)
+    _insert(db, "THR-001", datetime(2026, 1, 1, tzinfo=timezone.utc))
+    _insert(db, "THR-002", datetime(2026, 1, 2, tzinfo=timezone.utc))
+    _insert(db, "THR-003", datetime(2026, 1, 3, tzinfo=timezone.utc))
+    # Archive in a different order: 003 first, then 001, then 002.
+    db.set_thread_status("THR-003", status=ThreadStatus.ARCHIVED, summary="a")
+    time.sleep(0.01)
+    db.set_thread_status("THR-001", status=ThreadStatus.ARCHIVED, summary="b")
+    time.sleep(0.01)
+    db.set_thread_status("THR-002", status=ThreadStatus.ARCHIVED, summary="c")
+    # Pin the MOST-RECENTLY-ARCHIVED (THR-002) and the LEAST (THR-003);
+    # THR-001 stays unpinned. Pin must not move any row.
+    db.set_thread_pinned("THR-002", pinned=True)
+    db.set_thread_pinned("THR-003", pinned=True)
+    rows = db.list_threads(status="archived", limit=10)
+    # Ordinary archived order: most-recently-archived first.
+    assert [r.id for r in rows] == ["THR-002", "THR-001", "THR-003"]
+    assert [r.pinned_at is not None for r in rows] == [True, False, True]
+
+
+def test_list_threads_statusless_ignores_pin_state(tmp_path) -> None:
+    """The status-less query is NOT a pin-qualifying view: mixed open+archived
+    rows follow the ordinary started_at DESC order with no pinned-first rank
+    (restores the pre-THR-209 mixed-query order)."""
+    db = _db(tmp_path)
+    _insert(db, "THR-001", datetime(2026, 1, 1, tzinfo=timezone.utc))
+    _insert(db, "THR-002", datetime(2026, 1, 5, tzinfo=timezone.utc))
+    _insert(db, "THR-003", datetime(2026, 1, 3, tzinfo=timezone.utc))
+    db.set_thread_pinned("THR-001", pinned=True)
+    rows = db.list_threads(limit=10)
+    assert [r.id for r in rows] == ["THR-002", "THR-003", "THR-001"]
+
+
+def test_list_threads_open_unpinned_unchanged_when_others_pinned(tmp_path) -> None:
+    """Pinning some threads must not disturb the ordinary started_at DESC
+    order of the unpinned open rows."""
+    db = _db(tmp_path)
+    _insert(db, "THR-001", datetime(2026, 1, 1, tzinfo=timezone.utc))
+    _insert(db, "THR-002", datetime(2026, 1, 4, tzinfo=timezone.utc))
+    _insert(db, "THR-003", datetime(2026, 1, 5, tzinfo=timezone.utc))
+    db.set_thread_pinned("THR-001", pinned=True)
+    rows = db.list_threads(status="open", limit=10)
+    assert [r.id for r in rows] == ["THR-001", "THR-003", "THR-002"]
+    assert [r.pinned_at is not None for r in rows] == [True, False, False]
+
+
+def test_list_threads_empty(tmp_path) -> None:
+    db = _db(tmp_path)
+    assert db.list_threads(limit=10) == []
+    assert db.list_threads(status="open", limit=10) == []
+    assert db.list_threads(status="archived", limit=10) == []
 
 
 def test_list_threads_unpinned_order_unchanged_without_pins(tmp_path) -> None:

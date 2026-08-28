@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -24,9 +26,16 @@ from runtime.models import (
     ThreadReplyClaim,
 )
 from runtime.orchestrator.executors import (
+    ExecutorResult,
     GenericCliExecutor,
 )
 from runtime.orchestrator.executor_registry import build_executor, get_registry
+from runtime.orchestrator.host_supervisor import (
+    AdmissionRequest,
+    HostSessionSupervisor,
+    LaunchResult,
+    TerminalReason,
+)
 from runtime.orchestrator.org_config import (
     OrgConfig,
     render_current_time_line,
@@ -65,6 +74,28 @@ def _executor_error_detail(result, rc) -> str:
         raw = raw[len(prefix):].lstrip(": ").strip()
     raw = " ".join(raw.split())  # collapse newlines → single-line reason
     return raw[:_REASON_DETAIL_CAP]
+
+
+@dataclass(frozen=True)
+class _InvokeResult:
+    """One executor phase outcome for ``run_invocation``.
+
+    ``result`` is the executor ``ExecutorResult`` when a launch body ran;
+    ``None`` when nothing ran (pre-launch terminal winner).
+    ``terminal_reason`` is the supervisor's durable first-wins reason
+    (``None`` on the legacy uncontained path); ``error`` the outcome error
+    text when set.
+    """
+
+    result: "ExecutorResult | None"
+    terminal_reason: "TerminalReason | None" = None
+    error: str | None = None
+
+
+# Terminal reasons that mean the daemon lifecycle interrupted the invocation
+# (drain or cancellation) — the row is left for daemon-restart recovery rather
+# than settled, matching the pre-wiring shutdown semantics.
+_INTERRUPTED_TERMINALS = (TerminalReason.SHUTDOWN, TerminalReason.CANCELLED)
 
 
 async def _publish_invocation_event(
@@ -579,11 +610,19 @@ async def run_invocation(
     org_state,
     invocation_token: str,
     settings: Settings,
+    host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
     """Execute one thread invocation end-to-end.
 
     Reads the pending row, builds the prompt, spawns the executor subprocess,
     and records auto-decline rows on no-callback / timeout / failure.
+
+    THR-207 supervised wiring: when ``host_supervisor`` is the daemon-wide
+    ``HostSessionSupervisor`` the invocation runs through it (admission lease,
+    atomic ownership at grant, real backend launch into containment, opaque
+    cancellation, containment cleanup before exactly-once lease release); when
+    it is ``None`` (tests / idle state) the legacy uncontained path is used
+    unchanged.
     """
     inv = org_state.db.get_pending_invocation(invocation_token)
     if inv is None:
@@ -860,7 +899,7 @@ async def run_invocation(
         def _on_throttle_event(action: str, payload: dict) -> None:
             org_state.db.insert_audit_log(inv.thread_id, inv.agent_name, action, payload)
 
-        def _invoke(run_prompt: str, resume: str | None):
+        def _invoke(run_prompt: str, resume: str | None) -> _InvokeResult:
             def _pre_launch_validator():
                 validate_workspace_skills_integrity(
                     workspace, expected_specs,
@@ -869,23 +908,181 @@ async def run_invocation(
                     agent_name=inv.agent_name,
                     task_id=inv.thread_id,
                 )
-            run_kwargs = dict(
-                workspace=Path(workspace), prompt=run_prompt,
-                session_id=session_id, timeout_seconds=timeout,
-                on_throttle_event=_on_throttle_event,
+            if host_supervisor is None:
+                # ── Legacy uncontained path (unchanged) ──
+                run_kwargs = dict(
+                    workspace=Path(workspace), prompt=run_prompt,
+                    session_id=session_id, timeout_seconds=timeout,
+                    on_throttle_event=_on_throttle_event,
+                    pre_launch_validator=_pre_launch_validator,
+                    org_slug=org_state.slug,
+                    model=model_name,
+                )
+                if resume:
+                    run_kwargs["resume_session_id"] = resume
+                return _InvokeResult(result=executor.run(**run_kwargs))
+            # ── THR-207 supervised wiring: the invocation phase runs through
+            # the daemon-wide HostSessionSupervisor (admission lease, atomic
+            # ownership at grant, real backend launch into containment, opaque
+            # cancellation, containment cleanup before exactly-once lease
+            # release). The executor and its per-provider throttle stay inside
+            # the launch body unchanged.
+            spec_builder = getattr(executor, "build_launch_spec", None)
+            if spec_builder is None:
+                # Fail closed: no contained-launch seam — mirror the task
+                # producer's fail-closed behavior.
+                return _InvokeResult(
+                    result=None,
+                    terminal_reason=TerminalReason.FAILURE,
+                    error=(
+                        f"executor {type(executor).__name__!r} does not support "
+                        "contained launch (build_launch_spec missing)"
+                    ),
+                )
+            try:
+                launch_spec = spec_builder(
+                    workspace=Path(workspace), prompt=run_prompt,
+                    session_id=session_id, model=model_name,
+                    resume_session_id=resume, org_slug=org_state.slug,
+                    timeout_seconds=timeout,
+                )
+            except Exception as exc:
+                return _InvokeResult(
+                    result=None, terminal_reason=TerminalReason.FAILURE,
+                    error=f"launch_spec_failed: {exc}",
+                )
+
+            def _launch_body(running) -> LaunchResult:
+                # Real backend: the subprocess is already launched into
+                # containment — the executor communicates + parses only. Honest
+                # passthrough: no containment capability — the executor
+                # self-launches exactly as the legacy path, with the throttle's
+                # internal 429 retry disabled so the supervisor owns the
+                # finish/release/sleep/reacquire lifecycle.
+                contained = running.process is not None
+                run_kwargs = dict(
+                    workspace=Path(workspace), prompt=run_prompt,
+                    session_id=session_id, timeout_seconds=timeout,
+                    on_throttle_event=_on_throttle_event,
+                    pre_launch_validator=_pre_launch_validator if not contained else None,
+                    org_slug=org_state.slug,
+                    model=model_name,
+                    running=running if contained else None,
+                    throttle_backoff_seconds=() if not contained else None,
+                )
+                if resume:
+                    run_kwargs["resume_session_id"] = resume
+                res = executor.run(**run_kwargs)
+                return LaunchResult(
+                    success=res.success,
+                    duration_seconds=float(getattr(res, "duration_seconds", 0) or 0),
+                    returncode=getattr(res, "returncode", None),
+                    error=getattr(res, "error", None),
+                    rate_limited=bool(getattr(res, "rate_limited", False)),
+                    timed_out=(
+                        "timeout" in str(getattr(res, "error", "") or "").lower()
+                    ),
+                    payload=res,
+                )
+
+            outcome = host_supervisor.run(
+                AdmissionRequest(
+                    org=org_state.slug,
+                    invocation_kind="thread",
+                    logical_id=inv.thread_id,
+                    executor_profile=executor_name,
+                    enqueued_at=time.monotonic(),
+                ),
+                launch_spec=launch_spec,
+                launch_body=_launch_body,
                 pre_launch_validator=_pre_launch_validator,
-                org_slug=org_state.slug,
-                model=model_name,
             )
-            if resume:
-                run_kwargs["resume_session_id"] = resume
-            return executor.run(**run_kwargs)
+            launch = outcome.payload
+            if launch is None:
+                return _InvokeResult(
+                    result=None, terminal_reason=outcome.terminal_reason,
+                    error=outcome.error,
+                )
+            return _InvokeResult(
+                result=launch.payload, terminal_reason=outcome.terminal_reason,
+                error=outcome.error,
+            )
+
+        async def _settle_interrupted(phase: _InvokeResult) -> None:
+            """Daemon drain/cancellation interrupted the invocation before it
+            could settle its row: persist any token usage the attempt produced,
+            and leave a still-pending row for daemon-restart recovery (REPLY
+            delivery-state replacement; BOOTSTRAP/TASK_FOLLOWUP daemon_restart
+            reap) — the pre-wiring shutdown semantics when a worker was
+            cancelled mid-run. A row already settled by a real terminal
+            callback (the callback landed before the drain) needs only its
+            settled event."""
+            if phase.result is not None:
+                _persist_thread_token_usage(
+                    org_state, inv=inv, result=phase.result,
+                    executor_name=executor_name,
+                    invocation_token=invocation_token,
+                )
+            after = org_state.db.get_invocation_any_status(invocation_token)
+            if after is None:
+                return
+            if after.status in {ThreadInvocationStatus.CONSUMED, ThreadInvocationStatus.DECLINED}:
+                if after.status is ThreadInvocationStatus.DECLINED:
+                    await _publish_invocation_event(
+                        org_state, thread_id=inv.thread_id,
+                        agent_name=inv.agent_name, seq=inv.triggering_seq,
+                        kind="invocation_settled", status="declined",
+                    )
+                return
+            logger.info(
+                "run_invocation: token %s interrupted by %s — leaving pending "
+                "for daemon-restart recovery",
+                invocation_token[:8],
+                phase.terminal_reason.value if phase.terminal_reason else "?",
+            )
+
+        async def _settle_no_launch(phase: _InvokeResult) -> None:
+            """The supervisor refused or aborted launch before any subprocess
+            ran (pre-launch validator failure / prepare or spawn failure / no
+            contained-launch seam): settle the row FAILED with the durable
+            first-wins reason — mirroring the legacy runner_crash /
+            materialization-failure handling."""
+            reason = (
+                f"session {phase.terminal_reason.value} before launch"
+                if phase.terminal_reason else "session before launch"
+            )
+            if phase.error:
+                reason = f"{reason}: {phase.error}"
+            _settle_or_fail_reply(
+                org_state, invocation_token=invocation_token, claim=claim,
+                status=ThreadInvocationStatus.FAILED,
+                decline_reason=reason,
+            )
+            audit.log_thread_invocation_failed(
+                inv.thread_id,
+                agent=inv.agent_name,
+                token=invocation_token,
+                purpose=inv.purpose.value,
+                reason=reason,
+                kind="thread_invocation_failed",
+            )
+            await _publish_invocation_event(
+                org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
+                seq=inv.triggering_seq, kind="invocation_settled", status="failed",
+            )
 
         # Spawn subprocess in a thread pool (executors are synchronous).
         fallback_executed = False  # tracks session-not-found eviction fallback
         try:
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, lambda: _invoke(prompt, resume_sid))
+            phase = await loop.run_in_executor(None, lambda: _invoke(prompt, resume_sid))
+            if phase.terminal_reason in _INTERRUPTED_TERMINALS:
+                await _settle_interrupted(phase)
+                return
+            result = phase.result
+            if result is None:
+                await _settle_no_launch(phase)
+                return
 
             if (is_claude and resume_sid and not result.success
                     and _is_session_not_found(result)):
@@ -924,7 +1121,16 @@ async def run_invocation(
                 shown_seqs = [m.seq for m in messages]
                 resume_sid = None
                 fallback_executed = True
-                result = await loop.run_in_executor(None, lambda: _invoke(full_prompt, None))
+                phase = await loop.run_in_executor(
+                    None, lambda: _invoke(full_prompt, None),
+                )
+                if phase.terminal_reason in _INTERRUPTED_TERMINALS:
+                    await _settle_interrupted(phase)
+                    return
+                if phase.result is None:
+                    await _settle_no_launch(phase)
+                    return
+                result = phase.result
         except Exception as exc:
             _settle_or_fail_reply(
                 org_state, invocation_token=invocation_token, claim=claim,
@@ -1074,8 +1280,9 @@ async def run_invocation(
             )
 
             retry_exc: Exception | None = None
+            retry_phase: _InvokeResult | None = None
             try:
-                retry_result = await loop.run_in_executor(
+                retry_phase = await loop.run_in_executor(
                     None, lambda: _invoke(retry_prompt, retry_resume_sid),
                 )
             except Exception as exc:
@@ -1085,6 +1292,14 @@ async def run_invocation(
                 )
                 retry_result = None
                 retry_exc = exc
+            else:
+                if retry_phase.terminal_reason in _INTERRUPTED_TERMINALS:
+                    await _settle_interrupted(retry_phase)
+                    return
+                retry_result = retry_phase.result
+                if retry_result is None:
+                    await _settle_no_launch(retry_phase)
+                    return
 
             if retry_result is not None:
                 _persist_thread_token_usage(

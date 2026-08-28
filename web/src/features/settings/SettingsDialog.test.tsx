@@ -23,6 +23,7 @@ const mockSystem: SystemSettings = {
 
 const mockOrg: OrgSettings = {
   session_timeout_seconds: 3600,
+  reviewer_agents: ['code_reviewer'],
   dreaming: {
     enabled: true,
     schedule: { time: '02:00', timezone: 'UTC' },
@@ -501,6 +502,7 @@ const SETTINGS_FIXTURE: SettingsSnapshot = {
   },
   org: {
     session_timeout_seconds: 3600,
+    reviewer_agents: ['code_reviewer'],
     dreaming: {
       enabled: true,
       schedule: { time: '02:00', timezone: 'UTC' },

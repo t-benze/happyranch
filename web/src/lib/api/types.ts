@@ -256,8 +256,9 @@ export interface ThreadRecord {
    *  ``threads.mention_routing_enabled`` column; the daemon wire is a real
    *  boolean (never a string). */
   mention_routing_enabled: boolean;
-  /** Most recent message created_at (derived server-side). Feeds the
-   *  pinned-section activity ranking (THR-209). */
+  /** Most recent message created_at (derived server-side). Informational on
+   *  the wire (THR-209 msg 9: pinned ranking uses the immutable numeric
+   *  thread ID, not activity). */
   last_activity_at: string | null;
 }
 
@@ -806,6 +807,8 @@ export interface WorkingHoursSettings {
 
 export interface OrgSettings {
   session_timeout_seconds: number | null;
+  /** Server-returned operator setting; intentionally has no browser control. */
+  reviewer_agents: string[];
   dreaming: DreamingSettings;
   threads: ThreadsSettings;
   working_hours: WorkingHoursSettings;
