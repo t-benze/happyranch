@@ -131,7 +131,7 @@ export function Sidebar(): JSX.Element {
     <aside
       role="navigation"
       aria-label="Primary navigation"
-      className="border-border bg-bg-subtle w-rail flex h-full shrink-0 flex-col border-r"
+      className="border-border bg-bg-subtle w-rail-narrow md:w-rail flex h-full shrink-0 flex-col border-r"
     >
       {/* Context header — wordmark + org context line + caret, doubling as the
           org switcher (BUG-01/08). Keeps the existing org-switch route logic. */}
@@ -144,10 +144,13 @@ export function Sidebar(): JSX.Element {
           <SelectPrimitive.Trigger asChild aria-label="Active org">
             <button
               type="button"
-              className="border-border border-l-accent hover:bg-bg-raised focus-visible:ring-accent flex w-full items-center gap-2 border-b border-l-2 px-4 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none disabled:cursor-not-allowed"
+              className="border-border border-l-accent hover:bg-bg-raised focus-visible:ring-accent flex w-full items-center gap-2 border-b border-l-2 px-2 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none disabled:cursor-not-allowed md:px-4"
             >
               <Brandmark />
-              <span className="flex min-w-0 flex-1 flex-col">
+              {/* TASK-5987: below md the rail collapses to icons only — the
+                  wordmark + context line are hidden but stay in the DOM; the
+                  combobox keeps its "Active org" label. */}
+              <span className="min-w-0 flex-1 flex-col max-md:hidden md:flex">
                 <span className="font-['Baloo_2',sans-serif] text-[1rem] leading-tight font-extrabold tracking-[-0.03em]">
                   <span className="text-[#4ade80]">Happy</span>
                   <span className="text-fg">Ranch</span>
@@ -171,7 +174,7 @@ export function Sidebar(): JSX.Element {
                   )}
                 </span>
               </span>
-              <ChevronDown size={14} aria-hidden="true" className="text-fg-muted shrink-0" />
+              <ChevronDown size={14} aria-hidden="true" className="text-fg-muted hidden shrink-0 md:block" />
             </button>
           </SelectPrimitive.Trigger>
           <SelectContent>
@@ -258,7 +261,7 @@ export function Sidebar(): JSX.Element {
           >
             YT
           </span>
-          <span className="flex min-w-0 flex-col leading-tight">
+          <span className="min-w-0 flex-col leading-tight max-md:hidden md:flex">
             <span className="text-fg truncate text-sm">You</span>
             <span className="text-fg-subtle truncate text-xs">Founder</span>
           </span>
@@ -318,11 +321,11 @@ function SidebarNavItem({
   if (!enabled) {
     const span = (
       <span
-        className="text-fg-subtle flex cursor-not-allowed items-center gap-2.5 rounded px-2 py-1.5 text-sm"
+        className="text-fg-subtle flex cursor-not-allowed items-center justify-center gap-2.5 rounded px-2 py-1.5 text-sm md:justify-start"
         aria-disabled="true"
       >
         <Icon size={16} aria-hidden="true" className="shrink-0" />
-        <span>{children}</span>
+        <span className="sr-only md:not-sr-only">{children}</span>
       </span>
     );
     if (!tooltip) return span;
@@ -337,7 +340,7 @@ function SidebarNavItem({
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `flex items-center gap-2.5 rounded border-l-2 border-l-transparent px-2 py-1.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent ${
+        `flex items-center gap-2.5 rounded border-l-2 border-l-transparent px-2 py-1.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent justify-center md:justify-start ${
           isActive
             ? 'border-l-accent bg-bg-raised text-fg font-medium'
             : 'text-fg-muted hover:bg-bg-raised hover:text-fg'
@@ -345,7 +348,9 @@ function SidebarNavItem({
       }
     >
       <Icon size={16} aria-hidden="true" className="shrink-0" />
-      <span>{children}</span>
+      {/* TASK-5987: sr-only below md keeps the accessible name when the rail
+          collapses to icons; md+ restores the visible label. */}
+      <span className="sr-only md:not-sr-only">{children}</span>
     </NavLink>
   );
 }

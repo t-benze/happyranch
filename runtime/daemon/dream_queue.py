@@ -49,7 +49,10 @@ async def dream_worker_loop(state, settings: Settings) -> None:
             except asyncio.TimeoutError:
                 continue
             try:
-                await run_dream(org_state=org, dream_id=job.dream_id, settings=settings)
+                await run_dream(
+                    org_state=org, dream_id=job.dream_id, settings=settings,
+                    host_supervisor=state.host_supervisor,
+                )
             except Exception:
                 logger.exception("dream_worker_loop: dream %s crashed", job.dream_id)
         await asyncio.sleep(0.05)

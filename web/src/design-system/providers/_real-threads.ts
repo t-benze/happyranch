@@ -363,6 +363,45 @@ function useRenameThread(threadId: string): MutationLike<
   });
 }
 
+/**
+ * Numeric suffix of a THR-NNN thread id — mirrors the server's
+ * `CAST(SUBSTR(t.id, 5) AS INTEGER)` open-list pin-rank key
+ * (runtime/infrastructure/database.py::list_threads). THR-10 → 10,
+ * THR-2 → 2, THR-003 → 3.
+ */
+export function numericThreadId(threadId: string): number {
+  const n = Number.parseInt(threadId.slice(4), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Client mirror of the server's OPEN-list ordering rule — used ONLY for the
+ * optimistic open-list cache reorder in useSetThreadPinned so the UI never
+ * diverges from the server contract between click and refetch:
+ *
+ *   1. pinned threads first;
+ *   2. pinned ordered by immutable NUMERIC thread id DESC (THR-10 above
+ *      THR-2 — never lexicographic subject/display text, never activity);
+ *   3. unpinned in the established ordinary `started_at DESC` order.
+ *
+ * Archived/status-less/all cached views are NOT passed here — pin has zero
+ * presentation effect there, so they keep their ordinary order untouched.
+ * Pure: returns a new array, never mutates the input.
+ */
+export function reorderOpenThreads<
+  T extends Pick<ThreadRecord, 'thread_id' | 'pinned' | 'started_at'>,
+>(threads: T[]): T[] {
+  return [...threads].sort((a, b) => {
+    const aPinned = a.pinned ? 0 : 1;
+    const bPinned = b.pinned ? 0 : 1;
+    if (aPinned !== bPinned) return aPinned - bPinned;
+    if (aPinned === 0) {
+      return numericThreadId(b.thread_id) - numericThreadId(a.thread_id);
+    }
+    return b.started_at.localeCompare(a.started_at);
+  });
+}
+
 function useSetThreadPinned(threadId: string): MutationLike<
   SetThreadPinArgs,
   Awaited<ReturnType<typeof threadsApi.setThreadPinned>>
@@ -385,10 +424,23 @@ function useSetThreadPinned(threadId: string): MutationLike<
       );
       for (const [key, data] of prevLists) {
         if (!data) continue;
+        // TASK-5987 (PR #758 fix-forward): after flipping the flag, cached
+        // OPEN lists are reordered immediately to the exact server rule
+        // (reorderOpenThreads) so pinning THR-10 while THR-2 is pinned
+        // renders THR-10 above THR-2 BEFORE the response/refetch, and
+        // unpinning re-inserts the row into ordinary started_at-desc order.
+        // Only `params.status === 'open'` variants qualify: archived and
+        // status-less/all cached views keep their ordinary order and no pin
+        // presentation, exactly like the server. The mutation/audit/persistence
+        // wire behavior is unchanged.
+        const params = key[2] as { status?: string } | undefined;
+        const isOpenList = params?.status === 'open';
+        const threads = data.threads.map((t) =>
+          t.thread_id === threadId
+            ? { ...t, pinned: body.pinned, pinned_at: body.pinned ? t.pinned_at ?? new Date().toISOString() : null } : t,
+        );
         qc.setQueryData<{ threads: ThreadRecord[] }>(key, {
-          threads: data.threads.map((t) =>
-            t.thread_id === threadId ? { ...t, pinned: body.pinned, pinned_at: body.pinned ? t.pinned_at ?? new Date().toISOString() : null } : t,
-          ),
+          threads: isOpenList ? reorderOpenThreads(threads) : threads,
         });
       }
       if (prevDetail) {

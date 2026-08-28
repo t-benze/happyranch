@@ -811,6 +811,12 @@ to **§A**.
 
 ### 4.11 Settings (page, not dialog) — RENDER-ONLY
 
+> **Current-state supersession (THR-140 seq. 257–260, 2026-08-28):** The
+> historical v1 rail below is superseded by the shipped three-section rail:
+> Assistant · Organization · Executors. System, Agents, and unknown Settings
+> subroutes recover to Assistant with replace navigation. This annotation does
+> not rewrite the historical reconciliation decision.
+
 - **Purpose.** The in-app configuration surface.
 - **v1 scope** (unchanged): dedicated **page** with sticky left sub-nav (`Assistant ·
   System · Organization · Agents · Executors · Usage`) + field panel + sticky save
