@@ -1939,6 +1939,51 @@ class TestFirstPartyAdapterCatalog:
         assert cmd[2] == "-m"
         assert cmd[3] == "gpt-5"
 
+    def test_codex_adapter_build_argv_with_resume(self):
+        """TASK-5977: codex resume routes through `codex exec resume <id>`
+        (verified live on codex-cli 0.148.0). The resume subcommand has NO
+        --sandbox flag, so the workspace-write sandbox + network override are
+        carried as `-c` config overrides; stdin `-` keeps large prompts off
+        argv. The same thread_id is re-emitted after continuation."""
+        from runtime.adapters import CodexAdapter
+
+        adapter = CodexAdapter()
+        cmd = adapter.build_argv(
+            cli_path="/usr/local/bin/codex",
+            sandbox_mode="workspace-write",
+            resume_session_id="01a0-prior-thread",
+        )
+        expected = [
+            "/usr/local/bin/codex",
+            "exec",
+            "resume",
+            "01a0-prior-thread",
+            "-c",
+            'sandbox_mode="workspace-write"',
+            "-c",
+            "sandbox_workspace_write.network_access=true",
+            "--skip-git-repo-check",
+            "--json",
+            "-",
+        ]
+        assert cmd == expected
+
+    def test_codex_adapter_build_argv_resume_with_model(self):
+        from runtime.adapters import CodexAdapter
+
+        adapter = CodexAdapter()
+        cmd = adapter.build_argv(
+            cli_path="/usr/local/bin/codex",
+            sandbox_mode="workspace-write",
+            model="gpt-5",
+            model_arg=["-m", "{model}"],
+            resume_session_id="01a0-prior",
+        )
+        assert cmd[1:4] == ["exec", "resume", "01a0-prior"]
+        assert cmd[4] == "-m"
+        assert cmd[5] == "gpt-5"
+        assert 'sandbox_mode="workspace-write"' in cmd
+
     def test_codex_adapter_sandbox_flags_unchanged(self):
         """Proof that sandbox flags are NOT changed by D2 extraction."""
         from runtime.adapters import CodexAdapter
@@ -2021,6 +2066,32 @@ class TestFirstPartyAdapterCatalog:
         # Model injected after binary, before -p
         assert cmd[1] == "--model"
         assert cmd[2] == "gpt-5"
+
+    def test_pi_adapter_build_argv_with_resume(self):
+        """TASK-5977: pi resumes via `--session <id>` (verified live on pi
+        0.84.2). `--session` FAILS when the id is missing — the exact
+        eviction signature the runner needs. `--session-id` would silently
+        CREATE a fresh session (message omission), so it is never used on the
+        thread path."""
+        from runtime.adapters import PiAdapter
+
+        adapter = PiAdapter()
+        cmd = adapter.build_argv(
+            cli_path="/usr/local/bin/pi",
+            prompt="hello",
+            resume_session_id="01a0-prior",
+        )
+        expected = [
+            "/usr/local/bin/pi",
+            "-p",
+            "--mode",
+            "json",
+            "--session",
+            "01a0-prior",
+        ]
+        assert cmd == expected
+        assert "--session-id" not in cmd
+        assert "hello" not in cmd
 
     # ── Model omitted when not set ───────────────────────────────────────
 
@@ -2257,6 +2328,70 @@ class TestD2BuildExecutorAdapterInjection:
                 resume_session_id="resume-123",
             )
 
+            assert adapter_cmd == fallback_cmd
+
+    def test_codex_adapter_and_fallback_resume_argv_identical(self):
+        """TASK-5977: CodexExecutor fallback resume argv is bit-identical to
+        the CodexAdapter's (D2 parity, same as claude)."""
+        from runtime.adapters import CodexAdapter
+        from runtime.orchestrator.executors import CodexExecutor
+        from unittest.mock import patch
+
+        model_arg = ["-m", "{model}"]
+        adapter = CodexAdapter()
+        with patch(
+            "runtime.orchestrator.executors._resolve_binary",
+            return_value="/bin/codex",
+        ):
+            executor = CodexExecutor(
+                codex_cli_path="codex",
+                sandbox_mode="workspace-write",
+                adapter=None,
+                model_arg=model_arg,
+            )
+            adapter_cmd = adapter.build_argv(
+                cli_path="/bin/codex",
+                sandbox_mode="workspace-write",
+                model="test-model",
+                model_arg=model_arg,
+                resume_session_id="01a0-prior",
+            )
+            fallback_cmd = executor._build_argv(
+                model="test-model",
+                resume_session_id="01a0-prior",
+            )
+            assert adapter_cmd == fallback_cmd
+
+    def test_pi_adapter_and_fallback_resume_argv_identical(self):
+        """TASK-5977: PiExecutor fallback resume argv is bit-identical to the
+        PiAdapter's."""
+        from runtime.adapters import PiAdapter
+        from runtime.orchestrator.executors import PiExecutor
+        from unittest.mock import patch
+
+        model_arg = ["--model", "{model}"]
+        adapter = PiAdapter()
+        with patch(
+            "runtime.orchestrator.executors._resolve_binary",
+            return_value="/bin/pi",
+        ):
+            executor = PiExecutor(
+                pi_cli_path="pi",
+                adapter=None,
+                model_arg=model_arg,
+            )
+            adapter_cmd = adapter.build_argv(
+                cli_path="/bin/pi",
+                prompt="hello world",
+                model="test-model",
+                model_arg=model_arg,
+                resume_session_id="01a0-prior",
+            )
+            fallback_cmd = executor._build_argv(
+                prompt="hello world",
+                model="test-model",
+                resume_session_id="01a0-prior",
+            )
             assert adapter_cmd == fallback_cmd
 
     def test_executor_result_fields_unchanged(self):

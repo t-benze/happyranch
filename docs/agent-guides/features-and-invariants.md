@@ -276,16 +276,35 @@ Claude-backed thread participants reuse their Claude session across turns. State
 
 Implementation: `runtime/daemon/thread_runner.py`, `runtime/orchestrator/executors.py`, `runtime/infrastructure/database.py`, and `runtime/infrastructure/audit_logger.py`.
 
+**TASK-5977 (THR-200 seq 31) parity:** the same resume machinery is proven and shipped for **codex** (installed codex-cli 0.148.0: `codex exec resume <thread_id> --json -`, same `thread.started.thread_id` re-emitted after continuation, prompt via stdin) and **pi** (installed pi 0.84.2: `pi -p --mode json --session <id>`, same session header `id` re-emitted, prompt via stdin). OpenCode is an UNPROVEN gap (no binary on this machine) — it stays fresh. Evidence-backed per-executor support matrix lives in `protocol/05b-agent-runtime.md` (Thread provider-session lifecycle).
+
 Traps:
 
-- Claude-only optimization, never a correctness dependency.
+- Optimization, never a correctness dependency — for claude/codex/pi only.
 - `last_resumed_seq` advances only after a successful subprocess.
 - Per-`(thread, agent)` `asyncio.Lock` protects read-run-update.
 - **Eviction invalidation is transactional (THR-200).** On a provider-declared
   session-not-found, the `agent_session_evicted_fallback` audit and the durable
   `agent_session_id = NULL` invalidation commit in ONE transaction BEFORE the
   full-prompt fallback; a failed fallback leaves the id NULL and the delivery
-  watermark unadvanced.
+  watermark unadvanced. Classified ONLY from the executor that ran, reading
+  ONLY the proven return code and stream, and REQUIRING the anchored
+  provider-declared signature bound to the regex-escaped attempted session id
+  — claude `No conversation found with session ID: <attempted-id>` (rc=1
+  stderr), codex `Error: thread/resume: thread/resume failed: no rollout
+  found for thread id <attempted-id> (code -32600)` (rc=1 stderr — the
+  observed COMPLETE line including the CLI envelope; only horizontal
+  whitespace may pad it), pi `No session found matching
+  '<attempted-id>'` (rc=1 stderr) — each verified 2026-08-28 to echo the
+  attempted id verbatim. Generic legacy substrings, cross-provider text,
+  stdout-only text, wrong rc, wrong/missing id, prefix/suffix near-matches,
+  a marker embedded in auth/quota/transport output, and generic failure /
+  auth / quota / transport / ambiguous output never trigger the fresh retry.
+- **Resume eligibility (<=0 watermark).** A stored provider id whose
+  `last_resumed_seq` is null/zero/negative (<= 0) is never eligible for
+  resume — the runner must make a fresh invocation with the complete
+  canonical transcript; resume requires a strictly positive delivered
+  frontier (plus the full contiguity proof).
 - **Lifecycle invalidation (THR-200).** Archive, successful executor switch, and
   agent termination clear resume state (id NULL, watermark 0). Each boundary is
   a database-owned transaction: the participant reset and its
@@ -296,15 +315,24 @@ Traps:
   rolled back (no new executor installed) and a failed archive leaves the
   thread OPEN with every session row unmodified. Participant removal deletes
   the row and its session state together (no redundant clear).
+- **No fingerprint invalidation.** The proven codex/pi contracts resume across
+  model/config changes, so no executor/model/config fingerprint column is added.
 - **Equality self-heals (THR-200).** `last_resumed_seq == running_from_seq` runs
   the full prompt (never omits a required sequence) and recovers after one
   successfully settled full-prompt turn — no watermark-comparison change.
 - **Transport (THR-200).** Claude/Pi/Codex deliver the prompt on stdin
-  (pinned-version canaries); opencode/generic-CLI stay argv-based with a
-  pre-spawn `prompt_transport_too_large` guard. Encoded byte size is
-  transport-only, never a cost/reset policy.
+  (pinned-version canaries) — resume prompts included; opencode/generic-CLI
+  stay argv-based with a pre-spawn `prompt_transport_too_large` guard. Encoded
+  byte size is transport-only, never a cost/reset policy.
+- **pi uses `--session`, never `--session-id`.** `--session` fails when the id
+  is missing (the eviction signature); `--session-id` would silently CREATE a
+  fresh session and omit transcript messages.
+- **TASK execution never resumes provider sessions.** Only
+  `thread_runner.run_invocation` passes `resume_session_id`; the orchestrator's
+  task path and wake/dream runners always launch fresh. Pinned by
+  `tests/test_thread_resume_parity.py`.
 - `ExecutorResult.agent_session_id` is not `ExecutorResult.session_id`.
-- **GH-688 Phase 1 claim gate.** For a claimed conversational `REPLY`, a resumed session may use the delta only when the stored watermark is strictly below the claim's `running_from_seq`; otherwise the runner falls back to the full prompt. `last_resumed_seq` is observed session presentation and is never the delivery cursor — it can never omit a message the delivery state requires.
+- **GH-688 Phase 1 claim gate + no-message-omission proof.** For a claimed conversational `REPLY`, a resumed session may use the delta only when the stored watermark is strictly below the claim's `running_from_seq` AND the ENTIRE required post-watermark range is proven present and contiguous at the production seam: the runner loads the canonical transcript UNCAPPED, independently queries the authoritative transcript max, and authorizes the delta only when every required claimed sequence exists (the claim's inclusive end must also exist). Truncated loads, internal holes, equal/ahead watermarks, a null/zero/negative (<= 0) watermark (a stored id with watermark <= 0 is never eligible), and claim ends beyond the transcript fail closed to the genuinely complete canonical full prompt — a delta can never omit a message the delivery state requires. `last_resumed_seq` is observed session presentation and is never the delivery cursor.
 
 ## Thread Task Followup
 

@@ -154,7 +154,10 @@ rejected merely for omitting optional usage fields.
 
 **Thread provider-session state (THR-200).** The per-``(thread, agent)``
 resumable provider session id + delta watermark on ``thread_participants``
-is a Claude-only optimization, never a correctness dependency (see
+is an optimization, never a correctness dependency, for the executors whose
+resume contract is PROVEN against the installed CLI (claude 2.1.241, codex
+0.148.0, pi 0.84.2 — TASK-5977 audit); opencode is an unproven gap and
+stays fresh (see
 `protocol/05b-agent-runtime.md`). Eviction — a provider-declared
 session-not-found on a resume attempt — invalidates the durable id in the
 SAME transaction as the eviction audit, BEFORE the full-prompt fallback
@@ -169,9 +172,20 @@ the status flip, every participant reset, and the audit in one transaction),
 so a reset/audit failure leaves no partial lifecycle state: a failed switch
 is rolled back (no new executor installed) and a failed archive leaves the
 thread OPEN with every session row unmodified; participant removal deletes
-the row and its session state together. The GH-688 claim gate stays strict (`<` resumes,
-`=`/`>` use the full prompt) so no required sequence is ever omitted; the
-equality state self-heals after one successfully settled full-prompt turn.
+the row and its session state together. The GH-688 claim gate stays strict
+(`<` resumes, `=`/`>` use the full prompt) and a resumed delta is authorized
+only when the ENTIRE required post-watermark range is proven present and
+contiguous in the canonical transcript (uncapped load + independent
+authoritative max-seq proof; see `protocol/05b-agent-runtime.md`) — so no
+required sequence is ever omitted; the equality state self-heals after one
+successfully settled full-prompt turn. A stored provider id whose durable
+delivery watermark is null/zero/negative (<= 0) is never eligible for
+resume — the runner makes a fresh invocation with the complete canonical
+transcript. Eviction classification requires the anchored provider-declared
+rc=1 stderr signature bound to the exact attempted session id (the id is
+regex-escaped), never a generic legacy substring, wrong/missing id,
+prefix/suffix near-match, or a marker embedded in auth/quota/transport
+output.
 Prompt bodies travel via stdin for claude/pi/codex and via argv (guard-
 limited) for opencode/generic-CLI; encoded byte size is transport-only, never
 a cost or reset policy.

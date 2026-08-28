@@ -1249,20 +1249,24 @@ class TestCallPathManagedSkillsIndex:
             thread_id="THR-001", speaker="founder",
             kind=ThreadMessageKind.MESSAGE, body_markdown="hello",
         )
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown="follow-up",
+        )
         db.update_thread_session(
             "THR-001", "alice",
-            agent_session_id="claude-evicted", last_resumed_seq=0,
+            agent_session_id="claude-evicted", last_resumed_seq=1,
         )
         inv = db.mint_thread_invocation(
             thread_id="THR-001", agent_name="alice",
-            triggering_seq=1, purpose=ThreadInvocationPurpose.REPLY,
+            triggering_seq=2, purpose=ThreadInvocationPurpose.REPLY,
         )
         # GitHub #688 Slice B: seed the delivery-state queued slot.
         db._conn.execute(
             "INSERT INTO thread_reply_delivery_state "
             "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
             "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("THR-001", "alice", 0, 1, inv.invocation_token,
+            ("THR-001", "alice", 1, 2, inv.invocation_token,
              "2026-01-01T00:00:00+00:00"),
         )
         db._conn.commit()
@@ -1281,7 +1285,7 @@ class TestCallPathManagedSkillsIndex:
             duration_seconds = 1
             agent_session_id = None
             stdout_tail = ""
-            stderr_tail = "No conversation found"
+            stderr_tail = "No conversation found with session ID: claude-evicted"
             token_usage = None
             rate_limited = False
         evicted = _EvictedResult()

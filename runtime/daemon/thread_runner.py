@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from collections.abc import Callable
@@ -383,28 +384,259 @@ def _decline_by_default_doctrine() -> str:
     )
 
 
-# Best-effort markers for "the resume target no longer exists in the agent CLI's
-# local session store" (TTL eviction / workspace move). Verify against the running
-# CLI during integration — a miss is safe (degrades to a normal failure, never a
+# Executor-specific provider-declared session-not-found contracts. Each is
+# proven against the INSTALLED CLI (TASK-5977 audit + 2026-08-28 TASK-6008
+# re-probe; bounded local probes, no API traffic) and carries the exact
+# ATTEMPTED provider session id verbatim:
+#   - claude 2.1.241: rc=1, stderr `No conversation found with session ID:
+#     <uuid>` — the single evidence-backed complete form; the THR-200-era
+#     generic legacy markers ("session not found", "no session found", …)
+#     carry no immutable producer/CLI evidence and are NOT accepted.
+#   - codex 0.148.0: rc=1, stderr `Error: thread/resume: thread/resume
+#     failed: no rollout found for thread id <uuid> (code -32600)`
+#   - pi 0.84.2: rc=1, stderr `No session found matching '<id>'`
+# All three emit the signature on STDERR with exit code 1 and empty stdout,
+# and each echoes the attempted id verbatim (claude after ``session ID:``,
+# codex after ``thread id``, pi inside single quotes).
+# Classification is dispatched on the executor that actually ran, reads ONLY
+# the proven stream (stderr_tail — never the ``error`` envelope, which falls
+# back to stdout text when stderr is empty), requires the proven return code
+# (1), and requires the ANCHORED provider-declared signature bound to the
+# regex-escaped attempted session id. For EVERY executor the match is a
+# COMPLETE-LINE constraint: the observed signature must start a line and the
+# bound attempted id (plus the executor's literal tokens — codex ``(code
+# -32600)``, pi's quotes) must be the last content on that line
+# (horizontal-whitespace-only padding allowed; unrelated text on other lines
+# tolerated) — the observed provider contract is the one complete stderr
+# line: claude ``No conversation found with session ID: <attempted-id>``,
+# codex ``Error: thread/resume: thread/resume failed: no rollout found for
+# thread id <attempted-id> (code -32600)`` (the CLI envelope is part of the
+# observed line), pi ``No session found matching '<attempted-id>'``. Only
+# HORIZONTAL whitespace [ \t] may pad where the observed contract permits
+# spacing — ``\s`` never consumes LF/CRLF, so split-line forms can never
+# match. Wrong/missing id, prefix/suffix near-matches (including
+# punctuation-led suffixes a word boundary would accept), arbitrary
+# same-line prefix/suffix text, cross-provider text, stdout-only text, wrong
+# rc, generic legacy substrings, a marker embedded in auth/quota/transport
+# output, and ambiguous output never match — a miss is safe (degrades to a
+# normal failure — no fresh retry, session id/watermark untouched — never a
 # wrong answer).
-_SESSION_NOT_FOUND_MARKERS = (
-    "no conversation found",
-    "session not found",
-    "no session found",
-    "could not find session",
-    "no such session",
+_CLAUDE_EVICTION_SIGNATURE = "no conversation found with session id:"
+_CODEX_EVICTION_SIGNATURE = (
+    "error: thread/resume: thread/resume failed: "
+    "no rollout found for thread id"
+)
+_CODEX_EVICTION_JSON_RPC_CODE = "(code -32600)"
+_PI_EVICTION_SIGNATURE = "no session found matching"
+# Auth/quota/transport signal tokens: an otherwise matching eviction marker
+# EMBEDDED in such output is not the provider declaring the session missing
+# (a 401/429/timeout/network blob is not session eviction). The attempted id
+# is stripped from stderr before this scan so an id that happens to contain
+# such a digit/letter run (e.g. a hex id with "401") can never self-trigger.
+_AUTH_QUOTA_TRANSPORT_TOKENS = (
+    "unauthorized",
+    "authentication",
+    "forbidden",
+    "401",
+    "402",
+    "403",
+    "429",
+    "quota",
+    "rate limit",
+    "rate_limit",
+    "overloaded",
+    "payment",
+    "credit",
+    "billing",
+    "timeout",
+    "timed out",
+    "connection reset",
+    "connection refused",
+    "network error",
+    "dns",
+    "proxy",
+    "tls",
+    "ssl",
+    "certificate",
+    "panic:",
+    "internal error",
+    "segmentation fault",
 )
 
 
-def _is_session_not_found(result) -> bool:
-    blob = " ".join(
-        filter(None, [
-            getattr(result, "error", "") or "",
-            getattr(result, "stderr_tail", "") or "",
-            getattr(result, "stdout_tail", "") or "",
-        ])
-    ).lower()
-    return any(marker in blob for marker in _SESSION_NOT_FOUND_MARKERS)
+def _escaped_attempted_id(attempted_session_id: str | None) -> str | None:
+    """Regex-escaped lowercase attempted session id, or None when absent."""
+    if not attempted_session_id:
+        return None
+    return re.escape(attempted_session_id.lower())
+
+
+def _contains_auth_quota_transport_token(stderr: str, attempted_session_id: str) -> bool:
+    """True when stderr (minus the attempted id, so a hex id containing a
+    token-like run can never self-trigger) carries any auth/quota/transport
+    signal token — such output is never the eviction contract."""
+    if attempted_session_id:
+        stderr = stderr.replace(attempted_session_id.lower(), "")
+    return any(token in stderr for token in _AUTH_QUOTA_TRANSPORT_TOKENS)
+
+
+def _is_claude_session_evicted(result, attempted_session_id: str) -> bool:
+    """Claude 2.1.241 proven contract: rc=1, stderr exactly
+    ``No conversation found with session ID: <attempted-id>`` — the COMPLETE
+    observed provider stderr line. The signature and the regex-escaped
+    attempted id must occur on the SAME physical stderr line (horizontal
+    whitespace only where spacing is permitted; LF/CRLF are never consumed),
+    the signature starts the line, and the id is the last non-whitespace
+    content on it (complete-line constraint) — punctuation-led or
+    alphanumeric suffixes (``01a0-live-suffix``, ``01a0-live.``, …), prefix
+    text on the signature line, and split-line forms where the signature
+    terminates line N and the id starts line N+1 (LF, CRLF, or
+    whitespace-indented) never match. The removed THR-200-era generic legacy
+    substrings never match, and Pi's distinct signature never matches (no
+    shared-substring acceptance)."""
+    if getattr(result, "returncode", None) != 1:
+        return False
+    stderr = (getattr(result, "stderr_tail", None) or "").lower()
+    escaped = _escaped_attempted_id(attempted_session_id)
+    if escaped is None:
+        return False
+    # The observed contract is one COMPLETE physical stderr line: the
+    # signature starts the line, the attempted id terminates it (trailing
+    # whitespace allowed). Only HORIZONTAL whitespace (space/tab) may pad
+    # the signature/id — the old ``\s*`` gap also consumed LF/CRLF and
+    # accepted split-line forms (``... session ID:\n<id>``, CRLF, and
+    # whitespace-indented variants) as eviction (TASK-6024). ``^``/``$``
+    # with MULTILINE anchor each line so a punctuation-led or alphanumeric
+    # suffix (the old ``\b`` word boundary accepted punctuation-led
+    # suffixes), same-line prefix text, and signature/id split across
+    # lines can never match.
+    bound = re.search(
+        rf"^[ \t]*{_CLAUDE_EVICTION_SIGNATURE}[ \t]*{escaped}[ \t]*$",
+        stderr,
+        re.MULTILINE,
+    ) is not None
+    if not bound:
+        return False
+    # A marker embedded in auth/quota/transport output is not eviction.
+    return not _contains_auth_quota_transport_token(stderr, attempted_session_id)
+
+
+def _is_codex_session_evicted(result, attempted_session_id: str) -> bool:
+    """codex-cli 0.148.0 proven contract: rc=1, stderr exactly
+    ``Error: thread/resume: thread/resume failed: no rollout found for
+    thread id <attempted-id> (code -32600)`` — the OBSERVED COMPLETE
+    physical stderr line (CLI envelope + signature + JSON-RPC code). The
+    signature starts the line, the regex-escaped attempted id is bound, the
+    JSON-RPC code ``(code -32600)`` immediately follows it, and the line
+    ends there (horizontal whitespace [ \t] only where the observed contract
+    permits spacing — ``\\s`` never consumes LF/CRLF). Arbitrary same-line
+    prefix/suffix text, split LF/CRLF/indented forms, bare signatures
+    without the observed envelope, wrong/missing/prefix/suffix id, stdout,
+    wrong rc, and a marker embedded in auth/quota/transport output never
+    match."""
+    if getattr(result, "returncode", None) != 1:
+        return False
+    stderr = (getattr(result, "stderr_tail", None) or "").lower()
+    escaped = _escaped_attempted_id(attempted_session_id)
+    if escaped is None:
+        return False
+    bound = re.search(
+        rf"^[ \t]*{_CODEX_EVICTION_SIGNATURE}[ \t]+{escaped}[ \t]+"
+        rf"{re.escape(_CODEX_EVICTION_JSON_RPC_CODE)}[ \t]*$",
+        stderr,
+        re.MULTILINE,
+    ) is not None
+    if not bound:
+        return False
+    return not _contains_auth_quota_transport_token(stderr, attempted_session_id)
+
+
+def _is_pi_session_evicted(result, attempted_session_id: str) -> bool:
+    """pi 0.84.2 proven contract: rc=1, stderr exactly
+    ``No session found matching '<attempted-id>'`` — the OBSERVED COMPLETE
+    physical stderr line (quoted id). The signature starts the line and the
+    quoted regex-escaped attempted id terminates it (horizontal whitespace
+    [ \t] only where the observed contract permits spacing — ``\\s`` never
+    consumes LF/CRLF). Arbitrary same-line prefix/suffix text, split
+    LF/CRLF/indented forms, wrong/missing/prefix/suffix id, stdout, wrong
+    rc, and a marker embedded in auth/quota/transport output never match."""
+    if getattr(result, "returncode", None) != 1:
+        return False
+    stderr = (getattr(result, "stderr_tail", None) or "").lower()
+    escaped = _escaped_attempted_id(attempted_session_id)
+    if escaped is None:
+        return False
+    bound = re.search(
+        rf"^[ \t]*{_PI_EVICTION_SIGNATURE}[ \t]+'{escaped}'[ \t]*$",
+        stderr,
+        re.MULTILINE,
+    ) is not None
+    if not bound:
+        return False
+    return not _contains_auth_quota_transport_token(stderr, attempted_session_id)
+
+
+def _classify_session_evicted(
+    executor_name: str, result, attempted_session_id: str | None,
+) -> bool:
+    """Provider-declared session-not-found classification for the executor
+    that ran, bound to the exact attempted session id. Only the proven
+    executor/rc/stderr/signature contract may trigger the transactional
+    invalidation + one fresh full-transcript retry. Wrong executor, wrong
+    rc, stdout-only text, wrong/missing id, prefix/suffix near-matches,
+    generic legacy substrings, a marker embedded in auth/quota/transport
+    output, malformed output, and ambiguous failures all return False — the
+    invocation is a plain failure and no resume state is invalidated."""
+    if executor_name == "codex":
+        return _is_codex_session_evicted(result, attempted_session_id)
+    if executor_name == "pi":
+        return _is_pi_session_evicted(result, attempted_session_id)
+    if executor_name == "claude":
+        return _is_claude_session_evicted(result, attempted_session_id)
+    return False
+
+
+# Executors whose provider-session resume contract is PROVEN against the
+# installed CLI (TASK-5977 audit): claude (2.1.241, production since THR-200),
+# codex (0.148.0: `exec resume <thread_id> --json -`, same thread_id
+# re-emitted), pi (0.84.2: `-p --session <id> --mode json`, same session.id
+# re-emitted). opencode is NOT installed here — its resume contract is an
+# unproven gap and it stays fresh (full prompt every turn).
+_RESUME_CAPABLE_EXECUTORS = frozenset({"claude", "codex", "pi"})
+
+
+def _delta_range_is_complete(
+    messages: list[ThreadMessage],
+    *,
+    last_seq: int,
+    max_seq: int,
+) -> bool:
+    """Strict no-message-omission proof for a resumed delta prompt.
+
+    A delta ships every message with ``seq > last_seq`` (the durable delivery
+    watermark), so it is authorized ONLY when the loaded canonical transcript
+    proves the ENTIRE required range ``(last_seq, max_seq]`` is present and
+    contiguous: the load must reach the authoritative transcript max (no
+    truncation — the caller must load uncapped) and every internal sequence
+    must exist (no holes). A null/zero/negative (<= 0) watermark — an
+    ineligible delivered frontier — always fails closed, as do equal/ahead
+    watermarks (empty required range) and any missing or truncated sequence:
+    every one of those ships the complete canonical full-transcript fresh
+    prompt.
+    """
+    if last_seq <= 0:
+        # Null/zero/negative watermark: a stored provider id is INELIGIBLE
+        # for delta resume (TASK-6007 HIGH 3) — always the complete canonical
+        # full transcript, never a delta against the stored id.
+        return False
+    if max_seq <= last_seq:
+        # Equal or ahead watermark — nothing new to ship as a delta.
+        return False
+    if not messages or messages[-1].seq != max_seq:
+        # Truncated load: the required range cannot be proven complete.
+        return False
+    post = [m.seq for m in messages if m.seq > last_seq]
+    return post == list(range(last_seq + 1, max_seq + 1))
 
 
 # Per-(thread, agent) active-invocation lock (provider-agnostic, THR-042). The
@@ -653,7 +885,7 @@ async def run_invocation(
         return
 
     participants = org_state.db.list_thread_participants(inv.thread_id)
-    messages = org_state.db.list_thread_messages(inv.thread_id, limit=10000)
+    messages = org_state.db.list_thread_messages(inv.thread_id, limit=None)
 
     workspace = org_state.root / "workspaces" / inv.agent_name
 
@@ -812,15 +1044,20 @@ async def run_invocation(
     # --- Active-invocation lock (provider-agnostic, THR-042) ---
     # Every executor must acquire the per-(org, thread, agent) lock so no two
     # subprocess sessions for the same agent in the same thread run concurrently.
-    # Only Claude supports --resume and manages thread_session state; the lock
-    # now protects all providers against concurrent runs, not just Claude.
-    is_claude = executor_name == "claude"
+    # Only resume-capable executors (claude/codex/pi) support --resume/--session
+    # and manage thread_session state; the lock protects all providers against
+    # concurrent runs, not just Claude.
+    resume_capable = executor_name in _RESUME_CAPABLE_EXECUTORS
     invocation_guard = _invocation_lock(org_state, inv.thread_id, inv.agent_name)
     async with invocation_guard:
         stored_sid, last_seq = (
             org_state.db.get_thread_session(inv.thread_id, inv.agent_name)
-            if is_claude else (None, 0)
+            if resume_capable else (None, 0)
         )
+        # Authoritative upper bound of the required post-watermark range,
+        # queried independently so the completeness proof never trusts the
+        # loaded list's own extent.
+        max_seq = org_state.db.get_thread_max_message_seq(inv.thread_id)
         resume_sid: str | None = None
         # GitHub #688 Slice B: a claimed conversational REPLY must explicitly
         # state its inclusive delivery range so the agent knows exactly which
@@ -837,16 +1074,33 @@ async def run_invocation(
                 f"(inclusive), in order. Consider every message in that range; "
                 f"do not skip any of them.\n"
             )
-        # GitHub #688 Slice B: a resumed Claude session may use a delta only
-        # when it cannot omit a required sequence. For a claimed REPLY the
-        # session watermark must stay strictly below the claim's
-        # running_from_seq; otherwise ``last_resumed_seq`` would silently
-        # control (and drop) required delivery, so we fall back to the full
-        # prompt. Non-REPLY invocations keep the legacy resume behavior.
+        # Strict no-message-omission (TASK-5989) + resume eligibility
+        # (TASK-6007 HIGH 3): a resumed delta is authorized ONLY when the
+        # durable watermark is a strictly positive delivered frontier AND the
+        # ENTIRE required post-watermark range is proven present and
+        # contiguous in the canonical transcript (loaded uncapped above; see
+        # _delta_range_is_complete). A stored id whose watermark is null/
+        # zero/negative (<= 0) is INELIGIBLE — the runner must make a fresh
+        # invocation with the complete canonical transcript. For a claimed
+        # REPLY the session watermark must stay strictly below the claim's
+        # running_from_seq AND the claim's inclusive end must exist in the
+        # transcript; otherwise ``last_resumed_seq`` would silently control
+        # (and drop) required delivery. Truncated loads, internal holes, and
+        # equal/ahead/null watermarks all fail closed to the full fresh
+        # prompt. Non-REPLY invocations keep the legacy resume behavior but
+        # still require the completeness proof.
+        delta_complete = _delta_range_is_complete(
+            messages, last_seq=last_seq, max_seq=max_seq,
+        )
         can_resume = (
-            is_claude
+            resume_capable
             and stored_sid
-            and (claim is None or last_seq < claim.running_from_seq)
+            and last_seq > 0
+            and (claim is None or (
+                last_seq < claim.running_from_seq
+                and claim.running_through_seq <= max_seq
+            ))
+            and delta_complete
         )
         if can_resume:
             new_messages = [m for m in messages if m.seq > last_seq]
@@ -1084,8 +1338,8 @@ async def run_invocation(
                 await _settle_no_launch(phase)
                 return
 
-            if (is_claude and resume_sid and not result.success
-                    and _is_session_not_found(result)):
+            if (resume_capable and resume_sid and not result.success
+                    and _classify_session_evicted(executor_name, result, resume_sid)):
                 # THR-200: the eviction audit AND the durable session-id
                 # invalidation commit in ONE transaction (see
                 # AuditLogger.log_agent_session_evicted_fallback /
@@ -1096,7 +1350,7 @@ async def run_invocation(
                 # a full prompt instead of a doomed resume against a stale
                 # provider session.
                 audit.log_agent_session_evicted_fallback(
-                    inv.thread_id, agent_name=inv.agent_name, executor="claude",
+                    inv.thread_id, agent_name=inv.agent_name, executor=executor_name,
                     stale_session_id=resume_sid,
                     error=str(getattr(result, "error", "") or ""),
                 )
@@ -1176,7 +1430,7 @@ async def run_invocation(
             #
             # On a CONSUMED/DECLINED turn, the subprocess produced a real callback;
             # the agent_session_id is valid and should be persisted for future resume.
-            if is_claude and result.success and getattr(result, "agent_session_id", None):
+            if resume_capable and result.success and getattr(result, "agent_session_id", None):
                 new_watermark = max(shown_seqs) if shown_seqs else last_seq
                 new_watermark = max(new_watermark, last_seq)
                 org_state.db.update_thread_session(
@@ -1186,7 +1440,7 @@ async def run_invocation(
                 )
                 if resume_sid:
                     audit.log_agent_session_reused(
-                        inv.thread_id, agent_name=inv.agent_name, executor="claude",
+                        inv.thread_id, agent_name=inv.agent_name, executor=executor_name,
                         agent_session_id=result.agent_session_id,
                         triggering_seq=inv.triggering_seq,
                     )
@@ -1213,7 +1467,7 @@ async def run_invocation(
         # Persist the (possibly forked / freshly-minted) session id + delta
         # watermark. Advanced only on a successful subprocess — a failed turn
         # leaves the watermark so the next resume re-includes the skipped messages.
-        if is_claude and result.success and getattr(result, "agent_session_id", None):
+        if resume_capable and result.success and getattr(result, "agent_session_id", None):
             new_watermark = max(shown_seqs) if shown_seqs else last_seq
             new_watermark = max(new_watermark, last_seq)
             org_state.db.update_thread_session(
@@ -1223,7 +1477,7 @@ async def run_invocation(
             )
             if resume_sid:
                 audit.log_agent_session_reused(
-                    inv.thread_id, agent_name=inv.agent_name, executor="claude",
+                    inv.thread_id, agent_name=inv.agent_name, executor=executor_name,
                     agent_session_id=result.agent_session_id,
                     triggering_seq=inv.triggering_seq,
                 )
@@ -1250,7 +1504,7 @@ async def run_invocation(
                 "auto-declined if you exit again without calling one of these."
             )
 
-            if is_claude and getattr(result, "agent_session_id", None):
+            if resume_capable and getattr(result, "agent_session_id", None):
                 # Resume the same agent session and append the nudge.
                 retry_prompt = nudge_prompt
                 retry_resume_sid: str | None = result.agent_session_id
@@ -1318,7 +1572,7 @@ async def run_invocation(
             if after.status in {ThreadInvocationStatus.CONSUMED, ThreadInvocationStatus.DECLINED}:
                 # The nudge worked — terminal callback happened during the
                 # re-invoke. Persist the retry session for future resume.
-                if (is_claude and retry_result is not None and retry_result.success
+                if (resume_capable and retry_result is not None and retry_result.success
                         and getattr(retry_result, "agent_session_id", None)):
                     new_watermark = max(shown_seqs) if shown_seqs else last_seq
                     new_watermark = max(new_watermark, last_seq)
@@ -1330,7 +1584,7 @@ async def run_invocation(
                     if retry_resume_sid:
                         audit.log_agent_session_reused(
                             inv.thread_id, agent_name=inv.agent_name,
-                            executor="claude",
+                            executor=executor_name,
                             agent_session_id=retry_result.agent_session_id,
                             triggering_seq=inv.triggering_seq,
                         )
@@ -1349,7 +1603,7 @@ async def run_invocation(
             # rc!=0 → no_callback: rc=N.
             if retry_result is not None and retry_result.success:
                 # Session may still be persistable (clean exit from the nudge).
-                if (is_claude and getattr(retry_result, "agent_session_id", None)):
+                if (resume_capable and getattr(retry_result, "agent_session_id", None)):
                     new_watermark = max(shown_seqs) if shown_seqs else last_seq
                     new_watermark = max(new_watermark, last_seq)
                     org_state.db.update_thread_session(

@@ -26,6 +26,7 @@ class PiAdapter:
         prompt: str,
         model: str | None = None,
         model_arg: list[str] | None = None,
+        resume_session_id: str | None = None,
     ) -> list[str]:
         """Build the argv list for a Pi subprocess launch.
 
@@ -35,6 +36,12 @@ class PiAdapter:
                 Delivered via stdin (``input_text``), never argv (THR-200).
             model: Agent model id to inject, or None for CLI default.
             model_arg: Model arg template ``[flag, placeholder]`` or None.
+            resume_session_id: Session UUID to continue via ``--session <id>``
+                (verified live on pi 0.84.2: the same ``session.id`` header is
+                re-emitted after continuation). ``--session`` FAILS when the
+                id is missing — the exact eviction signature the thread runner
+                needs. ``--session-id`` would silently create a fresh session
+                (message omission) and is never used on the thread path.
         """
         cmd: list[str] = [cli_path]
         if model and model_arg:
@@ -45,4 +52,6 @@ class PiAdapter:
             "--mode",
             "json",
         ]
+        if resume_session_id:
+            cmd += ["--session", resume_session_id]
         return cmd
