@@ -200,6 +200,8 @@ Full schema and examples: `protocol/00-completion-contract.md`.
 
 A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg when a child terminates completed with a matching verdict. Since THR-211, auto-advance may also fire from a child whose completion report has durably landed while its task row still reads `in_progress` (the completion-status-lag window) — the recognition is session-safe and at-most-once, and the chain gate consumes the exact authenticated `(task_id, assigned_agent, current_session_id)` report so a newer unrelated row can never advance or clear the chain; see `protocol/00-completion-contract.md` and `protocol/05c-orchestrator.md` (Completion-status lag).
 
+A configured reviewer leg (org setting `reviewer_agents`, default `code_reviewer`) MUST declare `expect_verdict: "APPROVE"`; omission is a HARD REJECT — the whole delegation is denied before any child spawns, the owner receives a feedback task result and feedback orchestration step naming the required `expect_verdict: "APPROVE"`, and the root stays PENDING and is re-enqueued for a corrected decision (never a root failure). Missing agent / missing workspace delegates keep hard terminal failure. Same semantics apply to pipeline-carrier legs in fan-out decisions.
+
 Implementation: `runtime/orchestrator/chain.py` and `runtime/orchestrator/run_step.py`. Spec: `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md`.
 
 Example:
