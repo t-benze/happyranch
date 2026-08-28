@@ -92,6 +92,18 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
   beforeEach(() => { vi.restoreAllMocks(); });
   afterEach(() => { vi.restoreAllMocks(); });
 
+  test('custom CLI switch uses the primary action treatment without changing its wiring', async () => {
+    const user = userEvent.setup();
+    renderConnect();
+
+    const generate = screen.getByRole('button', { name: 'Generate connect prompt' });
+    const useCustom = screen.getByRole('button', { name: 'Connect a custom CLI instead' });
+
+    expect(useCustom).toHaveClass(...generate.className.split(' '));
+    await user.click(useCustom);
+    expect(screen.getByLabelText(/name this cli/i)).toBeInTheDocument();
+  });
+
   test('form requires only a valid non-built-in name -- no workspace-CLI field exists', async () => {
     const user = userEvent.setup();
     renderConnect();

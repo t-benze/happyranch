@@ -200,13 +200,12 @@ export function BuiltinConnect({
         >
           {flow.mint.isPending ? 'Generating…' : 'Generate connect prompt'}
         </Button>
-        <button
+        <Button
           type="button"
           onClick={onUseCustom}
-          className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 text-xs underline-offset-2 hover:underline"
         >
           Connect a custom CLI instead
-        </button>
+        </Button>
         {skipSlot}
       </div>
 
