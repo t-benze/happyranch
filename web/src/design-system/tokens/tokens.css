@@ -277,9 +277,13 @@
 
   /* ====================================================================== */
   /* RAIL — Direction-A 244px sidebar / layout rail (ds.css --rail-w)       */
+  /* TASK-5987: --spacing-rail-narrow (56px) is the collapsed icon-rail     */
+  /* width used below `md` (768px) so the AppShell rail never leaves a      */
+  /* sliver of content at mobile viewports (e.g. 375x812).                  */
   /* ====================================================================== */
 
   --spacing-rail: 244px;
+  --spacing-rail-narrow: 56px;
 
   /* ====================================================================== */
   /* CONTENT — Direction-A centered content cap (ds.css .wrap max-width)     */

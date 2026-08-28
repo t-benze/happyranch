@@ -26,7 +26,12 @@ ships the real backends behind the capability factory:
   deterministic default of ``build_default_host_supervisor()`` and the
   unsupported/unhealthy-environment fallback. The daemon drain calls
   ``shutdown()`` in the app lifespan finally. Thread, dream, and wake
-  producers stay structurally unchanged.
+  producers run through the same daemon-wide supervisor (THR-207 producer
+  wiring): each owns a real admission lease + atomic ownership at grant,
+  launches through the selected capability backend, finishes containment
+  before exactly-once lease release on every terminal path, and leaves a
+  drain/cancellation-interrupted row for the existing daemon-restart
+  recovery.
 
 Slice B backends (``runtime/platform/linux_systemd.py``,
 ``runtime/platform/macos_process_group.py``) implement the same contract with

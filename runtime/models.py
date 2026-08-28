@@ -505,7 +505,8 @@ class ThreadRecord(BaseModel):
     # absent = per-thread governs) does not disable it org-wide.
     reply_exchange_enabled: bool = True
     # Most recent message created_at (derived; NULL for threads without
-    # messages). Feeds the pinned-section activity ranking (THR-209).
+    # messages). Informational on the wire (THR-209 msg 9: pinned ranking
+    # uses the immutable numeric thread ID, not activity).
     last_activity_at: datetime | None = None
 
 

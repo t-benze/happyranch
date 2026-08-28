@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import React from 'react';
 
 // ---------------------------------------------------------------------------
 // classifyTailEvent — pure unit tests (no globals needed)
 // ---------------------------------------------------------------------------
-import { classifyTailEvent } from './_real-threads';
+import { classifyTailEvent, numericThreadId, reorderOpenThreads } from './_real-threads';
 // The mocked @/lib/api module — `threads` carries the THR-209 mutation fns.
 import { threads as threadsApi } from '@/lib/api';
 
@@ -370,6 +370,269 @@ describe('useSetThreadPinned — optimistic pin (THR-209)', () => {
       'threads', SLUG, { status: 'open' },
     ]);
     expect(list?.threads[0].pinned).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-5987 — reorderOpenThreads pure mirror of the server OPEN-list rule
+// ---------------------------------------------------------------------------
+
+describe('reorderOpenThreads — numeric-id-desc pin rank mirror (TASK-5987)', () => {
+  interface Row {
+    thread_id: string;
+    subject: string;
+    pinned: boolean;
+    pinned_at: string | null;
+    started_at: string;
+  }
+
+  function row(id: string, overrides: Partial<Row> = {}): Row {
+    return {
+      thread_id: id,
+      subject: id,
+      pinned: false,
+      pinned_at: null,
+      started_at: '2026-05-14T00:00:00Z',
+      ...overrides,
+    };
+  }
+
+  it('ranks pinned above unpinned and orders pinned by NUMERIC id desc (THR-10 above THR-2)', () => {
+    const input = [
+      row('THR-2', { pinned: true, pinned_at: '2026-05-20T00:00:00Z' }),
+      row('THR-10', { pinned: true, pinned_at: '2026-05-21T00:00:00Z' }),
+      row('THR-1'),
+    ];
+    // Lexicographic id ordering would put THR-2 first ('2' < '10'); the server
+    // rule is numeric, so THR-10 ranks above THR-2.
+    expect(reorderOpenThreads(input).map((t) => t.thread_id)).toEqual([
+      'THR-10',
+      'THR-2',
+      'THR-1',
+    ]);
+  });
+
+  it('is activity-independent: pinned rank ignores last_activity_at', () => {
+    const input = [
+      // THR-2 has the NEWEST activity but the LOWER numeric id — must rank below.
+      row('THR-2', { pinned: true, pinned_at: '2026-05-20T00:00:00Z' }),
+      row('THR-10', { pinned: true, pinned_at: '2026-05-19T00:00:00Z' }),
+    ];
+    expect(reorderOpenThreads(input).map((t) => t.thread_id)).toEqual([
+      'THR-10',
+      'THR-2',
+    ]);
+  });
+
+  it('keeps unpinned rows in the established started_at-desc ordinary order', () => {
+    const input = [
+      row('THR-3', { started_at: '2026-05-12T00:00:00Z' }),
+      row('THR-10', { started_at: '2026-05-14T00:00:00Z' }),
+      row('THR-1', { started_at: '2026-05-13T00:00:00Z' }),
+    ];
+    expect(reorderOpenThreads(input).map((t) => t.thread_id)).toEqual([
+      'THR-10',
+      'THR-1',
+      'THR-3',
+    ]);
+  });
+
+  it('handles empty and single-row lists', () => {
+    expect(reorderOpenThreads([])).toEqual([]);
+    expect(reorderOpenThreads([row('THR-1')]).map((t) => t.thread_id)).toEqual([
+      'THR-1',
+    ]);
+  });
+
+  it('is a pure function: does not mutate the input array', () => {
+    const input = [row('THR-2', { pinned: true, pinned_at: 'x' }), row('THR-10')];
+    const snapshot = input.map((t) => t.thread_id);
+    reorderOpenThreads(input);
+    expect(input.map((t) => t.thread_id)).toEqual(snapshot);
+  });
+});
+
+describe('numericThreadId — mirrors CAST(SUBSTR(t.id, 5) AS INTEGER)', () => {
+  it('parses the THR-NNN numeric suffix (zero-padded and bare)', () => {
+    expect(numericThreadId('THR-10')).toBe(10);
+    expect(numericThreadId('THR-2')).toBe(2);
+    expect(numericThreadId('THR-003')).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-5987 — useSetThreadPinned optimistic OPEN-list reorder
+// ---------------------------------------------------------------------------
+
+describe('useSetThreadPinned — optimistic open-list reorder (TASK-5987)', () => {
+  interface Row {
+    thread_id: string;
+    subject: string;
+    pinned: boolean;
+    pinned_at: string | null;
+    started_at: string;
+  }
+
+  const SLUG2 = SLUG;
+  const OPEN_KEY = ['threads', SLUG2, { status: 'open' }] as const;
+  const ARCHIVED_KEY = ['threads', SLUG2, { status: 'archived' }] as const;
+  const STATUSLESS_KEY = ['threads', SLUG2, {}] as const;
+
+  function row(id: string, overrides: Partial<Row> = {}): Row {
+    return {
+      thread_id: id,
+      subject: id,
+      pinned: false,
+      pinned_at: null,
+      started_at: '2026-05-14T00:00:00Z',
+      ...overrides,
+    };
+  }
+
+  /** Seed every list variant the UI cache can hold, in SERVER order. */
+  function seed(qc: QueryClient): void {
+    qc.setQueryData([...OPEN_KEY], {
+      // server order: THR-2 pinned first, then unpinned started_at desc.
+      threads: [
+        row('THR-2', { pinned: true, pinned_at: '2026-05-20T00:00:00Z', started_at: '2026-05-12T00:00:00Z' }),
+        row('THR-10', { started_at: '2026-05-14T00:00:00Z' }),
+        row('THR-1', { started_at: '2026-05-13T00:00:00Z' }),
+      ],
+    });
+    qc.setQueryData([...ARCHIVED_KEY], {
+      // ordinary archived order (archived_at desc) — pins interleaved.
+      threads: [
+        row('THR-5', { pinned: true, pinned_at: '2026-05-20T00:00:00Z', started_at: '2026-05-11T00:00:00Z' }),
+        row('THR-4', { started_at: '2026-05-10T00:00:00Z' }),
+      ],
+    });
+    qc.setQueryData([...STATUSLESS_KEY], {
+      // status-less mixed view — ordinary started_at desc, no pin rank.
+      threads: [
+        row('THR-10', { started_at: '2026-05-14T00:00:00Z' }),
+        row('THR-5', { pinned: true, pinned_at: '2026-05-20T00:00:00Z', started_at: '2026-05-11T00:00:00Z' }),
+        row('THR-2', { started_at: '2026-05-12T00:00:00Z' }),
+      ],
+    });
+    qc.setQueryData(['thread', SLUG2, 'THR-10'], {
+      ...row('THR-10'),
+      participants: [],
+      messages: [],
+      reply_delivery: [],
+    });
+  }
+
+  function ids(qc: QueryClient, key: readonly unknown[]): string[] {
+    const data = qc.getQueryData<{ threads: Row[] }>(key as never);
+    return (data?.threads ?? []).map((t) => t.thread_id);
+  }
+
+  it('pinning a higher-id thread reorders the OPEN cache to the server rule BEFORE the response/refetch', async () => {
+    const qc = makeClient();
+    seed(qc);
+    // Deferred response — keeps the mutation pending so the optimistic state
+    // is observable before the network settles.
+    let resolvePin!: (v: unknown) => void;
+    (threadsApi.setThreadPinned as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise((res) => {
+        resolvePin = res;
+      }),
+    );
+
+    const { result } = renderHook(() => realThreadsApi.useSetThreadPinned('THR-10'), {
+      wrapper: wrapper(qc),
+    });
+    await act(async () => {
+      void result.current.mutateAsync({ pinned: true });
+    });
+
+    // Optimistic cache applied while the response is still in flight.
+    await waitFor(() => expect(ids(qc, OPEN_KEY)).toEqual(['THR-10', 'THR-2', 'THR-1']));
+    expect(qc.getQueryData<{ threads: Row[] }>(OPEN_KEY as never)?.threads[0].pinned).toBe(true);
+    // Archived + status-less caches keep their ordinary order (no reorder).
+    expect(ids(qc, ARCHIVED_KEY)).toEqual(['THR-5', 'THR-4']);
+    expect(ids(qc, STATUSLESS_KEY)).toEqual(['THR-10', 'THR-5', 'THR-2']);
+
+    // Release the response — success keeps the server-rule order and marks the
+    // list for refetch (server reconciliation).
+    await act(async () => {
+      resolvePin({ thread_id: 'THR-10', pinned: true });
+    });
+    expect(ids(qc, OPEN_KEY)).toEqual(['THR-10', 'THR-2', 'THR-1']);
+    expect(qc.getQueryState(OPEN_KEY as never)?.isInvalidated).toBe(true);
+  });
+
+  it('unpinning re-inserts the row into ordinary started_at-desc order BEFORE the response/refetch', async () => {
+    const qc = makeClient();
+    seed(qc);
+    let resolvePin!: (v: unknown) => void;
+    (threadsApi.setThreadPinned as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise((res) => {
+        resolvePin = res;
+      }),
+    );
+
+    const { result } = renderHook(() => realThreadsApi.useSetThreadPinned('THR-2'), {
+      wrapper: wrapper(qc),
+    });
+    await act(async () => {
+      void result.current.mutateAsync({ pinned: false });
+    });
+
+    // THR-2 (started 05-12) drops to the ordinary section in started_at order:
+    // THR-10 (05-14), THR-1 (05-13), THR-2 (05-12) — while the POST is pending.
+    await waitFor(() => expect(ids(qc, OPEN_KEY)).toEqual(['THR-10', 'THR-1', 'THR-2']));
+    expect(qc.getQueryData<{ threads: Row[] }>(OPEN_KEY as never)?.threads[0].pinned).toBe(false);
+
+    await act(async () => {
+      resolvePin({ thread_id: 'THR-2', pinned: false });
+    });
+    expect(ids(qc, OPEN_KEY)).toEqual(['THR-10', 'THR-1', 'THR-2']);
+    expect(qc.getQueryState(OPEN_KEY as never)?.isInvalidated).toBe(true);
+  });
+
+  it('rolls back BOTH pin state and the exact prior ordering on failure', async () => {
+    const qc = makeClient();
+    seed(qc);
+    const priorOpen = JSON.parse(
+      JSON.stringify(qc.getQueryData<{ threads: Row[] }>(OPEN_KEY as never)),
+    );
+    (threadsApi.setThreadPinned as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('boom'),
+    );
+
+    const { result } = renderHook(() => realThreadsApi.useSetThreadPinned('THR-10'), {
+      wrapper: wrapper(qc),
+    });
+    await act(async () => {
+      await expect(result.current.mutateAsync({ pinned: true })).rejects.toThrow('boom');
+    });
+
+    expect(qc.getQueryData<{ threads: Row[] }>(OPEN_KEY as never)).toEqual(priorOpen);
+    expect(ids(qc, ARCHIVED_KEY)).toEqual(['THR-5', 'THR-4']);
+    expect(ids(qc, STATUSLESS_KEY)).toEqual(['THR-10', 'THR-5', 'THR-2']);
+  });
+
+  it('leaves archived/status-less caches untouched in order even when the flipped row lives there', async () => {
+    const qc = makeClient();
+    seed(qc);
+    (threadsApi.setThreadPinned as ReturnType<typeof vi.fn>).mockResolvedValue({
+      thread_id: 'THR-5',
+      pinned: false,
+    });
+
+    const { result } = renderHook(() => realThreadsApi.useSetThreadPinned('THR-5'), {
+      wrapper: wrapper(qc),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ pinned: false });
+    });
+
+    // The flag flips everywhere the row is cached, but NO list is reordered:
+    // archived + status-less keep their ordinary order (no pin presentation).
+    expect(ids(qc, ARCHIVED_KEY)).toEqual(['THR-5', 'THR-4']);
+    expect(ids(qc, STATUSLESS_KEY)).toEqual(['THR-10', 'THR-5', 'THR-2']);
+    expect(qc.getQueryData<{ threads: Row[] }>(ARCHIVED_KEY as never)?.threads[0].pinned).toBe(false);
   });
 });
 

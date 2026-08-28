@@ -22,8 +22,14 @@
 > through the real task producer and BOTH executor Popen launch bodies
 > (`runtime/orchestrator/executors.py`), so real task sessions launch into
 > the selected capability backend with opaque cancellation and supervisor-
-> owned 429 retry; thread/dream/wake producers are wired in later slices
-> against the same contract; `runtime/platform/isolation.py`
+> owned 429 retry; the thread/dream/wake producer slice (TASK-5967) wires
+> the remaining top-level producers (`thread_runner.run_invocation`,
+> `dream_runner.run_dream`, `wake_runner.run_wake`) against the same
+> contract — each owns a real admission lease + atomic ownership at grant,
+> launches through the selected capability backend, finishes containment
+> before exactly-once lease release on every terminal path, and leaves a
+> drain/cancellation-interrupted row for the existing daemon-restart
+> recovery; `runtime/platform/isolation.py`
 > (canonical-skill-store integrity + same-owner launch) is deliberately
 > untouched by this design. The observability slice (this PR) wires Receipt
 > publication into the EXISTING bounded operator surfaces — the bearer-authed
@@ -431,6 +437,20 @@ PIDs / 2800% CPU` remain unapproved measurement candidates.
   probe). Publication failures are contained at the supervisor seam. No
   schema/dependency/config/provider/producer change; thread/dream/wake stay
   unwired.
+- **B‴ — thread/dream/wake producers (TASK-5967):** wire the remaining top-
+  level producers (`thread_runner.run_invocation`, `dream_runner.run_dream`,
+  `wake_runner.run_wake`) through the same daemon-wide supervisor. Each
+  invocation owns a real admission lease + atomic ownership at grant,
+  launches through the selected capability backend, finishes containment
+  before exactly-once lease release on every terminal path
+  (finish → residue → publish → release), and a daemon drain/cancellation
+  that interrupts a producer leaves its row for the existing daemon-restart
+  recovery (threads reaped/replaced, dreams `recover_running_dreams`, wakes
+  `recover_running`) instead of settling it. Thread-specific semantics are
+  preserved: the Claude session-not-found eviction fallback and the THR-071
+  no-callback nudge re-invoke run as additional supervised phases, each
+  publishing its own honest bounded receipt. The legacy uncontained path
+  remains when the supervisor is absent (tests / idle state).
 - **C — bounded enforcement:** canary Linux limits chosen from measured
   receipts; macOS remains honestly capped.
 - **D — evidence-based policy proposal:** only then propose session/resource

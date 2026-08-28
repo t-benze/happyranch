@@ -61,7 +61,7 @@ class _SpawningExecutor:
         self._slug = slug
         self._wh = work_hour_id
 
-    def run(self, *, workspace, prompt, session_id, timeout_seconds):
+    def run(self, *, workspace, prompt, session_id, timeout_seconds, **_kwargs):
         # The wake reads the routine checklist (verbatim in the prompt) and
         # self-dispatches via the single-line callback.
         assert "## Routine Tasks" in prompt
