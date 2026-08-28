@@ -61,6 +61,7 @@ revocation epoch) and is out of scope for this Unit-3 local mechanism.
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import json
 import os
@@ -389,6 +390,14 @@ class AtomicFileTrustStateStore:
         are ONE serialized boundary (the TASK-6044 reviewer [HIGH] finding-1
         check-then-save race is closed). Reads stay lock-free and fail
         closed on a torn pair exactly as before.
+
+        The working copy handed to the transaction body is a DEEP COPY of
+        the loaded state (mirroring ``InMemoryTrustStateStore``), so an
+        abort or an exception discards the mutation even on FIRST-RUN —
+        ``load()`` returns the mutable ``_default_state`` when no pair
+        exists, and the transaction handle must never alias it (the
+        TASK-6047 reviewer [HIGH] finding: a discarded first-run mutation
+        leaked into later same-process loads/transactions).
         """
         with self._lock_file():
             tx = _TrustStateTransaction(self, self.load(), self._next_generation())
@@ -719,13 +728,15 @@ class AtomicFileTrustStateStore:
 class _TrustStateTransaction:
     """Handle yielded by ``AtomicFileTrustStateStore.transaction()``.
 
-    ``state`` is the working copy loaded under the inter-process lock;
-    ``generation`` is the exact monotonic generation this commit publishes.
-    ``commit()`` publishes the pair immediately (idempotent) — used when the
-    deny side must be durable BEFORE a failure is surfaced; ``abort()``
-    suppresses the normal-exit publish (a deny path has no side effect, not
-    even a generation bump). An exception in the transaction body always
-    suppresses the publish.
+    ``state`` is a DEEP COPY of the working state loaded under the
+    inter-process lock (never the store's mutable ``_default_state`` — an
+    abort or exception must discard the mutation, not leak it into later
+    same-process loads); ``generation`` is the exact monotonic generation
+    this commit publishes. ``commit()`` publishes the pair immediately
+    (idempotent) — used when the deny side must be durable BEFORE a failure
+    is surfaced; ``abort()`` suppresses the normal-exit publish (a deny
+    path has no side effect, not even a generation bump). An exception in
+    the transaction body always suppresses the publish.
     """
 
     __slots__ = ("_store", "_state", "_generation", "_published", "_aborted")
@@ -734,7 +745,7 @@ class _TrustStateTransaction:
         self, store: AtomicFileTrustStateStore, state: TrustState, generation: int
     ) -> None:
         self._store = store
-        self._state = state
+        self._state = copy.deepcopy(state)
         self._generation = generation
         self._published = False
         self._aborted = False

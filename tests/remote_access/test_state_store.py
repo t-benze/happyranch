@@ -1063,3 +1063,159 @@ class TestInterProcessTransaction:
         with store.transaction() as tx:
             tx.state.revocation_epoch = 1
         assert AtomicFileTrustStateStore(path, _fresh_state()).load().revocation_epoch == 1
+
+
+class TestFirstRunTransactionIsolation:
+    """TASK-6047 [HIGH] regressions: the FIRST-RUN transaction working copy
+    must never alias the store's mutable ``_default_state``. An abort or an
+    exception in the transaction body discards the mutation — a later
+    ``load()`` OR a following transaction on the SAME store observes none of
+    the discarded device/pairing/revocation state, no snapshot/anchor pair is
+    published, and a later valid commit still works and is loadable.
+
+    The pre-existing abort/exception tests construct a FRESH store and only
+    assert the persisted pair is untouched — they never observe the leaked
+    mutation inside ``self._default_state``. These tests use the SAME store
+    (the reviewer's probe shape) so the alias is exercised.
+    """
+
+    @staticmethod
+    def _no_pair_published(path: Path) -> None:
+        assert not path.exists(), "abort/exception must publish no snapshot"
+        assert not _anchor_path(path).exists(), "abort/exception must publish no anchor"
+
+    @staticmethod
+    def _device(device_id: str = "ghost") -> DeviceAuthorization:
+        return DeviceAuthorization(
+            device_id=device_id,
+            tenant_id="tenant-a",
+            home_id="home-a",
+            authorization_epoch=1,
+            expires_at=NOW() + timedelta(days=30),
+        )
+
+    def test_first_run_abort_discards_device_and_later_commit_works(self, tmp_path) -> None:
+        """A first-run abort of a device mutation must not leak into the SAME
+        store's later load()/transactions, and a later valid commit must
+        still publish a loadable pair (the store is never wedged)."""
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with store.transaction() as tx:
+            tx.state.devices["ghost"] = self._device()
+            tx.abort()
+        self._no_pair_published(path)
+        # Same store, no fresh-store masking: the discarded mutation is gone.
+        assert store.load().devices == {}
+        assert store.anchored_generation() is None
+        # A following transaction on the same store observes none of it.
+        with store.transaction() as tx:
+            assert "ghost" not in tx.state.devices
+            tx.state.revocation_epoch = 1
+        # The later valid commit is durable and loadable by a fresh store.
+        fresh = AtomicFileTrustStateStore(path, _fresh_state())
+        loaded = fresh.load()
+        assert loaded.revocation_epoch == 1
+        assert "ghost" not in loaded.devices
+        assert fresh.anchored_generation() == 1
+
+    def test_first_run_exception_discards_device(self, tmp_path) -> None:
+        """A first-run exception after a device mutation must discard it on
+        the same store (no leak, no published pair)."""
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with pytest.raises(RuntimeError):
+            with store.transaction() as tx:
+                tx.state.devices["ghost"] = self._device()
+                raise RuntimeError("boom")
+        self._no_pair_published(path)
+        assert store.load().devices == {}
+        with store.transaction() as tx:
+            assert "ghost" not in tx.state.devices
+
+    def test_first_run_abort_discards_pending_pairing(self, tmp_path) -> None:
+        """A first-run abort of a pairing-code mutation (pending_pairings)
+        must not leak into the same store."""
+        from runtime.remote_access.authorization import PendingPairing
+
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with store.transaction() as tx:
+            tx.state.pending_pairings["phone"] = PendingPairing(
+                code_digest="a" * 64,
+                expires_at=NOW() + timedelta(minutes=5),
+            )
+            tx.abort()
+        self._no_pair_published(path)
+        assert store.load().pending_pairings == {}
+        with store.transaction() as tx:
+            assert "phone" not in tx.state.pending_pairings
+
+    def test_first_run_exception_discards_pending_pairing(self, tmp_path) -> None:
+        """A first-run exception after a pairing-code mutation must discard
+        it on the same store."""
+        from runtime.remote_access.authorization import PendingPairing
+
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with pytest.raises(RuntimeError):
+            with store.transaction() as tx:
+                tx.state.pending_pairings["phone"] = PendingPairing(
+                    code_digest="a" * 64,
+                    expires_at=NOW() + timedelta(minutes=5),
+                )
+                raise RuntimeError("boom")
+        self._no_pair_published(path)
+        assert store.load().pending_pairings == {}
+        with store.transaction() as tx:
+            assert "phone" not in tx.state.pending_pairings
+
+    def test_first_run_abort_discards_revocation(self, tmp_path) -> None:
+        """A first-run abort of a revocation mutation (epoch + revoked flag)
+        must not leak into the same store."""
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with store.transaction() as tx:
+            tx.state.devices["device-a"] = self._device("device-a")
+            tx.state.revocation_epoch = 1
+            for dev in tx.state.devices.values():
+                object.__setattr__(dev, "revoked", True)
+            tx.abort()
+        self._no_pair_published(path)
+        loaded = store.load()
+        assert loaded.devices == {}
+        assert loaded.revocation_epoch == 0
+        with store.transaction() as tx:
+            assert tx.state.revocation_epoch == 0
+            assert tx.state.devices == {}
+
+    def test_first_run_exception_discards_revocation(self, tmp_path) -> None:
+        """A first-run exception after a revocation mutation must discard it
+        on the same store."""
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with pytest.raises(RuntimeError):
+            with store.transaction() as tx:
+                tx.state.revocation_epoch = 1
+                raise RuntimeError("boom")
+        self._no_pair_published(path)
+        loaded = store.load()
+        assert loaded.revocation_epoch == 0
+        assert loaded.devices == {}
+        with store.transaction() as tx:
+            assert tx.state.revocation_epoch == 0
+
+    def test_persisted_abort_does_not_leak_into_same_store(self, tmp_path) -> None:
+        """After a first commit, an abort of a later transaction must also
+        not leak into the same store's next load (isolation holds in the
+        persisted path too)."""
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with store.transaction() as tx:
+            tx.state.devices["device-a"] = self._device("device-a")
+        with store.transaction() as tx:
+            tx.state.devices["ghost"] = self._device()
+            tx.abort()
+        loaded = store.load()
+        assert "device-a" in loaded.devices
+        assert "ghost" not in loaded.devices
+        assert store.anchored_generation() == 1
