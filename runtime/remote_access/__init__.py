@@ -25,6 +25,7 @@ from runtime.remote_access.credentials import (
     DaemonCredentialProvider,
     FileDaemonCredentialProvider,
     StaticDaemonCredentialProvider,
+    SystemdCredentialProvider,
 )
 from runtime.remote_access.gateway import ConnectorGateway, GatewayContext
 from runtime.remote_access.identity import (
@@ -47,12 +48,19 @@ from runtime.remote_access.models import (
 )
 from runtime.remote_access.revocation import RevocationCoordinator, RevocationIncomplete
 from runtime.remote_access.state import InMemoryTrustStateStore, TrustStateStore
+from runtime.remote_access.state_store import (
+    AtomicFileTrustStateStore,
+    CorruptTrustStateError,
+    StateStoreError,
+)
 from runtime.remote_access.streams import StreamClosed, StreamHandle, StreamRegistry
 
 __all__ = [
+    "AtomicFileTrustStateStore",
     "AuthorizationVerifier",
     "ConnectorGateway",
     "ConnectorIdentity",
+    "CorruptTrustStateError",
     "CredentialUnavailable",
     "DaemonCredentialProvider",
     "Decision",
@@ -74,11 +82,13 @@ __all__ = [
     "RevocationIncomplete",
     "RevocationSignal",
     "SingleUseGuard",
+    "StateStoreError",
     "StaticDaemonCredentialProvider",
     "StaticProofVerifier",
     "StreamClosed",
     "StreamHandle",
     "StreamRegistry",
+    "SystemdCredentialProvider",
     "TrustState",
     "TrustStateStore",
 ]

@@ -213,7 +213,7 @@ This contract PR covered **merge unit A** (normative contracts, threat fixtures,
 
 - **Portable connector core (TASK-5724 phase unit 2 = tranche merge unit C) — IMPLEMENTED** by merge unit C (TASK-5842): `runtime/remote_access/` (strict parser/normalization, versioned route-policy consumer with schema/digest/version/staleness fail-closed drift **and the locked nine-step decision order, default behavior, every security-relevant nested normalization/header-stripping/upgrade value by exact canonical equality (contradictory non-empty prose and altered allowed-template lists rejected at load), forbidden classes, and operational state validated at load — unknown states never treated as active**, connector identity + device-proof verifier seam, current authorization/revocation with live-stream closure **through one authoritative `RevocationCoordinator` transaction that seals the stream registry fail closed before applying trust-state revocation, serializes concurrent revocations, and shares/persists the complete cleanup terminal result — no caller returns success while an in-flight or completed cleanup failure relevant to the sealed generation is unreported (TASK-5867); admission and revocation share one atomic ownership boundary — the sealed-flag check and registration are one critical section, the seal (the linearization point) precedes the live-stream snapshot, any admission not fully registered before the seal fails closed and never returns a usable wrapper, and transport open/close and duplicate-replacement callbacks never run under the lifecycle lock (TASK-5874)**, allow-list enforcement, remote-auth/hop-by-hop stripping, daemon-credential-provider seam, and a loopback-only forwarding abstraction **whose boundary normalizes every forward/open/stream failure — including connection refusal, timeouts, and hostile exception text — into stable Unit-A deny categories and deterministically closes partial resources**) plus `tests/remote_access/` (focused, adversarial, and checked-in mutation tests consuming the Unit-A fixtures; loopback-only test harness; in-memory persistence abstraction only). It adds **no** tailnet or externally reachable bind, **no** Headscale/DERP/Services integration, **no** durable persistence schema/migration, and **no** packaging/service installation.
 - **Hostile tenant-isolation runtime harness (tranche merge unit B)** — IMPLEMENTED at `labs/tenant_isolation/` (see §18); it consumes the same fixtures and shares the fail-closed contract.
-- **Linux supervised connector packaging (TASK-5724 phase unit 3)** — outside and unimplemented: systemd lifecycle, permissions, diagnostics, lab-only provider adapter.
+- **Linux supervised connector packaging (TASK-5724 phase unit 3)** — IMPLEMENTED (TASK-5972): systemd lifecycle + permissions + local diagnostics + upgrade/recovery + a LAB-ONLY provider adapter, in `runtime/remote_access/` (`state_store.py`, `readiness.py`, `systemd_unit.py`, `service_manager.py`, `lab_provider.py`, `supervisor.py`, `cli.py`; additive `SystemdCredentialProvider` in `credentials.py`), with tests at `tests/remote_access/` (deterministic fail-closed unit battery + real user-systemd conformance under `-m integration` gated on an operational probe with explicit skip reasons). See §19 for the Linux packaging contract.
 - **Lab capacity spike (phase unit 4 / tranche unit D)** — deferred by founder THR-097 seq108; its retained PR #733 is closed-unmerged and its partial CI-runner artifacts support no capacity, SLA, DERP-share, economics, or pricing claim.
 - Services domain/API design + additive schema, tenant-cell orchestrator, macOS managed enrollment, managed trust sync, DERP operations slice, signed end-to-end beta, macOS-home/Windows-home conformance, Swift retirement, production readiness.
 
@@ -236,6 +236,49 @@ Validators are semantic, not tautological snapshots: the normative invariants ar
 
 - `CLAUDE.md` — "Managed remote access (normative contract)" Essentials bullet (load-bearing invariants + implementation status).
 - `docs/superpowers/specs/README.md` — this spec is indexed as `current`.
-- Connector core implementation: `runtime/remote_access/` (portable supervised Python connector skeleton, loopback-only harness) with `tests/remote_access/`.
+- Connector core implementation: `runtime/remote_access/` (portable supervised Python connector skeleton + Linux supervised connector packaging, loopback-only harness + LAB-ONLY conformance adapter) with `tests/remote_access/`.
 - Hostile tenant-isolation runtime harness: `labs/tenant_isolation/`.
 - The web OpenAPI coverage test (`web/src/test/openapi-coverage.test.ts`), the Swift drift-guard, and `tests/contract/route-classification.json` are **unchanged** consumers/inputs; this contract reads them but does not modify them.
+
+## 19. Linux supervised connector packaging contract (phase unit 3 — implemented)
+
+### Scope and status
+
+Phase unit 3 (TASK-5972) ships the supervised Linux packaging for the connector core: systemd-managed lifecycle with a least-privilege service user/filesystem posture, the five-gate readiness contract, secure local credential-provider and trust-state-store implementations through the already-approved protocols, local diagnostics, upgrade/rollback, and a clearly LAB-ONLY provider adapter sufficient for Mac-client → Linux-home conformance. No tailnet/Headscale/DERP/Services integration, no managed enrollment, no tsnet flip, no telemetry, no new top-level dependency, no permission-model change, and no production provisioning are included. **The lab provider adapter is not a product or Supported-DIY lane and does not close THR-034** (its static lab device proof, explicit lab bind address, and `lab_only` gating are conformance vehicles only).
+
+### Fixed invariants preserved
+
+- The daemon stays loopback-only; the connector forwards to **literal `127.0.0.1`** only and injects the daemon bearer on the final hop (existing `HttpLoopbackForwarder` contract; `ConnectorReadiness` probes `127.0.0.1` and refuses any other host).
+- **No listener unless ALL five readiness gates pass**: daemon loopback reachability, credential permissions (0600 owner-only file or systemd `LoadCredential=` injection), current policy (`RoutePolicyConsumer.require_current`), bind identity (configured vs trust-state identity exact match), and non-corrupt trust state. Any failure = no listener; readiness loss while listening = immediate listener stop (fail closed).
+- The connector owns the allow-list and atomic fail-closed revocation (existing `ConnectorGateway`/`RevocationCoordinator`); revocation persists across restarts through the local trust-state store.
+- No daemon plaintext at Headscale/DERP (unchanged; control-plane units are outside this unit).
+
+### Least-privilege systemd posture
+
+System-mode unit renders: dedicated unprivileged service user/group, empty `CapabilityBoundingSet=`/`AmbientCapabilities=`, `NoNewPrivileges=yes`, `ProtectSystem=strict` with explicit `StateDirectory=`/`RuntimeDirectory=`/`LogsDirectory=`, `ProtectHome=yes`, `PrivateTmp=yes`, `PrivateDevices=yes`, `ProtectKernelTunables=yes`, `ProtectKernelModules=yes`, `ProtectControlGroups=yes`, `RestrictSUIDSGID=yes`, `RestrictRealtime=yes`, `LockPersonality=yes`, `MemoryDenyWriteExecute=yes`, `RestrictAddressFamilies=`, `SystemCallArchitectures=native`, `UMask=0077`, `Type=notify` + `WatchdogSec=` + `Restart=on-failure`, and `LoadCredential=daemon.token:<daemon_token_path>` (the service user never reads the daemon home; the token VALUE is never rendered in the unit). User-mode renders omit the directives the user manager cannot apply (`PrivateDevices=`, `ProtectKernelModules=`, capability directives) — verified on real systemd (Ubuntu 26.04) that user units carrying them fail to start.
+
+### Local trust-state store (schema-agnostic)
+
+`AtomicFileTrustStateStore` satisfies the already-approved `TrustStateStore` protocol with a versioned non-normative envelope: atomic replace + fsync (temp file, rename, directory fsync), owner-only file `0600` + directory `0700`, sha256 corruption detection, strict payload validation (unknown keys, bool/string epochs, naive datetimes, device-key mismatches, identity drift, symlinked/directory paths all fail closed), missing = first-run default (fresh deny-all), and present-but-corrupt = fail closed (corruption could erase a revocation). It is NOT the founder-gated managed persistent schema: no database, no migration machinery, no cross-version schema contract — it is the local recovery aid contract §13 permits, replaceable by the future founder-gated store. Revocation persists across restarts (a revoked device is still denied after a fresh process re-loads the store).
+
+### Readiness gates (no listener unless all pass)
+
+1. `daemon_loopback` — TCP connect to literal `127.0.0.1:<daemon_port>` (the probe implementation refuses any non-loopback host).
+2. `credential_permissions` — the configured credential provider reads a non-empty bearer (missing/unreadable/loose-permission/symlinked fails closed).
+3. `current_policy` — the route-policy consumer is present and `require_current` passes (empty/malformed/stale/future/rollback/compiler/apply-failed all fail closed).
+4. `bind_identity` — configured connector identity present and exactly matching the loaded trust-state identity.
+5. `trust_state` — the store loads a non-corrupt state (present-but-corrupt/loose/unreadable fails closed).
+
+The supervisor runs these before binding and continuously: readiness loss stops the listener immediately; the systemd `Type=notify` contract reports `READY=1`/`WATCHDOG=1`/`STOPPING=1` via sd_notify.
+
+### LAB-ONLY provider adapter
+
+`LabProviderAdapter` exists only for controlled lab/customer-network conformance (Mac-client → Linux-home): it requires `lab_only: true` in config AND `--lab-only` on the CLI `run`, binds only an explicitly configured concrete lab address (`0.0.0.0`/`::`/empty refused), runs the full locked gateway pipeline per request with a static explicitly-configured lab device proof (never a production verifier), and forwards to literal loopback with the bearer injected on the final hop. Denials are HTTP 403 with category-level prose only (never the bearer, paths, input, or exception text); the listener never logs raw request lines. The adapter's banner labels it `LAB-ONLY CONFORMANCE ADAPTER - not a product or Supported-DIY lane; does not close THR-034`.
+
+### Service lifecycle, diagnostics, upgrade/rollback
+
+`SystemdServiceManager` (injectable `systemctl`) implements install/uninstall/start/stop/restart/enable/disable/status with fail-closed non-zero exits; `upgrade` writes the new unit over an owner-only backup, `daemon-reload`s, restarts, verifies the unit reaches `active`, and AUTO-ROLLS BACK to the previous unit on a failed start; `rollback` restores the most recent backup. `diagnose` reports readiness gates, service state, store integrity, policy currency, and provider state — never the daemon bearer. CLI: `python -m runtime.remote_access.cli {run,install,uninstall,start,stop,restart,enable,disable,status,readiness,diagnose,upgrade,rollback} --config <path>`; `readiness` exits 0 only when ready.
+
+### Conformance and tests
+
+Deterministic fail-closed unit tests cover startup/readiness, revocation across restart, forbidden routes, credential leakage, and service-manager failures with fakes. Real user-systemd conformance tests (`tests/remote_access/test_linux_systemd_conformance.py`, `-m integration`) install a rendered unit into the real user manager, start it against the real `Type=notify` READY contract (helper sends `READY=1`/`WATCHDOG=1` over sd_notify), verify active + live PID, restart, stop, upgrade/rollback round-trip, enable/disable, and uninstall with hermetic teardown; they skip with an explicit environment reason where user systemd is unavailable.
