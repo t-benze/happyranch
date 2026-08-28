@@ -952,10 +952,12 @@ factory** (``runtime/platform/backend_factory.py``):
   before ``finish`` runs on a clean-success path, so a finish-time read is
   too late) and carries the immutable observation through wait/reap and
   drain/cancellation/cleanup into the receipt with KERNEL provenance;
-  when the exit-instant read loses the collection race, the receipt
-  records an explicit ``capture_final_read_lost`` event instead of
-  silently labeling the last-live read as the authoritative final
-  total/peak. ``finish``'s own pre-stop read
+  final-read validity is tracked **per counter** — when a counter's
+  exit-instant read loses the collection race, that counter's retained
+  last-live value is downgraded to ``sampled`` provenance (never silently
+  labeled the authoritative final total/peak merely because another
+  counter's final read succeeded) and the receipt records a precise
+  per-counter ``capture_final_read_lost:<counter>`` event. ``finish``'s own pre-stop read
   is the authoritative fallback when the process is still running (user
   cancellation / daemon drain). ``pids.current`` is only a best-effort
   live count — merged with sampled evidence under ``sampled`` provenance

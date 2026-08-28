@@ -155,19 +155,27 @@ class _KernelObservation:
     woken by a deterministic exit notification (``pidfd`` poll / ``waitid``
     — no polling cadence for the exit itself) and carries the result
     through wait/reap and actual drain/cancellation/cleanup into the
-    finish-time receipt. ``final_read_ok`` is False only when the exit-
-    instant read itself lost the collection race and the values come from
-    the last live read while the scope was alive — ``finish`` then records
-    an explicit ``capture_final_read_lost`` enforcement event instead of
-    silently labeling a possibly-stale last-live read as the authoritative
-    final total/peak.
+    finish-time receipt. The three counter files are opened and read
+    **independently**, so final-read validity is tracked **per counter**
+    (``final_read_ok_memory`` / ``final_read_ok_cpu`` /
+    ``final_read_ok_pids``): a counter whose exit-instant read succeeded
+    holds the authoritative final total/peak; a counter whose exit-instant
+    read lost the collection race retains only its last-live value while
+    the scope was alive — a genuine kernel-sourced reading that may
+    undercount the terminal window, never the authoritative final value.
+    ``finish`` downgrades such a retained value (honest non-KERNEL
+    provenance) and records a precise per-counter ``capture_final_read_lost``
+    event instead of silently labeling it authoritative merely because
+    another counter's final read succeeded.
     """
 
     captured_at: float
     memory_peak_bytes: int | None
     cpu_total_seconds: float | None
     process_peak: int | None
-    final_read_ok: bool = False
+    final_read_ok_memory: bool = False
+    final_read_ok_cpu: bool = False
+    final_read_ok_pids: bool = False
 
 
 @dataclass
@@ -646,16 +654,17 @@ class LinuxSystemdBackend:
         that any last-live poll would miss. The live pread on the poll
         timeout (every ``_EXIT_CAPTURE_POLL`` while the process runs)
         remains the honest fallback: on the rare path where collection
-        beats the exit-instant read, the observation is marked
-        ``final_read_ok=False`` and ``finish`` records an explicit
-        ``capture_final_read_lost`` enforcement event instead of silently
-        labeling a possibly-stale last-live read as the authoritative final
-        total/peak. The immutable observation (max of the final read and
-        the last live read — the kernel counters are monotonic
-        high-water/cumulative) is written on the launch state by reference,
-        so it survives ``finish`` popping the state from the registry. A
-        watcher failure is contained: it records nothing and the receipt
-        degrades to the honest fallback chain.
+        beats the exit-instant read, that counter's final-read validity
+        flag stays False and ``finish`` downgrades its retained last-live
+        value (honest non-KERNEL provenance) and records a precise
+        per-counter ``capture_final_read_lost`` enforcement event instead
+        of silently labeling a possibly-stale last-live read as the
+        authoritative final total/peak. The immutable observation (max of
+        the final read and the last live read — the kernel counters are
+        monotonic high-water/cumulative) is written on the launch state by
+        reference, so it survives ``finish`` popping the state from the
+        registry. A watcher failure is contained: it records nothing and
+        the receipt degrades to the honest fallback chain.
         """
         cg = state.cgroup
         if not cg:
@@ -712,9 +721,14 @@ class LinuxSystemdBackend:
                 # lifetime after exit vs ~10–30 us for the reads). ``last``
                 # remains the honest fallback when collection already won.
                 final = self._pread_observation(fds)
-                final_read_ok = any(
-                    final.get(name) is not None for name in fds
-                )
+                # Final-read validity is per counter: a counter whose
+                # exit-instant read succeeded holds the authoritative final
+                # total/peak; one that lost the collection race keeps only
+                # its last-live value (downgraded honestly by ``finish``,
+                # never silently KERNEL because another counter succeeded).
+                final_read_ok_memory = final.get("memory.peak") is not None
+                final_read_ok_cpu = final.get("cpu.stat") is not None
+                final_read_ok_pids = final.get("pids.peak") is not None
             except Exception:  # noqa: BLE001 — watcher failure is contained
                 return
             finally:
@@ -739,7 +753,9 @@ class LinuxSystemdBackend:
                 process_peak=_kernel_max(
                     final.get("pids.peak"), last.get("pids.peak")
                 ),
-                final_read_ok=final_read_ok,
+                final_read_ok_memory=final_read_ok_memory,
+                final_read_ok_cpu=final_read_ok_cpu,
+                final_read_ok_pids=final_read_ok_pids,
             )
             with self._launched_lock:
                 state.observation = observation
@@ -973,44 +989,68 @@ class LinuxSystemdBackend:
             enforcement_events = ("cgroup_procs_unreadable",)
         elif cgroup_vanished:
             enforcement_events = ("cgroup_vanished",)
-        # Measurement honesty: when the exit-watcher's final read lost the
-        # race against systemd's collection of the transient scope, the
-        # reported kernel values come from its last live read while the
-        # scope was alive — they are genuine KERNEL-sourced values but may
-        # undercount the final CPU/peak window, so the receipt records an
-        # explicit event instead of silently labeling them as the
-        # authoritative final total/peak.
-        if (
-            observation is not None
-            and not observation.final_read_ok
-            and any(
-                value is not None
-                for value in (
-                    observation.memory_peak_bytes,
-                    observation.cpu_total_seconds,
-                    observation.process_peak,
-                )
+        # Measurement honesty, per counter: the exit-watcher tracks
+        # final-read validity independently for ``memory.peak``,
+        # ``cpu.stat`` and ``pids.peak``. A counter whose exit-instant read
+        # lost the collection race retains only its last-live value while
+        # the scope was alive — a genuine KERNEL-sourced reading that may
+        # undercount the final CPU/peak window. That retained value is
+        # NEVER published as the authoritative final total/peak merely
+        # because another counter's final read succeeded: it is downgraded
+        # to the sampled-evidence path below and the receipt records a
+        # precise per-counter ``capture_final_read_lost`` event naming every
+        # affected counter.
+        lost_final_reads: list[str] = []
+        if observation is not None:
+            for counter, ok, retained in (
+                ("memory.peak", observation.final_read_ok_memory, observation.memory_peak_bytes),
+                ("cpu.stat", observation.final_read_ok_cpu, observation.cpu_total_seconds),
+                ("pids.peak", observation.final_read_ok_pids, observation.process_peak),
+            ):
+                if not ok and retained is not None:
+                    lost_final_reads.append(counter)
+        if lost_final_reads:
+            enforcement_events = enforcement_events + (
+                "capture_final_read_lost:" + ",".join(lost_final_reads),
             )
-        ):
-            enforcement_events = enforcement_events + ("capture_final_read_lost",)
         memory_peak, cpu_total, process_peak = merge_sample_peaks(samples)
-        # Authoritative kernel sources, newest first: the exit-watcher's
-        # immutable observation (captured at the process-exit instant while
-        # the cgroup was valid) and this finish-time pre-stop read. The
-        # kernel counters are monotonic (high-water peak / cumulative CPU),
-        # so the max over the valid reads is the best available — both are
-        # KERNEL provenance; ``pids.current`` or a sampled value is never
-        # relabeled authoritative.
+        # A counter whose exit-instant final read failed keeps only its
+        # last-live value (a point-in-time kernel-sourced reading): fold it
+        # into the sampled-evidence path so it is published with honest
+        # non-KERNEL provenance instead of being silently labeled the
+        # authoritative final total/peak.
+        if observation is not None:
+            if not observation.final_read_ok_memory and observation.memory_peak_bytes is not None:
+                memory_peak = _kernel_max(memory_peak, observation.memory_peak_bytes)
+            if not observation.final_read_ok_cpu and observation.cpu_total_seconds is not None:
+                cpu_total = _kernel_max(cpu_total, observation.cpu_total_seconds)
+            if not observation.final_read_ok_pids and observation.process_peak is not None:
+                process_peak = _kernel_max(process_peak, observation.process_peak)
+        # Authoritative kernel sources, newest first, gated per counter on
+        # the exit-instant read having succeeded: the exit-watcher's
+        # observation value (captured at the process-exit instant while the
+        # cgroup was valid) and this finish-time pre-stop read. The kernel
+        # counters are monotonic (high-water peak / cumulative CPU), so the
+        # max over the valid reads is the best available — both are KERNEL
+        # provenance; ``pids.current`` or a sampled value is never
+        # relabeled authoritative, and a retained last-live value whose
+        # final read failed never earns KERNEL provenance.
         memory_peak_kernel = _kernel_max(
-            observation.memory_peak_bytes if observation else None,
+            observation.memory_peak_bytes
+            if observation is not None and observation.final_read_ok_memory
+            else None,
             counters["memory.peak"] if "memory.peak" in counters else None,
         )
         cpu_total_kernel = _kernel_max(
-            observation.cpu_total_seconds if observation else None,
+            observation.cpu_total_seconds
+            if observation is not None and observation.final_read_ok_cpu
+            else None,
             counters.get("cpu.stat"),
         )
         process_peak_kernel = _kernel_max(
-            observation.process_peak if observation else None,
+            observation.process_peak
+            if observation is not None and observation.final_read_ok_pids
+            else None,
             counters.get("pids.peak"),
         )
         process_now = counters.get("pids.current")

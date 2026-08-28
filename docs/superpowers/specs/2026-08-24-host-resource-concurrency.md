@@ -175,10 +175,12 @@ concurrency (1 worker) and row lifecycle.
   wait/reap and actual drain/cancellation/cleanup into the finish-time
   receipt (`finish`'s own pre-stop read remains the authoritative fallback
   when the process is still running, e.g. user cancellation / daemon
-  drain). When the exit-instant read loses the collection race, the
-  receipt records an explicit `capture_final_read_lost` event instead of
-  silently labeling the last-live read as the authoritative final
-  total/peak. `pids.current` is only a
+  drain). Final-read validity is tracked **per counter**: when a counter's
+  exit-instant read loses the collection race, that counter's retained
+  last-live value is downgraded to `sampled` provenance — never silently
+  labeled the authoritative final total/peak merely because another
+  counter's final read succeeded — and the receipt records a precise
+  per-counter `capture_final_read_lost:<counter>` event. `pids.current` is only a
   best-effort live count: without `pids.peak` it is merged honestly with
   the sampled peak under `sampled` provenance, never labeled
   authoritative — an empty-tree teardown value of 0 must not masquerade as
@@ -304,10 +306,12 @@ both backends:
   the finish-time receipt with honest KERNEL provenance (`finish`'s own
   pre-stop read remains the authoritative fallback for paths where the
   process is still running at finish time, e.g. user cancellation / daemon
-  drain). If the exit-instant read loses the collection race, the receipt
-  records an explicit `capture_final_read_lost` enforcement event instead
-  of silently labeling the last-live read as the authoritative final
-  total/peak. A cgroup that has **vanished** at finish time is genuine emptiness
+  drain). Final-read validity is tracked **per counter**: if a counter's
+  exit-instant read loses the collection race, that counter's retained
+  last-live value is downgraded to `sampled` provenance (never silently
+  labeled the authoritative final total/peak merely because another
+  counter's final read succeeded) and the receipt records a precise
+  per-counter `capture_final_read_lost:<counter>` enforcement event. A cgroup that has **vanished** at finish time is genuine emptiness
   corroborated by a positively-terminal unit state and is recorded as an
   explicit `cgroup_vanished` enforcement event — it never short-circuits to
   a silently-verified CLEAN (an UNKNOWN unit-state interrogation still fails
