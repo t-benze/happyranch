@@ -11,7 +11,7 @@
  * with no pin leak, direct row + header controls, and keyboard/accessibility
  * assertions.
  */
-import { screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterEach, describe, expect, test, vi } from 'vitest';
@@ -117,6 +117,55 @@ function stubDetail(thread: ReturnType<typeof mkThread>) {
     ),
     http.get(`/api/v1/orgs/${SLUG}/tokens`, () => HttpResponse.json({ rollup: [] })),
   );
+}
+
+/**
+ * Numeric suffix mirror of the server's CAST(SUBSTR(t.id, 5) AS INTEGER)
+ * open-list pin-rank key (THR-10 > THR-2).
+ */
+function numericThreadId(id: string): number {
+  const n = Number.parseInt(id.slice(4), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Server-order-aware stub: GET /threads returns open lists in the real
+ * database.list_threads order (pinned first, pinned numeric id desc, unpinned
+ * started_at desc) and archived lists in ordinary order — so a refetch after a
+ * pin mutation reconciles against the authoritative server rule, exactly like
+ * the live daemon. Status-less merges stay ordinary.
+ */
+function stubServerOrderedList(threads: ReturnType<typeof mkThread>[]) {
+  server.use(
+    http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
+      const url = new URL(request.url);
+      const status = url.searchParams.get('status');
+      const filtered = status
+        ? threads.filter((t) => t.status === status)
+        : [...threads];
+      if (status === 'open') {
+        filtered.sort((a, b) => {
+          const aPinned = a.pinned ? 0 : 1;
+          const bPinned = b.pinned ? 0 : 1;
+          if (aPinned !== bPinned) return aPinned - bPinned;
+          if (aPinned === 0) return numericThreadId(b.thread_id) - numericThreadId(a.thread_id);
+          return b.started_at.localeCompare(a.started_at);
+        });
+      }
+      return HttpResponse.json({ threads: filtered });
+    }),
+    http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+      HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+    ),
+  );
+}
+
+/** Row link subjects in DOM order, scoped to the inbox list. */
+function rowSubjects(): string[] {
+  return screen
+    .getAllByRole('link')
+    .filter((el) => /Alpha|Ten|Two|One|Nine|Three/.test(el.textContent ?? ''))
+    .map((r) => r.textContent ?? '');
 }
 
 beforeEach(() => {
@@ -447,6 +496,156 @@ describe('THR-209 — Pinned section', () => {
     expect(
       screen.getByRole('button', { name: /Unpin thread THR-A/i }),
     ).toBeInTheDocument();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Optimistic open-list reorder (TASK-5987 — PR #758 fix-forward)     */
+/* ------------------------------------------------------------------ */
+
+describe('THR-209 — optimistic pin reorders the open list under the server rule (TASK-5987)', () => {
+  test('pinning a higher-id thread ranks it above lower pinned ids BEFORE the response/refetch', async () => {
+    // Server open order (server rule): THR-2 pinned, then unpinned started_at
+    // desc → THR-10 (05-14), THR-1 (05-13).
+    const state = [
+      mkThread('THR-2', 'Two pinned', {
+        pinned: true,
+        pinned_at: '2026-05-20T00:00:00Z',
+        started_at: '2026-05-12T00:00:00Z',
+      }),
+      mkThread('THR-10', 'Ten unpinned', { started_at: '2026-05-14T00:00:00Z' }),
+      mkThread('THR-1', 'One ordinary', { started_at: '2026-05-13T00:00:00Z' }),
+    ];
+    stubServerOrderedList(state);
+    // Gated POST: the mutation stays pending until the test releases it, so the
+    // optimistic render is observable before the response and the refetch.
+    let releasePost!: () => void;
+    const gate = new Promise<void>((res) => {
+      releasePost = res;
+    });
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-10/pin`, async () => {
+        await gate;
+        state[1] = {
+          ...state[1],
+          pinned: true,
+          pinned_at: '2026-05-21T00:00:00Z',
+        };
+        return HttpResponse.json({ thread_id: 'THR-10', pinned: true });
+      }),
+    );
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => expect(screen.getByText(/Ten unpinned/i)).toBeInTheDocument());
+    // Initial server order: Pinned [THR-2], Threads [THR-10, THR-1].
+    expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Two', 'Ten', 'One']);
+
+    await userEvent.click(screen.getByRole('button', { name: /Pin thread THR-10/i }));
+
+    // BEFORE the POST resolves: optimistic reorder → Pinned [THR-10, THR-2]
+    // (numeric 10 > 2 — lexicographic would keep THR-2 first).
+    await waitFor(() => {
+      expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Ten', 'Two', 'One']);
+    });
+    // THR-10 renders inside the Pinned section (heading precedes its row).
+    const pinnedHeading = screen.getByRole('heading', { name: /Pinned/i });
+    const tenRow = screen.getByText(/Ten unpinned/i);
+    expect(pinnedHeading.compareDocumentPosition(tenRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // Release the response — success + refetch reconcile to the same order.
+    await act(async () => {
+      releasePost();
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Unpin thread THR-10/i })).toBeInTheDocument(),
+    );
+    expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Ten', 'Two', 'One']);
+  });
+
+  test('unpinning re-inserts the row into ordinary started_at-desc order BEFORE the response/refetch', async () => {
+    // Server order: THR-10 pinned (numeric first), THR-2 pinned, then THR-1.
+    const state = [
+      mkThread('THR-10', 'Ten pinned', {
+        pinned: true,
+        pinned_at: '2026-05-21T00:00:00Z',
+        started_at: '2026-05-14T00:00:00Z',
+      }),
+      mkThread('THR-2', 'Two pinned', {
+        pinned: true,
+        pinned_at: '2026-05-20T00:00:00Z',
+        started_at: '2026-05-12T00:00:00Z',
+      }),
+      mkThread('THR-1', 'One ordinary', { started_at: '2026-05-13T00:00:00Z' }),
+    ];
+    stubServerOrderedList(state);
+    let releasePost!: () => void;
+    const gate = new Promise<void>((res) => {
+      releasePost = res;
+    });
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-2/pin`, async () => {
+        await gate;
+        state[1] = { ...state[1], pinned: false, pinned_at: null };
+        return HttpResponse.json({ thread_id: 'THR-2', pinned: false });
+      }),
+    );
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => expect(screen.getByText(/Ten pinned/i)).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole('button', { name: /Unpin thread THR-2/i }));
+
+    // BEFORE the POST resolves: THR-2 drops into ordinary started_at-desc
+    // position (THR-10 05-14, THR-1 05-13, THR-2 05-12).
+    await waitFor(() => {
+      expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Ten', 'One', 'Two']);
+    });
+    // THR-2 is no longer inside the Pinned section (its row follows the
+    // Pinned heading, i.e. it lives in the ordinary section).
+    const pinnedHeading = screen.getByRole('heading', { name: /Pinned/i });
+    const twoRow = screen.getByText(/Two pinned/i);
+    expect(
+      pinnedHeading.compareDocumentPosition(twoRow) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    await act(async () => {
+      releasePost();
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Pin thread THR-2/i })).toBeInTheDocument(),
+    );
+    expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Ten', 'One', 'Two']);
+  });
+
+  test('multi-row pin failure rolls back BOTH pin state and the exact prior row order', async () => {
+    const state = [
+      mkThread('THR-2', 'Two pinned', {
+        pinned: true,
+        pinned_at: '2026-05-20T00:00:00Z',
+        started_at: '2026-05-12T00:00:00Z',
+      }),
+      mkThread('THR-10', 'Ten unpinned', { started_at: '2026-05-14T00:00:00Z' }),
+      mkThread('THR-1', 'One ordinary', { started_at: '2026-05-13T00:00:00Z' }),
+    ];
+    stubServerOrderedList(state);
+    server.use(
+      http.post(`/api/v1/orgs/${SLUG}/threads/THR-10/pin`, () =>
+        HttpResponse.json({ error: 'boom' }, { status: 500 }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => expect(screen.getByText(/Ten unpinned/i)).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole('button', { name: /Pin thread THR-10/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(/Pin change failed/i),
+    );
+    // Rollback: exact prior order restored (Pinned [THR-2], Threads [THR-10, THR-1]).
+    expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Two', 'Ten', 'One']);
+    expect(screen.getByRole('button', { name: /Pin thread THR-10/i })).toBeInTheDocument();
+    // No optimistic Pinned-section reorder leaked.
+    const pinnedHeading = screen.getByRole('heading', { name: /Pinned/i });
+    const tenRow = screen.getByText(/Ten unpinned/i);
+    expect(pinnedHeading.compareDocumentPosition(tenRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
 
