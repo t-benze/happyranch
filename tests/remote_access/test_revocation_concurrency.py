@@ -329,10 +329,11 @@ def test_repeated_revoke_after_terminal_successful_cleanup_is_idempotent() -> No
 
 # ── Re-entrancy: callbacks cannot re-enter the transaction ───────────────
 
-def test_reentrant_close_all_from_close_callback_no_deadlock() -> None:
+def test_reentrant_close_all_from_close_callback_fails_closed_no_deadlock() -> None:
     """A transport-close callback that re-enters close_all on the SAME thread
-    returns immediately (the outer cleanup run owns the result) — no event
-    wait, no deadlock; the outer run still surfaces the failed id."""
+    is REJECTED with fail-closed non-success (RuntimeError) — never a silent
+    success, never an incomplete publish; the outer cleanup run owns and
+    publishes the real terminal result and still surfaces the failed id."""
     registry = StreamRegistry()
     events: list[str] = []
 
@@ -344,8 +345,12 @@ def test_reentrant_close_all_from_close_callback_no_deadlock() -> None:
 
         def close(self) -> None:
             events.append("inner-close_all")
-            registry.close_all()  # re-entrant: must return, not deadlock
-            events.append("inner-close_all-returned")
+            try:
+                registry.close_all()  # re-entrant: must fail closed, not deadlock
+            except RuntimeError:
+                events.append("inner-close_all-rejected")
+            else:
+                events.append("inner-close_all-returned")  # false success — forbidden
             raise OSError("boom")
 
         @property
@@ -356,7 +361,7 @@ def test_reentrant_close_all_from_close_callback_no_deadlock() -> None:
     with pytest.raises(StreamCloseError) as excinfo:
         registry.close_all()
     assert excinfo.value.stream_ids == ("reentrant",)
-    assert events == ["inner-close_all", "inner-close_all-returned"]
+    assert events == ["inner-close_all", "inner-close_all-rejected"]
     assert tracked.closed is True
     with pytest.raises(StreamClosed):
         tracked.receive()

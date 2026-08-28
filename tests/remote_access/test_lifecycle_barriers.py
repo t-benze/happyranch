@@ -38,7 +38,12 @@ from runtime.remote_access.forwarding import ForwardingHarness
 from runtime.remote_access.gateway import ConnectorGateway, GatewayContext
 from runtime.remote_access.revocation import RevocationCoordinator
 from runtime.remote_access.stripping import CredentialScanner
-from runtime.remote_access.streams import StreamClosed, StreamRegistry, _TrackedStream
+from runtime.remote_access.streams import (
+    StreamCloseError,
+    StreamClosed,
+    StreamRegistry,
+    _TrackedStream,
+)
 
 from .conftest import (
     NOW,
@@ -518,13 +523,13 @@ def test_revoke_transaction_waits_for_pre_seal_single_close_transport() -> None:
     assert registry.is_open("s1") is False
 
 
-def test_single_close_callback_reentrant_close_all_no_deadlock() -> None:
-    """M10 (same-thread re-entrancy): a transport-close callback running
-    inside a SINGLE close's outside-lock transport close calls close_all on
-    the same thread. The acknowledgement barrier must exclude the calling
-    thread's OWN in-flight close (it sits on this thread's stack and completes
-    the moment close_all returns) — waiting on it would self-deadlock. The
-    outer close completes, close_all publishes, and the wrapper stays sealed."""
+def test_single_close_callback_reentrant_close_all_fails_closed_no_deadlock() -> None:
+    """M10 (founder ruling, THR-097 seq140): a transport-close callback running
+    inside a SINGLE close's outside-lock transport close that calls close_all
+    on the same thread is REJECTED with fail-closed non-success (RuntimeError)
+    — never success, never an incomplete publish, no self-inflight exclusion.
+    The callback completes its own close and a later close_all from a normal
+    context publishes the terminal result."""
     registry = StreamRegistry()
     events: list[str] = []
 
@@ -541,8 +546,12 @@ def test_single_close_callback_reentrant_close_all_no_deadlock() -> None:
             if self._closed:
                 return
             events.append("callback-close_all")
-            registry.close_all()  # same-thread re-entry from inside a single close
-            events.append("callback-close_all-returned")
+            try:
+                registry.close_all()  # same-thread re-entry from inside a single close
+            except RuntimeError:
+                events.append("callback-close_all-rejected")
+            else:
+                events.append("callback-close_all-returned")  # false success — forbidden
             self._closed = True
 
         @property
@@ -552,12 +561,298 @@ def test_single_close_callback_reentrant_close_all_no_deadlock() -> None:
     handle = _ReentrantCallback()
     wrapper = registry.open("s1", handle)
     registry.close("s1")  # must not deadlock
-    assert events == ["callback-close_all", "callback-close_all-returned"]
+    assert events == ["callback-close_all", "callback-close_all-rejected"]
     assert handle.closed is True
     assert wrapper.closed is True
     with pytest.raises(StreamClosed):
         wrapper.receive()
     assert registry.is_open("s1") is False
+    # The rejected re-entry published NO success acknowledgement.
+    assert registry._cleanup_done.is_set() is False
+    registry.close_all()  # terminal success from a normal context
+    assert registry._cleanup_done.is_set() is True
+    registry.close_all()  # idempotent after terminal completion
+
+
+def test_reentrant_close_all_from_pre_seal_close_callback_success_then_terminal_success() -> None:
+    """M10 mutation-first (founder ruling): a same-thread re-entrant close_all
+    invoked from an UNFINISHED pre-seal single-close transport callback is
+    REJECTED with fail-closed non-success — no success acknowledgement, no
+    incomplete _cleanup_done publish, no self-inflight exclusion; the registry
+    stays unsealed and a sibling stream stays registered and usable. After the
+    callback's transport close completes successfully, a later close_all from
+    a normal context seals everything and reports TERMINAL SUCCESS exactly
+    once (transport close counts stay exactly-one)."""
+    registry = StreamRegistry()
+    entered = threading.Event()
+    rejected = threading.Event()
+    release = threading.Event()
+    events: list[str] = []
+
+    class _ReentrantOk:
+        stream_id = "s1"
+
+        def __init__(self) -> None:
+            self._closed = False
+            self.close_count = 0
+
+        def receive(self) -> bytes | None:
+            return None
+
+        def close(self) -> None:
+            self.close_count += 1
+            if self._closed:
+                return
+            entered.set()
+            assert release.wait(timeout=15), "harness: transport close never released"
+            try:
+                registry.close_all()  # same-thread re-entry from an unfinished callback
+            except RuntimeError:
+                events.append("reentrant-rejected")
+            else:
+                events.append("reentrant-returned")  # false success — forbidden
+            rejected.set()
+            self._closed = True
+
+        @property
+        def closed(self) -> bool:
+            return self._closed
+
+    s1 = _ReentrantOk()
+    s2 = _LiveHandle("s2")
+    w1 = registry.open("s1", s1)
+    w2 = registry.open("s2", s2)
+    closer = threading.Thread(target=lambda: registry.close("s1"), daemon=True)
+    closer.start()
+    assert entered.wait(timeout=15), "single close must reach the transport callback"
+    assert w1.closed is True  # sealed atomically with the pop (M4)
+    assert registry._cleanup_done.is_set() is False
+    release.set()
+    assert rejected.wait(timeout=15), "re-entrant close_all must return"
+    assert events == ["reentrant-rejected"]
+    # The rejection must NOT have published anything or sealed the registry.
+    assert registry._cleanup_done.is_set() is False
+    assert registry._revoked is False
+    assert registry.is_open("s2") is True
+    assert s2.close_count == 0
+    closer.join(timeout=15)
+    assert not closer.is_alive()
+    assert s1._closed is True and s1.close_count == 1
+    assert w2.closed is False  # sibling stream still usable (registry unsealed)
+    # A later close_all from a NORMAL context reports terminal success.
+    registry.close_all()
+    assert registry._cleanup_done.is_set() is True
+    assert s2.close_count == 1 and s1.close_count == 1  # exactly-once transport closes
+    assert w2.closed is True
+    assert registry.is_open("s1") is False and registry.is_open("s2") is False
+    with pytest.raises(StreamClosed):
+        w1.receive()
+    with pytest.raises(StreamClosed):
+        w2.receive()
+    registry.close_all()  # idempotent after terminal completion, never raises
+
+
+def test_reentrant_close_all_from_pre_seal_close_callback_failure_persisted() -> None:
+    """M10 mutation-first + REV-008 (founder ruling; the TASK-5925 reviewer's
+    exact probe). A transport-close callback inside a pre-seal single close
+    re-enters close_all on the same thread; the re-entrant call is REJECTED
+    (fail-closed non-success, no success acknowledgement, no incomplete
+    failed-id publish) and the callback's close then FAILS — becoming terminal
+    AFTER the rejection. A later close_all MUST re-surface the PERSISTED
+    failed stream id (never erased), and the authoritative RevocationCoordinator
+    surfaces it as RevocationIncomplete with the applied epoch."""
+    from runtime.remote_access.revocation import RevocationIncomplete
+
+    state = default_authorization_state()
+    registry = StreamRegistry()
+    coordinator = RevocationCoordinator(state, registry)
+    entered = threading.Event()
+    rejected = threading.Event()
+    release = threading.Event()
+    events: list[str] = []
+    outcome: dict = {}
+
+    class _ReentrantFailing:
+        stream_id = "s1"
+
+        def receive(self) -> bytes | None:
+            return None
+
+        def close(self) -> None:
+            entered.set()
+            assert release.wait(timeout=15), "harness: transport close never released"
+            try:
+                registry.close_all()
+            except RuntimeError:
+                events.append("reentrant-rejected")
+            else:
+                events.append("reentrant-returned")  # false success — forbidden
+            rejected.set()
+            raise OSError("transport close failed after the re-entrant rejection")
+
+        @property
+        def closed(self) -> bool:
+            return False
+
+    w1 = registry.open("s1", _ReentrantFailing())
+
+    def closer_run() -> None:
+        try:
+            registry.close("s1")
+        except Exception as exc:  # noqa: BLE001 - harness captures the outcome
+            outcome["exc"] = exc
+
+    closer = threading.Thread(target=closer_run, daemon=True)
+    closer.start()
+    assert entered.wait(timeout=15), "single close must reach the transport callback"
+    release.set()
+    assert rejected.wait(timeout=15), "re-entrant close_all must return"
+    assert events == ["reentrant-rejected"]
+    assert registry._cleanup_done.is_set() is False  # no incomplete publish
+    closer.join(timeout=15)
+    assert not closer.is_alive()
+    assert isinstance(outcome["exc"], OSError), f"close outcome: {outcome}"
+    assert w1.cleanup_failed is True
+    assert w1.closed is True
+    with pytest.raises(StreamClosed):
+        w1.receive()
+    assert registry.is_open("s1") is False
+    # The failure became terminal AFTER the rejection and must be PERSISTED.
+    with pytest.raises(StreamCloseError) as excinfo:
+        registry.close_all()
+    assert excinfo.value.stream_ids == ("s1",)
+    # Every later close_all re-raises the persisted failure — never erased.
+    with pytest.raises(StreamCloseError) as excinfo2:
+        registry.close_all()
+    assert excinfo2.value.stream_ids == ("s1",)
+    # The authoritative transaction reports the persisted failure too.
+    with pytest.raises(RevocationIncomplete) as excinfo3:
+        coordinator.revoke(epoch=2)
+    assert excinfo3.value.applied_epoch == 2
+    assert excinfo3.value.stream_ids == ("s1",)
+    assert state.revocation_epoch == 2
+
+
+def test_reentrant_close_all_from_callback_while_cleanup_in_progress_fails_closed() -> None:
+    """M12 (founder ruling): a transport-close callback re-enters close_all on
+    the same thread while ANOTHER thread's close_all cleanup is in progress
+    (the runner is waiting on THIS callback's close at the acknowledgement
+    barrier). The re-entrant call is REJECTED with fail-closed non-success —
+    it must never wait on the shared completion event (that would
+    self-deadlock the barrier). The runner then publishes the complete
+    terminal result, and the callback thread's later normal-context close_all
+    observes it."""
+    registry = StreamRegistry()
+    entered = threading.Event()
+    rejected = threading.Event()
+    release = threading.Event()
+    events: list[str] = []
+    results: dict = {}
+
+    class _BlockingReentrant:
+        stream_id = "s1"
+
+        def __init__(self) -> None:
+            self._closed = False
+
+        def receive(self) -> bytes | None:
+            return None
+
+        def close(self) -> None:
+            entered.set()
+            assert release.wait(timeout=15), "harness: transport close never released"
+            try:
+                registry.close_all()  # re-entry while another close_all is in progress
+            except RuntimeError:
+                events.append("reentrant-rejected")
+            else:
+                events.append("reentrant-returned")  # false success — forbidden
+            rejected.set()
+            self._closed = True
+
+        @property
+        def closed(self) -> bool:
+            return self._closed
+
+    s1 = _BlockingReentrant()
+    s2 = _LiveHandle("s2")
+    w1 = registry.open("s1", s1)
+    w2 = registry.open("s2", s2)
+    closer = threading.Thread(target=lambda: registry.close("s1"), daemon=True)
+    closer.start()
+    assert entered.wait(timeout=15), "single close must reach the transport callback"
+
+    def revoke() -> None:
+        try:
+            registry.close_all()
+            results["r"] = "ok"
+        except StreamCloseError as exc:
+            results["r"] = ("incomplete", exc.stream_ids)
+
+    revoker = threading.Thread(target=revoke, daemon=True)
+    revoker.start()
+    revoker.join(timeout=0.5)
+    try:
+        assert revoker.is_alive(), (
+            "revocation runner returned before the pre-seal transport close was terminal"
+        )
+    finally:
+        release.set()
+    assert rejected.wait(timeout=15), "re-entrant close_all must return non-success (no deadlock)"
+    assert events == ["reentrant-rejected"]
+    closer.join(timeout=15)
+    revoker.join(timeout=15)
+    assert not revoker.is_alive() and not closer.is_alive()
+    assert results == {"r": "ok"}, f"runner outcome: {results}"
+    assert s2.close_count == 1  # the runner closed the sibling stream exactly once
+    assert w1.closed is True and w2.closed is True
+    assert registry.is_open("s1") is False and registry.is_open("s2") is False
+    # The callback thread's LATER normal-context close_all observes the terminal result.
+    registry.close_all()  # idempotent no-op, never raises
+
+
+def test_reentrant_close_all_from_snapshot_callback_fails_closed() -> None:
+    """M10 seal-first (founder ruling): a transport-close callback that re-enters
+    close_all DURING the runner's own snapshot cleanup (the registry is already
+    sealed; the runner's cleanup is in progress on this thread) is REJECTED
+    with fail-closed non-success — never a silent success, never an incomplete
+    publish. A callback that handles the rejection completes its own close and
+    the outer run publishes the real terminal result."""
+    registry = StreamRegistry()
+    events: list[str] = []
+
+    class _SnapshotReentrant:
+        stream_id = "s1"
+
+        def __init__(self) -> None:
+            self._closed = False
+
+        def receive(self) -> bytes | None:
+            return None
+
+        def close(self) -> None:
+            if self._closed:
+                return
+            try:
+                registry.close_all()
+            except RuntimeError:
+                events.append("snapshot-reentrant-rejected")
+            else:
+                events.append("snapshot-reentrant-returned")  # false success — forbidden
+            self._closed = True
+
+        @property
+        def closed(self) -> bool:
+            return self._closed
+
+    handle = _SnapshotReentrant()
+    wrapper = registry.open("s1", handle)
+    registry.close_all()  # outer run: snapshot close -> callback re-entry
+    assert events == ["snapshot-reentrant-rejected"]
+    assert handle.closed is True
+    assert wrapper.closed is True
+    assert registry.is_open("s1") is False
+    registry.close_all()  # idempotent no-op after terminal completion
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -813,3 +1108,117 @@ def test_mutation_wrapper_close_not_routed_through_registry_is_detected() -> Non
             invariant()
     finally:
         _TrackedStream.close = original
+
+
+def test_mutation_self_inflight_exclusion_into_false_success_is_detected() -> None:
+    """Mutation (the TASK-5925 exact anti-pattern): close_all EXCLUDES the
+    calling thread's own in-flight closes from the acknowledgement barrier and
+    publishes an incomplete success. The reviewer-exact probe must go red: the
+    re-entrant close_all must be REJECTED (fail-closed non-success) and a later
+    close_all must re-surface the persisted callback failure — never an erased
+    success."""
+    def invariant() -> None:
+        registry = StreamRegistry()
+        events: list[str] = []
+
+        class _ReentrantFailing:
+            stream_id = "s1"
+
+            def receive(self) -> bytes | None:
+                return None
+
+            def close(self) -> None:
+                try:
+                    registry.close_all()
+                except RuntimeError:
+                    events.append("rejected")
+                else:
+                    events.append("false-success")  # forbidden: exclusion into success
+                raise OSError("boom")
+
+            @property
+            def closed(self) -> bool:
+                return False
+
+        registry.open("s1", _ReentrantFailing())
+        with pytest.raises(OSError):
+            registry.close("s1")
+        assert events == ["rejected"], (
+            "re-entrant close_all must be rejected, not excluded into success"
+        )
+        with pytest.raises(StreamCloseError) as excinfo:
+            registry.close_all()
+        assert excinfo.value.stream_ids == ("s1",), (
+            "persisted callback failure must be re-surfaced by a later close_all"
+        )
+        with pytest.raises(StreamCloseError) as excinfo2:
+            registry.close_all()
+        assert excinfo2.value.stream_ids == ("s1",), (
+            "later close_all must not erase the callback failure"
+        )
+
+    invariant()  # guard present: re-entrant close_all is rejected; failure persisted
+
+    original = StreamRegistry.close_all
+
+    def _exclude_self_inflight(self) -> None:
+        # TASK-5925 anti-pattern: same-thread re-entrant close_all excludes its
+        # own in-flight close from the acknowledgement barrier, publishes an
+        # incomplete success, and erases the callback failure that becomes
+        # terminal later.
+        if getattr(self._in_cleanup, "active", False):
+            return
+        with self._lock:
+            if self._cleanup_done.is_set():
+                failures = self._cleanup_failed_ids
+                role = "observe"
+            elif self._cleanup_started:
+                role = "wait"
+            else:
+                self._revoked = True
+                for tracked in list(self._streams.values()):
+                    tracked.seal()
+                pending = list(self._streams.items())
+                self._streams.clear()
+                self._cleanup_started = True
+                role = "run"
+        if role == "wait":
+            self._cleanup_done.wait()
+            with self._lock:
+                failures = self._cleanup_failed_ids
+        elif role == "run":
+            with self._cleanup_ack:
+                # The bug: the barrier excludes the calling thread's OWN
+                # in-flight closes, so an unfinished callback re-entry is
+                # treated as fully acknowledged.
+                while (
+                    self._cleanup_in_flight
+                    - getattr(self._self_inflight, "count", 0)
+                    > 0
+                ):
+                    self._cleanup_ack.wait()
+            failed: list[str] = []
+            self._in_cleanup.active = True
+            try:
+                for stream_id, tracked in pending:
+                    try:
+                        tracked._close_inner()
+                    except Exception:
+                        failed.append(stream_id)
+            finally:
+                with self._lock:
+                    self._cleanup_failed_ids = tuple(failed)
+                    self._cleanup_done.set()
+                self._in_cleanup.active = False
+            if failed:
+                raise StreamCloseError(failed)
+            return
+        if failures:
+            raise StreamCloseError(failures)
+
+    try:
+        StreamRegistry.close_all = _exclude_self_inflight  # type: ignore[method-assign]
+        with pytest.raises(AssertionError):
+            invariant()
+    finally:
+        StreamRegistry.close_all = original

@@ -722,8 +722,8 @@ def test_mutation_reentrant_revoke_guard_removed_is_detected(route_policy_fixtur
 
 
 def test_mutation_close_all_reentrancy_guard_removed_is_detected(route_policy_fixture) -> None:
-    """Guard removal: without the registry's same-thread re-entrancy guard, a
-    transport-close callback that re-enters close_all() waits on its own
+    """Guard removal: without the registry's same-thread re-entrancy rejection,
+    a transport-close callback that re-enters close_all() waits on its own
     completion event forever — the bounded-join invariant battery must detect
     the hang."""
     import threading
@@ -741,8 +741,12 @@ def test_mutation_close_all_reentrancy_guard_removed_is_detected(route_policy_fi
                 return None
 
             def close(self) -> None:
-                registry.close_all()
-                events.append("inner-returned")
+                try:
+                    registry.close_all()
+                except RuntimeError:
+                    events.append("inner-rejected")
+                else:
+                    events.append("inner-returned")  # false success — forbidden
                 raise OSError("boom")
 
             @property
@@ -753,9 +757,9 @@ def test_mutation_close_all_reentrancy_guard_removed_is_detected(route_policy_fi
         with pytest.raises(StreamCloseError) as excinfo:
             registry.close_all()
         assert excinfo.value.stream_ids == ("reentrant",)
-        assert events == ["inner-returned"]
+        assert events == ["inner-rejected"]
 
-    invariant()  # guard present: re-entrant close_all returns, no deadlock
+    invariant()  # guard present: re-entrant close_all is rejected, no deadlock
 
     original = StreamRegistry.close_all
 
@@ -809,9 +813,9 @@ def test_mutation_close_all_reentrancy_guard_removed_is_detected(route_policy_fi
 
         t = threading.Thread(target=run, daemon=True)
         t.start()
-        # The guard is what makes the same-thread re-entrant close_all return
-        # instead of waiting on its own completion event: with it removed,
-        # the invariant can never complete.
+        # The guard is what makes the same-thread re-entrant call fail closed
+        # instead of self-deadlocking on its own completion event: with it
+        # removed, the invariant can never complete.
         assert not done.wait(timeout=3), (
             "guard removal not detected: re-entrant close_all completed without the guard"
         )

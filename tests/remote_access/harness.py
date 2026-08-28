@@ -72,6 +72,8 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "REV-004": ("core", "admission racing the revocation seal (atomic ownership boundary)"),
     "REV-005": ("core", "single-stream close racing the seal — close linearizes first (acknowledgement barrier)"),
     "REV-006": ("core", "single-stream close racing the seal — seal linearizes first (idempotent no-op)"),
+    "REV-007": ("core", "same-thread re-entrant close_all from an unfinished transport cleanup callback fails closed (non-success, never success)"),
+    "REV-008": ("core", "a transport cleanup callback failure that becomes terminal after a re-entrant rejection is persisted and re-surfaced (never erased)"),
     # Route / method / upgrade semantics.
     "ROUTE-001": ("core", "forbidden agent-callback route"),
     "ROUTE-002": ("core", "method not allowed on surface"),

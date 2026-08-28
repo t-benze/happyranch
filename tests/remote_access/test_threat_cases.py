@@ -1,6 +1,6 @@
 """Consumes the normative Unit-A threat matrix through the connector core.
 
-- The classification of all 59 cases is exhaustive and checked in.
+- The classification of all 61 cases is exhaustive and checked in.
 - Every core-applicable hostile case produces exactly the fixture's deny and
   audit categories through the gateway; positive controls forward over real
   loopback 127.0.0.1.
@@ -24,10 +24,13 @@ from .conftest import make_request
 from .fake_daemon import FakeDaemon, assert_daemon_received
 from .harness import BEARER, CaseBuilder, CLASSIFICATION, classify_all
 
-LIVE_STREAM_CASES = {"REV-002", "REV-003", "REV-004", "REV-005", "REV-006"}
+LIVE_STREAM_CASES = {"REV-002", "REV-003", "REV-004", "REV-005", "REV-006", "REV-007", "REV-008"}
 # REV-004 (admission racing the seal), REV-005 (single-close racing the seal,
-# close first) and REV-006 (single-close racing the seal, seal first) are
-# driven deterministically by the dedicated admission/seal + lifecycle barrier
+# close first), REV-006 (single-close racing the seal, seal first), and the
+# THR-097 seq140 re-entrancy ruling REV-007 (same-thread re-entrant close_all
+# fails closed with non-success) / REV-008 (a callback failure that becomes
+# terminal after the rejection is persisted and re-surfaced) are driven
+# deterministically by the dedicated admission/seal + lifecycle barrier
 # batteries (tests/remote_access/test_admission_revocation_ownership.py and
 # tests/remote_access/test_lifecycle_barriers.py) — they are concurrency/
 # lifecycle orderings, not plain single-request drives.
@@ -40,8 +43,8 @@ def test_classification_is_exhaustive(threat_cases_fixture) -> None:
     all_ids = {c["id"] for c in threat_cases_fixture["cases"]}
     assert core | control == all_ids
     assert not (core & control)
-    assert len(all_ids) == 59
-    assert len(core) == 38  # 35 hostile + 3 positive controls
+    assert len(all_ids) == 61
+    assert len(core) == 40  # 37 hostile + 3 positive controls
     assert len(control) == 21
 
 

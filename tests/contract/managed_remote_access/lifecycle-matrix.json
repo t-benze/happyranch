@@ -1,9 +1,9 @@
 {
   "name": "managed-remote-access-lifecycle-matrix",
   "status": "normative-contract",
-  "version": 1,
+  "version": 2,
   "description": "The exhaustive implementer-owned lifecycle ownership matrix for the connector stream registry (THR-097 Unit C fresh lifecycle redesign). Every discovered public membership/ownership mutation is crossed with revocation in BOTH deterministic orderings; each cell states the exact linearization point, the atomic seal+membership transition, callback scope, and the permitted outcome. The contract suite validates this fixture semantically; tests/remote_access encodes the same cells as deterministic public-gateway barrier proofs.",
-  "governing_rule": "admission and every ownership/membership mutation share one atomic lifecycle boundary: a single lifecycle lock guards the sealed flag AND registry membership; the affected public wrapper(s) are sealed under that boundary before membership/ownership can escape; admissions not fully registered before the revocation seal fail closed and cannot return a usable wrapper; external transport close/open callbacks execute outside locks but remain inside the revocation acknowledgement barrier; revocation may report success only after every pre-seal stream is unusable/closed, all required cleanup outcomes are terminal and acknowledged, and no post-seal admission can return usable.",
+  "governing_rule": "admission and every ownership/membership mutation share one atomic lifecycle boundary: a single lifecycle lock guards the sealed flag AND registry membership; the affected public wrapper(s) are sealed under that boundary before membership/ownership can escape; admissions not fully registered before the revocation seal fail closed and cannot return a usable wrapper; external transport close/open callbacks execute outside locks but remain inside the revocation acknowledgement barrier; revocation may report success only after every pre-seal stream is unusable/closed, all required cleanup outcomes are terminal and acknowledged, and no post-seal admission can return usable. Same-thread re-entrant close_all invoked from an unfinished transport cleanup callback MUST return fail-closed non-success (never success): it may not exclude its own in-flight cleanup and publish success, may not mark the cleanup terminal with an incomplete failed-id set, and may not erase a callback failure that becomes terminal after the re-entrant call; the caller retries close_all from a normal context once its callback's transport close is terminal.",
   "boundary": {
     "lifecycle_lock": "StreamRegistry._lock guards BOTH the sealed flag (_revoked) and registry membership (_streams)",
     "atomic_transition": "every membership mutation performs its membership transition AND the seal of every affected public wrapper in ONE critical section on the lifecycle lock",
@@ -102,7 +102,7 @@
           "permitted_outcome": "idempotent no-op: close returns without effect; the wrapper is already sealed by the revocation snapshot; the transport is closed exactly once (by the snapshot) and never double-closed by the late close"
         }
       ],
-      "cleanup_acknowledgement": "the close mutation's caller observes the terminal cleanup outcome (a failing transport close propagates to the caller but never unseals the wrapper); the ack fires when the outside-lock close terminates"
+      "cleanup_acknowledgement": "the close mutation's caller observes the terminal cleanup outcome (a failing transport close propagates to the caller but never unseals the wrapper); the failed id is PERSISTED on the registry and re-surfaced by a later close_all/revoke (a callback failure that becomes terminal after a re-entrant rejection is never erased); the ack fires when the outside-lock close terminates"
     },
     {
       "id": "M5",
@@ -212,23 +212,23 @@
     {
       "id": "M10",
       "public_entry": "same-thread re-entrant close_all from inside a transport-close callback (during close_all's own cleanup OR inside a single-close's outside-lock transport close)",
-      "membership_effect": "none (guard return)",
+      "membership_effect": "none (rejected \u2014 fail-closed non-success; no seal, no membership change, no publish)",
       "seal_scope": "none",
-      "linearization_point": "the thread-local re-entrancy guard at close_all entry; the revocation acknowledgement barrier excludes the calling thread's OWN in-flight closes (they sit on this thread's stack and complete the moment close_all returns) \u2014 waiting on them would self-deadlock",
-      "callbacks": "the callback is running OUTSIDE the lifecycle lock (during close_all's outside-lock cleanup)",
+      "linearization_point": "the same-thread re-entrancy rejection at close_all entry (self-inflight / in-cleanup guard): the re-entrant call returns the existing non-success representation BEFORE any seal, membership transition, or acknowledgement publish",
+      "callbacks": "the callback is running OUTSIDE the lifecycle lock inside an unfinished transport cleanup callback (its own close is not yet terminal)",
       "orderings": [
         {
           "ordering": "mutation_first",
-          "revocation_success_requires": "re-entry never deadlocks and never corrupts the terminal result; the acknowledgement barrier never waits on the calling thread's own in-flight closes",
-          "permitted_outcome": "the inner close_all returns immediately; the outer cleanup run owns and publishes the terminal result"
+          "revocation_success_requires": "the re-entrant call never deadlocks, never publishes success, never marks _cleanup_done with an incomplete failed-id set, and never excludes its own in-flight cleanup; a callback failure that becomes terminal AFTER the rejection is persisted and re-surfaced by a later close_all",
+          "permitted_outcome": "the re-entrant close_all is rejected with fail-closed non-success (the public API's existing non-success representation \u2014 RuntimeError, mirroring the coordinator's re-entrant-revoke rejection) BEFORE any seal, membership transition, or acknowledgement publish; the registry is left unsealed and unpublished (no false success acknowledgement, no incomplete failed-id set); the callback completes its own transport close to a terminal outcome; a later close_all from a normal context reports the terminal success or the PERSISTED failure (never erased)"
         },
         {
           "ordering": "seal_first",
-          "revocation_success_requires": "re-entry never deadlocks and never corrupts the terminal result; the acknowledgement barrier never waits on the calling thread's own in-flight closes",
-          "permitted_outcome": "same \u2014 the registry is already sealed, the callback's re-entry is a no-op"
+          "revocation_success_requires": "the re-entrant call never deadlocks and never corrupts the terminal result; the outer cleanup run owns and publishes the complete terminal result",
+          "permitted_outcome": "the re-entrant close_all is rejected with fail-closed non-success (the public API's existing non-success representation \u2014 RuntimeError, mirroring the coordinator's re-entrant-revoke rejection); the outer run continues and publishes the terminal result; a callback that does not handle the rejection makes its own close fail closed (recorded in the terminal failed-id set)"
         }
       ],
-      "cleanup_acknowledgement": "the outer run acknowledges; re-entry observes nothing (no event wait on the thread's own completion); a single-close callback's re-entrant close_all must not wait on its own in-flight close"
+      "cleanup_acknowledgement": "the re-entrant call acknowledges and publishes NOTHING; the outer run (or a later normal-context close_all) owns the acknowledgement; barrier-tracked close failures are folded into the persisted terminal failed-id set before publish \u2014 never published with an incomplete set"
     },
     {
       "id": "M11",
@@ -261,16 +261,16 @@
       "orderings": [
         {
           "ordering": "mutation_first",
-          "revocation_success_requires": "every waiter observes the same terminal result",
+          "revocation_success_requires": "every waiter observes the same terminal result; a same-thread transport-close callback re-entering close_all while another caller's cleanup is in progress is REJECTED with fail-closed non-success (it must never wait on the shared completion event \u2014 waiting would self-deadlock the acknowledgement barrier); the runner still publishes the complete terminal result",
           "permitted_outcome": "all waiters see the persisted failed ids / success; a racing higher-epoch revoke can never treat an in-flight closure as a successful no-op"
         },
         {
           "ordering": "seal_first",
-          "revocation_success_requires": "same",
+          "revocation_success_requires": "same; a same-thread transport-close callback re-entering close_all while another caller's cleanup is in progress is REJECTED with fail-closed non-success (it must never wait on the shared completion event \u2014 waiting would self-deadlock the acknowledgement barrier); the runner still publishes the complete terminal result",
           "permitted_outcome": "same \u2014 later callers re-raise persisted failures"
         }
       ],
-      "cleanup_acknowledgement": "the complete cleanup terminal result is shared/persisted; no caller returns success while a cleanup failure relevant to the sealed generation is unreported"
+      "cleanup_acknowledgement": "the complete cleanup terminal result is shared/persisted; no caller returns success while a cleanup failure relevant to the sealed generation is unreported; a callback re-entering close_all on the same thread while another caller's cleanup is in progress returns fail-closed non-success rather than waiting on the shared event; pre-seal explicit-close failures persisted on the registry are folded into the published failed-id set"
     },
     {
       "id": "M13",
@@ -278,20 +278,20 @@
       "membership_effect": "registry close_all + trust-state revocation + signal",
       "seal_scope": "every registered wrapper (via close_all)",
       "linearization_point": "revocation_seal (inside close_all) precedes trust-state application; the epoch advance validates rollback before any side effect",
-      "callbacks": "transport closes run outside locks; a callback re-entering revoke fails closed (RuntimeError)",
+      "callbacks": "transport closes run outside locks; a callback re-entering revoke fails closed (RuntimeError); a callback re-entering the registry's close_all directly is likewise rejected (fail-closed non-success) \u2014 the coordinator guard fires first within revoke",
       "orderings": [
         {
           "ordering": "mutation_first",
-          "revocation_success_requires": "seal first, snapshot second, cleanup acknowledged, THEN trust-state application",
+          "revocation_success_requires": "seal first, snapshot second, cleanup acknowledged, THEN trust-state application; the transaction re-surfaces ANY persisted registry failure (including a pre-seal explicit-close failure recorded on the registry) as RevocationIncomplete with the applied epoch \u2014 never erased",
           "permitted_outcome": "revoke returns the applied epoch, or RevocationIncomplete with applied epoch + failed stream ids when a handle close failed (state still revoked)"
         },
         {
           "ordering": "seal_first",
-          "revocation_success_requires": "later revoke re-validates the epoch advance (rollback rejected) and re-surfaces persisted failures",
+          "revocation_success_requires": "later revoke re-validates the epoch advance (rollback rejected) and re-surfaces persisted failures; the transaction re-surfaces ANY persisted registry failure (including a pre-seal explicit-close failure recorded on the registry) as RevocationIncomplete with the applied epoch \u2014 never erased",
           "permitted_outcome": "higher-epoch revoke re-raises the persisted failed ids (never false success); rollback rejected before any side effect"
         }
       ],
-      "cleanup_acknowledgement": "the transaction serializes concurrent revocations and persists the complete cleanup terminal result; RevocationIncomplete carries the applied epoch and failed stream ids"
+      "cleanup_acknowledgement": "the transaction serializes concurrent revocations and persists the complete cleanup terminal result; RevocationIncomplete carries the applied epoch and failed stream ids; pre-seal explicit-close failures persisted on the registry are folded into the transaction's failed-id report (never erased)"
     },
     {
       "id": "M14",
@@ -401,7 +401,7 @@
     {
       "id": "M19",
       "public_entry": "transport-close callback invoking a registry mutation (open / close / close_all) during revocation cleanup",
-      "membership_effect": "open fails closed; close is a no-op; close_all returns via the re-entrancy guard",
+      "membership_effect": "open fails closed; close is a no-op; close_all is rejected (fail-closed non-success via the same-thread guard)",
       "seal_scope": "none (all sealed)",
       "linearization_point": "the registry sealed-flag/membership read under the lifecycle lock (callbacks run outside the lock)",
       "callbacks": "the callback IS the transport close callback; it executes OUTSIDE the lifecycle lock and never deadlocks",
@@ -409,21 +409,22 @@
         {
           "ordering": "mutation_first",
           "revocation_success_requires": "the callback's mutation observes the sealed registry",
-          "permitted_outcome": "open fails closed (allocated handle closed by the registry); close is an idempotent no-op; close_all returns immediately (same-thread guard); revoke raises RuntimeError"
+          "permitted_outcome": "open fails closed (allocated handle closed by the registry); close is an idempotent no-op; close_all raises the fail-closed non-success rejection (RuntimeError); revoke raises RuntimeError"
         },
         {
           "ordering": "seal_first",
           "revocation_success_requires": "same",
-          "permitted_outcome": "same fail-closed outcomes"
+          "permitted_outcome": "open fails closed (allocated handle closed by the registry); close is an idempotent no-op; close_all raises the fail-closed non-success rejection (RuntimeError); revoke raises RuntimeError"
         }
       ],
-      "cleanup_acknowledgement": "the outer revocation owns the terminal result; callback mutations never corrupt or bypass it"
+      "cleanup_acknowledgement": "the outer revocation owns the terminal result; the re-entrant close_all never publishes or acknowledges; callback mutations never corrupt or bypass it"
     }
   ],
   "notes": [
     "The matrix is exhaustive over every ownership/membership path discovered by the producer-complete rg audit of runtime/remote_access (streams.py StreamRegistry.open/close/close_all/is_open/raise_if_open, _TrackedStream.close; revocation.py RevocationCoordinator.revoke; gateway.py ConnectorGateway._forward admission/EOF/error paths and _close_partial; forwarding.py transport self-close and guarded idempotent close).",
     "Cells M1-M19 are encoded as deterministic PUBLIC-GATEWAY barrier proofs in tests/remote_access (not registry-only lookalikes) with entered/release barrier events, no timing sleeps, and assertions on wrapper receive/send/closed state, inner transport state/close counts, registry membership, revocation return/error, and no false-success acknowledgement.",
     "Checked-in mutation proofs remove/bypass the unified boundary (pop without seal, seal outside the boundary, close_all success before acknowledgement, wrapper close not routed through the registry) \u2014 each mutation must go red.",
-    "Unit-A threat cases REV-004/REV-005/REV-006 encode the admission-vs-seal and single-close-vs-seal permitted outcomes; REV-005 and REV-006 are the machine-readable close-vs-revoke cells."
+    "Unit-A threat cases REV-004/REV-005/REV-006/REV-007/REV-008 encode the admission-vs-seal and single-close-vs-seal permitted outcomes; REV-005 and REV-006 are the machine-readable close-vs-revoke cells.",
+    "THR-097 seq140 founder ruling: same-thread re-entrant close_all from an unfinished transport cleanup callback fails closed with non-success (never success, never an incomplete failed-id publish, never a self-inflight exclusion), and a callback failure that becomes terminal after the re-entrant rejection is persisted and re-surfaced by a later close_all/revoke (REV-007/REV-008)."
   ]
 }

@@ -1092,12 +1092,15 @@ def test_lifecycle_matrix_schema_and_exhaustiveness() -> None:
 
 def test_lifecycle_matrix_threat_case_parity() -> None:
     """The close-vs-revoke cells are encoded in the threat matrix too: REV-005
-    (close linearizes first) and REV-006 (seal linearizes first) must exist and
+    (close linearizes first), REV-006 (seal linearizes first), and the
+    THR-097 seq140 re-entrancy ruling REV-007 (same-thread re-entrant close_all
+    fails closed with non-success) / REV-008 (a callback failure that becomes
+    terminal after the rejection is persisted and re-surfaced) must exist and
     be hostile/denied with the normative revocation categories."""
     doc = _load("lifecycle_matrix")
     threat = _load("threat_cases")
     by_id = {c["id"]: c for c in threat["cases"]}
-    for cid in ("REV-005", "REV-006"):
+    for cid in ("REV-005", "REV-006", "REV-007", "REV-008"):
         assert cid in by_id, f"lifecycle_matrix: threat case {cid} missing"
         case = by_id[cid]
         assert case["class"] == "hostile"
@@ -1107,6 +1110,43 @@ def test_lifecycle_matrix_threat_case_parity() -> None:
     # The matrix names the close-vs-seal mutations (M4/M6) and their cells.
     matrix_prose = json.dumps(doc)
     assert "single_close" in matrix_prose and "REV-005" in matrix_prose
+    assert "REV-007" in matrix_prose and "REV-008" in matrix_prose
+
+
+def test_lifecycle_matrix_reentrancy_cells_encode_fail_closed_ruling() -> None:
+    """The THR-097 seq140 founder ruling is the normative contract: matrix cell
+    M10 (same-thread re-entrant close_all from an unfinished transport cleanup
+    callback) must state the fail-closed non-success rejection — never success,
+    never an incomplete failed-id publish, never a self-inflight exclusion — and
+    the persisted-failure guarantee. M12 (concurrent waiters) must state that a
+    same-thread callback re-entry is rejected rather than waiting on the shared
+    completion event (no self-deadlock)."""
+    doc = _load("lifecycle_matrix")
+    by_id = {m["id"]: m for m in doc["mutations"]}
+    m10 = by_id["M10"]
+    prose = json.dumps(m10)
+    for token in (
+        "rejected",
+        "non-success",
+        "never publishes success",
+        "incomplete failed-id set",
+        "never erased",
+        "never excludes its own in-flight cleanup",
+    ):
+        assert token in prose, f"lifecycle_matrix M10 must encode {token!r} (founder ruling)"
+    for cell in m10["orderings"]:
+        assert "RuntimeError" in cell["permitted_outcome"], (
+            f"lifecycle_matrix M10 {cell['ordering']}: must use the existing non-success "
+            "representation (RuntimeError, mirroring the coordinator re-entrancy rejection)"
+        )
+    m12 = by_id["M12"]
+    m12_prose = json.dumps(m12)
+    assert "REJECTED" in m12_prose, (
+        "lifecycle_matrix M12 must state the same-thread callback re-entry rejection"
+    )
+    assert "self-deadlock" in m12_prose, (
+        "lifecycle_matrix M12 must state that waiting on the shared event would self-deadlock"
+    )
 
 
 def test_lifecycle_matrix_mutation_close_vs_revoke_cells_are_distinct() -> None:

@@ -6,7 +6,7 @@
     "route-policy.json": "sha256:20b69e728b677b488e1565b79fedf02c0fd9060dd39968325888f6a2411839f6",
     "credential-taxonomy.json": "sha256:9aa64674cd40588f239c1ce9ebb0c1d35f79f0d53a0f2b4cb2c56eb15e73b4e9",
     "failure-categories.json": "sha256:6beb79d0553e856b279f73977457f7958d3c1e9ccd4937d7c1772817c1422be6",
-    "threat-cases.json": "sha256:554ca40c527cf6351d8f40e5a083df0a284a5507fee0f9456200e361df6c4a3a"
+    "threat-cases.json": "sha256:b0daef346296979b3b459bb9ce0300f7e15c7918a8641af777dac71a99af9d6e"
   },
   "artifacts": {
     "headscale": "sha256:a7a8ae9616bb964a3eed8101ebb020213f73668142a84806ec37a5eeb2c1fceb",

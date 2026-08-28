@@ -1,5 +1,5 @@
 """Stream/session registry — revocation closes open streams fail closed
-(contract §9; REV-002/REV-003/REV-004/REV-005/REV-006).
+(contract §9; REV-002/REV-003/REV-004/REV-005/REV-006/REV-007/REV-008).
 
 A closed stream refuses further frames; new streams are refused after a
 revocation has closed the registry.
@@ -24,8 +24,14 @@ callbacks execute OUTSIDE the lock but remain INSIDE the revocation
 acknowledgement barrier: ``close_all`` may publish success only after every
 pre-seal stream is unusable/closed, every outside-lock transport close that
 linearized before the seal is terminal, and no post-seal admission can return
-usable. Same-thread re-entrant ``close_all`` returns immediately — there is
-no lock-across-callback deadlock.
+usable. Same-thread re-entrant ``close_all`` invoked from an unfinished
+transport cleanup callback is REJECTED with fail-closed non-success (founder
+ruling THR-097 seq140) — it never excludes its own in-flight cleanup and
+publishes success, never marks the cleanup terminal with an incomplete
+failed-id set, and never erases a callback failure that becomes terminal
+after the re-entrant call; the caller retries from a normal context once its
+callback's transport close is terminal. There is no lock-across-callback
+deadlock.
 """
 from __future__ import annotations
 
@@ -241,13 +247,17 @@ class StreamRegistry:
         # Outside-lock transport closes that linearized before the seal are
         # registered here and must become terminal before close_all success.
         # A thread-local counter tracks the calling thread's OWN in-flight
-        # closes so the barrier never waits on them: a transport-close
-        # callback that re-enters close_all on the same thread cannot wait on
-        # its own stack frame (that would self-deadlock) — its close completes
-        # immediately after close_all returns.
+        # closes so a same-thread re-entrant close_all from an unfinished
+        # transport cleanup callback is REJECTED (fail-closed non-success)
+        # rather than publishing an incomplete success or self-deadlocking.
         self._cleanup_in_flight = 0
         self._cleanup_ack = threading.Condition()
         self._self_inflight = threading.local()  # same-thread in-flight closes
+        # Barrier-tracked explicit-close failures (pre-seal, terminal): folded
+        # into the persisted _cleanup_failed_ids at publish so a callback
+        # failure that becomes terminal after a re-entrant rejection is never
+        # erased (REV-008).
+        self._inflight_failed_ids: set[str] = set()
 
     # ── revocation acknowledgement barrier (lifecycle steps) ─────────────
 
@@ -256,17 +266,24 @@ class StreamRegistry:
         acknowledgement barrier. Called UNDER the lifecycle lock, atomically
         with the membership transition that owns the close (so the revocation
         seal, in the same lock, can never miss it). Also counts the calling
-        thread's own in-flight closes so the barrier never self-deadlocks."""
+        thread's own in-flight closes so a same-thread re-entrant close_all
+        from an unfinished transport cleanup callback is rejected (fail-closed
+        non-success) instead of being excluded into an incomplete success."""
         self._cleanup_in_flight += 1
         self._self_inflight.count = getattr(self._self_inflight, "count", 0) + 1
 
-    def _end_inflight_close(self) -> None:
+    def _end_inflight_close(self, failed_id: str | None = None) -> None:
         """Acknowledge that an outside-lock transport close is TERMINAL.
         Called AFTER the close terminates (success or recorded failure),
-        never under the lifecycle lock. Wakes the close_all acknowledgement
-        waiters."""
+        never under the lifecycle lock. When the close terminated with
+        FAILURE, the stream id is persisted on the registry so the close_all
+        runner folds it into the terminal failed-id set (a callback failure
+        that becomes terminal after a re-entrant rejection is never erased).
+        Wakes the close_all acknowledgement waiters."""
         with self._lock:
             self._cleanup_in_flight -= 1
+            if failed_id is not None:
+                self._inflight_failed_ids.add(failed_id)
         self._self_inflight.count = getattr(self._self_inflight, "count", 1) - 1
         with self._cleanup_ack:
             self._cleanup_ack.notify_all()
@@ -278,12 +295,14 @@ class StreamRegistry:
         snapshot cleanup — revocation never publishes success while a pre-seal
         transport close is in flight, and no outside-lock callback can ever
         deadlock against the wait (callbacks run on their own threads, which
-        acknowledge via ``_end_inflight_close``). The calling thread's OWN
-        in-flight closes are excluded: they sit on this thread's stack (the
-        re-entrant callback IS the close) and complete the moment this wait
-        returns — waiting on them would self-deadlock."""
+        acknowledge via ``_end_inflight_close``). A same-thread re-entrant
+        close_all from an unfinished transport cleanup callback is rejected at
+        ``close_all`` entry BEFORE this wait is reached, so the runner never
+        holds an in-flight close of its own — the wait covers EVERY registered
+        in-flight close (no self-inflight exclusion; an excluded own in-flight
+        close was the false-success acknowledgement defect)."""
         with self._cleanup_ack:
-            while self._cleanup_in_flight - getattr(self._self_inflight, "count", 0) > 0:
+            while self._cleanup_in_flight > 0:
                 self._cleanup_ack.wait()
 
     @staticmethod
@@ -379,8 +398,14 @@ class StreamRegistry:
             return
         try:
             tracked._close_inner()
-        finally:
-            self._end_inflight_close()
+        except Exception:
+            # Persist the failed id on the registry: a pre-seal explicit-close
+            # failure (including one that becomes terminal AFTER a re-entrant
+            # close_all rejection) is folded into the terminal failed-id set
+            # and re-surfaced by every later close_all/revoke — never erased.
+            self._end_inflight_close(tracked.stream_id)
+            raise
+        self._end_inflight_close()
 
     def close_all(self) -> None:
         """Seal the registry and close every open handle exactly once, sharing
@@ -404,7 +429,8 @@ class StreamRegistry:
            transport is still open;
         3. snapshot transport closes run OUTSIDE the lock (callbacks never
            run under it; a same-thread re-entrant ``close_all`` from inside a
-           callback returns immediately via the thread-local guard);
+           callback is REJECTED with fail-closed non-success by the same-thread
+           guard — it never publishes or acknowledges);
         4. concurrent callers WAIT on ``_cleanup_done`` without holding any
            lock and then observe the SAME persisted terminal result — a
            racing revoke can never treat an in-flight cleanup as a
@@ -421,11 +447,24 @@ class StreamRegistry:
         every required physical-cleanup outcome is terminal and acknowledged,
         and no post-seal admission can return usable.
         """
-        if getattr(self._in_cleanup, "active", False):
-            # Same-thread re-entrancy from within a transport-close callback:
-            # the outer cleanup run owns the terminal result; return now (no
-            # event wait — waiting would deadlock on our own completion).
-            return
+        if getattr(self._self_inflight, "count", 0) > 0 or getattr(
+            self._in_cleanup, "active", False
+        ):
+            # Same-thread re-entrancy from within an UNFINISHED transport
+            # cleanup callback (founder ruling THR-097 seq140): this thread is
+            # inside an outside-lock transport close whose outcome is not yet
+            # terminal. Proceeding would either exclude the calling thread's
+            # own in-flight close and publish an incomplete success (erasing a
+            # callback failure that becomes terminal later) or wait on our own
+            # completion. FAIL CLOSED: reject with the public API's existing
+            # non-success representation (RuntimeError, mirroring the
+            # coordinator's re-entrant-revoke rejection) BEFORE any seal,
+            # membership transition, or acknowledgement publish. The caller
+            # must retry close_all from a normal context once its callback's
+            # transport close is terminal.
+            raise RuntimeError(
+                "re-entrant close_all from a transport cleanup callback rejected"
+            )
         pending: list[tuple[str, _TrackedStream]] = []
         role = "observe"
         failures: tuple[str, ...] = ()
@@ -467,11 +506,24 @@ class StreamRegistry:
                         failed.append(stream_id)
             finally:
                 with self._lock:
-                    self._cleanup_failed_ids = tuple(failed)
+                    # Fold every barrier-tracked pre-seal explicit-close
+                    # failure (terminal before publish, guaranteed by the
+                    # acknowledgement barrier) into the PERSISTED terminal
+                    # result — never publish an incomplete failed-id set, and
+                    # never erase a callback failure that became terminal
+                    # after a re-entrant rejection (REV-008).
+                    self._cleanup_failed_ids = tuple(failed) + tuple(
+                        sorted(self._inflight_failed_ids)
+                    )
+                    self._inflight_failed_ids.clear()
                     self._cleanup_done.set()
                 self._in_cleanup.active = False
-            if failed:
-                raise StreamCloseError(failed)
+            # Raise on the PERSISTED terminal result (snapshot failures folded
+            # together with barrier-tracked explicit-close failures) — a
+            # pre-seal close failure folded in from the acknowledgement barrier
+            # must never slip past as a silent success.
+            if self._cleanup_failed_ids:
+                raise StreamCloseError(self._cleanup_failed_ids)
             return
         if failures:
             raise StreamCloseError(failures)
