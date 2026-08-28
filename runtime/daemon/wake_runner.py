@@ -14,6 +14,7 @@ that transitions the row.
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Callable
@@ -25,6 +26,12 @@ from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import WorkHourStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executor_registry import get_registry
+from runtime.orchestrator.host_supervisor import (
+    AdmissionRequest,
+    HostSessionSupervisor,
+    LaunchResult,
+    TerminalReason,
+)
 from runtime.orchestrator.org_config import (
     OrgConfig,
     load_org_config,
@@ -118,6 +125,7 @@ async def run_wake(
     work_hour_id: str,
     settings: Settings = global_settings,
     executor_factory: Callable | None = None,
+    host_supervisor: HostSessionSupervisor | None = None,
 ) -> None:
     """Run one working-hours wake session.
 
@@ -264,15 +272,128 @@ async def run_wake(
         )
 
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, lambda: executor.run(
-        workspace=workspace,
-        prompt=prompt,
-        session_id=session_id,
-        timeout_seconds=settings.session_timeout_seconds,
-        pre_launch_validator=_pre_launch_validator,
-        org_slug=org_state.slug,
-        model=model_name,
-    ))
+    result = None
+    if host_supervisor is None:
+        # ── Legacy uncontained path (unchanged) ──
+        result = await loop.run_in_executor(None, lambda: executor.run(
+            workspace=workspace,
+            prompt=prompt,
+            session_id=session_id,
+            timeout_seconds=settings.session_timeout_seconds,
+            pre_launch_validator=_pre_launch_validator,
+            org_slug=org_state.slug,
+            model=model_name,
+        ))
+    else:
+        # ── THR-207 supervised wiring: the wake session runs through the
+        # daemon-wide HostSessionSupervisor (admission lease, atomic ownership
+        # at grant, real backend launch into containment, opaque cancellation,
+        # containment cleanup before exactly-once lease release). The executor
+        # and its per-provider throttle stay inside the launch body unchanged.
+        spec_builder = getattr(executor, "build_launch_spec", None)
+        if spec_builder is None:
+            # Fail closed: no contained-launch seam — mirror the task
+            # producer's fail-closed behavior.
+            no_seam = (
+                f"executor {type(executor).__name__!r} does not support "
+                "contained launch (build_launch_spec missing)"
+            )
+            store.update(
+                work_hour_id, status=WorkHourStatus.FAILED,
+                ended_at=datetime.now(timezone.utc), error=no_seam,
+            )
+            AuditLogger(org_state.db).log_work_hour_failed(
+                work_hour_id, record.agent_name, reason=no_seam,
+            )
+            return
+        try:
+            launch_spec = spec_builder(
+                workspace=workspace,
+                prompt=prompt,
+                session_id=session_id,
+                model=model_name,
+                org_slug=org_state.slug,
+                timeout_seconds=settings.session_timeout_seconds,
+            )
+        except Exception as exc:
+            store.update(
+                work_hour_id, status=WorkHourStatus.FAILED,
+                ended_at=datetime.now(timezone.utc),
+                error=f"launch_spec_failed: {exc}",
+            )
+            AuditLogger(org_state.db).log_work_hour_failed(
+                work_hour_id, record.agent_name,
+                reason=f"launch_spec_failed: {exc}",
+            )
+            return
+
+        def _launch_body(running) -> LaunchResult:
+            # Real backend: the subprocess was already launched into
+            # containment — the executor communicates + parses only. Honest
+            # passthrough: no containment capability — the executor
+            # self-launches exactly as the legacy path, with the throttle's
+            # internal 429 retry disabled so the supervisor owns the
+            # finish/release/sleep/reacquire lifecycle.
+            contained = running.process is not None
+            res = executor.run(
+                workspace=workspace,
+                prompt=prompt,
+                session_id=session_id,
+                timeout_seconds=settings.session_timeout_seconds,
+                pre_launch_validator=_pre_launch_validator if not contained else None,
+                org_slug=org_state.slug,
+                model=model_name,
+                running=running if contained else None,
+                throttle_backoff_seconds=() if not contained else None,
+            )
+            return LaunchResult(
+                success=res.success,
+                duration_seconds=float(getattr(res, "duration_seconds", 0) or 0),
+                returncode=getattr(res, "returncode", None),
+                error=getattr(res, "error", None),
+                rate_limited=bool(getattr(res, "rate_limited", False)),
+                timed_out=_is_timeout(res),
+                payload=res,
+            )
+
+        outcome = await loop.run_in_executor(
+            None,
+            lambda: host_supervisor.run(
+                AdmissionRequest(
+                    org=org_state.slug,
+                    invocation_kind="wake",
+                    logical_id=work_hour_id,
+                    executor_profile=executor_name,
+                    enqueued_at=time.monotonic(),
+                ),
+                launch_spec=launch_spec,
+                launch_body=_launch_body,
+                pre_launch_validator=_pre_launch_validator,
+            ),
+        )
+        if outcome.terminal_reason in (TerminalReason.SHUTDOWN, TerminalReason.CANCELLED):
+            # Daemon drain / cancellation interrupted the invocation: leave the
+            # RUNNING row for daemon-restart recovery
+            # (``org.db.work_hours.recover_running()``) — the pre-wiring shutdown
+            # semantics when a worker was cancelled mid-run.
+            return
+        launch = outcome.payload
+        if launch is None:
+            # Pre-launch terminal winner (validator failure / prepare or spawn
+            # failure): nothing ran — fail closed with the durable first-wins
+            # reason, mirroring the materialization-failure path.
+            reason = f"session {outcome.terminal_reason.value} before launch"
+            if outcome.error:
+                reason = f"{reason}: {outcome.error}"
+            store.update(
+                work_hour_id, status=WorkHourStatus.FAILED,
+                ended_at=datetime.now(timezone.utc), error=reason,
+            )
+            AuditLogger(org_state.db).log_work_hour_failed(
+                work_hour_id, record.agent_name, reason=reason,
+            )
+            return
+        result = launch.payload
 
     if getattr(result, "token_usage", None) is not None:
         org_state.db.insert_session_token_usage(
