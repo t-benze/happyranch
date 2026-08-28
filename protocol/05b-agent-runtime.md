@@ -941,13 +941,21 @@ factory** (``runtime/platform/backend_factory.py``):
   (the receipt stays ``INCOMPLETE`` with explicit ``cgroup_procs_unreadable``
   evidence so admission blocks). Verified residue is reported as
   guaranteed-cleanup residue (admission-blocking). Counters are captured
-  **while the scope is alive**: a per-session exit-watcher reads
-  ``memory.peak``, ``cpu.stat`` ``usage_usec`` and ``pids.peak`` at the
-  process-exit instant (systemd collects the transient scope within ~5 ms
-  of the contained process exiting — structurally before ``finish`` runs on
-  a clean-success path, so a finish-time read is too late) and carries the
-  immutable observation through wait/reap and drain/cancellation/cleanup
-  into the receipt with KERNEL provenance; ``finish``'s own pre-stop read
+  **while the scope is alive**: a per-session exit-watcher opens
+  ``memory.peak``, ``cpu.stat`` ``usage_usec`` and ``pids.peak``
+  **independently** — an absent old-kernel ``pids.peak`` disables only
+  that counter, never the guaranteed memory/CPU capture, and never invents
+  provenance — and is woken by a deterministic exit notification (pidfd
+  poll, with a ``waitid(WNOWAIT)`` fallback; no polling cadence for the
+  exit itself) at the process-exit instant (systemd collects the transient
+  scope within ~0.3–0.6 ms of the contained process exiting — structurally
+  before ``finish`` runs on a clean-success path, so a finish-time read is
+  too late) and carries the immutable observation through wait/reap and
+  drain/cancellation/cleanup into the receipt with KERNEL provenance;
+  when the exit-instant read loses the collection race, the receipt
+  records an explicit ``capture_final_read_lost`` event instead of
+  silently labeling the last-live read as the authoritative final
+  total/peak. ``finish``'s own pre-stop read
   is the authoritative fallback when the process is still running (user
   cancellation / daemon drain). ``pids.current`` is only a best-effort
   live count — merged with sampled evidence under ``sampled`` provenance
