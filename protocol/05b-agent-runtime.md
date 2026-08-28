@@ -941,15 +941,37 @@ factory** (``runtime/platform/backend_factory.py``):
   interrogation is UNKNOWN evidence that never yields ``CLEAN``/``quiescent``
   (the receipt stays ``INCOMPLETE`` with explicit ``cgroup_procs_unreadable``
   evidence so admission blocks). Verified residue is reported as
-  guaranteed-cleanup residue (admission-blocking). Counters are authoritative
-  where the kernel exposes them (``memory.peak``, ``cpu.stat``
-  ``usage_usec``, ``pids.peak``); ``pids.current`` is only a best-effort
+  guaranteed-cleanup residue (admission-blocking). Counters are captured
+  **while the scope is alive**: a per-session exit-watcher opens
+  ``memory.peak``, ``cpu.stat`` ``usage_usec`` and ``pids.peak``
+  **independently** — an absent old-kernel ``pids.peak`` disables only
+  that counter, never the guaranteed memory/CPU capture, and never invents
+  provenance — and is woken by a deterministic exit notification (pidfd
+  poll, with a ``waitid(WNOWAIT)`` fallback; no polling cadence for the
+  exit itself) at the process-exit instant (systemd collects the transient
+  scope within ~0.3–0.6 ms of the contained process exiting — structurally
+  before ``finish`` runs on a clean-success path, so a finish-time read is
+  too late) and carries the immutable observation through wait/reap and
+  drain/cancellation/cleanup into the receipt with KERNEL provenance;
+  final-read validity is tracked **per counter** — when a counter's
+  exit-instant read loses the collection race, that counter's retained
+  last-live value is downgraded to ``sampled`` provenance (never silently
+  labeled the authoritative final total/peak merely because another
+  counter's final read succeeded) and the receipt records a precise
+  per-counter ``capture_final_read_lost:<counter>`` event. ``finish``'s own pre-stop read
+  is the authoritative fallback when the process is still running (user
+  cancellation / daemon drain). ``pids.current`` is only a best-effort
   live count — merged with sampled evidence under ``sampled`` provenance
   when ``pids.peak`` is absent, never labeled authoritative (an empty-tree
-  teardown value of 0 must not masquerade as a kernel peak). An absent
-  counter falls back to the sampled peak with ``sampled`` provenance only
-  when a sample exists, otherwise it is ``unavailable`` — never a
-  fabricated value.
+  teardown value of 0 must not masquerade as a kernel peak). A cgroup that
+  has **vanished** at finish time is recorded as an explicit
+  ``cgroup_vanished`` event and only yields CLEAN/quiescent when
+  corroborated by a positively-terminal unit state (an UNKNOWN
+  unit-state interrogation still fails closed to INCOMPLETE); a missing
+  cgroup can never short-circuit to a silently-verified clean or a
+  fabricated kernel measurement. An absent counter falls back to the
+  sampled peak with ``sampled`` provenance only when a sample exists,
+  otherwise it is ``unavailable`` — never a fabricated value.
 - ``runtime/platform/macos_process_group.py`` — honestly capped macOS
   backend: process-group launch, TERM/KILL bounded cleanup with
   group-ownership proof before signaling, identity-safe escaped-descendant

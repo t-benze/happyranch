@@ -158,14 +158,37 @@ concurrency (1 worker) and row lifecycle.
   `INCOMPLETE` with explicit `cgroup_procs_unreadable` evidence so a
   guaranteed cleanup can never release the lease without admission-blocking
   residue semantics; verified residue is reported as `SurvivorRecord`
-  (guaranteed-cleanup residue blocks admission). Counters are read before
-  teardown: `memory.peak` (kernel peak), `cpu.stat` `usage_usec` (kernel
-  cumulative), `pids.peak` (authoritative kernel process peak, read
-  before teardown while the cgroup scope exists). `pids.current` is only a
+  (guaranteed-cleanup residue blocks admission). Counters are captured
+  **while the scope is alive**: a per-session exit-watcher opens
+  `memory.peak` (kernel peak), `cpu.stat` `usage_usec` (kernel cumulative),
+  and `pids.peak` (authoritative kernel process peak) **independently** —
+  an absent old-kernel `pids.peak` disables only that counter, never the
+  guaranteed memory/CPU capture, and never invents provenance — and is
+  woken by a deterministic exit notification (pidfd poll, with a
+  `waitid(WNOWAIT)` fallback; no polling cadence for the exit itself) at
+  the exact process-exit instant. It preads the final counters before
+  systemd collects the transient scope (live evidence: the cgroup
+  directory survives the exit by only ~0.3–0.6 ms while the exit-instant
+  preads take ~10–30 us on the open fds; long before `finish` runs on a
+  clean-success path, so a finish-time read is
+  structurally too late) and carries the immutable observation through
+  wait/reap and actual drain/cancellation/cleanup into the finish-time
+  receipt (`finish`'s own pre-stop read remains the authoritative fallback
+  when the process is still running, e.g. user cancellation / daemon
+  drain). Final-read validity is tracked **per counter**: when a counter's
+  exit-instant read loses the collection race, that counter's retained
+  last-live value is downgraded to `sampled` provenance — never silently
+  labeled the authoritative final total/peak merely because another
+  counter's final read succeeded — and the receipt records a precise
+  per-counter `capture_final_read_lost:<counter>` event. `pids.current` is only a
   best-effort live count: without `pids.peak` it is merged honestly with
   the sampled peak under `sampled` provenance, never labeled
   authoritative — an empty-tree teardown value of 0 must not masquerade as
-  a kernel peak. An absent counter falls
+  a kernel peak. A cgroup that has **vanished** at finish time is genuine
+  emptiness only when corroborated by a positively-terminal unit state and
+  is recorded as an explicit `cgroup_vanished` event — it never
+  short-circuits to a silently-verified CLEAN (an UNKNOWN unit-state
+  interrogation still fails closed to INCOMPLETE). An absent counter falls
   back to the sampled value with `sampled` provenance only when a sample
   exists; otherwise it is `unavailable` — never a fabricated zero.
   Session scopes apply **no resource limits** in Slice B (no approved limit
@@ -208,7 +231,7 @@ concurrency (1 worker) and row lifecycle.
 | queued cancellation | remove request; no launch/handle/lease leak |
 | prepare failure | close partial handle; release lease; actionable failure |
 | spawn failure | abandon partial containment; release lease |
-| clean exit | collect receipt; explicit whole-tree stop; measured low-single-digit TERM grace/KILL; capability-appropriate residue check; publish survivor charge if applicable; release |
+| clean exit | collect receipt (authoritative kernel counters captured by the exit-watcher's exit-instant read while the scope was alive — a deterministic pidfd/waitid exit notification wakes it at the process exit itself, and systemd collects the transient scope ~0.3–0.6 ms later, so finish-time reads are too late); explicit whole-tree stop; measured low-single-digit TERM grace/KILL; capability-appropriate residue check; publish survivor charge if applicable; release |
 | nonzero exit | same cleanup; preserve executor failure as primary result and attach cleanup error |
 | timeout | mark timeout; tree TERM/KILL; verify; timeout remains primary result |
 | user/task cancellation | cancellation route invokes opaque handle, not PID-only signal; idempotent with the executor's own finish |
@@ -270,8 +293,30 @@ both backends:
 
 - Linux counters are authoritative where the kernel exposes them:
   `memory.peak` (kernel peak), `cpu.stat` `usage_usec` (kernel cumulative),
-  `pids.peak` (kernel process peak, read before teardown while the cgroup
-  scope exists). `pids.current` is only a best-effort live count: without
+  `pids.peak` (kernel process peak). A per-session **exit-watcher** opens
+  these counters independently (an absent old-kernel `pids.peak` disables
+  only that counter — never the guaranteed memory/CPU capture, and never
+  invents provenance) and is woken by a deterministic exit notification
+  (pidfd poll / `waitid(WNOWAIT)`; no polling cadence for the exit itself)
+  at the process-exit instant while the scope is alive — live evidence: the transient
+  scope's cgroup is collected by systemd within ~0.3–0.6 ms of the contained
+  process exiting, structurally before `finish` runs on a clean-success
+  path, so a finish-time read is too late — and carries the immutable
+  observation through wait/reap and actual drain/cancellation/cleanup into
+  the finish-time receipt with honest KERNEL provenance (`finish`'s own
+  pre-stop read remains the authoritative fallback for paths where the
+  process is still running at finish time, e.g. user cancellation / daemon
+  drain). Final-read validity is tracked **per counter**: if a counter's
+  exit-instant read loses the collection race, that counter's retained
+  last-live value is downgraded to `sampled` provenance (never silently
+  labeled the authoritative final total/peak merely because another
+  counter's final read succeeded) and the receipt records a precise
+  per-counter `capture_final_read_lost:<counter>` enforcement event. A cgroup that has **vanished** at finish time is genuine emptiness
+  corroborated by a positively-terminal unit state and is recorded as an
+  explicit `cgroup_vanished` enforcement event — it never short-circuits to
+  a silently-verified CLEAN (an UNKNOWN unit-state interrogation still fails
+  closed to INCOMPLETE) and never fabricates kernel measurement.
+  `pids.current` is only a best-effort live count: without
   `pids.peak` it is merged honestly with the sampled peak under `sampled`
   provenance and is never labeled authoritative — an empty-tree teardown
   value of 0 must not masquerade as a kernel peak. `memory.peak`'s absence

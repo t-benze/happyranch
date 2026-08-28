@@ -23,14 +23,31 @@ operations** — no OS/version inference:
   cleanup is reported as :class:`SurvivorRecord` — the supervisor's
   ``ResidueAccountant`` blocks admission on ``kills_tree_guaranteed``
   residue until reconciliation.
-* Counters are read **before** teardown (the cgroup disappears once the
-  scope is stopped): ``memory.peak`` (authoritative peak when the kernel
-  exposes it), ``cpu.stat`` ``usage_usec`` (authoritative cumulative CPU),
-  and ``pids.peak`` (authoritative process peak when the kernel exposes
-  it). ``pids.current`` is only a best-effort live membership count —
-  never labeled an authoritative kernel peak (an empty-tree teardown value
-  of 0 must not masquerade as one); without ``pids.peak`` it is merged
-  honestly with sampled evidence under ``sampled`` provenance.
+* Counters are captured **while the scope is alive**: a per-session exit-
+  watcher thread opens the authoritative kernel counter files
+  (``memory.peak``, ``cpu.stat`` ``usage_usec``, ``pids.peak``)
+  **independently** — an absent old-kernel ``pids.peak`` never discards
+  the guaranteed memory/CPU capture and never invents provenance — and is
+  woken by a deterministic exit notification (``pidfd`` poll, with a
+  ``waitid(WNOWAIT)`` fallback; no polling cadence for the exit itself) at
+  the instant the contained process exits. It preads the final counters
+  before systemd garbage-collects the transient scope's cgroup (live
+  evidence: the cgroup directory survives the exit by only ~0.3–0.6 ms,
+  long before ``finish`` runs on a clean-success path, while the exit-
+  instant preads take ~10–30 us on the open fds) and carries that
+  immutable observation through wait/reap and actual
+  drain/cancellation/cleanup into the finish-time receipt with honest
+  KERNEL provenance. ``finish``'s own pre-stop read remains the
+  authoritative fallback for paths where the process is still running at
+  finish time (user cancellation / daemon drain). ``pids.current`` is only
+  a best-effort live membership count — never labeled an authoritative
+  kernel peak (an empty-tree teardown value of 0 must not masquerade as
+  one); without ``pids.peak`` it is merged honestly with sampled evidence
+  under ``sampled`` provenance. A cgroup that has vanished at finish time
+  is never silently treated as verified evidence: it is recorded as an
+  explicit ``cgroup_vanished`` event, and quiescence is only claimed when
+  the unit state is positively terminal (an UNKNOWN unit-state
+  interrogation still fails closed to ``INCOMPLETE``).
 
 Slice B applies **no resource limits** to session scopes (the policy
 snapshot carries no approved limit values — 16/64/72/4096/2800 remain
@@ -43,6 +60,7 @@ from __future__ import annotations
 
 import logging
 import os
+import select
 import subprocess
 import threading
 import time
@@ -95,6 +113,71 @@ _ENFORCEMENT_PROPERTIES = (
 )
 
 
+def _kernel_max(*values: int | float | None) -> int | float | None:
+    """Max of the valid kernel-counter observations (``None`` when none).
+
+    The authoritative kernel counters are monotonic (``memory.peak`` /
+    ``pids.peak`` are high-water marks, ``cpu.stat`` ``usage_usec`` is
+    cumulative), so the max over the exit-watcher's capture and the
+    finish-time pre-stop read is the best available KERNEL value.
+    """
+    valid = [v for v in values if v is not None]
+    return max(valid) if valid else None
+
+
+# Bounded grace for ``finish`` to wait for the exit-watcher's immutable
+# observation when the contained process has already exited (the clean
+# success / timeout paths where systemd collects the transient scope ~0.3–
+# 0.6 ms after the exit-instant read). The watcher does a few microseconds
+# of file reads after its exit notification wakes, so this bound is
+# generous; a still-running process (user cancellation / daemon drain)
+# never blocks on it.
+_EXIT_CAPTURE_GRACE = 0.25
+
+# Cadence of the exit-watcher's live ``pread`` of the authoritative kernel
+# counter files while the contained process runs, used as the timeout of the
+# ``pidfd`` poll between live reads. The exit-instant read (deterministic
+# ``pidfd``/``waitid`` wake at process exit) is the authoritative capture;
+# the last live read is only the honest fallback when that exit-instant read
+# loses the race against systemd's collection of the transient scope (the
+# cgroup directory can vanish within microseconds of the process exiting).
+_EXIT_CAPTURE_POLL = 0.05
+
+
+@dataclass(frozen=True)
+class _KernelObservation:
+    """Immutable authoritative kernel counters captured at the process-exit
+    instant while the scope's cgroup was still valid.
+
+    The transient scope's cgroup is collected by systemd milliseconds after
+    the contained process exits — long before ``finish`` runs on a clean-
+    success path — so the exit-watcher reads these counters in a thread
+    woken by a deterministic exit notification (``pidfd`` poll / ``waitid``
+    — no polling cadence for the exit itself) and carries the result
+    through wait/reap and actual drain/cancellation/cleanup into the
+    finish-time receipt. The three counter files are opened and read
+    **independently**, so final-read validity is tracked **per counter**
+    (``final_read_ok_memory`` / ``final_read_ok_cpu`` /
+    ``final_read_ok_pids``): a counter whose exit-instant read succeeded
+    holds the authoritative final total/peak; a counter whose exit-instant
+    read lost the collection race retains only its last-live value while
+    the scope was alive — a genuine kernel-sourced reading that may
+    undercount the terminal window, never the authoritative final value.
+    ``finish`` downgrades such a retained value (honest non-KERNEL
+    provenance) and records a precise per-counter ``capture_final_read_lost``
+    event instead of silently labeling it authoritative merely because
+    another counter's final read succeeded.
+    """
+
+    captured_at: float
+    memory_peak_bytes: int | None
+    cpu_total_seconds: float | None
+    process_peak: int | None
+    final_read_ok_memory: bool = False
+    final_read_ok_cpu: bool = False
+    final_read_ok_pids: bool = False
+
+
 @dataclass
 class _LaunchState:
     """Per-session launch state captured at launch for finish-time checks."""
@@ -103,6 +186,8 @@ class _LaunchState:
     cgroup: str
     root_pid: int
     started_at: float
+    observation: _KernelObservation | None = None
+    capture_done: threading.Event = field(default_factory=threading.Event)
 
 
 class LinuxSystemdBackend:
@@ -534,6 +619,9 @@ class LinuxSystemdBackend:
         state = _LaunchState(unit=unit, cgroup=cg, root_pid=root_pid, started_at=self._monotonic())
         with self._launched_lock:
             self._launched[unit] = state
+        # The exit-watcher captures authoritative kernel counters at the
+        # process-exit instant, while the scope's cgroup is still valid.
+        self._start_exit_capture(state, proc)
         return RunningHandle(
             backend=_BACKEND_NAME,
             token=unit,
@@ -542,6 +630,221 @@ class LinuxSystemdBackend:
             start_identity=identity,
             process=proc,
         )
+
+    def _start_exit_capture(
+        self, state: _LaunchState, proc: subprocess.Popen
+    ) -> None:
+        """Spawn the per-session exit-watcher thread.
+
+        **Deterministic exit notification** (not polling): the watcher opens
+        the authoritative kernel counter files (``memory.peak`` /
+        ``cpu.stat`` ``usage_usec`` / ``pids.peak``) while the scope's
+        cgroup is valid — each file opened **independently**, so an absent
+        old-kernel ``pids.peak`` disables only that counter and never
+        discards the guaranteed memory/CPU capture — then blocks on a
+        ``pidfd`` poll (``select.poll``), which the kernel makes readable at
+        the exact process-exit instant (part of the child-exit path),
+        unlike ``proc.poll()`` which is only sampled every
+        ``_EXIT_CAPTURE_POLL``. At wake it immediately preads the final
+        counters: live evidence shows systemd collects the transient scope
+        ~0.27–0.62 ms after the contained process exits while the three
+        preads take ~10–30 us on the open fds, so the exit-instant read
+        captures the authoritative final kernel counters **while the scope
+        is alive** and the receipt includes terminal-window CPU/peak growth
+        that any last-live poll would miss. The live pread on the poll
+        timeout (every ``_EXIT_CAPTURE_POLL`` while the process runs)
+        remains the honest fallback: on the rare path where collection
+        beats the exit-instant read, that counter's final-read validity
+        flag stays False and ``finish`` downgrades its retained last-live
+        value (honest non-KERNEL provenance) and records a precise
+        per-counter ``capture_final_read_lost`` enforcement event instead
+        of silently labeling a possibly-stale last-live read as the
+        authoritative final total/peak. The immutable observation (max of
+        the final read and the last live read — the kernel counters are
+        monotonic high-water/cumulative) is written on the launch state by
+        reference, so it survives ``finish`` popping the state from the
+        registry. A watcher failure is contained: it records nothing and
+        the receipt degrades to the honest fallback chain.
+        """
+        cg = state.cgroup
+        if not cg:
+            # The scope never materialized (or already exited before launch
+            # resolved it) — there is no cgroup to capture while alive.
+            return
+        pid = proc.pid
+
+        def watch() -> None:
+            pidfd: int | None = None
+            fds: dict[str, int] = {}
+            try:
+                fds = self._open_observation_fds(cg)
+                if not fds:
+                    # Every counter file is already gone (the cgroup was
+                    # collected between launch and now) — nothing to capture.
+                    return
+                # Baseline live read while the cgroup is guaranteed valid.
+                last: dict[str, object] = self._pread_observation(fds)
+                try:
+                    # Deterministic exit notification: the kernel wakes this
+                    # thread the moment the contained process exits.
+                    pidfd = os.pidfd_open(pid)
+                except OSError:
+                    pidfd = None
+                if pidfd is not None:
+                    poller = select.poll()
+                    poller.register(pidfd, select.POLLIN)
+                    while True:
+                        # Blocks up to the live-read cadence; returns
+                        # immediately (non-empty) when the process exits.
+                        if poller.poll(int(_EXIT_CAPTURE_POLL * 1000)):
+                            break
+                        current = self._pread_observation(fds)
+                        last = {
+                            name: _kernel_max(
+                                current.get(name), last.get(name)
+                            )
+                            for name in fds
+                        }
+                else:
+                    # Defensive fallback for a kernel without pidfd (every
+                    # kernel exposing memory.peak is >= 5.19 and has pidfd):
+                    # block on waitid — still a deterministic exit
+                    # notification (WNOWAIT does not reap, so the executor's
+                    # own communicate()/wait() still reaps normally).
+                    try:
+                        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+                    except ChildProcessError:
+                        pass  # already reaped — the process has exited
+                # The process has exited: one final read while the cgroup
+                # still exists (fast pread on the open fds wins the
+                # collection race: measured ~0.27–0.62 ms of cgroup
+                # lifetime after exit vs ~10–30 us for the reads). ``last``
+                # remains the honest fallback when collection already won.
+                final = self._pread_observation(fds)
+                # Final-read validity is per counter: a counter whose
+                # exit-instant read succeeded holds the authoritative final
+                # total/peak; one that lost the collection race keeps only
+                # its last-live value (downgraded honestly by ``finish``,
+                # never silently KERNEL because another counter succeeded).
+                final_read_ok_memory = final.get("memory.peak") is not None
+                final_read_ok_cpu = final.get("cpu.stat") is not None
+                final_read_ok_pids = final.get("pids.peak") is not None
+            except Exception:  # noqa: BLE001 — watcher failure is contained
+                return
+            finally:
+                for fd in fds.values():
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                if pidfd is not None:
+                    try:
+                        os.close(pidfd)
+                    except OSError:
+                        pass
+            observation = _KernelObservation(
+                captured_at=self._monotonic(),
+                memory_peak_bytes=_kernel_max(
+                    final.get("memory.peak"), last.get("memory.peak")
+                ),
+                cpu_total_seconds=_kernel_max(
+                    final.get("cpu.stat"), last.get("cpu.stat")
+                ),
+                process_peak=_kernel_max(
+                    final.get("pids.peak"), last.get("pids.peak")
+                ),
+                final_read_ok_memory=final_read_ok_memory,
+                final_read_ok_cpu=final_read_ok_cpu,
+                final_read_ok_pids=final_read_ok_pids,
+            )
+            with self._launched_lock:
+                state.observation = observation
+                state.capture_done.set()
+
+        threading.Thread(
+            target=watch, name=f"hr-exit-capture-{state.unit}", daemon=True
+        ).start()
+
+    def _open_observation_fds(self, cg: str) -> dict[str, int]:
+        """Open the authoritative kernel counter files while the cgroup is
+        valid, each **independently**.
+
+        An absent file (old-kernel ``pids.peak`` shape, or a counter the
+        host's controllers do not expose) disables only that counter — the
+        guaranteed ``memory.peak`` / ``cpu.stat`` capture is never discarded
+        because one optional file is missing, and a missing file never
+        invents provenance. Returns a (possibly empty) map of opened counter
+        fds; an empty map means the cgroup is already gone (or no counter
+        is readable) and the watcher records nothing, degrading honestly to
+        the fallback chain."""
+        base = os.path.join(self._cgroup_root, cg.lstrip("/"))
+        fds: dict[str, int] = {}
+        for name in ("memory.peak", "cpu.stat", "pids.peak"):
+            try:
+                fds[name] = os.open(os.path.join(base, name), os.O_RDONLY)
+            except OSError:
+                # Absent file (old-kernel shape) or the cgroup was already
+                # collected: leave this counter unopened — the rest still
+                # capture.
+                continue
+        return fds
+
+    def _pread_observation(self, fds: dict[str, int]) -> dict[str, object]:
+        """One fast kernel-counter read via pre-opened fds (``pread`` avoids
+        the slow per-file ``open`` that would lose the collection race).
+        Returns ``{memory.peak, cpu.stat, pids.peak}`` with ``None`` for
+        files that vanished (ENODEV after cgroup collection) or carried a
+        semantically invalid negative PID count."""
+        result: dict[str, object] = {}
+        for name, fd in fds.items():
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                raw = os.read(fd, 256)
+                if name == "cpu.stat":
+                    usage = None
+                    for line in raw.decode("utf-8", "replace").splitlines():
+                        key, _, value = line.partition(" ")
+                        if key == "usage_usec":
+                            usage = int(value) / 1_000_000.0
+                            break
+                    result[name] = usage
+                else:
+                    value = int(raw.split()[0])
+                    # The kernel never reports a negative membership/peak; a
+                    # negative parseable value is semantically invalid and
+                    # must never earn authoritative KERNEL evidence.
+                    result[name] = value if value >= 0 else None
+            except OSError:
+                result[name] = None
+            except (ValueError, IndexError):
+                result[name] = None
+        return result
+
+    def _await_exit_capture(
+        self, state: _LaunchState, running: RunningHandle
+    ) -> _KernelObservation | None:
+        """Bounded wait for the exit-watcher's immutable observation.
+
+        Waits only when the contained process has already exited (the clean
+        success / timeout / post-kill paths where systemd is about to
+        collect the scope) and only up to ``_EXIT_CAPTURE_GRACE``; a
+        still-running process (user cancellation / daemon drain) never
+        blocks — ``finish``'s own pre-stop read is authoritative in that
+        window. Returns the observation (possibly all-None when the watcher
+        lost the cgroup race) or ``None`` when none exists yet.
+        """
+        proc = running.process
+        if (
+            state.cgroup
+            and proc is not None
+            and proc.poll() is not None
+            and state.observation is None
+        ):
+            deadline = self._monotonic() + _EXIT_CAPTURE_GRACE
+            while state.observation is None and self._monotonic() < deadline:
+                if state.capture_done.wait(0.005):
+                    break
+        return state.observation
 
     def sample(self, running: RunningHandle) -> ResourceSample:
         """One authoritative cgroup-counter sample (kernel provenance)."""
@@ -557,7 +860,9 @@ class LinuxSystemdBackend:
         return ResourceSample(
             sampled_at=self._monotonic(),
             memory_peak_bytes=(
-                counters["memory.current"] if "memory.current" in counters else None
+                counters["memory.peak"]
+                if "memory.peak" in counters
+                else (counters["memory.current"] if "memory.current" in counters else None)
             ),
             cpu_total_seconds=counters.get("cpu.stat"),
             process_count=counters.get("pids.current"),
@@ -574,19 +879,28 @@ class LinuxSystemdBackend:
     ) -> Receipt:
         """Explicit whole-scope stop on EVERY terminal path, then verify.
 
-        Ordering: read authoritative counters (the cgroup disappears on
-        stop) -> explicit ``systemctl stop`` -> bounded wait for **cgroup
-        emptiness** (the unit can report ``inactive`` while a TERM-resistant
-        member still lives in its cgroup — the control-group kill model:
-        merely observing the main PID exit is insufficient) -> escalate to
-        ``KILL`` when members remain -> verify cgroup emptiness -> identity-
-        verified survivors (guaranteed-cleanup residue, admission-blocking)
-        -> bounded receipt.
+        Ordering: await the exit-watcher's immutable kernel observation and
+        read authoritative counters (the cgroup disappears on stop — and on
+        a clean-success path systemd collects the transient scope ~0.3–0.6
+        ms after the contained process exits, before this method runs, so the
+        exit-watcher's exit-instant capture while the scope was alive is the
+        primary authoritative source) -> explicit ``systemctl stop`` -> bounded wait
+        for **cgroup emptiness** (the unit can report ``inactive`` while a
+        TERM-resistant member still lives in its cgroup — the control-group
+        kill model: merely observing the main PID exit is insufficient) ->
+        escalate to ``KILL`` when members remain -> verify cgroup emptiness
+        -> identity-verified survivors (guaranteed-cleanup residue,
+        admission-blocking) -> bounded receipt.
 
         Fail-closed: an unreadable ``cgroup.procs`` or an errored unit-state
         interrogation is UNKNOWN evidence — it can never yield ``CLEAN`` or
         ``quiescent`` (the receipt stays ``INCOMPLETE`` with explicit
-        ``cgroup_procs_unreadable`` evidence so admission blocks)."""
+        ``cgroup_procs_unreadable`` evidence so admission blocks). A cgroup
+        that has **vanished** (scope collected after exit) is genuine
+        emptiness corroborated by a positively-terminal unit state and is
+        recorded as an explicit ``cgroup_vanished`` event — it never
+        short-circuits to a silently-verified ``CLEAN`` and never fabricates
+        kernel measurement from ``pids.current`` or a sampled fallback."""
         samples = tuple(samples or ())
         unit = running.token
         with self._launched_lock:
@@ -597,8 +911,26 @@ class LinuxSystemdBackend:
         cg = state.cgroup
         if not cg:
             cg = self._control_group_of(unit) or ""
-        # 1. Authoritative counters BEFORE teardown.
+        # 0. The exit-watcher captured authoritative kernel counters at the
+        #    process-exit instant while the scope's cgroup was still valid
+        #    (a deterministic pidfd/waitid exit notification wakes it at the
+        #    exit itself, and systemd collects the transient scope ~0.3–0.6
+        #    ms later — long before this finish-time read on a clean-success
+        #    path). Wait a bounded moment for it when the process has already
+        #    exited; a still-running process (cancel/timeout/drain path) has
+        #    no exit capture yet and this method's own pre-stop read below is
+        #    authoritative instead.
+        observation = self._await_exit_capture(state, running)
+        # 1. Authoritative counters BEFORE teardown. On a natural-exit path
+        #    the cgroup is usually already collected here (the observation
+        #    above is the primary source); on a cancel/timeout/drain path
+        #    the process is still running and this read succeeds.
         counters = self._read_counters(cg) if cg else {}
+        # Whether the scope's cgroup is already gone at finish time: genuine
+        # emptiness (the transient scope was collected after the tree
+        # exited) that must be recorded as explicit evidence, never silently
+        # treated as a verified read.
+        cgroup_vanished = bool(cg) and not self._cgroup_dir_exists(cg)
         # 2. Explicit stop — clean success included.
         self._systemctl("stop", unit, timeout=max(grace_seconds + 1.0, 2.0))
         # 3. Quiescence = cgroup empty (unit state is not authoritative:
@@ -647,14 +979,85 @@ class LinuxSystemdBackend:
             if not quiescent
             else (CleanupStatus.KILL if escalated else CleanupStatus.CLEAN)
         )
+        # Cleanup evidence is never silently inferred: an unreadable
+        # cgroup is UNKNOWN (fail-closed); a vanished cgroup is genuine
+        # emptiness only when corroborated by a positively-terminal unit
+        # state above, and is recorded explicitly so the receipt never
+        # presents an unverified ``CLEAN`` or a fabricated measurement.
+        enforcement_events = ()
+        if members_unknown:
+            enforcement_events = ("cgroup_procs_unreadable",)
+        elif cgroup_vanished:
+            enforcement_events = ("cgroup_vanished",)
+        # Measurement honesty, per counter: the exit-watcher tracks
+        # final-read validity independently for ``memory.peak``,
+        # ``cpu.stat`` and ``pids.peak``. A counter whose exit-instant read
+        # lost the collection race retains only its last-live value while
+        # the scope was alive — a genuine KERNEL-sourced reading that may
+        # undercount the final CPU/peak window. That retained value is
+        # NEVER published as the authoritative final total/peak merely
+        # because another counter's final read succeeded: it is downgraded
+        # to the sampled-evidence path below and the receipt records a
+        # precise per-counter ``capture_final_read_lost`` event naming every
+        # affected counter.
+        lost_final_reads: list[str] = []
+        if observation is not None:
+            for counter, ok, retained in (
+                ("memory.peak", observation.final_read_ok_memory, observation.memory_peak_bytes),
+                ("cpu.stat", observation.final_read_ok_cpu, observation.cpu_total_seconds),
+                ("pids.peak", observation.final_read_ok_pids, observation.process_peak),
+            ):
+                if not ok and retained is not None:
+                    lost_final_reads.append(counter)
+        if lost_final_reads:
+            enforcement_events = enforcement_events + (
+                "capture_final_read_lost:" + ",".join(lost_final_reads),
+            )
         memory_peak, cpu_total, process_peak = merge_sample_peaks(samples)
-        memory_peak_kernel = (
-            counters["memory.peak"] if "memory.peak" in counters else None
+        # A counter whose exit-instant final read failed keeps only its
+        # last-live value (a point-in-time kernel-sourced reading): fold it
+        # into the sampled-evidence path so it is published with honest
+        # non-KERNEL provenance instead of being silently labeled the
+        # authoritative final total/peak.
+        if observation is not None:
+            if not observation.final_read_ok_memory and observation.memory_peak_bytes is not None:
+                memory_peak = _kernel_max(memory_peak, observation.memory_peak_bytes)
+            if not observation.final_read_ok_cpu and observation.cpu_total_seconds is not None:
+                cpu_total = _kernel_max(cpu_total, observation.cpu_total_seconds)
+            if not observation.final_read_ok_pids and observation.process_peak is not None:
+                process_peak = _kernel_max(process_peak, observation.process_peak)
+        # Authoritative kernel sources, newest first, gated per counter on
+        # the exit-instant read having succeeded: the exit-watcher's
+        # observation value (captured at the process-exit instant while the
+        # cgroup was valid) and this finish-time pre-stop read. The kernel
+        # counters are monotonic (high-water peak / cumulative CPU), so the
+        # max over the valid reads is the best available — both are KERNEL
+        # provenance; ``pids.current`` or a sampled value is never
+        # relabeled authoritative, and a retained last-live value whose
+        # final read failed never earns KERNEL provenance.
+        memory_peak_kernel = _kernel_max(
+            observation.memory_peak_bytes
+            if observation is not None and observation.final_read_ok_memory
+            else None,
+            counters["memory.peak"] if "memory.peak" in counters else None,
         )
-        cpu_total_kernel = counters.get("cpu.stat")
+        cpu_total_kernel = _kernel_max(
+            observation.cpu_total_seconds
+            if observation is not None and observation.final_read_ok_cpu
+            else None,
+            counters.get("cpu.stat"),
+        )
+        process_peak_kernel = _kernel_max(
+            observation.process_peak
+            if observation is not None and observation.final_read_ok_pids
+            else None,
+            counters.get("pids.peak"),
+        )
+        process_now = counters.get("pids.current")
         # Deterministic process-peak precedence (an authoritative zero must
         # never be fabricated from an empty-tree teardown pids.current):
-        #   1. a valid kernel ``pids.peak`` (read above, before teardown) is
+        #   1. a valid kernel ``pids.peak`` (the exit-watcher's capture or
+        #      the pre-stop read above, both while the cgroup was valid) is
         #      the authoritative peak — KERNEL provenance;
         #   2. absent/invalid ``pids.peak`` with sampled evidence: the
         #      sampled peak merged honestly with the best-effort live
@@ -665,8 +1068,6 @@ class LinuxSystemdBackend:
         #      provenance, never KERNEL;
         #   4. no usable evidence at all: UNAVAILABLE (None), never a
         #      fabricated 0.
-        process_peak_kernel = counters.get("pids.peak")
-        process_now = counters.get("pids.current")
         if process_peak_kernel is not None:
             process_peak_value = process_peak_kernel
             process_peak_provenance = MeasurementProvenance.KERNEL
@@ -715,9 +1116,7 @@ class LinuxSystemdBackend:
             process_peak=process_peak_value,
             process_peak_provenance=process_peak_provenance,
             sample_gaps=gaps,
-            enforcement_events=(
-                ("cgroup_procs_unreadable",) if members_unknown else ()
-            ),
+            enforcement_events=enforcement_events,
             survivors=survivors,
         )
 
