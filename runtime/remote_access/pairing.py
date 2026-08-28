@@ -41,6 +41,14 @@ Security properties (fixed invariants, THR-034 ceiling preserved):
   absent/unknown/expired/consumed/removed/revoked credentials.
 - Epochs are monotonic; persisted revocation survives restart and replay of
   an older trust snapshot is rejected by the companion anchor.
+- Every ceremony mutation (issue/redeem/revoke/remove) is serialized in-
+  process AND across processes: load, generation validation, snapshot
+  publication, and anchor publication are ONE owner-only inter-process
+  transaction boundary (fcntl.flock on ``<state>.lock``, TASK-6045 finding
+  1) — concurrent redemption of one code yields EXACTLY ONE credential,
+  concurrent mutations in separate processes are never lost, and the
+  snapshot+anchor pair is always published consistently (never an
+  interleaved/corrupt pair).
 """
 from __future__ import annotations
 
@@ -64,6 +72,7 @@ from runtime.remote_access.identity import (
 )
 from runtime.remote_access.revocation import RevocationCoordinator, RevocationIncomplete
 from runtime.remote_access.state import TrustStateStore
+from runtime.remote_access.state_store import StateStoreError
 from runtime.remote_access.streams import StreamRegistry
 
 # THR-034 wire contract constants (match the legacy Swift store so the
@@ -159,10 +168,13 @@ class PairingManager:
         self._registry = registry or StreamRegistry()
         self._signal = signal
         # Serializes every state-mutating ceremony operation (issue/redeem/
-        # revoke/remove) — the load->mutate->save sequence is one critical
-        # section, so concurrent redemption (ThreadingHTTPServer threads)
-        # yields EXACTLY ONE credential and can never lose/corrupt state
-        # (TASK-6039 reviewer [HIGH] finding 4).
+        # revoke/remove) in this process; the store's owner-only inter-process
+        # transaction (``TrustStateStore.transaction()``) additionally
+        # serializes them across processes (TASK-6045 finding 1) — the
+        # load->mutate->publish sequence is ONE serialized mutation boundary,
+        # so concurrent redemption (ThreadingHTTPServer threads OR separate
+        # CLI/connector processes) yields EXACTLY ONE credential and can
+        # never lose/corrupt state (TASK-6039 finding 4 / TASK-6044 finding 1).
         self._tx_lock = threading.Lock()
 
     # ── state access ──────────────────────────────────────────────────────
@@ -170,50 +182,29 @@ class PairingManager:
     def load_state(self) -> TrustState:
         return self._state_store.load()
 
-    def _pin_generation(self) -> int | None:
-        """The anchored generation at load time (None when the store does
-        not expose it, e.g. the in-memory harness store)."""
-        anchored = getattr(self._state_store, "anchored_generation", None)
-        if anchored is None:
-            return None
-        return anchored()
-
-    def _save(self, state: TrustState, pinned_generation: int | None = None) -> None:
-        """Save *state* with a cross-process optimistic-concurrency guard:
-        when the store exposes the anchored generation and a generation was
-        pinned at load time, verify it did NOT advance before saving. A
-        concurrent writer in ANOTHER process fails closed rather than
-        silently overwriting newer state (no lost pairing/revocation update)
-        — the in-process race is already excluded by ``_tx_lock``."""
-        if pinned_generation is not None:
-            anchored = getattr(self._state_store, "anchored_generation", None)
-            current = anchored() if anchored is not None else None
-            if current != pinned_generation:
-                raise PairingError(
-                    "trust state changed concurrently; retry the ceremony "
-                    "operation"
-                )
-        self._state_store.save(state)
-
     # ── ceremony: issue / redeem ──────────────────────────────────────────
 
     def issue_pairing_code(self, device_name: str) -> PairingIssued:
         """Mint a single-use, expiring pairing code for *device_name* and
         persist ONLY its digest. The raw code is returned once for the CLI
         to print; it is never stored or logged. Serialized with every other
-        ceremony mutation."""
+        ceremony mutation — in-process under ``_tx_lock`` AND across
+        processes through the store's owner-only inter-process transaction
+        (TASK-6045 finding 1): load, generation validation, snapshot
+        publication, and anchor publication are ONE serialized mutation
+        boundary, so a concurrent issue in ANOTHER process can never lose
+        this mutation to last-writer-wins."""
         with self._tx_lock:
             name = self._validate_device_name(device_name)
             now = self._now_fn()
             code = generate_pairing_code()
-            pinned = self._pin_generation()
-            state = self.load_state()
-            state.pending_pairings[name] = PendingPairing(
-                code_digest=_sha256(code),
-                expires_at=now + timedelta(seconds=self._code_ttl_seconds),
-                consumed=False,
-            )
-            self._save(state, pinned)
+            with self._state_store.transaction() as tx:
+                state = tx.state
+                state.pending_pairings[name] = PendingPairing(
+                    code_digest=_sha256(code),
+                    expires_at=now + timedelta(seconds=self._code_ttl_seconds),
+                    consumed=False,
+                )
             return PairingIssued(
                 device_name=name,
                 code=code,
@@ -228,57 +219,60 @@ class PairingManager:
         fresh credential (re-pairing the same device replaces the old
         authority — epoch advances, old digest replaced); returns the raw
         credential exactly once. Any failure (unknown, expired, consumed,
-        blank, or a concurrent cross-process writer) returns ``None`` —
+        blank, or an inter-process store failure) returns ``None`` —
         externally identical (no existence oracle).
 
-        SERIALIZED: the whole load->mutate->save runs under the ceremony
-        transaction lock, so concurrent redemption of the SAME code yields
-        EXACTLY ONE credential (the second caller observes the consumed
-        code) and concurrent redemption of different codes can never lose
-        or corrupt persisted state (TASK-6039 finding 4)."""
+        SERIALIZED: the whole load->mutate->publish runs under the ceremony
+        transaction lock AND the store's owner-only inter-process
+        transaction, so concurrent redemption of the SAME code — threads OR
+        separate processes — yields EXACTLY ONE credential (the second
+        caller observes the consumed code), and concurrent redemption of
+        different codes can never lose or corrupt persisted state. The
+        deny path (``abort``) has no side effect: no pair write, no
+        generation bump."""
         with self._tx_lock:
             if not code or not code.strip():
                 return None
             now = self._now_fn()
             digest = _sha256(code)
-            pinned = self._pin_generation()
-            state = self.load_state()
-            pending = self._find_pending(state, digest, now)
-            if pending is None:
-                return None
-            # Single-use consumption is durable BEFORE the credential is
-            # usable: a replayed code denies identically to an unknown one.
-            name = _find_name(state, digest)
-            state.pending_pairings[name] = PendingPairing(
-                code_digest=pending.code_digest,
-                expires_at=pending.expires_at,
-                consumed=True,
-            )
-            credential = generate_device_credential()
-            next_epoch = max(state.pairing_epoch, state.revocation_epoch) + 1
-            device = DeviceAuthorization(
-                device_id=name,
-                tenant_id=self._identity.tenant_id,
-                home_id=self._identity.home_id,
-                authorization_epoch=next_epoch,
-                expires_at=now + timedelta(days=self._credential_ttl_days),
-                credential_digest=_sha256(credential),
-            )
-            state.apply_pairing(device)
-            # Supported-DIY is multi-device: every successfully paired device
-            # is a current device (do not let the last-paired device shadow
-            # earlier ones via ``current_device_id``).
-            state.current_device_id = None
             try:
-                self._save(state, pinned)
-            except PairingError:
-                # A concurrent writer in another process advanced the state
-                # between our load and save: fail closed with the identical
-                # deny (never mint a credential from stale state, never
-                # overwrite the newer state). The code is still pending;
-                # the client may retry.
+                with self._state_store.transaction() as tx:
+                    state = tx.state
+                    pending = self._find_pending(state, digest, now)
+                    if pending is None:
+                        tx.abort()
+                        return None
+                    # Single-use consumption is durable BEFORE the credential
+                    # is usable: a replayed code denies identically to an
+                    # unknown one.
+                    name = _find_name(state, digest)
+                    state.pending_pairings[name] = PendingPairing(
+                        code_digest=pending.code_digest,
+                        expires_at=pending.expires_at,
+                        consumed=True,
+                    )
+                    credential = generate_device_credential()
+                    next_epoch = max(state.pairing_epoch, state.revocation_epoch) + 1
+                    device = DeviceAuthorization(
+                        device_id=name,
+                        tenant_id=self._identity.tenant_id,
+                        home_id=self._identity.home_id,
+                        authorization_epoch=next_epoch,
+                        expires_at=now + timedelta(days=self._credential_ttl_days),
+                        credential_digest=_sha256(credential),
+                    )
+                    state.apply_pairing(device)
+                    # Supported-DIY is multi-device: every successfully paired
+                    # device is a current device (do not let the last-paired
+                    # device shadow earlier ones via ``current_device_id``).
+                    state.current_device_id = None
+                return credential
+            except StateStoreError:
+                # The store is contended/unusable: fail closed with the
+                # identical deny (never mint a credential from uncommitted
+                # state, never overwrite the newer state). The code is still
+                # pending; the client may retry.
                 return None
-            return credential
 
     # ── revocation / removal / recovery ───────────────────────────────────
 
@@ -288,34 +282,38 @@ class PairingManager:
         close (fail closed) BEFORE the persisted state change, and the epoch
         advances monotonically. ``device_id=None`` revokes every device.
         Returns the applied epoch and closure completeness. Serialized with
-        every other ceremony mutation."""
+        every other ceremony mutation — in-process under ``_tx_lock`` AND
+        across processes through the store's inter-process transaction (the
+        epoch computation, the coordinator transaction, and the persisted
+        publication are ONE serialized boundary; a concurrent revoke in
+        another process can never be lost)."""
         with self._tx_lock:
-            pinned = self._pin_generation()
-            state = self.load_state()
-            next_epoch = max(state.pairing_epoch, state.revocation_epoch) + 1
-            coordinator = RevocationCoordinator(state, self._registry, signal=self._signal)
-            try:
-                if device_id is None:
-                    coordinator.revoke(next_epoch)
-                else:
-                    # Per-device revocation runs the SAME authoritative
-                    # transaction shape: every live stream closes
-                    # (conservative, fail closed — device-level stream
-                    # attribution is a later refinement), then the targeted
-                    # per-device state change.
-                    coordinator.revoke_device(device_id, next_epoch)
-            except RevocationIncomplete as exc:
-                # Deny side applied; closure imperfect. Persist and surface
-                # the incompleteness truthfully (never claim full success).
-                self._save(state, pinned)
-                raise PairingError(
-                    f"revocation epoch {exc.applied_epoch} applied; "
-                    f"{len(exc.stream_ids)} stream(s) failed to close"
-                ) from exc
-            self._save(state, pinned)
-            return RevokeOutcome(
-                epoch=state.revocation_epoch, complete=True, device_id=device_id
-            )
+            with self._state_store.transaction() as tx:
+                state = tx.state
+                next_epoch = max(state.pairing_epoch, state.revocation_epoch) + 1
+                coordinator = RevocationCoordinator(state, self._registry, signal=self._signal)
+                try:
+                    if device_id is None:
+                        coordinator.revoke(next_epoch)
+                    else:
+                        # Per-device revocation runs the SAME authoritative
+                        # transaction shape: every live stream closes
+                        # (conservative, fail closed — device-level stream
+                        # attribution is a later refinement), then the targeted
+                        # per-device state change.
+                        coordinator.revoke_device(device_id, next_epoch)
+                except RevocationIncomplete as exc:
+                    # Deny side applied; closure imperfect. The applied epoch
+                    # is committed (durable) BEFORE the failure is surfaced —
+                    # never claim full success, never lose the applied deny.
+                    tx.commit()
+                    raise PairingError(
+                        f"revocation epoch {exc.applied_epoch} applied; "
+                        f"{len(exc.stream_ids)} stream(s) failed to close"
+                    ) from exc
+                return RevokeOutcome(
+                    epoch=state.revocation_epoch, complete=True, device_id=device_id
+                )
 
     def remove_device(self, device_id: str) -> None:
         """Remove a paired device AND its credential entirely (credential
@@ -328,30 +326,33 @@ class PairingManager:
         record and its credential digest are deleted. A removed/lost device
         can never retain an open stream, and the revocation is durable even
         if the process dies mid-removal. The removed credential thereafter
-        denies identically to an absent one (no existence oracle).
+        denies identically to an absent one (no existence oracle). The whole
+        flow is one inter-process serialized mutation boundary (TASK-6045
+        finding 1): a concurrent remove/revoke in another process is never
+        lost.
 
         If a live stream fails to close, the removal fails closed with
-        ``PairingError`` (the device is revoked and the epoch persisted, but
-        the record is NOT deleted while closure is uncertain); the operator
-        restarts the connector to clear the sealed registry and retries."""
+        ``PairingError`` (the device is revoked and the epoch is COMMITTED —
+        durable — but the record is NOT deleted while closure is uncertain);
+        the supervisor rotates the sealed registry on its next reconciliation
+        and the operator retries."""
         with self._tx_lock:
-            pinned = self._pin_generation()
-            state = self.load_state()
-            next_epoch = max(state.pairing_epoch, state.revocation_epoch) + 1
-            coordinator = RevocationCoordinator(state, self._registry, signal=self._signal)
-            try:
-                coordinator.revoke_device(device_id, next_epoch)
-            except RevocationIncomplete as exc:
-                self._save(state, pinned)
-                raise PairingError(
-                    f"removal epoch {exc.applied_epoch} applied; "
-                    f"{len(exc.stream_ids)} stream(s) failed to close"
-                ) from exc
-            state.devices.pop(device_id, None)
-            state.pending_pairings.pop(device_id, None)
-            if state.current_device_id == device_id:
-                state.current_device_id = None
-            self._save(state, pinned)
+            with self._state_store.transaction() as tx:
+                state = tx.state
+                next_epoch = max(state.pairing_epoch, state.revocation_epoch) + 1
+                coordinator = RevocationCoordinator(state, self._registry, signal=self._signal)
+                try:
+                    coordinator.revoke_device(device_id, next_epoch)
+                except RevocationIncomplete as exc:
+                    tx.commit()
+                    raise PairingError(
+                        f"removal epoch {exc.applied_epoch} applied; "
+                        f"{len(exc.stream_ids)} stream(s) failed to close"
+                    ) from exc
+                state.devices.pop(device_id, None)
+                state.pending_pairings.pop(device_id, None)
+                if state.current_device_id == device_id:
+                    state.current_device_id = None
 
     def list_devices(self) -> list[DeviceInfo]:
         """Redacted operator-facing device list — NEVER digests or

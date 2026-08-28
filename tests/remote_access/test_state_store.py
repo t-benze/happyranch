@@ -902,3 +902,164 @@ class TestDiyEnvelopeFields:
         store.save(state)
         with pytest.raises(CorruptTrustStateError):
             AtomicFileTrustStateStore(tmp_path / "trust-state.json", state).load()
+
+
+class TestInterProcessTransaction:
+    """TASK-6045 finding-1 regressions: the ceremony mutation boundary is an
+    OWNER-ONLY INTER-PROCESS transaction (fcntl.flock) covering load,
+    generation validation, snapshot publication, and anchor publication as
+    one serialized mutation boundary — never a per-process threading lock or
+    a check-then-save optimistic guard.
+
+    Lock-path audit (write surfaces): the lock file lives beside the
+    snapshot (``<state>.lock``), owner-only (0600, directory 0700), is
+    deliberately NEVER unlinked (flock is bound to the open file description;
+    unlinking a held lock file would let a second inode be locked
+    concurrently), and has no stale-lock recovery need: the kernel releases
+    the flock automatically when the holder's descriptor closes or its
+    process dies (tested below). A bounded acquire fails closed with
+    ``StateStoreError`` on contention — the mutation is not applied.
+    """
+
+    def test_transaction_publishes_on_normal_exit(self, tmp_path) -> None:
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        with store.transaction() as tx:
+            tx.state.devices["device-a"] = _paired_state().devices["device-a"]
+        fresh = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        loaded = fresh.load()
+        assert "device-a" in loaded.devices
+        assert fresh.anchored_generation() == 1
+
+    def test_transaction_abort_publishes_nothing(self, tmp_path) -> None:
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        with store.transaction() as tx:
+            tx.state.devices["device-a"] = _paired_state().devices["device-a"]
+            tx.abort()
+        # No pair was written: a fresh store still sees the first-run default
+        # and the anchor/generation stay absent (deny path has NO side effect,
+        # not even a generation bump).
+        fresh = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        assert fresh.load().devices == {}
+        assert fresh.anchored_generation() is None
+
+    def test_transaction_exception_publishes_nothing(self, tmp_path) -> None:
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        with pytest.raises(RuntimeError):
+            with store.transaction() as tx:
+                tx.state.devices["device-a"] = _paired_state().devices["device-a"]
+                raise RuntimeError("boom")
+        fresh = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        assert fresh.load().devices == {}
+        assert fresh.anchored_generation() is None
+
+    def test_transaction_commit_before_raise_persists_deny_side(self, tmp_path) -> None:
+        """The revoke/remove RevocationIncomplete path must persist the
+        applied epoch BEFORE surfacing the failure (deny side is the safe
+        side and must be durable)."""
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        with pytest.raises(RuntimeError):
+            with store.transaction() as tx:
+                tx.state.revocation_epoch = 1
+                tx.commit()
+                raise RuntimeError("closure imperfect")
+        fresh = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        assert fresh.load().revocation_epoch == 1
+
+    def test_transaction_generations_are_monotonic(self, tmp_path) -> None:
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        for expected in (1, 2, 3):
+            with store.transaction() as tx:
+                tx.state.revocation_epoch = expected
+            assert store.anchored_generation() == expected
+
+    def test_lock_file_owner_only_and_never_unlinked(self, tmp_path) -> None:
+        import os
+
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with store.transaction() as tx:
+            tx.state.revocation_epoch = 1
+        lock_path = tmp_path / "trust-state.json.lock"
+        assert lock_path.exists(), "the transaction must create the owner-only lock file"
+        mode = stat.S_IMODE(lock_path.stat().st_mode)
+        assert mode & 0o077 == 0, f"lock file permissions too loose: {mode:o}"
+        assert stat.S_IMODE(tmp_path.stat().st_mode) & 0o077 == 0
+        assert lock_path.stat().st_size == 0
+        # The lock file is a persistent inode, NOT part of the state pair:
+        # load()/anchored_generation() ignore it, and factory-reset must not
+        # need to delete it (deleting a held lock file would break exclusion).
+        assert store.anchored_generation() == 1
+        with store.transaction() as tx:
+            tx.state.revocation_epoch = 2
+        assert lock_path.exists()
+
+    def test_contended_lock_fails_closed_with_timeout(self, tmp_path) -> None:
+        """While another open file description holds the flock, a bounded
+        transaction acquire fails closed (StateStoreError) and NO state is
+        written; after the holder releases, the same mutation succeeds."""
+        import fcntl
+        import os
+
+        path = tmp_path / "trust-state.json"
+        lock_path = tmp_path / "trust-state.json.lock"
+        store = AtomicFileTrustStateStore(path, _fresh_state(), lock_timeout=0.3)
+        holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            with pytest.raises(StateStoreError, match="contended"):
+                with store.transaction() as tx:
+                    tx.state.revocation_epoch = 1
+            fresh = AtomicFileTrustStateStore(path, _fresh_state())
+            assert fresh.load().revocation_epoch == 0
+            assert fresh.anchored_generation() is None
+        finally:
+            fcntl.flock(holder, fcntl.LOCK_UN)
+            os.close(holder)
+        # The holder released: the transaction now succeeds (fail closed on
+        # contention, never a permanently wedged store).
+        with store.transaction() as tx:
+            tx.state.revocation_epoch = 1
+        assert AtomicFileTrustStateStore(path, _fresh_state()).load().revocation_epoch == 1
+
+    def test_save_serializes_under_the_same_interprocess_lock(self, tmp_path) -> None:
+        """A plain ``save`` (install/test writer) acquires the SAME lock as a
+        transaction — a direct save cannot interleave with a transaction."""
+        import fcntl
+        import os
+
+        path = tmp_path / "trust-state.json"
+        lock_path = tmp_path / "trust-state.json.lock"
+        store = AtomicFileTrustStateStore(path, _fresh_state(), lock_timeout=0.3)
+        holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            with pytest.raises(StateStoreError, match="contended"):
+                store.save(_paired_state())
+        finally:
+            fcntl.flock(holder, fcntl.LOCK_UN)
+            os.close(holder)
+        store.save(_paired_state())
+        assert AtomicFileTrustStateStore(path, _fresh_state()).load().devices
+
+    def test_stale_lock_auto_recovered_after_holder_crash(self, tmp_path) -> None:
+        """A holder that dies (crash/outage) releases the flock automatically:
+        the kernel drops the lock when the descriptor closes at process exit —
+        there is no stale-lock recovery procedure to perform, and a subsequent
+        transaction succeeds immediately (fail open to the next legitimate
+        writer, never wedged)."""
+        import subprocess
+        import sys
+
+        path = tmp_path / "trust-state.json"
+        lock_path = tmp_path / "trust-state.json.lock"
+        crash = (
+            "import fcntl, os, sys\n"
+            f"fd = os.open({str(lock_path)!r}, os.O_CREAT | os.O_RDWR, 0o600)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+            "os._exit(0)\n"
+        )
+        subprocess.run([sys.executable, "-c", crash], check=True, timeout=30)
+        store = AtomicFileTrustStateStore(path, _fresh_state(), lock_timeout=2.0)
+        with store.transaction() as tx:
+            tx.state.revocation_epoch = 1
+        assert AtomicFileTrustStateStore(path, _fresh_state()).load().revocation_epoch == 1

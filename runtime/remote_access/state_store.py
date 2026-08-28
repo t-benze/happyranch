@@ -60,14 +60,18 @@ revocation epoch) and is out of scope for this Unit-3 local mechanism.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import stat
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+
+import fcntl
 
 from runtime.remote_access.authorization import DeviceAuthorization, PendingPairing, TrustState
 from runtime.remote_access.identity import ConnectorIdentity
@@ -90,6 +94,14 @@ ANCHOR_KIND = "connector-trust-state-anchor-nonnormative"
 
 _STATE_DIR_MODE = 0o700
 _STATE_FILE_MODE = 0o600
+
+# Default bound on the owner-only inter-process transaction lock acquire
+# (flock). Ceremony operations are short (load + mutate + two small atomic
+# writes); a holder that hangs past this bound fails the waiter closed with
+# ``StateStoreError`` instead of blocking forever (fail closed on
+# contention). ``LOCK_ACQUIRE_SLEEP`` is the non-blocking retry interval.
+DEFAULT_LOCK_TIMEOUT_SECONDS = 30.0
+_LOCK_ACQUIRE_SLEEP = 0.02
 
 _ENVELOPE_KEYS = frozenset({"version", "kind", "generation", "payload", "digest"})
 _ANCHOR_KEYS = frozenset({"version", "kind", "generation", "snapshot_digest", "digest"})
@@ -348,12 +360,93 @@ class AtomicFileTrustStateStore:
         path: Path,
         default_state: TrustState,
         anchor_path: Path | None = None,
+        lock_timeout: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
     ) -> None:
         self._path = Path(path)
         self._anchor_path = (
             Path(anchor_path) if anchor_path is not None else Path(str(path) + ".anchor")
         )
         self._default_state = default_state
+        self._lock_timeout = lock_timeout
+
+    # ── the one serialized mutation boundary (TASK-6045) ──────────────────
+
+    @contextlib.contextmanager
+    def transaction(self) -> Iterator["_TrustStateTransaction"]:
+        """The ONE serialized inter-process mutation boundary for the
+        trust-state pair: acquire the owner-only flock, LOAD the current
+        persisted state, compute the next monotonic generation, yield the
+        transaction handle, and on normal exit PUBLISH the snapshot+anchor
+        pair at that generation — all under the same lock. An exception in
+        the body publishes NOTHING (fail closed); ``tx.commit()`` publishes
+        immediately (the deny side must be durable before a surfaced
+        failure); ``tx.abort()`` publishes nothing on normal exit (a deny
+        path has no side effect, not even a generation bump).
+
+        Two processes can no longer both observe generation N, both pass a
+        generation check, and both write N+1: the load, the generation
+        computation, the snapshot publication, and the anchor publication
+        are ONE serialized boundary (the TASK-6044 reviewer [HIGH] finding-1
+        check-then-save race is closed). Reads stay lock-free and fail
+        closed on a torn pair exactly as before.
+        """
+        with self._lock_file():
+            tx = _TrustStateTransaction(self, self.load(), self._next_generation())
+            try:
+                yield tx
+            except BaseException:
+                # Never publish on failure (fail closed); a committed deny
+                # side is already durable via ``tx.commit()``.
+                raise
+            else:
+                tx.commit()
+
+    @contextlib.contextmanager
+    def _lock_file(self) -> Iterator[None]:
+        """Owner-only INTER-PROCESS lock (``fcntl.flock``) over the state
+        pair. The lock file lives beside the snapshot (``<state>.lock``),
+        owner-only (0600; the parent directory is tightened to 0700 exactly
+        like the snapshot writes), and is a STABLE inode that is NEVER
+        unlinked: flock is bound to the open file description, so unlinking
+        a held lock file would let a second inode be locked concurrently
+        (the classic lock-file unlink race). There is no stale-lock
+        recovery procedure to perform: the kernel releases the flock
+        automatically when the holder's descriptor closes or its process
+        dies (crash/outage fail open to the next legitimate writer). A
+        bounded non-blocking acquire fails closed with ``StateStoreError``
+        when the lock stays contended past ``lock_timeout``.
+        """
+        lock_path = Path(str(self._path) + ".lock")
+        parent = lock_path.parent
+        fd: int | None = None
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+            os.chmod(parent, _STATE_DIR_MODE)
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, _STATE_FILE_MODE)
+            # Tighten unconditionally: a pre-existing lock file with loose
+            # permissions holds no data — tightening is always safe and the
+            # file must never be group/world readable.
+            os.fchmod(fd, _STATE_FILE_MODE)
+            deadline = time.monotonic() + self._lock_timeout
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise StateStoreError(
+                            "trust state lock contended; retry the ceremony operation"
+                        )
+                    time.sleep(_LOCK_ACQUIRE_SLEEP)
+        except OSError as exc:
+            if fd is not None:
+                os.close(fd)
+            raise StateStoreError("trust state lock unavailable") from exc
+        try:
+            yield
+        finally:
+            # Closing the descriptor releases the flock (also on crash).
+            os.close(fd)
 
     # ── TrustStateStore protocol ──────────────────────────────────────────
 
@@ -431,25 +524,35 @@ class AtomicFileTrustStateStore:
         return _state_from_payload(payload)
 
     def save(self, state: TrustState) -> None:
-        next_generation = self._next_generation()
+        """Publish *state* at the next monotonic generation, under the SAME
+        owner-only inter-process lock as ``transaction()`` — a direct save
+        (install/test writers) can never interleave with a ceremony
+        transaction and can never observe/regress the anchored generation.
+        """
+        with self._lock_file():
+            self._write_pair(state, self._next_generation())
+
+    def _write_pair(self, state: TrustState, generation: int) -> None:
+        """Publish the snapshot then the companion anchor at *generation*
+        (snapshot first, then anchor; a crash between the two leaves a
+        mismatched pair that ``load()`` rejects — never a stale state).
+        Only ever called while holding the inter-process lock."""
         payload = _payload_from_state(state)
         envelope = {
             "version": ENVELOPE_VERSION,
             "kind": ENVELOPE_KIND,
-            "generation": next_generation,
+            "generation": generation,
             "payload": payload,
             "digest": hashlib.sha256(canonical_json(payload)).hexdigest(),
         }
         envelope_bytes = json.dumps(
             envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False
         ).encode("utf-8")
-        # Snapshot first, then anchor. A crash between the two leaves a
-        # mismatched pair that load() rejects (never a stale state).
         self._write_bytes(self._path, envelope_bytes)
         anchor_payload = {
             "version": ANCHOR_VERSION,
             "kind": ANCHOR_KIND,
-            "generation": next_generation,
+            "generation": generation,
             "snapshot_digest": hashlib.sha256(envelope_bytes).hexdigest(),
         }
         anchor = dict(anchor_payload)
@@ -611,3 +714,48 @@ class AtomicFileTrustStateStore:
                     os.unlink(tmp_name)
                 except OSError:
                     pass
+
+
+class _TrustStateTransaction:
+    """Handle yielded by ``AtomicFileTrustStateStore.transaction()``.
+
+    ``state`` is the working copy loaded under the inter-process lock;
+    ``generation`` is the exact monotonic generation this commit publishes.
+    ``commit()`` publishes the pair immediately (idempotent) — used when the
+    deny side must be durable BEFORE a failure is surfaced; ``abort()``
+    suppresses the normal-exit publish (a deny path has no side effect, not
+    even a generation bump). An exception in the transaction body always
+    suppresses the publish.
+    """
+
+    __slots__ = ("_store", "_state", "_generation", "_published", "_aborted")
+
+    def __init__(
+        self, store: AtomicFileTrustStateStore, state: TrustState, generation: int
+    ) -> None:
+        self._store = store
+        self._state = state
+        self._generation = generation
+        self._published = False
+        self._aborted = False
+
+    @property
+    def state(self) -> TrustState:
+        return self._state
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    def commit(self) -> None:
+        """Publish the snapshot+anchor pair NOW at the transaction's
+        generation (idempotent; a later abort cannot unpublish)."""
+        if self._published or self._aborted:
+            return
+        self._store._write_pair(self._state, self._generation)
+        self._published = True
+
+    def abort(self) -> None:
+        """Suppress the normal-exit publish: the mutation is discarded, no
+        pair write and no generation bump occurs."""
+        self._aborted = True

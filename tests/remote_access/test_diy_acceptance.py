@@ -509,3 +509,210 @@ def test_acceptance_cross_process_revoke_closes_live_sse_stream(tmp_path) -> Non
                     proc.kill()
     finally:
         daemon.stop()
+
+
+def test_acceptance_cross_process_revoke_remove_then_reopen_streams(tmp_path) -> None:
+    """TASK-6045 finding-2 shipping-process regression: after a SEPARATE
+    CLI-process revoke AND remove-device close genuinely in-flight SSE
+    streams on the REAL ``cli run --diy`` connector, the connector MUST NOT
+    be permanently sealed — a re-paired credential and an unaffected current
+    credential both open NEW SSE streams in the same connector lifetime,
+    while old/revoked credentials and WebSocket upgrades remain denied.
+
+    This fails on the reviewed head f46a83bc (the one-shot registry is
+    sealed and never rotated) and passes after the rotation fix.
+    """
+    import http.client
+
+    host = NETWORK_IPV4
+    connector_port = _free_port(host)
+    daemon = FakeDaemon(BEARER, hold_open=True)
+    daemon.start()
+    proc = None
+    try:
+        token_path = tmp_path / "daemon.token"
+        token_path.write_text(BEARER)
+        token_path.chmod(0o600)
+        state_path = tmp_path / "trust-state.json"
+        policy_path = tmp_path / "policy.json"
+        fixture = load_fixture("route-policy")
+        envelope = make_policy_envelope(
+            fixture, issued_at=datetime.now(timezone.utc) - timedelta(seconds=30)
+        )
+        policy_path.write_text(
+            envelope.model_dump_json()
+            if hasattr(envelope, "model_dump_json")
+            else json.dumps(envelope.__dict__)
+        )
+        stub = tmp_path / "tailscale-stub"
+        stub.write_text(f"#!/bin/sh\nprintf '%s\\n' '{host}'\n")
+        stub.chmod(0o755)
+        config = {
+            "tenant_id": "diy",
+            "home_id": "home-a",
+            "connector_id": "connector-a",
+            "daemon_port": daemon.port,
+            "daemon_token_path": str(token_path),
+            "policy_path": str(policy_path),
+            "state_path": str(state_path),
+            "system": False,
+            "poll_seconds": 0.2,
+            "diy": {
+                "network": {"mode": "tailscale", "tailscale_cli": str(stub)},
+                "bind_port": connector_port,
+            },
+        }
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps(config))
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "runtime.remote_access.cli",
+                "run",
+                "--diy",
+                "--config",
+                str(config_path),
+            ],
+            cwd=Path(__file__).resolve().parents[3],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+        _wait_until(lambda: _connector_reachable(host, connector_port), what="connector listener")
+
+        def pair_device(device: str) -> str:
+            pair_proc = subprocess.run(
+                [sys.executable, "-m", "runtime.remote_access.cli", "pair", "--config", str(config_path), "--device", device],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            assert pair_proc.returncode == 0, pair_proc.stderr
+            line = [l for l in pair_proc.stdout.splitlines() if "pairing code for device" in l][0]
+            return line.split(": ")[-1].strip()
+
+        def redeem(code: str) -> str:
+            result = _run_client(host, connector_port, ["redeem", "--code", code])
+            assert result["status"] == 200, result
+            return result["body"]["credential"]
+
+        def open_stream(credential: str):
+            """Open a real in-flight SSE in a SEPARATE client process; returns
+            (proc, status_line) once the daemon has flushed the headers."""
+            stream = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(CLIENT),
+                    "--host",
+                    host,
+                    "--port",
+                    str(connector_port),
+                    "stream",
+                    "--path",
+                    "/api/v1/orgs/acme/threads/T-1/tail",
+                    "--credential",
+                    credential,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            assert daemon.started.wait(timeout=15), "stream must reach the daemon"
+            return stream
+
+        def close_stream(stream) -> dict:
+            out, err = stream.communicate(timeout=15)
+            assert stream.returncode == 0, err
+            return json.loads(out)
+
+        def sse_status(credential: str) -> int:
+            """Open an SSE from the test process and return its status code
+            (200 = admitted by the CURRENT registry; 403 = denied)."""
+            conn = http.client.HTTPConnection(host, connector_port, timeout=10)
+            conn.request(
+                "GET",
+                "/api/v1/orgs/acme/threads/T-1/tail",
+                headers={
+                    "X-HappyRanch-Device-Credential": credential,
+                    "Accept": "text/event-stream",
+                },
+            )
+            resp = conn.getresponse()
+            resp.read()
+            status = resp.status
+            conn.close()
+            return status
+
+        # ── revoke path ───────────────────────────────────────────────────
+        cred_a = redeem(pair_device("macbook-pro"))
+        stream_a = open_stream(cred_a)
+        revoke_proc = subprocess.run(
+            [sys.executable, "-m", "runtime.remote_access.cli", "revoke", "--config", str(config_path), "--device", "macbook-pro"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert revoke_proc.returncode == 0, revoke_proc.stderr
+        result = close_stream(stream_a)
+        assert result["status"] == 200  # headers flushed before the revoke closed it
+        # RE-PAIR opens a NEW SSE in the same connector lifetime.
+        cred_a2 = redeem(pair_device("macbook-pro"))
+        assert cred_a2 != cred_a
+        assert sse_status(cred_a2) == 200, (
+            "re-paired credential must open a NEW SSE after cross-process revoke "
+            "(shipping process was permanently sealed on f46a83bc)"
+        )
+
+        # ── remove path ───────────────────────────────────────────────────
+        cred_b = redeem(pair_device("phone"))
+        stream_b = open_stream(cred_b)
+        remove_proc = subprocess.run(
+            [sys.executable, "-m", "runtime.remote_access.cli", "remove-device", "--config", str(config_path), "--device", "phone"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert remove_proc.returncode == 0, remove_proc.stderr
+        result = close_stream(stream_b)
+        assert result["status"] == 200
+        cred_b2 = redeem(pair_device("phone"))
+        assert sse_status(cred_b2) == 200, "re-paired (removed) device must reopen SSE"
+
+        # ── unaffected current credential after a targeted revoke ─────────
+        # (macbook-pro re-paired above is current; targeted-revoke phone only
+        #  closed phone's stream — macbook-pro still opens new streams)
+        assert sse_status(cred_a2) == 200
+
+        # ── old/revoked credentials remain denied ─────────────────────────
+        assert sse_status(cred_a) == 403, "old revoked credential must stay denied"
+        assert sse_status(cred_b) == 403, "removed credential must stay denied"
+
+        # ── WebSocket denial retained ─────────────────────────────────────
+        conn = http.client.HTTPConnection(host, connector_port, timeout=10)
+        conn.request(
+            "GET",
+            "/api/v1/orgs/acme/threads/T-1/tail",
+            headers={
+                "X-HappyRanch-Device-Credential": cred_b2,
+                "Upgrade": "websocket",
+                "Connection": "Upgrade",
+            },
+        )
+        ws_resp = conn.getresponse()
+        ws_resp.read()
+        conn.close()
+        assert ws_resp.status == 403
+
+        # ── the connector process survived the whole lifecycle ────────────
+        assert proc.poll() is None, "the shipping connector process must stay alive"
+        assert _connector_reachable(host, connector_port)
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.send_signal(signal.SIGTERM)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        daemon.stop()

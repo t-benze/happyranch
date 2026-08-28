@@ -480,3 +480,220 @@ def _proof(credential: str) -> DeviceProof:
         issued_at=NOW - timedelta(minutes=1),
         expires_at=NOW + timedelta(minutes=5),
     )
+
+
+# ── Deterministic multi-process ceremony races (TASK-6045 reviewer [HIGH] finding 1) ──
+#
+# The TASK-6039 optimistic generation guard was a check-then-act race ACROSS
+# processes: two CLI/connector processes can both read the anchored
+# generation, both pass the comparison, and both write generation N+1 —
+# losing a pairing/revocation mutation or interleaving snapshot/anchor into
+# an unloadable pair. These regressions run REAL separate OS processes
+# (``trust_state_race_worker.py``) against ONE shared file-backed store with
+# a deterministic load->publication seam, proving the post-fix owner-only
+# inter-process transaction serializes issue/redeem/revoke/remove: exactly
+# one redemption credential, no lost mutation, and a consistent loadable
+# snapshot+anchor pair.
+
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+_RACE_WORKER = Path(__file__).resolve().parent / "trust_state_race_worker.py"
+
+
+def _race_spec(state_path, operation, ready, release, result, **extra) -> dict:
+    spec = {
+        "state_path": str(state_path),
+        "operation": operation,
+        "ready_path": str(ready),
+        "release_path": str(release),
+        "result_path": str(result),
+    }
+    spec.update(extra)
+    return spec
+
+
+def _run_race(specs: list[dict], wait_both_timeout: float = 5.0) -> list[dict]:
+    """Spawn the workers, wait for their ready markers (bounded: at the
+    fixed head only the flock holder parks — its sibling is blocked ON the
+    inter-process lock, which is itself the serialization evidence), write
+    the release marker, and collect the JSON results."""
+    procs = [
+        subprocess.Popen(
+            [sys.executable, str(_RACE_WORKER), json.dumps(spec)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+        for spec in specs
+    ]
+    ready_paths = [Path(s["ready_path"]) for s in specs]
+    release_path = Path(specs[0]["release_path"])
+    deadline = time.monotonic() + wait_both_timeout
+    seen = 0
+    while time.monotonic() < deadline:
+        seen = sum(1 for p in ready_paths if p.exists())
+        if seen == len(specs):
+            break
+        time.sleep(0.02)
+    release_path.write_text("go", encoding="utf-8")
+    results = []
+    for proc, spec in zip(procs, specs):
+        out, err = proc.communicate(timeout=60)
+        assert proc.returncode == 0, f"race worker crashed: {err}\n{out}"
+        result_file = Path(spec["result_path"])
+        assert result_file.exists(), f"race worker produced no result: {err}\n{out}"
+        results.append(json.loads(result_file.read_text(encoding="utf-8")))
+    return results
+
+
+class TestMultiProcessCeremonyRaces:
+    """TASK-6045 finding-1 regressions: the ceremony transaction must be an
+    owner-only INTER-PROCESS serialized mutation boundary (load, generation
+    validation, snapshot publication, anchor publication), not a per-process
+    threading lock + optimistic check."""
+
+    @staticmethod
+    def _reload(state_path):
+        """A FRESH store instance over the same files — the exact
+        'another process' consumer: proves the pair binds (generation ==
+        anchor generation, digest over the exact snapshot bytes) and the
+        state is loadable/fail-closed-consistent after the race."""
+        from runtime.remote_access.authorization import TrustState
+        from runtime.remote_access.identity import ConnectorIdentity
+
+        identity = ConnectorIdentity(
+            tenant_id="diy", home_id="home-a", connector_id="connector-a"
+        )
+        store = AtomicFileTrustStateStore(
+            state_path,
+            TrustState(connector_identity=identity, pairing_epoch=0, revocation_epoch=0),
+        )
+        return store, store.load()
+
+    def test_concurrent_redeem_same_code_yields_exactly_one_credential_multiprocess(
+        self, tmp_path,
+    ) -> None:
+        """Two SEPARATE processes redeem the SAME one-time code concurrently:
+        exactly one credential is minted, the code is consumed, and the
+        persisted pair is consistent and loadable."""
+        state_path = tmp_path / "trust-state.json"
+        hand = tmp_path / "handshake"
+        hand.mkdir()
+        # Main-process issue (persisted before the race). The workers run on
+        # the REAL clock, so the code must be issued on the real clock too
+        # (the fixture NOW is a fixed historical instant whose 300s TTL would
+        # have expired by the time the workers redeem).
+        store, _state = self._reload(state_path)
+        issued = _make_manager(
+            store=store, now_fn=lambda: datetime.now(timezone.utc)
+        ).issue_pairing_code("macbook-pro")
+        specs = [
+            _race_spec(
+                state_path, "redeem", hand / "ready-a", hand / "release",
+                hand / "result-a.json", code=issued.code,
+            ),
+            _race_spec(
+                state_path, "redeem", hand / "ready-b", hand / "release",
+                hand / "result-b.json", code=issued.code,
+            ),
+        ]
+        results = _run_race(specs)
+        creds = [r.get("credential") for r in results if r.get("credential")]
+        assert len(creds) == 1, (
+            f"concurrent multi-process redemption of one code must mint EXACTLY "
+            f"ONE credential; minted {len(creds)}"
+        )
+        fresh, state = self._reload(state_path)
+        del fresh
+        assert "macbook-pro" in state.devices
+        digest = state.devices["macbook-pro"].credential_digest
+        assert digest == hashlib.sha256(creds[0].encode()).hexdigest()
+        assert state.pending_pairings["macbook-pro"].consumed is True
+
+    def test_concurrent_issue_different_devices_loses_no_mutation(self, tmp_path) -> None:
+        """Two SEPARATE processes issue pairing codes for DIFFERENT devices
+        concurrently: both pending pairings survive (no last-writer-wins
+        erasure) and the pair stays consistent/loadable."""
+        state_path = tmp_path / "trust-state.json"
+        hand = tmp_path / "handshake"
+        hand.mkdir()
+        specs = [
+            _race_spec(
+                state_path, "issue", hand / "ready-a", hand / "release",
+                hand / "result-a.json", device_name="macbook-pro",
+            ),
+            _race_spec(
+                state_path, "issue", hand / "ready-b", hand / "release",
+                hand / "result-b.json", device_name="phone",
+            ),
+        ]
+        results = _run_race(specs)
+        assert all("code" in r for r in results), results
+        _fresh, state = self._reload(state_path)
+        assert set(state.pending_pairings) == {"macbook-pro", "phone"}, (
+            f"concurrent issue across processes lost a mutation; pending = "
+            f"{sorted(state.pending_pairings)}"
+        )
+
+    def test_concurrent_targeted_revoke_different_devices_no_lost_revocation(
+        self, tmp_path,
+    ) -> None:
+        """Two SEPARATE processes revoke DIFFERENT devices concurrently: BOTH
+        revocations persist (neither lost) and the pair stays loadable."""
+        state_path = tmp_path / "trust-state.json"
+        hand = tmp_path / "handshake"
+        hand.mkdir()
+        manager = _make_manager(store=self._reload(state_path)[0])
+        for device in ("macbook-pro", "phone"):
+            issued = manager.issue_pairing_code(device)
+            assert manager.redeem_pairing(issued.code) is not None
+        specs = [
+            _race_spec(
+                state_path, "revoke_device", hand / "ready-a", hand / "release",
+                hand / "result-a.json", device_name="macbook-pro",
+            ),
+            _race_spec(
+                state_path, "revoke_device", hand / "ready-b", hand / "release",
+                hand / "result-b.json", device_name="phone",
+            ),
+        ]
+        results = _run_race(specs)
+        assert all("epoch" in r for r in results), results
+        _fresh, state = self._reload(state_path)
+        assert state.devices["macbook-pro"].revoked is True
+        assert state.devices["phone"].revoked is True
+        assert state.revocation_epoch == max(r["epoch"] for r in results)
+
+    def test_concurrent_remove_different_devices_no_lost_removal(self, tmp_path) -> None:
+        """Two SEPARATE processes remove DIFFERENT devices concurrently: both
+        records are gone (no lost removal) and the pair stays loadable."""
+        state_path = tmp_path / "trust-state.json"
+        hand = tmp_path / "handshake"
+        hand.mkdir()
+        manager = _make_manager(store=self._reload(state_path)[0])
+        for device in ("macbook-pro", "phone"):
+            issued = manager.issue_pairing_code(device)
+            assert manager.redeem_pairing(issued.code) is not None
+        specs = [
+            _race_spec(
+                state_path, "remove_device", hand / "ready-a", hand / "release",
+                hand / "result-a.json", device_name="macbook-pro",
+            ),
+            _race_spec(
+                state_path, "remove_device", hand / "ready-b", hand / "release",
+                hand / "result-b.json", device_name="phone",
+            ),
+        ]
+        results = _run_race(specs)
+        assert all(r.get("removed") for r in results), results
+        _fresh, state = self._reload(state_path)
+        assert state.devices == {}, (
+            f"concurrent removal across processes lost a removal; devices = "
+            f"{sorted(state.devices)}"
+        )

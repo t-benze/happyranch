@@ -863,18 +863,23 @@ class ConnectorSupervisor:
 
     def _reconcile_revocation(self) -> None:
         """Cross-process revocation closure at the REAL shipping seam
-        (TASK-6039 reviewer [CRITICAL] finding 2): the operator's
-        ``revoke``/``remove-device`` CLI runs in a SEPARATE process and
-        persists the revocation epoch; the connector process closes its live
-        streams on the next loop pass (bounded by ``poll_seconds``, fail
-        closed).
+        (TASK-6039 reviewer [CRITICAL] finding 2 / TASK-6044 reviewer [HIGH]
+        finding 2): the operator's ``revoke``/``remove-device`` CLI runs in a
+        SEPARATE process and persists the revocation epoch; the connector
+        process closes its live streams on the next loop pass (bounded by
+        ``poll_seconds``, fail closed) and then ROTATES the authoritative
+        live-stream runtime.
 
-        The registry is sealed ONLY when there are live streams to close —
-        an empty registry is never sealed here, so legitimately re-paired
-        devices can still open streams after the revocation is reconciled.
-        Any closure imperfection leaves the registry sealed anyway (no live
-        stream survives) — the loop records the reconciled epoch so it does
-        not re-raise the persisted failure every poll."""
+        Rotation is mandatory because the stream registry is ONE-SHOT:
+        ``close_all`` seals it permanently, and the pairing manager, the ctx
+        factory, and the provider adapter all capture it. Without rotation a
+        reconciled revocation would leave the shipping process permanently
+        sealed — a re-paired or unaffected current device could never open a
+        new stream (TASK-6044 finding 2). ``_rotate_runtime`` drops the
+        listener FIRST (no request/stream is admitted during the handoff),
+        clears the cached registry + pairing manager, rebuilds the provider
+        and every captured ctx-factory reference, and restarts the listener
+        at a readiness-gated fail-closed boundary."""
         if self.config.diy is None and self.config.lab is None:
             return
         try:
@@ -886,12 +891,44 @@ class ConnectorSupervisor:
         if state.revocation_epoch <= self._reconciled_revocation_epoch:
             return
         registry = self.registry
+        sealed = registry.sealed
         if registry.open_count() > 0:
             try:
                 registry.close_all()
             except StreamCloseError:
                 pass  # registry sealed; no live stream survives (fail closed)
+            sealed = True
         self._reconciled_revocation_epoch = state.revocation_epoch
+        # The authoritative registry is (now or already) sealed — one-shot:
+        # rotate the whole runtime so the process is never permanently
+        # sealed. When nothing was sealed (revoke with no live streams and
+        # no earlier seal) there is no rotation and therefore no listener
+        # gap — the common CLI-revoke-while-idle path stays seamless.
+        if sealed:
+            self._rotate_runtime()
+
+    def _rotate_runtime(self) -> None:
+        """Rotate the authoritative live-stream runtime at a fail-closed
+        lifecycle boundary after a persisted revocation: stop the provider
+        listener (no request/stream is admitted during the handoff), drop
+        the cached one-shot registry and pairing manager, rebuild the
+        provider adapter and every captured ctx-factory reference against a
+        FRESH registry, and restart the listener only when readiness still
+        passes (else the run loop brings it up when ready). The old registry
+        is sealed (denies) and the listener is down (refuses) until the new
+        runtime is live — nothing is admitted against a half-rotated state."""
+        was_running = self._provider_running
+        if was_running:
+            self._stop_provider()
+        # The one-shot registry and the cached ceremony manager are captured
+        # by the old ctx factory and provider: rebuild them all from scratch.
+        self._registry = None
+        self._pairing_manager = None
+        if was_running and self.readiness_report().ready:
+            # Rebuild the provider (fresh registry + pairing manager + ctx
+            # factory) and reopen the listener. On any failure the loop
+            # re-evaluates readiness and retries — fail closed, no READY.
+            self._start_provider()
 
     def shutdown(self) -> None:
         """Deterministic stop: drop the listener before exiting."""
