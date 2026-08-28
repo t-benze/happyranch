@@ -268,17 +268,21 @@ Data sources: orchestrator audit log (session/step/completion events), LLM usage
 The Settings surface ships as a full page
 (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*`
 route, entered from the sidebar footer "Settings" item, with left sub-nav
-panels (Assistant · System · Organization · Agents · Executors). Renders:
+panels (Assistant · Organization · Executors). The root, retired `system` and
+`agents` subroutes, and unknown Settings subroutes recover to Assistant with
+replace navigation. Renders:
 
-- **System** — daemon-wide settings (CLI name / default command metadata
-  — not a launch path; executor launch uses registered binary pins — plus
-  session timeout, orchestration limits, protocol dir) with restart-required
-  badges.
-  Read-only.
+- **Assistant** — setup, status, repair, reconfigure, and assistant executor
+  binding.
 - **Org** — org-level settings (session timeout override, dreaming
   config, threads config). Editable via inline forms (Phase 2) — a
   "Save" button persists changes; the allow-list serializer guarantees
   no sensitive key is ever sent or accepted.
+- **Executors** — effective machine executor registry and custom CLI lifecycle.
+
+`reviewer_agents` and `threads.default_turn_cap` remain operator-only response
+facts with no browser controls. Raw queue-worker and maximum-orchestration-step
+facts are not moved into Health by this Settings simplification.
 
 Routes:
 

@@ -301,13 +301,88 @@ def test_list_wire_exposes_pinned_fields(tmp_home, app, org_state, auth_headers)
         json={"pinned": True},
         headers=auth_headers,
     )
-    resp = client.get("/api/v1/orgs/alpha/threads", headers=auth_headers)
+    resp = client.get("/api/v1/orgs/alpha/threads?status=open", headers=auth_headers)
     assert resp.status_code == 200
     row = [t for t in resp.json()["threads"] if t["thread_id"] == tid][0]
     assert row["pinned"] is True
     assert row["pinned_at"] is not None
-    # Pinned thread ranks first in the list payload.
+    # Pinned thread ranks first in the OPEN list payload.
     assert resp.json()["threads"][0]["thread_id"] == tid
+
+
+def _seed_thread(org_state, thread_id: str, *, subject: str = "Files") -> str:
+    org_state.db.insert_thread(ThreadRecord(id=thread_id, subject=subject))
+    return thread_id
+
+
+def test_list_open_orders_pinned_by_numeric_id_desc(tmp_home, app, org_state, auth_headers):
+    """GET /threads?status=open returns pinned threads ranked by immutable
+    NUMERIC thread id descending (THR-10 above THR-2, never lexicographic or
+    activity), then unpinned in ordinary started_at DESC order."""
+    client = TestClient(app)
+    _seed_thread(org_state, "THR-2")
+    _seed_thread(org_state, "THR-10")
+    _seed_thread(org_state, "THR-3")
+    _seed_thread(org_state, "THR-4")  # unpinned
+    for tid in ("THR-2", "THR-10", "THR-3"):
+        client.post(
+            f"/api/v1/orgs/alpha/threads/{tid}/pin",
+            json={"pinned": True},
+            headers=auth_headers,
+        )
+    resp = client.get("/api/v1/orgs/alpha/threads?status=open", headers=auth_headers)
+    assert resp.status_code == 200
+    ids = [t["thread_id"] for t in resp.json()["threads"]]
+    # Numeric desc: 10 > 3 > 2 (lexicographic would be 3 > 2 > 10); unpinned last.
+    assert ids == ["THR-10", "THR-3", "THR-2", "THR-4"]
+    assert [t["pinned"] for t in resp.json()["threads"]] == [True, True, True, False]
+
+
+def test_list_archived_ignores_pin_state(tmp_home, app, org_state, auth_headers):
+    """GET /threads?status=archived must not split pinned/unpinned and must
+    not pin-rank: mixed pinned/unpinned rows follow the ordinary archived_at
+    DESC order (THR-209 message-9 correction)."""
+    import time as _t
+
+    client = TestClient(app)
+    _seed_thread(org_state, "THR-001")
+    _seed_thread(org_state, "THR-002")
+    _seed_thread(org_state, "THR-003")
+    # Archive 003 first, then 001, then 002 (most-recently-archived last).
+    for tid in ("THR-003", "THR-001", "THR-002"):
+        org_state.db.set_thread_status(tid, status=ThreadStatus.ARCHIVED, summary="done")
+        _t.sleep(0.01)
+    # Pin the most-recently-archived (THR-002) and the least (THR-003).
+    for tid in ("THR-002", "THR-003"):
+        client.post(
+            f"/api/v1/orgs/alpha/threads/{tid}/pin",
+            json={"pinned": True},
+            headers=auth_headers,
+        )
+    resp = client.get("/api/v1/orgs/alpha/threads?status=archived", headers=auth_headers)
+    assert resp.status_code == 200
+    ids = [t["thread_id"] for t in resp.json()["threads"]]
+    # Ordinary archived order (most-recently-archived first), pins interleaved.
+    assert ids == ["THR-002", "THR-001", "THR-003"]
+    assert [t["pinned"] for t in resp.json()["threads"]] == [True, False, True]
+
+
+def test_list_statusless_ignores_pin_state(tmp_home, app, org_state, auth_headers):
+    """The status-less GET /threads is not a pin-qualifying view: pinned rows
+    follow ordinary started_at DESC with no pinned-first rank."""
+    client = TestClient(app)
+    _seed_thread(org_state, "THR-001")
+    _seed_thread(org_state, "THR-002")
+    _seed_thread(org_state, "THR-003")
+    client.post(
+        f"/api/v1/orgs/alpha/threads/THR-001/pin",
+        json={"pinned": True},
+        headers=auth_headers,
+    )
+    resp = client.get("/api/v1/orgs/alpha/threads", headers=auth_headers)
+    assert resp.status_code == 200
+    ids = [t["thread_id"] for t in resp.json()["threads"]]
+    assert ids == ["THR-003", "THR-002", "THR-001"]
 
 
 def test_detail_wire_exposes_pinned_fields(tmp_home, app, org_state, auth_headers):
