@@ -240,34 +240,53 @@ settled rows after replies/declines/failures. No `task_id` semantics changed.
 - It does **not** claim any production observation of Phase-1 behavior.
 - It does **not** change schema, auth, permissions, or the
   `audit_log.task_id` scope convention.
-- It does **not** open Phase 2 (mention priority, `addressed_to_json`
-  writer/doctrine, fairness) — that remains gated on a separate founder
-  decision (THR-198 seq 7/10/20).
-  **Update (THR-198 seq 108-110, 2026-08-25):** the founder approved the
-  Phase-2 mention-routing program. **Slice A (additive storage + pure
-  resolver) landed** `threads.mention_routing_enabled` (INTEGER NOT NULL
-  DEFAULT 1) and `thread_messages.mentions_json` (TEXT), both additive and
-  idempotent, with store-seam persistence of derived mentions. **Slice B
-  (this PR) enables production mention routing** — the resolver is wired
-  into every conversational REPLY wake-selection seam at write time with
-  the per-thread setting and the ratified matrix (disabled/zero-valid →
-  broadcast; valid participant mentions → exactly that set), plus the
-  founder-only `POST /threads/{id}/mention-routing` toggle and
-  `happyranch threads mention-routing` CLI (audited
-  `thread_mention_routing_changed`). TASK_FOLLOWUP/BOOTSTRAP stay isolated;
-  GH-688 per-pair coalescing/claim/settlement/follow-on/rollback semantics
-  are preserved. **Slice C (merged) adds the per-thread web control** — a
-  founder-only direct "Mention routing" button in the thread-detail header
-  opens a dialog whose switch truthfully renders the thread's
-  current state, persists explicit changes through the same strict-boolean
-  API, prevents duplicate mutation in flight, and rolls back + surfaces a
-  visible error on failure. **Slice D (merged) ships the read-only Phase-2
-  release-measurement harness and release-record format** (§8 below); it
-  performs no production observation — the founder-approved acceptance
-  measurement remains **pending** at the Phase-2 epoch and is recorded only
-  when the window completes. Mention **priority/fairness, autocomplete, and
-  active-respondent fallback remain out of scope**; `addressed_to_json`
-  remains unwritten/unread with its separate cleanup plan.
+
+> **HISTORICAL (2026-06-17 original text; superseded by the THR-198 Phase-2
+> program approval below, then by TASK-6027):** it does **not** open Phase 2
+> (mention priority, `addressed_to_json` writer/doctrine, fairness) — that
+> remained gated on a separate founder decision (THR-198 seq 7/10/20) until the
+> 2026-08-25 approval below.
+>
+> **HISTORICAL rollout chronology (THR-198 seq 108-110, 2026-08-25, through
+> Slices A–D; superseded in its control-surface details by TASK-6027).** The
+> founder approved the Phase-2 mention-routing program. **Slice A (additive
+> storage + pure resolver) landed** `threads.mention_routing_enabled` (INTEGER
+> NOT NULL DEFAULT 1) and `thread_messages.mentions_json` (TEXT), both additive
+> and idempotent, with store-seam persistence of derived mentions. **Slice B
+> (this PR) enabled production mention routing** — the resolver was wired into
+> every conversational REPLY wake-selection seam at write time with the
+> per-thread setting and the ratified matrix (disabled/zero-valid → broadcast;
+> valid participant mentions → exactly that set), plus the founder-only `POST
+> /threads/{id}/mention-routing` toggle and `happyranch threads mention-routing`
+> CLI (audited `thread_mention_routing_changed`). TASK_FOLLOWUP/BOOTSTRAP stayed
+> isolated; GH-688 per-pair coalescing/claim/settlement/follow-on/rollback
+> semantics were preserved. **Slice C (merged) added the per-thread web
+> control** — a founder-only direct "Mention routing" button in the
+> thread-detail header opened a dialog whose switch truthfully rendered the
+> thread's current state, persisted explicit changes through the same
+> strict-boolean API, prevented duplicate mutation in flight, and rolled back +
+> surfaced a visible error on failure. **Slice D (merged) ships the read-only
+> Phase-2 release-measurement harness and release-record format** (§8 below); it
+> performs no production observation — the founder-approved acceptance
+> measurement remains **pending** at the Phase-2 epoch and is recorded only when
+> the window completes.
+>
+> **CURRENT STATE (2026-08-28, TASK-6027 founder ruling) — unconditional, no
+> switches.** All three settings/control surfaces were REMOVED: the per-thread
+> mention-routing setting (the "Mention routing" button/dialog, `POST
+> /threads/{id}/mention-routing`, `happyranch threads mention-routing`, and the
+> `thread_mention_routing_changed` audit producer), the per-thread
+> `reply_exchange_enabled` switch, and the org-wide
+> `org_settings.threads.reply_exchange_enabled` kill switch. Mention routing and
+> the strict mention-led exchange are **UNCONDITIONAL**: there is no per-thread
+> "disabled" state, no toggle to activate or operate, and no
+> route/CLI/audit/dialog/switch to run — persisted
+> `threads.mention_routing_enabled` values (inert legacy compatibility storage
+> only) cannot disable either behavior. The strict exchange's priority/fallback
+> semantics **ARE present** (frozen priority cohorts, 5-minute grace, 4-hour
+> absolute fail-open — §9). Rollback is code-version rollback / operational
+> containment only (§9.1). `addressed_to_json` remains unwritten/unread with its
+> separate cleanup plan.
 
 ## 8. Phase-2 mention-routing release measurement (THR-198 Slice D)
 
