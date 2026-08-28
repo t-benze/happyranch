@@ -1758,8 +1758,9 @@ class ClaudeWorkspaceAdapter:
         """Write CLAUDE.md to workspace with system prompt and context pointers.
 
         ``repo_names`` is accepted for API compatibility but is not listed
-        inline — CLAUDE.md just points at ``agent.yaml`` as the source of
-        truth so the repo list doesn't drift between the two files.
+        inline — CLAUDE.md points at the agent's authoritative
+        ``org/agents/<name>.md`` frontmatter (``AgentDef.repos``) so the repo
+        list doesn't drift between the two files.
         """
         _assert_no_reserved_headers_in_body(agent_name, system_prompt)
         workspace.mkdir(parents=True, exist_ok=True)
@@ -1803,7 +1804,10 @@ class ClaudeWorkspaceAdapter:
             "## System Prompt\n",
             system_prompt.strip() + "\n",
             "## Available Repositories\n",
-            "See `agent.yaml` in this workspace for the authoritative list of",
+            f"See the `repos` list in your authoritative `org/agents/{agent_name}.md` "
+            "frontmatter (`AgentDef.repos`) — bootstrap paths (enrollment/init/"
+            "manage-repo) provision missing clones, while session spawn only "
+            "fast-forward-pulls existing",
             repo_refresh_note + "\n",
             *_memory_bootstrap_section(workspace),
             "## Knowledge Base (shared across agents)\n",

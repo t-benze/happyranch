@@ -74,8 +74,9 @@ def validate_argv_template(argv: list[str]) -> list[str]:
 class ExecutorProfile:
     """A registered executor profile.
 
-    ``name`` is the string agents use in their frontmatter / agent.yaml
-    ``executor:`` field. It must be lower-case and non-empty.
+    ``name`` is the string agents use in their AgentDef frontmatter
+    (``org/agents/<name>.md``) ``executor:`` field. It must be lower-case
+    and non-empty.
 
     ``kind`` is ``"builtin"`` for the four built-in adapters (claude, codex,
     opencode, pi) and ``"custom"`` for user-registered CLI profiles.

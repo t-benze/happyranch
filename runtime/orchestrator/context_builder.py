@@ -59,8 +59,9 @@ class ContextBuilder:
         """Write CLAUDE.md to workspace with system prompt and context pointers.
 
         ``repo_names`` is accepted for API compatibility but is not listed
-        inline — CLAUDE.md just points at ``agent.yaml`` as the source of
-        truth so the repo list doesn't drift between the two files.
+        inline — CLAUDE.md points at the agent's authoritative
+        ``org/agents/<name>.md`` frontmatter (``AgentDef.repos``) so the repo
+        list doesn't drift between the two files.
         """
         self._claude.write_claude_md(workspace, agent_name, system_prompt, repo_names=repo_names)
 

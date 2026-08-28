@@ -65,8 +65,8 @@ happyranch orgs init hk-macau-tourism --from examples/orgs/hk-macau-tourism
 # 5. (Optional) Set the default org so you don't pass --org on every command.
 export HAPPYRANCH_ORG_SLUG=hk-macau-tourism
 
-# 6. Initialize agent workspaces (creates agent.yaml, generates bootstrap docs,
-#    copies skills, clones repos declared in agent.yaml).
+# 6. Initialize agent workspaces (generates bootstrap docs, copies skills,
+#    clones repos declared in each agent's org/agents/<name>.md frontmatter).
 happyranch init-agent
 
 # 7. Run a task. The CLI streams live events until done.
@@ -369,7 +369,10 @@ To enroll an agent with a non-default executor, the manager's `manage-agent` pay
 }
 ```
 
-After approval, the new workspace will have the requested executor in `agent.yaml` and will be bootstrapped with the matching workspace surface (`AGENTS.md` for non-Claude executors, `CLAUDE.md` for Claude).
+After approval, the requested executor and repos are persisted to the agent's
+`org/agents/<name>.md` frontmatter (`AgentDef`), the declared repos are cloned
+into the workspace, and the workspace is bootstrapped with the matching
+surface (`AGENTS.md` for non-Claude executors, `CLAUDE.md` for Claude).
 
 ### Managing the daemon
 
@@ -416,18 +419,22 @@ If a value isn't set in either, the code default applies. The file is optional �
 
 ### Per-Agent Configuration
 
-Each agent has an `agent.yaml` in its workspace (`<runtime>/orgs/<slug>/workspaces/<agent>/agent.yaml`). Created automatically by `happyranch init-agent` with empty defaults:
+Each agent's authoritative configuration lives in its AgentDef frontmatter at `<runtime>/orgs/<slug>/org/agents/<name>.md` (parsed by `runtime/orchestrator/agent_def.py`). Workspace `agent.yaml` was retired (THR-095) and is no longer read or written for org agents.
 
 ```yaml
+---
+name: dev_agent
+team: engineering
+role: worker
 executor: claude
 repos:
-  web-app: https://github.com/user/web-app.git
-  docs: https://github.com/user/docs.git
+  happyranch: https://github.com/t-benze/happyranch.git
+---
 ```
 
 `executor` is a registered executor profile name. Built-in profiles are `claude`, `codex`, `opencode`, and `pi`; org-config custom profiles are also valid once registered. If omitted, it defaults to `claude`.
 
-Repos are cloned into the agent's workspace on `happyranch init-agent` and auto-pulled before each task.
+Repos are cloned into the agent's workspace (`repos/<name>/`) by `happyranch init-agent`, founder enrollment / approval, and `manage-repo add/update`. At each session spawn the daemon only fast-forward-pulls existing clones (`git pull --ff-only`, fail-open); it does not clone a repository that is declared but missing — re-run init or `manage-repo update` to provision it.
 
 ### Session timeout overrides
 
@@ -582,13 +589,12 @@ client only hints field formats. Each save records an audit row.
 
 Each agent runs in its own persistent workspace inside the org directory. After `happyranch init-agent`, each workspace contains:
 
-- `agent.yaml` — per-agent config (`executor`, repos, ...)
 - `CLAUDE.md` (Claude) or `AGENTS.md` (Codex/opencode/Pi) — agent identity, system prompt, available repos
 - `.claude/settings.json` + `.claude/skills/` (Claude) — permissions and skills
 - `.agents/skills/` (Codex/opencode/Pi) — shared skills tree
 - `opencode.json` (opencode only) — `permission.bash` map
 - Pi has no HappyRanch-managed sandbox or permission file; use external containment for Pi-backed agents when command/tool restriction matters.
-- `repos/` — git clones of repositories from `agent.yaml` (auto-pulled before each task)
+- `repos/<name>/` — clones of the repositories declared in `org/agents/<name>.md` frontmatter (`AgentDef.repos`); provisioned by init/enrollment/manage-repo, fast-forward-pulled at each session spawn
 - `memory/` — agent-written insights from past tasks, one file per entry (`MEM-NNN-<slug>.md`) with YAML frontmatter. A regenerated `_index.md` is inlined into the bootstrap doc. Write via `happyranch memory add --from-file <path>`; read via `happyranch memory list|get|search`; promote durable cross-agent rules to the shared KB via `happyranch memory promote <MEM-NNN> --kb-slug <slug>`. Workspaces created before this layout existed continue to use a flat `learnings.md`; the founder runs a one-shot migration task to switch a workspace over.
 - `task_history.md` — rolling per-agent task history
 

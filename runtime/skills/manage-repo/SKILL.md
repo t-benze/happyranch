@@ -1,6 +1,6 @@
 ---
 name: manage-repo
-description: Add, remove, or update a repository in your agent.yaml configuration. Write a JSON file and call happyranch manage-repo --from-file to keep the invocation single-line.
+description: Add, remove, or update a repository in your AgentDef configuration (org/agents/<name>.md frontmatter). Write a JSON file and call happyranch manage-repo --from-file to keep the invocation single-line.
 ---
 
 # manage-repo
@@ -52,11 +52,11 @@ Manage the repositories cloned into your `repos/` directory. You can **add** a n
 
 ## What happens
 
-- **add**: writes the entry to `agent.yaml`, clones the repo into `repos/<name>/`, and refreshes executor workspace metadata. Claude workspaces also regenerate `.claude/settings.json` so the git-pull hook covers the new repo.
-- **remove**: deletes the entry from `agent.yaml`, removes the `repos/<name>/` directory, and refreshes executor workspace metadata.
-- **update**: updates the URL in `agent.yaml`, deletes the old clone, re-clones from the new URL, and refreshes executor workspace metadata.
+- **add**: writes the entry to your `org/agents/<name>.md` frontmatter (`AgentDef.repos`), clones the repo into `repos/<name>/` (or `git pull --ff-only` if a clone already exists), and refreshes executor workspace metadata. Repo freshness is daemon-side (THR-103): the session-spawn `refresh_workspace_repos` fast-forward-pull covers the new repo automatically — no per-workspace git-pull hook is emitted.
+- **remove**: deletes the entry from your `org/agents/<name>.md` frontmatter, removes the `repos/<name>/` directory, and refreshes executor workspace metadata.
+- **update**: updates the URL in your `org/agents/<name>.md` frontmatter, deletes the old clone, re-clones from the new URL, and refreshes executor workspace metadata.
 
 ## Error handling
 
 - If `happyranch` returns non-zero, retry once after 1 second.
-- `409` (duplicate repo on add) and `404` (repo not found on remove/update) are not retryable — check your `agent.yaml` and adjust.
+- `409` (duplicate repo on add) and `404` (repo not found on remove/update) are not retryable — check your `org/agents/<name>.md` frontmatter and adjust.

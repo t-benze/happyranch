@@ -69,12 +69,19 @@ The stable path is:
 5. If using the assistant dock, run `happyranch assistant init` and follow the
    printed registration instructions.
 
-Each agent workspace includes an `agent.yaml` that declares the executor:
+Each agent's executor and repos are declared in its AgentDef frontmatter at
+`org/agents/<name>.md` (in the org tree, not the workspace; workspace
+`agent.yaml` was retired by THR-095):
 
 ```yaml
+---
+name: dev_agent
+team: engineering
+role: worker
 executor: claude
 repos:
   happyranch: https://github.com/t-benze/happyranch.git
+---
 ```
 
 If your org changes an agent's executor, re-run initialization for that agent so

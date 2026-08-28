@@ -307,7 +307,7 @@ The Agents page (`web/src/features/agents/`) shows the active agent
 roster plus pending enrollments. Each agent detail drawer now includes
 (Phase 2):
 
-- **Repositories** — `repos` map from agent.yaml, shown as badge chips
+- **Repositories** — `repos` map from `AgentDef.repos` (`org/agents/<name>.md` frontmatter), shown as badge chips
   in the detail header.
 - **System prompt** — read-only, collapsible. Sourced from the
   `system_prompt` field on the existing `GET /agents` response (additive

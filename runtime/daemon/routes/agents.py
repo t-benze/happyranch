@@ -1465,13 +1465,19 @@ async def set_agent_executor(
     this route returns a named HTTP error, preserves the previous executor
     configuration and audit state, and prohibits subsequent launch.
 
-    Reconciles all three surfaces the orchestrator reads:
+    **Authority:** org/agents/<name>.md AgentDef frontmatter is
+    authoritative for executor/repository declarations (THR-095).
+    Dispatch resolves ``AgentDef.executor`` via
+    ``orchestrator._resolve_executor_name`` — workspace agent.yaml is
+    neither reconciled by this route nor read at dispatch. Workspace
+    setup on this path is bootstrap/provisioning only, and session
+    repository refresh is fail-open and existing-clone-only.
+
+    Surfaces this route touches:
       1. org agent .md frontmatter (``executor:``) — atomic rebuild via
          render_agent_text + tempfile + os.replace (same pattern as the
-         manage-agent update path).
-      2. workspace agent.yaml — via set_executor (what _resolve_executor_name
-         actually reads at dispatch time).
-      3. executor bootstrap — via ContextBuilder.ensure_workspace_ready with
+         manage-agent update path). This is the single authoritative store.
+      2. executor bootstrap — via ContextBuilder.ensure_workspace_ready with
          ``provider=<NEW executor>`` so the correct adapter regenerates
          (Claude → CLAUDE.md/.claude/; others → AGENTS.md/.agents/).
 
