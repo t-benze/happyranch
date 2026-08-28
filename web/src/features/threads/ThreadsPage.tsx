@@ -668,8 +668,11 @@ export function ThreadsPage(): JSX.Element {
           {/* THR-099: segmented All/Open/Archived pills on the LEFT, compact
               live-text Filter right-aligned on the SAME row (a-threads `.seg`
               row). The filter keeps its working substring match — just compact
-              and right-pinned (EM ruling: do NOT downgrade to a ghost button). */}
-          <div className="mt-3 flex items-center gap-2">
+              and right-pinned (EM ruling: do NOT downgrade to a ghost button).
+              TASK-5987: the row wraps below `sm` so the filter drops to its
+              own full-width line instead of pushing the tabs off-screen at
+              375px; at sm+ the row is the same single line as before. */}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             <Tabs
               value={bucket}
               onValueChange={(v) => setBucket(v as InboxBucket)}
@@ -699,7 +702,7 @@ export function ThreadsPage(): JSX.Element {
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               placeholder={S.filterPlaceholder}
-              className="text-caption h-7 w-44 shrink-0 px-2 py-1"
+              className="text-caption h-7 w-full shrink-0 px-2 py-1 sm:w-44"
               aria-label="Filter threads"
             />
           </div>

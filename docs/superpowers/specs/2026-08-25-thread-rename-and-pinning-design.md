@@ -1,8 +1,8 @@
 # Thread Rename and Pinning (THR-209, Phase 1)
 
-> Status: implemented (rev 2 — THR-209 message-9 correction, TASK-5976)
-> Current Source: `docs/agent-guides/features-and-invariants.md` (Threads), `runtime/daemon/routes/threads.py` (rename + pin routes), `runtime/infrastructure/database.py` (pinned_at + list ordering), `web/src/features/threads/ThreadsPage.tsx` (Pinned section + inline rename)
-> Provenance: THR-209 (founder request + product spec; messages 9–10 correction), TASK-5618 / TASK-5621 / TASK-5976
+> Status: implemented (rev 3 — TASK-5987 fix-forward: optimistic open-list cache mirror + responsive 375px seam)
+> Current Source: `docs/agent-guides/features-and-invariants.md` (Threads), `runtime/daemon/routes/threads.py` (rename + pin routes), `runtime/infrastructure/database.py` (pinned_at + list ordering), `web/src/features/threads/ThreadsPage.tsx` (Pinned section + inline rename), `web/src/design-system/providers/_real-threads.ts` (optimistic open-list reorder mirror)
+> Provenance: THR-209 (founder request + product spec; messages 9–10 correction), TASK-5618 / TASK-5621 / TASK-5976 / TASK-5987
 > Date: 2026-08-25
 
 ## Summary
@@ -105,6 +105,18 @@ one flat ordinary list (All = the pre-THR-209 `started_at DESC` merge of
 open + archived). Search/filter retains ordinary eligibility first, then the
 open bucket's pinned-first + numeric-ID-desc ordering.
 
+**Client/server parity (TASK-5987):** the optimistic path in
+`web/src/design-system/providers/_real-threads.ts`
+(`useSetThreadPinned.onMutate`) reorders the cached **open-list** variants
+(`params.status === 'open'`) immediately under the SAME server rule via the
+shared pure `reorderOpenThreads` mirror (pinned first, numeric thread ID
+desc, unpinned `started_at DESC`), so pinning THR-10 while THR-2 is pinned
+renders THR-10 above THR-2 and unpinning re-inserts the row into ordinary
+started-at order BEFORE the response/refetch — no client/server semantic
+divergence. Archived and status-less/all cached variants are NOT reordered
+(pin has zero presentation effect there). Rollback restores the exact prior
+snapshot including ordering.
+
 ## Mutation contract
 
 - `POST .../rename` body `{"subject": str}` — trims surrounding whitespace;
@@ -166,9 +178,17 @@ sentences) to stay in parity with the audit row shapes.
 - `InboxRow` gains an optional sibling `pinControl` slot (never nested inside
   the `<a>` — interactive-inside-interactive is invalid HTML).
 - `useSetThreadPinned` (real provider) is optimistic: flips the cached list
-  rows + detail row before the write, rolls back the exact snapshot on
+  rows + detail row before the write, reorders cached OPEN lists under the
+  server rule (TASK-5987), rolls back the exact snapshot (state + order) on
   failure, and invalidates on settle. `useRenameThread` patches the detail
   cache and invalidates the list.
+- Responsive seam (TASK-5987): the AppShell rail collapses from `w-rail`
+  (244px) to the compact `w-rail-narrow` (56px) icon rail below `md`
+  (768px) — nav labels stay in the a11y tree via `sr-only` — and the
+  ThreadsPage header tabs+filter row wraps (`flex-wrap`) with the filter
+  going full-width below `sm`, so the thread list is readable and actionable
+  at 375x812 with no sliver/clip/overflow; OPEN and ARCHIVED buckets share
+  the same responsive structure (Pinned section remains OPEN-only).
 - List renders a "Pinned" section header only in the **Open** bucket when
   any qualifying (filtered) thread is pinned; Archived and All buckets are
   single flat lists (no section headers, no pin rank);
@@ -198,7 +218,21 @@ sentences) to stay in parity with the audit row shapes.
   Pinned section in Archived/All buckets, empty/single, keyboard/accessible
   section + control semantics.
 - `web/src/design-system/providers/_real-threads.test.ts` — optimistic cache
-  update + rollback at the provider level.
+  update + rollback at the provider level; TASK-5987 adds the pure
+  `reorderOpenThreads`/`numericThreadId` mirror tests and multi-row
+  optimistic pin/unpin reorder (deferred response — order asserted BEFORE
+  the response/refetch), archived/status-less cache variants untouched,
+  rollback restoring pin state AND exact prior ordering, and success-time
+  server reconciliation (invalidation).
+- `web/src/features/threads/ThreadsPage.thr209.test.tsx` — page-level
+  multi-row optimistic pin/unpin reorder assertions with a gated POST
+  (order before response/refetch) and multi-row rollback order restoration.
+- `web/src/features/threads/ThreadsPage.responsive.test.tsx` + `Sidebar.test.tsx`
+  (TASK-5987) — responsive contract: rail collapse classes + sr-only labels
+  keeping accessible names, header `flex-wrap` + full-width filter below
+  `sm`, OPEN/ARCHIVED responsive equivalence, keyboard reachability.
+  Real-browser 375x812 bounding-box + screenshot + accessibility evidence is
+  captured at the repair head (Playwright harness).
 - `web/src/lib/api/threads.test.ts` — client mirror functions.
 - `web/src/features/audit/audit-narrative.test.ts` — narrative coverage for
   the new actions.
