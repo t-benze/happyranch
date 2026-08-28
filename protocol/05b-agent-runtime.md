@@ -798,7 +798,7 @@ These guardrails are enforced by the agent's system prompt (in `CLAUDE.md` or `A
 
 ### Full codebase access
 
-All agents can clone the project's git repo into their workspace for read access to the full codebase. The orchestrator handles the initial `git clone` (or `git pull` if already cloned) at session start so the agent always has fresh code. Agents can also pull on their own during a session.
+All agents can clone the project's git repo into their workspace for read access to the full codebase. Repository clones are provisioned from the agent's authoritative `repos` frontmatter (`org/agents/<name>.md` — `AgentDef.repos`): founder enrollment, pending-enrollment approval, `POST /agents/init`, and `manage-repo add/update` call `ContextBuilder.clone_repo`, which clones a missing repo and runs `git pull --ff-only` when an existing clone is encountered. At session spawn (task, thread, schedule, wake, dream) the daemon only fast-forward-pulls existing `repos/*/.git` clones via `refresh_workspace_repos`; it never clones a declared-but-missing repo (fail-open). Agents can also pull on their own during a session.
 
 Write restrictions are role-based but minimal:
 - Dev Agent: can create branches, commit, push to feature branches (not main)
@@ -832,7 +832,8 @@ even when they share both `storage_key` and `display_name`.
 The executor interface supports multiple backends. Four built-in adapters are
 provided; additional agentic CLIs can be registered as custom profiles via org
 configuration (THR-052). Swapping an agent from one executor to another is a
-one-line config change in `agent.yaml`.
+one-line config change in the agent's `org/agents/<name>.md` frontmatter
+(`AgentDef.executor`; THR-095 — workspace `agent.yaml` is no longer read).
 
 **Profile identity (D6, THR-107 seq115).** Each registered executor profile
 carries two canonical identity fields:
@@ -1168,44 +1169,43 @@ Coding-agent sessions are stateless — context is lost when a session ends. Age
 
 ### Solution: persistent workspaces with file-based memory
 
-Every agent has a **persistent workspace directory** that survives across sessions. The workspace contains the agent's memory files, any work products it creates (specs, code, proposals), and a cloned copy of the project repo. The orchestrator regenerates the executor bootstrap file (`CLAUDE.md` or `AGENTS.md`) and Claude settings when applicable at session start, but everything else persists.
+Every agent has a **persistent workspace directory** that survives across sessions. The workspace contains the agent's memory files, any work products it creates (specs, code, proposals), and clones of the repositories declared in the agent's `org/agents/<name>.md` frontmatter. The orchestrator regenerates the executor bootstrap file (`CLAUDE.md` or `AGENTS.md`) and Claude settings when applicable at session start, but everything else persists.
 
 ```
 workspaces/
 ├── engineering_head/
-│   ├── agent.yaml               # Includes executor + repos
 │   ├── CLAUDE.md or AGENTS.md   # Regenerated each session
 │   ├── .claude/settings.json    # Claude-only permission config
 │   ├── memory/                  # Per-entry store, persists across sessions (was learnings.md; LRN- ids resolve via permanent shim)
 │   ├── task_history.md          # Rolling summary of last N tasks
-│   └── repo/                    # Git clone of project (pulled at session start)
+│   └── repos/<name>/            # Clones of repos declared in org/agents/<name>.md (provisioned at enrollment/init; fast-forward-pulled at session spawn)
 ├── product_manager/
 │   ├── CLAUDE.md
 │   ├── .claude/settings.json
 │   ├── memory/
 │   ├── task_history.md
 │   ├── specs/                   # Specs PM writes accumulate here
-│   └── repo/
+│   └── repos/<name>/
 ├── dev_agent/
 │   ├── CLAUDE.md
 │   ├── .claude/settings.json
 │   ├── memory/
 │   ├── task_history.md
-│   └── repo/                    # Agent works on branches here
+│   └── repos/<name>/            # Agent works on branches here
 ├── payment_agent/
 │   ├── CLAUDE.md
 │   ├── .claude/settings.json
 │   ├── memory/
 │   ├── task_history.md
 │   ├── proposals/               # Payment change proposals
-│   └── repo/
+│   └── repos/<name>/
 └── ...
 ```
 
 > **Org-root portability (THR-187 Slice A).** The *only* workspace content
 > that is portable across a same-slug relocation is
 > ``workspaces/<agent>/memory/**``. ``task_history.md`` (rebuilt from the DB),
-> ``repo/`` clones, regenerated bootstrap files, injected settings/skills,
+> ``repos/<name>/`` clones, regenerated bootstrap files, injected settings/skills,
 > caches, task-output directories, and every other workspace byte are
 > non-portable and named as exclusions by the preflight classifier.
 > ``runtime/portability/roots.py`` is the authoritative exhaustive direct-org-root
@@ -1239,7 +1239,7 @@ The orchestrator regenerates the bootstrap document in the agent's workspace wit
 5. Task-specific context (brief, prior drafts, QA feedback, etc.)
 ```
 
-The agent's persistent files (memory entries, prior work products) are already in the workspace — the bootstrap document just references them. The orchestrator also runs `git pull` on the repo clone to ensure fresh code.
+The agent's persistent files (memory entries, prior work products) are already in the workspace — the bootstrap document just references them. At session spawn the daemon fast-forward-pulls each existing `repos/<name>/` clone (`refresh_workspace_repos`, fail-open); it does not clone repositories that are declared in `AgentDef.repos` but missing from the workspace — provisioning of missing clones is handled by enrollment, `POST /agents/init`, and `manage-repo`.
 
 ### Write-back protocol
 
