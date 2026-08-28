@@ -17,7 +17,8 @@ Operator surface for the supervised Linux connector:
 - **Supported-DIY ceremony (THR-097 Unit 3A):** ``pair`` issues a one-time
   pairing code (printed ONCE, never logged); ``list-devices`` shows the
   paired devices (redacted); ``revoke`` revokes one device or all
-  (persisted, live streams closed); ``remove-device`` removes a device and
+  (persisted; the connector closes live streams at its next
+  reconciliation); ``remove-device`` removes a device and
   its credential; ``pairing-status`` reports truthful lifecycle states;
   ``recovery --factory-reset`` deletes BOTH snapshot+anchor files to return
   to the first-run deny-all default (explicit operator action).
@@ -75,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     pair = add_lifecycle("pair", "issue a one-time pairing code for a device (Supported-DIY ceremony)")
     pair.add_argument("--device", required=True, help="human-readable device name (e.g. macbook-pro)")
     add_lifecycle("list-devices", "list paired devices (redacted — never credentials/digests)")
-    revoke = add_lifecycle("revoke", "revoke one device or all devices (persisted, live streams closed)")
+    revoke = add_lifecycle("revoke", "revoke one device or all devices (persisted; the connector closes live streams at its next reconciliation)")
     revoke.add_argument("--device", default=None, help="device name to revoke; omit to revoke ALL")
     remove = add_lifecycle("remove-device", "remove a device and its credential entirely")
     remove.add_argument("--device", required=True, help="device name to remove")
@@ -224,9 +225,15 @@ def _run_ceremony(args, supervisor: ConnectorSupervisor) -> int:
         if args.command == "revoke":
             outcome = supervisor.pairing_manager().revoke(device_id=args.device)
             target = args.device or "ALL devices"
+            # Cross-process honesty (TASK-6039 reviewer [CRITICAL] finding 2):
+            # this CLI process is NOT the connector process serving the live
+            # streams — it must never report stream closure it cannot prove.
+            # The revocation is persisted; the connector closes any live
+            # streams at its next reconciliation (bounded by poll_seconds).
             print(
-                f"revoked {target}: epoch {outcome.epoch}, "
-                f"live streams closed: {outcome.complete}"
+                f"revoked {target}: revocation epoch {outcome.epoch} persisted; "
+                f"the connector closes any live streams at its next "
+                f"reconciliation"
             )
             return 0
         if args.command == "remove-device":

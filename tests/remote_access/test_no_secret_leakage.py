@@ -219,7 +219,7 @@ class TestDiyLaneNoLeakage:
             state_path=str(tmp_path / "state.json"),
             lab=None,
             diy=DiyProviderConfig(
-                network=NetworkConfig(mode="explicit", address="100.64.0.5")
+                network=NetworkConfig(mode="tailscale")
             ),
         )
         cfg_path = tmp_path / "config.json"

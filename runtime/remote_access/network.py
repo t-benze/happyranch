@@ -1,17 +1,25 @@
 """Customer-owned-network address discovery and validation (THR-097 Unit 3A).
 
 The Supported-DIY adapter binds ONLY to an address on the customer's OWN
-network — never a wildcard, never a public/wildcard interface. Two sources:
+network — never a wildcard, never a public/wildcard interface, and never a
+bare plaintext concrete address. The customer-owned network is the
+ENCRYPTED tailscale mode ONLY (TASK-6039 reviewer [CRITICAL] finding 1):
 
-- **tailscale mode (default)** — ride-installed system Tailscale (THR-034
-  pattern: the customer runs their own Tailscale/headscale and is logged
-  in). The resolver invokes the ``tailscale`` CLI (``tailscale ip -4``)
-  and returns the node's tailnet IPv4 (the ``100.x`` address). No embedded
-  tsnet, no new dependency, no Network Extension.
-- **explicit mode** — an operator-configured concrete customer-network
-  address (used for the acceptance and for LAN-style customer networks).
-  The value is validated strictly: wildcard, loopback, multicast,
-  broadcast, and obviously-invalid addresses are refused (fail closed).
+- **tailscale mode (default; the only mode)** — ride-installed system
+  Tailscale (THR-034 pattern: the customer runs their own Tailscale/
+  headscale and is logged in). The resolver invokes the ``tailscale`` CLI
+  (``tailscale ip -4``) and returns the node's tailnet IPv4 (the ``100.x``
+  address) — traffic to that address traverses the customer's own
+  WireGuard-encrypted tailnet (authenticated, encrypted transport). No
+  embedded tsnet, no new dependency, no Network Extension.
+
+The former ``explicit`` concrete-address mode is REMOVED and fails closed:
+it bound the plaintext connector listener to an arbitrary LAN/public
+interface with no authenticated encrypted transport, breaching the fixed
+no-plaintext-service-path invariant. A leftover ``address`` or
+``mode: explicit`` in an operator config is refused with a clear
+migration message — the customer-owned network bind address is resolved
+exclusively from the encrypted tailscale mode.
 
 Resolution failure (CLI missing, not logged in, no IPv4, malformed output,
 ambiguous results) fails closed — no listener. The resolved address is
@@ -36,9 +44,12 @@ class NetworkAddressError(Exception):
 class NetworkConfig:
     """Customer-owned-network configuration (secret-free).
 
-    ``mode`` is ``tailscale`` (ride-installed CLI; default) or ``explicit``
-    (concrete ``address``). ``tailscale_cli`` overrides the CLI path for the
-    tailscale mode (default: ``tailscale`` on PATH).
+    ``mode`` is ALWAYS ``tailscale`` (ride-installed CLI; the encrypted
+    customer-owned transport — the ONLY supported mode). ``tailscale_cli``
+    overrides the CLI path (default: ``tailscale`` on PATH). The legacy
+    ``address`` field is retained ONLY so an old config carrying an
+    explicit-mode artifact fails closed with a clear message instead of a
+    load-time crash; any value set fails validation.
     """
 
     mode: str = "tailscale"
@@ -46,29 +57,26 @@ class NetworkConfig:
     address: str | None = None
 
     def validate(self) -> None:
-        if self.mode not in {"tailscale", "explicit"}:
-            raise NetworkAddressError("network mode must be 'tailscale' or 'explicit'")
-        if self.mode == "explicit":
-            if not self.address or not self.address.strip():
-                raise NetworkAddressError("explicit network mode requires an address")
-            validate_customer_network_address(self.address)
-        elif self.tailscale_cli and not self.tailscale_cli.strip():
+        if self.mode != "tailscale":
+            raise NetworkAddressError(
+                "network mode must be 'tailscale' — the customer-owned "
+                "network is the encrypted tailnet transport only; the "
+                "explicit plaintext concrete-address mode was removed "
+                "(fail closed, no plaintext service path)"
+            )
+        if self.address is not None:
+            raise NetworkAddressError(
+                "explicit network address is not supported: the "
+                "customer-owned network bind address is resolved "
+                "exclusively from the encrypted tailscale mode "
+                "(tailscale ip -4)"
+            )
+        if self.tailscale_cli and not self.tailscale_cli.strip():
             raise NetworkAddressError("tailscale_cli must be non-empty")
 
 
 class CustomerNetworkResolver(Protocol):
     def resolve(self) -> str: ...
-
-
-class ExplicitAddressResolver:
-    """A fixed, strictly-validated customer-network address."""
-
-    def __init__(self, address: str) -> None:
-        validate_customer_network_address(address)
-        self._address = address
-
-    def resolve(self) -> str:
-        return self._address
 
 
 class TailscaleCliResolver:
@@ -123,11 +131,10 @@ class TailscaleCliResolver:
 
 
 def resolve_customer_network_address(config: NetworkConfig) -> str:
-    """Resolve the bind address for a customer-owned network config. Any
-    failure raises ``NetworkAddressError`` (fail closed, no listener)."""
+    """Resolve the bind address for a customer-owned network config. The
+    encrypted tailscale mode is the ONLY mode; any failure raises
+    ``NetworkAddressError`` (fail closed, no listener)."""
     config.validate()
-    if config.mode == "explicit":
-        return ExplicitAddressResolver(config.address).resolve()
     return TailscaleCliResolver(config.tailscale_cli).resolve()
 
 
@@ -135,7 +142,7 @@ def validate_customer_network_address(address: str) -> None:
     """Strict validation of a customer-network bind address. Refuses
     wildcards, loopback, multicast, broadcast, and non-IPv4 strings —
     a connector must listen only on a concrete address on the customer's
-    own network."""
+    own network (the tailnet address resolved by tailscale mode)."""
     try:
         parsed = ipaddress.ip_address(address)
     except ValueError as exc:

@@ -12,7 +12,10 @@ Proves the security-critical ceremony properties:
 - revocation (one device and all) advances the epoch, persists across
   restart, closes live streams through the authoritative coordinator, and
   per-device revocation leaves other devices authorized;
-- removal deletes the record; the removed credential denies like absent;
+- removal REVOKES FIRST (live streams close, epoch advances, persists) and
+  then deletes the record; the removed credential denies like absent;
+- serialized redemption: concurrent redemption of one code yields EXACTLY
+  ONE credential; concurrent redemptions of different codes lose no state;
 - nothing credential-shaped is ever rendered in status/list output.
 """
 from __future__ import annotations
@@ -359,6 +362,113 @@ class TestListAndStatus:
         manager.revoke("macbook-pro")
         status = manager.pairing_status()
         assert status["devices"][0]["state"] == "revoked"
+
+
+class TestConcurrentRedemption:
+    """Adversarial concurrent redemption regression (TASK-6039 reviewer
+    [HIGH] finding 4): redemption/state mutation must be serialized (or
+    generation-checked) so concurrent redemption of the SAME code yields
+    EXACTLY ONE credential, and concurrent redemption of DIFFERENT codes
+    cannot lose/corrupt persisted state.
+
+    Deterministic interleaving seam: ``generate_device_credential`` is
+    slowed so BOTH racing threads are between load and save simultaneously
+    before either saves (at head, both mint; after the fix the transaction
+    lock serializes them and the second thread observes the consumed code).
+    """
+
+    @staticmethod
+    def _slow_credential(monkeypatch, released):
+        import runtime.remote_access.pairing as pairing_mod
+
+        orig = pairing_mod.generate_device_credential
+
+        def slow(*, rng=None):
+            released.wait(timeout=10)
+            return orig(rng=rng)
+
+        monkeypatch.setattr(pairing_mod, "generate_device_credential", slow)
+
+    def test_concurrent_redeem_same_code_yields_exactly_one_credential(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import threading
+
+        store = _file_store(tmp_path)
+        manager = _make_manager(store=store)
+        issued = manager.issue_pairing_code("macbook-pro")
+        released = threading.Event()
+        self._slow_credential(monkeypatch, released)
+        barrier = threading.Barrier(2)
+        results: list[str | None] = []
+
+        def worker() -> None:
+            barrier.wait()
+            results.append(manager.redeem_pairing(issued.code))
+
+        t1 = threading.Thread(target=worker)
+        t2 = threading.Thread(target=worker)
+        t1.start()
+        t2.start()
+        # Both threads are now between load and save (one inside the slow
+        # credential generator, the other blocked on the transaction lock):
+        # release them to race the save.
+        released.set()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+        assert not t1.is_alive() and not t2.is_alive()
+        creds = [r for r in results if r is not None]
+        assert len(creds) == 1, (
+            f"concurrent redemption of one code must mint EXACTLY ONE "
+            f"credential; minted {len(creds)}"
+        )
+        # The persisted device record holds the digest of the ONE minted
+        # credential (no lost/corrupt state).
+        state = store.load()
+        assert "macbook-pro" in state.devices
+        digest = state.devices["macbook-pro"].credential_digest
+        assert digest is not None
+        assert digest == hashlib.sha256(creds[0].encode()).hexdigest()
+        # The code is consumed (single-use preserved).
+        assert state.pending_pairings["macbook-pro"].consumed is True
+
+    def test_concurrent_redeem_different_codes_persists_both_devices(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Concurrent redemption of two DIFFERENT codes must not lose state:
+        both devices (and both credentials) survive — no last-writer-wins
+        erasure of one device's authority."""
+        import threading
+
+        store = _file_store(tmp_path)
+        manager = _make_manager(store=store)
+        a = manager.issue_pairing_code("macbook-pro")
+        b = manager.issue_pairing_code("phone")
+        released = threading.Event()
+        self._slow_credential(monkeypatch, released)
+        barrier = threading.Barrier(2)
+        results: dict[str, str | None] = {}
+
+        def worker(code, name) -> None:
+            barrier.wait()
+            results[name] = manager.redeem_pairing(code)
+
+        t1 = threading.Thread(target=worker, args=(a.code, "a"))
+        t2 = threading.Thread(target=worker, args=(b.code, "b"))
+        t1.start()
+        t2.start()
+        released.set()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+        assert not t1.is_alive() and not t2.is_alive()
+        assert results["a"] is not None and results["b"] is not None
+        # BOTH device records survive (no state loss).
+        state = store.load()
+        assert set(state.devices) == {"macbook-pro", "phone"}
+        digest_a = state.devices["macbook-pro"].credential_digest
+        digest_b = state.devices["phone"].credential_digest
+        assert digest_a == hashlib.sha256(results["a"].encode()).hexdigest()
+        assert digest_b == hashlib.sha256(results["b"].encode()).hexdigest()
 
 
 def _proof(credential: str) -> DeviceProof:

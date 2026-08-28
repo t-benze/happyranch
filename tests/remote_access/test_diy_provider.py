@@ -143,6 +143,7 @@ def _make_adapter(
     daemon: FakeDaemon | None = None,
     bind_address: str | None = None,
     config=None,
+    registry: StreamRegistry | None = None,
 ) -> DiyProviderAdapter:
     from .conftest import load_fixture, make_policy_envelope
     from runtime.remote_access.policy import RoutePolicyConsumer
@@ -151,8 +152,13 @@ def _make_adapter(
     daemon = daemon or FakeDaemon(BEARER)
     if created_daemon:
         daemon.start()
-    registry = StreamRegistry()
-    pairing = pairing or _make_pairing(_make_store(tmp_path), registry=registry)
+    # ONE shared registry when the caller wires the pairing manager itself
+    # (a pairing passed in without the same registry would revoke an
+    # unrelated empty registry — the defect this suite guards against).
+    if pairing is None:
+        registry = registry or StreamRegistry()
+        pairing = _make_pairing(_make_store(tmp_path), registry=registry)
+    registry = registry or StreamRegistry()
     fixture = load_fixture("route-policy")
     # The policy is built relative to the REAL clock (the adapter serves
     # requests stamped with datetime.now) so the freshness window never
@@ -161,7 +167,7 @@ def _make_adapter(
     envelope = make_policy_envelope(fixture, issued_at=real_now - timedelta(seconds=60))
     policy = RoutePolicyConsumer.from_envelope(envelope, now=real_now)
     cfg = config or DiyProviderConfig(
-        network=NetworkConfig(mode="explicit", address=bind_address or NETWORK_IPV4),
+        network=NetworkConfig(mode="tailscale"),
         bind_port=0,
     )
     adapter = DiyProviderAdapter(
@@ -178,7 +184,11 @@ def _make_adapter(
             registry=registry,
             now_fn=lambda: NOW,
         ),
-        bind_address=bind_address,
+        # TEST-ONLY bind override (the production config never supplies a
+        # concrete address — resolution is the encrypted tailscale mode;
+        # that resolution path is covered at the supervisor seam and in the
+        # acceptance with a stub tailscale CLI).
+        bind_address=bind_address if bind_address is not None else NETWORK_IPV4,
     )
     adapter._daemon = daemon  # for teardown
     return adapter
@@ -215,20 +225,64 @@ def _forward(adapter: DiyProviderAdapter, credential: str, path: str = "/api/v1/
     return resp.status, body
 
 
+def _sse_closed_after(resp, timeout: float = 8.0) -> bool:
+    """True when the SSE connection closes within *timeout* seconds (EOF or
+    connection error). select-bounded via the response's own buffered reader
+    (http.client nulls ``conn.sock`` on Connection: close responses, but the
+    response's ``fp`` stays the live channel)."""
+    import select
+    import time as _time
+
+    fp = resp.fp
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        try:
+            ready, _, _ = select.select([fp], [], [], 0.2)
+        except (OSError, ValueError):
+            return True  # fd gone — closed
+        if not ready:
+            continue
+        try:
+            chunk = resp.read1(1024)
+        except Exception:
+            return True  # reset/refused/closed-file — the stream is gone
+        if not chunk:
+            return True  # EOF — closed
+    return False
+
+
 class TestGating:
     def test_refuses_wildcard_bind(self, tmp_path) -> None:
-        cfg = DiyProviderConfig(network=NetworkConfig(mode="explicit", address="0.0.0.0"))
-        with pytest.raises((DiyProviderError, ValueError)):
-            DiyProviderAdapter(
-                config=cfg,
-                readiness=_AlwaysReady(),
-                pairing=_make_pairing(_make_store(tmp_path)),
-                identity=_identity(),
-                ctx_factory=None,  # type: ignore[arg-type]
-            )
+        """A wildcard bind target is refused (fail closed) — the connector
+        listens only on a concrete customer-network address."""
+        adapter = DiyProviderAdapter(
+            config=DiyProviderConfig(network=NetworkConfig(mode="tailscale"), bind_port=0),
+            readiness=_AlwaysReady(),
+            pairing=_make_pairing(_make_store(tmp_path)),
+            identity=_identity(),
+            ctx_factory=None,  # type: ignore[arg-type]
+            bind_address="0.0.0.0",
+        )
+        with pytest.raises(DiyProviderError, match="wildcard"):
+            adapter.start()
 
     def test_refuses_loopback_bind(self, tmp_path) -> None:
-        cfg = DiyProviderConfig(network=NetworkConfig(mode="explicit", address="127.0.0.1"))
+        adapter = DiyProviderAdapter(
+            config=DiyProviderConfig(network=NetworkConfig(mode="tailscale"), bind_port=0),
+            readiness=_AlwaysReady(),
+            pairing=_make_pairing(_make_store(tmp_path)),
+            identity=_identity(),
+            ctx_factory=None,  # type: ignore[arg-type]
+            bind_address="127.0.0.1",
+        )
+        with pytest.raises(DiyProviderError, match="loopback"):
+            adapter.start()
+
+    def test_refuses_removed_explicit_mode(self, tmp_path) -> None:
+        """The plaintext explicit concrete-address mode is REMOVED: a config
+        carrying it fails closed at the adapter boundary (TASK-6039 reviewer
+        [CRITICAL] finding 1)."""
+        cfg = DiyProviderConfig(network=NetworkConfig(mode="explicit", address="100.64.0.5"))
         with pytest.raises((DiyProviderError, ValueError)):
             DiyProviderAdapter(
                 config=cfg,
@@ -239,7 +293,7 @@ class TestGating:
             )
 
     def test_no_listener_when_not_ready(self, tmp_path) -> None:
-        cfg = DiyProviderConfig(network=NetworkConfig(mode="explicit", address=NETWORK_IPV4), bind_port=0)
+        cfg = DiyProviderConfig(network=NetworkConfig(mode="tailscale"), bind_port=0)
         adapter = DiyProviderAdapter(
             config=cfg,
             readiness=_NeverReady(),
@@ -256,7 +310,7 @@ class TestGating:
         """An occupied port surfaces as the documented DiyProviderError
         category (never a bare OSError) so the supervised retry contract
         holds."""
-        cfg = DiyProviderConfig(network=NetworkConfig(mode="explicit", address=NETWORK_IPV4), bind_port=0)
+        cfg = DiyProviderConfig(network=NetworkConfig(mode="tailscale"), bind_port=0)
         a = DiyProviderAdapter(
             config=cfg,
             readiness=_AlwaysReady(),
@@ -272,7 +326,7 @@ class TestGating:
         blocker.bind((NETWORK_IPV4, 0))
         blocker.listen(1)
         port = blocker.getsockname()[1]
-        cfg2 = DiyProviderConfig(network=NetworkConfig(mode="explicit", address=NETWORK_IPV4), bind_port=port)
+        cfg2 = DiyProviderConfig(network=NetworkConfig(mode="tailscale"), bind_port=port)
         a2 = DiyProviderAdapter(
             config=cfg2,
             readiness=_AlwaysReady(),
@@ -427,6 +481,44 @@ class TestRevocationAndRestart:
         pairing.remove_device("macbook-pro")
         assert _forward(adapter, credential)[0] == 403
 
+    def test_remove_device_closes_live_streams(self, tmp_path) -> None:
+        """A removed/lost device must not retain an open stream: removal
+        revokes (closes live streams through the authoritative transaction)
+        BEFORE the authority record is deleted (TASK-6039 reviewer [HIGH]
+        finding 3). The daemon HOLDS the SSE body open so the closure is
+        genuinely revocation-driven, not a natural EOF."""
+        daemon = FakeDaemon(BEARER, hold_open=True)
+        daemon.start()
+        try:
+            registry = StreamRegistry()
+            pairing = _make_pairing(_make_store(tmp_path), registry=registry)
+            a = _make_adapter(tmp_path, pairing=pairing, daemon=daemon, registry=registry)
+            a.start()
+            issued = pairing.issue_pairing_code("macbook-pro")
+            status, body = _redeem(a, issued.code)
+            assert status == 200
+            credential = body["credential"]
+            conn = http.client.HTTPConnection(NETWORK_IPV4, a.bound_port, timeout=10)
+            conn.connect()
+            conn.sock.settimeout(2)  # type: ignore[union-attr]
+            conn.request(
+                "GET",
+                "/api/v1/orgs/acme/threads/T-1/tail",
+                headers={DEVICE_CREDENTIAL_HEADER: credential, "Accept": "text/event-stream"},
+            )
+            sock = conn.sock  # captured BEFORE getresponse consumes it
+            resp = conn.getresponse()
+            assert resp.status == 200
+            assert daemon.started.wait(timeout=10)
+            # Removal must close the live stream (revoke-first), not just
+            # delete the record.
+            pairing.remove_device("macbook-pro")
+            assert _sse_closed_after(resp), "remove-device must close the live stream (revoke-first)"
+            conn.close()
+            a.stop()
+        finally:
+            daemon.stop()
+
 
 class TestDirectDaemonAttempt:
     def test_daemon_not_reachable_on_customer_network(self, adapter) -> None:
@@ -451,13 +543,15 @@ class TestDirectDaemonAttempt:
 
 
 class TestSseThroughAdapter:
-    def test_sse_stream_pumps_and_revocation_closes(self, tmp_path) -> None:
+    def test_sse_stream_pumps_data(self, tmp_path) -> None:
+        """Positive control: the SSE pump streams daemon events to the
+        away client over the customer-network path."""
         daemon = FakeDaemon(BEARER)
         daemon.start()
         try:
             registry = StreamRegistry()
             pairing = _make_pairing(_make_store(tmp_path), registry=registry)
-            a = _make_adapter(tmp_path, pairing=pairing, daemon=daemon)
+            a = _make_adapter(tmp_path, pairing=pairing, daemon=daemon, registry=registry)
             a.start()
             issued = pairing.issue_pairing_code("macbook-pro")
             status, body = _redeem(a, issued.code)
@@ -475,20 +569,85 @@ class TestSseThroughAdapter:
             assert resp.status == 200
             first = resp.read1(1024)
             assert b"data: hello" in first
-            # Revocation closes the live stream: the connection dies.
-            pairing.revoke("macbook-pro")
-            closed = False
-            for _ in range(50):
-                try:
-                    chunk = resp.read1(1024)
-                except (http.client.IncompleteRead, OSError, ConnectionError):
-                    closed = True
-                    break
-                if not chunk:
-                    closed = True
-                    break
-            assert closed, "stream should have been closed by revocation"
             conn.close()
+            a.stop()
+        finally:
+            daemon.stop()
+
+    def test_sse_revocation_closes_inflight_stream(self, tmp_path) -> None:
+        """REVOCATION closes a GENUINELY in-flight SSE stream (the daemon
+        holds the body open — the stream is NOT already finished): the
+        sealed registry handle terminates the pump fail-closed and the
+        client connection closes (TASK-6039 finding 5 — a real negative, not
+        a natural-EOF false positive)."""
+        daemon = FakeDaemon(BEARER, hold_open=True)
+        daemon.start()
+        try:
+            registry = StreamRegistry()
+            pairing = _make_pairing(_make_store(tmp_path), registry=registry)
+            a = _make_adapter(tmp_path, pairing=pairing, daemon=daemon, registry=registry)
+            a.start()
+            issued = pairing.issue_pairing_code("macbook-pro")
+            status, body = _redeem(a, issued.code)
+            assert status == 200
+            credential = body["credential"]
+            conn = http.client.HTTPConnection(NETWORK_IPV4, a.bound_port, timeout=10)
+            conn.connect()
+            conn.sock.settimeout(2)  # type: ignore[union-attr]
+            conn.request(
+                "GET",
+                "/api/v1/orgs/acme/threads/T-1/tail",
+                headers={DEVICE_CREDENTIAL_HEADER: credential, "Accept": "text/event-stream"},
+            )
+            sock = conn.sock  # captured BEFORE getresponse consumes it
+            resp = conn.getresponse()
+            assert resp.status == 200
+            # The daemon has flushed the SSE headers and is HOLDING the body
+            # open: the stream is genuinely in flight (not finished).
+            assert daemon.started.wait(timeout=10)
+            pairing.revoke("macbook-pro")
+            assert _sse_closed_after(resp), "revocation must close the genuinely in-flight SSE stream"
+            conn.close()
+            a.stop()
+        finally:
+            daemon.stop()
+    def test_websocket_upgrade_request_denied(self, tmp_path) -> None:
+        """WebSocket negative (TASK-6039 finding 5): the normative contract
+        allows ZERO WebSocket templates (``websocket.allowed_templates`` is
+        empty), so an ``Upgrade: websocket`` request — even with a valid
+        credential — is DENIED at the allow-list with the category-only 403
+        and never forwarded to the daemon. There is no WebSocket stream
+        surface to revoke; SSE is the exercised registry-tracked stream
+        type (revoke/remove closure negatives above)."""
+        daemon = FakeDaemon(BEARER)
+        daemon.start()
+        try:
+            registry = StreamRegistry()
+            pairing = _make_pairing(_make_store(tmp_path), registry=registry)
+            a = _make_adapter(tmp_path, pairing=pairing, daemon=daemon, registry=registry)
+            a.start()
+            issued = pairing.issue_pairing_code("macbook-pro")
+            status, body = _redeem(a, issued.code)
+            assert status == 200
+            credential = body["credential"]
+            conn = http.client.HTTPConnection(NETWORK_IPV4, a.bound_port, timeout=10)
+            conn.request(
+                "GET",
+                "/api/v1/orgs/acme/threads/T-1/tail",
+                headers={
+                    DEVICE_CREDENTIAL_HEADER: credential,
+                    "Upgrade": "websocket",
+                    "Connection": "Upgrade",
+                },
+            )
+            resp = conn.getresponse()
+            resp_body = resp.read()
+            conn.close()
+            assert resp.status == 403
+            assert credential.encode() not in resp_body
+            assert BEARER.encode() not in resp_body
+            # Never forwarded to the daemon:
+            assert not any(r["path"].endswith("/tail") for r in daemon.requests)
             a.stop()
         finally:
             daemon.stop()

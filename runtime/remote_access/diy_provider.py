@@ -3,8 +3,9 @@
 The PRODUCTION customer-owned-network (DIY) adapter: a home connector that
 serves the inherited THR-034 wire contract — ``POST /pair`` redemption and
 ``X-HappyRanch-Device-Credential``-authenticated forwarding — over the
-CUSTOMER'S OWN network (their own Tailscale/headscale tailnet, or an
-explicitly configured customer-network address), forwarding every allowed
+CUSTOMER'S OWN ENCRYPTED network (their own Tailscale/headscale tailnet —
+the ONLY supported customer-network mode; the plaintext explicit
+concrete-address mode is removed, fail closed), forwarding every allowed
 request to the literal-loopback daemon with the daemon bearer injected on
 the final hop.
 
@@ -14,8 +15,10 @@ This is the Supported-DIY product lane, NOT the lab adapter: it has no
 sibling with the same locked gateway pipeline and the same fail-closed
 invariants:
 
-- binds ONLY to the resolved customer-owned-network address (wildcard,
-  loopback, multicast, broadcast refused — ``runtime.remote_access.network``);
+- binds ONLY to the tailscale-resolved customer-owned-network address (the
+  encrypted tailnet transport; wildcard, loopback, multicast, broadcast,
+  and the removed plaintext explicit concrete-address mode are refused —
+  ``runtime.remote_access.network``);
 - no listener unless ALL readiness gates pass (the supervisor contract);
 - every request runs the full locked gateway pipeline (identity/bind/proof/
   policy/normalize/allowlist/strip/bearer) and forwards to literal
@@ -23,8 +26,9 @@ invariants:
 - pairing is the explicit local ceremony (``pairing.PairingManager``):
   single-use expiring codes, per-device ``hrpair_`` credentials stored as
   digests only, monotonic epochs, re-pair invalidates old authority,
-  revocation closes live streams and persists, removal denies identically
-  to absent (no existence oracle);
+  revocation closes live streams and persists, removal REVOKES FIRST then
+  deletes the record, and every ceremony mutation is serialized
+  (concurrent redemption yields exactly one credential);
 - denials are 403 category-level prose only — no bearer, codes, credentials,
   paths, input, or exception text; the listener never logs raw request lines.
 """
@@ -196,11 +200,17 @@ class DiyProviderAdapter:
 
     def _resolve_bind_address(self) -> str:
         if self._bind_address is not None:
-            # Explicitly supplied (acceptance/config override): still
-            # strictly validated at the adapter boundary.
+            # TEST-ONLY override (real-socket acceptance/config harness): the
+            # production config never supplies a concrete address — the bind
+            # address is resolved EXCLUSIVELY through the encrypted
+            # tailscale-mode resolver. Still strictly validated here and
+            # normalized to the documented adapter error category.
             from runtime.remote_access.network import validate_customer_network_address
 
-            validate_customer_network_address(self._bind_address)
+            try:
+                validate_customer_network_address(self._bind_address)
+            except NetworkAddressError as exc:
+                raise DiyProviderError(f"diy provider refused: {exc}") from exc
             return self._bind_address
         try:
             return resolve_customer_network_address(self.config.network)
@@ -208,10 +218,12 @@ class DiyProviderAdapter:
             raise DiyProviderError(f"customer network address unavailable: {exc}") from exc
 
     def _validate_gating(self) -> None:
-        if self.config.network.mode not in {"tailscale", "explicit"}:
-            raise DiyProviderError("diy provider refused: invalid network mode")
-        if self.config.network.mode == "explicit" and not self.config.network.address:
-            raise DiyProviderError("diy provider refused: explicit network address required")
+        if self.config.network.mode != "tailscale":
+            raise DiyProviderError(
+                "diy provider refused: the customer-owned network is the "
+                "encrypted tailscale mode only (the plaintext explicit "
+                "concrete-address mode was removed)"
+            )
         if self._bind_address in _FORBIDDEN_BIND_HOSTS:
             raise DiyProviderError("diy provider refused: wildcard bind address forbidden")
 

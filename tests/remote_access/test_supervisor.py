@@ -45,6 +45,79 @@ from .conftest import NOW, build_consumer, default_identity
 
 _UNSET = object()
 
+# A real customer-owned-network bind address for the supervisor-seam socket
+# tests: the host's first non-loopback IPv4 (hairpin to self is a genuine TCP
+# path through the kernel stack). Skipped with reason when the host has none.
+def _host_network_ipv4() -> str | None:
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        parts = line.split()
+        for i, part in enumerate(parts):
+            if part == "inet" and i + 1 < len(parts):
+                addr = parts[i + 1].split("/")[0]
+                if addr.startswith("127."):
+                    continue
+                try:
+                    from runtime.remote_access.network import validate_customer_network_address
+
+                    validate_customer_network_address(addr)
+                    return addr
+                except Exception:
+                    continue
+    return None
+
+
+NETWORK_IPV4 = _host_network_ipv4()
+BEARER = "supervisor-seam-bearer-7"
+
+
+def _tailscale_stub(tmp_path, address: str) -> str:
+    """A stub ``tailscale ip -4`` executable resolving to *address* — the
+    REAL shipping resolution path (TailscaleCliResolver -> subprocess ->
+    validation) without requiring a live tailnet on the test host."""
+    stub = tmp_path / "tailscale-stub"
+    stub.write_text(f"#!/bin/sh\nprintf '%s\\n' '{address}'\n")
+    stub.chmod(0o755)
+    return str(stub)
+
+def _sse_closed_after(resp, timeout: float = 8.0) -> bool:
+    """True when the SSE connection closes within *timeout* seconds (EOF or
+    connection error). select-bounded via the response's own buffered reader
+    (http.client nulls ``conn.sock`` on Connection: close responses, but the
+    response's ``fp`` stays the live channel)."""
+    import select
+    import time as _time
+
+    fp = resp.fp
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        try:
+            ready, _, _ = select.select([fp], [], [], 0.2)
+        except (OSError, ValueError):
+            return True  # fd gone — closed
+        if not ready:
+            continue
+        try:
+            chunk = resp.read1(1024)
+        except Exception:
+            return True  # reset/refused/closed-file — the stream is gone
+        if not chunk:
+            return True  # EOF — closed
+    return False
+
+
+
 
 class FakeManager:
     def __init__(self) -> None:
@@ -1024,7 +1097,7 @@ def _diy_config(tmp_path, **overrides) -> ConnectorConfig:
         system=False,
         lab=None,
         diy=DiyProviderConfig(
-            network=NetworkConfig(mode="explicit", address="100.64.0.5"),
+            network=NetworkConfig(mode="tailscale"),
             bind_port=8443,
         ),
     )
@@ -1039,7 +1112,7 @@ class TestDiyConfig:
         from runtime.remote_access.network import NetworkConfig
 
         config.diy = DiyProviderConfig(
-            network=NetworkConfig(mode="explicit", address="100.64.0.5")
+            network=NetworkConfig(mode="tailscale")
         )
         with pytest.raises(ConnectorConfigError, match="mutually exclusive"):
             config.validate()
@@ -1050,8 +1123,7 @@ class TestDiyConfig:
         config.to_file(path)
         loaded = ConnectorConfig.from_file(path)
         assert loaded.diy is not None
-        assert loaded.diy.network.mode == "explicit"
-        assert loaded.diy.network.address == "100.64.0.5"
+        assert loaded.diy.network.mode == "tailscale"
         assert loaded.diy.bind_port == 8443
         assert loaded.lab is None
 
@@ -1133,7 +1205,7 @@ class TestDiyConfig:
 
         config = _diy_config(
             tmp_path,
-            diy=DPC(network=NC(mode="explicit", address=addr), bind_port=0),
+            diy=DPC(network=NC(mode="tailscale", tailscale_cli=_tailscale_stub(tmp_path, addr)), bind_port=0),
         )
         supervisor = _supervisor(
             tmp_path, config=config, policy=build_consumer(route_policy_fixture)
@@ -1155,3 +1227,79 @@ class TestDiyConfig:
             assert provider.bind_address == addr
         finally:
             provider.stop()
+
+
+# ── Authoritative live-stream registry (TASK-6039 reviewer [CRITICAL] finding 2) ──
+
+
+@pytest.mark.skipif(
+    NETWORK_IPV4 is None,
+    reason="host has no non-loopback IPv4 address for a customer-network socket test",
+)
+def test_revoke_at_supervisor_seam_closes_live_streams(tmp_path, route_policy_fixture) -> None:
+    """REVOKE through the SUPERVISOR wiring must close the REAL live SSE
+    streams the shipping provider serves — ONE authoritative registry shared
+    by the gateway ctx factory, the provider, and the pairing manager (never
+    an unrelated empty registry reporting false success)."""
+    import http.client as _http
+
+    from runtime.remote_access.diy_provider import DEVICE_CREDENTIAL_HEADER
+    from runtime.remote_access.diy_provider import DiyProviderConfig as DPC
+    from runtime.remote_access.network import NetworkConfig as NC
+
+    from .fake_daemon import FakeDaemon
+
+    daemon = FakeDaemon(BEARER, hold_open=True)
+    daemon.start()
+    try:
+        token_path = tmp_path / "daemon.token"
+        token_path.write_text(BEARER)
+        token_path.chmod(0o600)
+        config = _diy_config(
+            tmp_path,
+            daemon_port=daemon.port,
+            diy=DPC(
+                network=NC(mode="tailscale", tailscale_cli=_tailscale_stub(tmp_path, NETWORK_IPV4)),
+                bind_port=0,
+            ),
+        )
+        # Policy built against the REAL clock (the adapter stamps requests
+        # with datetime.now; the conftest NOW is a fixed historical instant
+        # that would fail the policy freshness gate).
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+        real_now = _dt.now(_tz.utc)
+        policy = build_consumer(
+            route_policy_fixture, issued_at=real_now - _td(seconds=60), now=real_now
+        )
+        supervisor = _supervisor(tmp_path, config=config, policy=policy)
+        provider = supervisor.build_diy_provider()
+        assert provider is not None
+        provider.start()
+        try:
+            pairing = supervisor.pairing_manager()
+            issued = pairing.issue_pairing_code("macbook-pro")
+            credential = pairing.redeem_pairing(issued.code)
+            assert credential is not None
+            conn = _http.HTTPConnection(NETWORK_IPV4, provider.bound_port, timeout=10)
+            conn.connect()
+            conn.sock.settimeout(2)  # type: ignore[union-attr]
+            conn.request(
+                "GET",
+                "/api/v1/orgs/acme/threads/T-1/tail",
+                headers={DEVICE_CREDENTIAL_HEADER: credential, "Accept": "text/event-stream"},
+            )
+            sock = conn.sock  # captured BEFORE getresponse consumes it
+            resp = conn.getresponse()
+            assert resp.status == 200
+            # The daemon flushed the SSE headers and is HOLDING the body
+            # open: the stream is genuinely in flight.
+            assert daemon.started.wait(timeout=10)
+            outcome = pairing.revoke("macbook-pro")
+            assert outcome.complete is True
+            assert _sse_closed_after(resp), "supervisor-wired revoke must close the live SSE stream"
+            conn.close()
+        finally:
+            provider.stop()
+    finally:
+        daemon.stop()

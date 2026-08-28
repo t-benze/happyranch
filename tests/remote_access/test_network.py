@@ -1,16 +1,16 @@
 """Customer-owned-network address resolver/validation tests (THR-097 Unit 3A).
 
 Proves: strict bind-address validation (wildcard/loopback/multicast/
-reserved/broadcast refused), explicit-mode resolution, ride-installed
-tailscale-mode resolution with fail-closed behavior on missing CLI / bad
-output / multiple addresses, and secret-free error prose.
+reserved/broadcast refused), the encrypted tailscale-mode-only resolution
+(the plaintext explicit concrete-address mode is removed and fails closed),
+ride-installed tailscale-mode resolution with fail-closed behavior on
+missing CLI / bad output / multiple addresses, and secret-free error prose.
 """
 from __future__ import annotations
 
 import pytest
 
 from runtime.remote_access.network import (
-    ExplicitAddressResolver,
     NetworkAddressError,
     NetworkConfig,
     TailscaleCliResolver,
@@ -53,20 +53,36 @@ class TestValidation:
         validate_customer_network_address(address)  # no exception
 
 
-class TestExplicitMode:
-    def test_explicit_resolves_validated_address(self) -> None:
-        config = NetworkConfig(mode="explicit", address="100.64.0.5")
-        assert resolve_customer_network_address(config) == "100.64.0.5"
-
-    def test_explicit_missing_address_fails_closed(self) -> None:
-        config = NetworkConfig(mode="explicit", address=None)
+class TestExplicitModeRemoved:
+    def test_explicit_concrete_address_mode_removed(self) -> None:
+        """The production customer-owned-network bind is the ENCRYPTED
+        tailscale-mode transport ONLY. An explicit concrete-address mode
+        (bare plaintext HTTP on an arbitrary LAN/public interface) fails
+        closed at config validation AND at resolution — there is no
+        plaintext service path (TASK-6039 reviewer [CRITICAL] finding 1)."""
+        with pytest.raises(NetworkAddressError, match="tailscale"):
+            NetworkConfig(mode="explicit", address="100.64.0.5").validate()
+        with pytest.raises(NetworkAddressError, match="tailscale"):
+            resolve_customer_network_address(
+                NetworkConfig(mode="explicit", address="100.64.0.5")
+            )
+        # A leftover concrete address under tailscale mode is also refused
+        # (explicit-mode artifact) — fail closed, never silently ignored.
         with pytest.raises(NetworkAddressError, match="address"):
-            resolve_customer_network_address(config)
+            NetworkConfig(mode="tailscale", address="100.64.0.5").validate()
 
-    def test_explicit_loopback_refused(self) -> None:
-        config = NetworkConfig(mode="explicit", address="127.0.0.1")
-        with pytest.raises(NetworkAddressError, match="loopback"):
-            resolve_customer_network_address(config)
+    def test_explicit_resolver_class_removed(self) -> None:
+        with pytest.raises(ImportError):
+            from runtime.remote_access.network import ExplicitAddressResolver  # noqa: F401
+
+    def test_tailscale_mode_still_required_for_production(self) -> None:
+        """Tailscale mode remains the ONLY accepted customer-network mode;
+        anything else fails closed."""
+        with pytest.raises(NetworkAddressError, match="tailscale"):
+            NetworkConfig(mode="wireguard").validate()
+        NetworkConfig(mode="tailscale", tailscale_cli="tailscale").validate()
+        with pytest.raises(NetworkAddressError, match="tailscale_cli"):
+            NetworkConfig(mode="tailscale", tailscale_cli=" ").validate()
 
 
 class TestTailscaleMode:

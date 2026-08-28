@@ -49,6 +49,10 @@ def main(argv: list[str] | None = None) -> int:
     request.add_argument("--path", required=True)
     request.add_argument("--credential", required=True)
 
+    stream = sub.add_parser("stream")
+    stream.add_argument("--path", required=True)
+    stream.add_argument("--credential", required=True)
+
     connect = sub.add_parser("connect")
     connect.add_argument("--path", default="/api/v1/health")
 
@@ -59,6 +63,35 @@ def main(argv: list[str] | None = None) -> int:
         result = _request(
             args.host, args.port, args.method, args.path, credential=args.credential
         )
+    elif args.command == "stream":
+        # Open the SSE stream and read until it closes (revocation closes it
+        # fail-closed). Prints ONLY the status and received byte count —
+        # never the credential or payload content.
+        conn = http.client.HTTPConnection(args.host, args.port, timeout=30)
+        conn.connect()
+        conn.sock.settimeout(30)  # type: ignore[union-attr]
+        conn.request(
+            "GET",
+            args.path,
+            headers={
+                "X-HappyRanch-Device-Credential": args.credential,
+                "Accept": "text/event-stream",
+            },
+        )
+        resp = conn.getresponse()
+        status = resp.status
+        received = 0
+        try:
+            while True:
+                chunk = resp.read1(4096)
+                if not chunk:
+                    break
+                received += len(chunk)
+        except (http.client.IncompleteRead, OSError, ConnectionError, TimeoutError):
+            pass  # stream closed by the connector (revocation) — expected
+        conn.close()
+        print(json.dumps({"status": status, "received_bytes": received}))
+        return 0
     else:  # connect — no credential (e.g. direct bearer attempt)
         result = _request(args.host, args.port, "GET", args.path)
     print(json.dumps(result))

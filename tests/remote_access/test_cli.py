@@ -293,7 +293,7 @@ def _diy_config_file(tmp_path) -> str:
 
     config = _config(tmp_path, lab=False)
     config.diy = DiyProviderConfig(
-        network=NetworkConfig(mode="explicit", address="100.64.0.5"),
+        network=NetworkConfig(mode="tailscale"),
         bind_port=8443,
     )
     path = tmp_path / "diy-config.json"
@@ -341,6 +341,22 @@ def test_revoke_all_and_one(tmp_path, capsys) -> None:
     assert code == 0
     out = capsys.readouterr().out
     assert "ALL devices" in out
+
+
+def test_revoke_output_never_claims_cross_process_stream_closure(tmp_path, capsys) -> None:
+    """The CLI revoke runs in a SEPARATE process from the connector that
+    serves the live streams. It must persist the revocation and point at the
+    connector's reconciliation — never report false success
+    ("live streams closed") for streams it cannot prove closed
+    (TASK-6039 reviewer [CRITICAL] finding 2)."""
+    path = _diy_config_file(tmp_path)
+    assert cli.main(["pair", "--config", path, "--device", "macbook-pro"]) == 0
+    capsys.readouterr()
+    code = cli.main(["revoke", "--config", path])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "live streams closed" not in out
+    assert "reconciliation" in out
 
 
 def test_list_devices_redacted(tmp_path, capsys, monkeypatch) -> None:

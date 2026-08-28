@@ -19,7 +19,10 @@ Proven scenarios (each is asserted, not inferred):
 7. network/control-plane outage fail-closed (daemon down -> listener stops ->
    client refused; daemon back -> supervised listener returns);
 8. credential/token leakage scans across the connector's stdout/stderr, the
-   client outputs, the config file, the trust-state files, and process argv.
+   client outputs, the config file, the trust-state files, and process argv;
+9. cross-process revocation closes a live in-flight SSE stream served by the
+   connector PROCESS within one ``poll_seconds`` interval after a SEPARATE
+   CLI ``revoke``, and the CLI never reports false stream closure.
 
 The residual gap (reported, never fabricated): this host has no macOS binary
 and no Tailscale/headscale client, so the genuine macOS-client launch and the
@@ -140,6 +143,17 @@ def test_real_diy_acceptance(tmp_path) -> None:
         fixture = load_fixture("route-policy")
         envelope = make_policy_envelope(fixture, issued_at=datetime.now(timezone.utc) - timedelta(seconds=30))
         policy_path.write_text(envelope.model_dump_json() if hasattr(envelope, "model_dump_json") else json.dumps(envelope.__dict__))
+        # The customer-owned network is the ENCRYPTED tailscale mode ONLY
+        # (the plaintext explicit concrete-address mode was removed). The
+        # tailnet address is resolved through the REAL shipping resolution
+        # path (TailscaleCliResolver -> subprocess -> strict validation)
+        # with a stub ``tailscale ip -4`` executable printing this host's
+        # non-loopback IPv4 — this host has no tailnet; the encrypted
+        # transport hop remains an honest residual gap (see the module
+        # docstring).
+        stub = tmp_path / "tailscale-stub"
+        stub.write_text(f"#!/bin/sh\nprintf '%s\\n' '{host}'\n")
+        stub.chmod(0o755)
         config = {
             "tenant_id": "diy",
             "home_id": "home-a",
@@ -151,7 +165,7 @@ def test_real_diy_acceptance(tmp_path) -> None:
             "system": False,
             "poll_seconds": 0.2,
             "diy": {
-                "network": {"mode": "explicit", "address": host},
+                "network": {"mode": "tailscale", "tailscale_cli": str(stub)},
                 "bind_port": connector_port,
             },
         }
@@ -343,6 +357,151 @@ def test_real_diy_acceptance(tmp_path) -> None:
             print(f"\n=== ACCEPTANCE TRANSCRIPT ===\n{chr(10).join(transcript)}\n=== END TRANSCRIPT ===")
         finally:
             if proc is not None and proc.poll() is None:
+                proc.send_signal(signal.SIGTERM)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+    finally:
+        daemon.stop()
+
+
+@pytest.mark.skipif(
+    NETWORK_IPV4 is None,
+    reason="host has no non-loopback IPv4 address for a customer-owned-network acceptance run",
+)
+def test_acceptance_cross_process_revoke_closes_live_sse_stream(tmp_path) -> None:
+    """Cross-process revocation at the REAL shipping seam (TASK-6039
+    reviewer [CRITICAL] finding 2 / finding 5): a live SSE stream served by
+    the ``cli run --diy`` connector PROCESS is closed by a ``revoke`` issued
+    from a SEPARATE CLI PROCESS, through the connector's authoritative
+    registry + cross-process revocation reconciliation (bounded by
+    ``poll_seconds``). The CLI must never report false stream closure.
+
+    The customer-network address is resolved through the REAL shipping
+    resolution path (tailscale-mode ``TailscaleCliResolver`` -> subprocess
+    -> strict validation) with a stub ``tailscale ip -4`` executable that
+    prints the host's non-loopback IPv4 — no tailnet is present on this
+    host, and the encrypted-transport hop remains an honest residual gap.
+    """
+    host = NETWORK_IPV4
+    connector_port = _free_port(host)
+    # hold_open: the daemon flushes the SSE headers and HOLDS the body open,
+    # so the stream is genuinely in flight when the cross-process revoke
+    # lands — closure is revocation-driven, not a natural EOF.
+    daemon = FakeDaemon(BEARER, hold_open=True)
+    daemon.start()
+    try:
+        token_path = tmp_path / "daemon.token"
+        token_path.write_text(BEARER)
+        token_path.chmod(0o600)
+        state_path = tmp_path / "trust-state.json"
+        policy_path = tmp_path / "policy.json"
+        fixture = load_fixture("route-policy")
+        envelope = make_policy_envelope(
+            fixture, issued_at=datetime.now(timezone.utc) - timedelta(seconds=30)
+        )
+        policy_path.write_text(
+            envelope.model_dump_json()
+            if hasattr(envelope, "model_dump_json")
+            else json.dumps(envelope.__dict__)
+        )
+        stub = tmp_path / "tailscale-stub"
+        stub.write_text(f"#!/bin/sh\nprintf '%s\\n' '{host}'\n")
+        stub.chmod(0o755)
+        config = {
+            "tenant_id": "diy",
+            "home_id": "home-a",
+            "connector_id": "connector-a",
+            "daemon_port": daemon.port,
+            "daemon_token_path": str(token_path),
+            "policy_path": str(policy_path),
+            "state_path": str(state_path),
+            "system": False,
+            "poll_seconds": 0.2,
+            "diy": {
+                "network": {"mode": "tailscale", "tailscale_cli": str(stub)},
+                "bind_port": connector_port,
+            },
+        }
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps(config))
+
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "runtime.remote_access.cli",
+                "run",
+                "--diy",
+                "--config",
+                str(config_path),
+            ],
+            cwd=Path(__file__).resolve().parents[3],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+        try:
+            _wait_until(lambda: _connector_reachable(host, connector_port), what="connector listener")
+
+            pair_proc = subprocess.run(
+                [sys.executable, "-m", "runtime.remote_access.cli", "pair", "--config", str(config_path), "--device", "macbook-pro"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            assert pair_proc.returncode == 0, pair_proc.stderr
+            code = [l for l in pair_proc.stdout.splitlines() if "pairing code for device" in l][0].split(": ")[-1].strip()
+            redeem = _run_client(host, connector_port, ["redeem", "--code", code])
+            assert redeem["status"] == 200
+            credential = redeem["body"]["credential"]
+
+            # Open the SSE stream (blocks in the client until closure).
+            stream = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(CLIENT),
+                    "--host",
+                    host,
+                    "--port",
+                    str(connector_port),
+                    "stream",
+                    "--path",
+                    "/api/v1/orgs/acme/threads/T-1/tail",
+                    "--credential",
+                    credential,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            # The stream is established when the daemon has flushed the SSE
+            # headers (connector opened the registry-tracked stream).
+            assert daemon.started.wait(timeout=15)
+
+            # Revoke from a SEPARATE process (the shipping operator surface).
+            revoke_proc = subprocess.run(
+                [sys.executable, "-m", "runtime.remote_access.cli", "revoke", "--config", str(config_path), "--device", "macbook-pro"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            assert revoke_proc.returncode == 0, revoke_proc.stderr
+            assert "live streams closed" not in revoke_proc.stdout, (
+                "CLI must never claim stream closure it cannot prove cross-process"
+            )
+            # The connector's reconciliation closes the stream within
+            # poll_seconds: the client read loop must terminate.
+            out, err = stream.communicate(timeout=15)
+            assert stream.returncode == 0, err
+            result = json.loads(out)
+            assert result["status"] == 200
+            # Leak scan: the stream client output never carries the credential.
+            assert credential not in (out or "") and credential not in (err or "")
+        finally:
+            if proc.poll() is None:
                 proc.send_signal(signal.SIGTERM)
                 try:
                     proc.wait(timeout=10)

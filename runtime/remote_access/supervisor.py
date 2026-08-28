@@ -74,7 +74,7 @@ from runtime.remote_access.state_store import (
     CorruptTrustStateError,
     StateStoreError,
 )
-from runtime.remote_access.streams import StreamRegistry
+from runtime.remote_access.streams import StreamCloseError, StreamRegistry
 from runtime.remote_access.stripping import CredentialScanner
 from runtime.remote_access.systemd_unit import ConnectorUnitSpec, render_connector_unit
 
@@ -228,6 +228,17 @@ class ConnectorSupervisor:
         self._notify_fn = notify_fn or (lambda state: sd_notify(state))
         self._provider: LabProviderAdapter | None = None
         self._provider_running = False
+        # ONE authoritative live-stream registry and ONE pairing manager per
+        # process, shared by the gateway ctx factories, the provider adapter,
+        # and the ceremony surface — in-process revocation closes the REAL
+        # shipping streams, never an unrelated empty registry (TASK-6039
+        # reviewer [CRITICAL] finding 2).
+        self._registry: StreamRegistry | None = None
+        self._pairing_manager: PairingManager | None = None
+        # The revocation epoch the run loop has already reconciled (streams
+        # closed): cross-process revoke/remove from the CLI is closed here
+        # within one poll interval.
+        self._reconciled_revocation_epoch: int = 0
 
     # ── construction helpers (CLI path) ───────────────────────────────────
 
@@ -245,6 +256,16 @@ class ConnectorSupervisor:
                 state_path, self.initial_state()
             )
         return self._state_store
+
+    @property
+    def registry(self) -> StreamRegistry:
+        """The ONE authoritative live-stream registry for this process,
+        shared by the gateway ctx factories, the provider adapters, and the
+        pairing manager: a revocation closes the REAL shipping streams
+        (never an unrelated empty registry reporting false success)."""
+        if self._registry is None:
+            self._registry = StreamRegistry()
+        return self._registry
 
     def initial_state(self) -> TrustState:
         """First-run state: connector identity + (lab-only) lab device pairing.
@@ -317,7 +338,8 @@ class ConnectorSupervisor:
 
     def build_ctx_factory(self) -> Callable[[datetime], GatewayContext]:
         """Wire the full gateway context used by the LAB provider (a fixed
-        lab proof — clearly LAB-ONLY, never a product pairing path)."""
+        lab proof — clearly LAB-ONLY, never a product pairing path). Streams
+        register in the ONE authoritative process registry."""
         config = self.config
         identity_ = self._configured_identity()
         lab_device = config.lab.lab_device_id if config.lab else "lab-client-1"
@@ -325,7 +347,7 @@ class ConnectorSupervisor:
         forwarder = HttpLoopbackForwarder(
             LoopbackTarget(LOOPBACK_HOST, config.daemon_port)
         )
-        registry = StreamRegistry()
+        registry = self.registry
 
         def factory(now: datetime) -> GatewayContext:
             state = self.state_store.load()
@@ -356,36 +378,43 @@ class ConnectorSupervisor:
         """Wire the per-request gateway context factory for the Supported-DIY
         provider: the device proof is derived from the presented
         ``X-HappyRanch-Device-Credential`` (THR-034 wire contract), verified
-        by the production pairing verifier."""
+        by the production pairing verifier. Streams register in the ONE
+        authoritative process registry shared with the pairing manager, so
+        in-process revoke closes the REAL shipping streams."""
         config = self.config
         identity_ = self._configured_identity()
         credential_provider = self.credential_provider()
         forwarder = HttpLoopbackForwarder(
             LoopbackTarget(LOOPBACK_HOST, config.daemon_port)
         )
-        registry = StreamRegistry()
         return make_diy_context_factory(
             identity=identity_,
             pairing=self.pairing_manager(),
             policy=self.load_policy(),
             credential_provider=credential_provider,
             forwarder=forwarder,
-            registry=registry,
+            registry=self.registry,
             now_fn=self._now_fn,
         )
 
     def pairing_manager(self) -> PairingManager:
-        """The Supported-DIY pairing ceremony manager bound to the approved
-        trust-state store (digests only, atomic owner-only files)."""
-        config = self.config
-        diy = config.diy
-        return PairingManager(
-            state_store=self.state_store,
-            identity=self._configured_identity(),
-            now_fn=self._now_fn,
-            code_ttl_seconds=diy.token_ttl_seconds if diy else 300,
-            credential_ttl_days=diy.credential_ttl_days if diy else 365,
-        )
+        """The ONE authoritative Supported-DIY pairing ceremony manager for
+        this process, bound to the shared authoritative stream registry —
+        revocation closes the REAL shipping streams, never an unrelated
+        empty registry. Cached so the provider, the ctx factory, and the
+        ceremony surface all mutate/verify through the SAME instance."""
+        if self._pairing_manager is None:
+            config = self.config
+            diy = config.diy
+            self._pairing_manager = PairingManager(
+                state_store=self.state_store,
+                identity=self._configured_identity(),
+                now_fn=self._now_fn,
+                code_ttl_seconds=diy.token_ttl_seconds if diy else 300,
+                credential_ttl_days=diy.credential_ttl_days if diy else 365,
+                registry=self.registry,
+            )
+        return self._pairing_manager
 
     def build_provider(self) -> LabProviderAdapter | None:
         """Construct a FRESH lab adapter. A stopped ``ThreadingHTTPServer``
@@ -828,8 +857,41 @@ class ConnectorSupervisor:
                     self._notify_fn("STOPPING=1\n")
                 else:
                     self._notify_fn("STATUS=waiting for readiness\n")
+            self._reconcile_revocation()
             wait_fn(poll_seconds)
         return 0
+
+    def _reconcile_revocation(self) -> None:
+        """Cross-process revocation closure at the REAL shipping seam
+        (TASK-6039 reviewer [CRITICAL] finding 2): the operator's
+        ``revoke``/``remove-device`` CLI runs in a SEPARATE process and
+        persists the revocation epoch; the connector process closes its live
+        streams on the next loop pass (bounded by ``poll_seconds``, fail
+        closed).
+
+        The registry is sealed ONLY when there are live streams to close —
+        an empty registry is never sealed here, so legitimately re-paired
+        devices can still open streams after the revocation is reconciled.
+        Any closure imperfection leaves the registry sealed anyway (no live
+        stream survives) — the loop records the reconciled epoch so it does
+        not re-raise the persisted failure every poll."""
+        if self.config.diy is None and self.config.lab is None:
+            return
+        try:
+            state = self.state_store.load()
+        except StateStoreError:
+            # Fail closed: the readiness gate already stops the listener on
+            # unusable state; nothing to close here.
+            return
+        if state.revocation_epoch <= self._reconciled_revocation_epoch:
+            return
+        registry = self.registry
+        if registry.open_count() > 0:
+            try:
+                registry.close_all()
+            except StreamCloseError:
+                pass  # registry sealed; no live stream survives (fail closed)
+        self._reconciled_revocation_epoch = state.revocation_epoch
 
     def shutdown(self) -> None:
         """Deterministic stop: drop the listener before exiting."""
