@@ -172,9 +172,13 @@ the status flip, every participant reset, and the audit in one transaction),
 so a reset/audit failure leaves no partial lifecycle state: a failed switch
 is rolled back (no new executor installed) and a failed archive leaves the
 thread OPEN with every session row unmodified; participant removal deletes
-the row and its session state together. The GH-688 claim gate stays strict (`<` resumes,
-`=`/`>` use the full prompt) so no required sequence is ever omitted; the
-equality state self-heals after one successfully settled full-prompt turn.
+the row and its session state together. The GH-688 claim gate stays strict
+(`<` resumes, `=`/`>` use the full prompt) and a resumed delta is authorized
+only when the ENTIRE required post-watermark range is proven present and
+contiguous in the canonical transcript (uncapped load + independent
+authoritative max-seq proof; see `protocol/05b-agent-runtime.md`) — so no
+required sequence is ever omitted; the equality state self-heals after one
+successfully settled full-prompt turn.
 Prompt bodies travel via stdin for claude/pi/codex and via argv (guard-
 limited) for opencode/generic-CLI; encoded byte size is transport-only, never
 a cost or reset policy.

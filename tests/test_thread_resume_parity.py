@@ -13,10 +13,17 @@ These tests pin the seams:
 - thread-runner resume flows for codex/pi (delta vs full fallback, eviction
   classification, transactional invalidation, lifecycle, mixed executors,
   unsupported executors staying fresh)
+- TASK-5989 review: strict no-message-omission — a resumed delta is used
+  only when the ENTIRE required post-watermark range is proven present and
+  contiguous at the production seam (>10k transcripts, internal holes,
+  equal/ahead/null watermarks, truncated loads); and exact executor/rc/
+  stream/signature-specific eviction classification (positive + negative
+  matrix)
 - an explicit regression that TASK execution never passes a resume id
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,15 +46,17 @@ from runtime.models import (
 
 
 class _FakeResult:
-    def __init__(self, success: bool, error: str = "", agent_session_id=None):
+    def __init__(self, success: bool, error: str = "", agent_session_id=None,
+                 stderr_tail: str = "", stdout_tail: str = "",
+                 returncode: int | None = None):
         self.success = success
         self.error = error
-        self.returncode = 0 if success else 1
+        self.returncode = 0 if success else (1 if returncode is None else returncode)
         self.session_id = "sess-x"
         self.duration_seconds = 1
         self.agent_session_id = agent_session_id
-        self.stdout_tail = ""
-        self.stderr_tail = ""
+        self.stdout_tail = stdout_tail
+        self.stderr_tail = stderr_tail
         self.token_usage = None
 
 
@@ -68,6 +77,30 @@ class _Org:
         self.db = db
         self.root = root
         self.slug = "test"
+
+
+def _bulk_append_messages(db, thread_id, start, end, prefix="msg-"):
+    """Bulk-insert messages ``start..end`` (inclusive) with distinct bodies
+    in ONE transaction — mirrors append_thread_message's row shape."""
+    rows = [
+        (thread_id, seq, "founder", ThreadMessageKind.MESSAGE.value,
+         f"{prefix}{seq:05d}", None, None, None, None,
+         datetime.now(timezone.utc).isoformat())
+        for seq in range(start, end + 1)
+    ]
+    db._conn.executemany(
+        "INSERT INTO thread_messages (thread_id, seq, speaker, kind, "
+        "body_markdown, decline_reason, system_payload_json, "
+        "sent_from_task_id, mentions_json, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    db._conn.commit()
+
+
+def _bodies_in(prompt: str) -> set[str]:
+    """Distinct ``msg-<seq>`` body tokens present in a rendered prompt."""
+    return set(re.findall(r"msg-\d{5}", prompt))
 
 
 def _seed_queued_reply(db, thread_id, agent_name, triggering_seq):
@@ -346,9 +379,12 @@ async def test_turn1_full_prompt_never_resumes_for_codex_and_pi(
 @pytest.mark.parametrize(
     "executor,eviction_error",
     [
-        ("codex", "Command exited with code 1: Error: thread/resume: thread/resume "
-                  "failed: no rollout found for thread id 01a0-dead (code -32600)"),
-        ("pi", "Command exited with code 1: No session found matching '01a0-dead'"),
+        # Exact stderr signatures recorded by the 2026-08-28 local probes
+        # (bounded, no API traffic) against the INSTALLED CLIs.
+        ("codex", "Error: thread/resume: thread/resume failed: no rollout "
+                  "found for thread id 01a0-dead (code -32600)"),
+        ("pi", "No session found matching '01a0-dead'"),
+        ("claude", "No conversation found with session ID: 01a0-dead"),
     ],
 )
 async def test_eviction_invalidates_then_single_full_retry(
@@ -357,11 +393,11 @@ async def test_eviction_invalidates_then_single_full_retry(
     """Provider-declared session-not-found → transactional invalidation
     BEFORE exactly one fresh full-transcript retry; a failed fallback leaves
     the id NULL and the watermark unadvanced."""
-    first = _FakeResult(False, error=eviction_error, agent_session_id=None)
-    first.returncode = 1
+    first = _FakeResult(False, error=f"Command exited with code 1: {eviction_error}",
+                        agent_session_id=None, stderr_tail=eviction_error,
+                        returncode=1)
     fallback = _FakeResult(False, error="Command exited with code 1: boom",
-                           agent_session_id=None)
-    fallback.returncode = 1
+                           agent_session_id=None, returncode=1)
     db, fake = await _run_reply(
         tmp_path, monkeypatch, executor,
         stored_sid="01a0-dead", last_seq=1,
@@ -385,6 +421,70 @@ async def test_eviction_invalidates_then_single_full_retry(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "executor,stderr,stdout,rc",
+    [
+        # Cross-provider text on the wrong executor must never classify.
+        ("codex", "No session found matching '01a0-live'", "", 1),
+        ("codex", "no conversation found", "", 1),
+        ("pi", "no rollout found for thread id 01a0-live (code -32600)", "", 1),
+        ("claude", "no rollout found for thread id 01a0-live (code -32600)", "", 1),
+        # Pi's exact declared signature must not be accepted as Claude's even
+        # though it shares the "no session found" substring.
+        ("claude", "No session found matching '01a0-live'", "", 1),
+        # Wrong return code with the exact signature.
+        ("codex", "no rollout found for thread id 01a0-live (code -32600)", "", 2),
+        ("pi", "No session found matching '01a0-live'", "", 3),
+        ("claude", "No conversation found", "", 2),
+        # stdout-only text (signature on the wrong stream) never classifies;
+        # the failure envelope is stderr-derived so it stays clean too.
+        ("codex", "", "no rollout found for thread id 01a0-live (code -32600)", 1),
+        ("pi", "", "No session found matching '01a0-live'", 1),
+        ("claude", "", "No conversation found", 1),
+        # Malformed / near-match signatures.
+        ("codex", "no rollout found for thread id 01a0-live", "", 1),  # no code
+        ("pi", "No session found", "", 1),  # missing "matching"
+        ("claude", "no conversation was found", "", 1),  # near-miss marker
+        # Auth / quota / transport / generic failures.
+        ("codex", "API Error: 401 Unauthorized", "", 1),
+        ("pi", "API Error: 429 Overloaded", "", 1),
+        ("claude", "Connection reset by peer", "", 1),
+        ("codex", "panic: runtime error", "", 1),
+    ],
+)
+async def test_eviction_negative_matrix_never_invalidates_or_retries(
+    tmp_path, monkeypatch, executor, stderr, stdout, rc,
+):
+    """Only the exact proven executor/rc/stream/signature classifies as
+    eviction. Everything else — wrong executor, wrong rc, stdout-only text,
+    near-matches, auth/quota/transport/generic — leaves the resume state
+    untouched and never fires the fresh retry."""
+    sid = "01a0-live"
+    # Production-shaped failure envelope: _run_command derives error from
+    # ``full_stderr or full_stdout``, so a stdout-only signature WOULD reach
+    # the ``error`` field — the classifier must still reject it (stderr-only).
+    stream_text = stderr or stdout
+    envelope = f"Command exited with code {rc}"
+    if stream_text:
+        envelope += f": {stream_text}"
+    failure = _FakeResult(False, error=envelope, agent_session_id=None,
+                          stderr_tail=stderr, stdout_tail=stdout, returncode=rc)
+    db, fake = await _run_reply(
+        tmp_path, monkeypatch, executor,
+        stored_sid=sid, last_seq=1,
+        fake=_RecordingExec([failure]),
+    )
+    # Exactly ONE attempt — the resume ran but no eviction retry fired.
+    assert len(fake.calls) == 1
+    assert fake.calls[0].get("resume_session_id") == sid
+    # Resume state untouched: id preserved, watermark unadvanced.
+    stored, seq = db.get_thread_session("THR-001", "alice")
+    assert stored == sid and seq == 1
+    actions = {r["action"] for r in db.get_audit_logs("THR-001")}
+    assert "agent_session_evicted_fallback" not in actions
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("executor", ["codex", "pi"])
 async def test_generic_resume_failure_never_retries_fresh(
     tmp_path, monkeypatch, executor,
@@ -405,6 +505,232 @@ async def test_generic_resume_failure_never_retries_fresh(
     assert stored == "01a0-live" and seq == 1  # untouched, no retry
     actions = {r["action"] for r in db.get_audit_logs("THR-001")}
     assert "agent_session_evicted_fallback" not in actions
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Strict no-message-omission (TASK-5989): delta resume ONLY when the ENTIRE
+# required post-watermark range is proven present and contiguous at the
+# production seam (real Database + run_invocation, uncapped load +
+# independent authoritative max-seq proof).
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _run_reply_at_seq(tmp_path, monkeypatch, executor, stored_sid, last_seq,
+                      triggering_seq, fake, db=None):
+    """Production-seam harness: real Database + real run_invocation with a
+    caller-chosen triggering seq (the caller seeds the transcript and the
+    queued REPLY delivery state first, optionally passing its own ``db``)."""
+    from runtime.daemon.thread_runner import run_invocation
+    if db is None:
+        db = Database(tmp_path / "happyranch.db")
+        db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+        db.add_thread_participant("THR-001", "alice", added_by="founder")
+    if stored_sid is not None:
+        db.update_thread_session("THR-001", "alice",
+                                 agent_session_id=stored_sid,
+                                 last_resumed_seq=last_seq)
+    inv = _seed_queued_reply(db, "THR-001", "alice",
+                             triggering_seq=triggering_seq)
+    _write_agent(tmp_path, executor)
+    import runtime.daemon.thread_runner as runner_mod
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: fake)
+    org = _Org(db=db, root=tmp_path)
+    # asyncio coroutine wrapper so the helper reads like the others.
+    return run_invocation(org_state=org,
+                          invocation_token=inv.invocation_token,
+                          settings=Settings()), db, fake
+
+
+@pytest.mark.asyncio
+async def test_over_10k_complete_transcript_resumes_with_delta(tmp_path, monkeypatch):
+    """>10,000-message transcript: the old first-10,000 load cap would have
+    truncated the canonical range required after the watermark (10,001..
+    10,500). With the uncapped load + independent max-seq proof, EVERY
+    required claimed sequence is present and contiguous, so the delta is
+    authorized and ships exactly the required range — no omission."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    _bulk_append_messages(db, "THR-001", 1, 10500)
+    fake = _RecordingExec([_FakeResult(True, agent_session_id="01a0-big")])
+    coro, db, fake = _run_reply_at_seq(
+        tmp_path, monkeypatch, "codex",
+        stored_sid="01a0-big", last_seq=10000, triggering_seq=10500, fake=fake,
+        db=db,
+    )
+    await coro
+    # Delta resume used (proof passed).
+    assert fake.calls[0].get("resume_session_id") == "01a0-big"
+    delta = fake.calls[0]["prompt"]
+    assert "New activity since your last turn follows" in delta
+    bodies = _bodies_in(delta)
+    assert len(bodies) == 500
+    assert "msg-10001" in bodies and "msg-10500" in bodies
+    assert max(int(b[4:]) for b in bodies) == 10500
+    assert min(int(b[4:]) for b in bodies) == 10001  # nothing below the watermark
+    # Watermark advanced to the proven transcript max after a successful turn.
+    stored, seq = db.get_thread_session("THR-001", "alice")
+    assert stored == "01a0-big" and seq == 10500
+
+
+@pytest.mark.asyncio
+async def test_over_10k_missing_internal_seq_falls_back_to_full_transcript(
+    tmp_path, monkeypatch,
+):
+    """A hole in the required post-watermark range (seq 10300 absent from the
+    canonical transcript) must fail closed: NO delta resume — the runner ships
+    the genuinely complete canonical full transcript fresh, so the missing
+    sequence can never be silently omitted by a delta."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    _bulk_append_messages(db, "THR-001", 1, 10500)
+    db._conn.execute(
+        "DELETE FROM thread_messages WHERE thread_id = ? AND seq = 10300",
+        ("THR-001",),
+    )
+    db._conn.commit()
+    fake = _RecordingExec([_FakeResult(True, agent_session_id="01a0-big")])
+    coro, db, fake = _run_reply_at_seq(
+        tmp_path, monkeypatch, "codex",
+        stored_sid="01a0-big", last_seq=10000, triggering_seq=10500, fake=fake,
+        db=db,
+    )
+    await coro
+    # No delta resume — the completeness proof failed closed.
+    assert "resume_session_id" not in fake.calls[0]
+    full = fake.calls[0]["prompt"]
+    assert "Full message history follows" in full
+    bodies = _bodies_in(full)
+    assert "msg-00001" in bodies and "msg-10001" in bodies and "msg-10500" in bodies
+    assert "msg-10300" not in bodies  # genuinely absent from the canonical transcript
+    assert len(bodies) == 10499  # every other canonical sequence rendered
+
+
+@pytest.mark.asyncio
+async def test_claim_end_beyond_transcript_max_fails_closed(tmp_path, monkeypatch):
+    """A claimed REPLY whose inclusive end (seq 2) is NOT present in the
+    canonical transcript (deleted after the wake was queued) must never
+    resume with a delta — the claim references a sequence the proof cannot
+    supply, so the runner fails closed to the full canonical prompt."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m2 newest")
+    db.update_thread_session("THR-001", "alice", agent_session_id="01a0-claim",
+                             last_resumed_seq=1)
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=2)
+    db._conn.execute(
+        "DELETE FROM thread_messages WHERE thread_id = ? AND seq = 2",
+        ("THR-001",),
+    )
+    db._conn.commit()
+    _write_agent(tmp_path, "codex")
+    from runtime.daemon.thread_runner import run_invocation
+    import runtime.daemon.thread_runner as runner_mod
+    fake = _RecordingExec([_FakeResult(True, agent_session_id="01a0-claim")])
+    monkeypatch.setattr(runner_mod, "_build_executor_for_provider",
+                        lambda provider, settings, paths: fake)
+    org = _Org(db=db, root=tmp_path)
+    await run_invocation(org_state=org, invocation_token=inv.invocation_token,
+                         settings=Settings())
+    assert "resume_session_id" not in fake.calls[0]
+    full = fake.calls[0]["prompt"]
+    assert "Full message history follows" in full
+    assert "m1" in full and "m2 newest" not in full  # canonical truth
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("last_seq", [2, 3])
+async def test_equal_and_ahead_watermarks_never_resume_delta(
+    tmp_path, monkeypatch, last_seq,
+):
+    """Equal (watermark == transcript max) and ahead (watermark > max)
+    watermarks leave an empty required post-watermark range — the proof fails
+    closed and the runner ships the full prompt."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m2 newest")
+    fake = _RecordingExec([_FakeResult(True, agent_session_id="01a0-eq")])
+    coro, db, fake = _run_reply_at_seq(
+        tmp_path, monkeypatch, "codex",
+        stored_sid="01a0-eq", last_seq=last_seq, triggering_seq=2, fake=fake,
+        db=db,
+    )
+    await coro
+    assert "resume_session_id" not in fake.calls[0]
+    full = fake.calls[0]["prompt"]
+    assert "Full message history follows" in full
+    assert "m1" in full and "m2 newest" in full
+
+
+@pytest.mark.asyncio
+async def test_null_watermark_with_stored_session_delta_covers_every_required_seq(
+    tmp_path, monkeypatch,
+):
+    """A stored provider session with a NULL watermark (last_resumed_seq=0)
+    may resume with a delta ONLY because the ENTIRE required range (1..max)
+    is proven present and contiguous — the delta is the complete canonical
+    sequence set, so no message can be omitted."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m2 newest")
+    fake = _RecordingExec([_FakeResult(True, agent_session_id="01a0-null")])
+    coro, db, fake = _run_reply_at_seq(
+        tmp_path, monkeypatch, "codex",
+        stored_sid="01a0-null", last_seq=0, triggering_seq=2, fake=fake,
+        db=db,
+    )
+    await coro
+    assert fake.calls[0].get("resume_session_id") == "01a0-null"
+    delta = fake.calls[0]["prompt"]
+    assert "New activity since your last turn follows" in delta
+    assert "m1" in delta and "m2 newest" in delta
+
+
+@pytest.mark.parametrize(
+    "messages,last_seq,max_seq,expected",
+    [
+        # Complete required range → authorized.
+        ([1, 2, 3, 4, 5], 2, 5, True),
+        ([1, 2, 3], 0, 3, True),            # null watermark, full set present
+        # Truncated load (does not reach the authoritative max) → fail closed.
+        ([1, 2, 3, 4], 2, 5, False),
+        ([], 0, 0, False),
+        # Internal hole in the required range → fail closed.
+        ([1, 2, 3, 5], 2, 5, False),
+        ([1, 3, 4, 5], 1, 5, False),          # hole right after the watermark
+        # Equal / ahead watermark → empty required range → fail closed.
+        ([1, 2, 3], 3, 3, False),
+        ([1, 2, 3], 4, 3, False),
+    ],
+)
+def test_delta_range_completeness_proof(messages, last_seq, max_seq, expected):
+    """Unit pin for the completeness proof itself (the production-seam tests
+    above prove the seam; this pins every branch of the proof incl. the
+    truncation guard that the uncapped seam cannot reach)."""
+    from runtime.daemon.thread_runner import _delta_range_is_complete
+    msgs = [
+        ThreadMessage(
+            thread_id="THR-001", seq=s, speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown=f"m{s}",
+            created_at=datetime.now(timezone.utc),
+        )
+        for s in messages
+    ]
+    assert _delta_range_is_complete(msgs, last_seq=last_seq, max_seq=max_seq) is expected
 
 
 @pytest.mark.asyncio

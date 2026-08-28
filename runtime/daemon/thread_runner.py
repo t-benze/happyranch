@@ -352,22 +352,29 @@ def _decline_by_default_doctrine() -> str:
     )
 
 
-# Best-effort markers for "the resume target no longer exists in the agent CLI's
-# local session store" (TTL eviction / workspace move). Verified against the
-# running CLIs during the TASK-5977 contract audit:
-#   - claude: legacy markers (in production since THR-200)
-#   - codex 0.148.0: `Error: thread/resume: thread/resume failed: no rollout
-#     found for thread id <uuid> (code -32600)` on stderr, rc=1
-#   - pi 0.84.2: `No session found matching '<id>'` on stderr, rc=1
-# A miss is safe (degrades to a normal failure, never a wrong answer).
-_SESSION_NOT_FOUND_MARKERS = (
+# Executor-specific provider-declared session-not-found contracts. Each is
+# proven against the INSTALLED CLI (TASK-5977 audit + 2026-08-28 re-probe;
+# bounded local probes, no API traffic):
+#   - claude 2.1.241: rc=1, stderr `No conversation found with session ID:
+#     <uuid>` (legacy markers since THR-200)
+#   - codex 0.148.0: rc=1, stderr `Error: thread/resume: thread/resume
+#     failed: no rollout found for thread id <uuid> (code -32600)`
+#   - pi 0.84.2: rc=1, stderr `No session found matching '<id>'`
+# All three emit the marker on STDERR with exit code 1 and empty stdout.
+# Classification is dispatched on the executor that actually ran and reads
+# ONLY the proven stream (stderr_tail) with the proven return code (1), so
+# cross-provider text, stdout-only text, wrong rc, and near-matches never
+# invalidate state. A miss is safe (degrades to a normal failure — no fresh
+# retry, session id/watermark untouched — never a wrong answer).
+_CLAUDE_EVICTION_MARKERS = (
     "no conversation found",
     "session not found",
     "no session found",
     "could not find session",
     "no such session",
-    "no rollout found",
 )
+_CODEX_EVICTION_SIGNATURES = ("no rollout found for thread id", "(code -32600)")
+_PI_EVICTION_SIGNATURE = "no session found matching"
 
 
 # Executors whose provider-session resume contract is PROVEN against the
@@ -379,15 +386,80 @@ _SESSION_NOT_FOUND_MARKERS = (
 _RESUME_CAPABLE_EXECUTORS = frozenset({"claude", "codex", "pi"})
 
 
-def _is_session_not_found(result) -> bool:
-    blob = " ".join(
-        filter(None, [
-            getattr(result, "error", "") or "",
-            getattr(result, "stderr_tail", "") or "",
-            getattr(result, "stdout_tail", "") or "",
-        ])
-    ).lower()
-    return any(marker in blob for marker in _SESSION_NOT_FOUND_MARKERS)
+def _is_claude_session_evicted(result) -> bool:
+    """Claude's established eviction contract (THR-200 legacy markers),
+    sharpened by the 2026-08-28 probe: rc=1 and the marker on STDERR only.
+    stdout-only text and wrong rc never match — the ``error`` envelope is not
+    inspected because it falls back to stdout text when stderr is empty.
+    Pi's exact declared signature is never accepted as Claude's, even though
+    it shares the ``no session found`` substring (cross-provider forbidden)."""
+    if getattr(result, "returncode", None) != 1:
+        return False
+    stderr = (getattr(result, "stderr_tail", None) or "").lower()
+    if _PI_EVICTION_SIGNATURE in stderr:
+        return False
+    return any(marker in stderr for marker in _CLAUDE_EVICTION_MARKERS)
+
+
+def _is_codex_session_evicted(result) -> bool:
+    """codex-cli 0.148.0 proven contract: rc=1, stderr carries the
+    no-rollout-for-thread-id signature including the JSON-RPC code
+    ``(code -32600)`` (recorded in the TASK-5977 audit)."""
+    if getattr(result, "returncode", None) != 1:
+        return False
+    stderr = (getattr(result, "stderr_tail", None) or "").lower()
+    return all(m in stderr for m in _CODEX_EVICTION_SIGNATURES)
+
+
+def _is_pi_session_evicted(result) -> bool:
+    """pi 0.84.2 proven contract: rc=1, stderr `No session found matching`."""
+    if getattr(result, "returncode", None) != 1:
+        return False
+    stderr = (getattr(result, "stderr_tail", None) or "").lower()
+    return _PI_EVICTION_SIGNATURE in stderr
+
+
+def _classify_session_evicted(executor_name: str, result) -> bool:
+    """Provider-declared session-not-found classification for the executor
+    that ran. Only the exact proven eviction contract may trigger the
+    transactional invalidation + one fresh full-transcript retry. Wrong
+    executor, wrong rc, stdout-only text, malformed/near-matches, and
+    auth/quota/transport/generic failures all return False — the invocation
+    is a plain failure and no resume state is invalidated."""
+    if executor_name == "codex":
+        return _is_codex_session_evicted(result)
+    if executor_name == "pi":
+        return _is_pi_session_evicted(result)
+    if executor_name == "claude":
+        return _is_claude_session_evicted(result)
+    return False
+
+
+def _delta_range_is_complete(
+    messages: list[ThreadMessage],
+    *,
+    last_seq: int,
+    max_seq: int,
+) -> bool:
+    """Strict no-message-omission proof for a resumed delta prompt.
+
+    A delta ships every message with ``seq > last_seq`` (the durable delivery
+    watermark), so it is authorized ONLY when the loaded canonical transcript
+    proves the ENTIRE required range ``(last_seq, max_seq]`` is present and
+    contiguous: the load must reach the authoritative transcript max (no
+    truncation — the caller must load uncapped) and every internal sequence
+    must exist (no holes). Equal/ahead/null watermarks (empty required range)
+    and any missing or truncated sequence fail closed to a full-transcript
+    fresh invocation.
+    """
+    if max_seq <= last_seq:
+        # Equal, ahead, or null watermark — nothing new to ship as a delta.
+        return False
+    if not messages or messages[-1].seq != max_seq:
+        # Truncated load: the required range cannot be proven complete.
+        return False
+    post = [m.seq for m in messages if m.seq > last_seq]
+    return post == list(range(last_seq + 1, max_seq + 1))
 
 
 # Per-(thread, agent) active-invocation lock (provider-agnostic, THR-042). The
@@ -628,7 +700,7 @@ async def run_invocation(
         return
 
     participants = org_state.db.list_thread_participants(inv.thread_id)
-    messages = org_state.db.list_thread_messages(inv.thread_id, limit=10000)
+    messages = org_state.db.list_thread_messages(inv.thread_id, limit=None)
 
     workspace = org_state.root / "workspaces" / inv.agent_name
 
@@ -797,6 +869,10 @@ async def run_invocation(
             org_state.db.get_thread_session(inv.thread_id, inv.agent_name)
             if resume_capable else (None, 0)
         )
+        # Authoritative upper bound of the required post-watermark range,
+        # queried independently so the completeness proof never trusts the
+        # loaded list's own extent.
+        max_seq = org_state.db.get_thread_max_message_seq(inv.thread_id)
         resume_sid: str | None = None
         # GitHub #688 Slice B: a claimed conversational REPLY must explicitly
         # state its inclusive delivery range so the agent knows exactly which
@@ -813,16 +889,28 @@ async def run_invocation(
                 f"(inclusive), in order. Consider every message in that range; "
                 f"do not skip any of them.\n"
             )
-        # GitHub #688 Slice B: a resumed Claude session may use a delta only
-        # when it cannot omit a required sequence. For a claimed REPLY the
-        # session watermark must stay strictly below the claim's
-        # running_from_seq; otherwise ``last_resumed_seq`` would silently
-        # control (and drop) required delivery, so we fall back to the full
-        # prompt. Non-REPLY invocations keep the legacy resume behavior.
+        # Strict no-message-omission (TASK-5989): a resumed delta is
+        # authorized ONLY when the ENTIRE required post-watermark range is
+        # proven present and contiguous in the canonical transcript (loaded
+        # uncapped above; see _delta_range_is_complete). For a claimed REPLY
+        # the session watermark must stay strictly below the claim's
+        # running_from_seq AND the claim's inclusive end must exist in the
+        # transcript; otherwise ``last_resumed_seq`` would silently control
+        # (and drop) required delivery. Truncated loads, internal holes, and
+        # equal/ahead/null watermarks all fail closed to the full fresh
+        # prompt. Non-REPLY invocations keep the legacy resume behavior but
+        # still require the completeness proof.
+        delta_complete = _delta_range_is_complete(
+            messages, last_seq=last_seq, max_seq=max_seq,
+        )
         can_resume = (
             resume_capable
             and stored_sid
-            and (claim is None or last_seq < claim.running_from_seq)
+            and (claim is None or (
+                last_seq < claim.running_from_seq
+                and claim.running_through_seq <= max_seq
+            ))
+            and delta_complete
         )
         if can_resume:
             new_messages = [m for m in messages if m.seq > last_seq]
@@ -903,7 +991,7 @@ async def run_invocation(
             result = await loop.run_in_executor(None, lambda: _invoke(prompt, resume_sid))
 
             if (resume_capable and resume_sid and not result.success
-                    and _is_session_not_found(result)):
+                    and _classify_session_evicted(executor_name, result)):
                 # THR-200: the eviction audit AND the durable session-id
                 # invalidation commit in ONE transaction (see
                 # AuditLogger.log_agent_session_evicted_fallback /

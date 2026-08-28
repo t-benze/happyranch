@@ -1846,8 +1846,11 @@ async def test_thread_invocation_session_not_found_fallback_forwards_model(
             all_model_kwargs.append(kwargs.get("model"))
             if call_count[0] == 1:
                 # First invocation: resume attempt fails with session-not-found
+                # (production shape: the marker lands on stderr, rc=1 — the
+                # classifier reads stderr_tail only, never the error envelope).
                 result = FakeExecutorResult(success=False, error="No session found")
                 result.returncode = 1
+                result.stderr_tail = "No session found"
                 return result
             else:
                 return FakeExecutorResult(success=True)

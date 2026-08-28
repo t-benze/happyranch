@@ -287,11 +287,13 @@ Traps:
   session-not-found, the `agent_session_evicted_fallback` audit and the durable
   `agent_session_id = NULL` invalidation commit in ONE transaction BEFORE the
   full-prompt fallback; a failed fallback leaves the id NULL and the delivery
-  watermark unadvanced. Classified ONLY from the provider's exact declared
-  signature: claude legacy markers, codex `no rollout found for thread id`
-  (rc=1 stderr), pi `No session found matching` (rc=1 stderr). Generic
-  failure / auth / quota / transport / ambiguous output never trigger the
-  fresh retry.
+  watermark unadvanced. Classified ONLY from the executor that ran, reading
+  ONLY the proven return code and stream — claude legacy markers on stderr
+  (rc=1, probe `No conversation found with session ID: <uuid>`), codex
+  `no rollout found for thread id` + `(code -32600)` (rc=1 stderr), pi
+  `No session found matching` (rc=1 stderr). Cross-provider text, stdout-
+  only text, wrong rc, malformed/near-matches, and generic failure / auth /
+  quota / transport / ambiguous output never trigger the fresh retry.
 - **Lifecycle invalidation (THR-200).** Archive, successful executor switch, and
   agent termination clear resume state (id NULL, watermark 0). Each boundary is
   a database-owned transaction: the participant reset and its
@@ -319,7 +321,7 @@ Traps:
   task path and wake/dream runners always launch fresh. Pinned by
   `tests/test_thread_resume_parity.py`.
 - `ExecutorResult.agent_session_id` is not `ExecutorResult.session_id`.
-- **GH-688 Phase 1 claim gate.** For a claimed conversational `REPLY`, a resumed session may use the delta only when the stored watermark is strictly below the claim's `running_from_seq`; otherwise the runner falls back to the full prompt. `last_resumed_seq` is observed session presentation and is never the delivery cursor — it can never omit a message the delivery state requires.
+- **GH-688 Phase 1 claim gate + no-message-omission proof.** For a claimed conversational `REPLY`, a resumed session may use the delta only when the stored watermark is strictly below the claim's `running_from_seq` AND the ENTIRE required post-watermark range is proven present and contiguous at the production seam: the runner loads the canonical transcript UNCAPPED, independently queries the authoritative transcript max, and authorizes the delta only when every required claimed sequence exists (the claim's inclusive end must also exist). Truncated loads, internal holes, equal/ahead/null watermarks, and claim ends beyond the transcript fail closed to the genuinely complete canonical full prompt — a delta can never omit a message the delivery state requires. `last_resumed_seq` is observed session presentation and is never the delivery cursor.
 
 ## Thread Task Followup
 

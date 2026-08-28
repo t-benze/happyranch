@@ -97,9 +97,17 @@ carries the resumable provider session id + delta watermark
   registry entry): it stays fresh (full prompt every turn) and must not
   resume until its contract is independently proven. A GH-688 claimed REPLY
   may resume with a delta ONLY when the stored watermark is strictly below
-  the claim's ``running_from_seq`` — the ``<``, ``=``, and ``>`` cases are
-  all covered so no required sequence is ever omitted; ``=``/``>`` use the
-  full prompt. The equality state (watermark == ``running_from_seq``) is NOT
+  the claim's ``running_from_seq`` AND the ENTIRE required post-watermark
+  range is proven present and contiguous at the production seam: the runner
+  loads the canonical transcript UNCAPPED, queries the independent
+  authoritative transcript max (``get_thread_max_message_seq``), and only
+  then authorizes a delta when every required claimed sequence exists (no
+  truncation, no internal holes; a claimed REPLY additionally requires the
+  claim's inclusive end to exist in the transcript). ``<``/``=``/``>``
+  watermark cases, equal/ahead/null watermarks, truncated loads, and any
+  missing internal sequence all fail closed to the genuinely complete
+  canonical full-transcript fresh prompt — a delta can never omit a required
+  sequence. The equality state (watermark == ``running_from_seq``) is NOT
   permanent: after ONE successfully transported, terminally settled
   full-prompt turn both watermarks converge to the same frontier and resume
   eligibility returns. Do not implement a standalone watermark-comparison
@@ -123,11 +131,14 @@ carries the resumable provider session id + delta watermark
   transaction BEFORE the full-prompt fallback launch. If the fallback also
   fails, the id remains NULL and the delivery watermark does NOT advance —
   the next wake re-attempts the same range from a full prompt. The
-  classifier uses each executor's exact declared signature — claude
-  (legacy markers), codex ``no rollout found for thread id`` (rc=1,
-  stderr, codex-cli 0.148.0), pi ``No session found matching`` (rc=1,
-  stderr, pi 0.84.2) — and never classifies auth/quota/transport/generic
-  exit or ambiguous output as eviction (no fresh retry for those).
+  classifier is executor-specific and reads ONLY the proven return code and
+  stream — claude (legacy markers on stderr, rc=1; probe: ``No conversation
+  found with session ID: <uuid>``), codex ``no rollout found for thread id``
+  + ``(code -32600)`` (rc=1, stderr, codex-cli 0.148.0), pi ``No session
+  found matching`` (rc=1, stderr, pi 0.84.2) — and never classifies
+  cross-provider text, stdout-only text, wrong rc, malformed/near-matches,
+  or auth/quota/transport/generic exit or ambiguous output as eviction (no
+  fresh retry for those).
   (THR-187/THR-195 missing-session wedges are this mechanism; THR-198's
   healthy-session equality wedge needs only transport — no row change.)
 - **Lifecycle invalidation**: thread archive, a SUCCESSFUL executor switch,
