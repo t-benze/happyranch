@@ -24,15 +24,15 @@ Fixed invariants enforced here:
 """
 from __future__ import annotations
 
-import json
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from typing import Callable
 
 from runtime.remote_access.gateway import ConnectorGateway, GatewayContext
-from runtime.remote_access.models import Decision, Header, RemoteRequest
+from runtime.remote_access.httpd import BaseConnectorHandler, send_json, serve_decision
+from runtime.remote_access.models import Decision, RemoteRequest
 from runtime.remote_access.readiness import ConnectorReadiness
 
 LAB_ONLY_BANNER = (
@@ -40,7 +40,6 @@ LAB_ONLY_BANNER = (
     "does not close THR-034"
 )
 
-_DENY_STATUS = 403
 _NOT_READY_STATUS = 503
 
 # Addresses that would expose the lab listener beyond an explicit interface.
@@ -165,107 +164,22 @@ class LabProviderAdapter:
 
     # ── HTTP serving ──────────────────────────────────────────────────────
 
-    def _handler_factory(self) -> type[BaseHTTPRequestHandler]:
+    def _handler_factory(self) -> type[BaseConnectorHandler]:
         adapter = self
 
-        class Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
+        class Handler(BaseConnectorHandler):
+            """Serves the shared BaseConnectorHandler surface: parse, run
+            the adapter's full gateway pipeline, serve the decision (403
+            category-only denials; relayed loopback responses; tracked SSE
+            streams). Raw request lines are never logged (base class).
+            """
 
-            def log_message(self, format: str, *args) -> None:  # noqa: A002
-                return  # never log raw request lines (no paths/secrets in logs)
-
-            def _handle(self) -> None:
+            def serve_request(self, request: RemoteRequest, now) -> None:
                 try:
-                    request = self._parse_request()
-                    decision = adapter.handle_request(request)
+                    decision = adapter.handle_request(request, now)
                 except LabProviderError:
-                    self._send_json(_NOT_READY_STATUS, {"error": "not_ready"})
+                    send_json(self, _NOT_READY_STATUS, {"error": "not_ready"})
                     return
-                if not decision.allowed:
-                    category = decision.audit_category or "denied"
-                    self._send_json(_DENY_STATUS, {"error": category})
-                    return
-                if decision.response is not None:
-                    self.send_response(decision.response.status)
-                    for header in decision.response.headers:
-                        if header.name.lower() in {"content-length", "transfer-encoding"}:
-                            continue
-                        self.send_header(header.name, header.value)
-                    body = decision.response.body or b""
-                    self.send_header("Content-Length", str(len(body)))
-                    self.send_header("Connection", "close")
-                    self.end_headers()
-                    self.wfile.write(body)
-                    self.wfile.flush()
-                    return
-                # Allowed SSE/WebSocket stream: emit headers then pump the
-                # tracked stream handle until EOF/closure (fail closed on
-                # revocation: the handle raises StreamClosed and the pump
-                # terminates the response).
-                if decision.stream is not None:
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/event-stream")
-                    self.send_header("Connection", "close")
-                    self.end_headers()
-                    self.wfile.flush()
-                    handle = decision.stream
-                    while True:
-                        try:
-                            chunk = handle.receive()
-                        except Exception:
-                            return  # stream sealed/closed: stop pumping
-                        if chunk is None:
-                            return
-                        try:
-                            self.wfile.write(chunk)
-                            self.wfile.flush()
-                        except (BrokenPipeError, ConnectionResetError):
-                            return
-                    return
-                self._send_json(500, {"error": "internal_error"})
-
-            def _parse_request(self) -> RemoteRequest:
-                raw_path = self.path or "/"
-                path, _, query = raw_path.partition("?")
-                if not path:
-                    path = "/"
-                length = int(self.headers.get("Content-Length") or 0)
-                body = self.rfile.read(length) if length else None
-                # Raw headers (duplicates preserved) — the gateway's locked
-                # strip step removes authorization/hop-by-hop/forwarding
-                # headers at the correct pipeline point; content-type and
-                # content-length must survive to the loopback daemon.
-                headers = [Header(k.lower(), v) for k, v in self.headers.items()]
-                stream_type = "http"
-                if self.headers.get("Upgrade", "").lower() == "websocket":
-                    stream_type = "websocket"
-                elif self.headers.get("Accept", "") == "text/event-stream":
-                    stream_type = "sse"
-                return RemoteRequest(
-                    method=self.command,
-                    path=path,
-                    query=query or None,
-                    headers=tuple(headers),
-                    body=body,
-                    stream_type=stream_type,
-                )
-
-            def _send_json(self, status: int, payload: dict) -> None:
-                body = json.dumps(payload).encode("utf-8")
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Connection", "close")
-                self.end_headers()
-                self.wfile.write(body)
-                self.wfile.flush()
-
-            do_GET = _handle
-            do_POST = _handle
-            do_PUT = _handle
-            do_DELETE = _handle
-            do_PATCH = _handle
-            do_HEAD = _handle
-            do_OPTIONS = _handle
+                serve_decision(self, decision)
 
         return Handler

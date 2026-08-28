@@ -69,7 +69,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from runtime.remote_access.authorization import DeviceAuthorization, TrustState
+from runtime.remote_access.authorization import DeviceAuthorization, PendingPairing, TrustState
 from runtime.remote_access.identity import ConnectorIdentity
 from runtime.remote_access.policy import canonical_json
 # The non-normative local envelope (not a founder-gated schema). Bumping the
@@ -95,7 +95,14 @@ _ENVELOPE_KEYS = frozenset({"version", "kind", "generation", "payload", "digest"
 _ANCHOR_KEYS = frozenset({"version", "kind", "generation", "snapshot_digest", "digest"})
 
 _PAYLOAD_KEYS = frozenset(
-    {"connector_identity", "pairing_epoch", "revocation_epoch", "current_device_id", "devices"}
+    {
+        "connector_identity",
+        "pairing_epoch",
+        "revocation_epoch",
+        "current_device_id",
+        "devices",
+        "pending_pairings",
+    }
 )
 _IDENTITY_KEYS = frozenset({"tenant_id", "home_id", "connector_id"})
 _DEVICE_KEYS = frozenset(
@@ -106,8 +113,14 @@ _DEVICE_KEYS = frozenset(
         "authorization_epoch",
         "expires_at",
         "revoked",
+        "credential_digest",
     }
 )
+# credential_digest is OPTIONAL (Unit 3A additive): pre-3A envelopes that
+# predate it must still load (absent = None); a present value is validated
+# strictly. Unknown keys are still rejected via ``_DEVICE_KEYS``.
+_DEVICE_REQUIRED_KEYS = _DEVICE_KEYS - {"credential_digest"}
+_PENDING_KEYS = frozenset({"code_digest", "expires_at", "consumed"})
 
 
 class StateStoreError(Exception):
@@ -199,7 +212,7 @@ def _state_from_payload(payload: dict[str, Any]) -> TrustState:
         unknown_device = set(raw) - _DEVICE_KEYS
         if unknown_device:
             raise CorruptTrustStateError("trust state device record has unknown keys")
-        missing_device = _DEVICE_KEYS - set(raw)
+        missing_device = _DEVICE_REQUIRED_KEYS - set(raw)
         if missing_device:
             raise CorruptTrustStateError("trust state device record incomplete")
         stored_id = _require_str(raw, "device_id")
@@ -208,6 +221,20 @@ def _state_from_payload(payload: dict[str, Any]) -> TrustState:
         revoked = raw.get("revoked")
         if not isinstance(revoked, bool):
             raise CorruptTrustStateError("trust state revoked must be a boolean")
+        # Unit 3A Supported-DIY: the pairing-credential digest is OPTIONAL in
+        # the non-normative envelope (managed/harness records predate it).
+        # Present must be a non-empty 64-hex sha256 digest; anything else
+        # fails closed. Absent stays None (no credential enforcement).
+        credential_digest = raw.get("credential_digest")
+        if credential_digest is not None:
+            if (
+                not isinstance(credential_digest, str)
+                or len(credential_digest) != 64
+                or any(c not in "0123456789abcdef" for c in credential_digest)
+            ):
+                raise CorruptTrustStateError(
+                    "trust state device credential_digest must be a sha256 hex digest"
+                )
         devices[device_id] = DeviceAuthorization(
             device_id=stored_id,
             tenant_id=_require_str(raw, "tenant_id"),
@@ -215,7 +242,38 @@ def _state_from_payload(payload: dict[str, Any]) -> TrustState:
             authorization_epoch=_require_int(raw, "authorization_epoch"),
             expires_at=_require_tz_datetime(raw.get("expires_at")),
             revoked=revoked,
+            credential_digest=credential_digest,
         )
+
+    pending_raw = payload.get("pending_pairings")
+    pending_pairings: dict[str, PendingPairing] = {}
+    if pending_raw is not None:
+        if not isinstance(pending_raw, dict):
+            raise CorruptTrustStateError("trust state pending_pairings must be an object")
+        for device_name, raw in pending_raw.items():
+            if not isinstance(device_name, str) or not device_name.strip():
+                raise CorruptTrustStateError("trust state pending pairing name must be a string")
+            if not isinstance(raw, dict):
+                raise CorruptTrustStateError("trust state pending pairing record must be an object")
+            unknown_pending = set(raw) - _PENDING_KEYS
+            if unknown_pending:
+                raise CorruptTrustStateError("trust state pending pairing has unknown keys")
+            missing_pending = _PENDING_KEYS - set(raw)
+            if missing_pending:
+                raise CorruptTrustStateError("trust state pending pairing incomplete")
+            code_digest = _require_str(raw, "code_digest")
+            if len(code_digest) != 64 or any(c not in "0123456789abcdef" for c in code_digest):
+                raise CorruptTrustStateError(
+                    "trust state pending pairing code_digest must be a sha256 hex digest"
+                )
+            consumed = raw.get("consumed")
+            if not isinstance(consumed, bool):
+                raise CorruptTrustStateError("trust state pending pairing consumed must be a boolean")
+            pending_pairings[device_name] = PendingPairing(
+                code_digest=code_digest,
+                expires_at=_require_tz_datetime(raw.get("expires_at")),
+                consumed=consumed,
+            )
 
     current_device_id = payload.get("current_device_id")
     if current_device_id is not None:
@@ -231,6 +289,7 @@ def _state_from_payload(payload: dict[str, Any]) -> TrustState:
         revocation_epoch=revocation_epoch,
         devices=devices,
         current_device_id=current_device_id,
+        pending_pairings=pending_pairings,
     )
 
 
@@ -257,8 +316,17 @@ def _payload_from_state(state: TrustState) -> dict[str, Any]:
                 "authorization_epoch": device.authorization_epoch,
                 "expires_at": device.expires_at.isoformat(),
                 "revoked": device.revoked,
+                "credential_digest": device.credential_digest,
             }
             for device_id, device in sorted(state.devices.items())
+        },
+        "pending_pairings": {
+            device_name: {
+                "code_digest": pending.code_digest,
+                "expires_at": pending.expires_at.isoformat(),
+                "consumed": pending.consumed,
+            }
+            for device_name, pending in sorted(state.pending_pairings.items())
         },
     }
 

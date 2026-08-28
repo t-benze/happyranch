@@ -749,3 +749,156 @@ class TestCompanionMonotonicAnchor:
         path.write_text(json.dumps(json.loads(raw), indent=4))
         with pytest.raises(CorruptTrustStateError):
             store.load()
+
+# ── Supported-DIY additive envelope fields (THR-097 Unit 3A) ───────────────
+
+
+class TestDiyEnvelopeFields:
+    def test_credential_digest_and_pending_pairings_round_trip(self, tmp_path) -> None:
+        """credential_digest (device) and pending_pairings (payload) persist
+        through save/load with full pair validation."""
+        from datetime import timedelta
+
+        from runtime.remote_access.authorization import PendingPairing
+        from runtime.remote_access.identity import ConnectorIdentity
+
+        identity = ConnectorIdentity(
+            tenant_id="diy", home_id="home-a", connector_id="connector-a"
+        )
+        state = TrustState(connector_identity=identity, pairing_epoch=0, revocation_epoch=0)
+        state.apply_pairing(
+            DeviceAuthorization(
+                device_id="macbook-pro",
+                tenant_id="diy",
+                home_id="home-a",
+                authorization_epoch=1,
+                expires_at=NOW() + timedelta(days=365),
+                credential_digest="a" * 64,
+            )
+        )
+        state.pending_pairings["phone"] = PendingPairing(
+            code_digest="b" * 64,
+            expires_at=NOW() + timedelta(minutes=5),
+        )
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", state)
+        store.save(state)
+        loaded = AtomicFileTrustStateStore(tmp_path / "trust-state.json", state).load()
+        assert loaded.devices["macbook-pro"].credential_digest == "a" * 64
+        assert loaded.pending_pairings["phone"].code_digest == "b" * 64
+        assert loaded.pending_pairings["phone"].consumed is False
+
+    def test_old_envelope_without_new_fields_still_loads(self, tmp_path) -> None:
+        """Existing v2 envelopes that predate the Unit-3A fields (no
+        credential_digest / no pending_pairings) must still load: the new
+        fields are OPTIONAL (absent = None / {})."""
+        import hashlib
+        import json as _json
+
+        from runtime.remote_access.policy import canonical_json
+        from runtime.remote_access.state_store import (
+            ANCHOR_KIND,
+            ANCHOR_VERSION,
+            ENVELOPE_KIND,
+            ENVELOPE_VERSION,
+        )
+
+        # Build a PRE-3A envelope+anchor pair by hand (the anchor's
+        # snapshot_digest must cover the exact bytes — no new fields).
+        payload = {
+            "connector_identity": {
+                "tenant_id": "diy",
+                "home_id": "home-a",
+                "connector_id": "connector-a",
+            },
+            "pairing_epoch": 1,
+            "revocation_epoch": 0,
+            "current_device_id": None,
+            "devices": {
+                "legacy-device": {
+                    "device_id": "legacy-device",
+                    "tenant_id": "diy",
+                    "home_id": "home-a",
+                    "authorization_epoch": 1,
+                    "expires_at": (NOW() + timedelta(days=30)).isoformat(),
+                    "revoked": False,
+                }
+            },
+        }
+        envelope = {
+            "version": ENVELOPE_VERSION,
+            "kind": ENVELOPE_KIND,
+            "generation": 1,
+            "payload": payload,
+            "digest": hashlib.sha256(canonical_json(payload)).hexdigest(),
+        }
+        snapshot_bytes = _json.dumps(
+            envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        anchor = {
+            "version": ANCHOR_VERSION,
+            "kind": ANCHOR_KIND,
+            "generation": 1,
+            "snapshot_digest": hashlib.sha256(snapshot_bytes).hexdigest(),
+        }
+        anchor["digest"] = hashlib.sha256(canonical_json(anchor)).hexdigest()
+        snapshot_path = tmp_path / "trust-state.json"
+        snapshot_path.write_bytes(snapshot_bytes)
+        anchor_path = Path(str(snapshot_path) + ".anchor")
+        anchor_path.write_bytes(
+            _json.dumps(anchor, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        )
+        snapshot_path.chmod(0o600)
+        anchor_path.chmod(0o600)
+
+        from runtime.remote_access.authorization import TrustState as TS
+        from runtime.remote_access.identity import ConnectorIdentity
+
+        identity = ConnectorIdentity(
+            tenant_id="diy", home_id="home-a", connector_id="connector-a"
+        )
+        default = TS(connector_identity=identity, pairing_epoch=0, revocation_epoch=0)
+        loaded = AtomicFileTrustStateStore(snapshot_path, default).load()
+        assert loaded.devices["legacy-device"].credential_digest is None
+        assert loaded.pending_pairings == {}
+
+    def test_invalid_credential_digest_fails_closed(self, tmp_path) -> None:
+        from datetime import timedelta
+
+        from runtime.remote_access.identity import ConnectorIdentity
+
+        identity = ConnectorIdentity(
+            tenant_id="diy", home_id="home-a", connector_id="connector-a"
+        )
+        state = TrustState(connector_identity=identity, pairing_epoch=0, revocation_epoch=0)
+        state.apply_pairing(
+            DeviceAuthorization(
+                device_id="macbook-pro",
+                tenant_id="diy",
+                home_id="home-a",
+                authorization_epoch=1,
+                expires_at=NOW() + timedelta(days=365),
+                credential_digest="not-a-sha256",  # wrong shape
+            )
+        )
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", state)
+        store.save(state)
+        with pytest.raises(CorruptTrustStateError):
+            AtomicFileTrustStateStore(tmp_path / "trust-state.json", state).load()
+
+    def test_invalid_pending_pairing_digest_fails_closed(self, tmp_path) -> None:
+        from datetime import timedelta
+
+        from runtime.remote_access.authorization import PendingPairing
+        from runtime.remote_access.identity import ConnectorIdentity
+
+        identity = ConnectorIdentity(
+            tenant_id="diy", home_id="home-a", connector_id="connector-a"
+        )
+        state = TrustState(connector_identity=identity, pairing_epoch=0, revocation_epoch=0)
+        state.pending_pairings["phone"] = PendingPairing(
+            code_digest="short", expires_at=NOW() + timedelta(minutes=5)
+        )
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", state)
+        store.save(state)
+        with pytest.raises(CorruptTrustStateError):
+            AtomicFileTrustStateStore(tmp_path / "trust-state.json", state).load()

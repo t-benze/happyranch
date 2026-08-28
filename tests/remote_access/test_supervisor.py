@@ -1003,3 +1003,155 @@ class TestManagedPaths:
         supervisor = _supervisor(tmp_path, config=cfg)
         spec = supervisor.unit_spec()
         assert "--lab-only" not in spec.exec_start
+
+
+# ── Supported-DIY provider wiring (THR-097 Unit 3A) ─────────────────────────
+
+
+def _diy_config(tmp_path, **overrides) -> ConnectorConfig:
+    from runtime.remote_access.diy_provider import DiyProviderConfig
+    from runtime.remote_access.network import NetworkConfig
+
+    fields = dict(
+        tenant_id="diy",
+        home_id="home-a",
+        connector_id="connector-a",
+        daemon_port=8999,
+        daemon_token_path=str(tmp_path / "daemon.token"),
+        policy_path=str(tmp_path / "policy.json"),
+        state_path=str(tmp_path / "state.json"),
+        unit_name="happyranch-connector.service",
+        system=False,
+        lab=None,
+        diy=DiyProviderConfig(
+            network=NetworkConfig(mode="explicit", address="100.64.0.5"),
+            bind_port=8443,
+        ),
+    )
+    fields.update(overrides)
+    return ConnectorConfig(**fields)
+
+
+class TestDiyConfig:
+    def test_lab_and_diy_mutually_exclusive(self, tmp_path) -> None:
+        config = _config(tmp_path, lab=True)
+        from runtime.remote_access.diy_provider import DiyProviderConfig
+        from runtime.remote_access.network import NetworkConfig
+
+        config.diy = DiyProviderConfig(
+            network=NetworkConfig(mode="explicit", address="100.64.0.5")
+        )
+        with pytest.raises(ConnectorConfigError, match="mutually exclusive"):
+            config.validate()
+
+    def test_config_file_round_trip_preserves_diy(self, tmp_path) -> None:
+        config = _diy_config(tmp_path)
+        path = tmp_path / "diy.json"
+        config.to_file(path)
+        loaded = ConnectorConfig.from_file(path)
+        assert loaded.diy is not None
+        assert loaded.diy.network.mode == "explicit"
+        assert loaded.diy.network.address == "100.64.0.5"
+        assert loaded.diy.bind_port == 8443
+        assert loaded.lab is None
+
+    def test_diy_config_validation_errors_fail_closed(self, tmp_path) -> None:
+        from runtime.remote_access.diy_provider import DiyProviderConfig
+        from runtime.remote_access.network import NetworkConfig
+
+        config = _diy_config(
+            tmp_path, diy=DiyProviderConfig(network=NetworkConfig(mode="explicit", address="0.0.0.0"))
+        )
+        with pytest.raises(ConnectorConfigError, match="diy"):
+            config.validate()
+
+    def test_unit_spec_carries_diy_flag(self, tmp_path) -> None:
+        config = _diy_config(tmp_path)
+        supervisor = ConnectorSupervisor(config=config)
+        spec = supervisor.unit_spec()
+        assert "--diy" in spec.exec_start
+
+    def test_initial_state_has_no_devices_for_diy(self, tmp_path) -> None:
+        config = _diy_config(tmp_path)
+        supervisor = ConnectorSupervisor(config=config)
+        state = supervisor.initial_state()
+        assert state.devices == {}
+        assert state.connector_identity is not None
+
+    def test_pairing_manager_persists_across_restart(self, tmp_path) -> None:
+        config = _diy_config(tmp_path)
+        supervisor = ConnectorSupervisor(config=config)
+        pairing = supervisor.pairing_manager()
+        issued = pairing.issue_pairing_code("macbook-pro")
+        credential = pairing.redeem_pairing(issued.code)
+        assert credential is not None
+        # Fresh supervisor over the same files:
+        fresh = ConnectorSupervisor(config=config)
+        state = fresh.pairing_manager().load_state()
+        assert "macbook-pro" in state.devices
+        assert state.devices["macbook-pro"].credential_digest is not None
+
+    def test_build_diy_provider(self, tmp_path, route_policy_fixture) -> None:
+        config = _diy_config(tmp_path)
+        supervisor = _supervisor(tmp_path, config=config, policy=build_consumer(route_policy_fixture))
+        provider = supervisor.build_diy_provider()
+        assert provider is not None
+        # A lab-only config has no diy provider.
+        lab_config = _config(tmp_path, lab=True)
+        lab_supervisor = _supervisor(tmp_path, config=lab_config, policy=build_consumer(route_policy_fixture))
+        assert lab_supervisor.build_diy_provider() is None
+
+    def test_diy_provider_listens_via_supervisor(self, tmp_path, route_policy_fixture) -> None:
+        """The supervisor's readiness-gated start actually brings the DIY
+        listener up on the resolved customer-network address."""
+        import subprocess
+
+        from runtime.remote_access.diy_provider import DiyProviderConfig
+        from runtime.remote_access.network import NetworkConfig
+        from runtime.remote_access.readiness import ConnectorReadiness
+
+        # Find a real non-loopback IPv4 (as in the adapter acceptance tests).
+        try:
+            out = subprocess.run(
+                ["ip", "-4", "-o", "addr", "show"], capture_output=True, text=True, check=False, timeout=10
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            pytest.skip("no ip tool for a real-network listener test")
+        addr = None
+        for line in out.splitlines():
+            parts = line.split()
+            for i, p in enumerate(parts):
+                if p == "inet" and i + 1 < len(parts):
+                    candidate = parts[i + 1].split("/")[0]
+                    if not candidate.startswith("127."):
+                        addr = candidate
+        if addr is None:
+            pytest.skip("host has no non-loopback IPv4 for a real listener test")
+
+        from runtime.remote_access.diy_provider import DiyProviderConfig as DPC
+        from runtime.remote_access.network import NetworkConfig as NC
+
+        config = _diy_config(
+            tmp_path,
+            diy=DPC(network=NC(mode="explicit", address=addr), bind_port=0),
+        )
+        supervisor = _supervisor(
+            tmp_path, config=config, policy=build_consumer(route_policy_fixture)
+        )
+
+        class Ready:
+            def evaluate(self, now):
+                from runtime.remote_access.readiness import GateResult, ReadinessReport
+
+                gates = {n: GateResult(True, f"{n}_ok", n) for n in ConnectorReadiness.GATE_NAMES}
+                return ReadinessReport(ready=True, gates=gates)
+
+        provider = supervisor.build_diy_provider()
+        provider._readiness = Ready()  # noqa: SLF001 — test seam
+        provider.start()
+        try:
+            assert provider.listening is True
+            assert provider.bound_port is not None
+            assert provider.bind_address == addr
+        finally:
+            provider.stop()

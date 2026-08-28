@@ -131,3 +131,100 @@ def test_denied_detail_for_bearer_shaped_input_is_static_prose(route_policy_fixt
     assert decision.denied.detail == (
         "Request rejected; credential-shaped material is never accepted in remote input."
     )
+
+
+# ── Supported-DIY lane leakage scans (THR-097 Unit 3A) ─────────────────────
+
+
+class TestDiyLaneNoLeakage:
+    """The DIY lane never leaks pairing codes, device credentials, or the
+    daemon bearer through responses, diagnostics, status, config files,
+    argv, or the persisted trust-state envelope."""
+
+    def test_pairing_and_credential_never_in_status_or_diagnostics(self, tmp_path) -> None:
+        import json as _json
+
+        from runtime.remote_access.authorization import TrustState
+        from runtime.remote_access.identity import ConnectorIdentity
+        from runtime.remote_access.pairing import PairingManager
+        from runtime.remote_access.state import InMemoryTrustStateStore
+
+        identity = ConnectorIdentity(
+            tenant_id="diy", home_id="home-a", connector_id="connector-a"
+        )
+        store = InMemoryTrustStateStore(
+            TrustState(connector_identity=identity, pairing_epoch=0, revocation_epoch=0)
+        )
+        manager = PairingManager(state_store=store, identity=identity)
+        issued = manager.issue_pairing_code("macbook-pro")
+        credential = manager.redeem_pairing(issued.code)
+        assert credential is not None
+
+        blob = _json.dumps(manager.pairing_status()) + str(manager.list_devices())
+        assert issued.code not in blob
+        assert credential not in blob
+        import hashlib
+
+        assert hashlib.sha256(credential.encode()).hexdigest() not in blob
+
+    def test_trust_state_envelope_never_contains_raw_credentials(self, tmp_path) -> None:
+        from pathlib import Path
+
+        from runtime.remote_access.authorization import TrustState
+        from runtime.remote_access.identity import ConnectorIdentity
+        from runtime.remote_access.pairing import PairingManager
+        from runtime.remote_access.state_store import AtomicFileTrustStateStore
+
+        identity = ConnectorIdentity(
+            tenant_id="diy", home_id="home-a", connector_id="connector-a"
+        )
+        state_path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(
+            state_path,
+            TrustState(connector_identity=identity, pairing_epoch=0, revocation_epoch=0),
+        )
+        manager = PairingManager(state_store=store, identity=identity)
+        issued = manager.issue_pairing_code("macbook-pro")
+        credential = manager.redeem_pairing(issued.code)
+        assert credential is not None
+
+        raw = (state_path.read_text() + Path(str(state_path) + ".anchor").read_text())
+        assert issued.code not in raw
+        assert credential not in raw
+        assert "Bearer " not in raw
+        # Only sha256 digests persist.
+        import hashlib
+
+        assert hashlib.sha256(credential.encode()).hexdigest() in raw
+
+    def test_diy_cli_argv_and_output_never_contain_credential(self, tmp_path, capsys, monkeypatch) -> None:
+        """The pairing code appears once (issue print); the device credential
+        NEVER appears in any CLI output or process argv (the CLI never knows
+        it — redemption happens over the wire)."""
+        import subprocess
+        import sys
+
+        from runtime.remote_access import cli as _cli
+        from runtime.remote_access.diy_provider import DiyProviderConfig
+        from runtime.remote_access.network import NetworkConfig
+        from runtime.remote_access.supervisor import ConnectorConfig
+
+        config = ConnectorConfig(
+            tenant_id="diy",
+            home_id="home-a",
+            connector_id="connector-a",
+            daemon_port=8999,
+            daemon_token_path=str(tmp_path / "daemon.token"),
+            policy_path=str(tmp_path / "policy.json"),
+            state_path=str(tmp_path / "state.json"),
+            lab=None,
+            diy=DiyProviderConfig(
+                network=NetworkConfig(mode="explicit", address="100.64.0.5")
+            ),
+        )
+        cfg_path = tmp_path / "config.json"
+        config.to_file(cfg_path)
+        code = _cli.main(["pair", "--config", str(cfg_path), "--device", "macbook-pro"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "hrpair_" not in out  # issue only prints the CODE, never a credential

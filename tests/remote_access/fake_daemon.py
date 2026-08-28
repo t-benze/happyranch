@@ -24,14 +24,14 @@ class FakeDaemon:
     tests for both HTTP and SSE.
     """
 
-    def __init__(self, expected_bearer: str, hold_open: bool = False) -> None:
+    def __init__(self, expected_bearer: str, hold_open: bool = False, port: int = 0) -> None:
         self.expected_bearer = expected_bearer
         self.requests: list[dict] = []
         self.hold_open = hold_open
         self.started = threading.Event()
         self.release = threading.Event()
         self._server = ThreadingHTTPServer(
-            (LOOPBACK_HOST, 0), self._handler_factory()
+            (LOOPBACK_HOST, port), self._handler_factory()
         )
         self._port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
