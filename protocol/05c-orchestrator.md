@@ -1115,6 +1115,36 @@ agent-driven Schedule records with a dedicated scheduler/runner/spawn-callback
 pipeline. The two systems coexist and do not share data or scheduling
 infrastructure.
 
+**Advisory workspace-disk context for schedule-spawned task sessions
+(THR-195 / TASK-5971).** When the daemon launches a task session for a root
+task that a Schedule spawned (the task's id appears in that Schedule's
+``spawned_task_ids`` — resolved by the no-schema reverse lookup
+``ScheduleStore.find_by_spawned_task_id``), the orchestrator composes a
+bounded, fail-open **ADVISORY** workspace-disk snapshot into the session
+prompt through the existing ``protocol_doc_manifest`` note seam (the same
+seam as the repo-freshness note). This exists so recurring cleanup runs get
+standard daemon-side sizing/status context at trigger time without paying for
+an inventory session.
+
+The block is advisory sizing context ONLY. It is packed fresh at session
+launch — it is never templated into, or persisted as, ``normalized_brief``
+or any Schedule field. It is **stale on arrival**, is **not an eligibility
+list** and **not a candidate list**, labels no path safe, and recommends no
+removal. Every path and fact must be re-derived independently and immediately
+before any action. The block carries only aggregate measurements/status:
+``measured_at``; aggregate total and largest workspace sizes; aggregate
+registered-worktree counts joined to task status (``TASK-\d+`` prefix match
+handles suffixed worktree names like ``TASK-5567-base691``; unknown or
+missing tasks are unclassified, never assumed terminal); aggregate
+dependency-directory (``node_modules``/``.venv``) counts/sizes including the
+inside-``.claude/worktrees`` split; and live sessions by agent from
+``SessionTracker``. It never enumerates paths and never uses pending jobs or
+``blocked_on_job_ids`` as liveness. Measurement is explicitly bounded
+(wall-clock deadline, entry/depth/git-subprocess caps) and fail-open: any
+timeout or error produces an explicit ``measurement unavailable`` advisory
+note and can never prevent session spawning. Ordinary (non-schedule-spawned)
+task, thread, wake, dream, and schedule-fire sessions never receive the block.
+
 ---
 
 ## 4. Runtime-Managed Skill Policy (CONTEXT/ADMISSION)

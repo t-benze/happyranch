@@ -1234,6 +1234,26 @@ workspaces/
 > classification (allow / named exclusion / reject); see 05c-orchestrator
 > §Organization portability.
 
+**Advisory workspace-disk context (THR-195 / TASK-5971).** At task-session
+launch (``Orchestrator._run_agent``), a bounded, fail-open **ADVISORY**
+workspace-disk snapshot may be packed into the session prompt through the
+``protocol_doc_manifest`` note seam (the same seam as the repo-freshness
+note) — but ONLY when the launched root task was spawned by a Schedule
+(reverse lookup over the existing ``schedules.spawned_task_ids`` link;
+ordinary task, thread, wake, dream, and schedule-fire sessions never receive
+it). The block is packed fresh at session launch; it is never stored in the
+task brief or in any Schedule field. It is **stale on arrival**, is **not an
+eligibility list** and **not a candidate list**, labels no path safe, and
+recommends no removal — every path and fact must be re-derived independently
+and immediately before any action. It contains only aggregate measurements
+(total/largest workspace sizes, registered-worktree counts joined to task
+status, dependency-directory counts/sizes, live sessions by agent) and never
+enumerates paths. Measurement is bounded (wall-clock deadline, traversal and
+subprocess caps) and fail-open: a timeout or error yields an explicit
+``measurement unavailable`` advisory note and never prevents session
+spawning. See 05c-orchestrator §Advisory workspace-disk context for the
+full contract.
+
 ### Three layers of memory
 
 **1. Institutional memory (knowledge base)**

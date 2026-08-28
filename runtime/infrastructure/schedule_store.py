@@ -185,6 +185,37 @@ class ScheduleStore:
             ).fetchall()
         return self._models_skipping_unknown_kinds(rows)
 
+    def find_by_spawned_task_id(self, task_id: str) -> ScheduleRecord | None:
+        """Reverse lookup: the Schedule that spawned ``task_id``, or None.
+
+        THR-195 / TASK-5971: the existing durable Schedule→task link is
+        ``spawned_task_ids`` (a JSON column appended by the spawn callback).
+        This read-only, no-schema reverse lookup identifies schedule-spawned
+        task sessions so the daemon can pack advisory workspace context into
+        exactly those prompts. Exact-value match only (TASK-100 never matches
+        a row that spawned TASK-1000). Malformed JSON or any read error
+        fails open to None.
+        """
+        if not task_id:
+            return None
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT * FROM schedules WHERE EXISTS ("
+                    "  SELECT 1 FROM json_each(schedules.spawned_task_ids) "
+                    "  WHERE json_each.value = ?"
+                    ")",
+                    (task_id,),
+                ).fetchall()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            return None
+        if not rows:
+            return None
+        try:
+            return self._row_to_model(rows[0])
+        except UnknownScheduleKindError:
+            return None
+
     def list_ids_by_status(self, statuses: set[str]) -> list[str]:
         """Exhaustive status-filtered schedule-id query (no cap, DB-side filter).
 
