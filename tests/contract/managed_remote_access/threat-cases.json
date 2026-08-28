@@ -1042,6 +1042,50 @@
       }
     },
     {
+      "id": "REV-005",
+      "class": "hostile",
+      "category": "revoked_mid_stream",
+      "scenario": "Revocation races an explicit single-stream close and the close linearizes first. The close's membership pop and wrapper seal are ONE atomic transition under the lifecycle boundary, and its outside-lock transport close remains INSIDE the revocation acknowledgement barrier: revocation cannot publish success while the pre-seal stream's transport cleanup is in flight, and no usable wrapper survives at revocation success.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/{slug}/jobs/{job_id}/follow",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "revocation",
+        "audit_category": "revocation_stream_closed",
+        "failure_detail": "Stream closed on revocation; a pre-seal single-close's transport cleanup is acknowledged before revocation success.",
+        "proves": "a single-stream close that linearizes before the seal seals its wrapper atomically with membership removal and its transport close stays inside the revocation acknowledgement barrier"
+      }
+    },
+    {
+      "id": "REV-006",
+      "class": "hostile",
+      "category": "revoked_mid_stream",
+      "scenario": "Revocation races an explicit single-stream close and the revocation seal linearizes first. The post-seal close is an idempotent no-op: membership is already empty and the wrapper already sealed, so the transport is closed exactly once (by the revocation snapshot) and never double-closed.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/{slug}/jobs/{job_id}/log",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "revocation",
+        "audit_category": "revocation_stream_closed",
+        "failure_detail": "Stream closed on revocation; a post-seal single-close is an idempotent no-op and never double-closes the transport.",
+        "proves": "a single-stream close that linearizes after the seal is an idempotent no-op; the revocation snapshot owns the exactly-once transport close"
+      }
+    },
+    {
       "id": "ROUTE-001",
       "class": "hostile",
       "category": "forbidden_route",

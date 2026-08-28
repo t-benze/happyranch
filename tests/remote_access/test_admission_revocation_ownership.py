@@ -158,10 +158,10 @@ def _pause_wrapper_construction(monkeypatch, entered: threading.Event, release: 
     """
     original_init = _TrackedStream.__init__
 
-    def paused_init(self, stream_id, inner):
+    def paused_init(self, stream_id, inner, registry):
         entered.set()
         assert release.wait(timeout=15), "harness: admission never released"
-        original_init(self, stream_id, inner)
+        original_init(self, stream_id, inner, registry)
 
     monkeypatch.setattr(_TrackedStream, "__init__", paused_init)
 
@@ -380,9 +380,11 @@ def test_concurrent_admissions_racing_seal_every_surface_closed_or_denied(monkey
 
 def test_duplicate_id_replacement_close_runs_outside_lifecycle_lock() -> None:
     """Duplicate-id replacement: the old wrapper is sealed and its transport
-    close runs OUTSIDE the lifecycle lock. While the replacement close is
-    blocked, a concurrent close_all must still be able to take the lock and
-    complete (no lock-across-callback deadlock)."""
+    close runs OUTSIDE the lifecycle lock but INSIDE the revocation
+    acknowledgement barrier. While the replacement close is blocked, a
+    concurrent close_all must still take the lock and seal (no lock-across-
+    callback deadlock) but must NOT publish success until the replacement
+    transport close is terminal."""
     registry = StreamRegistry()
     entered = threading.Event()
     release = threading.Event()
@@ -403,23 +405,30 @@ def test_duplicate_id_replacement_close_runs_outside_lifecycle_lock() -> None:
         finally:
             done.set()
 
-    closer_thread = threading.Thread(target=closer, daemon=True)
+    closer_thread = threading.Thread(target=closer)
     try:
         replacer.start()
         assert entered.wait(timeout=15), "replacement transport close must be invoked"
         # The replacement close is running (outside the lock). A concurrent
-        # close_all must complete — it would deadlock if the replacement
-        # close executed under the lifecycle lock.
+        # close_all must still take the lifecycle lock and complete its seal
+        # section — it would deadlock if the replacement close executed under
+        # the lifecycle lock.
         closer_thread.start()
-        assert done.wait(timeout=5), (
-            "close_all deadlocked behind the replacement transport close — "
-            "duplicate-replacement callback ran under the lifecycle lock"
+        # The acknowledgement barrier holds: close_all must NOT publish
+        # success while the pre-seal replacement transport close is in flight.
+        assert done.wait(timeout=0.5) is False, (
+            "close_all published success while the replacement transport close "
+            "was in flight (acknowledgement barrier bypassed)"
+        )
+        assert registry._revoked is True, (
+            "close_all's seal must complete (no lock-across-callback deadlock)"
         )
     finally:
         release.set()
     replacer.join(timeout=15)
     closer_thread.join(timeout=15)
     assert not replacer.is_alive() and not closer_thread.is_alive()
+    assert done.is_set(), "close_all must complete after the barrier is acknowledged"
 
     wrapper = replacement_outcome["wrapper"]
     assert wrapper is not None
@@ -539,7 +548,7 @@ def test_mutation_unlocked_admission_boundary_is_detected(monkeypatch) -> None:
         previous = self._streams.get(stream_id)
         if previous is not None and previous._inner is not handle:
             previous.close()
-        tracked = _TrackedStream(stream_id, handle)
+        tracked = _TrackedStream(stream_id, handle, self)
         self._streams[stream_id] = tracked
         return tracked
 
@@ -570,7 +579,7 @@ def test_mutation_success_returned_before_acknowledgement_is_detected() -> None:
     original = StreamRegistry.open
 
     def _return_before_ack(self, stream_id, handle):
-        tracked = _TrackedStream(stream_id, handle)
+        tracked = _TrackedStream(stream_id, handle, self)
         if self._revoked:
             raise StreamClosed(stream_id)
         return tracked  # SUCCESS returned before registration/acknowledgement

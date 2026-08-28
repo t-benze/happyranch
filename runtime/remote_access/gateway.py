@@ -381,12 +381,14 @@ class ConnectorGateway:
                 except Exception as exc:
                     # Mid-stream receive failure (connection reset, HTTP parse
                     # error, ...): drop the partial stream deterministically and
-                    # normalize the denial.
+                    # normalize the denial. The registry owns the handle once it
+                    # was passed to open(): the close (membership removal +
+                    # seal + transport close) is the registry's job — the
+                    # gateway never double-closes the raw handle.
                     try:
                         ctx.stream_registry.close(stream_id)
                     except Exception:
                         pass
-                    _close_partial(handle)
                     return self._redact(_forward_failure(exc))
             return Decision(
                 allowed=True,

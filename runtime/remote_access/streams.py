@@ -1,5 +1,5 @@
 """Stream/session registry — revocation closes open streams fail closed
-(contract §9; REV-002/REV-003).
+(contract §9; REV-002/REV-003/REV-004/REV-005/REV-006).
 
 A closed stream refuses further frames; new streams are refused after a
 revocation has closed the registry.
@@ -8,13 +8,24 @@ The registry owns the cleanup lifecycle as a one-shot state machine: the
 first ``close_all`` seals and runs the transport cleanup exactly once, and
 the terminal result is shared/persisted so that NO caller may return success
 while an in-flight or completed cleanup failure relevant to the sealed
-generation is unreported (TASK-5867). Admission and revocation share ONE
-atomic ownership boundary (TASK-5874): ``open``'s sealed-check + registration
-and ``close_all``'s seal + snapshot are the same critical section, so no
-admission that linearizes after the seal can return a usable wrapper.
-Transport-close callbacks never run under the lifecycle lock, and same-thread
-re-entrant ``close_all`` returns immediately — there is no lock-across-
-callback deadlock.
+generation is unreported (TASK-5867).
+
+ADMISSION AND EVERY OWNERSHIP/MEMBERSHIP MUTATION SHARE ONE ATOMIC LIFECYCLE
+BOUNDARY (TASK-5874, extended by the THR-097 Unit-C fresh lifecycle
+redesign): a single lifecycle lock guards BOTH the sealed flag (``_revoked``)
+and registry membership (``_streams``). Every public membership mutation —
+``open`` admission, duplicate-id replacement, ``close(stream_id)`` single
+close, the retained-wrapper public ``close``, and ``close_all`` revocation —
+performs its membership transition AND the seal of every affected public
+wrapper in ONE critical section, so the affected wrapper(s) are sealed UNDER
+that boundary before membership/ownership can escape (there is no
+pop-without-seal window — TASK-5888). Physical transport close/open
+callbacks execute OUTSIDE the lock but remain INSIDE the revocation
+acknowledgement barrier: ``close_all`` may publish success only after every
+pre-seal stream is unusable/closed, every outside-lock transport close that
+linearized before the seal is terminal, and no post-seal admission can return
+usable. Same-thread re-entrant ``close_all`` returns immediately — there is
+no lock-across-callback deadlock.
 """
 from __future__ import annotations
 
@@ -69,21 +80,32 @@ class _TrackedStream:
 
     The registry hands out THIS object (never the raw handle): the externally
     retained HTTP/SSE/WebSocket surface is the wrapper, whose public state is
-    owned by the registry. Once the wrapper is sealed (revocation or close),
-    the surface goes fail-closed IRREVOCABLY: ``receive``/``send`` raise
+    owned by the registry. Once the wrapper is sealed (revocation, single
+    close, duplicate replacement, or the client's own ``close``), the surface
+    goes fail-closed IRREVOCABLY: ``receive``/``send`` raise
     ``StreamClosed``, ``closed`` reports True, and ``close`` is an idempotent
     no-op — regardless of whether the underlying transport ``close()``
     succeeded or raised. A failing transport close is surfaced through
     ``StreamCloseError``/``RevocationIncomplete`` carrying the stream id, and
     ``cleanup_failed`` records the outcome evidence without claiming physical
     closure.
+
+    The retained-wrapper public ``close`` is a REGISTRY MEMBERSHIP MUTATION:
+    it routes through ``StreamRegistry.close`` so the membership removal and
+    the seal are ONE atomic lifecycle transition (the registry owns the
+    wrapper's lifecycle; the client-held wrapper can never escape the atomic
+    seal). The wrapper is constructed OUTSIDE the lifecycle lock (it has no
+    callbacks), which is the deterministic race-test seam: an admission can
+    pause between construction and registration while a revocation completes,
+    and must still fail closed.
     """
 
-    __slots__ = ("stream_id", "_inner", "_sealed", "_cleanup_failed")
+    __slots__ = ("stream_id", "_inner", "_sealed", "_cleanup_failed", "_registry")
 
-    def __init__(self, stream_id: str, inner: StreamHandle) -> None:
+    def __init__(self, stream_id: str, inner: StreamHandle, registry: "StreamRegistry") -> None:
         self.stream_id = stream_id
         self._inner = inner
+        self._registry = registry
         self._sealed = False
         self._cleanup_failed = False
 
@@ -131,18 +153,25 @@ class _TrackedStream:
     def seal(self) -> None:
         """Seal the public surface BEFORE any transport close is attempted
         (fail-closed ordering): from this instant the retained handle rejects
-        receive/send and reports closed, even if ``_close_inner`` raises."""
+        receive/send and reports closed, even if ``_close_inner`` raises.
+        Only ever called under the lifecycle lock, atomically with the
+        membership transition that owns this wrapper."""
         self._sealed = True
 
     def close(self) -> None:
-        """Close the stream. Once sealed this is an idempotent no-op (the
-        revocation transaction owns cleanup after sealing); before sealing, the
-        surface is sealed first and the inner close is attempted — a failure
-        propagates but never unseals the retained handle."""
+        """Retained-wrapper public close — a REGISTRY MEMBERSHIP MUTATION.
+
+        Routes through ``StreamRegistry.close`` so the membership removal and
+        the wrapper seal are ONE atomic lifecycle transition under the
+        lifecycle lock (the wrapper is the registry-owned surface; the
+        registry runs the transport close outside the lock and acknowledges
+        it on the revocation acknowledgement barrier). Once sealed this is an
+        idempotent no-op (the revocation transaction owns cleanup after
+        sealing).
+        """
         if self._sealed:
             return
-        self._sealed = True
-        self._close_inner()
+        self._registry.close(self.stream_id)
 
     def _close_inner(self) -> None:
         """Attempt the underlying transport close, recording the failure
@@ -158,34 +187,49 @@ class StreamRegistry:
     """Tracks open streams; ``close_all`` (revocation) closes every handle and
     permanently refuses new streams.
 
-    ADMISSION AND REVOCATION SHARE ONE ATOMIC OWNERSHIP BOUNDARY
-    (TASK-5874): a single lifecycle lock guards BOTH the sealed flag
-    (``_revoked``) and registry membership. ``open`` performs its sealed-flag
-    check and its registration in ONE critical section, so an admission is
-    successful ONLY if it is fully registered before the revocation seal;
-    every admission that linearizes after the seal fails closed and NEVER
-    returns a usable wrapper. ``close_all`` performs the seal (the
-    linearization point) and the live-stream snapshot in the SAME critical
-    section, so the snapshot contains exactly the pre-seal registrations and
-    no post-seal registration can exist.
+    ONE ATOMIC LIFECYCLE BOUNDARY (TASK-5874, fresh lifecycle redesign): a
+    single lifecycle lock guards BOTH the sealed flag (``_revoked``) and
+    registry membership. EVERY public membership mutation — ``open``
+    admission, duplicate-id replacement, ``close(stream_id)``, the
+    retained-wrapper public ``close``, and ``close_all`` — performs its
+    membership transition AND the seal of every affected public wrapper in
+    ONE critical section (the seal never lags the membership transition — no
+    pop-without-seal window, TASK-5888), and runs physical transport
+    close/open callbacks OUTSIDE the lock but INSIDE the revocation
+    acknowledgement barrier.
 
-    Every open handle is wrapped in a ``_TrackedStream`` whose public state is
-    owned by the registry: after revocation the externally retained wrapper
-    irrevocably rejects receive/send even when the underlying transport close
-    raised — a revoked device never retains a live stream and no handle is
-    ever left readable, writable, or untracked.
+    Linearization points:
 
-    Transport open/close and duplicate-replacement callbacks NEVER execute
-    under the lifecycle lock: once a handle is passed to ``open`` the registry
-    owns its cleanup, and the fail-closed path closes an unregistered
-    allocated handle outside the lock.
+    - ``open``: the sealed-flag check + registration insert in ONE critical
+      section. An admission is successful ONLY if it is fully registered
+      before the revocation seal; every admission that linearizes after the
+      seal fails closed and NEVER returns a usable wrapper (the allocated
+      transport is closed by the registry itself, outside the lock).
+    - ``close(stream_id)`` / retained-wrapper ``close``: the membership pop +
+      wrapper seal in ONE critical section; the transport close runs outside
+      the lock on the acknowledgement barrier.
+    - duplicate-id replacement: the old wrapper's pop + seal and the new
+      wrapper's insert in ONE critical section; the replaced transport close
+      runs outside the lock on the acknowledgement barrier (a same-handle
+      re-registration never closes the shared inner).
+    - ``close_all``: the seal (the **linearization point**) + wrapper seals +
+      snapshot + membership clear in ONE critical section, seal before
+      snapshot; then the runner waits for every outside-lock transport close
+      that linearized before the seal (acknowledgement barrier), runs the
+      snapshot transport closes outside the lock, and publishes the shared
+      terminal result.
+
+    Revocation success is permitted only after the registry is sealed, every
+    pre-seal registered wrapper is irrevocably unusable, every required
+    physical-cleanup outcome is terminal and acknowledged, and no post-seal
+    admission can return usable.
     """
 
     def __init__(self) -> None:
         self._streams: dict[str, _TrackedStream] = {}
         self._revoked = False
         # ── cleanup lifecycle (one-shot; terminal result shared/persisted) ──
-        # ONE lock = the atomic ownership boundary: guards the sealed flag AND
+        # ONE lock = the atomic lifecycle boundary: guards the sealed flag AND
         # registry membership. Callbacks (transport open/close, duplicate
         # replacement) never run under it.
         self._lock = threading.Lock()
@@ -193,6 +237,54 @@ class StreamRegistry:
         self._cleanup_done = threading.Event()
         self._cleanup_failed_ids: tuple[str, ...] = ()
         self._in_cleanup = threading.local()  # same-thread re-entrancy guard
+        # ── revocation acknowledgement barrier ────────────────────────────
+        # Outside-lock transport closes that linearized before the seal are
+        # registered here and must become terminal before close_all success.
+        # A thread-local counter tracks the calling thread's OWN in-flight
+        # closes so the barrier never waits on them: a transport-close
+        # callback that re-enters close_all on the same thread cannot wait on
+        # its own stack frame (that would self-deadlock) — its close completes
+        # immediately after close_all returns.
+        self._cleanup_in_flight = 0
+        self._cleanup_ack = threading.Condition()
+        self._self_inflight = threading.local()  # same-thread in-flight closes
+
+    # ── revocation acknowledgement barrier (lifecycle steps) ─────────────
+
+    def _begin_inflight_close(self) -> None:
+        """Register an outside-lock transport close on the revocation
+        acknowledgement barrier. Called UNDER the lifecycle lock, atomically
+        with the membership transition that owns the close (so the revocation
+        seal, in the same lock, can never miss it). Also counts the calling
+        thread's own in-flight closes so the barrier never self-deadlocks."""
+        self._cleanup_in_flight += 1
+        self._self_inflight.count = getattr(self._self_inflight, "count", 0) + 1
+
+    def _end_inflight_close(self) -> None:
+        """Acknowledge that an outside-lock transport close is TERMINAL.
+        Called AFTER the close terminates (success or recorded failure),
+        never under the lifecycle lock. Wakes the close_all acknowledgement
+        waiters."""
+        with self._lock:
+            self._cleanup_in_flight -= 1
+        self._self_inflight.count = getattr(self._self_inflight, "count", 1) - 1
+        with self._cleanup_ack:
+            self._cleanup_ack.notify_all()
+
+    def _wait_for_inflight_acknowledgement(self) -> None:
+        """The revocation acknowledgement barrier: ``close_all``'s runner
+        waits (with NO lock held) for every outside-lock transport close that
+        linearized before the seal to become terminal, before running its own
+        snapshot cleanup — revocation never publishes success while a pre-seal
+        transport close is in flight, and no outside-lock callback can ever
+        deadlock against the wait (callbacks run on their own threads, which
+        acknowledge via ``_end_inflight_close``). The calling thread's OWN
+        in-flight closes are excluded: they sit on this thread's stack (the
+        re-entrant callback IS the close) and complete the moment this wait
+        returns — waiting on them would self-deadlock."""
+        with self._cleanup_ack:
+            while self._cleanup_in_flight - getattr(self._self_inflight, "count", 0) > 0:
+                self._cleanup_ack.wait()
 
     @staticmethod
     def _close_unexposed(handle: StreamHandle) -> None:
@@ -210,27 +302,34 @@ class StreamRegistry:
         """Admit ``handle`` under ``stream_id`` and return the registry-owned
         wrapper — the raw handle is never handed out.
 
-        Ownership boundary (TASK-5874): the sealed-flag check and the
+        One atomic lifecycle boundary: the sealed-flag check and the
         registration are ONE critical section on the lifecycle lock. An
         admission is successful ONLY if it fully registers before the seal:
 
         - if the seal already linearized, the admission fails closed: the
-          allocated transport is closed OUTSIDE the lock (never leaked, never
-          returned) and ``StreamClosed`` is raised — even when transport
-          allocation or callbacks raced;
+          allocated transport is closed OUTSIDE the lock (registered on the
+          acknowledgement barrier — never leaked, never returned) and
+          ``StreamClosed`` is raised — even when transport allocation or
+          callbacks raced;
         - a duplicate-id replacement seals the previous wrapper and closes its
-          transport OUTSIDE the lock (callbacks never run under the lock);
+          transport OUTSIDE the lock on the acknowledgement barrier (callbacks
+          never run under the lock; the replaced transport close is terminal
+          before ``close_all`` success);
         - a pre-seal registration is included in ``close_all``'s snapshot and
           revoked with it.
         """
-        tracked = _TrackedStream(stream_id, handle)  # construction: no callbacks
+        tracked = _TrackedStream(stream_id, handle, self)  # construction: no callbacks
         replace: _TrackedStream | None = None
+        doomed: StreamHandle | None = None
         with self._lock:
             if self._revoked:
                 # The seal already linearized: this admission is NOT fully
                 # registered before the seal — fail closed below, outside the
-                # lock.
+                # lock. The unexposed handle's close is registered on the
+                # acknowledgement barrier so it too is terminal before any
+                # in-flight revocation publishes success.
                 doomed = handle
+                self._begin_inflight_close()
             else:
                 previous = self._streams.get(stream_id)
                 if previous is not None:
@@ -238,30 +337,50 @@ class StreamRegistry:
                     previous.seal()  # retained old wrapper fail-closes now
                     if previous._inner is not handle:
                         replace = previous  # different transport: close outside
+                        self._begin_inflight_close()
                 self._streams[stream_id] = tracked  # registration linearizes
-                doomed = None
         if doomed is not None:
-            self._close_unexposed(doomed)
+            try:
+                self._close_unexposed(doomed)
+            finally:
+                self._end_inflight_close()
             raise StreamClosed(stream_id)
         if replace is not None:
-            # Duplicate-replacement transport close runs OUTSIDE the lock
-            # (callbacks never run under it); a failure is recorded on the
-            # replaced wrapper (``cleanup_failed``) and never blocks the new
-            # admission.
+            # Duplicate-replacement transport close runs OUTSIDE the lock on
+            # the acknowledgement barrier (callbacks never run under it); a
+            # failure is recorded on the replaced wrapper (``cleanup_failed``)
+            # and never blocks the new admission. The barrier ack fires when
+            # the close is terminal.
             try:
                 replace._close_inner()
             except Exception:
                 pass
+            finally:
+                self._end_inflight_close()
         return tracked
 
     def close(self, stream_id: str) -> None:
-        """Close one tracked stream: the wrapper is dropped under the lock,
-        then sealed and its transport closed OUTSIDE the lock (the failure
-        propagates but never unseals)."""
+        """Close one tracked stream: the membership removal AND the wrapper
+        seal are ONE atomic transition under the lifecycle lock — there is no
+        pop-without-seal window in which a concurrent revocation could publish
+        success while the retained wrapper is still usable (TASK-5888). The
+        transport close runs OUTSIDE the lock on the revocation
+        acknowledgement barrier: ``close_all`` waits for it to be terminal
+        before publishing success. The transport-close failure propagates to
+        the caller but never unseals the wrapper; a missing/unknown stream id
+        is an idempotent no-op."""
+        tracked: _TrackedStream | None = None
         with self._lock:
             tracked = self._streams.pop(stream_id, None)
-        if tracked is not None:
-            tracked.close()
+            if tracked is not None:
+                tracked.seal()  # atomic with membership removal (TASK-5888)
+                self._begin_inflight_close()
+        if tracked is None:
+            return
+        try:
+            tracked._close_inner()
+        finally:
+            self._end_inflight_close()
 
     def close_all(self) -> None:
         """Seal the registry and close every open handle exactly once, sharing
@@ -273,18 +392,24 @@ class StreamRegistry:
         1. the FIRST caller seals the registry and every retained wrapper
            (fail-closed byte safety), snapshots the streams, and marks the
            cleanup started — all under the lifecycle lock, in the SAME
-           critical section ``open`` uses for its sealed-check + registration
-           (one atomic ownership boundary: the seal is the linearization
-           point and occurs BEFORE the snapshot, and no post-seal admission
-           can register);
-        2. transport closes run OUTSIDE the lock (callbacks never run under
-           it; a same-thread re-entrant ``close_all`` from inside a callback
-           returns immediately via the thread-local guard);
-        3. concurrent callers WAIT on ``_cleanup_done`` without holding any
+           critical section every mutation uses for its seal+membership
+           transition (one atomic lifecycle boundary: the seal is the
+           linearization point and occurs BEFORE the snapshot, and no
+           post-seal admission can register);
+        2. the runner then enters the REVOCATION ACKNOWLEDGEMENT BARRIER:
+           it waits (holding no lock) for every outside-lock transport close
+           that linearized before the seal — single-close, retained-wrapper
+           close, duplicate replacement, fail-closed admission — to become
+           terminal, so revocation never publishes success while a pre-seal
+           transport is still open;
+        3. snapshot transport closes run OUTSIDE the lock (callbacks never
+           run under it; a same-thread re-entrant ``close_all`` from inside a
+           callback returns immediately via the thread-local guard);
+        4. concurrent callers WAIT on ``_cleanup_done`` without holding any
            lock and then observe the SAME persisted terminal result — a
            racing revoke can never treat an in-flight cleanup as a
            successful idempotent no-op;
-        4. every subsequent caller re-raises the persisted failures as
+        5. every subsequent caller re-raises the persisted failures as
            ``StreamCloseError`` — a completed cleanup failure relevant to the
            sealed generation is never silently forgotten.
 
@@ -293,7 +418,8 @@ class StreamRegistry:
         leave the externally retained handle readable, writable, or
         untracked. Revocation success is permitted only after the registry is
         sealed, every pre-seal registered wrapper is irrevocably unusable,
-        and every required physical-cleanup outcome is acknowledged.
+        every required physical-cleanup outcome is terminal and acknowledged,
+        and no post-seal admission can return usable.
         """
         if getattr(self._in_cleanup, "active", False):
             # Same-thread re-entrancy from within a transport-close callback:
@@ -327,6 +453,10 @@ class StreamRegistry:
             with self._lock:
                 failures = self._cleanup_failed_ids
         elif role == "run":
+            # Revocation acknowledgement barrier: every outside-lock transport
+            # close that linearized before the seal must be terminal before
+            # success (single close / replacement / fail-closed admission).
+            self._wait_for_inflight_acknowledgement()
             failed: list[str] = []
             self._in_cleanup.active = True
             try:
@@ -347,8 +477,15 @@ class StreamRegistry:
             raise StreamCloseError(failures)
 
     def is_open(self, stream_id: str) -> bool:
-        return stream_id in self._streams
+        """Derived membership read — synchronized on the lifecycle lock so the
+        reported truth is a real linearization point of the atomic boundary."""
+        with self._lock:
+            return stream_id in self._streams
 
     def raise_if_open(self, stream_id: str) -> None:
-        if not self.is_open(stream_id):
-            raise StreamClosed(stream_id)
+        """Fail closed when the stream is NOT a member of the registry (a
+        closed/never-registered stream must not be used). Synchronized on the
+        lifecycle lock like ``is_open``."""
+        with self._lock:
+            if stream_id not in self._streams:
+                raise StreamClosed(stream_id)
