@@ -18,11 +18,16 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 import time
 
 import pytest
 
-from runtime.platform.linux_systemd import LinuxSystemdBackend
+from runtime.platform.linux_systemd import (
+    LinuxSystemdBackend,
+    _KernelObservation,
+    _LaunchState,
+)
 from runtime.platform.session_backend import (
     BackendLaunchError,
     Capability,
@@ -801,6 +806,277 @@ def test_finish_empty_tree_teardown_zero_is_never_kernel_provenance():
     assert receipt.process_peak_provenance is not MeasurementProvenance.KERNEL
 
 
+def _set_exit_observation(
+    backend: LinuxSystemdBackend,
+    token: str,
+    *,
+    memory: int | None = None,
+    cpu: float | None = None,
+    proc: int | None = None,
+) -> None:
+    """Deterministic seam: record the exit-watcher's immutable observation
+    on the launch state (what the watcher thread stores after capturing the
+    kernel counters while the scope was alive)."""
+    with backend._launched_lock:
+        state = backend._launched[token]
+        state.observation = _KernelObservation(
+            captured_at=1.0,
+            memory_peak_bytes=memory,
+            cpu_total_seconds=cpu,
+            process_peak=proc,
+        )
+        state.capture_done.set()
+
+
+# ── exit-watcher capture: the deployed clean-success receipt defect ────
+
+
+def test_finish_uses_exit_capture_when_cgroup_vanished():
+    """THE shipped clean-success defect: the contained process exits and the
+    transient scope's cgroup is collected by systemd before ``finish`` runs,
+    so the finish-time counter read is empty. The exit-watcher's immutable
+    observation (captured while the scope was alive) must still publish
+    non-null KERNEL memory/CPU/process peaks — never null with unavailable
+    provenance despite guaranteed capabilities."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(backend, {})  # cgroup gone: no finish-time counters
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sh", "-c", "exit 0")))
+    _set_exit_observation(backend, running.token, memory=2_097_152, cpu=1.25, proc=5)
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt.memory_peak_bytes == 2_097_152
+    assert receipt.memory_peak_provenance is MeasurementProvenance.KERNEL
+    assert receipt.cpu_total_seconds == 1.25
+    assert receipt.cpu_total_provenance is MeasurementProvenance.KERNEL
+    assert receipt.process_peak == 5
+    assert receipt.process_peak_provenance is MeasurementProvenance.KERNEL
+
+
+def test_finish_merges_exit_capture_with_finish_read_as_max():
+    """The monotonic kernel counters merge the exit-watcher's capture and
+    the finish-time pre-stop read as the max; both are genuine KERNEL reads
+    and neither ``pids.current`` nor a sampled value is relabeled."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "inactive"))
+    _install_fake_read_file(
+        backend,
+        {
+            "memory.peak": "4194304",  # finish read higher for memory
+            "pids.peak": "3",  # finish read lower for pids
+            "cpu.stat": "usage_usec 500000\n",  # finish read lower for cpu
+            "pids.current": "3",
+        },
+    )
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sh", "-c", "exit 0")))
+    _set_exit_observation(backend, running.token, memory=2_097_152, cpu=2.0, proc=7)
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt.memory_peak_bytes == 4_194_304  # max of both KERNEL reads
+    assert receipt.cpu_total_seconds == 2.0  # exit capture cpu higher
+    assert receipt.process_peak == 7  # exit capture pids.peak higher
+    assert receipt.memory_peak_provenance is MeasurementProvenance.KERNEL
+    assert receipt.cpu_total_provenance is MeasurementProvenance.KERNEL
+    assert receipt.process_peak_provenance is MeasurementProvenance.KERNEL
+
+
+def test_finish_no_exit_capture_and_vanished_cgroup_is_unavailable():
+    """A vanished cgroup with NO exit capture and NO samples is never
+    fabricated: memory/CPU/process stay UNAVAILABLE (None) — the missing
+    cgroup cannot short-circuit to a fake kernel value."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "not-found"))
+    _install_fake_read_file(backend, {})  # cgroup gone; no capture either
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sh", "-c", "exit 0")))
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt.memory_peak_bytes is None
+    assert receipt.memory_peak_provenance is MeasurementProvenance.UNAVAILABLE
+    assert receipt.cpu_total_seconds is None
+    assert receipt.cpu_total_provenance is MeasurementProvenance.UNAVAILABLE
+    assert receipt.process_peak is None
+    assert receipt.process_peak_provenance is MeasurementProvenance.UNAVAILABLE
+
+
+def test_finish_vanished_cgroup_clean_with_explicit_evidence():
+    """A vanished cgroup corroborated by a positively-terminal unit state is
+    genuine emptiness (the scope was collected after the tree exited) — it
+    yields CLEAN/quiescent but ONLY with explicit ``cgroup_vanished``
+    evidence, never a silently-verified clean."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, "not-found"))
+    _install_fake_read_file(backend, {})
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sh", "-c", "exit 0")))
+    _set_exit_observation(backend, running.token, memory=1000, cpu=0.1, proc=2)
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt.cleanup_status is CleanupStatus.CLEAN
+    assert receipt.quiescent is True
+    assert "cgroup_vanished" in receipt.enforcement_events
+    assert "cgroup_procs_unreadable" not in receipt.enforcement_events
+    assert receipt.memory_peak_provenance is MeasurementProvenance.KERNEL
+
+
+def test_finish_vanished_cgroup_unknown_unit_state_fails_closed():
+    """A vanished cgroup with an UNKNOWN unit state never short-circuits to
+    falsely clean/quiescent evidence: the receipt stays INCOMPLETE with the
+    vanish recorded (fail-closed)."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+
+    def script(argv):
+        if "is-active" in argv:
+            return (1, "Failed to connect to bus")  # UNKNOWN unit state
+        return (0, "")
+
+    _install_fake_run(backend, script)
+    _install_fake_read_file(backend, {})
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sh", "-c", "exit 0")))
+    _set_exit_observation(backend, running.token, memory=1000, cpu=0.1, proc=2)
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt.cleanup_status is CleanupStatus.INCOMPLETE
+    assert receipt.quiescent is False
+    assert "cgroup_vanished" in receipt.enforcement_events
+
+
+def test_exit_watcher_captures_live_and_final_values():
+    """Deterministic watcher proof: a short-lived process exits; the
+    watcher's live ``pread`` polls carry the kernel counters while the
+    cgroup is valid and the immutable observation lands on the launch state
+    (non-null) after exit — the exact capture-before-teardown seam."""
+    backend = LinuxSystemdBackend()
+
+    def systemd_run_scope(unit, slice_name, argv, **kwargs):
+        proc = subprocess.Popen(
+            ["sh", "-c", "sleep 0.2"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        _FAKE_PROCESSES.append(proc)
+        return proc
+
+    backend._systemd_run_scope = systemd_run_scope  # type: ignore[method-assign]
+    backend._wait_for_cgroup = lambda unit, proc, timeout=None: "/cg"  # type: ignore[method-assign]
+    reads = []
+    # Real fds (from /dev/null) so the watcher's close of the "opened"
+    # counter files never touches pytest's stdio descriptors.
+    _devnull_fds = [os.open(os.devnull, os.O_RDONLY) for _ in range(3)]
+
+    def fake_open(cg):
+        return {
+            "memory.peak": _devnull_fds[0],
+            "cpu.stat": _devnull_fds[1],
+            "pids.peak": _devnull_fds[2],
+        }
+
+    def fake_pread(fds):
+        # deterministic GC simulation: counters vanish once the process exits
+        alive = any(p.poll() is None for p in _FAKE_PROCESSES)
+        if not alive:
+            return {"memory.peak": None, "cpu.stat": None, "pids.peak": None}
+        reads.append(1)
+        return {"memory.peak": 2_097_152, "cpu.stat": 0.25, "pids.peak": 4}
+
+    backend._open_observation_fds = fake_open  # type: ignore[method-assign]
+    backend._pread_observation = fake_pread  # type: ignore[method-assign]
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sh", "-c", "sleep 0.2")))
+    state = backend._launched[running.token]
+    assert state.capture_done.wait(timeout=5)
+    assert state.observation is not None
+    assert state.observation.memory_peak_bytes == 2_097_152
+    assert state.observation.cpu_total_seconds == 0.25
+    assert state.observation.process_peak == 4
+    assert len(reads) >= 2  # live polls happened while the process ran
+
+
+def test_await_exit_capture_waits_bounded_for_observation():
+    """``finish`` gives the exit-watcher a bounded moment to record its
+    observation when the process has already exited, then uses it."""
+    backend = LinuxSystemdBackend()
+    proc = subprocess.Popen(
+        ["true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    _FAKE_PROCESSES.append(proc)
+    assert proc.wait(timeout=5) == 0  # ensure the process has exited
+    state = _LaunchState(unit="u", cgroup="/cg", root_pid=proc.pid, started_at=0.0)
+
+    def set_later():
+        time.sleep(0.05)
+        with backend._launched_lock:
+            state.observation = _KernelObservation(
+                captured_at=1.0, memory_peak_bytes=5, cpu_total_seconds=0.1, process_peak=2
+            )
+            state.capture_done.set()
+
+    threading.Thread(target=set_later).start()
+    running = RunningHandle(
+        backend="x", token="u", request_id="r", root_pid=proc.pid,
+        start_identity="i", process=proc,
+    )
+    obs = backend._await_exit_capture(state, running)
+    assert obs is not None
+    assert obs.memory_peak_bytes == 5
+    assert obs.process_peak == 2
+
+
+def test_sample_reads_kernel_peak_counter():
+    """The live sampler reads the kernel ``memory.peak`` high-water counter
+    (not the instantaneous ``memory.current``) while the scope is valid."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_read_file(
+        backend,
+        {
+            "memory.current": "1048576",
+            "memory.peak": "2097152",
+            "pids.current": "3",
+            "pids.peak": "7",
+        },
+    )
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "60")))
+    sample = backend.sample(running)
+    assert sample.memory_peak_bytes == 2_097_152  # the kernel peak, not current
+    assert sample.provenance is MeasurementProvenance.KERNEL
+
+
+def test_watcher_capture_failure_is_contained():
+    """A watcher failure records no observation and never breaks ``finish``:
+    the receipt degrades to the honest fallback chain."""
+    backend = LinuxSystemdBackend()
+
+    def systemd_run_scope(unit, slice_name, argv, **kwargs):
+        proc = subprocess.Popen(
+            ["sleep", "1"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        _FAKE_PROCESSES.append(proc)
+        return proc
+
+    backend._systemd_run_scope = systemd_run_scope  # type: ignore[method-assign]
+    backend._wait_for_cgroup = lambda unit, proc, timeout=None: "/cg"  # type: ignore[method-assign]
+
+    def boom(cg):
+        raise RuntimeError("watcher boom")
+
+    backend._open_observation_fds = boom  # type: ignore[method-assign]
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "1")))
+    state = backend._launched[running.token]
+    time.sleep(0.2)
+    assert state.observation is None  # contained: nothing recorded
+    _install_fake_run(backend, lambda argv: (0, "not-found"))
+    _install_fake_read_file(backend, {})
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt is not None
+    assert receipt.memory_peak_provenance is MeasurementProvenance.UNAVAILABLE
+
+
 def test_probe_process_peak_capability_tracks_pids_peak():
     """The probe declares REPORTS_PROCESS_PEAK guaranteed only when the
     kernel exposes pids.peak; an old kernel (live-count fallback only) keeps
@@ -1032,6 +1308,87 @@ def test_finish_reads_authoritative_counters_real(real_backend):
     assert receipt.memory_peak_provenance is MeasurementProvenance.KERNEL
     assert receipt.cpu_total_seconds is not None
     assert receipt.cpu_total_provenance is MeasurementProvenance.KERNEL
+
+
+@real_integration
+def test_finish_clean_exit_receipt_non_null_kernel_real(real_backend):
+    """THE deployed clean-success defect on the real host: the contained
+    process exits naturally and systemd collects the transient scope before
+    ``finish`` runs (live evidence: the cgroup directory can vanish within
+    microseconds of the process exiting). The exit-watcher's capture while
+    the scope was alive must still publish non-null KERNEL memory, CPU, and
+    process peaks on the receipt — never null with unavailable provenance
+    despite guaranteed capabilities."""
+    running = _launch_sleep(real_backend, argv=("sh", "-c", "sleep 0.5"))
+    out, err = running.process.communicate(timeout=10)  # wait/reap like the executor
+    receipt = real_backend.finish(running, "success", grace_seconds=2.0)
+    assert receipt.memory_peak_bytes is not None
+    assert receipt.memory_peak_provenance is MeasurementProvenance.KERNEL
+    assert receipt.cpu_total_seconds is not None
+    assert receipt.cpu_total_provenance is MeasurementProvenance.KERNEL
+    assert receipt.process_peak is not None
+    assert receipt.process_peak_provenance is MeasurementProvenance.KERNEL
+    assert receipt.cleanup_status is CleanupStatus.CLEAN
+    assert receipt.quiescent is True
+
+
+@real_integration
+def test_exit_capture_cross_checked_against_systemd_accounting_real(real_backend):
+    """Deterministic journal/kernel cross-check for the SAME scope: while
+    the contained process runs, systemd's manager accounting (``systemctl
+    show`` MemoryPeak/CPUUsageNSec — the systemd 'journal' view) and the raw
+    kernel cgroup counters agree; after a natural exit the carried KERNEL
+    receipt values are non-null and never below the live systemd accounting
+    (the observation is complete, not a stale lower bound)."""
+    running = _launch_sleep(
+        real_backend,
+        argv=(
+            "python3",
+            "-c",
+            "import time\n"
+            "x=[bytearray(1024*1024)]*48\n"
+            "t=time.monotonic()\n"
+            "while time.monotonic()-t < 2.0:\n"
+            "    pass",
+        ),
+    )
+    sysd_mem = sysd_cpu = None
+    try:
+        time.sleep(0.8)  # let the workload allocate memory and burn CPU
+        code, out = real_backend._systemctl(
+            "show", "-p", "MemoryPeak", "-p", "CPUUsageNSec", running.token
+        )
+        assert code == 0
+        props = dict(
+            line.split("=", 1) for line in out.splitlines() if "=" in line
+        )
+        assert "MemoryPeak" in props and "CPUUsageNSec" in props
+        sysd_mem = int(props["MemoryPeak"])
+        sysd_cpu = int(props["CPUUsageNSec"]) / 1_000_000_000.0
+        cg = real_backend._proc_cgroup(running.root_pid)
+        assert cg is not None
+        counters = real_backend._read_counters(cg)
+        kernel_mem = counters.get("memory.peak")
+        kernel_cpu = counters.get("cpu.stat")
+        assert kernel_mem is not None and kernel_cpu is not None
+        # Two independent views of the same scope agree: systemd mirrors the
+        # kernel accounting for scope units (at most a small lag).
+        assert kernel_mem >= sysd_mem - max(1, int(kernel_mem * 0.05))
+        assert kernel_cpu >= sysd_cpu - max(0.01, kernel_cpu * 0.1)
+    finally:
+        out, err = running.process.communicate(timeout=10)  # natural exit
+        receipt = real_backend.finish(running, "success", grace_seconds=2.0)
+    # The carried KERNEL observation is complete — never below the live
+    # systemd accounting captured above.
+    assert receipt.memory_peak_bytes is not None
+    assert receipt.memory_peak_provenance is MeasurementProvenance.KERNEL
+    assert receipt.cpu_total_seconds is not None
+    assert receipt.cpu_total_provenance is MeasurementProvenance.KERNEL
+    assert receipt.process_peak is not None
+    assert receipt.process_peak_provenance is MeasurementProvenance.KERNEL
+    assert sysd_mem is not None and sysd_cpu is not None
+    assert receipt.memory_peak_bytes >= sysd_mem - max(1, int(sysd_mem * 0.05))
+    assert receipt.cpu_total_seconds >= sysd_cpu - max(0.01, sysd_cpu * 0.1)
 
 
 @real_integration

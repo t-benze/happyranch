@@ -117,6 +117,63 @@ def test_run_command_contained_success_path_descendant_cleanup_real(
     assert supervisor._admission.released_total() == 1
 
 
+def test_run_command_contained_clean_exit_receipt_kernel_values_real(backend, tmp_path):
+    """THE shipping seam on the real host: a contained command that exits
+    cleanly (the executor's ``communicate`` reaps it; systemd collects the
+    transient scope before the supervisor's terminal finish) must produce a
+    receipt with non-null KERNEL memory/CPU/process peaks — the deployed
+    defect was 3-for-3 null on exactly this path."""
+    supervisor = HostSessionSupervisor(
+        backend=backend,
+        policy=canary_policy(sample_interval_seconds=0.1),
+        publisher=lambda receipt: None,
+    )
+    ws = tmp_path / "ws-clean"
+    ws.mkdir(parents=True, exist_ok=True)
+
+    def launch_body(running):
+        result = _run_command(
+            ["sh", "-c", "sleep 0.3"],
+            workspace=ws,
+            session_id="sess-real-clean-1",
+            timeout_seconds=10,
+            provider="claude",
+            running=running,
+        )
+        return LaunchResult(
+            success=result.success,
+            duration_seconds=float(getattr(result, "duration_seconds", 0) or 0),
+            returncode=getattr(result, "returncode", None),
+            error=getattr(result, "error", None),
+            rate_limited=bool(getattr(result, "rate_limited", False)),
+            timed_out=False,
+            payload=result,
+        )
+
+    outcome = supervisor.run(
+        AdmissionRequest(
+            org="test", invocation_kind="task", logical_id="task-real-clean-1",
+            executor_profile="claude",
+        ),
+        launch_spec=LaunchSpec(
+            argv=("sh", "-c", "sleep 0.3"),
+            cwd=str(ws),
+        ),
+        launch_body=launch_body,
+    )
+    assert outcome.terminal_reason is TerminalReason.SUCCESS
+    assert outcome.receipt is not None
+    assert outcome.receipt.memory_peak_bytes is not None
+    assert outcome.receipt.memory_peak_provenance is MeasurementProvenance.KERNEL
+    assert outcome.receipt.cpu_total_seconds is not None
+    assert outcome.receipt.cpu_total_provenance is MeasurementProvenance.KERNEL
+    assert outcome.receipt.process_peak is not None
+    assert outcome.receipt.process_peak_provenance is MeasurementProvenance.KERNEL
+    assert outcome.receipt.cleanup_status is CleanupStatus.CLEAN
+    assert outcome.receipt.quiescent is True
+    assert supervisor.active_count() == 0
+
+
 def test_run_command_contained_timeout_tree_cleanup_real(backend, tmp_path):
     """A contained session that times out in the executor body kills the main
     process; the supervisor's terminal finish still stops the whole scope and
