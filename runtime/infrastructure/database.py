@@ -9068,7 +9068,7 @@ class Database:
                 self.insert_audit_log_uncommitted(
                     task_id="config:threads", agent=actor,
                     action="org_config_write",
-                    payload=json.dumps({
+                    payload={
                         "section": "threads",
                         "tiers": ["reply_exchange_enabled"],
                         "before": {
@@ -9081,7 +9081,7 @@ class Database:
                                 False if target_off else None
                             ),
                         },
-                    }),
+                    },
                 )
             self._conn.commit()
             return transitioned, arrivals

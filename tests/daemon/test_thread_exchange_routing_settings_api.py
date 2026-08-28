@@ -156,6 +156,14 @@ def _open_exchange_row(org_state, thread_id: str):
     ).fetchone()
 
 
+def _org_config_write_rows(org_state) -> list[dict]:
+    """config:threads org_config_write audit rows (payload single-decoded)."""
+    return [
+        r for r in org_state.db.get_audit_logs("config:threads")
+        if r["action"] == "org_config_write"
+    ]
+
+
 # ---------------------------------------------------------------------------
 # TASK-5982 — disable/re-enable rollback compatibility over an OPEN epoch
 # ---------------------------------------------------------------------------
@@ -249,6 +257,70 @@ def test_org_exchange_routing_kill_switch_disables_and_retires(exchange_thread):
     )
     assert r.status_code == 200, r.text
     assert r.json().get("idempotent") is True
+
+
+def test_org_exchange_routing_kill_switch_writes_canonical_audit_row(
+    exchange_thread,
+):
+    """TASK-6000 — the org kill-switch audit row must be the canonical
+    ``org_config_write`` object under exactly ONE JSON decode, matching the
+    producer shape at ``audit_logger.py::log_org_config_write``
+    ({section, tiers, before, after}). ``insert_audit_log_uncommitted``
+    JSON-encodes payload itself, so a pre-serialized string would come back
+    double-encoded as a str, not the required object."""
+    _thread_id, client, org_state, auth_headers = exchange_thread
+    rows_before = _org_config_write_rows(org_state)
+
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/exchange-routing",
+        json={"reply_exchange_enabled": False},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["reply_exchange_enabled"] is False
+
+    rows = _org_config_write_rows(org_state)
+    assert len(rows) == len(rows_before) + 1
+    row = rows[-1]
+    assert row["task_id"] == "config:threads"
+    assert row["action"] == "org_config_write"
+    # ONE decode of the persisted column yields the canonical object, not a
+    # nested JSON string.
+    payload = row["payload"]
+    assert isinstance(payload, dict), f"double-encoded payload: {payload!r}"
+    raw = org_state.db._conn.execute(
+        "SELECT payload FROM audit_log WHERE id = ?", (row["id"],),
+    ).fetchone()["payload"]
+    assert isinstance(json.loads(raw), dict)
+    assert payload["section"] == "threads"
+    assert payload["tiers"] == ["reply_exchange_enabled"]
+    # before: switch was not explicitly off; after: now explicitly off.
+    assert payload["before"]["reply_exchange_enabled"] is not True
+    assert payload["after"]["reply_exchange_enabled"] is False
+
+
+def test_org_exchange_routing_kill_switch_idempotent_no_extra_audit_row(
+    exchange_thread,
+):
+    """TASK-6000 — an idempotent repeated no-op kill-switch request creates
+    NO extra org_config_write audit row."""
+    _thread_id, client, org_state, auth_headers = exchange_thread
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/exchange-routing",
+        json={"reply_exchange_enabled": False},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    rows_after_first = _org_config_write_rows(org_state)
+
+    r = client.post(
+        "/api/v1/orgs/alpha/threads/exchange-routing",
+        json={"reply_exchange_enabled": False},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json().get("idempotent") is True
+    assert _org_config_write_rows(org_state) == rows_after_first
 
 
 def test_org_exchange_routing_reenable_after_disable(exchange_thread):
