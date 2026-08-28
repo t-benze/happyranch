@@ -402,19 +402,30 @@ def _decline_by_default_doctrine() -> str:
 # the proven stream (stderr_tail — never the ``error`` envelope, which falls
 # back to stdout text when stderr is empty), requires the proven return code
 # (1), and requires the ANCHORED provider-declared signature bound to the
-# regex-escaped attempted session id. For claude the match is a COMPLETE-LINE
-# constraint: the signature must start a line and the attempted id must be
-# the last non-whitespace content on that line (whitespace-only padding
-# allowed; unrelated text on other lines tolerated) — the observed provider
-# contract is the one complete stderr line ``No conversation found with
-# session ID: <attempted-id>``. Wrong/missing id, prefix/suffix near-matches
-# (including punctuation-led suffixes a word boundary would accept),
-# cross-provider text, stdout-only text, wrong rc, generic legacy substrings,
-# a marker embedded in auth/quota/transport output, and ambiguous output
-# never match — a miss is safe (degrades to a normal failure — no fresh
-# retry, session id/watermark untouched — never a wrong answer).
+# regex-escaped attempted session id. For EVERY executor the match is a
+# COMPLETE-LINE constraint: the observed signature must start a line and the
+# bound attempted id (plus the executor's literal tokens — codex ``(code
+# -32600)``, pi's quotes) must be the last content on that line
+# (horizontal-whitespace-only padding allowed; unrelated text on other lines
+# tolerated) — the observed provider contract is the one complete stderr
+# line: claude ``No conversation found with session ID: <attempted-id>``,
+# codex ``Error: thread/resume: thread/resume failed: no rollout found for
+# thread id <attempted-id> (code -32600)`` (the CLI envelope is part of the
+# observed line), pi ``No session found matching '<attempted-id>'``. Only
+# HORIZONTAL whitespace [ \t] may pad where the observed contract permits
+# spacing — ``\s`` never consumes LF/CRLF, so split-line forms can never
+# match. Wrong/missing id, prefix/suffix near-matches (including
+# punctuation-led suffixes a word boundary would accept), arbitrary
+# same-line prefix/suffix text, cross-provider text, stdout-only text, wrong
+# rc, generic legacy substrings, a marker embedded in auth/quota/transport
+# output, and ambiguous output never match — a miss is safe (degrades to a
+# normal failure — no fresh retry, session id/watermark untouched — never a
+# wrong answer).
 _CLAUDE_EVICTION_SIGNATURE = "no conversation found with session id:"
-_CODEX_EVICTION_SIGNATURE = "no rollout found for thread id"
+_CODEX_EVICTION_SIGNATURE = (
+    "error: thread/resume: thread/resume failed: "
+    "no rollout found for thread id"
+)
 _CODEX_EVICTION_JSON_RPC_CODE = "(code -32600)"
 _PI_EVICTION_SIGNATURE = "no session found matching"
 # Auth/quota/transport signal tokens: an otherwise matching eviction marker
@@ -512,8 +523,17 @@ def _is_claude_session_evicted(result, attempted_session_id: str) -> bool:
 
 def _is_codex_session_evicted(result, attempted_session_id: str) -> bool:
     """codex-cli 0.148.0 proven contract: rc=1, stderr exactly
-    ``no rollout found for thread id <attempted-id> (code -32600)`` — the
-    JSON-RPC code must immediately follow the bound attempted id."""
+    ``Error: thread/resume: thread/resume failed: no rollout found for
+    thread id <attempted-id> (code -32600)`` — the OBSERVED COMPLETE
+    physical stderr line (CLI envelope + signature + JSON-RPC code). The
+    signature starts the line, the regex-escaped attempted id is bound, the
+    JSON-RPC code ``(code -32600)`` immediately follows it, and the line
+    ends there (horizontal whitespace [ \t] only where the observed contract
+    permits spacing — ``\\s`` never consumes LF/CRLF). Arbitrary same-line
+    prefix/suffix text, split LF/CRLF/indented forms, bare signatures
+    without the observed envelope, wrong/missing/prefix/suffix id, stdout,
+    wrong rc, and a marker embedded in auth/quota/transport output never
+    match."""
     if getattr(result, "returncode", None) != 1:
         return False
     stderr = (getattr(result, "stderr_tail", None) or "").lower()
@@ -521,9 +541,10 @@ def _is_codex_session_evicted(result, attempted_session_id: str) -> bool:
     if escaped is None:
         return False
     bound = re.search(
-        rf"{_CODEX_EVICTION_SIGNATURE}\s*{escaped}\s*"
-        rf"{re.escape(_CODEX_EVICTION_JSON_RPC_CODE)}",
+        rf"^[ \t]*{_CODEX_EVICTION_SIGNATURE}[ \t]+{escaped}[ \t]+"
+        rf"{re.escape(_CODEX_EVICTION_JSON_RPC_CODE)}[ \t]*$",
         stderr,
+        re.MULTILINE,
     ) is not None
     if not bound:
         return False
@@ -532,7 +553,13 @@ def _is_codex_session_evicted(result, attempted_session_id: str) -> bool:
 
 def _is_pi_session_evicted(result, attempted_session_id: str) -> bool:
     """pi 0.84.2 proven contract: rc=1, stderr exactly
-    ``No session found matching '<attempted-id>'`` — the id is quoted."""
+    ``No session found matching '<attempted-id>'`` — the OBSERVED COMPLETE
+    physical stderr line (quoted id). The signature starts the line and the
+    quoted regex-escaped attempted id terminates it (horizontal whitespace
+    [ \t] only where the observed contract permits spacing — ``\\s`` never
+    consumes LF/CRLF). Arbitrary same-line prefix/suffix text, split
+    LF/CRLF/indented forms, wrong/missing/prefix/suffix id, stdout, wrong
+    rc, and a marker embedded in auth/quota/transport output never match."""
     if getattr(result, "returncode", None) != 1:
         return False
     stderr = (getattr(result, "stderr_tail", None) or "").lower()
@@ -540,7 +567,9 @@ def _is_pi_session_evicted(result, attempted_session_id: str) -> bool:
     if escaped is None:
         return False
     bound = re.search(
-        rf"{_PI_EVICTION_SIGNATURE}\s*'{escaped}'", stderr
+        rf"^[ \t]*{_PI_EVICTION_SIGNATURE}[ \t]+'{escaped}'[ \t]*$",
+        stderr,
+        re.MULTILINE,
     ) is not None
     if not bound:
         return False

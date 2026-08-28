@@ -136,9 +136,13 @@ carries the resumable provider session id + delta watermark
   the next wake re-attempts the same range from a full prompt. The
   classifier is executor-specific, reads ONLY the proven return code and
   stream, and REQUIRES the anchored provider-declared signature bound to the
-  exact attempted session id — claude ``No conversation found with session
-  ID: <attempted-id>``, codex ``no rollout found for thread id
-  <attempted-id> (code -32600)``, pi ``No session found matching
+  exact attempted session id as the COMPLETE observed stderr line
+  (horizontal whitespace [ \t] only where the observed contract permits
+  spacing; LF/CRLF are never consumed) — claude ``No conversation found with session
+  ID: <attempted-id>``, codex ``Error: thread/resume: thread/resume failed:
+  no rollout found for thread id
+  <attempted-id> (code -32600)`` (the CLI envelope is part of the observed
+  line), pi ``No session found matching
   '<attempted-id>'`` (each rc=1, stderr, and verified 2026-08-28 to echo
   the attempted id verbatim; the id is regex-escaped) — and never classifies
   generic legacy substrings, cross-provider text, stdout-only text, wrong

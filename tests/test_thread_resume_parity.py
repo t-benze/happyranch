@@ -381,22 +381,34 @@ async def test_turn1_full_prompt_never_resumes_for_codex_and_pi(
     [
         # Exact stderr signatures recorded by the 2026-08-28 local probes
         # (bounded, no API traffic) against the INSTALLED CLIs — each echoes
-        # the ATTEMPTED id verbatim.
+        # the ATTEMPTED id verbatim. For codex the OBSERVED complete line
+        # includes the CLI envelope `Error: thread/resume: thread/resume
+        # failed: `; for pi the line is exactly `No session found matching
+        # '<id>'` (quoted id).
         ("codex", "Error: thread/resume: thread/resume failed: no rollout "
                   "found for thread id 01a0-dead (code -32600)"),
         ("pi", "No session found matching '01a0-dead'"),
         ("claude", "No conversation found with session ID: 01a0-dead"),
-        # The anchored signature bound to the attempted id still classifies
-        # when wrapped in unrelated error/warning text (never in
-        # auth/quota/transport output — that is a negative, below).
+        # The observed complete signature line still classifies when wrapped
+        # in unrelated text on OTHER physical lines (never on the signature
+        # line itself — arbitrary same-line prefix/suffix is a negative,
+        # below; auth/quota/transport output is a negative too).
         ("codex", "Warning: stale config detected; continuing\n"
                   "Error: thread/resume: thread/resume failed: no rollout "
                   "found for thread id 01a0-dead (code -32600)\n"
                   "Process finished with exit code 1"),
-        ("pi", "Error: no session found matching '01a0-dead' "
-               "(the session file may have expired)"),
+        ("pi", "some unrelated first line\n"
+                "No session found matching '01a0-dead'\n"
+                "process finished with exit code 1"),
         ("claude", "No conversation found with session ID: 01a0-dead\n"
                     "[debug] exiting"),
+        # Horizontal whitespace (space/tab) is permitted where the observed
+        # contract permits spacing — leading/trailing padding and multiple
+        # spaces at the id/code boundaries stay positive for every executor.
+        ("codex", "  Error: thread/resume: thread/resume failed: no rollout "
+                  "found for thread id  01a0-dead  (code -32600)  "),
+        ("pi", "  No session found matching  '01a0-dead'  "),
+        ("claude", "\tNo conversation found with session ID: 01a0-dead\t"),
         # Complete-line termination (TASK-6019): the observed provider stderr
         # LINE must be exactly `No conversation found with session ID:
         # <attempted-id>`; allowed whitespace around the signature/id and
@@ -580,8 +592,56 @@ async def test_eviction_observed_audit_corpus_line_classifies(
         ("claude", "No conversation found with session ID:\n  01a0-live", "", 1),
         ("claude", "  No conversation found with session ID:\n01a0-live", "", 1),
         ("claude", "  No conversation found with session ID:\r\n\t01a0-live", "", 1),
+        # TASK-6028 [HIGH] six probes + symmetric broadening: codex/pi must
+        # ALSO anchor the COMPLETE observed physical stderr line with
+        # horizontal whitespace only — `\s` must never consume LF/CRLF and
+        # arbitrary same-line prefix/suffix must never classify (the old
+        # unanchored `re.search` + `\s*` accepted all of these as eviction,
+        # wrongly invalidating durable state and fresh-retrying).
+        #
+        # Split signature/ID forms: LF, CRLF, and whitespace-indented splits
+        # (both the bare signature and the observed codex envelope form).
+        ("codex", "no rollout found for thread id\n01a0-live (code -32600)", "", 1),
+        ("codex", "Error: thread/resume: thread/resume failed: no rollout "
+                  "found for thread id\n01a0-live (code -32600)", "", 1),
+        ("codex", "Error: thread/resume: thread/resume failed: no rollout "
+                  "found for thread id\r\n01a0-live (code -32600)", "", 1),
+        ("codex", "Error: thread/resume: thread/resume failed: no rollout "
+                  "found for thread id\n  01a0-live (code -32600)", "", 1),
+        ("pi", "No session found matching\n'01a0-live'", "", 1),
+        ("pi", "No session found matching\r\n'01a0-live'", "", 1),
+        ("pi", "No session found matching\n  '01a0-live'", "", 1),
+        # Arbitrary unrelated same-line prefix / suffix (bare + enveloped).
+        ("codex", "boom no rollout found for thread id 01a0-live (code -32600)", "", 1),
+        ("codex", "boom: Error: thread/resume: thread/resume failed: no "
+                  "rollout found for thread id 01a0-live (code -32600)", "", 1),
+        ("codex", "no rollout found for thread id 01a0-live (code -32600) boom", "", 1),
+        ("codex", "Error: thread/resume: thread/resume failed: no rollout "
+                  "found for thread id 01a0-live (code -32600) boom", "", 1),
+        ("pi", "boom No session found matching '01a0-live'", "", 1),
+        ("pi", "No session found matching '01a0-live' boom", "", 1),
+        # The observed codex contract is the COMPLETE line including the CLI
+        # envelope `Error: thread/resume: thread/resume failed: ` — a bare
+        # signature without the envelope, and invented same-line wrapper
+        # text on the observed pi line, never classify (fail closed).
+        ("codex", "no rollout found for thread id 01a0-live (code -32600)", "", 1),
+        ("pi", "Error: no session found matching '01a0-live' "
+               "(the session file may have expired)", "", 1),
+        # Wrong / missing / prefix / suffix attempted id on the OBSERVED
+        # enveloped codex line (id binding, not envelope presence, decides).
+        ("codex", "Error: thread/resume: thread/resume failed: no rollout "
+                  "found for thread id 01a0-OTHER (code -32600)", "", 1),
+        ("codex", "Error: thread/resume: thread/resume failed: no rollout "
+                  "found for thread id (code -32600)", "", 1),
+        ("codex", "Error: thread/resume: thread/resume failed: no rollout "
+                  "found for thread id x01a0-live (code -32600)", "", 1),
+        ("codex", "Error: thread/resume: thread/resume failed: no rollout "
+                  "found for thread id 01a0-liveX (code -32600)", "", 1),
+        ("pi", "No session found matching '01a0-live-suffix'", "", 1),
+        ("pi", "No session found matching 'x01a0-live-suffix'", "", 1),
         # An otherwise matching marker EMBEDDED in auth/quota/transport
-        # output is not the provider declaring the session missing.
+        # output on the signature line is not the provider declaring the
+        # session missing.
         ("claude", "API Error: 401 Unauthorized: no conversation found with "
                     "session id 01a0-live", "", 1),
         ("codex", "API Error: 429 rate limit exceeded: no rollout found for "
@@ -590,6 +650,12 @@ async def test_eviction_observed_audit_corpus_line_classifies(
                    "(code -32600)", "", 1),
         ("pi", "Connection timed out: no session found matching '01a0-live' "
                 "is unavailable", "", 1),
+        # An otherwise complete eviction line accompanied by auth/quota/
+        # transport text anywhere in stderr is not eviction either.
+        ("codex", "Error: thread/resume: thread/resume failed: no rollout "
+                  "found for thread id 01a0-live (code -32600)\n"
+                  "Error: 429 rate limit exceeded", "", 1),
+        ("pi", "Error: 401 unauthorized: no session found matching '01a0-live'", "", 1),
         # Wrong return code with the exact signature.
         ("codex", "no rollout found for thread id 01a0-live (code -32600)", "", 2),
         ("pi", "No session found matching '01a0-live'", "", 3),

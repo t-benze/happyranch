@@ -291,8 +291,10 @@ Traps:
   ONLY the proven return code and stream, and REQUIRING the anchored
   provider-declared signature bound to the regex-escaped attempted session id
   — claude `No conversation found with session ID: <attempted-id>` (rc=1
-  stderr), codex `no rollout found for thread id <attempted-id>
-  (code -32600)` (rc=1 stderr), pi `No session found matching
+  stderr), codex `Error: thread/resume: thread/resume failed: no rollout
+  found for thread id <attempted-id> (code -32600)` (rc=1 stderr — the
+  observed COMPLETE line including the CLI envelope; only horizontal
+  whitespace may pad it), pi `No session found matching
   '<attempted-id>'` (rc=1 stderr) — each verified 2026-08-28 to echo the
   attempted id verbatim. Generic legacy substrings, cross-provider text,
   stdout-only text, wrong rc, wrong/missing id, prefix/suffix near-matches,
