@@ -112,9 +112,10 @@ def _adapter(
     readiness=None,
     lab_only: bool = True,
     bind_host: str = "127.0.0.1",
+    bind_port: int = 0,
     ctx_factory=None,
 ) -> LabProviderAdapter:
-    config = LabProviderConfig(bind_host=bind_host, lab_only=lab_only)
+    config = LabProviderConfig(bind_host=bind_host, bind_port=bind_port, lab_only=lab_only)
     return LabProviderAdapter(
         config=config,
         readiness=readiness or _AlwaysReady(),
@@ -167,6 +168,27 @@ class TestReadinessGating:
         with pytest.raises(LabProviderError):
             adapter.start()
         adapter.stop()  # must not raise
+
+
+class TestListenerBinding:
+    def test_occupied_port_fails_as_lab_provider_error(self, route_policy_fixture) -> None:
+        """QA TASK-6014: a REAL bind conflict (occupied port) raises a bare
+        OSError out of ``ThreadingHTTPServer``, escaping the documented
+        ``LabProviderError`` startup category. Normalize at the adapter
+        boundary: ``start()`` must raise ``LabProviderError`` (expected
+        operational listener failure) — never a bare ``OSError`` — and leave
+        no listener behind."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
+            blocker.bind(("127.0.0.1", 0))
+            blocker.listen(1)
+            port = int(blocker.getsockname()[1])
+            adapter = _adapter(
+                route_policy_fixture, bind_host="127.0.0.1", bind_port=port
+            )
+            with pytest.raises(LabProviderError, match="bind"):
+                adapter.start()
+            assert adapter.listening is False
+            assert adapter.bound_port is None
 
 
 class TestPipeline:

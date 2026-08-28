@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from datetime import timedelta
 from pathlib import Path
 
@@ -271,6 +272,129 @@ class TestRunLoop:
         supervisor.shutdown()
         assert supervisor._provider_running is False
         assert provider.stops == 0
+        assert not _notified("READY=1")
+
+    def test_real_occupied_port_keeps_supervised_retry_never_ready(self, tmp_path) -> None:
+        """QA TASK-6014 structural diagnosis through the SHIPPING path: the REAL
+        ``LabProviderAdapter`` bind failure (occupied port) raised a bare
+        OSError that escaped ``_start_provider``'s ``LabProviderError`` catch,
+        crashing ``run()`` instead of retrying. With the adapter boundary
+        normalization: zero READY, secret-free STATUS, no listener, and the
+        loop keeps re-evaluating (no process exit, no systemd restart
+        needed)."""
+        notifications.clear()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
+            blocker.bind(("127.0.0.1", 0))
+            blocker.listen(1)
+            port = int(blocker.getsockname()[1])
+            # Constructed directly (NOT via _config): the _config helper's
+            # named ``lab`` param would shadow the occupied port with its
+            # default ephemeral config.
+            config = ConnectorConfig(
+                tenant_id="tenant-a",
+                home_id="home-a",
+                connector_id="connector-a",
+                daemon_port=8999,
+                daemon_token_path=str(tmp_path / "daemon.token"),
+                policy_path=str(tmp_path / "policy.json"),
+                state_path=str(tmp_path / "state.json"),
+                unit_name="happyranch-connector.service",
+                system=False,
+                lab=LabProviderConfig(
+                    bind_host="127.0.0.1", bind_port=port, lab_only=True
+                ),
+            )
+            # provider=None: NO injected fake — build_provider() constructs
+            # the REAL LabProviderAdapter from the config.
+            supervisor = ConnectorSupervisor(
+                config=config,
+                manager=FakeManager(),
+                readiness=_FakeReadiness(ready=True),
+                provider=None,
+                now_fn=lambda: NOW(),
+                notify_fn=lambda state: notifications.append(state),
+            )
+            supervisor.run(max_iterations=2, poll_seconds=0)  # must NOT raise
+            assert supervisor._provider_running is False
+            assert supervisor._provider is None  # no listener of ours
+            assert (
+                sum("provider failed to start" in n for n in notifications) == 2
+            )  # supervised retry each poll
+            assert not _notified("READY=1")
+            assert not _notified("WATCHDOG=1")
+            # secret-free STATUS: never leaks tokens/paths/exception text
+            for n in notifications:
+                assert "token" not in n.lower()
+                assert "daemon" not in n.lower()
+                assert "Errno" not in n
+            supervisor.shutdown()
+            assert supervisor._provider_running is False
+
+    def test_real_occupied_port_recovers_when_freed(self, tmp_path) -> None:
+        """QA TASK-6014 supervised retry/recovery: while the port is occupied
+        the loop reports STATUS with zero READY; once the conflict clears the
+        NEXT iteration binds a real listener and emits READY — the process
+        never exits, so systemd never restart-throttles."""
+        notifications.clear()
+        blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen(1)
+        port = int(blocker.getsockname()[1])
+        # Constructed directly (NOT via _config): see the sibling test above.
+        config = ConnectorConfig(
+            tenant_id="tenant-a",
+            home_id="home-a",
+            connector_id="connector-a",
+            daemon_port=8999,
+            daemon_token_path=str(tmp_path / "daemon.token"),
+            policy_path=str(tmp_path / "policy.json"),
+            state_path=str(tmp_path / "state.json"),
+            unit_name="happyranch-connector.service",
+            system=False,
+            lab=LabProviderConfig(
+                bind_host="127.0.0.1", bind_port=port, lab_only=True
+            ),
+        )
+        supervisor = ConnectorSupervisor(
+            config=config,
+            manager=FakeManager(),
+            readiness=_FakeReadiness(ready=True),
+            provider=None,
+            now_fn=lambda: NOW(),
+            notify_fn=lambda state: notifications.append(state),
+        )
+        try:
+            supervisor.run(max_iterations=1, poll_seconds=0)
+            assert not _notified("READY=1")  # occupied: no listener, no READY
+            blocker.close()  # release the conflict
+            supervisor.run(max_iterations=1, poll_seconds=0)
+            assert _notified("READY=1")  # freed: recovered and listening
+            assert supervisor._provider_running is True
+            adapter = supervisor._provider
+            assert adapter is not None
+            assert adapter.listening is True
+            assert adapter.bound_port == port
+        finally:
+            blocker.close()
+            supervisor.shutdown()
+
+    def test_unexpected_provider_defect_propagates(self, tmp_path) -> None:
+        """The LabProviderError category contract is OPERATIONAL-only: an
+        unexpected defect inside provider start (a programming error, not a
+        bind/listen OSError) must propagate loudly — never be normalized or
+        swallowed into the retry loop."""
+        notifications.clear()
+
+        class _DefectiveProvider:
+            def start(self) -> None:
+                raise ValueError("programming defect")
+
+            def stop(self) -> None:
+                pass
+
+        supervisor = _supervisor(tmp_path, provider=_DefectiveProvider())
+        with pytest.raises(ValueError, match="programming defect"):
+            supervisor.run(max_iterations=1, poll_seconds=0)
         assert not _notified("READY=1")
 
     def test_shutdown_stops_provider(self, tmp_path) -> None:

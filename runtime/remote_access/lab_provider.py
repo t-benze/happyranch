@@ -94,15 +94,30 @@ class LabProviderAdapter:
 
     def start(self) -> None:
         """Validate lab-only gating, run readiness, then bind. Raises
-        :class:`LabProviderError` (redacted) on any failure — no listener."""
+        :class:`LabProviderError` (redacted) on any failure — no listener.
+        Expected operational listener failures (occupied port, permission,
+        address unavailable) are normalized from the socket ``OSError`` to
+        :class:`LabProviderError` at this boundary so the supervisor's
+        supervised-retry contract sees the documented category — never a
+        bare ``OSError``. Unexpected defects (programming errors, readiness-
+        subsystem failures) still propagate loudly."""
         self._validate_lab_gating()
         report = self._readiness.evaluate(datetime.now(timezone.utc))
         if not report.ready:
             failed = ", ".join(report.failing_gates)
             raise LabProviderError(f"readiness failed: {failed}")
-        self._server = ThreadingHTTPServer(
-            (self.config.bind_host, self.config.bind_port), self._handler_factory()
-        )
+        try:
+            self._server = ThreadingHTTPServer(
+                (self.config.bind_host, self.config.bind_port), self._handler_factory()
+            )
+        except OSError as exc:
+            # Expected operational listener failure (bind/listen syscall: port
+            # in use, permission denied, address unavailable). Normalize to the
+            # documented startup category with a category-only message — never
+            # the raw socket/errno text — leaving no listener behind. This is
+            # deliberately narrow: only the bind/listen construction is wrapped,
+            # so programming errors still fail loudly.
+            raise LabProviderError("lab provider failed to bind listener") from exc
         self._ready = True
         self._thread = threading.Thread(
             target=self._server.serve_forever, name="hr-lab-provider", daemon=True

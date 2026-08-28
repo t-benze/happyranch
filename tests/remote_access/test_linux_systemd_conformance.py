@@ -300,6 +300,105 @@ def test_real_systemd_supervisor_readiness_listener_lifecycle(
         daemon.close()
 
 
+def test_real_systemd_occupied_port_retries_without_crash(
+    tmp_path_factory,
+) -> None:
+    """QA TASK-6014 under the REAL user systemd manager: a lab port that is
+    already occupied must NOT crash the connector process. Before the fix the
+    bare OSError killed ``run()`` and systemd ``Restart=on-failure`` produced
+    5 restarts then "Start request repeated too quickly" (unit permanently
+    failed). With the adapter-boundary normalization the supervisor keeps
+    retrying with STATUS (never READY), the unit stays alive (no restart
+    throttle), and it recovers + binds + READY once the port frees."""
+    _skip_if_unavailable()
+    manager = SystemdServiceManager(system=False)
+    base = tmp_path_factory.mktemp("hr-conn-occupied")
+    daemon = _FakeDaemon()
+    blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    lab_port = int(blocker.getsockname()[1])
+    try:
+        token = base / "daemon.token"
+        token.write_text("conformance-token", encoding="utf-8")
+        token.chmod(0o600)
+        policy = base / "policy.json"
+        _write_policy_envelope(policy)
+        managed_config = str(base / "managed" / "happyranch-connector" / "config.json")
+        config = ConnectorConfig(
+            tenant_id="tenant-conformance",
+            home_id="home-conformance",
+            connector_id="connector-conformance",
+            daemon_port=daemon.port,
+            daemon_token_path=str(token),
+            policy_path=str(policy),
+            state_path=str(base / "state.json"),
+            unit_name=UNIT_NAME,
+            system=False,
+            managed_dir_root=str(base / "managed"),
+            lab=LabProviderConfig(
+                bind_host="127.0.0.1", bind_port=lab_port, lab_only=True
+            ),
+            poll_seconds=1.0,
+            exec_start=(
+                sys.executable,
+                "-m",
+                "runtime.remote_access.cli",
+                "run",
+                "--config",
+                managed_config,
+                "--lab-only",
+            ),
+        )
+        supervisor = ConnectorSupervisor(config=config, manager=manager)
+        manager.uninstall(UNIT_NAME)  # hermetic baseline
+        try:
+            supervisor.install(enable=False)
+            # ``systemctl start`` on Type=notify blocks until READY (90s
+            # TimeoutStartSec) — with the port occupied there is no READY, so
+            # start WITHOUT blocking and poll the unit state instead.
+            subprocess.run(
+                ["systemctl", "--user", "start", "--no-block", UNIT_NAME],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            # Allow several retry cycles: the process must stay alive and the
+            # unit must never reach "failed" (no crash -> no restart-throttle).
+            assert _wait_for(
+                lambda: manager.status(UNIT_NAME).pid > 0, timeout=15
+            ), "connector process never came up"
+            time.sleep(5)  # a few poll_seconds retries while the port is busy
+            first = manager.status(UNIT_NAME)
+            assert first.active_state != "failed", (
+                "connector unit FAILED on an occupied port (crash/restart-throttle)"
+            )
+            assert first.pid > 0
+            time.sleep(3)
+            second = manager.status(UNIT_NAME)
+            assert second.pid == first.pid, (
+                "connector process restarted (bare OSError still escaping)"
+            )
+            assert second.active_state != "failed"
+
+            # Release the conflict: the supervised loop binds on the next poll,
+            # emits READY, and the unit reaches active with a live listener.
+            blocker.close()
+            assert _wait_for(lambda: _port_open(lab_port), timeout=30), (
+                "connector never recovered the freed lab port"
+            )
+            status = manager.status(UNIT_NAME)
+            assert status.running is True
+            assert status.active_state == "active"
+        finally:
+            manager.uninstall(UNIT_NAME)
+        assert not (manager.unit_dir / UNIT_NAME).exists()
+    finally:
+        blocker.close()
+        daemon.close()
+
+
 def test_real_upgrade_rollback_roundtrip(manager, notify_helper) -> None:
     """Upgrade replaces the unit over a backup; rollback restores it — both
     against the real user manager with a start-verification loop."""
