@@ -9,10 +9,15 @@ local diagnostics.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+from runtime.remote_access.credentials import (
+    CredentialUnavailable,
+    SystemdCredentialProvider,
+)
 from runtime.remote_access.lab_provider import LAB_ONLY_BANNER, LabProviderConfig, LabProviderError
 from runtime.remote_access.readiness import (
     ConnectorReadiness,
@@ -239,6 +244,29 @@ class TestRunLoop:
         supervisor.run(max_iterations=1, poll_seconds=0)
         assert supervisor._provider_running is False
         assert any("provider failed to start" in n for n in notifications)
+        assert not _notified("READY=1")  # never READY without a proven listener
+
+    def test_provider_start_failure_never_emits_ready(self, tmp_path) -> None:
+        """The reviewer's [HIGH] READY-ordering finding: READY=1 must NEVER be
+        emitted unless the provider actually started (listener proven). On a
+        bind/start failure the loop retries, reports STATUS only, and the
+        supervisor stays deterministically not-running with no listener."""
+        notifications.clear()
+        provider = _FakeProvider(fail_start=True)
+        supervisor = _supervisor(tmp_path, provider=provider)
+        supervisor.run(max_iterations=2, poll_seconds=0)
+        assert (
+            sum("provider failed to start" in n for n in notifications) == 2
+        )  # the loop retried each poll
+        assert supervisor._provider_running is False
+        assert not _notified("READY=1")
+        assert not _notified("WATCHDOG=1")
+        assert any("provider failed to start" in n for n in notifications)
+        # fail-closed status/shutdown: still not running, still no READY
+        supervisor.shutdown()
+        assert supervisor._provider_running is False
+        assert provider.stops == 0
+        assert not _notified("READY=1")
 
     def test_shutdown_stops_provider(self, tmp_path) -> None:
         notifications.clear()
@@ -296,14 +324,19 @@ class TestRunLoop:
 
 class TestServiceManagerDelegation:
     def test_install_renders_unit(self, tmp_path) -> None:
+        token = tmp_path / "daemon.token"
+        token.write_text("token-x")
+        token.chmod(0o600)
+        (tmp_path / "policy.json").write_text("{}")
         manager = FakeManager()
-        supervisor = _supervisor(tmp_path, manager=manager)
+        cfg = _config(tmp_path, managed_dir_root=str(tmp_path / "managed"))
+        supervisor = _supervisor(tmp_path, manager=manager, config=cfg)
         supervisor.install()
         assert manager.calls == ["install"]
         assert manager.installed[0][0] == "happyranch-connector.service"
         unit_text = manager.installed[0][1]
         assert "NoNewPrivileges=yes" in unit_text
-        assert "LoadCredential" in unit_text or "daemon_token_path" in unit_text
+        assert "LoadCredential" in unit_text
 
     def test_start_stop_restart_enable_disable_uninstall(self, tmp_path) -> None:
         manager = FakeManager()
@@ -420,3 +453,174 @@ class TestSdNotify:
 
     def test_sd_notify_missing_socket_fails_safe(self, tmp_path) -> None:
         assert sd_notify("WATCHDOG=1\n", notify_socket=str(tmp_path / "nope.sock")) is False
+
+
+class TestCredentialProvider:
+    """Finding 3: the service path must automatically consume
+    CREDENTIALS_DIRECTORY/LoadCredential — without redundant config and
+    without ever falling back to reading the daemon home."""
+
+    def test_auto_consumes_crdentials_directory_env(self, tmp_path, monkeypatch) -> None:
+        creds = tmp_path / "creds"
+        creds.mkdir()
+        (creds / "daemon.token").write_text("svc-token")
+        (creds / "daemon.token").chmod(0o600)
+        monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(creds))
+        supervisor = _supervisor(tmp_path)  # config also carries daemon_token_path
+        provider = supervisor.credential_provider()
+        assert isinstance(provider, SystemdCredentialProvider)
+        assert provider.read_bearer() == "svc-token"
+
+    def test_never_falls_back_to_daemon_home_under_systemd(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Under LoadCredential= the injected credential is the ONLY source:
+        a missing credential fails closed — it must never fall through to the
+        daemon-token file path (the service user may not read the daemon home)."""
+        creds = tmp_path / "creds"
+        creds.mkdir()  # empty: nothing injected
+        monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(creds))
+        supervisor = _supervisor(tmp_path)  # daemon_token_path set, file absent
+        provider = supervisor.credential_provider()
+        assert isinstance(provider, SystemdCredentialProvider)
+        with pytest.raises(CredentialUnavailable):
+            provider.read_bearer()
+
+    def test_no_env_uses_configured_sources(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.delenv("CREDENTIALS_DIRECTORY", raising=False)
+        token = tmp_path / "daemon.token"
+        token.write_text("file-token")
+        token.chmod(0o600)
+        supervisor = _supervisor(tmp_path)
+        provider = supervisor.credential_provider()
+        assert provider.read_bearer() == "file-token"
+
+
+class TestInstallStaging:
+    """Finding 3: install() stages config/state into the declared managed
+    directories (accessible to the dedicated service user), never pointing the
+    unit at ~/.happyranch paths the hardened service cannot read."""
+
+    def _policy(self, tmp_path) -> Path:
+        p = tmp_path / "policy.json"
+        p.write_text("{}")
+        return p
+
+    def test_install_stages_managed_config_policy_and_state(self, tmp_path) -> None:
+        token = tmp_path / "daemon.token"
+        token.write_text("token-x")
+        token.chmod(0o600)
+        policy = self._policy(tmp_path)
+        from runtime.remote_access.authorization import TrustState
+
+        state = TrustState(connector_identity=default_identity(), pairing_epoch=0, revocation_epoch=0)
+        store = AtomicFileTrustStateStore(tmp_path / "state.json", state)
+        store.save(state)
+        manager = FakeManager()
+        cfg = _config(tmp_path, managed_dir_root=str(tmp_path / "managed"))
+        supervisor = _supervisor(tmp_path, manager=manager, config=cfg)
+        path = supervisor.install()
+        managed_root = tmp_path / "managed" / "happyranch-connector"
+        assert (managed_root / "config.json").is_file()
+        assert (managed_root / "policy.json").is_file()
+        assert (managed_root / "trust-state.json").is_file()
+        assert (managed_root / "trust-state.json.anchor").is_file()
+        managed_cfg = ConnectorConfig.from_file(managed_root / "config.json")
+        assert managed_cfg.state_path == str(managed_root / "trust-state.json")
+        assert managed_cfg.policy_path == str(managed_root / "policy.json")
+        assert managed_cfg.tenant_id == "tenant-a"
+        unit_text = manager.installed[0][1]
+        assert str(managed_root / "config.json") in unit_text
+        assert "--lab-only" in unit_text  # lab provider → unit passes --lab-only
+
+    def test_install_staged_unit_never_points_at_daemon_home(self, tmp_path) -> None:
+        """The rendered unit's --config must be the managed path — never a
+        ~/.happyranch/... path the hardened service user cannot read."""
+        token = tmp_path / "daemon.token"
+        token.write_text("token-x")
+        token.chmod(0o600)
+        self._policy(tmp_path)
+        manager = FakeManager()
+        cfg = _config(tmp_path, managed_dir_root=str(tmp_path / "managed"))
+        supervisor = _supervisor(tmp_path, manager=manager, config=cfg)
+        supervisor.install()
+        unit_text = manager.installed[0][1]
+        assert ".happyranch" not in unit_text
+        assert "--config" in unit_text
+
+    def test_install_refuses_missing_policy(self, tmp_path) -> None:
+        manager = FakeManager()
+        cfg = _config(tmp_path, managed_dir_root=str(tmp_path / "managed"))
+        supervisor = _supervisor(tmp_path, manager=manager, config=cfg)
+        with pytest.raises(ConnectorConfigError):
+            supervisor.install()
+        assert manager.calls == []  # nothing staged, nothing installed
+
+    def test_install_refuses_partial_source_state(self, tmp_path) -> None:
+        """A source snapshot without its companion anchor is partial/corrupt
+        state — install() must refuse to stage it (revocation history could be
+        silently dropped)."""
+        token = tmp_path / "daemon.token"
+        token.write_text("token-x")
+        token.chmod(0o600)
+        self._policy(tmp_path)
+        from runtime.remote_access.authorization import TrustState
+
+        state = TrustState(connector_identity=default_identity(), pairing_epoch=0, revocation_epoch=0)
+        store = AtomicFileTrustStateStore(tmp_path / "state.json", state)
+        store.save(state)
+        (tmp_path / "state.json.anchor").unlink()
+        manager = FakeManager()
+        cfg = _config(tmp_path, managed_dir_root=str(tmp_path / "managed"))
+        supervisor = _supervisor(tmp_path, manager=manager, config=cfg)
+        with pytest.raises(ConnectorConfigError):
+            supervisor.install()
+        assert manager.calls == []
+
+    def test_install_staged_files_are_owner_only(self, tmp_path) -> None:
+        token = tmp_path / "daemon.token"
+        token.write_text("token-x")
+        token.chmod(0o600)
+        self._policy(tmp_path)
+        manager = FakeManager()
+        cfg = _config(tmp_path, managed_dir_root=str(tmp_path / "managed"))
+        supervisor = _supervisor(tmp_path, manager=manager, config=cfg)
+        supervisor.install()
+        managed_root = tmp_path / "managed" / "happyranch-connector"
+        import stat
+
+        for name in ("config.json", "policy.json"):
+            mode = stat.S_IMODE((managed_root / name).stat().st_mode)
+            assert mode & 0o077 == 0
+
+
+class TestManagedPaths:
+    def test_system_mode_defaults_to_var_lib(self, tmp_path) -> None:
+        cfg = _config(tmp_path, system=True)
+        supervisor = _supervisor(tmp_path, config=cfg)
+        assert str(supervisor._managed_state_root()) == "/var/lib/happyranch-connector"
+
+    def test_user_mode_defaults_to_xdg_state_home(self, tmp_path) -> None:
+        cfg = _config(tmp_path, system=False)
+        supervisor = _supervisor(tmp_path, config=cfg)
+        root = supervisor._managed_state_root()
+        assert str(root).startswith(str(Path.home() / ".local" / "state"))
+
+    def test_managed_dir_root_override_wins(self, tmp_path) -> None:
+        cfg = _config(tmp_path, system=True, managed_dir_root=str(tmp_path / "m"))
+        supervisor = _supervisor(tmp_path, config=cfg)
+        assert str(supervisor._managed_state_root()) == str(tmp_path / "m" / "happyranch-connector")
+
+    def test_unit_spec_default_exec_start_uses_managed_config(self, tmp_path) -> None:
+        cfg = _config(tmp_path, managed_dir_root=str(tmp_path / "m"))
+        supervisor = _supervisor(tmp_path, config=cfg)
+        spec = supervisor.unit_spec()
+        assert "--config" in spec.exec_start
+        assert str(tmp_path / "m" / "happyranch-connector" / "config.json") in spec.exec_start
+        assert "--lab-only" in spec.exec_start  # lab configured
+
+    def test_unit_spec_no_lab_omits_lab_only(self, tmp_path) -> None:
+        cfg = _config(tmp_path, lab=False, managed_dir_root=str(tmp_path / "m"))
+        supervisor = _supervisor(tmp_path, config=cfg)
+        spec = supervisor.unit_spec()
+        assert "--lab-only" not in spec.exec_start

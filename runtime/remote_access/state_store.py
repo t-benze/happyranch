@@ -16,7 +16,17 @@ file-backed store with:
 - **strict payload validation** (unknown keys, wrong types, bool-epochs,
   naive datetimes, key mismatches all fail closed);
 - **symlink/directory rejection** (a state path that is a symlink or a
-  directory is never read).
+  directory is never read);
+- **monotonic companion generation/digest anchor** (founder approval
+  THR-097 seq163): an owner-only ``<state>.anchor`` file OUTSIDE the
+  replaceable snapshot records the snapshot generation and a digest over the
+  exact snapshot bytes. load() binds the pair — envelope generation must
+  equal the anchor generation AND the anchor digest must cover the exact
+  snapshot bytes — so a previously valid OLDER snapshot replayed after a
+  newer revocation/generation (including across a new store/process
+  instance) is deterministically rejected. Missing/mismatched/corrupt/
+  stale anchors, snapshot/anchor partial-update states, symlinked anchors,
+  and loose anchor permissions all fail closed.
 
 The envelope is a versioned, **schema-agnostic, non-normative** JSON
 document. It is NOT the founder-gated managed persistent schema: it defines
@@ -27,6 +37,26 @@ explicitly replaceable by the future founder-gated store. It never co-mingles
 with the daemon token file or mutable Services caches, and it never carries
 the daemon bearer or any credential-shaped material — it holds authorization
 state only.
+
+Crash-consistency / rollback contract
+-------------------------------------
+
+Each of the two files (snapshot, anchor) is written atomically (temp file,
+fsync, rename, directory fsync); the PAIR is updated snapshot-first then
+anchor. A crash between the two writes leaves a mismatched pair that load()
+rejects — never a silently-accepted stale state. Recovery is an explicit
+operator action: restore a consistent (snapshot + anchor) pair from backup,
+or delete BOTH files to factory-reset to the first-run deny-all default
+(partial deletion of one file fails closed). Generation is strictly
+monotonic: save() never writes a generation at or below the anchored one.
+
+Honest limit (consultant seq162 / manager seq165): a local companion anchor
+detects accidental or partial local rollback — a backup restore, a
+half-copied state directory, a botched upgrade — and rejects naive replay
+across restart. It does NOT resist a determined actor who can replace BOTH
+local files; authoritative rollback protection for the managed lane is a
+Units 4-5 control-plane responsibility (the control plane already knows the
+revocation epoch) and is out of scope for this Unit-3 local mechanism.
 """
 from __future__ import annotations
 
@@ -45,11 +75,24 @@ from runtime.remote_access.policy import canonical_json
 # The non-normative local envelope (not a founder-gated schema). Bumping the
 # version is a breaking change to the recovery aid; unknown versions fail
 # closed rather than being guessed.
-ENVELOPE_VERSION = 1
+#
+# v2 adds the monotonic ``generation`` field (envelope-level) bound to the
+# companion anchor. v1 envelopes (no generation, no anchor) are rejected as
+# unsupported — a v1 snapshot can no longer be trusted without an anchor.
+ENVELOPE_VERSION = 2
 ENVELOPE_KIND = "connector-trust-state-nonnormative"
+
+# The companion monotonic generation/digest anchor (founder THR-097 seq163).
+# Lives OUTSIDE the replaceable snapshot (``<state>.anchor``), owner-only,
+# atomic, schema-agnostic/non-normative — no database, no migration.
+ANCHOR_VERSION = 1
+ANCHOR_KIND = "connector-trust-state-anchor-nonnormative"
 
 _STATE_DIR_MODE = 0o700
 _STATE_FILE_MODE = 0o600
+
+_ENVELOPE_KEYS = frozenset({"version", "kind", "generation", "payload", "digest"})
+_ANCHOR_KEYS = frozenset({"version", "kind", "generation", "snapshot_digest", "digest"})
 
 _PAYLOAD_KEYS = frozenset(
     {"connector_identity", "pairing_epoch", "revocation_epoch", "current_device_id", "devices"}
@@ -221,48 +264,80 @@ def _payload_from_state(state: TrustState) -> dict[str, Any]:
 
 
 class AtomicFileTrustStateStore:
-    """An atomic, corruption-detecting, owner-only ``TrustStateStore``.
+    """An atomic, corruption-detecting, owner-only ``TrustStateStore`` with a
+    monotonic companion generation/digest anchor (founder THR-097 seq163).
 
-    ``default_state`` is returned when no state file exists (first run: a
-    fresh deny-all state). Any present-but-corrupt/loose/unreadable/symlinked
-    state fails closed with :class:`StateStoreError` (or
+    ``default_state`` is returned when NO snapshot AND NO anchor exist (first
+    run: a fresh deny-all state). Any present-but-corrupt/loose/unreadable/
+    symlinked state or anchor, any partial pair (one file missing), any
+    cross-generation pair, and any replayed older snapshot after a newer
+    revocation/generation fails closed with :class:`StateStoreError` (or
     :class:`CorruptTrustStateError`).
     """
 
-    def __init__(self, path: Path, default_state: TrustState) -> None:
+    def __init__(
+        self,
+        path: Path,
+        default_state: TrustState,
+        anchor_path: Path | None = None,
+    ) -> None:
         self._path = Path(path)
+        self._anchor_path = (
+            Path(anchor_path) if anchor_path is not None else Path(str(path) + ".anchor")
+        )
         self._default_state = default_state
 
     # ── TrustStateStore protocol ──────────────────────────────────────────
 
     def load(self) -> TrustState:
         path = self._path
-        if not path.exists():
-            return self._default_state
+        anchor_path = self._anchor_path
+        # Symlinks are rejected BEFORE existence is consulted: a dangling
+        # symlink has Path.exists() == False and must never look like a
+        # missing (first-run) file.
         if path.is_symlink():
             raise StateStoreError("trust state file must not be a symlink")
-        if not path.is_file():
-            raise StateStoreError("trust state path is not a file")
-        try:
-            mode = stat.S_IMODE(path.stat().st_mode)
-        except OSError as exc:
-            raise StateStoreError("trust state file unreadable") from exc
-        if mode & 0o077:
-            raise StateStoreError("trust state file permissions too loose")
-        try:
-            raw = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise StateStoreError("trust state file unreadable") from exc
+        if anchor_path.is_symlink():
+            raise StateStoreError("trust state anchor must not be a symlink")
+        path_exists = path.exists()
+        anchor_exists = anchor_path.exists()
+        if not path_exists and not anchor_exists:
+            return self._default_state
+        # Any partial pair is fail-closed: a snapshot without its anchor (or
+        # an anchor without its snapshot) is an interrupted update or a
+        # partial restore, never a trusted state.
+        if not path_exists:
+            raise CorruptTrustStateError(
+                "trust state snapshot missing (anchor present)"
+            )
+        if not anchor_exists:
+            raise CorruptTrustStateError(
+                "trust state anchor missing (snapshot present)"
+            )
+        raw = self._read_owner_only(path, "trust state file")
+        anchor = self._parse_anchor(self._read_owner_only(anchor_path, "trust state anchor"))
         try:
             envelope = json.loads(raw)
         except (ValueError, TypeError) as exc:
             raise CorruptTrustStateError("trust state file is not valid JSON") from exc
         if not isinstance(envelope, dict):
             raise CorruptTrustStateError("trust state envelope must be an object")
+        unknown = set(envelope) - _ENVELOPE_KEYS
+        if unknown:
+            raise CorruptTrustStateError("trust state envelope has unknown keys")
         if envelope.get("version") != ENVELOPE_VERSION:
             raise CorruptTrustStateError("trust state envelope version unsupported")
         if envelope.get("kind") != ENVELOPE_KIND:
             raise CorruptTrustStateError("trust state envelope kind mismatch")
+        generation = envelope.get("generation")
+        if (
+            isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation < 1
+        ):
+            raise CorruptTrustStateError(
+                "trust state envelope generation must be a positive integer"
+            )
         payload = envelope.get("payload")
         if not isinstance(payload, dict):
             raise CorruptTrustStateError("trust state payload must be an object")
@@ -270,24 +345,62 @@ class AtomicFileTrustStateStore:
         expected = hashlib.sha256(canonical_json(payload)).hexdigest()
         if not isinstance(digest, str) or digest != expected:
             raise CorruptTrustStateError("trust state integrity check failed")
+        # ── companion anchor bind (monotonicity) ──────────────────────────
+        # 1. The envelope generation must equal the anchored generation: a
+        #    cross-generation pair (stale anchor / newer snapshot, or a
+        #    restored old pair mislabeled) is rejected.
+        if generation != anchor["generation"]:
+            raise CorruptTrustStateError(
+                "trust state generation does not match companion anchor"
+            )
+        # 2. The anchor digest must cover the EXACT snapshot bytes: any
+        #    byte-level difference (a replayed older snapshot, a partially
+        #    written snapshot, a re-serialized envelope) is rejected.
+        if anchor["snapshot_digest"] != hashlib.sha256(raw).hexdigest():
+            raise CorruptTrustStateError(
+                "trust state snapshot does not match companion anchor"
+            )
         return _state_from_payload(payload)
 
     def save(self, state: TrustState) -> None:
+        next_generation = self._next_generation()
         payload = _payload_from_state(state)
         envelope = {
             "version": ENVELOPE_VERSION,
             "kind": ENVELOPE_KIND,
+            "generation": next_generation,
             "payload": payload,
             "digest": hashlib.sha256(canonical_json(payload)).hexdigest(),
         }
-        self._write_envelope(envelope)
+        envelope_bytes = json.dumps(
+            envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        # Snapshot first, then anchor. A crash between the two leaves a
+        # mismatched pair that load() rejects (never a stale state).
+        self._write_bytes(self._path, envelope_bytes)
+        anchor_payload = {
+            "version": ANCHOR_VERSION,
+            "kind": ANCHOR_KIND,
+            "generation": next_generation,
+            "snapshot_digest": hashlib.sha256(envelope_bytes).hexdigest(),
+        }
+        anchor = dict(anchor_payload)
+        anchor["digest"] = hashlib.sha256(canonical_json(anchor_payload)).hexdigest()
+        self._write_bytes(
+            self._anchor_path,
+            json.dumps(
+                anchor, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode("utf-8"),
+        )
 
-    def _render(self, state: TrustState) -> bytes:
-        """Serialize *state* exactly as ``save`` would (deterministic)."""
+    def _render(self, state: TrustState, generation: int = 1) -> bytes:
+        """Serialize *state* exactly as ``save`` would at *generation*
+        (deterministic; used by tests to construct/verify envelopes)."""
         payload = _payload_from_state(state)
         envelope = {
             "version": ENVELOPE_VERSION,
             "kind": ENVELOPE_KIND,
+            "generation": generation,
             "payload": payload,
             "digest": hashlib.sha256(canonical_json(payload)).hexdigest(),
         }
@@ -295,8 +408,87 @@ class AtomicFileTrustStateStore:
             envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False
         ).encode("utf-8")
 
-    def _write_envelope(self, envelope: dict) -> None:
-        parent = self._path.parent
+    # ── anchor / generation helpers ───────────────────────────────────────
+
+    def _next_generation(self) -> int:
+        """The next monotonic generation from the on-disk anchor. A snapshot
+        without an anchor is partial state and must never be silently
+        resurrected at a fresh generation."""
+        anchor_path = self._anchor_path
+        if not anchor_path.exists():
+            if self._path.exists():
+                raise StateStoreError(
+                    "trust state anchor missing; cannot determine next generation "
+                    "(refusing partial state)"
+                )
+            return 1
+        anchor = self._parse_anchor(self._read_owner_only(anchor_path, "trust state anchor"))
+        return anchor["generation"] + 1
+
+    def _parse_anchor(self, raw: bytes) -> dict[str, int | str]:
+        """Strictly validate the companion anchor; any violation fails closed."""
+        try:
+            anchor = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            raise CorruptTrustStateError("trust state anchor is not valid JSON") from exc
+        if not isinstance(anchor, dict):
+            raise CorruptTrustStateError("trust state anchor must be an object")
+        unknown = set(anchor) - _ANCHOR_KEYS
+        if unknown:
+            raise CorruptTrustStateError("trust state anchor has unknown keys")
+        if anchor.get("version") != ANCHOR_VERSION:
+            raise CorruptTrustStateError("trust state anchor version unsupported")
+        if anchor.get("kind") != ANCHOR_KIND:
+            raise CorruptTrustStateError("trust state anchor kind mismatch")
+        generation = anchor.get("generation")
+        if (
+            isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation < 1
+        ):
+            raise CorruptTrustStateError(
+                "trust state anchor generation must be a positive integer"
+            )
+        snapshot_digest = anchor.get("snapshot_digest")
+        if not isinstance(snapshot_digest, str) or len(snapshot_digest) != 64:
+            raise CorruptTrustStateError("trust state anchor snapshot_digest invalid")
+        digest = anchor.get("digest")
+        expected = hashlib.sha256(
+            canonical_json(
+                {
+                    "version": ANCHOR_VERSION,
+                    "kind": ANCHOR_KIND,
+                    "generation": generation,
+                    "snapshot_digest": snapshot_digest,
+                }
+            )
+        ).hexdigest()
+        if not isinstance(digest, str) or digest != expected:
+            raise CorruptTrustStateError("trust state anchor integrity check failed")
+        return {"generation": generation, "snapshot_digest": snapshot_digest}
+
+    def _read_owner_only(self, path: Path, what: str) -> bytes:
+        """Read a state/anchor file with the owner-only contract enforced:
+        symlink, non-file, loose permissions, or unreadable all fail closed."""
+        if path.is_symlink():
+            raise StateStoreError(f"{what} must not be a symlink")
+        if not path.is_file():
+            raise StateStoreError(f"{what} path is not a file")
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError as exc:
+            raise StateStoreError(f"{what} unreadable") from exc
+        if mode & 0o077:
+            raise StateStoreError(f"{what} permissions too loose")
+        try:
+            return path.read_bytes()
+        except OSError as exc:
+            raise StateStoreError(f"{what} unreadable") from exc
+
+    def _write_bytes(self, path: Path, data: bytes) -> None:
+        """Atomic owner-only write: temp file in the same directory, fsync,
+        rename, directory fsync. A crash never leaves a half-written file."""
+        parent = path.parent
         fd = None
         tmp_name: str | None = None
         try:
@@ -309,21 +501,15 @@ class AtomicFileTrustStateStore:
             raise StateStoreError("trust state directory unavailable") from exc
         try:
             fd, tmp_name = tempfile.mkstemp(
-                prefix=f".{self._path.name}.", suffix=".tmp", dir=parent
+                prefix=f".{path.name}.", suffix=".tmp", dir=parent
             )
             os.fchmod(fd, _STATE_FILE_MODE)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            with os.fdopen(fd, "wb") as fh:
                 fd = None
-                json.dump(
-                    envelope,
-                    fh,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                )
+                fh.write(data)
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.replace(tmp_name, self._path)
+            os.replace(tmp_name, path)
             tmp_name = None
             # fsync the directory so the rename is durable across a crash.
             dir_fd = os.open(parent, os.O_RDONLY)

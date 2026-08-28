@@ -17,6 +17,7 @@ Linux connector lifecycle:
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -68,6 +69,10 @@ DEFAULT_UNIT_NAME = "happyranch-connector.service"
 DEFAULT_STATE_DIR = "happyranch-connector"
 DEFAULT_POLL_SECONDS = 5.0
 
+# Owner-only mode for staged managed files (config/policy/state under the
+# dedicated service user's state directory).
+_MANAGED_FILE_MODE = 0o600
+
 
 class ConnectorConfigError(Exception):
     """The connector config is invalid (fail closed before any side effect)."""
@@ -88,6 +93,11 @@ class ConnectorConfig:
     # policy artifact (PolicyEnvelope JSON) and trust state file
     policy_path: str | None = None
     state_path: str = "~/.happyranch/remote_access/trust-state.json"
+    # managed-dir root override: where install() stages the service config/
+    # state/policy. None = /var/lib (system mode) or the user XDG state home
+    # (user mode). An override keeps hermetic tests/conformance fully under a
+    # temp root; production leaves it None.
+    managed_dir_root: str | None = None
     # service-manager settings
     unit_name: str = DEFAULT_UNIT_NAME
     system: bool = False
@@ -243,6 +253,12 @@ class ConnectorSupervisor:
         )
 
     def credential_provider(self) -> DaemonCredentialProvider:
+        # Under the service path systemd sets $CREDENTIALS_DIRECTORY (the
+        # LoadCredential= injection the unit renders): consume it AUTOMATICALLY
+        # — no redundant config, and never fall back to reading the daemon
+        # home. A missing injected credential fails closed instead.
+        if os.environ.get("CREDENTIALS_DIRECTORY"):
+            return SystemdCredentialProvider()
         if self.config.credentials_directory:
             return SystemdCredentialProvider(self.config.credentials_directory)
         if self.config.daemon_token_path:
@@ -373,34 +389,173 @@ class ConnectorSupervisor:
 
     # ── systemd lifecycle ─────────────────────────────────────────────────
 
-    def unit_spec(self) -> ConnectorUnitSpec:
-        daemon_token = self.config.daemon_token_path or ""
-        return ConnectorUnitSpec(
-            unit_name=self.config.unit_name,
-            exec_start=self.config.exec_start
-            or (
+    def _managed_state_root(self, config: ConnectorConfig | None = None) -> Path:
+        """The managed state root for *config*: where install() stages the
+        service config/state/policy and where the rendered unit points
+        ``--config``. ``StateDirectory=<state_dir>`` resolves to the same
+        location systemd creates for the service user (system: ``/var/lib``;
+        user: the XDG state home)."""
+        cfg = config or self.config
+        if cfg.managed_dir_root:
+            return Path(cfg.managed_dir_root).expanduser() / cfg.state_dir
+        if cfg.system:
+            return Path("/var/lib") / cfg.state_dir
+        return Path.home() / ".local" / "state" / cfg.state_dir
+
+    def unit_spec(self, config: ConnectorConfig | None = None) -> ConnectorUnitSpec:
+        cfg = config or self.config
+        daemon_token = cfg.daemon_token_path or ""
+        args = cfg.exec_start
+        if args is None:
+            # The default unit points --config at the MANAGED config path (the
+            # dedicated service user's state directory) — never at a
+            # ~/.happyranch path the hardened unit cannot read. A lab provider
+            # config carries the only provider that exists, so the rendered
+            # unit passes --lab-only (never silently started as a product).
+            args = (
                 "/opt/happyranch/venv/bin/python",
                 "-m",
                 "runtime.remote_access.cli",
                 "run",
                 "--config",
-                str(Path(self.config.state_path).expanduser().parent / "config.json"),
-            ),
-            system=self.config.system,
-            user=self.config.service_user if self.config.system else None,
-            group=self.config.service_group if self.config.system else None,
+                str(self._managed_state_root(cfg) / "config.json"),
+            )
+            if cfg.lab is not None:
+                args += ("--lab-only",)
+        return ConnectorUnitSpec(
+            unit_name=cfg.unit_name,
+            exec_start=args,
+            system=cfg.system,
+            user=cfg.service_user if cfg.system else None,
+            group=cfg.service_group if cfg.system else None,
             daemon_token_path=daemon_token,
-            state_dir=self.config.state_dir,
-            run_dir=self.config.run_dir,
-            logs_dir=self.config.logs_dir,
-            watchdog_sec=self.config.watchdog_sec,
-            restart_sec=self.config.restart_sec,
+            state_dir=cfg.state_dir,
+            run_dir=cfg.run_dir,
+            logs_dir=cfg.logs_dir,
+            watchdog_sec=cfg.watchdog_sec,
+            restart_sec=cfg.restart_sec,
+        )
+
+    def _managed_config(self) -> ConnectorConfig:
+        """The config the SERVICE actually runs: the operator's config with
+        state/policy re-pointed at the managed directories (accessible to the
+        dedicated service user). Never a ``~/.happyranch`` path."""
+        cfg = self.config
+        root = self._managed_state_root(cfg)
+        return ConnectorConfig(
+            tenant_id=cfg.tenant_id,
+            home_id=cfg.home_id,
+            connector_id=cfg.connector_id,
+            daemon_port=cfg.daemon_port,
+            daemon_token_path=cfg.daemon_token_path,
+            credentials_directory=cfg.credentials_directory,
+            policy_path=str(root / "policy.json"),
+            state_path=str(root / "trust-state.json"),
+            unit_name=cfg.unit_name,
+            system=cfg.system,
+            service_user=cfg.service_user,
+            service_group=cfg.service_group,
+            state_dir=cfg.state_dir,
+            run_dir=cfg.run_dir,
+            logs_dir=cfg.logs_dir,
+            watchdog_sec=cfg.watchdog_sec,
+            restart_sec=cfg.restart_sec,
+            exec_start=cfg.exec_start,
+            poll_seconds=cfg.poll_seconds,
+            lab=cfg.lab,
+            managed_dir_root=cfg.managed_dir_root,
         )
 
     def install(self, *, enable: bool = True) -> Path:
+        """Stage config/state/policy into the declared managed directories and
+        install the rendered unit. The source trust state (if any) is copied
+        so revocation history survives the move; a corrupt or partial source
+        state refuses installation (fail closed)."""
+        managed = self._managed_config()
+        return self._install_managed(managed, enable=enable)
+
+    def _install_managed(self, managed: ConnectorConfig, *, enable: bool) -> Path:
+        root = Path(managed.state_path).expanduser().parent
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            os.chmod(root, 0o700)
+        except OSError as exc:
+            raise ConnectorConfigError(
+                f"cannot create managed state directory {root}: {exc}"
+            ) from exc
+        # 1. The SOURCE trust state must be loadable before staging anything:
+        #    a corrupt/partial pair (snapshot without its companion anchor)
+        #    could hide a revocation and must never be installed over.
+        try:
+            self.state_store.load()
+        except StateStoreError as exc:
+            raise ConnectorConfigError(
+                f"refusing to install: source trust state unusable: {exc}"
+            ) from exc
+        # 2. Stage the source state pair under the MANAGED names (the managed
+        #    config's state_path points at ``trust-state.json``); the source
+        #    file may be named differently. ``load()`` above guarantees the
+        #    pair is consistent (snapshot + companion anchor).
+        source_path = Path(self.config.state_path).expanduser()
+        if source_path.exists():
+            staged_pairs = (
+                ("trust-state.json", source_path),
+                ("trust-state.json.anchor", Path(str(source_path) + ".anchor")),
+            )
+            for managed_name, src in staged_pairs:
+                if src.is_file():
+                    try:
+                        data = src.read_bytes()
+                        target = root / managed_name
+                        target.write_bytes(data)
+                        os.chmod(target, _MANAGED_FILE_MODE)
+                    except OSError as exc:
+                        raise ConnectorConfigError(
+                            f"cannot stage {managed_name}: {exc}"
+                        ) from exc
+        # 3. Stage the policy artifact the service consumes.
+        src_policy = Path(self.config.policy_path).expanduser()
+        if not src_policy.is_file():
+            raise ConnectorConfigError(f"policy_path not found: {src_policy}")
+        try:
+            policy_data = src_policy.read_bytes()
+            target = root / "policy.json"
+            target.write_bytes(policy_data)
+            os.chmod(target, _MANAGED_FILE_MODE)
+        except OSError as exc:
+            raise ConnectorConfigError(f"cannot stage policy: {exc}") from exc
+        # 4. Write the managed config (what the service actually loads).
+        try:
+            managed.to_file(root / "config.json")
+            os.chmod(root / "config.json", _MANAGED_FILE_MODE)
+        except OSError as exc:
+            raise ConnectorConfigError(f"cannot write managed config: {exc}") from exc
+        # 5. System mode: the staged tree must be owned by the service user.
+        if managed.system:
+            self._chown_tree(root, managed.service_user, managed.service_group)
+        spec = self.unit_spec(managed)
         return self.manager.install(
-            render_connector_unit(self.unit_spec()), self.config.unit_name, enable=enable
+            render_connector_unit(spec), managed.unit_name, enable=enable
         )
+
+    def _chown_tree(self, root: Path, user: str, group: str) -> None:
+        """Own the staged managed tree to the dedicated service user/group
+        (system mode only). Unknown user/group fails closed."""
+        try:
+            import grp
+            import pwd
+
+            uid = pwd.getpwnam(user).pw_uid
+            gid = grp.getgrnam(group).gr_gid
+        except (KeyError, ImportError) as exc:
+            raise ConnectorConfigError(
+                f"service user/group not found: {user}/{group}"
+            ) from exc
+        for path in (root, *sorted(root.rglob("*"))):
+            try:
+                os.chown(path, uid, gid)
+            except OSError as exc:
+                raise ConnectorConfigError(f"cannot chown {path}: {exc}") from exc
 
     def uninstall(self) -> None:
         self.manager.uninstall(self.config.unit_name)
@@ -442,8 +597,10 @@ class ConnectorSupervisor:
     ) -> int:
         """Readiness-gated foreground loop.
 
-        - readiness passes: start the provider (if configured) and notify
-          READY; subsequent passes ping WATCHDOG.
+        - readiness passes: start the provider (if configured); READY=1 is
+          emitted ONLY when the listener actually started (``_start_provider``
+          returns proven success) — never on a bind/start failure; subsequent
+          passes ping WATCHDOG.
         - readiness fails while the provider is up: stop the listener
           IMMEDIATELY (fail closed) and notify STOPPING.
         - the loop runs until ``max_iterations`` (tests) or a signal-driven
@@ -459,8 +616,9 @@ class ConnectorSupervisor:
             report = self.readiness_report()
             if report.ready:
                 if not self._provider_running:
-                    self._start_provider()
-                    self._notify_fn("READY=1\n")
+                    if self._start_provider():
+                        self._notify_fn("READY=1\n")
+                    # else: no listener — STATUS already emitted; never READY
                 else:
                     self._notify_fn("WATCHDOG=1\n")
             else:
@@ -478,22 +636,26 @@ class ConnectorSupervisor:
             self._stop_provider()
         self._notify_fn("STOPPING=1\n")
 
-    def _start_provider(self) -> None:
+    def _start_provider(self) -> bool:
+        """Start the provider and return PROVEN success: True only when the
+        listener is actually running (``_provider_running`` set). A bind/start
+        failure returns False — the caller must never emit READY."""
         if self._injected_provider is not None:
             provider = self._injected_provider
         else:
             provider = self.build_provider()
         if provider is None:
-            return  # no provider configured: readiness without a listener
+            return True  # no provider configured: readiness without a listener
         try:
             provider.start()
         except LabProviderError:
             # fail-closed: readiness passed but the provider refused to bind
             # (e.g. bind conflict) — keep the loop re-evaluating; no listener.
             self._notify_fn("STATUS=provider failed to start; no listener\n")
-            return
+            return False
         self._provider = provider
         self._provider_running = True
+        return True
 
     def _stop_provider(self) -> None:
         provider = self._provider

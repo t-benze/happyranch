@@ -1,30 +1,49 @@
 """Real Linux/systemd conformance for the supervised connector (THR-097
 phase unit 3).
 
-Hermetic user-scope systemd conformance on a capable host: install a REAL
-user unit rendered by ``render_connector_unit`` into the user unit dir,
-``daemon-reload``, start it against the real ``Type=notify`` READY contract
-(the helper sends ``READY=1`` over sd_notify, exactly like the connector
-supervisor), verify it reaches ``active`` with a live PID, restart it,
-exercise upgrade/rollback against the real user manager, stop it, uninstall
-it, and prove the unit is gone. Every unit is torn down; no live daemon is
-touched.
+Hermetic user-scope systemd conformance on a capable host that launches the
+ACTUAL rendered connector: install the unit rendered for the shipping
+``ConnectorSupervisor`` (``python -m runtime.remote_access.cli run`` with a
+lab provider, LoadCredential=, and the managed-dir config), start it against
+the real ``Type=notify`` READY contract, verify it reaches ``active`` with a
+live PID (READY is emitted ONLY after every readiness gate passes AND the
+listener started), prove the lab listener is actually bound, exercise
+status/restart/stop, and verify the listener is gone after stop. A real HTTP
+request through the lab listener proves the shipping pipeline forwards to the
+literal-loopback daemon. Upgrade/rollback round-trip, enable/disable, and
+daemon-reload run against the real user manager too. Every unit is torn down;
+no live daemon is touched.
 
 Gated on an operational probe with an explicit skip reason — an unavailable
 real capability is NOT silently counted as PASS (skip, not pass), mirroring
 ``tests/platform/test_task_producer_linux_integration.py``. Runs under
-``-m integration`` (unit runs exclude it).
+``-m integration`` (unit runs exclude it). Where the runner cannot host user
+systemd, the deterministic unit-level fail-closed battery
+(``test_supervisor.py``/``test_service_manager.py``/``test_state_store.py``)
+remains the coverage.
 """
 from __future__ import annotations
 
+import json
 import shutil
+import socket
 import subprocess
 import sys
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib import request as url_request
 
 import pytest
 
+from runtime.remote_access.lab_provider import LabProviderConfig
 from runtime.remote_access.service_manager import SystemdServiceManager
+from runtime.remote_access.supervisor import ConnectorConfig, ConnectorSupervisor
 from runtime.remote_access.systemd_unit import ConnectorUnitSpec, render_connector_unit
+
+from .conftest import load_fixture
 
 pytestmark = pytest.mark.integration
 
@@ -84,6 +103,16 @@ def manager():
     return SystemdServiceManager(system=False)
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _clean_state_directory_residue():
+    """systemd creates the declared StateDirectory at unit start; remove the
+    empty residue so conformance leaves no trace in the real user state home."""
+    yield
+    shutil.rmtree(
+        Path.home() / ".local" / "state" / "happyranch-connector", ignore_errors=True
+    )
+
+
 @pytest.fixture(scope="module")
 def notify_helper(tmp_path_factory) -> str:
     helper = tmp_path_factory.mktemp("connector-conformance") / "notify_sleep.py"
@@ -103,39 +132,172 @@ def _unit_text(helper: str) -> str:
     return render_connector_unit(spec)
 
 
-def test_real_user_systemd_install_start_status_stop_uninstall(
-    manager, notify_helper
-) -> None:
-    """The full hermetic lifecycle against the REAL user systemd manager:
-    install a rendered least-privilege user unit, reload, start (the helper
-    satisfies the Type=notify READY contract), verify active + live PID,
-    restart, stop, uninstall, prove removal."""
-    text = _unit_text(notify_helper)
-    manager.uninstall(UNIT_NAME)  # hermetic baseline: nothing left behind
+# ── real-supervisor conformance (finding 3) ────────────────────────────────
+
+
+class _FakeDaemonHandler(BaseHTTPRequestHandler):
+    def log_message(self, format: str, *args) -> None:  # noqa: A002
+        return
+
+    def do_GET(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+
+class _FakeDaemon:
+    """A literal-127.0.0.1 stand-in for the daemon the readiness probe and the
+    loopback forwarder talk to."""
+
+    def __init__(self) -> None:
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeDaemonHandler)
+        self.port = int(self.server.server_address[1])
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, name="hr-fake-daemon", daemon=True
+        )
+        self.thread.start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _port_open(port: int, timeout: float = 1.0) -> bool:
     try:
-        path = manager.install(text, UNIT_NAME)
-        assert path.is_file()
-        assert "NoNewPrivileges=yes" in text
-        # user-mode render must be startable by the user manager
-        assert "CapabilityBoundingSet=" not in text
-        assert "PrivateDevices=yes" not in text
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
-        manager.start(UNIT_NAME)
-        assert manager.is_active(UNIT_NAME) is True
 
-        status = manager.status(UNIT_NAME)
-        assert status.load_state == "loaded"
-        assert status.pid > 0
-        assert status.running is True
+def _wait_for(predicate, timeout: float = 30.0, interval: float = 0.2) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
 
-        manager.restart(UNIT_NAME)
-        assert manager.is_active(UNIT_NAME) is True
 
-        manager.stop(UNIT_NAME)
-        assert manager.is_active(UNIT_NAME) is False
+def _write_policy_envelope(path: Path) -> None:
+    """A current, structurally-valid route-policy envelope for the service."""
+    artifact = load_fixture("route-policy")
+    envelope = {
+        "schema_version": 1,
+        "artifact_version": int(artifact.get("version", 1)),
+        "issued_at": (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat(),
+        "max_age_seconds": 3600,
+        "revision": 1,
+        "state": "active",
+        "artifact": artifact,
+    }
+    path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+
+
+def test_real_systemd_supervisor_readiness_listener_lifecycle(
+    tmp_path_factory,
+) -> None:
+    """The shipping ConnectorSupervisor under the REAL user systemd manager:
+    install the actual rendered unit, start it through the Type=notify READY
+    contract (READY only after all gates + listener start), verify active +
+    live PID + bound listener + end-to-end request to the literal-loopback
+    daemon, then restart and stop with the listener gone."""
+    _skip_if_unavailable()
+    manager = SystemdServiceManager(system=False)
+    base = tmp_path_factory.mktemp("hr-conn-supervisor")
+    daemon = _FakeDaemon()
+    try:
+        token = base / "daemon.token"
+        token.write_text("conformance-token", encoding="utf-8")
+        token.chmod(0o600)
+        policy = base / "policy.json"
+        _write_policy_envelope(policy)
+        lab_port = _free_port()
+        managed_config = str(base / "managed" / "happyranch-connector" / "config.json")
+        config = ConnectorConfig(
+            tenant_id="tenant-conformance",
+            home_id="home-conformance",
+            connector_id="connector-conformance",
+            daemon_port=daemon.port,
+            daemon_token_path=str(token),
+            policy_path=str(policy),
+            state_path=str(base / "state.json"),
+            unit_name=UNIT_NAME,
+            system=False,
+            managed_dir_root=str(base / "managed"),
+            lab=LabProviderConfig(
+                bind_host="127.0.0.1", bind_port=lab_port, lab_only=True
+            ),
+            exec_start=(
+                sys.executable,
+                "-m",
+                "runtime.remote_access.cli",
+                "run",
+                "--config",
+                managed_config,
+                "--lab-only",
+            ),
+        )
+        supervisor = ConnectorSupervisor(config=config, manager=manager)
+        manager.uninstall(UNIT_NAME)  # hermetic baseline
+        try:
+            unit_path = supervisor.install(enable=False)
+            assert unit_path.is_file()
+            # The unit points --config at the MANAGED config (never a
+            # daemon-home/state_path-derived path) and renders LoadCredential=.
+            unit_text = unit_path.read_text(encoding="utf-8")
+            assert f"--config {managed_config}" in unit_text
+            assert "~/.happyranch" not in unit_text
+            assert f"LoadCredential=daemon.token:{token}" in unit_text
+
+            managed_root = base / "managed" / "happyranch-connector"
+            assert (managed_root / "config.json").is_file()
+            assert (managed_root / "policy.json").is_file()
+            staged = ConnectorConfig.from_file(managed_root / "config.json")
+            assert staged.state_path == str(managed_root / "trust-state.json")
+            assert staged.policy_path == str(managed_root / "policy.json")
+
+            manager.start(UNIT_NAME)
+            assert manager.is_active(UNIT_NAME) is True
+            status = manager.status(UNIT_NAME)
+            assert status.load_state == "loaded"
+            assert status.pid > 0
+            assert status.running is True
+            # Type=notify: active means READY was emitted — and READY is only
+            # emitted after ALL gates passed AND the lab listener started.
+            assert _wait_for(lambda: _port_open(lab_port), timeout=30), (
+                "connector lab listener never came up under systemd"
+            )
+
+            # End-to-end: a real request through the lab listener runs the
+            # shipping gateway pipeline and reaches the literal-loopback daemon.
+            resp = url_request.urlopen(
+                f"http://127.0.0.1:{lab_port}/api/v1/health", timeout=10
+            )
+            assert resp.status == 200
+            resp.close()
+
+            manager.restart(UNIT_NAME)
+            assert manager.is_active(UNIT_NAME) is True
+            assert _wait_for(lambda: _port_open(lab_port), timeout=30)
+
+            manager.stop(UNIT_NAME)
+            assert manager.is_active(UNIT_NAME) is False
+            assert _wait_for(lambda: not _port_open(lab_port), timeout=15), (
+                "connector listener still bound after stop"
+            )
+        finally:
+            manager.uninstall(UNIT_NAME)
+        assert not (manager.unit_dir / UNIT_NAME).exists()
     finally:
-        manager.uninstall(UNIT_NAME)
-    assert not (manager.unit_dir / UNIT_NAME).exists()
+        daemon.close()
 
 
 def test_real_upgrade_rollback_roundtrip(manager, notify_helper) -> None:
