@@ -74,6 +74,14 @@ export const THREADS_STRINGS = {
   mentionRoutingFailed: 'Routing change failed — restored to the previous state.',
   mentionRoutingSaving: 'Saving…',
 
+  /* TASK-5966 — per-thread strict reply-exchange control (independent
+     rollback control; ``mention_routing_enabled`` is never redefined). */
+  exchangeRoutingToggleLabel: 'Hold replies while the mentioned cohort discusses',
+  exchangeRoutingDescription:
+    'When on (default), a founder mention with other participants present opens a strict exchange: only the mentioned cohort is woken while the episode runs; everyone else is held and receives exactly one range-covering catch-up when the exchange closes (5 minutes of quiet, or at most 4 hours). A mention of a held participant wakes them immediately without joining the cohort. Mention routing itself is untouched — this is a separate switch.',
+  exchangeRoutingFailed: 'Exchange change failed — restored to the previous state.',
+  exchangeRoutingSaving: 'Saving…',
+
   /* System card labels */
   systemEventLabel: 'system',
 

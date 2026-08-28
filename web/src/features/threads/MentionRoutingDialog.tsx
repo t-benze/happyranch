@@ -24,13 +24,18 @@ import {
   DialogTitle,
 } from '@/design-system/primitives/Dialog';
 import { Button } from '@/design-system/primitives/Button';
-import { useSetThreadMentionRouting } from '@/hooks/threads';
+import {
+  useSetThreadMentionRouting,
+  useSetThreadExchangeRouting,
+} from '@/hooks/threads';
 import { THREADS_STRINGS as S } from './strings';
 
 interface Props {
   threadId: string;
   /** Server-derived current state (live thread record, cache-updated). */
   enabled: boolean;
+  /** TASK-5966: the independent reply-exchange switch. */
+  exchangeEnabled: boolean;
   open: boolean;
   onClose: () => void;
 }
@@ -87,11 +92,21 @@ function RoutingSwitch({
   );
 }
 
-export function MentionRoutingDialog({ threadId, enabled, open, onClose }: Props): JSX.Element {
+export function MentionRoutingDialog({
+  threadId,
+  enabled,
+  exchangeEnabled,
+  open,
+  onClose,
+}: Props): JSX.Element {
   const toggle = useSetThreadMentionRouting(threadId);
+  const exchangeToggle = useSetThreadExchangeRouting(threadId);
   const labelId = useId();
+  const exchangeLabelId = useId();
   const switchRef = useRef<HTMLButtonElement>(null);
+  const exchangeSwitchRef = useRef<HTMLButtonElement>(null);
   const [failed, setFailed] = useState(false);
+  const [exchangeFailed, setExchangeFailed] = useState(false);
 
   const flip = async (next: boolean) => {
     setFailed(false);
@@ -107,6 +122,16 @@ export function MentionRoutingDialog({ threadId, enabled, open, onClose }: Props
     // While the change was in flight the switch was disabled, which drops
     // keyboard focus; restore it so a keyboard user stays on the control.
     switchRef.current?.focus();
+  };
+
+  const flipExchange = async (next: boolean) => {
+    setExchangeFailed(false);
+    try {
+      await exchangeToggle.mutateAsync({ reply_exchange_enabled: next });
+    } catch {
+      setExchangeFailed(true);
+    }
+    exchangeSwitchRef.current?.focus();
   };
 
   return (
@@ -142,12 +167,38 @@ export function MentionRoutingDialog({ threadId, enabled, open, onClose }: Props
               {S.mentionRoutingFailed}
             </p>
           )}
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex min-w-0 flex-col gap-1">
+              <span id={exchangeLabelId} className="text-text-primary text-body-sm font-medium">
+                {S.exchangeRoutingToggleLabel}
+              </span>
+              <span className="text-text-muted text-body-sm">
+                {S.exchangeRoutingDescription}
+              </span>
+            </div>
+            <RoutingSwitch
+              value={exchangeEnabled}
+              disabled={exchangeToggle.isPending}
+              onChange={(v) => { void flipExchange(v); }}
+              labelledBy={exchangeLabelId}
+              ref={exchangeSwitchRef}
+            />
+          </div>
+          {exchangeFailed && (
+            <p role="alert" className="text-feedback-danger text-body-sm">
+              {S.exchangeRoutingFailed}
+            </p>
+          )}
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose} disabled={toggle.isPending}>
+          <Button variant="ghost" onClick={onClose} disabled={toggle.isPending || exchangeToggle.isPending}>
             Close
           </Button>
-          {toggle.isPending && <span className="text-text-muted text-body-sm">{S.mentionRoutingSaving}</span>}
+          {(toggle.isPending || exchangeToggle.isPending) && (
+            <span className="text-text-muted text-body-sm">
+              {S.mentionRoutingSaving}
+            </span>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

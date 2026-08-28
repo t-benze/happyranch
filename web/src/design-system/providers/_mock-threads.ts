@@ -35,6 +35,8 @@ import type {
   SendFollowUpResult,
   SetThreadMentionRoutingArgs,
   SetThreadMentionRoutingResult,
+  SetThreadExchangeRoutingArgs,
+  SetThreadExchangeRoutingResult,
   SetThreadPinArgs,
   SetThreadPinResult,
   ThreadsApi,
@@ -264,6 +266,7 @@ function useComposeThread(): MutationLike<ComposeArgs, ComposeResult> {
         pinned: false,
         pinned_at: null,
         mention_routing_enabled: true,
+        reply_exchange_enabled: true,
         last_activity_at: startedAt,
       };
       store.threads = [rec, ...store.threads];
@@ -546,6 +549,29 @@ function useSetThreadMentionRouting(
   });
 }
 
+function useSetThreadExchangeRouting(
+  threadId: string,
+): MutationLike<SetThreadExchangeRoutingArgs, SetThreadExchangeRoutingResult> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: SetThreadExchangeRoutingArgs) => {
+      await sleep(120);
+      const idx = store.threads.findIndex((t) => t.thread_id === threadId);
+      if (idx >= 0) {
+        store.threads[idx] = {
+          ...store.threads[idx],
+          reply_exchange_enabled: body.reply_exchange_enabled,
+        };
+      }
+      return { thread_id: threadId, reply_exchange_enabled: body.reply_exchange_enabled };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-threads'] });
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Exposed surface
 // ---------------------------------------------------------------------------
@@ -567,6 +593,7 @@ export const mockThreadsApi: ThreadsApi = {
   useRenameThread,
   useSetThreadPinned,
   useSetThreadMentionRouting,
+  useSetThreadExchangeRouting,
 };
 
 /** Test-only: reset the in-memory store to the canonical fixtures. */

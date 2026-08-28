@@ -265,9 +265,17 @@ def test_task_followup_reply_never_mention_routed(tmp_path):
 def test_participant_removed_after_write_does_not_revoke_minted_wake(tmp_path):
     """The routing decision is frozen at write time: a wake minted for a
     mentioned participant survives their later removal; the NEXT message
-    re-resolves against the current roster (mention now invalid -> broadcast)."""
+    re-resolves against the current roster (mention now invalid -> broadcast).
+    Pinned to mode 1 (exchange off) so this stays a pure mention-routing
+    contract test — under F1's strict exchange (default), a founder mention
+    with a non-empty deferred set opens an exchange that holds the
+    non-mentioned members (covered in tests/test_thread_reply_exchange.py)."""
     db = Database(tmp_path / "happyranch.db")
     _make_thread(db)
+    db._conn.execute(
+        "UPDATE threads SET reply_exchange_enabled = 0 WHERE id = 'THR-001'",
+    )
+    db._conn.commit()
     assert _arrival_wake_names(
         db, "THR-001", speaker="founder", body="@charlie please",
         recipients=["alpha", "bravo", "charlie"],
@@ -276,7 +284,13 @@ def test_participant_removed_after_write_does_not_revoke_minted_wake(tmp_path):
     db.remove_thread_participant("THR-001", "charlie")
     # The already-minted wake is untouched (pair row still exists).
     states = db.list_reply_delivery_states()
-    assert [s.agent_name for s in states] == ["charlie"]
+    # F1 (U0): every recipient got an obligation row; only charlie (the
+    # wake-set member) holds a queued token.
+    by_name = {s.agent_name: s for s in states}
+    assert set(by_name) == {"alpha", "bravo", "charlie"}
+    assert by_name["charlie"].queued_invocation_token is not None
+    assert by_name["alpha"].queued_invocation_token is None
+    assert by_name["bravo"].queued_invocation_token is None
     # The next message re-resolves: @charlie is now invalid -> broadcast.
     assert _arrival_wake_names(
         db, "THR-001", speaker="founder", body="@charlie again",
@@ -367,8 +381,11 @@ def test_mentioned_burst_still_coalesces_per_pair(tmp_path):
 
 
 def test_non_mentioned_participant_pair_untouched_by_narrowed_wake(tmp_path):
-    """When a message routes only to the mentioned set, the non-mentioned
-    pairs keep their existing watermarks — no required raise, no mint."""
+    """F1 (TASK-5966, founder-approved S3): when a message routes only to the
+    mentioned set, the non-mentioned pairs get the OBLIGATION raise (U0
+    full-recipient obligations — required advances, watermark stays
+    contiguous) but NO mint and NO wake audit. Wake-mint eligibility is
+    separated from obligation advancement."""
     db = Database(tmp_path / "happyranch.db")
     _make_thread(db)
     _seq1, arrivals = db.record_conversational_arrival(
@@ -386,10 +403,17 @@ def test_non_mentioned_participant_pair_untouched_by_narrowed_wake(tmp_path):
     )
     assert [a.agent_name for a in arrivals2] == ["bravo"]
     states = {s.agent_name: s for s in db.list_reply_delivery_states()}
-    # Only bravo's pair has a required raise past the acknowledged tail.
+    # Only bravo's pair mints (wake set == mention set); acknowledged
+    # watermarks stay at the settled tail for every pair.
     assert states["bravo"].required_through_seq == _seq2
-    assert states["alpha"].required_through_seq == _seq1
-    assert states["charlie"].required_through_seq == _seq1
+    assert states["bravo"].queued_invocation_token is not None
+    # Non-mentioned pairs: obligation raise only — required advances to the
+    # message seq, acknowledged stays at the settled tail, NO token, NO mint.
+    for agent in ("alpha", "charlie"):
+        assert states[agent].required_through_seq == _seq2
+        assert states[agent].acknowledged_through_seq == _seq1
+        assert states[agent].queued_invocation_token is None
+        assert states[agent].running_invocation_token is None
 
 
 def test_settle_followon_still_minted_after_mentioned_arrival(tmp_path):

@@ -1081,6 +1081,7 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
         "pinned": t.pinned_at is not None,
         "pinned_at": t.pinned_at.isoformat() if t.pinned_at else None,
         "mention_routing_enabled": t.mention_routing_enabled,
+        "reply_exchange_enabled": t.reply_exchange_enabled,
         "last_activity_at": t.last_activity_at.isoformat() if t.last_activity_at else None,
     }
 
@@ -1488,7 +1489,7 @@ async def decline_thread_endpoint(
         if inv is None:
             raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
         if inv.purpose is ThreadInvocationPurpose.REPLY:
-            settlement = org.db.settle_conversational_reply(
+            settlement, catch_up = org.db.settle_conversational_reply_with_exchange(
                 token=body.invocation_token,
                 outcome="decline",
                 decline_reason=reason,
@@ -1502,6 +1503,12 @@ async def decline_thread_endpoint(
                 ok = True
                 if settlement.follow_on_token is not None:
                     tokens_to_enqueue.append(settlement.follow_on_token)
+                # TASK-5966: catch-up tokens minted by the closure evaluation
+                # at this settlement (decline route owns the enqueue).
+                tokens_to_enqueue.extend(
+                    a.invocation_token for a in catch_up
+                    if a.invocation_token is not None
+                )
         else:
             ok = org.db.mark_invocation_declined(
                 body.invocation_token, decline_reason=reason,
@@ -2907,6 +2914,39 @@ async def set_thread_mention_routing_endpoint(
     return {
         "thread_id": thread_id,
         "mention_routing_enabled": body.mention_routing_enabled,
+    }
+
+
+class SetThreadExchangeRoutingBody(BaseModel):
+    # Strict bool (mirrors the mention-routing contract): the exchange switch
+    # is a boolean — "yes"/1/etc. must not silently coerce (THR-198;
+    # bool-before-int per MEM-304 is handled by Pydantic strict mode).
+    reply_exchange_enabled: Annotated[bool, Field(strict=True)]
+
+
+@router.post("/threads/{thread_id}/exchange-routing")
+async def set_thread_exchange_routing_endpoint(
+    slug: str, thread_id: str, body: SetThreadExchangeRoutingBody, org: OrgDep,
+) -> dict:
+    """TASK-5966 — independent rollback control: toggle the per-thread
+    strict-exchange switch (mode 2 of the 3-mode position model).
+    ``mention_routing_enabled`` is NEVER touched here."""
+    t = org.db.get_thread(thread_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found"})
+    async with org.db_lock:
+        transitioned = org.db.set_thread_exchange_routing_with_audit(
+            thread_id, enabled=body.reply_exchange_enabled,
+        )
+        if not transitioned:
+            return {
+                "thread_id": thread_id,
+                "reply_exchange_enabled": body.reply_exchange_enabled,
+                "idempotent": True,
+            }
+    return {
+        "thread_id": thread_id,
+        "reply_exchange_enabled": body.reply_exchange_enabled,
     }
 
 

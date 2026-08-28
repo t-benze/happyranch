@@ -96,6 +96,31 @@ from typing import Any
 #: Slice-B merge timestamp.
 RATIFIED_EPOCH = "2026-08-26T14:25:23Z"
 
+#: TASK-5966 F1 rollout measurement boundary — the daemon restart that first
+#: runs the strict mention-led exchange code. A SEPARATE boundary from the
+#: Phase-2 epoch/window: the exchange changes the decline/wake populations
+#: wholesale, so F1 metrics are never mixed into the Phase-2 G1/G2/G3
+#: numbers. ``RATIFIED_EPOCH`` and the August 2026 baseline window are
+#: preserved untouched. Write-time-frozen: messages written before the F1
+#: epoch never open exchanges (no historical backfill).
+RATIFIED_EPOCH_F1 = "2026-08-28T06:22:21Z"
+
+#: F1 exchange gates (falsifiable, founder-ratified):
+#:   * no-pierce: ``sum(wake_created)`` for held pairs inside open exchanges
+#:     is ZERO (except the three documented pierce sources: mention, a
+#:     pre-existing queued wake claimed mid-E, TASK_FOLLOWUP/BOOTSTRAP);
+#:   * exactly-one catch-up: per deferred pair per exchange,
+#:     ``count(queued tokens covering [open_seq, close_seq]) in {0, 1}``
+#:     (0 only when a pierce/coalesce already covered it);
+#:   * N-to-1: per founder-mention-led burst, per deferred pair, wake
+#:     sessions drop from up to 5 (shipped) to exactly 1;
+#:   * G2 coverage containment over the F1 window is at baseline.
+REQUIRED_F1 = (
+    "zero wakes for held pairs inside open exchanges except the three "
+    "documented pierces; exactly one range-covering catch-up per deferred "
+    "pair per exchange; N-to-1 burst compression; G2 containment at baseline"
+)
+
 #: Baseline window: calendar month August 2026, happyranch org (seq 85-87).
 RATIFIED_BASELINE_START = "2026-08-01T00:00:00Z"
 RATIFIED_BASELINE_END = "2026-09-01T00:00:00Z"

@@ -271,6 +271,16 @@ def _sweep_on_startup(
     for entry in db.recover_reply_delivery_state():
         recovered_tokens.append(entry.invocation_token)
 
+    # 6e. TASK-5966 exchange reconcile: corruption sweep (fail-closed) then
+    # idempotent closure evaluation for every open exchange. daemon_restart is
+    # an INTERRUPTION, never terminal, while a recovery replacement covering
+    # the exchange is queued/running (6b) — the quiescence predicate keeps the
+    # cohort non-quiescent until that replacement settles. Catch-up tokens
+    # minted by a stale-close are enqueued after commit like every other
+    # startup token.
+    for entry in db.reconcile_reply_exchanges():
+        recovered_tokens.append(entry.invocation_token)
+
     # 6c. Reap the remaining conversational REPLY rows not governed by any
     # delivery-state ownership slot (orphan legacy receipts — e.g. archived
     # threads cutover does not reach). Never touch the governed queued wakes

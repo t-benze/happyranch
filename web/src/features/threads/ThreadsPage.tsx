@@ -898,6 +898,7 @@ export function ThreadsPage(): JSX.Element {
           <MentionRoutingDialog
             threadId={threadId}
             enabled={activeThread.data?.mention_routing_enabled ?? true}
+            exchangeEnabled={activeThread.data?.reply_exchange_enabled ?? true}
             open={showMentionRouting}
             onClose={() => setShowMentionRouting(false)}
           />

@@ -96,3 +96,8 @@ export const useSetThreadMentionRouting: ReturnType<
   typeof useData
 >['threads']['useSetThreadMentionRouting'] = (threadId) =>
   useData().threads.useSetThreadMentionRouting(threadId);
+
+export const useSetThreadExchangeRouting: ReturnType<
+  typeof useData
+>['threads']['useSetThreadExchangeRouting'] = (threadId) =>
+  useData().threads.useSetThreadExchangeRouting(threadId);

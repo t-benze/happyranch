@@ -126,6 +126,11 @@ export type SetThreadMentionRoutingResult = Awaited<
   ReturnType<typeof threadsApi.setThreadMentionRouting>
 >;
 
+export type SetThreadExchangeRoutingArgs = { reply_exchange_enabled: boolean };
+export type SetThreadExchangeRoutingResult = Awaited<
+  ReturnType<typeof threadsApi.setThreadExchangeRouting>
+>;
+
 export interface ThreadsApi {
   // Reads
   useThreadsList: (
@@ -166,6 +171,13 @@ export interface ThreadsApi {
   useSetThreadMentionRouting: (
     threadId: string,
   ) => MutationLike<SetThreadMentionRoutingArgs, SetThreadMentionRoutingResult>;
+  /** Founder-only per-thread strict reply-exchange switch (TASK-5966 — the
+   *  INDEPENDENT rollback control; ``mention_routing_enabled`` is never
+   *  touched). Optimistic with rollback; same-state no-ops resolve as
+   *  success (``idempotent``). */
+  useSetThreadExchangeRouting: (
+    threadId: string,
+  ) => MutationLike<SetThreadExchangeRoutingArgs, SetThreadExchangeRoutingResult>;
 }
 
 // ---------------------------------------------------------------------------

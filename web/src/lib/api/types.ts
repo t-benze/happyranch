@@ -256,6 +256,11 @@ export interface ThreadRecord {
    *  ``threads.mention_routing_enabled`` column; the daemon wire is a real
    *  boolean (never a string). */
   mention_routing_enabled: boolean;
+  /** Per-thread strict reply-exchange switch (TASK-5966). Mirrors the
+   *  durable ``threads.reply_exchange_enabled`` column — the INDEPENDENT
+   *  rollback control for the mention-led exchange (mode 2 of the 3-mode
+   *  position model); ``mention_routing_enabled`` is never redefined. */
+  reply_exchange_enabled: boolean;
   /** Most recent message created_at (derived server-side). Feeds the
    *  pinned-section activity ranking (THR-209). */
   last_activity_at: string | null;

@@ -136,6 +136,20 @@ export const setThreadMentionRouting = (
     body,
   });
 
+export const setThreadExchangeRouting = (
+  slug: string,
+  threadId: string,
+  body: { reply_exchange_enabled: boolean },
+): Promise<{
+  thread_id: string;
+  reply_exchange_enabled: boolean;
+  idempotent?: boolean;
+}> =>
+  request(`/orgs/${slug}/threads/${threadId}/exchange-routing`, {
+    method: 'POST',
+    body,
+  });
+
 export const abortReplies = (
   slug: string,
   threadId: string,

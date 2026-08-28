@@ -496,6 +496,14 @@ class ThreadRecord(BaseModel):
     # Additive column with NOT NULL DEFAULT 1 — existing threads adopt the
     # enabled default with no data migration or replay.
     mention_routing_enabled: bool = True
+    # TASK-5966 strict mention-led exchange (THR-198 seq 194/195/196):
+    # INDEPENDENT rollback control. Additive column with NOT NULL DEFAULT 1.
+    # This is the separate exchange switch — ``mention_routing_enabled``
+    # keeps its shipped meaning. The exchange activates only when BOTH
+    # ``mention_routing_enabled`` AND ``reply_exchange_enabled`` are on and
+    # the org kill-switch (``org_settings.threads.reply_exchange_enabled``,
+    # absent = per-thread governs) does not disable it org-wide.
+    reply_exchange_enabled: bool = True
     # Most recent message created_at (derived; NULL for threads without
     # messages). Feeds the pinned-section activity ranking (THR-209).
     last_activity_at: datetime | None = None
@@ -682,6 +690,12 @@ class ThreadReplySettlement(BaseModel):
     ``required_through_seq`` still exceeds the acknowledged watermark AND no
     follow-on wake was minted to carry it (failure/timeout leave the range
     unacknowledged with no immediate retry).
+
+    TASK-5966 strict mention-led exchange: ``exchange_held`` is True when the
+    pair was a held (deferred) member of an open exchange and its follow-on
+    wake was therefore SUPPRESSED — the unacknowledged range is intentionally
+    deferred to the exchange's single range-covering catch-up at closure, and
+    ``retry_required`` stays False (this is not a retry condition).
     """
     thread_id: str
     agent_name: str
@@ -690,6 +704,26 @@ class ThreadReplySettlement(BaseModel):
     required_through_seq: int
     retry_required: bool
     follow_on_token: str | None
+    exchange_held: bool = False
+
+
+class ThreadReplyExchangeProjection(BaseModel):
+    """Exchange-level wire projection for a thread (server contract,
+    TASK-5966). Derived from ``thread_reply_exchange`` only — never
+    fabricated. The most recent exchange row (any state) is returned so the
+    UI/CLI can truthfully disclose an open exchange's bounds and deferred
+    set; a thread that never opened an exchange has none.
+    """
+    thread_id: str
+    exchange_id: int
+    state: Literal["open", "released", "suppressed"]
+    open_seq: int
+    close_seq: int
+    opened_at: str
+    last_activity_at: str
+    closed_at: str | None
+    close_reason: str | None
+    deferred_count: int
 
 
 class ReplyDeliveryProjection(BaseModel):

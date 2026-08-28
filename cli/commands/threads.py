@@ -382,6 +382,45 @@ def cmd_threads_mention_routing(args: argparse.Namespace) -> None:
     print(f"Thread {data['thread_id']} mention routing: {state}{idempotent}")
 
 
+def cmd_threads_exchange_routing(args: argparse.Namespace) -> None:
+    """Read or toggle a thread's reply-exchange switch (TASK-5966).
+
+    The strict mention-led exchange is the independent rollback control
+    (mode 2 of the 3-mode position model: pure broadcast / shipped mention
+    routing / strict exchange). With ``--enabled`` (on|off|true|false|1|0)
+    the POST mutates the setting; without it the command reads the current
+    value from the thread detail. ``mention_routing_enabled`` is NEVER
+    touched by this verb.
+    """
+    import json as _json
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+    if args.enabled is not None:
+        r = client.post(
+            f"/api/v1/orgs/{slug}/threads/{args.thread_id}/exchange-routing",
+            json={"reply_exchange_enabled": args.enabled},
+        )
+        if not _ok(r):
+            return
+        data = r.json()
+    else:
+        r = client.get(f"/api/v1/orgs/{slug}/threads/{args.thread_id}")
+        if not _ok(r):
+            return
+        data = {
+            "thread_id": args.thread_id,
+            "reply_exchange_enabled": r.json()["reply_exchange_enabled"],
+        }
+    if args.json:
+        print(_json.dumps(data, indent=2))
+        return
+    state = "on" if data["reply_exchange_enabled"] else "off"
+    idempotent = " (no-op)" if data.get("idempotent") else ""
+    print(f"Thread {data['thread_id']} reply exchange: {state}{idempotent}")
+
+
 def _parse_mention_routing_flag(value: str) -> bool:
     """Shared on/off/true/false/1/0 parse for the mention-routing flag.
 
@@ -823,6 +862,24 @@ def register(sub) -> None:
         "--json", action="store_true", help="Emit the raw API response",
     )
     p_threads_mention_routing.set_defaults(func=cmd_threads_mention_routing)
+
+    p_threads_exchange_routing = threads_sub.add_parser(
+        "exchange-routing",
+        help="Read or toggle a thread's strict reply-exchange switch "
+             "(TASK-5966)",
+    )
+    p_threads_exchange_routing.add_argument("--org", default=None, help="Org slug")
+    p_threads_exchange_routing.add_argument(
+        "--thread-id", dest="thread_id", required=True,
+    )
+    p_threads_exchange_routing.add_argument(
+        "--enabled", default=None, type=_parse_mention_routing_flag,
+        help="on|off|true|false|1|0 (omit to read the current value)",
+    )
+    p_threads_exchange_routing.add_argument(
+        "--json", action="store_true", help="Emit the raw API response",
+    )
+    p_threads_exchange_routing.set_defaults(func=cmd_threads_exchange_routing)
 
     p_threads_invite = threads_sub.add_parser("invite", help="Founder: invite a participant to a thread")
     p_threads_invite.add_argument("--org", default=None, help="Org slug")

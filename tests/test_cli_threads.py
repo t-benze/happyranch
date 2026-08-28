@@ -1137,6 +1137,69 @@ def test_threads_mention_routing_flag_parser_rejects_invalid():
             _parse_mention_routing_flag(bad)
 
 
+# ---------------------------------------------------------------------------
+# TASK-5966 strict reply-exchange (independent rollback control) — CLI parity
+# ---------------------------------------------------------------------------
+
+
+def test_threads_exchange_routing_read_prints_state(monkeypatch, capsys):
+    from cli.commands.threads import cmd_threads_exchange_routing
+
+    fake = Mock()
+    fake.get.return_value = _json_response({
+        "thread_id": "THR-001",
+        "reply_exchange_enabled": False,
+    })
+    _stub_client(monkeypatch, fake)
+
+    cmd_threads_exchange_routing(argparse.Namespace(
+        org="alpha", thread_id="THR-001", enabled=None, json=False,
+    ))
+    out = capsys.readouterr().out
+    assert "Thread THR-001 reply exchange: off" in out
+    # Read path must not POST.
+    assert not fake.post.called
+
+
+def test_threads_exchange_routing_write_posts_and_prints(monkeypatch, capsys):
+    from cli.commands.threads import cmd_threads_exchange_routing
+
+    fake = Mock()
+    fake.post.return_value = _json_response({
+        "thread_id": "THR-001",
+        "reply_exchange_enabled": True,
+    })
+    _stub_client(monkeypatch, fake)
+
+    cmd_threads_exchange_routing(argparse.Namespace(
+        org="alpha", thread_id="THR-001", enabled=True, json=False,
+    ))
+    out = capsys.readouterr().out
+    assert "Thread THR-001 reply exchange: on" in out
+    fake.post.assert_called_once_with(
+        "/api/v1/orgs/alpha/threads/THR-001/exchange-routing",
+        json={"reply_exchange_enabled": True},
+    )
+
+
+def test_threads_exchange_routing_idempotent_noop_printed(monkeypatch, capsys):
+    from cli.commands.threads import cmd_threads_exchange_routing
+
+    fake = Mock()
+    fake.post.return_value = _json_response({
+        "thread_id": "THR-001",
+        "reply_exchange_enabled": True,
+        "idempotent": True,
+    })
+    _stub_client(monkeypatch, fake)
+
+    cmd_threads_exchange_routing(argparse.Namespace(
+        org="alpha", thread_id="THR-001", enabled=True, json=False,
+    ))
+    out = capsys.readouterr().out
+    assert "Thread THR-001 reply exchange: on (no-op)" in out
+
+
 def test_threads_show_prints_mention_routing_line(monkeypatch, capsys):
     from cli.main import cmd_threads_show
 

@@ -483,6 +483,82 @@ export function describeAuditEntry(e: AuditEntry): AuditNarrative {
       break;
     }
 
+    /* --- strict mention-led exchange (TASK-5966) ----------------------- */
+    // Payload shapes mirror runtime/infrastructure/database.py exchange store
+    // seams (the single writer): thread_id, exchange_id, open_seq/close_seq,
+    // priority/deferred sets, close_reason, mint_token_prefix. `agent` is
+    // the exchange owner (founder) or the deferral owner.
+    case 'thread_exchange_opened': {
+      segs.push(tx(' opened a mention-led exchange'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      detail = detailOf(
+        numOf(p, 'exchange_id') != null
+          ? `exchange #${numOf(p, 'exchange_id')}`
+          : null,
+        rangeOf(p),
+      );
+      break;
+    }
+    case 'thread_exchange_closed': {
+      segs.push(tx(' closed a mention-led exchange'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      detail = detailOf(
+        str(p, 'close_reason'),
+        p['suppressed'] === true ? 'no catch-up (suppressed)' : null,
+      );
+      break;
+    }
+    case 'thread_exchange_corrupt': {
+      segs.push(tx(' flagged a corrupt exchange'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      detail = detailOf(str(p, 'reason'));
+      break;
+    }
+    case 'thread_deferral_held': {
+      segs.push(tx(' is held by a mention-led exchange'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      detail = detailOf(
+        numOf(p, 'exchange_id') != null
+          ? `exchange #${numOf(p, 'exchange_id')}`
+          : null,
+      );
+      break;
+    }
+    case 'thread_deferral_released': {
+      segs.push(tx(' was released with a catch-up wake'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      detail = detailOf(str(p, 'mint_token_prefix'));
+      break;
+    }
+    case 'thread_deferral_coalesced': {
+      segs.push(tx(' was released into an existing wake'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      break;
+    }
+    case 'thread_deferral_suppressed': {
+      segs.push(tx(' deferral was suppressed'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      detail = detailOf(str(p, 'reason'));
+      break;
+    }
+    case 'thread_exchange_routing_changed': {
+      segs.push(tx(' changed the reply-exchange setting'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      const v = p['reply_exchange_enabled'];
+      detail = detailOf(
+        v === true ? 'exchanges enabled' : v === false ? 'exchanges disabled' : null,
+      );
+      break;
+    }
+
     /* --- jobs ----------------------------------------------------- */
     case 'job_submitted': {
       pushJob(' submitted ', 'on');

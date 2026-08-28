@@ -413,3 +413,69 @@ under-approximation that never fabricates coverage.
 - malformed mentions_json: <n>
 - operator: <name/role>; noted anomalies: <none | ...>
 ```
+
+---
+
+## 9. TASK-5966 — strict mention-led exchange (F1) addendum
+
+> **Status:** merged code is inert until a daemon restart loads it. The
+> **F1 epoch** is that restart (`RATIFIED_EPOCH_F1 =
+> 2026-08-28T06:22:21Z` in `runtime/infrastructure/thread_release_measurement.py`
+> — record the ACTUAL restart instant, not the merge time). The Phase-2
+> epoch/window (`2026-08-26T14:25:23Z`) and its G1/G2/G3 criteria are
+> **preserved untouched**; F1 is a **separate measurement boundary** because
+> the exchange changes the decline/wake populations wholesale (seq 189/194).
+
+### 9.1 Deployment & rollback
+
+- **Deploy:** restart the daemon on the merged head. The new tables
+  (`thread_reply_exchange`, `thread_exchange_deferrals`) and the
+  `threads.reply_exchange_enabled` column are created by the idempotent
+  startup schema block — no migration file, no ALTER on shipped tables.
+- **Activation:** mode 2 (strict exchange) is on by default (per-thread
+  `reply_exchange_enabled=1`, org kill-switch absent → per-thread governs).
+  A thread runs the exchange only when BOTH `mention_routing_enabled` AND
+  `reply_exchange_enabled` are on.
+- **Rollback (one write, no migration):** set the org kill-switch
+  `org_settings.threads.reply_exchange_enabled=false` → mode 1 (shipped
+  mention routing) everywhere. Existing exchange rows go dormant (never
+  written by reverted/off code). Re-enable → new exchange rows from the new
+  epoch (write-time-frozen; **no historical backfill**). Reverting code also
+  works — the tables are never read or written. `mention_routing_enabled`
+  values are untouched in both directions (destructive retirement is
+  explicitly deferred).
+
+### 9.2 F1 acceptance (falsifiable, run against the live DB read-only)
+
+- **No-pierce:** `sum(wake_created)` for held pairs inside open exchanges is
+  ZERO except the three documented pierce sources (mention of the agent, a
+  pre-existing queued wake claimed mid-exchange, TASK_FOLLOWUP/BOOTSTRAP
+  isolated broadcasts).
+- **Exactly-one catch-up:** per deferred pair per exchange,
+  `count(queued tokens covering [open_seq, close_seq]) in {0, 1}` (0 only
+  when a pierce/coalesce already covered it).
+- **N-to-1:** per founder-mention-led burst, per deferred pair, wake sessions
+  drop from up to 5 (shipped) to exactly 1 (fresh corpus: 17 bursts,
+  25 sessions saved).
+- **G2 containment over the F1 window is at baseline** (0 losses).
+- **Bounds:** `EXCHANGE_GRACE = 5 min` idle close (quiescence + no live
+  cohort wake), `MAX_PRIORITY_WAIT = 4 h` absolute fail-open (reaper,
+  30s tick), abort/archive → suppressed (no catch-up).
+- **Replay acceptance:** THR-097 #116 range replay (deferred pairs → exactly
+  1 catch-up each), the 17 founder-mention-led burst corpus, THR-198 #136
+  preclaimed-wake fixture (pre-arrival settlement never covering; exactly one
+  catch-up), and the adversarial race/restart/corruption suite in
+  `tests/test_thread_reply_exchange.py`.
+
+### 9.3 F1 release record (append to the record above)
+
+```markdown
+- f1_epoch (UTC): <actual restart instant>
+- exchange rows: opened=<n>, released=<n>, suppressed=<n> (reasons)
+- held wake audits while open (no-pierce violations): <n> (expect 0)
+- catch-up wakes minted: <n>; coalesced releases: <n>
+- deferred wake sessions per burst: avg=<x> (expect →1)
+- G2 containment over F1 window: <covered>/<founder messages> (expect 0 loss)
+- rollback drill: org kill-switch off → mode 1 confirmed; re-enabled
+- operator: <name/role>; noted anomalies: <none | ...>
+```

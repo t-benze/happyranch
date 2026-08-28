@@ -291,6 +291,8 @@ async def _lifespan(app: FastAPI):
 
     from runtime.daemon.zombie_reaper import zombie_reaper_loop
     zombie_reaper_task = asyncio.create_task(zombie_reaper_loop(state))
+    from runtime.daemon.exchange_reaper import exchange_reaper_loop
+    exchange_reaper_task = asyncio.create_task(exchange_reaper_loop(state))
     from runtime.daemon.direct_connect_projection_sweep import direct_connect_projection_sweep_loop
     direct_connect_projection_sweep_task = asyncio.create_task(
         direct_connect_projection_sweep_loop(state)
