@@ -1,11 +1,14 @@
-"""THR-195 / TASK-6016: daemon-managed workspace cleanup scheduler.
+"""THR-195 / TASK-6036: daemon-managed workspace cleanup scheduler.
 
 Covers the shipping seams of the founder-resolved system-default design
-(THR-195 seq 129/130/131): weekly trigger decision (cadence, dedup/cooldown,
-at-most-once per window), daemon trigger writes (task creation + enqueue with
-fresh advisory context through the daemon-composed brief — never a Schedule
-brief), the durable founder-report thread seam (create-on-first-trigger +
-daemon-minted token in the brief), REPORT-ONLY semantics, mandatory
+(THR-195 seq 129/130/131 + TASK-6036 defaults): per-agent weekly trigger
+decision (cadence, per-agent dedup/cooldown, at-most-once per window),
+per-agent >= 1 GiB trigger/non-trigger, owning-agent routing, exact
+first-two report-only behavior, daemon trigger writes (task creation +
+enqueue with fresh advisory context through the daemon-composed brief —
+never a Schedule brief), the per-agent durable founder-report thread seam
+(create-on-first-trigger, participant-authorized task-bound send path, NO
+minted token), the enabled-by-default kill switch, mandatory
 advisory/stale/non-candidate/re-derive wording, single true wall-clock
 deadline across Git collection, every cardinality-cap boundary yielding
 unavailable/truncated status, suffixed TASK-id conservative classification,
@@ -15,7 +18,7 @@ and SessionTracker live-session aggregation.
 from __future__ import annotations
 
 import asyncio
-import json
+import inspect
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -58,7 +61,7 @@ def _make_teams(root: Path) -> TeamsRegistry:
     registry = TeamsRegistry.load(root)
     registry._teams["engineering"] = type(
         "TM", (), {"name": "engineering_manager", "team": "engineering",
-                   "workers": ("dev_agent",)}
+                   "workers": ("dev_agent", "qa_engineer")}
     )()
     return registry
 
@@ -84,6 +87,7 @@ def _insert_cleanup_task(
     db: Database,
     *,
     task_id: str,
+    agent: str = "dev_agent",
     created_at: datetime,
     status: TaskStatus = TaskStatus.COMPLETED,
     brief: str | None = None,
@@ -92,7 +96,7 @@ def _insert_cleanup_task(
         id=task_id,
         brief=brief or (wcs._CLEANUP_BRIEF_MARKER + "\nprior cleanup run"),
         team="engineering",
-        assigned_agent=wcs._RESPONSIBLE_AGENT,
+        assigned_agent=agent,
         status=status,
         created_at=created_at,
     ))
@@ -124,7 +128,7 @@ class _RecordingGitRun:
         })()
 
 
-# ── (a) trigger decision: cadence, dedup, at-most-once per window ────────
+# ── (a) per-agent trigger decision: cadence, dedup, cooldown ─────────────
 
 def _sunday_0330_utc() -> datetime:
     """Next Sunday 03:30 UTC (deterministic reference for due/not-due)."""
@@ -142,7 +146,9 @@ def test_trigger_decision_not_due_before_occurrence(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     occurrence = _sunday_0330_utc()
     just_before = occurrence - timedelta(minutes=30)  # Sunday 03:00: this week's occurrence is still in the future
-    decision = wcs.decide_cleanup_trigger(db=db, now_utc=just_before, tz=timezone.utc)
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=just_before, tz=timezone.utc,
+    )
     assert decision.should_trigger is False
     assert decision.reason == "not_due"
 
@@ -150,7 +156,9 @@ def test_trigger_decision_not_due_before_occurrence(tmp_path):
 def test_trigger_decision_due_with_no_prior_run(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     occurrence = _sunday_0330_utc()
-    decision = wcs.decide_cleanup_trigger(db=db, now_utc=occurrence, tz=timezone.utc)
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occurrence, tz=timezone.utc,
+    )
     assert decision.should_trigger is True
     assert decision.reason is None
 
@@ -162,7 +170,25 @@ def test_trigger_decision_dedup_prior_run_in_flight(tmp_path):
         db, task_id="TASK-100", created_at=occurrence - timedelta(days=7),
         status=TaskStatus.IN_PROGRESS,
     )
-    decision = wcs.decide_cleanup_trigger(db=db, now_utc=occurrence, tz=timezone.utc)
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occurrence, tz=timezone.utc,
+    )
+    assert decision.should_trigger is False
+    assert decision.reason == "prior_run_in_flight"
+
+
+def test_trigger_decision_suppresses_other_nonterminal_statuses(tmp_path):
+    """Any non-terminal status (e.g. ESCALATED) suppresses; terminal set is
+    exactly COMPLETED/FAILED/SUPERSEDED/CANCELLED."""
+    db = Database(tmp_path / "db.sqlite")
+    occurrence = _sunday_0330_utc()
+    _insert_cleanup_task(
+        db, task_id="TASK-100", created_at=occurrence - timedelta(days=7),
+        status=TaskStatus.ESCALATED,
+    )
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occurrence, tz=timezone.utc,
+    )
     assert decision.should_trigger is False
     assert decision.reason == "prior_run_in_flight"
 
@@ -170,8 +196,13 @@ def test_trigger_decision_dedup_prior_run_in_flight(tmp_path):
 def test_trigger_decision_at_most_once_per_window(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     occurrence = _sunday_0330_utc()
-    _insert_cleanup_task(db, task_id="TASK-100", created_at=occurrence + timedelta(seconds=1))
-    decision = wcs.decide_cleanup_trigger(db=db, now_utc=occurrence + timedelta(minutes=5), tz=timezone.utc)
+    _insert_cleanup_task(
+        db, task_id="TASK-100", created_at=occurrence + timedelta(seconds=1),
+    )
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent",
+        now_utc=occurrence + timedelta(minutes=5), tz=timezone.utc,
+    )
     assert decision.should_trigger is False
     assert decision.reason == "already_triggered_this_window"
 
@@ -183,23 +214,78 @@ def test_trigger_decision_terminal_prior_run_before_window_triggers(tmp_path):
         db, task_id="TASK-100", created_at=occurrence - timedelta(days=8),
         status=TaskStatus.COMPLETED,
     )
-    decision = wcs.decide_cleanup_trigger(db=db, now_utc=occurrence, tz=timezone.utc)
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occurrence, tz=timezone.utc,
+    )
     assert decision.should_trigger is True
 
 
 def test_trigger_decision_ignores_unrelated_tasks(tmp_path):
-    """A non-cleanup dev_agent task (no marker) never counts for dedup."""
+    """A non-cleanup task (no marker) never counts for dedup/cooldown."""
     db = Database(tmp_path / "db.sqlite")
     occurrence = _sunday_0330_utc()
     _insert_cleanup_task(
         db, task_id="TASK-100", created_at=occurrence + timedelta(minutes=1),
         brief="Ordinary dev_agent work, no cleanup marker.",
     )
-    decision = wcs.decide_cleanup_trigger(db=db, now_utc=occurrence + timedelta(minutes=2), tz=timezone.utc)
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent",
+        now_utc=occurrence + timedelta(minutes=2), tz=timezone.utc,
+    )
     assert decision.should_trigger is True
 
 
-# ── (b) daemon trigger: task creation + enqueue + fresh context ──────────
+def test_trigger_decision_seven_day_cooldown_suppresses(tmp_path):
+    """A terminal prior cleanup task younger than 7 days suppresses even when
+    the weekly window is unserviced (rolling per-agent cooldown)."""
+    db = Database(tmp_path / "db.sqlite")
+    occurrence = _sunday_0330_utc()
+    # Terminal run from ~6 days ago: older than the last occurrence but
+    # younger than the seven-day cooldown.
+    _insert_cleanup_task(
+        db, task_id="TASK-100",
+        created_at=occurrence - timedelta(days=6) - timedelta(hours=23),
+        status=TaskStatus.COMPLETED,
+    )
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occurrence, tz=timezone.utc,
+    )
+    assert decision.should_trigger is False
+    assert decision.reason == "cooldown"
+
+
+def test_trigger_decision_cooldown_expired_triggers(tmp_path):
+    """A terminal prior cleanup task older than 7 days with an unserviced
+    window triggers."""
+    db = Database(tmp_path / "db.sqlite")
+    occurrence = _sunday_0330_utc()
+    _insert_cleanup_task(
+        db, task_id="TASK-100",
+        created_at=occurrence - timedelta(days=8),
+        status=TaskStatus.COMPLETED,
+    )
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occurrence, tz=timezone.utc,
+    )
+    assert decision.should_trigger is True
+
+
+def test_trigger_decision_is_per_agent(tmp_path):
+    """Agent A's in-flight cleanup task never suppresses agent B's trigger."""
+    db = Database(tmp_path / "db.sqlite")
+    occurrence = _sunday_0330_utc()
+    _insert_cleanup_task(
+        db, task_id="TASK-100", agent="dev_agent",
+        created_at=occurrence - timedelta(days=7),
+        status=TaskStatus.IN_PROGRESS,
+    )
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="qa_engineer", now_utc=occurrence, tz=timezone.utc,
+    )
+    assert decision.should_trigger is True
+
+
+# ── (b) daemon trigger: per-agent threshold, owning-agent routing ─────────
 
 class _FakeQueue:
     def __init__(self) -> None:
@@ -228,20 +314,34 @@ def _make_org(tmp_path: Path, db: Database, settings: Settings):
     )
 
 
-@pytest.mark.asyncio
-async def test_trigger_creates_report_only_task_with_fresh_advisory(tmp_path, test_settings):
-    db = Database(tmp_path / "db.sqlite")
-    ws = tmp_path / "workspaces" / "dev_agent"
-    _write_file(ws / "repos" / "r1" / "file.txt", 1024 * 3)
-    org = _make_org(tmp_path / "orgs" / "test", db, test_settings)
-    org.root = tmp_path / "orgs" / "test"
-    (org.root / "workspaces").mkdir(parents=True, exist_ok=True)
-    (org.root / "workspaces" / "dev_agent" / "repos" / "r1").mkdir(parents=True)
-    _write_file(org.root / "workspaces" / "dev_agent" / "repos" / "r1" / "file.txt", 1024 * 3)
+def _org_with_workspaces(tmp_path: Path, db: Database, settings: Settings):
+    org_root = tmp_path / "orgs" / "test"
+    org_root.mkdir(parents=True, exist_ok=True)
+    org = _make_org(org_root, db, settings)
+    org.root = org_root
+    (org_root / "workspaces" / "dev_agent").mkdir(parents=True, exist_ok=True)
+    (org_root / "workspaces" / "qa_engineer").mkdir(parents=True, exist_ok=True)
+    return org
 
+
+@pytest.mark.asyncio
+async def test_trigger_creates_task_for_owning_agent_with_fresh_advisory(
+    tmp_path, test_settings, monkeypatch,
+):
+    """A due agent with a >= 1 GiB workspace (threshold monkeypatched small
+    for determinism) gets an ordinary task assigned to ITSELF, carrying the
+    fresh advisory snapshot in the daemon-composed brief."""
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(
+        org.root / "workspaces" / "dev_agent" / "repos" / "r1" / "file.txt",
+        1024 * 3,
+    )
     state = _FakeDaemonState()
     task_id = await wcs.trigger_cleanup(
-        org, enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
     )
     assert task_id is not None
     task = db.get_task(task_id)
@@ -256,68 +356,128 @@ async def test_trigger_creates_report_only_task_with_fresh_advisory(tmp_path, te
     assert "measured_at" in task.brief
     assert "3.0 KiB" in task.brief or "3 KiB" in task.brief
 
-    # REPORT-ONLY semantics.
-    assert "REPORT-ONLY" in task.brief
+    # First run: strictly report-only.
+    assert "THIS RUN IS STRICTLY REPORT-ONLY" in task.brief
     assert "Do NOT delete" in task.brief
 
 
 @pytest.mark.asyncio
-async def test_trigger_resolves_or_creates_durable_report_thread_and_mints_token(
-    tmp_path, test_settings,
+async def test_trigger_skips_below_1gib_threshold(tmp_path, test_settings):
+    """An agent whose workspace measures below the >= 1 GiB founder threshold
+    is NOT triggered; the skip is audited and no task/thread is created."""
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(
+        org.root / "workspaces" / "dev_agent" / "repos" / "r1" / "file.txt",
+        1024 * 3,  # 3 KiB << 1 GiB
+    )
+    state = _FakeDaemonState()
+    task_id = await wcs.trigger_cleanup(
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    )
+    assert task_id is None
+    assert state.queue.items == []
+    audits = db.get_audit_logs("workspace-cleanup:skipped")
+    assert any(
+        r["action"] == "workspace_cleanup_skipped"
+        and r["payload"].get("reason") == "workspace_below_threshold"
+        for r in audits
+    )
+
+
+@pytest.mark.asyncio
+async def test_trigger_routes_to_owning_agent(tmp_path, test_settings, monkeypatch):
+    """Owning-agent routing: qa_engineer's triggered task is assigned to
+    qa_engineer, not a fixed dev_agent."""
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(
+        org.root / "workspaces" / "qa_engineer" / "repos" / "r1" / "file.txt",
+        1024,
+    )
+    state = _FakeDaemonState()
+    task_id = await wcs.trigger_cleanup(
+        org, agent="qa_engineer",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    )
+    assert task_id is not None
+    task = db.get_task(task_id)
+    assert task.assigned_agent == "qa_engineer"
+    assert f"agent qa_engineer" in task.brief
+
+
+@pytest.mark.asyncio
+async def test_trigger_fail_open_when_measurement_unavailable(
+    tmp_path, test_settings, monkeypatch,
 ):
+    """An unavailable measurement is an explicit audit skip — never a task,
+    never a crash, never a block on daemon operation."""
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+
+    monkeypatch.setattr(
+        wcs, "measure_workspace_context",
+        lambda *a, **kw: wcs.WorkspaceContextSnapshot(
+            available=False, reason="measurement deadline exceeded",
+        ),
+    )
+    state = _FakeDaemonState()
+    task_id = await wcs.trigger_cleanup(
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    )
+    assert task_id is None
+    assert state.queue.items == []
+    audits = db.get_audit_logs("workspace-cleanup:skipped")
+    assert any(
+        r["action"] == "workspace_cleanup_skipped"
+        and r["payload"].get("reason") == "measurement_unavailable"
+        for r in audits
+    )
+
+
+@pytest.mark.asyncio
+async def test_trigger_skips_when_agent_team_unresolved(tmp_path, test_settings):
     db = Database(tmp_path / "db.sqlite")
     org_root = tmp_path / "orgs" / "test"
     org_root.mkdir(parents=True, exist_ok=True)
+    # Empty TeamsRegistry: no agent has a team → fail-closed skip.
     org = _make_org(org_root, db, test_settings)
     org.root = org_root
+    org.teams = TeamsRegistry.load(org_root)
     (org_root / "workspaces" / "dev_agent").mkdir(parents=True)
 
     state = _FakeDaemonState()
-    # First trigger: daemon creates the durable thread with the fixed subject.
     task_id = await wcs.trigger_cleanup(
-        org, enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
     )
-    task = db.get_task(task_id)
-    threads = db.list_threads(limit=50)
-    matching = [t for t in threads if t.subject == wcs._CLEANUP_REPORT_THREAD_SUBJECT]
-    assert len(matching) == 1
-    thread_id = matching[0].id
-    assert db.is_thread_participant(thread_id, "dev_agent")
-    assert f"--thread {thread_id}" in task.brief
-    token_match = re.search(r"'invocation_token': '([0-9a-f]{32})'", task.brief)
-    assert token_match is not None
-    inv = db.get_pending_invocation(token_match.group(1))
-    assert inv is not None
-    assert inv.thread_id == thread_id
-    assert inv.agent_name == "dev_agent"
-
-    # Second trigger reuses the SAME durable thread (no duplicate).
-    task2_id = await wcs.trigger_cleanup(
-        org, enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    assert task_id is None
+    assert state.queue.items == []
+    audits = db.get_audit_logs("workspace-cleanup:skipped")
+    assert any(
+        r["action"] == "workspace_cleanup_skipped"
+        and r["payload"].get("reason") == "agent_team_unresolved"
+        for r in audits
     )
-    task2 = db.get_task(task2_id)
-    assert f"--thread {thread_id}" in task2.brief
-    threads2 = db.list_threads(limit=50)
-    matching2 = [t for t in threads2 if t.subject == wcs._CLEANUP_REPORT_THREAD_SUBJECT]
-    assert len(matching2) == 1
-    assert matching2[0].id == thread_id
 
 
 @pytest.mark.asyncio
 async def test_trigger_audits_trigger_and_never_touches_schedules(
-    tmp_path, test_settings,
+    tmp_path, test_settings, monkeypatch,
 ):
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
     db = Database(tmp_path / "db.sqlite")
-    org_root = tmp_path / "orgs" / "test"
-    org_root.mkdir(parents=True, exist_ok=True)
-    org = _make_org(org_root, db, test_settings)
-    org.root = org_root
-    (org_root / "workspaces" / "dev_agent").mkdir(parents=True)
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
     _make_schedule(db, schedule_id="SCHEDULE-001", spawned=[])
 
     state = _FakeDaemonState()
     task_id = await wcs.trigger_cleanup(
-        org, enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
     )
     audits = db.get_audit_logs(task_id)
     assert any(r["action"] == "workspace_cleanup_triggered" for r in audits)
@@ -329,61 +489,95 @@ async def test_trigger_audits_trigger_and_never_touches_schedules(
     assert schedule.normalized_brief == "Unrelated user schedule brief."
 
 
-@pytest.mark.asyncio
-async def test_trigger_fail_open_when_measurement_unavailable(
-    tmp_path, test_settings, monkeypatch,
-):
-    db = Database(tmp_path / "db.sqlite")
-    org_root = tmp_path / "orgs" / "test"
-    org_root.mkdir(parents=True, exist_ok=True)
-    org = _make_org(org_root, db, test_settings)
-    org.root = org_root
-    (org_root / "workspaces" / "dev_agent").mkdir(parents=True)
+# ── (c) exact first-two report-only behavior ──────────────────────────────
 
-    monkeypatch.setattr(
-        wcs, "measure_workspace_context",
-        lambda **kw: wcs.WorkspaceContextSnapshot(
-            available=False, reason="measurement deadline exceeded",
-        ),
-    )
+@pytest.mark.asyncio
+async def _trigger_with_seeded_runs(
+    tmp_path, test_settings, monkeypatch, *, seeded: int,
+) -> str:
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
+    now = datetime.now(timezone.utc)
+    for i in range(seeded):
+        _insert_cleanup_task(
+            db, task_id=f"TASK-{100 + i}", agent="dev_agent",
+            created_at=now - timedelta(days=30 + i),
+            status=TaskStatus.COMPLETED,
+        )
     state = _FakeDaemonState()
     task_id = await wcs.trigger_cleanup(
-        org, enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
     )
     assert task_id is not None
-    task = db.get_task(task_id)
-    assert "measurement unavailable" in task.brief
-    assert "does not affect this run" in task.brief
+    return db.get_task(task_id).brief
 
 
 @pytest.mark.asyncio
-async def test_trigger_skips_when_agent_team_unresolved(tmp_path, test_settings):
+async def test_first_two_runs_are_strictly_report_only(tmp_path, test_settings, monkeypatch):
+    """Runs #1 and #2 per agent carry the STRICT report-only brief; run #3
+    carries the approved TASK-5552 §4 cleanup brief (first-two boundary)."""
+    brief1 = await _trigger_with_seeded_runs(
+        tmp_path / "case1", test_settings, monkeypatch, seeded=0,
+    )
+    assert "THIS RUN IS STRICTLY REPORT-ONLY" in brief1
+    assert "Allowed cache action" not in brief1
+    assert "git -C <primary> worktree remove" not in brief1
+
+    brief2 = await _trigger_with_seeded_runs(
+        tmp_path / "case2", test_settings, monkeypatch, seeded=1,
+    )
+    assert "THIS RUN IS STRICTLY REPORT-ONLY" in brief2
+    assert "Allowed cache action" not in brief2
+
+    brief3 = await _trigger_with_seeded_runs(
+        tmp_path / "case3", test_settings, monkeypatch, seeded=2,
+    )
+    assert "THIS RUN IS STRICTLY REPORT-ONLY" not in brief3
+    assert "Allowed cache action" in brief3
+    assert "git -C <primary> worktree remove" in brief3
+    assert "blocked_on_job_ids" in brief3  # §4: jobs are diagnostics only
+    assert "report-only" not in brief3.lower().replace(
+        "none in report-only", "",
+    ) or "STRICTLY REPORT-ONLY" not in brief3
+
+
+@pytest.mark.asyncio
+async def test_report_only_brief_has_no_candidate_or_path_enumeration(
+    tmp_path, test_settings, monkeypatch,
+):
+    """The report-only brief never enumerates executable candidates or
+    concrete paths; it is aggregate-only."""
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
     db = Database(tmp_path / "db.sqlite")
-    org_root = tmp_path / "orgs" / "test"
-    org_root.mkdir(parents=True, exist_ok=True)
-    # Empty TeamsRegistry: dev_agent has no team → fail-closed skip.
-    org = _make_org(org_root, db, test_settings)
-    org.root = org_root
-    org.teams = TeamsRegistry.load(org_root)
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
 
     state = _FakeDaemonState()
     task_id = await wcs.trigger_cleanup(
-        org, enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
     )
-    assert task_id is None
-    assert state.queue.items == []
-    audits = db.get_audit_logs("workspace-cleanup:skipped")
-    assert any(r["action"] == "workspace_cleanup_skipped" for r in audits)
+    brief = db.get_task(task_id).brief
+    assert "safe to remove" not in brief.lower()
+    assert "rm -rf" not in brief
+    assert "git worktree remove" not in brief
+    assert "delete" not in brief.lower().replace("do not delete", "")
+    # The brief names no concrete path under the org root.
+    assert "workspaces/dev_agent" not in brief
+    assert "node_modules" not in brief
 
 
-# ── (c) advisory wording + no candidate/safe-removal semantics ───────────
+# ── (d) advisory wording + no candidate/safe-removal semantics ────────────
 
 def test_note_wording_available():
     snap = wcs.WorkspaceContextSnapshot(
         measured_at="2026-08-28T09:32:00+00:00",
-        workspaces_count=2,
-        workspaces_bytes=5 * 1024 * 1024,
-        largest=[("dev_agent", 4 * 1024 * 1024), ("qa_engineer", 1024 * 1024)],
+        workspaces_count=1,
+        workspaces_bytes=4 * 1024 * 1024 * 1024,
+        largest=[("dev_agent", 4 * 1024 * 1024 * 1024)],
         worktrees_registered=3,
         worktrees_terminal=2,
         worktrees_non_terminal=1,
@@ -399,7 +593,7 @@ def test_note_wording_available():
     for required in (
         "ADVISORY ONLY", "STALE ON ARRIVAL", "NOT an eligibility list",
         "NOT a candidate list", "Re-derive every path and every fact",
-        "measured_at", "dev_agent (4.0 MiB)", "2 terminal-task",
+        "measured_at", "dev_agent (4.0 GiB)", "2 terminal-task",
         "2 / 1.0 MiB", "1 (dev_agent)",
     ):
         assert required in note
@@ -419,32 +613,7 @@ def test_note_wording_unavailable():
     assert "ADVISORY ONLY" in note
 
 
-@pytest.mark.asyncio
-async def test_brief_has_no_candidate_or_path_enumeration(tmp_path, test_settings):
-    """The daemon-composed brief never enumerates executable candidates or
-    concrete paths; it is aggregate-only."""
-    db = Database(tmp_path / "db.sqlite")
-    org_root = tmp_path / "orgs" / "test"
-    org_root.mkdir(parents=True, exist_ok=True)
-    org = _make_org(org_root, db, test_settings)
-    org.root = org_root
-    (org_root / "workspaces" / "dev_agent").mkdir(parents=True)
-
-    state = _FakeDaemonState()
-    task_id = await wcs.trigger_cleanup(
-        org, enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
-    )
-    brief = db.get_task(task_id).brief
-    assert "safe to remove" not in brief.lower()
-    assert "rm -rf" not in brief
-    assert "git worktree remove" not in brief
-    assert "delete" not in brief.lower().replace("do not delete", "")
-    # The brief names no concrete path under the org root.
-    assert "workspaces/dev_agent" not in brief
-    assert "node_modules" not in brief
-
-
-# ── (d) measurement: aggregates, no path enumeration, symlink safety ─────
+# ── (e) measurement: per-agent aggregates, symlink safety, fail-open ──────
 
 def test_measure_aggregates_sizes_deps_and_worktree_status(tmp_path, monkeypatch):
     db = Database(tmp_path / "db.sqlite")
@@ -453,53 +622,49 @@ def test_measure_aggregates_sizes_deps_and_worktree_status(tmp_path, monkeypatch
         status=TaskStatus.COMPLETED,
     )
     ws = tmp_path / "ws"
-    _write_file(ws / "a" / "repos" / "r" / ".git" / "HEAD", 10)
-    _write_file(ws / "a" / "repos" / "r" / "file.txt", 1000)
-    _write_file(ws / "a" / "repos" / "r" / "node_modules" / "pkg" / "index.js", 2000)
-    _write_file(ws / "b" / "repos" / "r" / ".git" / "HEAD", 10)
-    _write_file(ws / "b" / "repos" / "r" / "file.txt", 3000)
-    paths = type("P", (), {"workspaces_dir": ws})()
+    _write_file(ws / "repos" / "r" / ".git" / "HEAD", 10)
+    _write_file(ws / "repos" / "r" / "file.txt", 1000)
+    _write_file(ws / "repos" / "r" / "node_modules" / "pkg" / "index.js", 2000)
     monkeypatch.setattr(
         wcs, "_git_worktree_paths",
-        lambda repo_dir, timeout: ([repo_dir.parents[1] / "TASK-1-wt"], False),
+        lambda repo_dir, timeout: ([ws / ".claude" / "worktrees" / "TASK-1-wt"], False),
     )
-    snap = wcs.measure_workspace_context(paths=paths, db=db, sessions=None)
+    snap = wcs.measure_workspace_context(ws, db=db, sessions=None)
     assert snap.available is True
-    assert snap.workspaces_count == 2
-    # 6000 bytes of content + two 10-byte .git/HEAD markers used for repo detection.
-    assert snap.workspaces_bytes == 1000 + 2000 + 3000 + 20
+    assert snap.workspaces_count == 1
+    assert snap.workspaces_bytes == 10 + 1000 + 2000
+    assert snap.largest == [("ws", 10 + 1000 + 2000)]
     assert snap.dep_dirs == 1
     assert snap.dep_bytes == 2000
-    assert snap.worktrees_registered == 2
-    assert snap.worktrees_terminal == 2
+    assert snap.worktrees_registered == 1
+    assert snap.worktrees_terminal == 1
     assert snap.worktrees_unclassified == 0
 
 
 def test_measure_skips_symlinks_and_bounds_walk(tmp_path, monkeypatch):
     db = Database(tmp_path / "db.sqlite")
     ws = tmp_path / "ws"
-    _write_file(ws / "a" / "real.txt", 100)
-    (ws / "a" / "link").symlink_to(ws / "a")
-    paths = type("P", (), {"workspaces_dir": ws})()
+    _write_file(ws / "real.txt", 100)
+    (ws / "link").symlink_to(ws)
     monkeypatch.setattr(wcs, "_git_worktree_paths", lambda repo_dir, timeout: ([], False))
-    snap = wcs.measure_workspace_context(paths=paths, db=db, sessions=None)
+    snap = wcs.measure_workspace_context(ws, db=db, sessions=None)
     assert snap.available is True
     assert snap.workspaces_bytes == 100  # the symlink target is never walked
 
 
-def test_measure_never_raises_when_workspaces_dir_missing(tmp_path):
+def test_measure_missing_workspace_dir_is_empty_available(tmp_path):
     db = Database(tmp_path / "db.sqlite")
-    paths = type("P", (), {"workspaces_dir": tmp_path / "nope"})()
-    snap = wcs.measure_workspace_context(paths=paths, db=db, sessions=None)
+    snap = wcs.measure_workspace_context(
+        tmp_path / "nope", db=db, sessions=None,
+    )
     assert snap.available is True
-    assert snap.workspaces_count == 0
+    assert snap.workspaces_bytes == 0
 
 
 def test_measure_deadline_produces_unavailable_note(tmp_path, monkeypatch):
     db = Database(tmp_path / "db.sqlite")
     ws = tmp_path / "ws"
-    _write_file(ws / "a" / "file.txt", 100)
-    paths = type("P", (), {"workspaces_dir": ws})()
+    _write_file(ws / "file.txt", 100)
 
     class _Clock:
         def __init__(self):
@@ -510,7 +675,7 @@ def test_measure_deadline_produces_unavailable_note(tmp_path, monkeypatch):
             return self.now
 
     monkeypatch.setattr(wcs.time, "monotonic", _Clock())
-    snap = wcs.measure_workspace_context(paths=paths, db=db, sessions=None)
+    snap = wcs.measure_workspace_context(ws, db=db, sessions=None)
     assert snap.available is False
     assert snap.reason is not None
 
@@ -518,18 +683,17 @@ def test_measure_deadline_produces_unavailable_note(tmp_path, monkeypatch):
 def test_measure_never_raises_on_unexpected_error(tmp_path, monkeypatch):
     db = Database(tmp_path / "db.sqlite")
     ws = tmp_path / "ws"
-    paths = type("P", (), {"workspaces_dir": ws})()
 
-    def boom(**kw):
+    def boom(*a, **kw):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(wcs, "_measure", boom)
-    snap = wcs.measure_workspace_context(paths=paths, db=db, sessions=None)
+    snap = wcs.measure_workspace_context(ws, db=db, sessions=None)
     assert snap.available is False
     assert "measurement error" in (snap.reason or "")
 
 
-# ── (e) deadline: one true wall-clock deadline across Git collection ─────
+# ── (f) deadline: one true wall-clock deadline across Git collection ──────
 
 def test_measure_bounds_git_timeout_by_remaining_deadline_and_marks_unavailable(
     tmp_path, monkeypatch,
@@ -540,7 +704,7 @@ def test_measure_bounds_git_timeout_by_remaining_deadline_and_marks_unavailable(
     db = Database(tmp_path / "db.sqlite")
     ws = tmp_path / "ws"
     for repo in ("r1", "r2"):
-        (ws / "dev_agent" / "repos" / repo / ".git").mkdir(parents=True)
+        (ws / "repos" / repo / ".git").mkdir(parents=True)
 
     class _FakeClock:
         def __init__(self):
@@ -562,8 +726,7 @@ def test_measure_bounds_git_timeout_by_remaining_deadline_and_marks_unavailable(
     monkeypatch.setattr(wcs, "_git_worktree_paths", fake_git)
 
     snap = wcs.measure_workspace_context(
-        paths=type("P", (), {"workspaces_dir": ws})(),
-        db=db, sessions=None, deadline_seconds=10.0,
+        ws, db=db, sessions=None, deadline_seconds=10.0,
     )
     # First call got the full per-call cap; the second was bounded to the
     # remaining budget (deadline = 1000 + 10 = 1010; after the first call the
@@ -578,7 +741,7 @@ def test_measure_expiry_after_last_repo_marks_unavailable(tmp_path, monkeypatch)
     repository still flips the snapshot to unavailable."""
     db = Database(tmp_path / "db.sqlite")
     ws = tmp_path / "ws"
-    (ws / "dev_agent" / "repos" / "r1" / ".git").mkdir(parents=True)
+    (ws / "repos" / "r1" / ".git").mkdir(parents=True)
 
     class _FakeClock:
         def __init__(self):
@@ -597,35 +760,22 @@ def test_measure_expiry_after_last_repo_marks_unavailable(tmp_path, monkeypatch)
     monkeypatch.setattr(wcs, "_git_worktree_paths", fake_git)
 
     snap = wcs.measure_workspace_context(
-        paths=type("P", (), {"workspaces_dir": ws})(),
-        db=db, sessions=None, deadline_seconds=10.0,
+        ws, db=db, sessions=None, deadline_seconds=10.0,
     )
     assert snap.available is False
     assert "bounded limits" in (snap.reason or "")
 
 
-# ── (f) cardinality caps → truncated/unavailable, boundary tests ─────────
-
-def test_measure_workspace_cap_hit_marks_unavailable(tmp_path):
-    db = Database(tmp_path / "db.sqlite")
-    ws = tmp_path / "ws"
-    for i in range(wcs._MAX_WORKSPACES + 1):
-        _write_file(ws / f"ws{i}" / "file.txt", 1)
-    paths = type("P", (), {"workspaces_dir": ws})()
-    snap = wcs.measure_workspace_context(paths=paths, db=db, sessions=None)
-    assert snap.available is False
-    assert "bounded limits" in (snap.reason or "")
-
+# ── (g) cardinality caps → truncated/unavailable, boundary tests ─────────
 
 def test_measure_repo_cap_hit_marks_unavailable(tmp_path, monkeypatch):
     db = Database(tmp_path / "db.sqlite")
     ws = tmp_path / "ws"
-    repos = ws / "dev_agent" / "repos"
+    repos = ws / "repos"
     for i in range(wcs._MAX_REPOS_PER_WORKSPACE + 1):
         (repos / f"r{i}" / ".git").mkdir(parents=True)
-    paths = type("P", (), {"workspaces_dir": ws})()
     monkeypatch.setattr(wcs, "_git_worktree_paths", lambda repo_dir, timeout: ([], False))
-    snap = wcs.measure_workspace_context(paths=paths, db=db, sessions=None)
+    snap = wcs.measure_workspace_context(ws, db=db, sessions=None)
     assert snap.available is False
     assert "bounded limits" in (snap.reason or "")
 
@@ -633,14 +783,13 @@ def test_measure_repo_cap_hit_marks_unavailable(tmp_path, monkeypatch):
 def test_measure_worktree_cap_hit_marks_unavailable(tmp_path, monkeypatch):
     db = Database(tmp_path / "db.sqlite")
     ws = tmp_path / "ws"
-    (ws / "dev_agent" / "repos" / "r1" / ".git").mkdir(parents=True)
+    (ws / "repos" / "r1" / ".git").mkdir(parents=True)
     many = [str(tmp_path / "wt" / str(i)) for i in range(wcs._MAX_WORKTREES_PER_REPO + 1)]
     runner = _RecordingGitRun(by_repo={
-        str(ws / "dev_agent" / "repos" / "r1"): many,
+        str(ws / "repos" / "r1"): many,
     })
     monkeypatch.setattr(wcs.subprocess, "run", runner)
-    paths = type("P", (), {"workspaces_dir": ws})()
-    snap = wcs.measure_workspace_context(paths=paths, db=db, sessions=None)
+    snap = wcs.measure_workspace_context(ws, db=db, sessions=None)
     assert snap.available is False
     assert "bounded limits" in (snap.reason or "")
 
@@ -667,7 +816,17 @@ def test_git_worktree_paths_no_cap_no_truncation(tmp_path, monkeypatch):
     assert len(paths) == 3
 
 
-# ── (g) suffixed TASK-id conservative classification ─────────────────────
+def test_iter_workspaces_cap_sets_truncated(tmp_path):
+    ws = tmp_path / "ws"
+    for i in range(wcs._MAX_WORKSPACES + 1):
+        (ws / f"agent{i}").mkdir(parents=True)
+    paths = type("P", (), {"workspaces_dir": ws})()
+    dirs, truncated = wcs._iter_workspaces(paths)
+    assert truncated is True
+    assert len(dirs) == wcs._MAX_WORKSPACES
+
+
+# ── (h) suffixed TASK-id conservative classification ─────────────────────
 
 def test_task_id_from_worktree_name_exact_and_suffixed():
     assert wcs._task_id_from_worktree_name("TASK-5567") == "TASK-5567"
@@ -681,14 +840,13 @@ def test_task_id_from_worktree_name_exact_and_suffixed():
 def test_measure_classifies_unknown_worktree_task_as_unclassified(tmp_path, monkeypatch):
     db = Database(tmp_path / "db.sqlite")
     ws = tmp_path / "ws"
-    (ws / "dev_agent" / "repos" / "r1" / ".git").mkdir(parents=True)
+    (ws / "repos" / "r1" / ".git").mkdir(parents=True)
     unknown_wt = str(tmp_path / "wt-unknown")
     runner = _RecordingGitRun(by_repo={
-        str(ws / "dev_agent" / "repos" / "r1"): [unknown_wt],
+        str(ws / "repos" / "r1"): [unknown_wt],
     })
     monkeypatch.setattr(wcs.subprocess, "run", runner)
-    paths = type("P", (), {"workspaces_dir": ws})()
-    snap = wcs.measure_workspace_context(paths=paths, db=db, sessions=None)
+    snap = wcs.measure_workspace_context(ws, db=db, sessions=None)
     assert snap.worktrees_registered == 1
     assert snap.worktrees_unclassified == 1
     assert snap.worktrees_terminal == 0
@@ -700,7 +858,7 @@ def test_terminal_statuses_parity():
     assert wcs._TERMINAL_TASK_STATUSES == frozenset(run_step.TERMINAL_STATES)
 
 
-# ── (h) SessionTracker live sessions ─────────────────────────────────────
+# ── (i) SessionTracker live sessions ──────────────────────────────────────
 
 def test_session_tracker_iter_active_snapshot():
     tracker = SessionTracker()
@@ -725,13 +883,202 @@ def test_live_sessions_fail_open_on_none_or_error():
     assert wcs._live_sessions(_BoomTracker()) == (0, [])
 
 
-# ── (i) no Schedule / ordinary-session effect ────────────────────────────
+# ── (j) per-agent durable report thread: no minted token ──────────────────
+
+@pytest.mark.asyncio
+async def test_trigger_creates_per_agent_report_thread_without_minted_token(
+    tmp_path, test_settings, monkeypatch,
+):
+    """First trigger creates ONE durable thread per agent (per-agent subject,
+    owning agent as participant) and the brief instructs the participant-
+    authorized task-bound send path — NO minted invocation token."""
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
+
+    state = _FakeDaemonState()
+    task_id = await wcs.trigger_cleanup(
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    )
+    task = db.get_task(task_id)
+    subject = wcs.report_thread_subject("dev_agent")
+    threads = db.list_threads(limit=50)
+    matching = [t for t in threads if t.subject == subject]
+    assert len(matching) == 1
+    thread_id = matching[0].id
+    # Owning agent is a participant (participant-authorized send path).
+    assert db.is_thread_participant(thread_id, "dev_agent")
+    # Brief carries the thread id + the task-bound send instruction.
+    assert f"--thread-id {thread_id}" in task.brief
+    assert "happyranch threads send --org" in task.brief
+    assert "--task-id" in task.brief and "--session-id" in task.brief
+    assert "no invocation token is needed" in task.brief
+    # NO minted token anywhere in the brief.
+    assert "invocation_token" not in task.brief
+    assert "BOOTSTRAP" not in task.brief
+
+
+@pytest.mark.asyncio
+async def test_trigger_reuses_same_thread_on_next_run(tmp_path, test_settings, monkeypatch):
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
+
+    state = _FakeDaemonState()
+    task1_id = await wcs.trigger_cleanup(
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    )
+    task1 = db.get_task(task1_id)
+    thread_id = wcs._find_report_thread(db, "dev_agent")
+    assert thread_id is not None
+    assert f"--thread-id {thread_id}" in task1.brief
+
+    task2_id = await wcs.trigger_cleanup(
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    )
+    task2 = db.get_task(task2_id)
+    assert f"--thread-id {thread_id}" in task2.brief
+    subject = wcs.report_thread_subject("dev_agent")
+    matching = [t for t in db.list_threads(limit=50) if t.subject == subject]
+    assert len(matching) == 1
+    assert matching[0].id == thread_id
+
+
+@pytest.mark.asyncio
+async def test_two_agents_get_distinct_report_threads(tmp_path, test_settings, monkeypatch):
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
+    _write_file(org.root / "workspaces" / "qa_engineer" / "f.txt", 1024)
+
+    state = _FakeDaemonState()
+    await wcs.trigger_cleanup(
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    )
+    await wcs.trigger_cleanup(
+        org, agent="qa_engineer",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    )
+    dev_thread = wcs._find_report_thread(db, "dev_agent")
+    qa_thread = wcs._find_report_thread(db, "qa_engineer")
+    assert dev_thread is not None and qa_thread is not None
+    assert dev_thread != qa_thread
+    assert db.is_thread_participant(dev_thread, "dev_agent")
+    assert not db.is_thread_participant(dev_thread, "qa_engineer")
+    assert db.is_thread_participant(qa_thread, "qa_engineer")
+
+
+@pytest.mark.asyncio
+async def test_trigger_fail_open_when_thread_creation_fails(
+    tmp_path, test_settings, monkeypatch,
+):
+    """Thread creation failure never blocks the run: the brief falls back to
+    a compose-a-new-thread instruction."""
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
+
+    async def boom(*a, **kw):
+        raise RuntimeError("thread create boom")
+
+    monkeypatch.setattr(wcs, "_resolve_or_create_report_thread", lambda *a, **kw: None)
+    state = _FakeDaemonState()
+    task_id = await wcs.trigger_cleanup(
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    )
+    assert task_id is not None
+    brief = db.get_task(task_id).brief
+    assert "composing a founder-visible thread" in brief
+    assert "The daemon could not resolve the durable per-agent report thread" in brief
+
+
+# ── (k) kill switch (enabled-by-default org config flag) ─────────────────
+
+@pytest.mark.asyncio
+async def test_kill_switch_default_enabled_triggers(tmp_path, test_settings, monkeypatch):
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+
+    state = _FakeDaemonState()
+    state.orgs = {"test": org}
+    state.metrics_registry = _FakeMetricsRegistry()
+
+    triggered: list[str] = []
+
+    async def fake_trigger(org, *, agent, enqueue, now_utc=None):
+        triggered.append(agent)
+        return "TASK-1"
+
+    monkeypatch.setattr(wcs, "trigger_cleanup", fake_trigger)
+    monkeypatch.setattr(
+        wcs, "decide_cleanup_trigger",
+        lambda **kw: wcs.CleanupTriggerDecision(True, None),
+    )
+    await wcs._tick_org(org, state, now_utc=_sunday_0330_utc())
+    assert triggered == ["dev_agent", "qa_engineer"]
+
+
+@pytest.mark.asyncio
+async def test_kill_switch_disabled_skips_org(tmp_path, test_settings, monkeypatch):
+    """workspace_cleanup.enabled: false in the org config.yaml disables the
+    whole capability for the org (existing daemon/org config mechanism)."""
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    cfg_path = org.root / "org" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("workspace_cleanup:\n  enabled: false\n")
+
+    state = _FakeDaemonState()
+    state.orgs = {"test": org}
+    state.metrics_registry = _FakeMetricsRegistry()
+
+    triggered: list[str] = []
+
+    async def fake_trigger(org, *, agent, enqueue, now_utc=None):
+        triggered.append(agent)
+        return "TASK-1"
+
+    monkeypatch.setattr(wcs, "trigger_cleanup", fake_trigger)
+    monkeypatch.setattr(
+        wcs, "decide_cleanup_trigger",
+        lambda **kw: wcs.CleanupTriggerDecision(True, None),
+    )
+    await wcs._tick_org(org, state, now_utc=_sunday_0330_utc())
+    assert triggered == []
+
+
+def test_org_config_kill_switch_parse():
+    from runtime.orchestrator.org_config import OrgConfig, OrgConfigError
+
+    assert OrgConfig().workspace_cleanup_enabled is True
+    assert OrgConfig.load_from_text("").workspace_cleanup_enabled is True
+    assert OrgConfig.load_from_text(
+        "workspace_cleanup:\n  enabled: false\n"
+    ).workspace_cleanup_enabled is False
+    assert OrgConfig.load_from_text(
+        "workspace_cleanup:\n  enabled: true\n"
+    ).workspace_cleanup_enabled is True
+    with pytest.raises(OrgConfigError):
+        OrgConfig.load_from_text("workspace_cleanup:\n  enabled: nope\n")
+    with pytest.raises(OrgConfigError):
+        OrgConfig.load_from_text("workspace_cleanup: 42\n")
+
+
+# ── (l) no Schedule / ordinary-session effect ────────────────────────────
 
 def test_orchestrator_has_no_cleanup_seam():
     """The superseded prompt-seam is gone: the orchestrator no longer imports
     or calls any workspace-cleanup context builder, so ordinary and unrelated
     Schedule-spawned sessions are byte-identical BY CONSTRUCTION."""
-    import inspect
     import runtime.orchestrator.orchestrator as orch_module
     source = inspect.getsource(orch_module)
     assert "workspace_context" not in source
@@ -740,14 +1087,13 @@ def test_orchestrator_has_no_cleanup_seam():
 
 def test_no_schedule_store_reverse_lookup_survives():
     """find_by_spawned_task_id (the rejected Schedule discriminator) is gone."""
-    import inspect
     import runtime.infrastructure.schedule_store as store_module
     assert not hasattr(store_module, "find_by_spawned_task_id")
     source = inspect.getsource(store_module)
     assert "find_by_spawned_task_id" not in source
 
 
-# ── (j) full _run_agent shipping seam: no advisory note in ANY session ───
+# ── (m) full _run_agent shipping seam: no advisory note in ANY session ───
 
 _TASK_CONTEXT_CONTRACT_IDS = (
     "start-task",
@@ -835,7 +1181,7 @@ def test_no_session_prompt_contains_cleanup_note(
     assert "Repository freshness" in spawned_prompt
 
 
-# ── (k) daemon loop: trigger/non-trigger through the async loop ──────────
+# ── (n) daemon loop: trigger/non-trigger through the async loop ──────────
 
 class _FakeMetricsRegistry:
     def record_loop_tick(self, *args, **kwargs) -> None:
@@ -845,11 +1191,7 @@ class _FakeMetricsRegistry:
 @pytest.mark.asyncio
 async def test_loop_ticks_and_triggers_when_due(tmp_path, test_settings, monkeypatch):
     db = Database(tmp_path / "db.sqlite")
-    org_root = tmp_path / "orgs" / "test"
-    org_root.mkdir(parents=True, exist_ok=True)
-    org = _make_org(org_root, db, test_settings)
-    org.root = org_root
-    (org_root / "workspaces" / "dev_agent").mkdir(parents=True)
+    org = _org_with_workspaces(tmp_path, db, test_settings)
 
     state = _FakeDaemonState()
     state.orgs = {"test": org}
@@ -858,8 +1200,8 @@ async def test_loop_ticks_and_triggers_when_due(tmp_path, test_settings, monkeyp
     due = _sunday_0330_utc()
     triggered: list[str] = []
 
-    async def fake_trigger(org, *, enqueue, now_utc=None):
-        triggered.append(org.slug)
+    async def fake_trigger(org, *, agent, enqueue, now_utc=None):
+        triggered.append(agent)
         return "TASK-1"
 
     monkeypatch.setattr(wcs, "trigger_cleanup", fake_trigger)
@@ -868,16 +1210,13 @@ async def test_loop_ticks_and_triggers_when_due(tmp_path, test_settings, monkeyp
         lambda **kw: wcs.CleanupTriggerDecision(True, None),
     )
     await wcs._tick_org(org, state, now_utc=due)
-    assert triggered == ["test"]
+    assert triggered == ["dev_agent", "qa_engineer"]
 
 
 @pytest.mark.asyncio
 async def test_loop_ticks_and_skips_when_not_due(tmp_path, test_settings, monkeypatch):
     db = Database(tmp_path / "db.sqlite")
-    org_root = tmp_path / "orgs" / "test"
-    org_root.mkdir(parents=True, exist_ok=True)
-    org = _make_org(org_root, db, test_settings)
-    org.root = org_root
+    org = _org_with_workspaces(tmp_path, db, test_settings)
 
     state = _FakeDaemonState()
     state.orgs = {"test": org}
@@ -885,8 +1224,8 @@ async def test_loop_ticks_and_skips_when_not_due(tmp_path, test_settings, monkey
 
     triggered: list[str] = []
 
-    async def fake_trigger(org, *, enqueue, now_utc=None):
-        triggered.append(org.slug)
+    async def fake_trigger(org, *, agent, enqueue, now_utc=None):
+        triggered.append(agent)
         return "TASK-1"
 
     monkeypatch.setattr(wcs, "trigger_cleanup", fake_trigger)
@@ -906,10 +1245,7 @@ async def test_loop_waits_out_boot_warm_up_before_any_tick(
     before ``warm_up_seconds`` elapse (short-lived lifespan contexts — e.g.
     the dashboard lifespan test — never see trigger side effects)."""
     db = Database(tmp_path / "db.sqlite")
-    org_root = tmp_path / "orgs" / "test"
-    org_root.mkdir(parents=True, exist_ok=True)
-    org = _make_org(org_root, db, test_settings)
-    org.root = org_root
+    org = _org_with_workspaces(tmp_path, db, test_settings)
 
     state = _FakeDaemonState()
     state.orgs = {"test": org}

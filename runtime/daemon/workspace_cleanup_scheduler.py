@@ -2,31 +2,53 @@
 
 Founder ruling (THR-195 seq 129): workspace cleanup is a **daemon-managed,
 system-default capability** that runs on its own without user configuration and
-independent of all user Schedules. The daemon periodically performs a bounded
-aggregate workspace measurement and — when the authoritative TASK-5552 /
-THR-195 contract says cleanup investigation is warranted — triggers an
-ordinary root task for the responsible agent with the fresh measurement packed
-as advisory context at trigger time. It never uses, creates, or modifies a
-Schedule, never injects anything into the shared session-prompt seam, and never
-performs cleanup itself.
+independent of all user Schedules. The daemon periodically measures each agent
+workspace and — when the owner's workspace total is at or above the founder
+threshold and the TASK-5552 / THR-195 contract says cleanup investigation is
+warranted — triggers an ordinary root task for that owning agent with the
+fresh measurement packed as advisory context at trigger time. It never uses,
+creates, or modifies a Schedule, never injects anything into the shared
+session-prompt seam, and never performs cleanup itself.
 
 This is the "sixth loop" of the same shape as ``dream_scheduler`` /
 ``schedule_scheduler`` / ``zombie_reaper`` (one new module, one registration in
 ``runtime/daemon/app.py``). The measurement core is adopted from the retained
-TASK-5974/TASK-5986 work (deadline + cardinality-cap fixes included); the
-rejected Schedule-prompt-seam architecture is not carried forward.
+TASK-5974/TASK-5986/TASK-6016 work (deadline + cardinality-cap fixes
+included); the rejected Schedule-prompt-seam architecture is not carried
+forward.
+
+Founder-approved product defaults (TASK-6036, resolving the TASK-6029 stop
+analysis): daemon-managed system cleanup independent of user Schedules; weekly
+Sunday 03:30 in each org's timezone; measure per agent and trigger only when
+that agent's workspace total is >= 1 GiB; the first TWO triggered runs per
+agent are strictly report-only; each triggered ordinary task is assigned to
+its owning agent; suppress while that agent has a non-terminal cleanup task
+and apply a seven-day per-agent cooldown; one durable founder-visible report
+thread PER AGENT via the existing participant-authorized thread-send path with
+NO minted report token; one enabled-by-default kill switch (an org config
+``workspace_cleanup.enabled`` flag).
+
+Persistence uses only existing durable mechanisms (no schema/API/CLI change):
+the per-agent first-two run counter and cooldown are derived from the owning
+agent's daemon-marked cleanup task rows (``tasks.brief`` prefix marker —
+TASK-5552 §3's "fixed cleanup task marker"), and the per-agent durable thread
+identity is resolved by a fixed per-agent subject over ``threads.subject``.
 
 Contract-relevant bounds (all documented in protocol/05b + 05c):
 
 - Cadence: weekly, Sunday 03:30 in the org's effective timezone (TASK-5552
-  §6). At most one trigger per weekly window; a missed window is never
-  replayed (no backfill), matching the recurring Schedule contract.
-- Trigger: the weekly occurrence is due AND this window is unserviced AND no
-  prior cleanup task is non-terminal (TASK-5552 §3 "one run at a time").
-- Report-only: the daemon-composed brief is REPORT-ONLY (TASK-5552 §6 rollout:
-  the first runs produce an inventory and nothing else). No deletion/pruning/
-  movement is authorized by this module or the shipped brief; the mutating
-  brief is a separately approved follow-up.
+  §6). At most one trigger per weekly window per agent; a missed window is
+  never replayed (no backfill), matching the recurring Schedule contract.
+- Trigger: the weekly occurrence is due AND this window is unserviced for the
+  agent AND no prior cleanup task of that agent is non-terminal (TASK-5552 §3
+  "one run at a time") AND the agent's last cleanup task is older than the
+  seven-day per-agent cooldown AND the agent's workspace measures >= 1 GiB.
+- Report-only rollout: the first TWO triggered runs per agent are STRICTLY
+  report-only (daemon-composed REPORT-ONLY brief — inventory and nothing
+  else). From the third triggered run onward the daemon composes the approved
+  TASK-5552 §4 fixed normalized cleanup brief (bounded, Git-aware, non-force,
+  action-time-re-derived eligibility). The advisory block itself never
+  authorizes removal in either variant.
 - Advisory content: the packed block is aggregate-only sizing/status context,
   prominently ADVISORY / STALE ON ARRIVAL / not an eligibility or candidate
   list / no path safe / no removal recommended / re-derive before any action.
@@ -36,11 +58,18 @@ Contract-relevant bounds (all documented in protocol/05b + 05c):
   subprocess caps) and fail-open: every timeout/error/cap hit yields an
   explicit unavailable/truncated status and can never block daemon operation
   or task/session spawning.
-- Reporting: the responsible agent reports to the founder in a single durable
-  founder-visible thread (fixed subject; created by the daemon on first
-  trigger). The daemon passes the thread id plus a daemon-minted single-use
-  invocation token in the brief; the agent appends the report via the existing
-  reply route. Silence on that thread is the loop-stopped signal.
+- Reporting: the responsible agent reports to the founder in ONE durable
+  founder-visible thread per agent (fixed per-agent subject; created by the
+  daemon on first trigger with the owning agent as composer/participant and
+  @founder as recipient). The daemon passes only the thread id in the brief —
+  NO minted invocation token. The agent appends its report during the task
+  session via the existing participant-authorized, task-bound
+  ``happyranch threads send`` path (composer + task_id + session_id binding).
+  Silence on that thread is the loop-stopped signal.
+- Kill switch: ``workspace_cleanup.enabled`` in the org ``config.yaml``
+  (default True). Setting it to false disables the whole capability for that
+  org. This is an existing daemon/org config mechanism — no new public
+  API/CLI/UI surface.
 """
 from __future__ import annotations
 
@@ -56,7 +85,7 @@ from datetime import time as _dt_time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from runtime.models import TaskRecord, TaskStatus, ThreadInvocationPurpose
+from runtime.models import TaskRecord, TaskStatus
 
 if TYPE_CHECKING:
     from runtime.daemon.org_state import OrgState
@@ -68,21 +97,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger("happyranch.daemon.workspace_cleanup_scheduler")
 
 # ---------------------------------------------------------------------------
-# Responsible agent + cadence (derived from TASK-5552 / THR-195)
+# Founder-approved cadence + per-agent policy (TASK-6036 defaults)
 # ---------------------------------------------------------------------------
-
-# The designated engineering agent: TASK-5552 §3 "an ordinary root task for
-# the designated engineering agent"; every engineering implementation leg of
-# this feature (TASK-5974/5986/6001/6016) is dev_agent, and dev_agent is the
-# largest workspace consumer in THR-195 seq 131 measurements. Selection is
-# documented as an assumption for the reviewer; no user configuration surface
-# exists (founder: "runs on its own without configuration from the user").
-_RESPONSIBLE_AGENT = "dev_agent"
 
 # Weekly occurrence: Sunday 03:30 in the org's effective timezone.
 # ``datetime.weekday()``: Monday=0 ... Sunday=6.
 _OCCURRENCE_WEEKDAY = 6
 _OCCURRENCE_TIME = _dt_time(hour=3, minute=30)
+
+# Per-agent trigger threshold: trigger only when the owning agent's workspace
+# total is >= 1 GiB (founder default).
+_MIN_WORKSPACE_TRIGGER_BYTES = 1024 ** 3
+
+# Seven-day per-agent cooldown: no new trigger while the agent's latest
+# cleanup task is younger than this (rolling window, derived from the tasks
+# table — no new state).
+_COOLDOWN_SECONDS = 7 * 24 * 3600
+
+# First TWO triggered runs per agent are strictly report-only; from the third
+# run onward the daemon composes the approved TASK-5552 §4 cleanup brief.
+_REPORT_ONLY_RUN_LIMIT = 2
 
 # Scheduler tick interval (cheap decision scan, mirrors schedule_scheduler).
 _LOOP_INTERVAL_SECONDS = 60
@@ -95,30 +129,35 @@ _LOOP_INTERVAL_SECONDS = 60
 # trigger side effects.
 _WARM_UP_SECONDS = 30.0
 
-# Fixed marker the daemon writes at the top of every cleanup brief. Used ONLY
-# to identify daemon-created cleanup tasks for dedup/window bookkeeping — it is
-# the daemon's own content, never a user-content heuristic.
+# Fixed marker the daemon writes at the top of every cleanup brief (both the
+# report-only and the cleanup variant). Used ONLY to identify daemon-created
+# cleanup tasks for dedup/cooldown/run-count bookkeeping — it is the daemon's
+# own content, never a user-content heuristic (TASK-5552 §3 "the fixed
+# cleanup task marker").
 _CLEANUP_BRIEF_MARKER = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)"
 
-# Durable founder-visible report thread (consultant THR-195 seq 131: "one
-# durable thread, not one per run; the daemon passes a fixed thread id in the
-# brief and lets the agent append"). The fixed subject is how the daemon
-# resolves the durable thread identity without any new schema.
-_CLEANUP_REPORT_THREAD_SUBJECT = "HappyRanch system workspace cleanup reports"
+# Per-agent durable founder-visible report thread. The fixed per-agent subject
+# is how the daemon resolves the durable thread identity per agent without any
+# new schema (consultant THR-195 seq 131: "one durable thread, not one per
+# run" — one per AGENT per the founder default).
+_REPORT_THREAD_SUBJECT_PREFIX = "HappyRanch system workspace cleanup reports"
 
-# Bound for the dedup/window scan over the responsible agent's recent tasks.
+# Bound for the dedup/cooldown/run-count scan over one agent's recent tasks.
 _MAX_CLEANUP_TASK_SCAN = 1000
 
 
 # ── measurement bounds ────────────────────────────────────────────────────
 # Tight, explicit bounds: the advisory walk must never stall the daemon loop.
+# The entry/depth caps are calibrated against real org workspaces (a 4.6 GiB
+# workspace with node_modules/.venv trees measures ~300k entries at depth <=15
+# in <1s on the live host); the wall-clock deadline is the hard bound.
 _MEASURE_DEADLINE_SECONDS = 10.0
 _GIT_TIMEOUT_SECONDS = 5.0
 _MAX_WORKSPACES = 64
 _MAX_REPOS_PER_WORKSPACE = 16
 _MAX_WORKTREES_PER_REPO = 256
-_MAX_ENTRIES_PER_WORKSPACE = 250_000
-_MAX_DEPTH = 12
+_MAX_ENTRIES_PER_WORKSPACE = 500_000
+_MAX_DEPTH = 20
 _TOP_WORKSPACES = 3
 
 _DEPENDENCY_DIR_NAMES = frozenset({"node_modules", ".venv"})
@@ -138,7 +177,13 @@ _TERMINAL_TASK_STATUSES = frozenset({
 
 @dataclass
 class WorkspaceContextSnapshot:
-    """One bounded, fail-open workspace-disk snapshot (advisory only)."""
+    """One bounded, fail-open workspace-disk snapshot (advisory only).
+
+    Scoped to ONE agent workspace (the owning agent of a trigger candidate):
+    ``workspaces_count`` is 1, ``largest`` carries the single
+    ``(agent_name, total_bytes)`` entry, and the worktree/dependency counts
+    cover that workspace.
+    """
 
     available: bool = True
     reason: str | None = None          # set when ``available`` is False
@@ -218,8 +263,8 @@ def format_workspace_context_note(snapshot: WorkspaceContextSnapshot) -> str:
     ) or "n/a"
     lines.append(f"  measured_at:        {snapshot.measured_at}")
     lines.append(
-        f"  workspaces total:   {_fmt_bytes(snapshot.workspaces_bytes)} across "
-        f"{snapshot.workspaces_count}"
+        f"  workspace total:    {_fmt_bytes(snapshot.workspaces_bytes)} "
+        f"({snapshot.workspaces_count} workspace)"
     )
     lines.append(f"  largest:            {largest}")
     lines.append(
@@ -397,82 +442,70 @@ class _WorktreeStats:
 
 
 def _registered_worktree_stats(
-    paths: Any, db: "Database", *, deadline: float,
+    workspace: Path, db: "Database", *, deadline: float,
 ) -> _WorktreeStats:
-    """Aggregate registered worktrees across every workspace/repo, joined to
-    task status where the ``TASK-\\d+`` prefix resolves to a known task.
+    """Aggregate registered worktrees of ONE agent workspace, joined to task
+    status where the ``TASK-\\d+`` prefix resolves to a known task.
 
     Bounded by the shared wall-clock ``deadline``: every git subprocess
     receives ``min(_GIT_TIMEOUT_SECONDS, remaining)`` and expiry is re-checked
     after every subprocess and after the last repository, so a call begun just
     before the deadline can never publish a snapshot as available. Every
-    cardinality-cap hit (workspaces/repos/worktrees) sets ``truncated`` so
-    partial aggregates are never presented as complete.
+    cardinality-cap hit (repos/worktrees) sets ``truncated`` so partial
+    aggregates are never presented as complete.
     """
     stats = _WorktreeStats()
-    workspaces, workspaces_truncated = _iter_workspaces(paths)
-    if workspaces_truncated:
+    try:
+        from runtime.orchestrator.workspace_adapters import (
+            PersistentWorkspaceSetup,
+        )
+        repo_names = PersistentWorkspaceSetup.detect_repo_names(workspace)
+    except OSError:
+        repo_names = []
+    if len(repo_names) > _MAX_REPOS_PER_WORKSPACE:
         stats.truncated = True
-    deadline_hit = False
-    for workspace in workspaces:
+    for name in repo_names[: _MAX_REPOS_PER_WORKSPACE]:
         if time.monotonic() > deadline:
-            deadline_hit = True
+            stats.timed_out = True
             break
-        try:
-            from runtime.orchestrator.workspace_adapters import (
-                PersistentWorkspaceSetup,
-            )
-            repo_names = PersistentWorkspaceSetup.detect_repo_names(workspace)
-        except OSError:
-            continue
-        if len(repo_names) > _MAX_REPOS_PER_WORKSPACE:
+        repo_dir = workspace / "repos" / name
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            stats.timed_out = True
+            break
+        wt_paths, wt_truncated = _git_worktree_paths(
+            repo_dir, min(_GIT_TIMEOUT_SECONDS, remaining),
+        )
+        if wt_truncated:
             stats.truncated = True
-        for name in repo_names[: _MAX_REPOS_PER_WORKSPACE]:
-            if time.monotonic() > deadline:
-                deadline_hit = True
-                break
-            repo_dir = workspace / "repos" / name
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                deadline_hit = True
-                break
-            wt_paths, wt_truncated = _git_worktree_paths(
-                repo_dir, min(_GIT_TIMEOUT_SECONDS, remaining),
-            )
-            if wt_truncated:
-                stats.truncated = True
-            if time.monotonic() > deadline:
-                deadline_hit = True
-                break
-            for wt_path in wt_paths:
-                stats.registered += 1
-                task_id = _task_id_from_worktree_name(wt_path.name)
-                status = None
-                if task_id is not None:
-                    try:
-                        task = db.get_task(task_id)
-                    except Exception:
-                        task = None
-                    status = getattr(task, "status", None)
-                if status is None:
-                    stats.unclassified += 1
-                elif status in _TERMINAL_TASK_STATUSES:
-                    stats.terminal += 1
-                else:
-                    stats.non_terminal += 1
-        if deadline_hit:
+        if time.monotonic() > deadline:
+            stats.timed_out = True
             break
+        for wt_path in wt_paths:
+            stats.registered += 1
+            task_id = _task_id_from_worktree_name(wt_path.name)
+            status = None
+            if task_id is not None:
+                try:
+                    task = db.get_task(task_id)
+                except Exception:
+                    task = None
+                status = getattr(task, "status", None)
+            if status is None:
+                stats.unclassified += 1
+            elif status in _TERMINAL_TASK_STATUSES:
+                stats.terminal += 1
+            else:
+                stats.non_terminal += 1
     if time.monotonic() > deadline:
-        deadline_hit = True
-    if deadline_hit:
         stats.timed_out = True
     return stats
 
 
 def _iter_workspaces(paths: Any) -> tuple[list[Path], bool]:
-    """Sorted workspace directories up to ``_MAX_WORKSPACES`` plus a
-    ``truncated`` flag set when more workspaces exist than the cap, so callers
-    never present a partial workspace aggregate as complete."""
+    """Sorted agent-workspace directories up to ``_MAX_WORKSPACES`` plus a
+    ``truncated`` flag set when more workspaces exist than the cap, so the
+    per-org trigger scan never unboundedly enumerates."""
     try:
         workspaces_dir = paths.workspaces_dir
         if not workspaces_dir.exists():
@@ -506,25 +539,27 @@ def _live_sessions(sessions: "SessionTracker | None") -> tuple[int, list[str]]:
 # ── public measurement (never raises) ─────────────────────────────────────
 
 def measure_workspace_context(
+    workspace_dir: Path,
     *,
-    paths: "OrgPaths",
     db: "Database",
     sessions: "SessionTracker | None" = None,
     deadline_seconds: float = _MEASURE_DEADLINE_SECONDS,
 ) -> WorkspaceContextSnapshot:
-    """Measure one bounded advisory workspace snapshot. NEVER raises.
+    """Measure one bounded advisory snapshot of a single agent workspace.
+    NEVER raises.
 
-    Fail-open: an unreadable workspaces dir, a deadline that fires before any
-    workspace is measured, or any unexpected error yields ``available=False``
-    with a reason. Any truncation (deadline or traversal cap) also yields
-    ``available=False`` — partial numbers are never presented as a complete
-    measurement. Per-workspace soft failures (e.g. an unreadable subtree) are
-    reported via ``workspaces_unmeasured`` rather than silently claimed as
-    complete.
+    Fail-open: a missing workspace dir measures as an empty available
+    snapshot; a deadline that fires before the walk completes, any traversal
+    cap hit, or any unexpected error yields ``available=False`` with a reason.
+    Partial numbers from a deadline/cap hit are never presented as a complete
+    measurement.
     """
     deadline = time.monotonic() + max(0.001, deadline_seconds)
     try:
-        return _measure(deadline=deadline, paths=paths, db=db, sessions=sessions)
+        return _measure(
+            workspace_dir=workspace_dir, deadline=deadline,
+            db=db, sessions=sessions,
+        )
     except Exception as exc:  # pragma: no cover — defensive, fail-open
         return WorkspaceContextSnapshot(
             available=False, reason=f"measurement error: {exc}",
@@ -532,76 +567,54 @@ def measure_workspace_context(
 
 
 def _measure(
-    *, deadline: float, paths: "OrgPaths", db: "Database",
+    *, workspace_dir: Path, deadline: float, db: "Database",
     sessions: "SessionTracker | None",
 ) -> WorkspaceContextSnapshot:
     snap = WorkspaceContextSnapshot()
-    workspaces, workspaces_truncated = _iter_workspaces(paths)
-    snap.workspaces_count = len(workspaces)
-    if workspaces_truncated:
-        snap.truncated = True
-
-    per_workspace: list[tuple[str, int]] = []
-    measured = 0
-    for workspace in workspaces:
-        if time.monotonic() > deadline:
-            snap.workspaces_unmeasured += 1
-            continue
-        walk = _walk_workspace(
-            workspace,
-            deadline=deadline,
-            max_entries=_MAX_ENTRIES_PER_WORKSPACE,
-            max_depth=_MAX_DEPTH,
-        )
-        measured += 1
-        if walk.truncated:
-            snap.truncated = True
-        if walk.errors and walk.bytes_total == 0:
-            snap.workspaces_unmeasured += 1
-        else:
-            snap.workspaces_bytes += walk.bytes_total
-            per_workspace.append((workspace.name, walk.bytes_total))
-        snap.dep_dirs += walk.dep_count
-        snap.dep_bytes += walk.dep_bytes
-        snap.dep_dirs_in_worktrees += walk.dep_in_wt_count
-        snap.dep_bytes_in_worktrees += walk.dep_in_wt_bytes
-
-    if workspaces and measured == 0:
-        return snap.unavailable(
-            "measurement deadline exceeded before any workspace"
-        )
-    if snap.truncated:
+    if not workspace_dir.exists():
+        # A missing workspace dir measures as an empty, complete snapshot
+        # (0 bytes < threshold → no trigger).
+        return snap
+    walk = _walk_workspace(
+        workspace_dir,
+        deadline=deadline,
+        max_entries=_MAX_ENTRIES_PER_WORKSPACE,
+        max_depth=_MAX_DEPTH,
+    )
+    if walk.truncated:
         # Strict fail-closed: partial numbers from a deadline/cap hit are
         # never presented as a complete measurement.
         return snap.unavailable(
             "workspace measurement did not complete within bounded limits "
             "(timeout or traversal cap)"
         )
+    if walk.errors and walk.bytes_total == 0:
+        return snap.unavailable("workspace could not be measured (unreadable)")
 
-    per_workspace.sort(key=lambda item: item[1], reverse=True)
-    snap.largest = per_workspace[: _TOP_WORKSPACES]
+    snap.workspaces_count = 1
+    snap.workspaces_bytes = walk.bytes_total
+    snap.largest = [(workspace_dir.name, walk.bytes_total)]
+    snap.dep_dirs = walk.dep_count
+    snap.dep_bytes = walk.dep_bytes
+    snap.dep_dirs_in_worktrees = walk.dep_in_wt_count
+    snap.dep_bytes_in_worktrees = walk.dep_in_wt_bytes
 
-    wt = _registered_worktree_stats(paths, db, deadline=deadline)
+    wt = _registered_worktree_stats(workspace_dir, db, deadline=deadline)
     snap.worktrees_registered = wt.registered
     snap.worktrees_terminal = wt.terminal
     snap.worktrees_non_terminal = wt.non_terminal
     snap.worktrees_unclassified = wt.unclassified
     if wt.timed_out or wt.truncated:
-        snap.truncated = True
-
-    snap.live_sessions_count, snap.live_sessions_agents = _live_sessions(sessions)
-
-    if snap.truncated:
-        # Strict fail-closed: partial numbers from a deadline/cap hit are
-        # never presented as a complete measurement.
         return snap.unavailable(
             "workspace measurement did not complete within bounded limits "
             "(timeout or traversal cap)"
         )
+
+    snap.live_sessions_count, snap.live_sessions_agents = _live_sessions(sessions)
     return snap
 
 
-# ── weekly occurrence + trigger decision ──────────────────────────────────
+# ── weekly occurrence + per-agent trigger decision ────────────────────────
 
 def _previous_occurrence(now_local: datetime) -> datetime:
     """Most recent Sunday 03:30 at-or-before ``now_local`` (never future)."""
@@ -624,28 +637,40 @@ def _is_cleanup_brief(brief: str | None) -> bool:
     return bool(brief and brief.startswith(_CLEANUP_BRIEF_MARKER))
 
 
-def _latest_cleanup_task(db: "Database", agent: str) -> "TaskRecord | None":
-    """Most recent cleanup-marked task for ``agent``, or None.
+def _scan_cleanup_tasks(
+    db: "Database", agent: str,
+) -> tuple["TaskRecord | None", int]:
+    """Scan one agent's recent tasks (newest first) for daemon-marked cleanup
+    tasks. Returns ``(latest_cleanup_task, count)``.
 
-    Bounded scan over ``list_tasks`` pages (newest first). Any lookup error
-    fails closed (returns None → caller skips the trigger) so a dedup-blind
-    daemon can never double-fire a run.
+    Bounded by ``_MAX_CLEANUP_TASK_SCAN`` rows. The count is the per-agent
+    "triggered runs so far" (first-two report-only bookkeeping); the latest
+    row feeds the weekly-window dedup, the non-terminal suppression, and the
+    seven-day cooldown — all derived from the tasks table, no new state.
+    Any lookup error fails closed (returns ``(None, 0)`` → the caller skips
+    the trigger) so a dedup-blind daemon can never double-fire a run.
     """
     before: str | None = None
+    seen = 0
+    latest: "TaskRecord | None" = None
     for _ in range(_MAX_CLEANUP_TASK_SCAN // 100 + 1):
         try:
             page = db.list_tasks(
                 limit=100, assigned_agent=agent, before_task_id=before,
             )
         except Exception:
-            return None
+            return None, 0
         if not page:
-            return None
+            break
         for task in page:
             if _is_cleanup_brief(task.brief):
-                return task
+                seen += 1
+                if latest is None:
+                    latest = task
         before = page[-1].id
-    return None
+        if len(page) < 100:
+            break
+    return latest, seen
 
 
 @dataclass
@@ -657,12 +682,17 @@ class CleanupTriggerDecision:
 def decide_cleanup_trigger(
     *,
     db: "Database",
-    agent: str = _RESPONSIBLE_AGENT,
+    agent: str,
     now_utc: datetime | None = None,
     tz: tzinfo | None = None,
 ) -> CleanupTriggerDecision:
-    """Pure trigger decision: weekly occurrence due + window unserviced + no
-    prior cleanup task in flight (TASK-5552 §3 one-run-at-a-time)."""
+    """Pure per-agent trigger decision: weekly occurrence due + window
+    unserviced + no non-terminal prior cleanup task (TASK-5552 §3 one-run-at-
+    a-time) + seven-day per-agent cooldown elapsed.
+
+    The >= 1 GiB size gate is applied by the caller after the fresh
+    measurement (it needs the measured bytes, so it lives with the trigger).
+    """
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
     effective_tz = tz or timezone.utc
@@ -671,23 +701,32 @@ def decide_cleanup_trigger(
     if now_local < occurrence:
         return CleanupTriggerDecision(False, "not_due")
 
-    latest = _latest_cleanup_task(db, agent)
+    latest, _count = _scan_cleanup_tasks(db, agent)
     if latest is None:
         return CleanupTriggerDecision(True, None)
-    if _as_aware_utc(latest.created_at) >= occurrence.astimezone(timezone.utc):
+    latest_utc = _as_aware_utc(latest.created_at)
+    if latest_utc >= occurrence.astimezone(timezone.utc):
         return CleanupTriggerDecision(False, "already_triggered_this_window")
     if latest.status not in _TERMINAL_TASK_STATUSES:
         return CleanupTriggerDecision(False, "prior_run_in_flight")
+    if now_utc - latest_utc < timedelta(seconds=_COOLDOWN_SECONDS):
+        return CleanupTriggerDecision(False, "cooldown")
     return CleanupTriggerDecision(True, None)
 
 
-# ── durable founder-report thread ─────────────────────────────────────────
+# ── per-agent durable founder-report thread (no minted token) ─────────────
 
-def _find_report_thread(db: "Database") -> str | None:
-    """Open thread id with the fixed cleanup-report subject, else None."""
+def report_thread_subject(agent: str) -> str:
+    """Fixed per-agent subject of the durable cleanup-report thread."""
+    return f"{_REPORT_THREAD_SUBJECT_PREFIX} — {agent}"
+
+
+def _find_report_thread(db: "Database", agent: str) -> str | None:
+    """Open thread id with this agent's fixed cleanup-report subject."""
+    subject = report_thread_subject(agent)
     try:
         for thread in db.list_threads(status="open", limit=500):
-            if thread.subject == _CLEANUP_REPORT_THREAD_SUBJECT:
+            if thread.subject == subject:
                 return thread.id
     except Exception:
         return None
@@ -695,12 +734,20 @@ def _find_report_thread(db: "Database") -> str | None:
 
 
 def _resolve_or_create_report_thread(
-    org: "OrgState", *, task_id: str,
-) -> tuple[str | None, int | None]:
-    """Resolve the durable report thread; create it (dream-complete pattern)
-    on first trigger. Returns ``(thread_id, last_seq)`` or ``(None, None)``
-    when the thread cannot be created (fail-open: the run still proceeds with
-    a compose-a-new-thread fallback instruction)."""
+    org: "OrgState", *, agent: str, task_id: str,
+) -> str | None:
+    """Resolve this agent's durable report thread; create it on first trigger
+    (dream-complete pattern) with the owning agent as composer/participant and
+    @founder as recipient. Returns the thread id, or None when the thread
+    cannot be created (fail-open: the run still proceeds with a
+    compose-a-new-thread fallback instruction).
+
+    No invocation token is minted: the agent appends its report during the
+    task session via the existing participant-authorized, task-bound
+    ``threads send`` path (composer + task_id + session_id), which requires no
+    token — only participant membership (guaranteed by this creation) and a
+    live task-session binding.
+    """
     from runtime.daemon.routes.threads import FOUNDER_LITERAL
     from runtime.daemon.routes.threads import _create_agent_thread_locked
     from runtime.orchestrator.org_config import (
@@ -708,16 +755,15 @@ def _resolve_or_create_report_thread(
         resolve_org_setting_threads,
     )
 
-    existing = _find_report_thread(org.db)
+    existing = _find_report_thread(org.db, agent)
     if existing is not None:
-        messages = org.db.list_thread_messages(existing, limit=1000)
-        last_seq = messages[-1].seq if messages else 0
-        return existing, last_seq
+        return existing
 
+    subject = report_thread_subject(agent)
     opening = (
-        f"Daemon-managed workspace cleanup reporting thread. Cleanup run "
-        f"{task_id} was triggered; the responsible agent appends its "
-        f"report here."
+        f"Daemon-managed workspace cleanup reporting thread for {agent}. "
+        f"Cleanup run {task_id} was triggered; the owning agent appends its "
+        f"report here (one durable thread per agent)."
     )
     try:
         turn_cap = resolve_org_setting_threads(
@@ -725,121 +771,180 @@ def _resolve_or_create_report_thread(
         )["default_turn_cap"]
         # Same shared compose helper the dream-complete route uses for
         # founder-only threads: identical participant/turn/audit semantics.
+        # Composer = the owning agent (its workspace exists), recipients =
+        # [@founder] only, so no agent recipient is woken on creation.
         thread_id, _seq, _tokens, _addressed = _create_agent_thread_locked(
             org,
-            composer=_RESPONSIBLE_AGENT,
-            subject=_CLEANUP_REPORT_THREAD_SUBJECT,
+            composer=agent,
+            subject=subject,
             body_text=opening,
             recipients=[FOUNDER_LITERAL],
             turn_cap=turn_cap,
             composed_from_task_id=task_id,
         )
-        return thread_id, _seq
+        return thread_id
     except Exception:
         logger.exception(
-            "workspace cleanup: report thread creation failed for org %s",
-            org.slug,
-        )
-        return None, None
-
-
-def _mint_report_token(
-    db: "Database", *, thread_id: str, agent: str, last_seq: int,
-) -> str | None:
-    """Mint a single-use BOOTSTRAP invocation token for the agent on the
-    report thread (consumable by the existing reply route). Returns None on
-    failure (fail-open)."""
-    try:
-        inv = db.mint_thread_invocation(
-            thread_id=thread_id,
-            agent_name=agent,
-            triggering_seq=max(1, last_seq),
-            purpose=ThreadInvocationPurpose.BOOTSTRAP,
-        )
-        return inv.invocation_token
-    except Exception:
-        logger.exception(
-            "workspace cleanup: report token mint failed for thread %s",
-            thread_id,
+            "workspace cleanup: report thread creation failed for org %s "
+            "(agent %s)",
+            org.slug, agent,
         )
         return None
 
 
 # ── brief composition ─────────────────────────────────────────────────────
 
+_REPORT_INSTRUCTION = (
+    "3. Report to the founder by appending to the durable founder-visible "
+    "thread {thread_id} (\"{subject}\"). You are a participant of that thread "
+    "(the daemon composed it with you as composer and @founder as "
+    "recipient); no invocation token is needed. Use the existing "
+    "participant-authorized, task-bound send path with your current task "
+    "session:\n"
+    "\n"
+    "    happyranch threads send --org {slug} --thread-id {thread_id} "
+    "--task-id {task_id} --session-id <YOUR_CURRENT_SESSION_ID> "
+    "--from-file <payload>\n"
+    "\n"
+    "    payload JSON: {{\"composer\": \"{agent}\", \"body_markdown\": "
+    "\"<report: measured before/after sizes, exact removals, skips, and any "
+    "ambiguity>\"}}\n"
+    "\n"
+    "  Append to that thread — do NOT compose a new thread. If the thread is "
+    "unusable, compose a founder-visible thread titled \"{subject}\" "
+    "(recipient @founder) with the same report content instead."
+)
+
+_FALLBACK_REPORT_INSTRUCTION = (
+    "3. Report to the founder by composing a founder-visible thread titled "
+    "\"{subject}\" (recipient @founder) with the report content: measured "
+    "before/after sizes, exact removals (none in report-only), skips, and any "
+    "ambiguity. (The daemon could not resolve the durable per-agent report "
+    "thread at trigger time; the first successful report establishes it.)"
+)
+
+
 def compose_cleanup_brief(
     *,
     org_slug: str,
+    agent: str,
     task_id: str,
+    run_number: int,
     snapshot: WorkspaceContextSnapshot,
     thread_id: str | None,
-    report_token: str | None,
-    report_seq: int | None,
 ) -> str:
-    """Daemon-composed REPORT-ONLY brief: fixed marker + fresh advisory block +
-    founder-thread reporting instructions. Never a Schedule brief; nothing is
-    persisted beyond this task row."""
-    lines = [
+    """Daemon-composed brief for one triggered cleanup task of ``agent``.
+
+    Always starts with the fixed daemon marker (dedup/cooldown/run-count
+    bookkeeping — TASK-5552 §3). The first ``_REPORT_ONLY_RUN_LIMIT`` runs per
+    agent are STRICTLY report-only; later runs carry the approved TASK-5552
+    §4 fixed normalized cleanup brief. Both pack the fresh advisory snapshot
+    and the founder-thread reporting instruction. Never a Schedule brief;
+    nothing is persisted beyond this task row.
+    """
+    report = (
+        _REPORT_INSTRUCTION.format(
+            thread_id=thread_id, subject=report_thread_subject(agent),
+            slug=org_slug, task_id=task_id, agent=agent,
+        )
+        if thread_id
+        else _FALLBACK_REPORT_INSTRUCTION.format(
+            subject=report_thread_subject(agent),
+        )
+    )
+    header = (
         _CLEANUP_BRIEF_MARKER,
         "",
-        "This is a daemon-managed, system-default workspace cleanup run, "
-        "independent of all user Schedules. You are the responsible agent.",
+        f"Daemon-triggered workspace cleanup run for agent {agent} (run "
+        f"#{run_number}). This is a daemon-managed, system-default capability "
+        "independent of all user Schedules. You are the responsible agent; "
+        "you own this run.",
         "",
-        "THIS RUN IS REPORT-ONLY. Do NOT delete, prune, move, or modify any "
-        "file, worktree, dependency directory, or workspace artifact. Do NOT "
-        "create or modify any Schedule. No cleanup action is authorized in "
-        "this run.",
-        "",
-        format_workspace_context_note(snapshot),
-        "",
-        "Work to do:",
-        "",
-        "1. Inventory current org workspace state read-only: registered "
-        "linked worktrees, dependency directories, and task associations. "
-        "Classify each worktree by its TASK-\\d+ prefix (suffixed names like "
-        "TASK-5567-base691 resolve to TASK-5567); unknown or missing tasks "
-        "are unclassified, never assumed terminal.",
-        "2. Re-derive every fact and every path immediately before any action "
-        "or recommendation. Write output/<task_id>/ with inventory.json, "
-        "final-ledger.jsonl (all rows no-op), and report.md per the TASK-5552 "
-        "cleanup design, including measured sizes, exact skips and reasons, "
-        "and any ambiguity.",
-    ]
-    if thread_id and report_token:
-        payload = {
-            "thread_id": thread_id,
-            "invocation_token": report_token,
-            "speaker": _RESPONSIBLE_AGENT,
-            "body_markdown": (
-                "<report: measured before/after sizes, exact removals (none "
-                "in report-only), skips, any ambiguity>"
-            ),
-            "in_response_to_seq": report_seq or 1,
-        }
-        lines.extend([
-            f"3. Report to the founder by appending to the durable "
-            f"founder-visible thread {thread_id} "
-            f"(\"{_CLEANUP_REPORT_THREAD_SUBJECT}\") using the "
-            f"daemon-minted single-use invocation token:",
+    )
+    if run_number <= _REPORT_ONLY_RUN_LIMIT:
+        body = [
+            "THIS RUN IS STRICTLY REPORT-ONLY (first-two per-agent rollout). "
+            "Do NOT delete, prune, move, or modify any file, worktree, "
+            "dependency directory, or workspace artifact. Do NOT create or "
+            "modify any Schedule. No cleanup action is authorized in this "
+            "run.",
             "",
-            f"    happyranch threads reply --org {org_slug} "
-            f"--thread {thread_id} --from-file <payload>",
+            format_workspace_context_note(snapshot),
             "",
-            f"    payload JSON: {payload}",
+            "Work to do:",
             "",
-            "Append to that thread — do NOT compose a new thread. If the "
-            "token or thread is unusable, compose a new founder-visible "
-            f"thread titled \"{_CLEANUP_REPORT_THREAD_SUBJECT}\" with the "
-            "same report content instead.",
-        ])
+            "1. Inventory your workspace read-only: registered linked "
+            "worktrees, dependency directories, and task associations. "
+            "Classify each worktree by its TASK-\\d+ prefix (suffixed names "
+            "like TASK-5567-base691 resolve to TASK-5567); unknown or missing "
+            "tasks are unclassified, never assumed terminal.",
+            "2. Re-derive every fact and every path immediately before any "
+            "action or recommendation. Write output/<task_id>/ with "
+            "inventory.json, final-ledger.jsonl (all rows no-op), and "
+            "report.md per the TASK-5552 cleanup design, including measured "
+            "sizes, exact skips and reasons, and any ambiguity.",
+        ]
     else:
-        lines.extend([
-            "3. Report to the founder by composing a founder-visible thread "
-            f"titled \"{_CLEANUP_REPORT_THREAD_SUBJECT}\" (recipient "
-            "@founder) with the report content: measured before/after sizes, "
-            "exact removals (none in report-only), skips, and any ambiguity.",
-        ])
-    return "\n".join(lines)
+        body = [
+            "THIS RUN MAY PERFORM BOUNDED CLEANUP ACTIONS per the approved "
+            "TASK-5552 §4 contract — but ONLY after the first two report-only "
+            "runs, ONLY on action-time-re-derived eligibility, and ONLY with "
+            "the exact non-force mechanisms below. Any uncertainty is a "
+            "skip.",
+            "",
+            "Begin read-only and create output/<task_id>/inventory.json, "
+            "final-ledger.jsonl, and report.md. Do not act on an inventory "
+            "row. Immediately before each possible action, rebuild that "
+            "exact row from current filesystem, Git, task/session, "
+            "PR/protection, and OS process evidence; append the final row "
+            "before action; act only when that same row says eligible. Any "
+            "uncertainty is a skip.",
+            "",
+            "Liveness requires both runtime and OS checks: active "
+            "SessionTracker/task binding, validated executor PID identity, "
+            "process cwd/executable, mapped/open files, and child processes "
+            "beneath the candidate/worktree. A missing capability or "
+            "permission is a skip. Pending job rows and blocked_on_job_ids "
+            "are diagnostics only, never liveness proof.",
+            "",
+            "Allowed cache action: remove one literal real node_modules or "
+            ".venv directory inside a registered, non-primary linked "
+            "worktree of YOUR workspace, only when its immediate parent has "
+            "the accepted lock/manifest, the owning task has been terminal "
+            "for 24 hours, no live evidence exists, path ownership is "
+            "unambiguous, it is not a symlink/shared target, and it is not "
+            "protected. Use one explicit non-force recursive library/command "
+            "invocation for that exact path. Never use a glob, parent root, "
+            "git clean, or rm -rf.",
+            "",
+            "Allowed whole-worktree action: after seven terminal days, remove "
+            "one clean registered non-primary worktree only when no liveness "
+            "exists, no open/unmerged PR uses it, HEAD is preserved and "
+            "reachable from an approved durable ref (normally origin/main), "
+            "and no protection applies. Use only "
+            "git -C <primary> worktree remove <literal-path> without "
+            "--force. Use git worktree prune only for an already-missing "
+            "registered path after dry-run confirms the exact stale record.",
+            "",
+            "Never delete or mutate dirty work, detached/unreachable/"
+            "local-only commits, broken or unregistered source-shaped paths, "
+            "salvage residue, primary checkouts, workspace roots, "
+            "output/memory/artifacts/config, databases/logs, canonical "
+            "skills, or any unknown path. Record preservation "
+            "recommendations only; do not auto-commit, archive, tag, bundle, "
+            "move, repair, or quarantine them in this task.",
+            "",
+            "Record every candidate and skip reason; final pre-action proofs "
+            "with timestamps; literal argv; exit; apparent and allocated "
+            "bytes before/after; filesystem free space before/after; "
+            "concurrent/unattributed delta separately; and protected-path "
+            "postchecks. Stop further mutations on any action/evidence/"
+            "report-write failure. Complete through the normal task contract "
+            "with exact artifact path and honest zero-removal reporting.",
+            "",
+            format_workspace_context_note(snapshot),
+        ]
+    return "\n".join((*header, *body, "", report))
 
 
 # ── trigger ───────────────────────────────────────────────────────────────
@@ -847,86 +952,123 @@ def compose_cleanup_brief(
 async def trigger_cleanup(
     org: "OrgState",
     *,
+    agent: str,
     enqueue: Callable[[str, str], None],
     now_utc: datetime | None = None,
 ) -> str | None:
-    """Create + enqueue one report-only cleanup task for the responsible
-    agent, packing the fresh advisory measurement and the report-thread seam
-    into the daemon-composed brief. Returns the task id, or None when the
-    responsible agent/team cannot be resolved (fail-closed skip, never
-    raised)."""
+    """Create + enqueue one cleanup task for ``agent`` (the owning agent),
+    packing the fresh advisory measurement and the per-agent report-thread
+    seam into the daemon-composed brief.
+
+    Fail-closed skip (returns None, never raises) when: the agent has no team
+    in this org, the fresh measurement is unavailable, or the agent's
+    workspace measures below the >= 1 GiB trigger threshold. Each skip is
+    audited so operators can see why no task was created.
+    """
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
 
     from runtime.orchestrator._paths import OrgPaths
 
-    team = org.teams.team_for_agent(_RESPONSIBLE_AGENT)
+    team = org.teams.team_for_agent(agent)
     if team is None:
         logger.error(
-            "workspace cleanup: responsible agent %s has no team in org %s",
-            _RESPONSIBLE_AGENT, org.slug,
+            "workspace cleanup: agent %s has no team in org %s",
+            agent, org.slug,
         )
         org.db.insert_audit_log(
             task_id="workspace-cleanup:skipped",
-            agent=_RESPONSIBLE_AGENT,
+            agent=agent,
             action="workspace_cleanup_skipped",
-            payload={"reason": "responsible_agent_team_unresolved"},
+            payload={"reason": "agent_team_unresolved", "agent": agent},
         )
         return None
 
     task_id = org.db.next_task_id()
 
-    # Durable founder-report thread (create-on-first-trigger) + token.
-    thread_id: str | None = None
-    report_seq: int | None = None
-    async with org.db_lock:
-        thread_id, report_seq = _resolve_or_create_report_thread(
-            org, task_id=task_id,
-        )
-    report_token = None
-    if thread_id is not None:
-        report_token = _mint_report_token(
-            org.db, thread_id=thread_id, agent=_RESPONSIBLE_AGENT,
-            last_seq=report_seq or 0,
-        )
-
-    # Bounded, fail-open measurement — a disk gauge must never block the run.
-    snapshot = measure_workspace_context(
-        paths=OrgPaths(root=org.root),
-        db=org.db,
-        sessions=org.sessions,
+    # Bounded, fail-open measurement of THE AGENT'S OWN workspace — the gate
+    # for the >= 1 GiB founder threshold and the advisory snapshot packed at
+    # trigger time. A disk gauge must never block the run; it runs in a
+    # thread executor so the daemon event loop is never stalled by the
+    # (deadline-bounded) traversal.
+    loop = asyncio.get_running_loop()
+    snapshot = await loop.run_in_executor(
+        None,
+        lambda: measure_workspace_context(
+            OrgPaths(root=org.root).workspaces_dir / agent,
+            db=org.db,
+            sessions=org.sessions,
+        ),
     )
+    if not snapshot.available:
+        org.db.insert_audit_log(
+            task_id="workspace-cleanup:skipped",
+            agent=agent,
+            action="workspace_cleanup_skipped",
+            payload={"reason": "measurement_unavailable", "agent": agent},
+        )
+        return None
+    if snapshot.workspaces_bytes < _MIN_WORKSPACE_TRIGGER_BYTES:
+        org.db.insert_audit_log(
+            task_id="workspace-cleanup:skipped",
+            agent=agent,
+            action="workspace_cleanup_skipped",
+            payload={
+                "reason": "workspace_below_threshold",
+                "agent": agent,
+                "workspaces_bytes": snapshot.workspaces_bytes,
+            },
+        )
+        return None
+
+    # Per-agent triggered-run counter (first-two report-only bookkeeping),
+    # derived from the owning agent's daemon-marked cleanup task rows.
+    _latest, run_count = _scan_cleanup_tasks(org.db, agent)
+    run_number = run_count + 1
+
+    # Per-agent durable founder-report thread (create-on-first-trigger). No
+    # minted token: the agent appends via the participant-authorized,
+    # task-bound send path during its session.
+    thread_id: str | None = None
+    async with org.db_lock:
+        thread_id = _resolve_or_create_report_thread(
+            org, agent=agent, task_id=task_id,
+        )
 
     brief = compose_cleanup_brief(
         org_slug=org.slug,
+        agent=agent,
         task_id=task_id,
+        run_number=run_number,
         snapshot=snapshot,
         thread_id=thread_id,
-        report_token=report_token,
-        report_seq=report_seq,
     )
     org.db.insert_task(TaskRecord(
         id=task_id,
         brief=brief,
         team=team,
-        assigned_agent=_RESPONSIBLE_AGENT,
+        assigned_agent=agent,
     ))
     enqueue(org.slug, task_id)
 
     org.db.insert_audit_log(
         task_id=task_id,
-        agent=_RESPONSIBLE_AGENT,
+        agent=agent,
         action="workspace_cleanup_triggered",
         payload={
             "report_thread_id": thread_id,
             "measurement_available": snapshot.available,
-            "measurement_reason": snapshot.reason,
+            "run_number": run_number,
+            "brief_kind": (
+                "report_only" if run_number <= _REPORT_ONLY_RUN_LIMIT
+                else "cleanup"
+            ),
         },
     )
     logger.info(
-        "workspace cleanup triggered for org %s: task %s (thread %s, "
-        "measurement_available=%s)",
-        org.slug, task_id, thread_id, snapshot.available,
+        "workspace cleanup triggered for org %s: agent %s task %s (run #%s, "
+        "thread %s)",
+        org.slug, agent, task_id, run_number, thread_id,
     )
     return task_id
 
@@ -934,26 +1076,40 @@ async def trigger_cleanup(
 # ── per-org tick + async loop ─────────────────────────────────────────────
 
 async def _tick_org(org: "OrgState", state: "DaemonState", now_utc: datetime) -> None:
-    """One org's decision+tick. Never raises (loop-level isolation)."""
+    """One org's per-agent decision+trigger pass. Never raises (loop-level
+    isolation)."""
     from runtime.orchestrator._paths import OrgPaths
     from runtime.orchestrator.org_config import (
         _resolve_timezone,
         load_org_config,
     )
 
-    tz = _resolve_timezone(load_org_config(OrgPaths(root=org.root)).timezone)[0]
-    decision = decide_cleanup_trigger(db=org.db, now_utc=now_utc, tz=tz)
-    if not decision.should_trigger:
-        # Skip reasons are derivable from the tasks table; only the trigger
-        # itself (and the team-unresolved fail-closed skip in trigger_cleanup)
-        # carry audit rows, so the weekly loop never spams the ledger.
+    paths = OrgPaths(root=org.root)
+    cfg = load_org_config(paths)
+    if not cfg.workspace_cleanup_enabled:
+        # Kill switch (enabled-by-default org config flag).
         return
+    tz = _resolve_timezone(cfg.timezone)[0]
 
-    await trigger_cleanup(
-        org,
-        enqueue=lambda slug, tid: _enqueue_task(state, slug, tid),
-        now_utc=now_utc,
-    )
+    workspaces, _truncated = _iter_workspaces(paths)
+    for workspace in workspaces:
+        agent = workspace.name
+        if org.teams.team_for_agent(agent) is None:
+            # Only registered org agents own cleanup runs (skips special dirs
+            # like ``_terminated`` and unregistered workspaces).
+            continue
+        decision = decide_cleanup_trigger(db=org.db, agent=agent, now_utc=now_utc, tz=tz)
+        if not decision.should_trigger:
+            # Skip reasons are derivable from the tasks table; only the
+            # trigger itself (and the fail-closed skips inside trigger_cleanup)
+            # carry audit rows, so the weekly loop never spams the ledger.
+            continue
+        await trigger_cleanup(
+            org,
+            agent=agent,
+            enqueue=lambda slug, tid: _enqueue_task(state, slug, tid),
+            now_utc=now_utc,
+        )
 
 
 def _enqueue_task(state: "DaemonState", slug: str, task_id: str) -> None:
@@ -966,7 +1122,7 @@ async def workspace_cleanup_scheduler_loop(
     interval_seconds: int = _LOOP_INTERVAL_SECONDS,
     warm_up_seconds: float = _WARM_UP_SECONDS,
 ) -> None:
-    """Weekly workspace-cleanup trigger loop (THR-195 seq 129/131).
+    """Weekly workspace-cleanup trigger loop (THR-195 seq 129).
 
     Mirrors ``dream_scheduler_loop`` / ``zombie_reaper_loop``: per-tick
     per-org decision with a boot warm-up grace, exception isolation, and

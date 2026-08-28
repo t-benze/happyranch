@@ -1119,12 +1119,12 @@ infrastructure.
 cleanup is a **daemon-managed, system-default capability** that runs on its
 own without user configuration and is fully independent of user Schedules
 (founder ruling THR-195 seq 129; manager resolution seq 130; implementation
-direction seq 131). The daemon registers a periodic loop
-(``runtime/daemon/workspace_cleanup_scheduler.py`` — the sixth daemon-owned
-loop alongside dream/schedule/zombie/direct-connect, one registration in
-``runtime/daemon/app.py``) that:
+direction seq 131; per-agent defaults TASK-6036). The daemon registers a
+periodic loop (``runtime/daemon/workspace_cleanup_scheduler.py`` — the sixth
+daemon-owned loop alongside dream/schedule/zombie/direct-connect, one
+registration in ``runtime/daemon/app.py``) that, per agent workspace:
 
-1. **Measures** org workspace aggregates with an explicit bounded,
+1. **Measures** the OWNING AGENT's workspace with an explicit bounded,
    fail-open budget: one true wall-clock deadline shared across all
    collection — each git subprocess receives ``min(per-call cap, remaining
    deadline)`` and expiry is re-checked after every subprocess and after the
@@ -1133,34 +1133,53 @@ loop alongside dream/schedule/zombie/direct-connect, one registration in
    ``measurement unavailable`` advisory status and can never block daemon
    operation or task/session spawning.
 2. **Decides** on the weekly occurrence (Sunday 03:30 in the org's effective
-   timezone; TASK-5552 §6). At most one trigger per weekly window (a missed
-   window is never replayed) and one run at a time: a later occurrence fires
-   only after the preceding cleanup task is terminal (TASK-5552 §3).
-3. **Triggers** an ordinary root task for the responsible engineering agent
+   timezone; TASK-5552 §6). At most one trigger per weekly window per agent
+   (a missed window is never replayed), one run at a time (a later
+   occurrence fires only after the preceding cleanup task of that agent is
+   terminal — TASK-5552 §3), a seven-day per-agent cooldown, and the
+   founder threshold: trigger only when the agent's workspace totals
+   >= 1 GiB.
+3. **Triggers** an ordinary root task ASSIGNED TO THE OWNING AGENT
    (``insert_task`` + ``enqueue_task`` — the same pattern the Schedule spawn
    callback uses, minus the Schedule) with a **daemon-composed brief** that
    carries the fresh advisory snapshot at trigger time. The brief is never a
    Schedule brief: no Schedule is looked up, created, or modified, and
-   nothing is persisted in any Schedule field. The brief is REPORT-ONLY
-   (TASK-5552 §6 rollout); no mutating brief ships in this capability.
+   nothing is persisted in any Schedule field. The first TWO triggered runs
+   per agent are STRICTLY report-only (TASK-5552 §6 rollout); from run #3
+   the brief is the approved TASK-5552 §4 fixed normalized cleanup contract
+   (bounded, Git-aware, non-force, action-time-re-derived eligibility).
 
 The packed advisory block is sizing context ONLY: **stale on arrival**, **not
 an eligibility list**, **not a candidate list**, labels no path safe,
-recommends no removal, contains only aggregate counts/sizes/status, never
-enumerates paths, and never uses pending jobs or ``blocked_on_job_ids`` as
-liveness. Every path and fact must be re-derived independently and
-immediately before any action.
+recommends no removal, contains only aggregate counts/sizes/status for the
+owning agent's workspace, never enumerates paths, and never uses pending
+jobs or ``blocked_on_job_ids`` as liveness. Every path and fact must be
+re-derived independently and immediately before any action.
 
-The responsible agent reports results to the founder in a **single durable
-founder-visible thread** (consultant seq 131: "one durable thread, not one
-per run"). The daemon resolves the thread by a fixed subject, creates it on
-first trigger (the shared ``_create_agent_thread_locked`` compose helper,
-composer = the responsible agent, recipient @founder), and passes the thread
-id plus a daemon-minted single-use invocation token in the brief; the agent
-appends the report via the existing ``happyranch threads reply`` route.
-Silence on that thread is the loop-stopped signal. Report content: measured
+The responsible agent reports results to the founder in **one durable
+founder-visible thread PER AGENT** (consultant seq 131: "one durable thread,
+not one per run" — per-agent per the founder default). The daemon resolves
+the thread by a fixed per-agent subject, creates it on first trigger (the
+shared ``_create_agent_thread_locked`` compose helper, composer = the owning
+agent, recipient @founder — the owning agent is therefore a participant) and
+passes only the thread id in the brief. NO minted report token: the agent
+appends the report during its task session via the existing
+participant-authorized, task-bound ``happyranch threads send`` path
+(composer + task_id + session_id binding), which requires participant
+membership and a live task-session binding but no invocation token. Silence
+on that thread is the loop-stopped signal. Report content: measured
 before/after sizes, exact removals (none in report-only), skips, and any
 ambiguity (seq 130).
+
+Persistence is schema-free by design: the first-two run counter and the
+seven-day cooldown derive from the owning agent's daemon-marked cleanup task
+rows (``tasks.brief`` prefix marker — TASK-5552 §3's "fixed cleanup task
+marker"), and the per-agent thread identity is resolved by the fixed
+per-agent subject over ``threads.subject``. No schema/API/CLI/auth/permission
+change is introduced. A kill switch — ``workspace_cleanup.enabled`` in the
+org ``config.yaml`` (default true) — disables the capability per org; it is
+an existing daemon/org config mechanism with no new public API/CLI/UI
+surface.
 
 ---
 

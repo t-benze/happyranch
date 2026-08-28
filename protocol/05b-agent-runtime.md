@@ -1248,12 +1248,14 @@ workspaces/
 **daemon-managed, system-default capability** independent of all user
 Schedules. The daemon runs a periodic loop
 (``runtime/daemon/workspace_cleanup_scheduler.py``, registered in
-``runtime/daemon/app.py``) that performs a bounded aggregate workspace
-measurement and, when the weekly occurrence is due and unserviced and no
-prior cleanup task is in flight, triggers an ordinary root task for the
-responsible engineering agent with a **daemon-composed brief** that packs the
-fresh measurement as **ADVISORY** context at trigger time. It never uses,
-creates, or modifies a Schedule, never injects anything into the shared
+``runtime/daemon/app.py``) that measures EACH AGENT's own workspace on a
+bounded, fail-open budget and, per agent, when the weekly occurrence is due
+and unserviced, no prior cleanup task of that agent is non-terminal, the
+seven-day per-agent cooldown has elapsed, and the agent's workspace totals
+>= 1 GiB (founder-approved defaults, TASK-6036), triggers an ordinary root
+task ASSIGNED TO THAT OWNING AGENT with a **daemon-composed brief** that
+packs the fresh measurement as **ADVISORY** context at trigger time. It never
+uses, creates, or modifies a Schedule, never injects anything into the shared
 session-prompt seam (``protocol_doc_manifest``), and never performs cleanup
 itself. Ordinary task, thread, wake, dream, and Schedule-spawned sessions are
 byte-identical to a runtime without the feature.
@@ -1262,33 +1264,42 @@ The packed block is advisory sizing context ONLY. It is **stale on arrival**,
 is **not an eligibility list** and **not a candidate list**, labels no path
 safe, and recommends no removal — every path and fact must be re-derived
 independently and immediately before any action. It contains only aggregate
-measurements/status: ``measured_at``; aggregate total and largest workspace
-sizes; aggregate registered-worktree counts joined to task status
-(``TASK-\d+`` prefix match handles suffixed worktree names like
+measurements/status for the owning agent's workspace: ``measured_at``;
+total and largest workspace sizes; registered-worktree counts joined to task
+status (``TASK-\d+`` prefix match handles suffixed worktree names like
 ``TASK-5567-base691``; unknown or missing tasks are unclassified, never
-assumed terminal); aggregate dependency-directory
-(``node_modules``/``.venv``) counts/sizes including the inside-
-``.claude/worktrees`` split; and live sessions by agent from
-``SessionTracker``. It never enumerates paths and never uses pending jobs or
-``blocked_on_job_ids`` as liveness. Measurement is explicitly bounded (one
-wall-clock deadline shared across every subprocess — each git call receives
-``min(per-call cap, remaining)`` with expiry re-checked after every call and
-after the last repository — plus entry/depth/workspace/repo/worktree caps)
-and fail-open: every timeout, error, or cardinality-cap hit yields an explicit
-``measurement unavailable`` advisory note and can never block daemon
-operation or task/session spawning.
+assumed terminal); dependency-directory (``node_modules``/``.venv``)
+counts/sizes including the inside-``.claude/worktrees`` split; and live
+sessions by agent from ``SessionTracker``. It never enumerates paths and
+never uses pending jobs or ``blocked_on_job_ids`` as liveness. Measurement
+is explicitly bounded (one wall-clock deadline shared across every
+subprocess — each git call receives ``min(per-call cap, remaining)`` with
+expiry re-checked after every call and after the last repository — plus
+entry/depth/workspace/repo/worktree caps) and fail-open: every timeout,
+error, or cardinality-cap hit yields an explicit ``measurement unavailable``
+advisory note and can never block daemon operation or task/session spawning.
 
-Cadence and trigger policy derive from the approved TASK-5552 design: weekly
-(Sunday 03:30 in the org's effective timezone), at most one trigger per
-weekly window (a missed window is never replayed), and one run at a time (a
-later occurrence fires only after the preceding cleanup task is terminal).
-The daemon-composed brief is **REPORT-ONLY** (TASK-5552 §6 rollout: the first
-runs produce an inventory and nothing else); enabling any mutating brief is a
-separately approved follow-up decision. The responsible agent reports results
-to the founder in a single durable founder-visible thread (fixed subject,
-created by the daemon on first trigger) using a daemon-minted single-use
-invocation token embedded in the brief — see 05c-orchestrator §Daemon-managed
-workspace cleanup scheduler for the full contract.
+Cadence and trigger policy: weekly (Sunday 03:30 in the org's effective
+timezone), at most one trigger per weekly window per agent (a missed window
+is never replayed), one run at a time (a later occurrence fires only after
+the preceding cleanup task of that agent is terminal), a seven-day per-agent
+cooldown, and a per-agent >= 1 GiB workspace-total threshold. The first TWO
+triggered runs per agent are **STRICTLY report-only** (TASK-5552 §6
+rollout: inventory and nothing else); from run #3 the daemon composes the
+approved TASK-5552 §4 fixed normalized cleanup brief (bounded, Git-aware,
+non-force, action-time-re-derived eligibility). The advisory block itself
+never authorizes removal in either variant. The responsible agent reports
+results to the founder in ONE durable founder-visible thread PER AGENT (fixed
+per-agent subject, created by the daemon on first trigger with the owning
+agent as composer/participant and @founder as recipient) via the existing
+participant-authorized, task-bound ``happyranch threads send`` path — NO
+minted report token. The first-two-run counter, the cooldown, and the
+per-agent thread identity are persisted through existing durable mechanisms
+only (the owning agent's daemon-marked task rows and ``threads.subject``) —
+no schema/API/CLI/auth change. A kill switch (``workspace_cleanup.enabled``
+in the org ``config.yaml``, default true) disables the capability per org.
+See 05c-orchestrator §Daemon-managed workspace cleanup scheduler for the
+full contract.
 
 ### Three layers of memory
 
