@@ -11,10 +11,13 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 
 ### Settings
 
-The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with left sub-nav panels (Assistant · System · Organization · Agents · Executors). (The TopBar gear button and `SettingsDialog` are prototype/design-preview surfaces only — not production entry points.) It shows:
+The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with exactly three left sub-nav panels: Assistant · Organization · Executors. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (The TopBar gear button and `SettingsDialog` are prototype/design-preview surfaces only — not production entry points.) It shows:
 
-- **System** (read-only) — daemon-wide settings (CLI name / default command metadata — not a launch path; executor launch uses registered binary pins — plus session timeout default, orchestration limits) with restart-required badges.
+- **Assistant** — assistant status, setup/recovery, and assistant executor binding.
 - **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), threads config (enabled, default turn cap, invocation timeout), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
+- **Executors** — effective machine executor registry, custom CLI lifecycle, and recovery.
+
+The response includes operator-only `reviewer_agents` and `threads.default_turn_cap`; neither has a browser control. Removing the former System rail does not move queue-worker or maximum-orchestration-step facts into Health.
 
 **Backend routes:**
 

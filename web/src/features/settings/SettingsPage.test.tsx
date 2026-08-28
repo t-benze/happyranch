@@ -2,6 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test, beforeEach } from 'vitest';
+import { useLocation, useNavigationType } from 'react-router-dom';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
@@ -21,6 +22,7 @@ const SETTINGS_PAYLOAD = {
   },
   org: {
     session_timeout_seconds: null,
+    reviewer_agents: ['code_reviewer'],
     dreaming: {
       enabled: true,
       schedule: { time: '09:00', timezone: 'UTC' },
@@ -104,21 +106,37 @@ function mountAt(route: string) {
   return renderWithProviders(<AppRoutes />, { route });
 }
 
+function RouteEvidence(): JSX.Element {
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  return <output data-testid="route-evidence">{navigationType}:{location.pathname}</output>;
+}
+
+function mountAtWithRouteEvidence(route: string) {
+  sessionStorage.setItem('happyranch.token', 'tok');
+  return renderWithProviders(<><AppRoutes /><RouteEvidence /></>, { route });
+}
+
 describe('SettingsPage — sub-nav and routing', () => {
   beforeEach(() => {
     stubBaseHandlers();
   });
 
-  test('iAC1: /settings is a real bookmarkable route with sub-nav', async () => {
-    mountAt(`/orgs/${SLUG}/settings`);
+  test.each([
+    `/orgs/${SLUG}/settings`,
+    `/orgs/${SLUG}/settings/system`,
+    `/orgs/${SLUG}/settings/agents`,
+    `/orgs/${SLUG}/settings/unknown`,
+  ])('%s resolves to canonical Assistant with replace semantics', async (route) => {
+    mountAtWithRouteEvidence(route);
 
-    // Should redirect to /settings/assistant
-    await waitFor(() =>
-      expect(screen.getByText('System Assistant')).toBeInTheDocument(),
+    await waitFor(() => expect(screen.getByText('System Assistant')).toBeInTheDocument());
+    expect(screen.getByTestId('route-evidence')).toHaveTextContent(
+      `REPLACE:/orgs/${SLUG}/settings/assistant`,
     );
   });
 
-  test('sub-nav renders all six sections', async () => {
+  test('sub-nav renders exactly three sections in canonical order', async () => {
     mountAt(`/orgs/${SLUG}/settings/assistant`);
 
     await waitFor(() =>
@@ -126,13 +144,14 @@ describe('SettingsPage — sub-nav and routing', () => {
     );
 
     const content = screen.getByTestId('settings-content');
-    expect(within(content).getByText('Assistant')).toBeInTheDocument();
-    expect(within(content).getByText('System')).toBeInTheDocument();
-    expect(within(content).getByText('Organization')).toBeInTheDocument();
-    expect(within(content).getByText('Agents')).toBeInTheDocument();
-    expect(within(content).getByText('Executors')).toBeInTheDocument();
-    // THR-061 seq79: the Usage sub-tab was removed (Usage now lives on /usage).
-    expect(within(content).queryByText('Usage')).not.toBeInTheDocument();
+    const subnav = within(content).getByRole('complementary');
+    expect(within(subnav).getAllByRole('link').map((link) => link.textContent)).toEqual([
+      'Assistant',
+      'Organization',
+      'Executors',
+    ]);
+    expect(within(subnav).queryByText('System')).not.toBeInTheDocument();
+    expect(within(subnav).queryByText('Agents')).not.toBeInTheDocument();
   });
 
   test('SET-03: each sub-nav item renders a leading icon', async () => {
@@ -147,9 +166,7 @@ describe('SettingsPage — sub-nav and routing', () => {
 
     for (const label of [
       'Assistant',
-      'System',
       'Organization',
-      'Agents',
       'Executors',
     ]) {
       const link = within(subnav).getByRole('link', { name: label });
@@ -169,44 +186,8 @@ describe('SettingsPage — sub-nav and routing', () => {
     // wait for any async side-effects to settle before finding sub-nav.
     const user = userEvent.setup();
     const content = await screen.findByTestId('settings-content');
-    await user.click(within(content).getByText('System'));
-
-    // System section should show daemon-wide settings notice
-    await waitFor(() =>
-      expect(screen.getByText('Daemon-wide settings. These are read-only', { exact: false })).toBeInTheDocument(),
-    );
-    // Should show restart-required badge on protocol_dir
-    expect(screen.getByText('Protocol dir')).toBeInTheDocument();
-  });
-});
-
-describe('SettingsPage — System section', () => {
-  beforeEach(() => {
-    stubBaseHandlers();
-  });
-
-  test('shows system settings with restart-required badges', async () => {
-    mountAt(`/orgs/${SLUG}/settings/system`);
-
-    await waitFor(() =>
-      expect(screen.getByText('Protocol dir')).toBeInTheDocument(),
-    );
-
-    // All 8 system fields are restart-required
-    const badges = screen.getAllByText('Restart required');
-    expect(badges.length).toBeGreaterThanOrEqual(7);
-  });
-
-  test('session_timeout_seconds shows restart-required badge', async () => {
-    mountAt(`/orgs/${SLUG}/settings/system`);
-
-    await waitFor(() =>
-      expect(screen.getByText('Session timeout (s)')).toBeInTheDocument(),
-    );
-
-    // All 8 system fields (including session_timeout_seconds) are restart-required
-    const restartBadges = screen.getAllByText('Restart required');
-    expect(restartBadges.length).toBe(8);
+    await user.click(within(content).getByText('Organization'));
+    await waitFor(() => expect(screen.getByText('Org-level settings.', { exact: false })).toBeInTheDocument());
   });
 });
 
@@ -234,6 +215,7 @@ describe('SettingsPage — Organization section', () => {
 
     // Default turn cap must NOT be rendered (THR-046 msg126)
     expect(within(content).queryByText('Default turn cap')).not.toBeInTheDocument();
+    expect(within(content).queryByText(/reviewer agents/i)).not.toBeInTheDocument();
   });
 
   test('Clean⇄Dirty: save bar appears when form is dirty', async () => {
@@ -986,52 +968,6 @@ describe('SettingsPage — Organization section', () => {
         within(content).getByRole('status'),
       ).toHaveTextContent(/Saved.*takes effect.*scheduler/);
     });
-  });
-});
-
-describe('SettingsPage — Agents section', () => {
-  beforeEach(() => {
-    stubBaseHandlers();
-  });
-
-  test('shows gap notice directing to Agents page', async () => {
-    mountAt(`/orgs/${SLUG}/settings/agents`);
-
-    await waitFor(() =>
-      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
-    );
-    const content = screen.getByTestId('settings-content');
-
-    await waitFor(() =>
-      expect(within(content).getByText('Agent roster')).toBeInTheDocument(),
-    );
-
-    expect(
-      within(content).getByText(/Agent configuration is not editable/i),
-    ).toBeInTheDocument();
-
-    // Link to Agents page
-    expect(within(content).getByText('Agents page')).toHaveAttribute('href', '../agents');
-  });
-
-  test('Founder handle reads broadcast framing (iAC4)', async () => {
-    mountAt(`/orgs/${SLUG}/settings/agents`);
-
-    await waitFor(() =>
-      expect(screen.getByTestId('settings-content')).toBeInTheDocument(),
-    );
-    const content = screen.getByTestId('settings-content');
-
-    expect(within(content).getByText('Founder handle')).toBeInTheDocument();
-
-    // iAC4: broadcast framing — no @mention routing promise
-    expect(
-      within(content).getByText('The handle agents reference when they broadcast to you.'),
-    ).toBeInTheDocument();
-    // Must NOT contain "route questions to you"
-    expect(
-      within(content).queryByText(/route.*questions/i),
-    ).not.toBeInTheDocument();
   });
 });
 

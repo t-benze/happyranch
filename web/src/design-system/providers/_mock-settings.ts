@@ -30,6 +30,7 @@ const FIXTURE: SettingsSnapshot = {
   },
   org: {
     session_timeout_seconds: null,
+    reviewer_agents: ['code_reviewer'],
     dreaming: {
       enabled: true,
       schedule: { time: '02:00', timezone: 'UTC' },
