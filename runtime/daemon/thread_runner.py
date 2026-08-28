@@ -472,27 +472,35 @@ def _contains_auth_quota_transport_token(stderr: str, attempted_session_id: str)
 def _is_claude_session_evicted(result, attempted_session_id: str) -> bool:
     """Claude 2.1.241 proven contract: rc=1, stderr exactly
     ``No conversation found with session ID: <attempted-id>`` — the COMPLETE
-    observed provider stderr line. The signature must START a line and the
-    regex-escaped attempted id must be the last non-whitespace content on
-    that line (complete-line constraint; whitespace-only padding allowed,
-    unrelated text on OTHER lines tolerated) — punctuation-led or
-    alphanumeric suffixes (``01a0-live-suffix``, ``01a0-live.``, …) and any
-    prefix text on the signature line never match. The removed THR-200-era
-    generic legacy substrings never match, and Pi's distinct signature never
-    matches (no shared-substring acceptance)."""
+    observed provider stderr line. The signature and the regex-escaped
+    attempted id must occur on the SAME physical stderr line (horizontal
+    whitespace only where spacing is permitted; LF/CRLF are never consumed),
+    the signature starts the line, and the id is the last non-whitespace
+    content on it (complete-line constraint) — punctuation-led or
+    alphanumeric suffixes (``01a0-live-suffix``, ``01a0-live.``, …), prefix
+    text on the signature line, and split-line forms where the signature
+    terminates line N and the id starts line N+1 (LF, CRLF, or
+    whitespace-indented) never match. The removed THR-200-era generic legacy
+    substrings never match, and Pi's distinct signature never matches (no
+    shared-substring acceptance)."""
     if getattr(result, "returncode", None) != 1:
         return False
     stderr = (getattr(result, "stderr_tail", None) or "").lower()
     escaped = _escaped_attempted_id(attempted_session_id)
     if escaped is None:
         return False
-    # The observed contract is one COMPLETE line: the signature starts the
-    # line, the attempted id terminates it (trailing whitespace allowed).
-    # ``^``/``$`` with MULTILINE anchor each line so a punctuation-led or
-    # alphanumeric suffix (the old ``\b`` word boundary accepted
-    # punctuation-led suffixes) and same-line prefix text can never match.
+    # The observed contract is one COMPLETE physical stderr line: the
+    # signature starts the line, the attempted id terminates it (trailing
+    # whitespace allowed). Only HORIZONTAL whitespace (space/tab) may pad
+    # the signature/id — the old ``\s*`` gap also consumed LF/CRLF and
+    # accepted split-line forms (``... session ID:\n<id>``, CRLF, and
+    # whitespace-indented variants) as eviction (TASK-6024). ``^``/``$``
+    # with MULTILINE anchor each line so a punctuation-led or alphanumeric
+    # suffix (the old ``\b`` word boundary accepted punctuation-led
+    # suffixes), same-line prefix text, and signature/id split across
+    # lines can never match.
     bound = re.search(
-        rf"^\s*{_CLAUDE_EVICTION_SIGNATURE}\s*{escaped}\s*$",
+        rf"^[ \t]*{_CLAUDE_EVICTION_SIGNATURE}[ \t]*{escaped}[ \t]*$",
         stderr,
         re.MULTILINE,
     ) is not None

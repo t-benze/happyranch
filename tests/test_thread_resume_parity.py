@@ -443,6 +443,78 @@ async def test_eviction_invalidates_then_single_full_retry(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "corpus_stderr,corpus_sid",
+    [
+        # Positive corpus from the IMMUTABLE audit-log evidence: the live
+        # daemon recorded REAL Claude evictions as `agent_session_evicted_fallback`
+        # audit rows in the org runtime DB
+        # `/home/benze/.happyranch/runtime/orgs/happyranch/happyranch.db`
+        # (table `audit_log`; 25 rows, executor=claude, agent=consultant_head,
+        # 2026-08-24T10:02:18Z id 67364 .. 2026-08-28T01:32:47Z id 74845;
+        # THR-198/THR-195/THR-187/THR-190/THR-175/THR-165/THR-097). The
+        # observed payload error shape is `Command exited with code 1: <stderr>`
+        # where <stderr> is one COMPLETE LF-terminated line
+        # `No conversation found with session ID: <attempted-id>` — for row
+        # 67364 the eviction line is the FIRST (only) stderr line; for the
+        # THR-187/THR-195 rows it FOLLOWS a `.claude/settings.json`
+        # trust-warning first line (unrelated text on an EARLIER line is
+        # tolerated; the eviction LINE itself is complete). The session id
+        # is substituted with a synthetic UUID of the same shape — no
+        # secrets; the classifier reads stderr_tail (never the envelope).
+        (
+            "No conversation found with session ID: "
+            "efdad7c5-f542-413b-8733-69961917801d",
+            "efdad7c5-f542-413b-8733-69961917801d",
+        ),
+        (
+            "Ignoring 1 permissions.allow entry from .claude/settings.json: "
+            "this workspace has not been trusted. Run Claude Code "
+            "interactively here once and accept the trust dialog.\n"
+            "No conversation found with session ID: "
+            "e65b6466-bed4-4aa2-b704-57e270babe66",
+            "e65b6466-bed4-4aa2-b704-57e270babe66",
+        ),
+    ],
+)
+async def test_eviction_observed_audit_corpus_line_classifies(
+    tmp_path, monkeypatch, corpus_stderr, corpus_sid,
+):
+    """The corpus line recorded in the immutable audit log for the observed
+    Claude eviction classifies through the SHIPPING `_classify_session_evicted`
+    call path (run_invocation eviction fallback) with the transactional
+    invalidation-before-exactly-one-fresh-full-retry behavior: one resume
+    attempt, the eviction audit + `agent_session_id = NULL` invalidation
+    committed in one transaction, then exactly one fresh full-transcript
+    retry whose failure leaves the id NULL and the watermark unadvanced."""
+    first = _FakeResult(False, error=f"Command exited with code 1: {corpus_stderr}",
+                        agent_session_id=None, stderr_tail=corpus_stderr,
+                        returncode=1)
+    fallback = _FakeResult(False, error="Command exited with code 1: boom",
+                           agent_session_id=None, returncode=1)
+    db, fake = await _run_reply(
+        tmp_path, monkeypatch, "claude",
+        stored_sid=corpus_sid, last_seq=1,
+        fake=_RecordingExec([first, fallback]),
+    )
+    # Exactly one resume attempt + exactly one fresh full retry.
+    assert len(fake.calls) == 2
+    assert fake.calls[0].get("resume_session_id") == corpus_sid
+    assert "resume_session_id" not in fake.calls[1]
+    # The fallback ran the FULL canonical transcript, not a delta.
+    assert "m1" in fake.calls[1]["prompt"] and "m2 newest" in fake.calls[1]["prompt"]
+    # Transactional invalidation committed: id NULL, watermark preserved.
+    stored, seq = db.get_thread_session("THR-001", "alice")
+    assert stored is None
+    assert seq == 1  # failed fallback must not advance delivery state
+    evicted = [r for r in db.get_audit_logs("THR-001")
+               if r["action"] == "agent_session_evicted_fallback"]
+    assert len(evicted) == 1
+    assert evicted[0]["payload"]["executor"] == "claude"
+    assert evicted[0]["payload"]["stale_session_id"] == corpus_sid
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "executor,stderr,stdout,rc",
     [
         # Cross-provider text on the wrong executor must never classify.
@@ -497,6 +569,17 @@ async def test_eviction_invalidates_then_single_full_retry(
         ("claude", "prefix No conversation found with session ID: 01a0-live suffix", "", 1),
         ("claude", "No conversation found with session ID: 01a0-live-suffix\n"
                     "[debug] exiting", "", 1),
+        # Same-physical-line constraint (TASK-6024/THR-200 continuation):
+        # the observed signature and the attempted id must be on the SAME
+        # stderr LINE — the old `\s*` gap between them also consumed LF/CRLF,
+        # accepting split-line forms where the signature terminates line N
+        # and the id starts line N+1. LF, CRLF, and whitespace-indented
+        # split-line signature/ID forms must never classify.
+        ("claude", "No conversation found with session ID:\n01a0-live", "", 1),
+        ("claude", "No conversation found with session ID:\r\n01a0-live", "", 1),
+        ("claude", "No conversation found with session ID:\n  01a0-live", "", 1),
+        ("claude", "  No conversation found with session ID:\n01a0-live", "", 1),
+        ("claude", "  No conversation found with session ID:\r\n\t01a0-live", "", 1),
         # An otherwise matching marker EMBEDDED in auth/quota/transport
         # output is not the provider declaring the session missing.
         ("claude", "API Error: 401 Unauthorized: no conversation found with "
