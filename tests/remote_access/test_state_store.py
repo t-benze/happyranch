@@ -707,6 +707,36 @@ class TestCompanionMonotonicAnchor:
         with pytest.raises(StateStoreError):
             store.save(_paired_state())
 
+
+
+    def test_anchored_generation_none_when_no_pair(self, tmp_path) -> None:
+        """No snapshot and no anchor = no generation (first run)."""
+        store = AtomicFileTrustStateStore(tmp_path / "state.json", _fresh_state())
+        assert store.anchored_generation() is None
+
+    def test_anchored_generation_returns_saved_generation(self, tmp_path) -> None:
+        """A saved pair reports its anchored generation; a re-save bumps it."""
+        path = tmp_path / "state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        assert store.anchored_generation() is None
+        store.save(_fresh_state())
+        assert store.anchored_generation() == 1
+        store.save(_paired_state())
+        assert store.anchored_generation() == 2
+        # A NEW store instance (restart) reads the same anchored generation.
+        reloaded = AtomicFileTrustStateStore(path, _fresh_state())
+        assert reloaded.anchored_generation() == 2
+
+    def test_anchored_generation_partial_pair_fails_closed(self, tmp_path) -> None:
+        """A snapshot without its anchor is partial state: the generation
+        cannot be trusted and fails closed."""
+        path = tmp_path / "state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        store.save(_paired_state())
+        _anchor_path(path).unlink()
+        with pytest.raises(StateStoreError):
+            store.anchored_generation()
+
     def test_revocation_replay_digest_binds_snapshot_bytes(self, tmp_path) -> None:
         """Changing ANY byte of the snapshot (even re-serializing identical
         JSON differently) breaks the anchor digest — the bind is over the exact

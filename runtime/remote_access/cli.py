@@ -4,7 +4,9 @@ Operator surface for the supervised Linux connector:
 
 - ``run`` — the systemd ``Type=notify`` foreground loop (readiness-gated
   listener; SIGTERM/SIGINT stop the listener before exit). Requires
-  ``--lab-only`` when the config carries a lab provider.
+  ``--lab-only`` when the config carries a lab provider, and fails closed
+  (exit 1) when the config has no concrete lab provider/listener at all —
+  READY=1 is never emitted without a proven bound listener.
 - ``install`` / ``uninstall`` / ``start`` / ``stop`` / ``restart`` /
   ``enable`` / ``disable`` / ``status`` — systemd service lifecycle.
 - ``readiness`` — evaluate the five gates; exit 0 only when ready.

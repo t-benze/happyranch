@@ -229,7 +229,11 @@ def test_run_with_lab_only_flag_banner_printed(tmp_path, monkeypatch, capsys) ->
     assert LAB_ONLY_BANNER in capsys.readouterr().err
 
 
-def test_run_without_lab_config_ok(tmp_path, monkeypatch, capsys) -> None:
+def test_run_without_provider_config_fails_closed(tmp_path, monkeypatch, capsys) -> None:
+    """TASK-6004 [HIGH]: a runnable config WITHOUT a concrete lab
+    provider/listener must fail closed — the supervisor's run() raises
+    ConnectorConfigError and the CLI exits 1 with an error; READY=1 can never
+    be emitted without a listener."""
     config = _config(tmp_path, lab=False)
     path = tmp_path / "config.json"
     config.to_file(path)
@@ -237,11 +241,14 @@ def test_run_without_lab_config_ok(tmp_path, monkeypatch, capsys) -> None:
 
     class RunStub(StubSupervisor):
         def run(self, *args, **kwargs):
-            seen["ran"] = True
-            return 0
+            # Mirrors the REAL supervisor: provider-less run is rejected at
+            # startup before the notify loop.
+            raise ConnectorConfigError(
+                "refusing to run: no lab provider configured"
+            )
 
     monkeypatch.setattr(cli, "ConnectorSupervisor", RunStub)
     code = cli.main(["run", "--config", str(path)])
-    assert code == 0
-    assert seen.get("ran") is True
-    assert "error" not in capsys.readouterr().err.lower()
+    assert code == 1
+    assert seen == {}
+    assert "no lab provider" in capsys.readouterr().err

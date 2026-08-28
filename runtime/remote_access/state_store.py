@@ -425,6 +425,19 @@ class AtomicFileTrustStateStore:
         anchor = self._parse_anchor(self._read_owner_only(anchor_path, "trust state anchor"))
         return anchor["generation"] + 1
 
+    def anchored_generation(self) -> int | None:
+        """The generation recorded in the on-disk companion anchor, or ``None``
+        when NO pair exists (first run). Used to compare pairs (e.g. install
+        re-seeding) WITHOUT loading the snapshot: a partial pair (snapshot
+        without anchor) or a corrupt/loose/symlinked anchor fails closed — a
+        generation must never be guessed from partial state."""
+        if not self._path.exists() and not self._anchor_path.exists():
+            return None
+        anchor = self._parse_anchor(
+            self._read_owner_only(self._anchor_path, "trust state anchor")
+        )
+        return anchor["generation"]
+
     def _parse_anchor(self, raw: bytes) -> dict[str, int | str]:
         """Strictly validate the companion anchor; any violation fails closed."""
         try:

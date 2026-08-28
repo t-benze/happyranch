@@ -6,9 +6,14 @@ Linux connector lifecycle:
 
 - ``run`` — the systemd ``Type=notify`` foreground loop: readiness gates
   before ANY listener; on readiness loss the listener is stopped
-  immediately (fail closed); READY/WATCHDOG via sd_notify.
+  immediately (fail closed); READY/WATCHDOG via sd_notify. A runnable
+  configuration REQUIRES a concrete lab provider/listener — provider-less
+  run configurations are rejected at startup and NEVER emit READY=1.
 - ``install``/``uninstall``/``start``/``stop``/``restart``/``enable``/
-  ``disable``/``status`` — systemd service lifecycle.
+  ``disable``/``status`` — systemd service lifecycle. ``install`` treats the
+  source trust state only as an initial seed when NO managed pair exists;
+  once a managed snapshot+anchor pair exists it is authoritative and is
+  never overwritten or rolled back by a stale operator source pair.
 - ``upgrade``/``rollback`` — unit replacement with auto-rollback on failed
   start.
 - ``readiness_report``/``diagnose`` — local diagnostics that never render
@@ -468,9 +473,13 @@ class ConnectorSupervisor:
 
     def install(self, *, enable: bool = True) -> Path:
         """Stage config/state/policy into the declared managed directories and
-        install the rendered unit. The source trust state (if any) is copied
-        so revocation history survives the move; a corrupt or partial source
-        state refuses installation (fail closed)."""
+        install the rendered unit. The source trust state is only an initial
+        seed when NO managed pair exists; once a managed snapshot+anchor pair
+        exists it is AUTHORITATIVE — reinstall never overwrites or rolls it
+        back with a stale operator source pair (a revocation must survive
+        reinstall/upgrade-recovery), refuses same-generation conflicts, and
+        stages any monotonic advance transactionally. A corrupt or partial
+        source state refuses installation (fail closed)."""
         managed = self._managed_config()
         return self._install_managed(managed, enable=enable)
 
@@ -492,27 +501,58 @@ class ConnectorSupervisor:
             raise ConnectorConfigError(
                 f"refusing to install: source trust state unusable: {exc}"
             ) from exc
-        # 2. Stage the source state pair under the MANAGED names (the managed
-        #    config's state_path points at ``trust-state.json``); the source
-        #    file may be named differently. ``load()`` above guarantees the
-        #    pair is consistent (snapshot + companion anchor).
+        # 2. The managed snapshot+anchor pair is AUTHORITATIVE once it exists
+        #    (TASK-6004 [HIGH]): install/reinstall must never overwrite or roll
+        #    it back with a stale operator source pair — that would resurrect
+        #    a revoked device. The source pair is only an initial seed when NO
+        #    managed pair exists. Otherwise:
+        #      - managed pair unreadable/partial  -> refuse (never replace it);
+        #      - source generation < managed     -> refuse rollback;
+        #      - equal generation, same bytes    -> keep managed (no-op);
+        #      - equal generation, different     -> refuse (split/conflict);
+        #      - source generation > managed     -> monotonic advance, staged
+        #        transactionally (both files as temps BEFORE any rename, so an
+        #        interrupted staging never leaves a usable mixed pair and
+        #        never rolls back).
+        managed_state_path = root / "trust-state.json"
+        managed_anchor_path = root / "trust-state.json.anchor"
         source_path = Path(self.config.state_path).expanduser()
-        if source_path.exists():
-            staged_pairs = (
-                ("trust-state.json", source_path),
-                ("trust-state.json.anchor", Path(str(source_path) + ".anchor")),
+        managed_exists = managed_state_path.exists() or managed_anchor_path.exists()
+        if managed_exists:
+            managed_store = AtomicFileTrustStateStore(
+                managed_state_path, self.initial_state()
             )
-            for managed_name, src in staged_pairs:
-                if src.is_file():
-                    try:
-                        data = src.read_bytes()
-                        target = root / managed_name
-                        target.write_bytes(data)
-                        os.chmod(target, _MANAGED_FILE_MODE)
-                    except OSError as exc:
+            try:
+                managed_store.load()  # full pair binding validation
+            except StateStoreError as exc:
+                raise ConnectorConfigError(
+                    f"refusing to install: managed trust state unusable: {exc}"
+                ) from exc
+            source_gen = self.state_store.anchored_generation()
+            managed_gen = managed_store.anchored_generation()
+            if source_gen is not None and managed_gen is not None:
+                if source_gen < managed_gen:
+                    raise ConnectorConfigError(
+                        f"refusing to install: source trust state (generation "
+                        f"{source_gen}) is OLDER than the managed state "
+                        f"(generation {managed_gen}); refusing to roll back a "
+                        f"revocation. Delete the managed pair deliberately to "
+                        f"factory-reset."
+                    )
+                if source_gen == managed_gen:
+                    if source_path.read_bytes() != managed_state_path.read_bytes():
                         raise ConnectorConfigError(
-                            f"cannot stage {managed_name}: {exc}"
-                        ) from exc
+                            f"refusing to install: conflicting trust state at "
+                            f"the same generation ({source_gen}); refusing to "
+                            f"replace the managed pair with a different state."
+                        )
+                    # identical pair already in sync: keep the managed pair
+                else:
+                    # strictly newer source pair: monotonic advance
+                    self._stage_state_pair(source_path, root)
+        elif source_path.exists():
+            # initial install: seed the managed pair from the source pair
+            self._stage_state_pair(source_path, root)
         # 3. Stage the policy artifact the service consumes.
         src_policy = Path(self.config.policy_path).expanduser()
         if not src_policy.is_file():
@@ -537,6 +577,64 @@ class ConnectorSupervisor:
         return self.manager.install(
             render_connector_unit(spec), managed.unit_name, enable=enable
         )
+
+    def _stage_state_pair(self, source_path: Path, root: Path) -> None:
+        """Stage the VALIDATED source pair (snapshot + companion anchor) into
+        the managed root under the managed names. Transactional staging: both
+        files are written to temp names and fsynced BEFORE either is renamed
+        into place, so a failure before the renames leaves the existing managed
+        pair fully intact (never a rollback); a crash between the renames
+        leaves a mismatched pair that ``load()`` rejects (never a usable mixed
+        pair)."""
+        entries = (
+            ("trust-state.json", source_path),
+            ("trust-state.json.anchor", Path(str(source_path) + ".anchor")),
+        )
+        temps: list[tuple[Path, Path]] = []
+        try:
+            for managed_name, src in entries:
+                if not src.is_file():
+                    raise ConnectorConfigError(
+                        f"refusing to install: source state file missing: {src}"
+                    )
+                tmp = root / f".{managed_name}.stage-tmp"
+                data = src.read_bytes()
+                with open(tmp, "wb") as fh:
+                    fh.write(data)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.chmod(tmp, _MANAGED_FILE_MODE)
+                temps.append((tmp, root / managed_name))
+            # Both temps are durable: publish snapshot first, then anchor. A
+            # crash between the renames leaves a mismatched pair that load()
+            # rejects — fail closed, never a usable mixed pair.
+            for tmp, target in temps:
+                os.replace(tmp, target)
+                self._fsync_dir(root)
+        except OSError as exc:
+            raise ConnectorConfigError(f"cannot stage trust state: {exc}") from exc
+        finally:
+            for tmp, _target in temps:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _fsync_dir(directory: Path) -> None:
+        """Best-effort directory fsync after a rename (durability nicety; the
+        store's own writes fsync the directory on every save)."""
+        try:
+            dir_fd = os.open(directory, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            try:
+                os.fsync(dir_fd)
+            except OSError:
+                pass
+        finally:
+            os.close(dir_fd)
 
     def _chown_tree(self, root: Path, user: str, group: str) -> None:
         """Own the staged managed tree to the dedicated service user/group
@@ -597,6 +695,8 @@ class ConnectorSupervisor:
     ) -> int:
         """Readiness-gated foreground loop.
 
+        - a provider-less run configuration (no lab config, no injected
+          provider) is REJECTED at startup — fail closed, never READY=1;
         - readiness passes: start the provider (if configured); READY=1 is
           emitted ONLY when the listener actually started (``_start_provider``
           returns proven success) — never on a bind/start failure; subsequent
@@ -608,6 +708,16 @@ class ConnectorSupervisor:
           ``shutdown()``).
         """
         poll_seconds = poll_seconds if poll_seconds is not None else self.config.poll_seconds
+        # A RUNNABLE configuration REQUIRES a concrete listener provider (a lab
+        # config or an injected adapter): without one, READY=1 could never be
+        # backed by a proven bound listener. Reject provider-less run
+        # configurations at startup — fail closed, never READY. Non-run
+        # construction (status/readiness/diagnose/install) stays valid.
+        if self.config.lab is None and self._injected_provider is None:
+            raise ConnectorConfigError(
+                "refusing to run: no lab provider configured — the connector "
+                "has no listener to bring up, so READY would be false"
+            )
         iterations = 0
         while True:
             iterations += 1
@@ -645,7 +755,10 @@ class ConnectorSupervisor:
         else:
             provider = self.build_provider()
         if provider is None:
-            return True  # no provider configured: readiness without a listener
+            # Provider-less run is rejected at startup; belt-and-braces: never
+            # report proven success (READY) without a listener.
+            self._notify_fn("STATUS=no provider configured; no listener\n")
+            return False
         try:
             provider.start()
         except LabProviderError:

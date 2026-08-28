@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
+from runtime.remote_access.authorization import DeviceAuthorization, TrustState
 from runtime.remote_access.credentials import (
     CredentialUnavailable,
     SystemdCredentialProvider,
@@ -26,7 +28,10 @@ from runtime.remote_access.readiness import (
 )
 from runtime.remote_access.revocation import RevocationCoordinator
 from runtime.remote_access.service_manager import ServiceStatus, UpgradeOutcome
-from runtime.remote_access.state_store import AtomicFileTrustStateStore
+from runtime.remote_access.state_store import (
+    AtomicFileTrustStateStore,
+    StateStoreError,
+)
 from runtime.remote_access.streams import StreamRegistry
 from runtime.remote_access.supervisor import (
     ConnectorConfig,
@@ -277,12 +282,35 @@ class TestRunLoop:
         assert provider.stops == 1
         assert _notified("STOPPING=1")
 
-    def test_no_provider_configured_loop_is_safe(self, tmp_path) -> None:
+    def test_run_without_provider_fails_closed(self, tmp_path) -> None:
+        """The reviewer's [HIGH] provider-less READY finding: a RUNNABLE
+        configuration without a concrete lab provider/listener must fail
+        closed at startup and must NEVER emit READY=1 (no listener could back
+        it). Non-run construction (status/readiness/diagnose/install) stays
+        valid — only run() rejects."""
         notifications.clear()
         supervisor = _supervisor(tmp_path, provider=None, lab=False)
-        code = supervisor.run(max_iterations=2, poll_seconds=0)
-        assert code == 0
-        assert _notified("READY=1")  # readiness passes; no listener needed
+        with pytest.raises(ConnectorConfigError):
+            supervisor.run(max_iterations=2, poll_seconds=0)
+        assert notifications == []  # never entered the notify loop; no READY
+
+    def test_start_provider_without_provider_returns_false(self, tmp_path) -> None:
+        """Belt-and-braces: even if run()'s startup gate were bypassed,
+        _start_provider must never report proven success without a listener."""
+        notifications.clear()
+        supervisor = _supervisor(tmp_path, provider=None, lab=False)
+        assert supervisor._start_provider() is False
+        assert supervisor._provider_running is False
+        assert not _notified("READY=1")
+
+    def test_run_with_injected_provider_needs_no_lab_config(self, tmp_path) -> None:
+        """A concrete injected provider IS a listener source: run() accepts it
+        even when the config carries no lab provider (test-only seam)."""
+        notifications.clear()
+        supervisor = _supervisor(tmp_path, provider=_FakeProvider(), lab=False)
+        supervisor.run(max_iterations=1, poll_seconds=0)
+        assert supervisor._provider_running is True
+        assert _notified("READY=1")
 
     def test_restart_after_readiness_loss_rebuilds_adapter(
         self, tmp_path, route_policy_fixture
@@ -511,8 +539,6 @@ class TestInstallStaging:
         token.write_text("token-x")
         token.chmod(0o600)
         policy = self._policy(tmp_path)
-        from runtime.remote_access.authorization import TrustState
-
         state = TrustState(connector_identity=default_identity(), pairing_epoch=0, revocation_epoch=0)
         store = AtomicFileTrustStateStore(tmp_path / "state.json", state)
         store.save(state)
@@ -564,8 +590,6 @@ class TestInstallStaging:
         token.write_text("token-x")
         token.chmod(0o600)
         self._policy(tmp_path)
-        from runtime.remote_access.authorization import TrustState
-
         state = TrustState(connector_identity=default_identity(), pairing_epoch=0, revocation_epoch=0)
         store = AtomicFileTrustStateStore(tmp_path / "state.json", state)
         store.save(state)
@@ -592,6 +616,237 @@ class TestInstallStaging:
         for name in ("config.json", "policy.json"):
             mode = stat.S_IMODE((managed_root / name).stat().st_mode)
             assert mode & 0o077 == 0
+
+
+class TestInstallReinstallAuthority:
+    """TASK-6004 [HIGH]: once a managed snapshot+anchor pair exists it is
+    AUTHORITATIVE. install/reinstall must never overwrite or roll it back
+    with a stale operator source pair — the source pair is only an initial
+    seed when NO managed state exists."""
+
+    def _policy(self, tmp_path) -> Path:
+        p = tmp_path / "policy.json"
+        p.write_text("{}")
+        return p
+
+    def _source_supervisor(self, tmp_path, *, manager=None, **overrides):
+        token = tmp_path / "daemon.token"
+        token.write_text("token-x")
+        token.chmod(0o600)
+        self._policy(tmp_path)
+        cfg = _config(
+            tmp_path, managed_dir_root=str(tmp_path / "managed"), **overrides
+        )
+        return _supervisor(tmp_path, manager=manager or FakeManager(), config=cfg)
+
+    def _managed_root(self, tmp_path) -> Path:
+        return tmp_path / "managed" / "happyranch-connector"
+
+    def _revoked_state(self) -> TrustState:
+        """A state whose lab device is revoked at epoch 1 (the managed state
+        advances past the initial source seed)."""
+        state = TrustState(
+            connector_identity=default_identity(), pairing_epoch=0, revocation_epoch=1
+        )
+        state.apply_pairing(
+            DeviceAuthorization(
+                device_id="lab-client-1",
+                tenant_id="tenant-a",
+                home_id="home-a",
+                authorization_epoch=1,
+                expires_at=NOW() + timedelta(days=3650),
+                revoked=True,
+            )
+        )
+        return state
+
+    def test_initial_install_seeds_managed_from_source(self, tmp_path) -> None:
+        """No managed pair yet: the source pair is the initial seed (the
+        pre-existing staging contract still holds)."""
+        state = TrustState(
+            connector_identity=default_identity(), pairing_epoch=0, revocation_epoch=0
+        )
+        store = AtomicFileTrustStateStore(tmp_path / "state.json", state)
+        store.save(state)
+        manager = FakeManager()
+        supervisor = self._source_supervisor(tmp_path, manager=manager)
+        supervisor.install()
+        managed_root = self._managed_root(tmp_path)
+        assert (managed_root / "trust-state.json").is_file()
+        assert (managed_root / "trust-state.json.anchor").is_file()
+        # A NEW store instance over the managed pair loads the seeded state.
+        reloaded = AtomicFileTrustStateStore(
+            managed_root / "trust-state.json", state
+        ).load()
+        assert reloaded.revocation_epoch == 0
+
+    def test_reinstall_after_managed_revocation_refuses_and_preserves(
+        self, tmp_path
+    ) -> None:
+        """The reviewer's exact repro: install epoch 0 (gen 1), advance the
+        MANAGED pair to revoked epoch 1 (gen 2), then reinstall with the stale
+        source pair — install must REFUSE (never roll back a revocation), and
+        a NEW store instance must still load the revoked managed state."""
+        state = TrustState(
+            connector_identity=default_identity(), pairing_epoch=0, revocation_epoch=0
+        )
+        store = AtomicFileTrustStateStore(tmp_path / "state.json", state)
+        store.save(state)
+        manager = FakeManager()
+        supervisor = self._source_supervisor(tmp_path, manager=manager)
+        supervisor.install()
+        managed_root = self._managed_root(tmp_path)
+        # Advance the MANAGED pair (the running service revokes) → generation 2.
+        managed_store = AtomicFileTrustStateStore(
+            managed_root / "trust-state.json", state
+        )
+        managed_store.save(self._revoked_state())
+        # Reinstall with the unchanged STALE source pair → must refuse.
+        with pytest.raises(ConnectorConfigError):
+            supervisor.install()
+        # The managed pair is untouched: a NEW instance (restart) still denies.
+        reloaded = AtomicFileTrustStateStore(
+            managed_root / "trust-state.json", state
+        ).load()
+        assert reloaded.revocation_epoch == 1
+        assert reloaded.devices["lab-client-1"].revoked is True
+
+    def test_reinstall_with_newer_source_pair_adopts_monotonically(
+        self, tmp_path
+    ) -> None:
+        """A strictly NEWER source pair (higher generation) is a monotonic
+        advance: install adopts it, and the adopted pair is authoritative."""
+        state = TrustState(
+            connector_identity=default_identity(), pairing_epoch=0, revocation_epoch=0
+        )
+        store = AtomicFileTrustStateStore(tmp_path / "state.json", state)
+        store.save(state)
+        manager = FakeManager()
+        supervisor = self._source_supervisor(tmp_path, manager=manager)
+        supervisor.install()
+        # The source advances (operator re-provisions a newer pair) → gen 2.
+        store.save(self._revoked_state())
+        supervisor.install()
+        managed_root = self._managed_root(tmp_path)
+        reloaded = AtomicFileTrustStateStore(
+            managed_root / "trust-state.json", state
+        ).load()
+        assert reloaded.revocation_epoch == 1
+        assert reloaded.devices["lab-client-1"].revoked is True
+
+    def test_reinstall_with_equal_identical_pair_is_noop(self, tmp_path) -> None:
+        """An equal (identical) pair is already in sync: install keeps the
+        managed pair untouched and still succeeds."""
+        state = TrustState(
+            connector_identity=default_identity(), pairing_epoch=0, revocation_epoch=0
+        )
+        store = AtomicFileTrustStateStore(tmp_path / "state.json", state)
+        store.save(state)
+        manager = FakeManager()
+        supervisor = self._source_supervisor(tmp_path, manager=manager)
+        supervisor.install()
+        managed_root = self._managed_root(tmp_path)
+        managed_store = AtomicFileTrustStateStore(managed_root / "trust-state.json", state)
+        managed_store.save(self._revoked_state())  # managed → gen 2
+        # Operator re-saves the SAME pair at the source → source gen 2 == managed gen 2.
+        store.save(self._revoked_state())
+        supervisor.install()  # must not raise
+        reloaded = AtomicFileTrustStateStore(
+            managed_root / "trust-state.json", state
+        ).load()
+        assert reloaded.revocation_epoch == 1  # managed preserved (still revoked)
+
+    def test_reinstall_with_conflicting_same_generation_refuses(self, tmp_path) -> None:
+        """A different pair at the SAME generation is a split/conflict —
+        install refuses and the managed pair stays authoritative."""
+        state = TrustState(
+            connector_identity=default_identity(), pairing_epoch=0, revocation_epoch=0
+        )
+        store = AtomicFileTrustStateStore(tmp_path / "state.json", state)
+        store.save(state)
+        manager = FakeManager()
+        supervisor = self._source_supervisor(tmp_path, manager=manager)
+        supervisor.install()
+        managed_root = self._managed_root(tmp_path)
+        managed_store = AtomicFileTrustStateStore(managed_root / "trust-state.json", state)
+        managed_store.save(self._revoked_state())  # managed → gen 2 (revoked)
+        # Source advances to gen 2 with a DIFFERENT (non-revoked) state.
+        other = TrustState(
+            connector_identity=default_identity(), pairing_epoch=0, revocation_epoch=0
+        )
+        other.apply_pairing(
+            DeviceAuthorization(
+                device_id="lab-client-1",
+                tenant_id="tenant-a",
+                home_id="home-a",
+                authorization_epoch=1,
+                expires_at=NOW() + timedelta(days=3650),
+            )
+        )
+        store.save(other)
+        assert store.anchored_generation() == 2
+        with pytest.raises(ConnectorConfigError):
+            supervisor.install()
+        reloaded = AtomicFileTrustStateStore(
+            managed_root / "trust-state.json", state
+        ).load()
+        assert reloaded.revocation_epoch == 1  # managed untouched
+
+    def test_reinstall_interrupted_staging_leaves_no_usable_mixed_pair(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """An interrupted/partial staging (second member write fails) must
+        leave NO usable mixed pair: the managed pair either stays intact or
+        fails closed under load() — never a loadable mixed snapshot, and
+        never a rollback to a lower generation."""
+        state = TrustState(
+            connector_identity=default_identity(), pairing_epoch=0, revocation_epoch=0
+        )
+        store = AtomicFileTrustStateStore(tmp_path / "state.json", state)
+        store.save(state)
+        manager = FakeManager()
+        supervisor = self._source_supervisor(tmp_path, manager=manager)
+        supervisor.install()
+        managed_root = self._managed_root(tmp_path)
+        managed_store = AtomicFileTrustStateStore(managed_root / "trust-state.json", state)
+        managed_store.save(state)  # managed → gen 2 (still unrevoked)
+        # Source advances to gen 3 (strictly newer → adoption path); the
+        # anchor publish fails mid-staging.
+        store.save(state)
+        store.save(self._revoked_state())
+        real_replace = os.replace
+
+        def _fail_second_replace(src, dst, *a, **kw):
+            if "trust-state.json.anchor" in str(dst):
+                raise OSError("injected anchor publish failure")
+            return real_replace(src, dst, *a, **kw)
+
+        monkeypatch.setattr(os, "replace", _fail_second_replace)
+        with pytest.raises(ConnectorConfigError):
+            supervisor.install()
+        monkeypatch.undo()
+        # The managed pair must NOT be a usable mixed pair: loading it fails
+        # closed (new snapshot + old anchor = mismatched), never a loadable
+        # un-revoked state.
+        fresh = AtomicFileTrustStateStore(managed_root / "trust-state.json", state)
+        with pytest.raises(StateStoreError):
+            fresh.load()
+
+    def test_reinstall_source_partial_pair_refuses(self, tmp_path) -> None:
+        """A source snapshot without its companion anchor is partial state
+        and must refuse reinstall exactly as it refuses initial install."""
+        state = TrustState(
+            connector_identity=default_identity(), pairing_epoch=0, revocation_epoch=0
+        )
+        store = AtomicFileTrustStateStore(tmp_path / "state.json", state)
+        store.save(state)
+        manager = FakeManager()
+        supervisor = self._source_supervisor(tmp_path, manager=manager)
+        supervisor.install()
+        (tmp_path / "state.json.anchor").unlink()  # source becomes partial
+        with pytest.raises(ConnectorConfigError):
+            supervisor.install()
+        assert manager.calls == ["install"]  # no second unit install
 
 
 class TestManagedPaths:
