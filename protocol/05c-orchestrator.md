@@ -463,7 +463,7 @@ cascade-failed. Instead:
 A manager may declare a fan-out decision (`action: fanout`) to spawn N children
 in parallel (2 ≤ N ≤ 8). The orchestrator:
 
-1. **Validates** width, width_cap_ack, workspace presence, and scope. A child may optionally carry `then`/`expect_verdict` — a *pipeline carrier* (Phase 2) — whose legs are validated exactly like an inline `delegate + then` chain (each leg needs `agent` + `prompt`; a configured reviewer leg additionally MUST declare `expect_verdict: "APPROVE"` — omitted is a HARD REJECT, THR-175).
+1. **Validates** width, width_cap_ack, workspace presence, and scope. A child may optionally carry `then`/`expect_verdict` — a *pipeline carrier* (Phase 2) — whose legs are validated exactly like an inline `delegate + then` chain (each leg needs `agent` + `prompt`; a configured reviewer leg additionally MUST declare `expect_verdict: "APPROVE"` — omitted is a HARD REJECT, THR-175). HARD REJECT denies the whole fan-out before any child spawns and returns feedback to the owner naming the required `expect_verdict: "APPROVE"`, leaving the root PENDING and re-enqueued for a corrected decision — never a root failure. Missing agent name / missing workspace are unrecoverable and keep hard terminal failure.
 2. **Atomically mints** all N children via `try_delegate_many`, transitioning
    the parent to `in_progress(delegated)` with `active_fanout` set (an additive
    JSON metadata column). For pipeline carriers, the child's inline chain is
@@ -982,7 +982,12 @@ delegation and burn a re-spawn round.
 Reviewer identities are configured per-org in the DB-backed `reviewer_agents`
 setting (default `["code_reviewer"]`, THR-175) — never hardcoded in the
 transition logic. A configured reviewer leg MUST declare
-`expect_verdict: "APPROVE"`; omission is a HARD REJECT at authoring. At the
+`expect_verdict: "APPROVE"`; omission is a HARD REJECT at authoring — the
+delegation is denied before any child spawns and the owner receives a feedback
+orchestration step naming the required `expect_verdict: "APPROVE"`, with the
+root back to PENDING and re-enqueued for a corrected decision (never a root
+failure). A delegate with a missing agent name or missing workspace is NOT
+recoverable and keeps hard terminal failure. At the
 execution seam a configured reviewer leg with a downstream leg only
 auto-advances on an explicit `APPROVE` — a missing verdict or any non-approve
 verdict (`REQUEST_CHANGES` / `REVISE` / `BLOCK` / equivalent) clears the chain

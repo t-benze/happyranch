@@ -14,7 +14,7 @@ Collapse the linear happy-path of a multi-gate workflow into one manager decisio
 - **Full DAG with revise loops.** No conditional branching by verdict, no in-chain loops. REVISE iteration stays the manager's job — they handle it on the wake that fires when a chain leg deviates.
 - **Worker-side workflow authoring.** Workers do not declare chains. Only team managers speak the `NextStep` protocol; that gate is preserved.
 - **Verdict semantics in code.** The system treats verdicts as opaque strings. Per-team vocabulary (APPROVE / REQUEST_CHANGES / PASS / REVISE / BLOCK for engineering; whatever content team picks) lives in each team's workflow KB entry.
-- **Reviewer identity (THR-175).** Reviewer identities are configured per-org in the DB-backed `reviewer_agents` org setting (default `["code_reviewer"]`), never hardcoded in the transition logic. A chain leg whose `agent` is in that set is a *reviewer leg* and MUST declare `expect_verdict: "APPROVE"`; omission is a HARD REJECT before any child spawns, and at the execution seam a reviewer leg with a downstream leg only auto-advances on an explicit `APPROVE` verdict.
+- **Reviewer identity (THR-175).** Reviewer identities are configured per-org in the DB-backed `reviewer_agents` org setting (default `["code_reviewer"]`), never hardcoded in the transition logic. A chain leg whose `agent` is in that set is a *reviewer leg* and MUST declare `expect_verdict: "APPROVE"`; omission is a HARD REJECT before any child spawns, and at the execution seam a reviewer leg with a downstream leg only auto-advances on an explicit `APPROVE` verdict. HARD REJECT denies the whole delegation before any child spawns and returns a feedback orchestration step to the owner naming the required `expect_verdict: "APPROVE"`, leaving the root PENDING and re-enqueued for a corrected decision — it never fails the root. Missing agent name / missing workspace are unrecoverable and remain hard terminal failures.
 
 ## Architecture
 
@@ -227,7 +227,7 @@ The manager doesn't need to re-derive the chain's history from raw child task re
 | Founder revisits parent mid-chain | Cannot happen — `happyranch revisit` requires terminal predecessor; parent is `blocked(delegated)` while chain runs. |
 | Manager declares chain with off-team agent (any leg) | Validated at decision-parse time across all legs; rejected as feedback step back to manager (existing `feedback` mechanism). No partial spawn. |
 | Manager declares chain referencing themselves | Same path as cross-team guard — managers are not in the team's worker registry; rejected. |
-| Manager declares a configured reviewer leg that omits `expect_verdict` (THR-175) | HARD REJECT before any child spawns; remediation *set `expect_verdict: "APPROVE"` on every configured reviewer leg*. |
+| Manager declares a configured reviewer leg that omits `expect_verdict` (THR-175) | HARD REJECT before any child spawns; the owner receives a feedback orchestration step naming `expect_verdict: "APPROVE"`, the root stays PENDING, and the task is re-enqueued for a corrected decision — never a root failure. Missing agent/workspace remain unrecoverable hard failures. |
 | Empty `then: []`, no `expect_verdict` | Identical to today's single-leg delegate. Allowed (zero-cost forward-compat). |
 | Empty `then: []`, `expect_verdict` set | 1-leg gated chain. First leg's worker must emit matching verdict; mismatch wakes manager, match wakes manager too (next-leg-doesn't-exist branch). Useful when the manager wants verdict-gated wake context without writing a multi-leg chain. |
 | Nested chains (chain-leg worker emits a `decision` field) | Workers don't speak the NextStep protocol (`run_step.py:295` gate); `decision` from a worker is silently ignored today. Same here. |
@@ -276,6 +276,7 @@ The manager doesn't need to re-derive the chain's history from raw child task re
 - **Workers don't author chains.** The `is_team_manager(agent)` gate in `run_step.py` already blocks workers from emitting `decision` payloads; do not relax this when adding chain support.
 - **Opaque failure of a chain leg does NOT preserve the chain (TASK-3604).** The failed leg is terminal FAILED with no automatic successor; the bounded parent wake receives the failure and clears `active_chain`. Chains aborted by a failed leg do not auto-resume — the parent manager decides whether to re-declare.
 - **Cancel-during-chain clears `active_chain` before terminating the in-flight leg.** Otherwise the leg's terminal could race the cancel and trigger a phantom auto-advance.
+- **Reviewer expect_verdict omission (HARD REJECT) never fails the root.** The delegation is denied before any child spawns; the owner gets a feedback orchestration step naming `expect_verdict: "APPROVE"`, the root returns to PENDING, and exactly one self re-enqueue occurs so the corrected decision can proceed. Only unrecoverable structural errors (missing agent name / missing workspace) hard-fail the task.
 
 ## Open questions
 

@@ -513,14 +513,14 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
                 return
             # THR-175: a pipeline-carrier first leg that is a configured
             # reviewer must declare expect_verdict=APPROVE (only when the child
-            # actually carries a downstream ``then`` chain).
+            # actually carries a downstream ``then`` chain). Omission is a
+            # HARD REJECT — a recoverable authoring error, fed back to the
+            # owner for correction (never a root failure).
             if child.then and child.agent in reviewer_agents and child.expect_verdict is None:
-                note = f"invalid fanout: {_reviewer_omitted_expectation_error(child.agent)}"
-                _fail(orch, task_id, note=note)
-                _enqueue_parent_if_waiting(orch, task_id)
-                _maybe_post_thread_followup(
-                    orch, task_id,
-                    status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                _reject_reviewer_omission(
+                    orch, task_id, agent, next_count,
+                    _reviewer_omitted_expectation_error(child.agent),
+                    action_label="fan-out",
                 )
                 return
             # Validate carrier chain legs for pipeline children (Phase 2).
@@ -539,12 +539,10 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
                     )
                     return
                 if leg.agent in reviewer_agents and leg.expect_verdict is None:
-                    note = f"invalid fanout: {_reviewer_omitted_expectation_error(leg.agent)}"
-                    _fail(orch, task_id, note=note)
-                    _enqueue_parent_if_waiting(orch, task_id)
-                    _maybe_post_thread_followup(
-                        orch, task_id,
-                        status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                    _reject_reviewer_omission(
+                        orch, task_id, agent, next_count,
+                        _reviewer_omitted_expectation_error(leg.agent),
+                        action_label="fan-out",
                     )
                     return
 
@@ -642,17 +640,26 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
         return
 
     if decision.action == "delegate":
-        # First: hard-fail on structurally invalid delegate (no agent name or
-        # missing workspace). These are unrecoverable for this step.
+        # Classify delegate validation errors. A configured reviewer leg that
+        # omits expect_verdict (THR-175 HARD REJECT) is a recoverable authoring
+        # error — feedback task result + feedback orchestration step, root back
+        # to PENDING, one self re-enqueue so the owner corrects the decision
+        # (never a root failure). Missing agent name / missing workspace are
+        # unrecoverable for this step and keep hard terminal failure.
         err = _validate_delegate(orch, decision)
         if err is not None:
-            note = f"invalid delegate: {err}"
-            _fail(orch, task_id, note=note)
-            _enqueue_parent_if_waiting(orch, task_id)
-            _maybe_post_thread_followup(
-                orch, task_id,
-                status=TaskStatus.FAILED, auto_revisit_spawned=False,
-            )
+            if _is_reviewer_omission_error(err):
+                _reject_reviewer_omission(
+                    orch, task_id, agent, next_count, err,
+                )
+            else:
+                note = f"invalid delegate: {err}"
+                _fail(orch, task_id, note=note)
+                _enqueue_parent_if_waiting(orch, task_id)
+                _maybe_post_thread_followup(
+                    orch, task_id,
+                    status=TaskStatus.FAILED, auto_revisit_spawned=False,
+                )
             return
         # Target-scope guard. Managers: own-team agents or self. Non-manager
         # owners: self only. Violations feed a feedback step back (not a hard
@@ -1068,19 +1075,24 @@ def _check_retry_link_required(
     return None
 
 
-def _reject_retry_link_decision(
+def _feedback_and_reenqueue(
     orch: "Orchestrator",
     task_id: str,
     agent: str,
     next_count: int,
-    retry_link_err: str,
+    feedback: str,
 ) -> None:
-    """Fail closed with feedback when a delegate or fan-out retry is invalid."""
-    feedback = (
-        f"Invalid revisit_of_task_id: {retry_link_err}. "
-        f"When re-delegating to an agent with a FAILED child under this parent, "
-        f"you MUST set revisit_of_task_id to that failed predecessor's task id."
-    )
+    """Record a feedback task result + feedback orchestration audit step and
+    re-enqueue the SAME task for a corrected decision.
+
+    The owner's next session must re-run and fix the decision; the root is
+    never failed, no child is spawned, and no active_chain/fanout/park
+    metadata is written. This is the established authoring-error feedback
+    shape (out-of-scope and retry-link rejection reuse it): one
+    ``task_results`` row (status=completed, confidence=0), one
+    ``orchestration_step`` audit row keyed to the claimed step with
+    ``{"action": "feedback", "reason": feedback}``, task back to PENDING
+    with block_kind cleared, and exactly one self re-enqueue."""
     db = orch._db
     db.insert_task_result(
         task_id=task_id,
@@ -1097,6 +1109,53 @@ def _reject_retry_link_decision(
     db.update_task(task_id, status=TaskStatus.PENDING, block_kind=None)
     if orch._queue is not None:
         orch._queue.put_nowait(orch._slug, task_id)
+
+
+def _is_reviewer_omission_error(err: str) -> bool:
+    """True when a delegate/fanout validation error is the recoverable THR-175
+    reviewer ``expect_verdict`` omission (HARD REJECT with remediation) rather
+    than an unrecoverable structural error (missing agent name / missing
+    workspace). Only ``_reviewer_omitted_expectation_error`` emits this text,
+    so no structural error can be misclassified as recoverable."""
+    return "omits expect_verdict" in err
+
+
+def _reject_reviewer_omission(
+    orch: "Orchestrator",
+    task_id: str,
+    agent: str,
+    next_count: int,
+    err: str,
+    *,
+    action_label: str = "delegation",
+) -> None:
+    """HARD REJECT a configured reviewer leg that omits ``expect_verdict`` as a
+    recoverable authoring error: feedback task result + feedback orchestration
+    audit step, root back to PENDING, one self re-enqueue — never a root
+    failure (TASK-5921). ``err`` already carries the HARD REJECT message and
+    the expect_verdict: "APPROVE" remediation."""
+    feedback = (
+        f"Invalid {action_label}: {err} "
+        f"Correct the decision and re-submit with "
+        f'expect_verdict: "APPROVE" on the reviewer leg.'
+    )
+    _feedback_and_reenqueue(orch, task_id, agent, next_count, feedback)
+
+
+def _reject_retry_link_decision(
+    orch: "Orchestrator",
+    task_id: str,
+    agent: str,
+    next_count: int,
+    retry_link_err: str,
+) -> None:
+    """Fail closed with feedback when a delegate or fan-out retry is invalid."""
+    feedback = (
+        f"Invalid revisit_of_task_id: {retry_link_err}. "
+        f"When re-delegating to an agent with a FAILED child under this parent, "
+        f"you MUST set revisit_of_task_id to that failed predecessor's task id."
+    )
+    _feedback_and_reenqueue(orch, task_id, agent, next_count, feedback)
 
 
 def _legs_out_of_scope(orch: "Orchestrator", owner: str, decision) -> list[tuple[str, str]]:

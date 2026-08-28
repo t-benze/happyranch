@@ -192,9 +192,14 @@ The orchestrator spawns the first leg, then auto-advances to the next leg on eac
 hardcoded. Any chain leg whose `agent` is one of the org's configured
 reviewer agents is a *reviewer leg* and MUST declare
 `expect_verdict: "APPROVE"`. A reviewer leg that **omits** `expect_verdict` is
-a **HARD REJECT** — the whole delegation is denied before any child spawns,
-with remediation *set `expect_verdict: "APPROVE"` on every configured reviewer
-leg*. At the execution seam, a configured reviewer leg with a downstream leg
+a **HARD REJECT** — the whole delegation is denied before any child spawns.
+HARD REJECT is a recoverable authoring error: the owner receives a feedback
+task result and a feedback orchestration step explicitly naming the required
+`expect_verdict: "APPROVE"` remediation, the root stays PENDING, and the task
+is re-enqueued for one corrected decision — it never fails the root and never
+spawns a child. A delegate with a missing agent name or a missing workspace is
+NOT recoverable and keeps hard terminal failure. At the execution seam, a
+configured reviewer leg with a downstream leg
 never auto-advances unless it returns an explicit `APPROVE` verdict: a missing
 verdict or any non-approve verdict (`REQUEST_CHANGES` / `REVISE` / `BLOCK` /
 equivalent) clears the chain and wakes the manager — QA/downstream is never
