@@ -30,11 +30,11 @@ def contract() -> Contract:
 
 
 def test_contract_loads_all_four_fixtures(contract: Contract) -> None:
-    assert contract.version == 1
+    assert contract.version == 2
     assert contract.status == "normative-contract"
     assert len(contract.deny_categories) >= 20
     assert len(contract.audit_categories) >= 40
-    assert len(contract.threat_cases) == 56
+    assert len(contract.threat_cases) == 61
 
 
 def test_contract_reports_fixture_digests(contract: Contract) -> None:

@@ -36,6 +36,7 @@ FIXTURE_FILES = {
     "credential_taxonomy": CONTRACT_DIR / "credential-taxonomy.json",
     "failure_categories": CONTRACT_DIR / "failure-categories.json",
     "threat_cases": CONTRACT_DIR / "threat-cases.json",
+    "lifecycle_matrix": CONTRACT_DIR / "lifecycle-matrix.json",
 }
 
 # Extra required top-level keys beyond the common (version/name/status/description)
@@ -360,6 +361,7 @@ _TOP_LEVEL_EXTRA = {
     "credential_taxonomy": ["classes"],
     "failure_categories": ["deny_categories", "audit_categories", "existence_guard"],
     "threat_cases": ["cases"],
+    "lifecycle_matrix": ["governing_rule", "boundary", "linearization_points", "mutations", "notes"],
 }
 
 
@@ -943,6 +945,329 @@ def test_audit_categories_never_embed_tenant_identifiers() -> None:
         assert case["expected"]["audit_category"] in audit_ids, (
             f"case {case['id']}: audit category must come from the fixed taxonomy"
         )
+
+
+# ---------------------------------------------------------------------------
+# 5b. Lifecycle ownership matrix (THR-097 Unit C fresh lifecycle redesign)
+# ---------------------------------------------------------------------------
+
+# Every public membership mutation the lifecycle matrix MUST enumerate. The
+# audit is producer-complete over runtime/remote_access (streams.py, gateway.py,
+# forwarding.py, revocation.py); a mutation path discovered later must be added
+# here AND to the fixture AND to the deterministic barrier battery — never
+# silently omitted.
+REQUIRED_LIFECYCLE_MUTATIONS = [
+    "admission open",
+    "admission rejection after seal",
+    "duplicate-id replacement",
+    "explicit single-stream close",
+    "bulk close",
+    "retained wrapper close",
+    "missing/idempotent close",
+    "derived wrapper surface",
+    "derived membership reads",
+    "re-entrant close_all callback",
+    "re-entrant revoke callback",
+    "concurrent close_all waiters",
+    "RevocationCoordinator transaction",
+    "gateway HTTP normal-EOF cleanup",
+    "gateway HTTP error-driven cleanup",
+    "gateway SSE/WebSocket admission",
+    "gateway revoked-admission path",
+    "transport-driven self-close",
+    "transport-close callback mutation",
+]
+
+
+def _assert_lifecycle_ordering_cell(cell: dict, mutation_id: str, ordering: str) -> None:
+    _assert_exact_keys(
+        cell,
+        ["ordering", "revocation_success_requires", "permitted_outcome"],
+        f"lifecycle_matrix.mutations[{mutation_id}].{ordering}",
+    )
+    assert cell["ordering"] == ordering, (
+        f"lifecycle_matrix mutation {mutation_id}: ordering must be {ordering!r}"
+    )
+    assert cell["revocation_success_requires"], (
+        f"lifecycle_matrix mutation {mutation_id} {ordering}: "
+        "revocation_success_requires must be stated"
+    )
+    assert cell["permitted_outcome"], (
+        f"lifecycle_matrix mutation {mutation_id} {ordering}: "
+        "permitted_outcome must be stated"
+    )
+
+
+def _assert_governing_rule(rule: str) -> None:
+    """The single rule governing every matrix cell: one atomic lifecycle
+    boundary with seal-before-escape and the acknowledgement barrier."""
+    assert rule, "lifecycle_matrix: governing_rule required"
+    for token in ("atomic lifecycle boundary", "seal", "acknowledgement barrier"):
+        assert token in rule, f"lifecycle_matrix: governing_rule must encode {token!r}"
+
+
+def test_lifecycle_matrix_schema_and_exhaustiveness() -> None:
+    """The lifecycle matrix is semantically validated and exhaustive: every
+    required mutation is present; every mutation crosses revocation in BOTH
+    deterministic orderings with an exact linearization point, the atomic
+    seal+membership transition, callback scope, and permitted outcomes."""
+    doc = _load("lifecycle_matrix")
+    _assert_governing_rule(doc["governing_rule"])
+    _assert_exact_keys(
+        doc["boundary"],
+        ["lifecycle_lock", "atomic_transition", "callback_scope", "acknowledgement_barrier", "seal_first_orderings"],
+        "lifecycle_matrix.boundary",
+    )
+    assert "linearization_points" in doc["linearization_points"] or doc["linearization_points"], (
+        "lifecycle_matrix: linearization_points required"
+    )
+
+    mutations = doc["mutations"]
+    assert mutations, "lifecycle_matrix: mutations must be non-empty"
+    ids: set[str] = set()
+    labels: set[str] = set()
+    for mutation in mutations:
+        mid = mutation.get("id", "<no id>")
+        _assert_exact_keys(
+            mutation,
+            [
+                "id",
+                "public_entry",
+                "membership_effect",
+                "seal_scope",
+                "linearization_point",
+                "callbacks",
+                "orderings",
+                "cleanup_acknowledgement",
+            ],
+            f"lifecycle_matrix.mutations[{mid}]",
+        )
+        assert mid not in ids, f"lifecycle_matrix: duplicate mutation id {mid!r}"
+        ids.add(mid)
+        assert mutation["public_entry"], f"lifecycle_matrix mutation {mid}: public_entry required"
+        assert mutation["linearization_point"], (
+            f"lifecycle_matrix mutation {mid}: linearization_point required"
+        )
+        callbacks = mutation["callbacks"].lower()
+        assert "outside" in callbacks or callbacks.startswith("none"), (
+            f"lifecycle_matrix mutation {mid}: callbacks must be declared outside the lock "
+            "(or explicitly 'none' for read-only cells)"
+        )
+        assert mutation["cleanup_acknowledgement"], (
+            f"lifecycle_matrix mutation {mid}: cleanup_acknowledgement required"
+        )
+        orderings = mutation["orderings"]
+        assert len(orderings) == 2, f"lifecycle_matrix mutation {mid}: exactly two orderings required"
+        seen = {cell["ordering"] for cell in orderings}
+        assert seen == {"mutation_first", "seal_first"}, (
+            f"lifecycle_matrix mutation {mid}: must cross BOTH orderings "
+            f"(mutation_first, seal_first), found {seen}"
+        )
+        for cell in orderings:
+            _assert_lifecycle_ordering_cell(cell, mid, cell["ordering"])
+        labels.add(mutation["membership_effect"].lower())
+
+    present = {
+        m["membership_effect"].lower()
+        + " "
+        + m["public_entry"].lower()
+        + " "
+        + m["seal_scope"].lower()
+        + " "
+        + m["linearization_point"].lower()
+        + " "
+        + m["callbacks"].lower()
+        + " "
+        + m["cleanup_acknowledgement"].lower()
+        + " "
+        + " ".join(cell["permitted_outcome"].lower() for cell in m["orderings"])
+        for m in mutations
+    }
+    for required in REQUIRED_LIFECYCLE_MUTATIONS:
+        tokens = required.lower().split()
+        assert any(all(token in label for token in tokens) for label in present), (
+            f"lifecycle_matrix: missing required mutation path {required!r}"
+        )
+
+
+def test_lifecycle_matrix_threat_case_parity() -> None:
+    """The close-vs-revoke cells are encoded in the threat matrix too: REV-005
+    (close linearizes first), REV-006 (seal linearizes first), and the
+    THR-097 seq140 re-entrancy ruling REV-007 (same-thread re-entrant close_all
+    fails closed with non-success) / REV-008 (a callback failure that becomes
+    terminal after the rejection is persisted and re-surfaced) must exist and
+    be hostile/denied with the normative revocation categories."""
+    doc = _load("lifecycle_matrix")
+    threat = _load("threat_cases")
+    by_id = {c["id"]: c for c in threat["cases"]}
+    for cid in ("REV-005", "REV-006", "REV-007", "REV-008"):
+        assert cid in by_id, f"lifecycle_matrix: threat case {cid} missing"
+        case = by_id[cid]
+        assert case["class"] == "hostile"
+        assert case["expected"]["outcome"] == "denied"
+        assert case["expected"]["deny_category"] == "revocation"
+        assert case["expected"]["audit_category"] == "revocation_stream_closed"
+    # The matrix names the close-vs-seal mutations (M4/M6) and their cells.
+    matrix_prose = json.dumps(doc)
+    assert "single_close" in matrix_prose and "REV-005" in matrix_prose
+    assert "REV-007" in matrix_prose and "REV-008" in matrix_prose
+
+
+def test_lifecycle_matrix_reentrancy_cells_encode_fail_closed_ruling() -> None:
+    """The THR-097 seq140 founder ruling is the normative contract: matrix cell
+    M10 (same-thread re-entrant close_all from an unfinished transport cleanup
+    callback) must state the fail-closed non-success rejection — never success,
+    never an incomplete failed-id publish, never a self-inflight exclusion — and
+    the persisted-failure guarantee. M12 (concurrent waiters) must state that a
+    same-thread callback re-entry is rejected rather than waiting on the shared
+    completion event (no self-deadlock)."""
+    doc = _load("lifecycle_matrix")
+    by_id = {m["id"]: m for m in doc["mutations"]}
+    m10 = by_id["M10"]
+    prose = json.dumps(m10)
+    for token in (
+        "rejected",
+        "non-success",
+        "never publishes success",
+        "incomplete failed-id set",
+        "never erased",
+        "never excludes its own in-flight cleanup",
+    ):
+        assert token in prose, f"lifecycle_matrix M10 must encode {token!r} (founder ruling)"
+    for cell in m10["orderings"]:
+        assert "RuntimeError" in cell["permitted_outcome"], (
+            f"lifecycle_matrix M10 {cell['ordering']}: must use the existing non-success "
+            "representation (RuntimeError, mirroring the coordinator re-entrancy rejection)"
+        )
+    m12 = by_id["M12"]
+    m12_prose = json.dumps(m12)
+    assert "REJECTED" in m12_prose, (
+        "lifecycle_matrix M12 must state the same-thread callback re-entry rejection"
+    )
+    assert "self-deadlock" in m12_prose, (
+        "lifecycle_matrix M12 must state that waiting on the shared event would self-deadlock"
+    )
+
+
+_STALE_REENTRANCY_TOKENS = (
+    "returns immediately",
+    "return immediately",
+    "immediate-return",
+    "early success",
+    "success immediately",
+)
+
+
+def _assert_no_stale_immediate_return(low: str, context: str) -> None:
+    """Reject the TASK-5925 forbidden semantics wherever a re-entrancy cell
+    states same-thread close_all behavior: immediate-return/early-success
+    wording must never be normative in the lifecycle matrix."""
+    for stale in _STALE_REENTRANCY_TOKENS:
+        assert stale not in low, (
+            f"{context} must not encode stale immediate-return/early-success "
+            f"semantics ({stale!r} is the forbidden TASK-5925 behavior)"
+        )
+
+
+def test_lifecycle_matrix_m5_callback_reentrancy_encodes_fail_closed_ruling() -> None:
+    """The THR-097 seq140 founder ruling governs M5 (bulk close_all) as well:
+    M5's callback cell must NOT state that a same-thread re-entrant close_all
+    from a snapshot transport-close callback 'returns immediately' (the exact
+    stale semantics TASK-5936 flagged) and MUST encode the fail-closed
+    rejection — RuntimeError/non-success before any seal, membership
+    transition, cleanup acknowledgement, or success publication; callback
+    termination stays inside the acknowledgement barrier; a later close_all
+    reports terminal success or the persisted failure."""
+    doc = _load("lifecycle_matrix")
+    m5 = next(m for m in doc["mutations"] if m["id"] == "M5")
+    callbacks = m5["callbacks"]
+    low = callbacks.lower()
+    _assert_no_stale_immediate_return(low, "lifecycle_matrix M5 callbacks")
+    for token in (
+        "rejected",
+        "non-success",
+        "before any seal",
+        "acknowledgement barrier",
+        "terminal success",
+        "persisted",
+    ):
+        assert token in low, (
+            f"lifecycle_matrix M5 callbacks must encode the seq140 fail-closed "
+            f"ruling token {token!r}"
+        )
+    assert "RuntimeError" in callbacks, (
+        "lifecycle_matrix M5 callbacks must name the existing non-success "
+        "representation (RuntimeError)"
+    )
+
+
+def test_lifecycle_matrix_reentrancy_cells_cross_consistent() -> None:
+    """Cross-cell consistency: every cell that states same-thread re-entrant
+    close_all semantics — M5 (bulk close_all callbacks), M10 (re-entrant
+    close_all), M12 (concurrent waiters re-entry), M19 (transport-close
+    callback mutation) — must agree on the seq140 fail-closed non-success
+    rejection, tie success to the acknowledgement barrier, and NONE may carry
+    stale immediate-return / early-success semantics."""
+    doc = _load("lifecycle_matrix")
+    by_id = {m["id"]: m for m in doc["mutations"]}
+    cells = {
+        "M5": json.dumps(by_id["M5"]),
+        "M10": json.dumps(by_id["M10"]),
+        "M12": json.dumps(by_id["M12"]),
+        "M19": json.dumps(by_id["M19"]),
+    }
+    for mid, prose in cells.items():
+        low = prose.lower()
+        _assert_no_stale_immediate_return(low, f"lifecycle_matrix {mid}")
+        assert "rejected" in low, (
+            f"lifecycle_matrix {mid} must encode the fail-closed rejection "
+            "(seq140 same-thread re-entry)"
+        )
+        assert "non-success" in low, (
+            f"lifecycle_matrix {mid} must encode the fail-closed non-success result"
+        )
+        assert "acknowledg" in low, (
+            f"lifecycle_matrix {mid} must tie the re-entrant outcome to the "
+            "acknowledgement barrier (callback termination inside it; no early success)"
+        )
+
+
+def test_lifecycle_matrix_mutation_close_vs_revoke_cells_are_distinct() -> None:
+    """The two close-vs-revoke orderings must state DISTINCT permitted outcomes:
+    mutation-first (transport close acknowledged before revocation success) vs
+    seal-first (idempotent no-op, no double close) — never a merged cell."""
+    doc = _load("lifecycle_matrix")
+    for mutation in doc["mutations"]:
+        if mutation["id"] not in {"M4", "M6"}:
+            continue
+        by_ordering = {cell["ordering"]: cell for cell in mutation["orderings"]}
+        first = by_ordering["mutation_first"]["permitted_outcome"].lower()
+        second = by_ordering["seal_first"]["permitted_outcome"].lower()
+        assert first != second, (
+            f"lifecycle_matrix {mutation['id']}: orderings must have distinct permitted outcomes"
+        )
+        assert "acknowledg" in first or "before revocation" in first, (
+            f"lifecycle_matrix {mutation['id']} mutation_first: must require "
+            "acknowledgement before revocation success"
+        )
+        assert "idempotent" in second and "double" in second, (
+            f"lifecycle_matrix {mutation['id']} seal_first: must state the idempotent "
+            "no-op / no double close outcome"
+        )
+
+
+def test_lifecycle_matrix_mutation_remove_boundary_detected() -> None:
+    """Checked-in mutation proof: removing the atomic boundary from the
+    governing rule (the fixed contract weakened to match old code) must fail
+    the semantic validator — the matrix is the normative contract, not a
+    description of existing code."""
+    doc = json.loads(FIXTURE_FILES["lifecycle_matrix"].read_text(encoding="utf-8"))
+    doc["governing_rule"] = (
+        "admission checks the sealed flag; close pops membership and seals "
+        "afterwards; revocation reports success after its own snapshot cleanup."
+    )
+    with pytest.raises(AssertionError):
+        _assert_governing_rule(doc["governing_rule"])
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 {
-  "version": "1",
+  "version": "2",
   "name": "managed-remote-access-threat-cases",
   "status": "normative-contract",
   "description": "Hostile threat matrix for the managed remote-access lane (merge unit A, TASK-5771). Positive controls plus tenant-A-vs-B hostile negatives. Every case carries a stable deny/failure category, a stable audit category, and redacted tenant-neutral failure prose with no raw exception text and no credential material. Hostile cases are denied with a deny_category; positive controls are allowed. Paired cases (existence_pair) prove the no-cross-tenant-existence-oracle rule: identical deny category, audit category, AND identical externally visible failure detail whether the target exists or not (including the absent-vs-consumed credential pair). All credential inputs are obvious non-secret placeholders.",
@@ -1017,6 +1017,116 @@
         "audit_category": "revocation_stream_closed",
         "failure_detail": "Stream closed on revocation; subsequent frames are refused.",
         "proves": "revocation cancels open SSE/WebSocket streams immediately"
+      }
+    },
+    {
+      "id": "REV-004",
+      "class": "hostile",
+      "category": "revoked_mid_stream",
+      "scenario": "Revocation seals the connector while a request admission is in flight. Admission and revocation share one atomic ownership boundary: an admission fully registered before the seal is included in the revocation snapshot and closed with it; an admission not fully registered before the seal fails closed and never returns a usable stream.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/{slug}/jobs/{job_id}/tail",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "revocation",
+        "audit_category": "revocation_stream_closed",
+        "failure_detail": "Stream closed on revocation; no post-seal admission returns a usable stream.",
+        "proves": "the revocation seal is the linearization point before the live-stream snapshot; no admission can return usable after the seal"
+      }
+    },
+    {
+      "id": "REV-005",
+      "class": "hostile",
+      "category": "revoked_mid_stream",
+      "scenario": "Revocation races an explicit single-stream close and the close linearizes first. The close's membership pop and wrapper seal are ONE atomic transition under the lifecycle boundary, and its outside-lock transport close remains INSIDE the revocation acknowledgement barrier: revocation cannot publish success while the pre-seal stream's transport cleanup is in flight, and no usable wrapper survives at revocation success.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/{slug}/jobs/{job_id}/follow",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "revocation",
+        "audit_category": "revocation_stream_closed",
+        "failure_detail": "Stream closed on revocation; a pre-seal single-close's transport cleanup is acknowledged before revocation success.",
+        "proves": "a single-stream close that linearizes before the seal seals its wrapper atomically with membership removal and its transport close stays inside the revocation acknowledgement barrier"
+      }
+    },
+    {
+      "id": "REV-006",
+      "class": "hostile",
+      "category": "revoked_mid_stream",
+      "scenario": "Revocation races an explicit single-stream close and the revocation seal linearizes first. The post-seal close is an idempotent no-op: membership is already empty and the wrapper already sealed, so the transport is closed exactly once (by the revocation snapshot) and never double-closed.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/{slug}/jobs/{job_id}/log",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "revocation",
+        "audit_category": "revocation_stream_closed",
+        "failure_detail": "Stream closed on revocation; a post-seal single-close is an idempotent no-op and never double-closes the transport.",
+        "proves": "a single-stream close that linearizes after the seal is an idempotent no-op; the revocation snapshot owns the exactly-once transport close"
+      }
+    },
+    {
+      "id": "REV-007",
+      "class": "hostile",
+      "category": "revoked_mid_stream",
+      "scenario": "Revocation is invoked RE-ENTRANTLY from an unfinished transport cleanup callback on the same thread (e.g. inside a pre-seal explicit single-stream close's outside-lock transport close). The re-entrant close_all must fail closed with non-success \u2014 it may not exclude its own in-flight cleanup and publish success, may not mark the cleanup terminal with an incomplete failed-id set, and must not deadlock; the caller retries close_all from a normal context once its callback's transport close is terminal.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/{slug}/jobs/{job_id}/stream",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "revocation",
+        "audit_category": "revocation_stream_closed",
+        "failure_detail": "Stream closed on revocation; a same-thread re-entrant close_all from an unfinished transport cleanup callback is rejected (fail-closed non-success), never success.",
+        "proves": "same-thread re-entrant close_all from an unfinished transport cleanup callback returns fail-closed non-success and never publishes success"
+      }
+    },
+    {
+      "id": "REV-008",
+      "class": "hostile",
+      "category": "revoked_mid_stream",
+      "scenario": "A transport cleanup callback failure becomes TERMINAL after a same-thread re-entrant close_all rejection. The later close_all/revoke must re-surface the persisted failed stream id \u2014 the callback failure is never erased behind the rejected re-entry or a later successful-looking close_all.",
+      "actor": "tenant_a_device",
+      "target": "home_a_connector",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/orgs/{slug}/jobs/{job_id}/events",
+        "policy_state": "current",
+        "transport": "any",
+        "credential_placeholder": "PLACEHOLDER_CONNECTOR_DEVICE_PROOF"
+      },
+      "expected": {
+        "outcome": "denied",
+        "deny_category": "revocation",
+        "audit_category": "revocation_stream_closed",
+        "failure_detail": "Stream closed on revocation; a callback failure that becomes terminal after a re-entrant close_all rejection is persisted and re-surfaced by a later revocation.",
+        "proves": "a callback failure that becomes terminal after the re-entrant rejection is persisted and re-surfaced by a later close_all/revoke (never erased)"
       }
     },
     {
