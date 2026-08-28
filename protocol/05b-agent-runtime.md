@@ -88,34 +88,83 @@ executions (the limit is never below the platform's kernel floor).
 carries the resumable provider session id + delta watermark
 (``agent_session_id``, ``last_resumed_seq``). Lifecycle rules:
 
-- **Resume is Claude-only and an optimization, never a correctness
-dependency**; the SQLite transcript is canonical. A GH-688 claimed REPLY may
-resume with a delta ONLY when the stored watermark is strictly below the
-claim's ``running_from_seq`` — the ``<``, ``=``, and ``>`` cases are all
-covered so no required sequence is ever omitted; ``=``/``>`` use the full
-prompt. The equality state (watermark == ``running_from_seq``) is NOT
-permanent: after ONE successfully transported, terminally settled full-prompt
-turn both watermarks converge to the same frontier and resume eligibility
-returns. Do not implement a standalone watermark-comparison change.
+- **Resume is an optimization, never a correctness dependency**, for the
+  executors whose provider-session contract is PROVEN against the installed
+  CLI (TASK-5977 audit, THR-200 seq 31) — claude (pinned 2.1.241, in
+  production since THR-200), codex (installed codex-cli 0.148.0), and pi
+  (installed pi 0.84.2); the SQLite transcript is canonical for every
+  executor. OpenCode is an UNPROVEN gap on this machine (no binary, no
+  registry entry): it stays fresh (full prompt every turn) and must not
+  resume until its contract is independently proven. A GH-688 claimed REPLY
+  may resume with a delta ONLY when the stored watermark is strictly below
+  the claim's ``running_from_seq`` AND the ENTIRE required post-watermark
+  range is proven present and contiguous at the production seam: the runner
+  loads the canonical transcript UNCAPPED, queries the independent
+  authoritative transcript max (``get_thread_max_message_seq``), and only
+  then authorizes a delta when every required claimed sequence exists (no
+  truncation, no internal holes; a claimed REPLY additionally requires the
+  claim's inclusive end to exist in the transcript). ``<``/``=``/``>``
+  watermark cases, equal/ahead watermarks, a null/zero/negative (<= 0)
+  watermark (a stored provider id with a durable watermark <= 0 is
+  INELIGIBLE for resume — the runner makes a fresh invocation with the
+  complete canonical transcript), truncated loads, and any
+  missing internal sequence all fail closed to the genuinely complete
+  canonical full-transcript fresh prompt — a delta can never omit a required
+  sequence. The equality state (watermark == ``running_from_seq``) is NOT
+  permanent: after ONE successfully transported, terminally settled
+  full-prompt turn both watermarks converge to the same frontier and resume
+  eligibility returns. Do not implement a standalone watermark-comparison
+  change.
+- **Per-executor resume argv (evidence-backed, TASK-5977)**: claude
+  ``claude -p ... --output-format json --resume <id>``; codex
+  ``codex exec resume <thread_id> --json -`` (the resume subcommand has NO
+  ``--sandbox`` flag, so the same workspace-write sandbox + localhost
+  network posture is carried as ``-c sandbox_mode="workspace-write" -c
+  sandbox_workspace_write.network_access=true``; ``-`` reads the prompt from
+  stdin — large-prompt-safe); pi ``pi -p --mode json --session <id>``
+  (``--session`` FAILS when the id is missing — the eviction signature;
+  ``--session-id`` would silently create a fresh session and is never used).
+  All three read the prompt via stdin (``input_text``) — never argv.
+  Verified live: each emits its stable id on a fresh non-interactive run
+  (claude ``.session_id``; codex ``thread.started.thread_id``; pi session
+  header ``id``) and re-emits the SAME id after non-interactive
+  continuation.
 - **Eviction (provider-declared session-not-found)**: the eviction audit and
-the durable ``agent_session_id = NULL`` invalidation commit in ONE
-transaction BEFORE the full-prompt fallback launch. If the fallback also
-fails, the id remains NULL and the delivery watermark does NOT advance — the
-next wake re-attempts the same range from a full prompt. (THR-187/THR-195
-missing-session wedges are this mechanism; THR-198's healthy-session
-equality wedge needs only transport — no row change.)
+  the durable ``agent_session_id = NULL`` invalidation commit in ONE
+  transaction BEFORE the full-prompt fallback launch. If the fallback also
+  fails, the id remains NULL and the delivery watermark does NOT advance —
+  the next wake re-attempts the same range from a full prompt. The
+  classifier is executor-specific, reads ONLY the proven return code and
+  stream, and REQUIRES the anchored provider-declared signature bound to the
+  exact attempted session id as the COMPLETE observed stderr line
+  (horizontal whitespace [ \t] only where the observed contract permits
+  spacing; LF/CRLF are never consumed) — claude ``No conversation found with session
+  ID: <attempted-id>``, codex ``Error: thread/resume: thread/resume failed:
+  no rollout found for thread id
+  <attempted-id> (code -32600)`` (the CLI envelope is part of the observed
+  line), pi ``No session found matching
+  '<attempted-id>'`` (each rc=1, stderr, and verified 2026-08-28 to echo
+  the attempted id verbatim; the id is regex-escaped) — and never classifies
+  generic legacy substrings, cross-provider text, stdout-only text, wrong
+  rc, wrong/missing id, prefix/suffix near-matches, a marker embedded in
+  auth/quota/transport output, or ambiguous output as eviction (no
+  fresh retry for those).
+  (THR-187/THR-195 missing-session wedges are this mechanism; THR-198's
+  healthy-session equality wedge needs only transport — no row change.)
 - **Lifecycle invalidation**: thread archive, a SUCCESSFUL executor switch,
-and agent termination clear resume state (id NULL, watermark 0) so any later
-wake starts fresh. Each boundary is a database-owned transaction: the
-participant reset and its ``thread_session_invalidated`` audit commit
-atomically (the termination reset+audit run inside the existing
-terminate-cleanup transaction; archive wraps the ``ARCHIVED`` status flip,
-every participant reset, and the audit in one transaction). A reset/audit
-failure leaves no partial lifecycle state — a failed switch is rolled back
-(prior frontmatter restored, workspace re-reconciled, so no new executor is
-installed) and a failed archive leaves the thread OPEN with every session
-row unmodified. Participant removal already hard-deletes the row (session
-state goes with it — no redundant clear).
+  and agent termination clear resume state (id NULL, watermark 0) so any later
+  wake starts fresh. Each boundary is a database-owned transaction: the
+  participant reset and its ``thread_session_invalidated`` audit commit
+  atomically (the termination reset+audit run inside the existing
+  terminate-cleanup transaction; archive wraps the ``ARCHIVED`` status flip,
+  every participant reset, and the audit in one transaction). A reset/audit
+  failure leaves no partial lifecycle state — a failed switch is rolled back
+  (prior frontmatter restored, workspace re-reconciled, so no new executor is
+  installed) and a failed archive leaves the thread OPEN with every session
+  row unmodified. Participant removal already hard-deletes the row (session
+  state goes with it — no redundant clear). The proven contracts do NOT
+  require executor/model/config fingerprint invalidation (codex and pi
+  resume across model/config changes), so no fingerprint column is added.
 
 **Thread reply delivery lifecycle (GH-688 Phase 1).** Conversational
 ``REPLY`` wakes are coalesced and durably tracked per ``(thread_id,

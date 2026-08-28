@@ -5593,13 +5593,23 @@ class Database:
 
     @_synchronized
     def list_thread_messages(
-        self, thread_id: str, *, since_seq: int = 0, limit: int = 1000
+        self, thread_id: str, *, since_seq: int = 0, limit: int | None = 1000
     ) -> list[ThreadMessage]:
-        cursor = self._conn.execute(
+        """Messages for ``thread_id`` with ``seq > since_seq``, ascending.
+
+        ``limit`` caps the returned row count; pass ``None`` for an uncapped
+        load — the daemon's resume seam needs the complete canonical
+        transcript to prove delta completeness (TASK-5989).
+        """
+        sql = (
             "SELECT * FROM thread_messages "
-            "WHERE thread_id = ? AND seq > ? ORDER BY seq LIMIT ?",
-            (thread_id, since_seq, limit),
+            "WHERE thread_id = ? AND seq > ? ORDER BY seq"
         )
+        params: list = [thread_id, since_seq]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        cursor = self._conn.execute(sql, params)
         rows = cursor.fetchall()
         attachments_by_seq = self._attachments_for_messages(
             thread_id,
@@ -5621,6 +5631,16 @@ class Database:
             )
             for r in rows
         ]
+
+    @_synchronized
+    def get_thread_max_message_seq(self, thread_id: str) -> int:
+        """Authoritative highest transcript seq for ``thread_id`` (0 if empty).
+
+        Read-only — the independent upper bound the thread runner uses to
+        prove that the loaded transcript covers the complete required range
+        before authorizing a resumed delta prompt (TASK-5989).
+        """
+        return self._thread_tail_seq(thread_id)
 
     @_synchronized
     def get_thread_message_by_seq(
