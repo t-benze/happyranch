@@ -118,7 +118,7 @@ export const searchMemory = (
 // Founder-facing agent write routes (Agents surface reshape, design-overhaul)
 // ---------------------------------------------------------------------------
 
-/** Switch an agent's executor end-to-end (org .md + workspace agent.yaml). */
+/** Switch an agent's executor end-to-end (org .md frontmatter + executor workspace bootstrap). */
 export const setAgentExecutor = (
   slug: string,
   agentName: string,

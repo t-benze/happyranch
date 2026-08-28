@@ -9,7 +9,7 @@ Triggered on-demand when the founder asks you to "reflect" inside a thread turn.
 
 ## Identity
 
-Read your agent name from `agent.yaml` in the workspace root if you don't already know it. Every `happyranch learning ...` and `happyranch kb ...` call takes `--agent <your_name>` where required.
+Read your agent name from your workspace directory name (or the `# Agent:` header of your bootstrap `CLAUDE.md`/`AGENTS.md`) if you don't already know it. Every `happyranch learning ...` and `happyranch kb ...` call takes `--agent <your_name>` where required.
 
 ## START — opening report as a thread reply
 

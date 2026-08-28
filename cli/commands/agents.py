@@ -37,9 +37,10 @@ def cmd_init_agent(args: argparse.Namespace) -> None:
                 return
             agent = event.get("agent", "")
             phase = event.get("phase", "")
-            # Executor drift: org .md frontmatter disagrees with the workspace
-            # agent.yaml. init does NOT auto-reconcile — surface the values and
-            # the exact command to fix it.
+            # Executor drift: pre-THR-095 daemons could report that the org
+            # .md frontmatter disagreed with a workspace agent.yaml. THR-095
+            # retired agent.yaml for org agents, so current daemons never emit
+            # this phase; the branch is kept for older-daemon compatibility.
             if phase == "executor_drift":
                 print(
                     f"  [{agent}] WARNING executor drift: "
@@ -101,7 +102,7 @@ def _manage_repo_payload_from_file(path: str) -> tuple[str, dict]:
 
 
 def cmd_manage_repo(args: argparse.Namespace) -> None:
-    """Agent callback: add, remove, or update a repo in agent.yaml."""
+    """Agent callback: add, remove, or update a repo in AgentDef.repos (org/agents/<name>.md frontmatter)."""
     if not args.org:
         print("error: --org <slug> is required for agent callbacks", file=sys.stderr)
         sys.exit(1)

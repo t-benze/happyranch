@@ -179,9 +179,10 @@ def test_ensure_workspace_ready_migrates_recent_tasks_to_task_history(test_setti
     assert "TASK-001 old entry" in migrated
 
 
-def test_build_claude_md_points_at_agent_yaml_for_repos(test_settings, tmp_dir, runtime):
-    """CLAUDE.md should redirect readers to agent.yaml for the repo list,
-    not duplicate it inline — agent.yaml is the source of truth."""
+def test_build_claude_md_points_at_agent_def_frontmatter_for_repos(test_settings, tmp_dir, runtime):
+    """CLAUDE.md should redirect readers to AgentDef.repos in the agent's
+    org/agents/<name>.md frontmatter for the repo list, not duplicate it
+    inline — the frontmatter is the authoritative source (THR-095/THR-212)."""
     builder = ContextBuilder(test_settings, runtime, slug="test")
     workspace = tmp_dir / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -193,7 +194,15 @@ def test_build_claude_md_points_at_agent_yaml_for_repos(test_settings, tmp_dir, 
     )
     content = (workspace / "CLAUDE.md").read_text()
     assert "Available Repositories" in content
-    assert "agent.yaml" in content
+    # The authoritative repo source is the AgentDef frontmatter, not agent.yaml.
+    assert "org/agents/dev_agent.md" in content
+    assert "AgentDef.repos" in content
+    assert "agent.yaml" not in content
+    # Provisioning-vs-refresh distinction: bootstrap paths (enrollment/init/
+    # manage-repo) provision missing clones; session spawn only
+    # fast-forward-pulls existing clones (refresh_workspace_repos, fail-open).
+    assert "provision missing clones" in content
+    assert "fast-forward-pulls existing" in content
     # The repo names themselves must not be inlined — that would drift.
     assert "repos/my-opc/" not in content
     assert "repos/web-app/" not in content
