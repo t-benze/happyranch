@@ -1244,25 +1244,51 @@ workspaces/
 > classification (allow / named exclusion / reject); see 05c-orchestrator
 > §Organization portability.
 
-**Advisory workspace-disk context (THR-195 / TASK-5971).** At task-session
-launch (``Orchestrator._run_agent``), a bounded, fail-open **ADVISORY**
-workspace-disk snapshot may be packed into the session prompt through the
-``protocol_doc_manifest`` note seam (the same seam as the repo-freshness
-note) — but ONLY when the launched root task was spawned by a Schedule
-(reverse lookup over the existing ``schedules.spawned_task_ids`` link;
-ordinary task, thread, wake, dream, and schedule-fire sessions never receive
-it). The block is packed fresh at session launch; it is never stored in the
-task brief or in any Schedule field. It is **stale on arrival**, is **not an
-eligibility list** and **not a candidate list**, labels no path safe, and
-recommends no removal — every path and fact must be re-derived independently
-and immediately before any action. It contains only aggregate measurements
-(total/largest workspace sizes, registered-worktree counts joined to task
-status, dependency-directory counts/sizes, live sessions by agent) and never
-enumerates paths. Measurement is bounded (wall-clock deadline, traversal and
-subprocess caps) and fail-open: a timeout or error yields an explicit
-``measurement unavailable`` advisory note and never prevents session
-spawning. See 05c-orchestrator §Advisory workspace-disk context for the
-full contract.
+**Daemon-managed workspace cleanup scheduler (THR-195 seq 129).** Cleanup is a
+**daemon-managed, system-default capability** independent of all user
+Schedules. The daemon runs a periodic loop
+(``runtime/daemon/workspace_cleanup_scheduler.py``, registered in
+``runtime/daemon/app.py``) that performs a bounded aggregate workspace
+measurement and, when the weekly occurrence is due and unserviced and no
+prior cleanup task is in flight, triggers an ordinary root task for the
+responsible engineering agent with a **daemon-composed brief** that packs the
+fresh measurement as **ADVISORY** context at trigger time. It never uses,
+creates, or modifies a Schedule, never injects anything into the shared
+session-prompt seam (``protocol_doc_manifest``), and never performs cleanup
+itself. Ordinary task, thread, wake, dream, and Schedule-spawned sessions are
+byte-identical to a runtime without the feature.
+
+The packed block is advisory sizing context ONLY. It is **stale on arrival**,
+is **not an eligibility list** and **not a candidate list**, labels no path
+safe, and recommends no removal — every path and fact must be re-derived
+independently and immediately before any action. It contains only aggregate
+measurements/status: ``measured_at``; aggregate total and largest workspace
+sizes; aggregate registered-worktree counts joined to task status
+(``TASK-\d+`` prefix match handles suffixed worktree names like
+``TASK-5567-base691``; unknown or missing tasks are unclassified, never
+assumed terminal); aggregate dependency-directory
+(``node_modules``/``.venv``) counts/sizes including the inside-
+``.claude/worktrees`` split; and live sessions by agent from
+``SessionTracker``. It never enumerates paths and never uses pending jobs or
+``blocked_on_job_ids`` as liveness. Measurement is explicitly bounded (one
+wall-clock deadline shared across every subprocess — each git call receives
+``min(per-call cap, remaining)`` with expiry re-checked after every call and
+after the last repository — plus entry/depth/workspace/repo/worktree caps)
+and fail-open: every timeout, error, or cardinality-cap hit yields an explicit
+``measurement unavailable`` advisory note and can never block daemon
+operation or task/session spawning.
+
+Cadence and trigger policy derive from the approved TASK-5552 design: weekly
+(Sunday 03:30 in the org's effective timezone), at most one trigger per
+weekly window (a missed window is never replayed), and one run at a time (a
+later occurrence fires only after the preceding cleanup task is terminal).
+The daemon-composed brief is **REPORT-ONLY** (TASK-5552 §6 rollout: the first
+runs produce an inventory and nothing else); enabling any mutating brief is a
+separately approved follow-up decision. The responsible agent reports results
+to the founder in a single durable founder-visible thread (fixed subject,
+created by the daemon on first trigger) using a daemon-minted single-use
+invocation token embedded in the brief — see 05c-orchestrator §Daemon-managed
+workspace cleanup scheduler for the full contract.
 
 ### Three layers of memory
 

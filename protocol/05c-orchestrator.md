@@ -1115,35 +1115,52 @@ agent-driven Schedule records with a dedicated scheduler/runner/spawn-callback
 pipeline. The two systems coexist and do not share data or scheduling
 infrastructure.
 
-**Advisory workspace-disk context for schedule-spawned task sessions
-(THR-195 / TASK-5971).** When the daemon launches a task session for a root
-task that a Schedule spawned (the task's id appears in that Schedule's
-``spawned_task_ids`` — resolved by the no-schema reverse lookup
-``ScheduleStore.find_by_spawned_task_id``), the orchestrator composes a
-bounded, fail-open **ADVISORY** workspace-disk snapshot into the session
-prompt through the existing ``protocol_doc_manifest`` note seam (the same
-seam as the repo-freshness note). This exists so recurring cleanup runs get
-standard daemon-side sizing/status context at trigger time without paying for
-an inventory session.
+**Daemon-managed workspace cleanup scheduler (THR-195 seq 129).** Workspace
+cleanup is a **daemon-managed, system-default capability** that runs on its
+own without user configuration and is fully independent of user Schedules
+(founder ruling THR-195 seq 129; manager resolution seq 130; implementation
+direction seq 131). The daemon registers a periodic loop
+(``runtime/daemon/workspace_cleanup_scheduler.py`` — the sixth daemon-owned
+loop alongside dream/schedule/zombie/direct-connect, one registration in
+``runtime/daemon/app.py``) that:
 
-The block is advisory sizing context ONLY. It is packed fresh at session
-launch — it is never templated into, or persisted as, ``normalized_brief``
-or any Schedule field. It is **stale on arrival**, is **not an eligibility
-list** and **not a candidate list**, labels no path safe, and recommends no
-removal. Every path and fact must be re-derived independently and immediately
-before any action. The block carries only aggregate measurements/status:
-``measured_at``; aggregate total and largest workspace sizes; aggregate
-registered-worktree counts joined to task status (``TASK-\d+`` prefix match
-handles suffixed worktree names like ``TASK-5567-base691``; unknown or
-missing tasks are unclassified, never assumed terminal); aggregate
-dependency-directory (``node_modules``/``.venv``) counts/sizes including the
-inside-``.claude/worktrees`` split; and live sessions by agent from
-``SessionTracker``. It never enumerates paths and never uses pending jobs or
-``blocked_on_job_ids`` as liveness. Measurement is explicitly bounded
-(wall-clock deadline, entry/depth/git-subprocess caps) and fail-open: any
-timeout or error produces an explicit ``measurement unavailable`` advisory
-note and can never prevent session spawning. Ordinary (non-schedule-spawned)
-task, thread, wake, dream, and schedule-fire sessions never receive the block.
+1. **Measures** org workspace aggregates with an explicit bounded,
+   fail-open budget: one true wall-clock deadline shared across all
+   collection — each git subprocess receives ``min(per-call cap, remaining
+   deadline)`` and expiry is re-checked after every subprocess and after the
+   last repository; workspace/repo/worktree cardinality caps propagate
+   truncation. Every timeout, error, or cap hit yields an explicit
+   ``measurement unavailable`` advisory status and can never block daemon
+   operation or task/session spawning.
+2. **Decides** on the weekly occurrence (Sunday 03:30 in the org's effective
+   timezone; TASK-5552 §6). At most one trigger per weekly window (a missed
+   window is never replayed) and one run at a time: a later occurrence fires
+   only after the preceding cleanup task is terminal (TASK-5552 §3).
+3. **Triggers** an ordinary root task for the responsible engineering agent
+   (``insert_task`` + ``enqueue_task`` — the same pattern the Schedule spawn
+   callback uses, minus the Schedule) with a **daemon-composed brief** that
+   carries the fresh advisory snapshot at trigger time. The brief is never a
+   Schedule brief: no Schedule is looked up, created, or modified, and
+   nothing is persisted in any Schedule field. The brief is REPORT-ONLY
+   (TASK-5552 §6 rollout); no mutating brief ships in this capability.
+
+The packed advisory block is sizing context ONLY: **stale on arrival**, **not
+an eligibility list**, **not a candidate list**, labels no path safe,
+recommends no removal, contains only aggregate counts/sizes/status, never
+enumerates paths, and never uses pending jobs or ``blocked_on_job_ids`` as
+liveness. Every path and fact must be re-derived independently and
+immediately before any action.
+
+The responsible agent reports results to the founder in a **single durable
+founder-visible thread** (consultant seq 131: "one durable thread, not one
+per run"). The daemon resolves the thread by a fixed subject, creates it on
+first trigger (the shared ``_create_agent_thread_locked`` compose helper,
+composer = the responsible agent, recipient @founder), and passes the thread
+id plus a daemon-minted single-use invocation token in the brief; the agent
+appends the report via the existing ``happyranch threads reply`` route.
+Silence on that thread is the loop-stopped signal. Report content: measured
+before/after sizes, exact removals (none in report-only), skips, and any
+ambiguity (seq 130).
 
 ---
 

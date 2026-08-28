@@ -48,7 +48,6 @@ from runtime.orchestrator.workspace_adapters import (
     refresh_workspace_repos,
     validate_workspace_skills_integrity,
 )
-from runtime.orchestrator.workspace_context import maybe_build_cleanup_context_note
 from runtime.orchestrator.teams import TeamsRegistry
 
 logger = logging.getLogger(__name__)
@@ -883,21 +882,9 @@ class Orchestrator:
         repo_refresh_results = refresh_workspace_repos(workspace)
 
         # Protocol doc manifest — bundled-path one-liner per doc (THR-070).
-        # THR-195 / TASK-5971: a bounded, fail-open ADVISORY workspace-disk
-        # note is appended only when this task was spawned by a Schedule
-        # (reverse lookup over ``spawned_task_ids``); ordinary sessions get
-        # an empty string and a byte-identical prompt. The note is composed
-        # fresh here at session launch — never templated into or persisted
-        # as the brief or any Schedule field.
         protocol_doc_manifest = "\n".join(filter(None, (
             resolve_protocol_doc_manifest(settings=self._settings),
             format_repo_refresh_note(repo_refresh_results),
-            maybe_build_cleanup_context_note(
-                db=self._db,
-                paths=self._paths,
-                sessions=self._sessions,
-                task_id=task_id,
-            ),
         )))
 
         # THR-109: resolve inherited task attachments and materialize them
