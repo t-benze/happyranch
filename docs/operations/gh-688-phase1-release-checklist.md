@@ -437,13 +437,27 @@ under-approximation that never fabricates coverage.
   A thread runs the exchange only when BOTH `mention_routing_enabled` AND
   `reply_exchange_enabled` are on.
 - **Rollback (one write, no migration):** set the org kill-switch
-  `org_settings.threads.reply_exchange_enabled=false` → mode 1 (shipped
-  mention routing) everywhere. Existing exchange rows go dormant (never
-  written by reverted/off code). Re-enable → new exchange rows from the new
-  epoch (write-time-frozen; **no historical backfill**). Reverting code also
-  works — the tables are never read or written. `mention_routing_enabled`
-  values are untouched in both directions (destructive retirement is
-  explicitly deferred).
+  `org_settings.threads.reply_exchange_enabled=false` (via
+  `POST /orgs/{slug}/threads/exchange-routing` or `happyranch threads
+  org-exchange-routing --enabled off`; per-thread rollback via the existing
+  per-thread toggle) → mode 1 (shipped mention routing) everywhere.
+  The disable is **coverage-safe retirement**: every open exchange epoch is
+  atomically CAS-closed/terminalized with a DISTINCT disable reason
+  (`exchange_disabled` per-thread, `org_exchange_disabled` org-wide) and
+  every deferred pair with unacknowledged content gets exactly ONE
+  slot-checked range-covering catch-up wake (the same exactly-once enqueue
+  ownership as every other wake — startup recovery re-enqueues a minted
+  token if the process dies before enqueue). Obligations are never dropped,
+  watermarks stay monotonic and contiguous, no fabricated acknowledgements,
+  and no dormant resumable row is ever left behind. Repeated disables are
+  idempotent (CAS per epoch). **Re-enable creates only NEW epochs**
+  (write-time-frozen; **no historical backfill, no resurrection**); the
+  first re-enable after a revert/redeploy also retires any stale pre-disable
+  open rows (the belt: a raw operator DB write is additionally retired
+  within one reaper tick (30s) or at the next conversational write on the
+  affected thread). Reverting code also works — the tables are never read
+  or written while off. `mention_routing_enabled` values are untouched in
+  both directions (destructive retirement is explicitly deferred).
 
 ### 9.2 F1 acceptance (falsifiable, run against the live DB read-only)
 
@@ -476,6 +490,8 @@ under-approximation that never fabricates coverage.
 - catch-up wakes minted: <n>; coalesced releases: <n>
 - deferred wake sessions per burst: avg=<x> (expect →1)
 - G2 containment over F1 window: <covered>/<founder messages> (expect 0 loss)
-- rollback drill: org kill-switch off → mode 1 confirmed; re-enabled
+- rollback drill: org kill-switch off → mode 1 confirmed; open epochs
+  retired with `org_exchange_disabled` + catch-up wakes minted (count
+  recorded); re-enabled → only new epochs (no resurrection)
 - operator: <name/role>; noted anomalies: <none | ...>
 ```

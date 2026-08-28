@@ -557,7 +557,14 @@ def test_set_mention_routing_audit_failure_rolls_back_toggle(tmp_path, monkeypat
 def test_disabled_setting_applies_to_next_write_only(tmp_path):
     """Toggling mid-flight applies to FUTURE arrivals only (write-time
     routing): a wake already minted under the enabled default keeps its
-    claimed range even after the setting flips to disabled."""
+    claimed range even after the setting flips to disabled.
+
+    TASK-5966/TASK-5982 note: the first founder @mention also opened a
+    strict exchange (P={bravo}, D={alpha,charlie}); disabling mention
+    routing (the exchange's mode-1 precondition) retires that inert epoch
+    with coverage-safe catch-up at the next write seam, while the write
+    itself still broadcasts — the shipped mention-routing contract is
+    unchanged."""
     db = Database(tmp_path / "happyranch.db")
     _make_thread(db)
     _seq1, arrivals = db.record_conversational_arrival(
@@ -567,8 +574,27 @@ def test_disabled_setting_applies_to_next_write_only(tmp_path):
     )
     assert [a.agent_name for a in arrivals] == ["bravo"]
     db.set_thread_mention_routing_with_audit("THR-001", enabled=False)
-    # Next write broadcasts (disabled) — including the same mention.
-    assert _arrival_wake_names(
+    # Next write broadcasts (disabled) — including the same mention — and
+    # the inert open exchange is retired (never left dormant/resumable).
+    names = _arrival_wake_names(
         db, "THR-001", speaker="founder", body="@bravo two",
         recipients=["alpha", "bravo", "charlie"],
-    ) == ["alpha", "bravo", "charlie"]
+    )
+    assert sorted(set(names)) == ["alpha", "bravo", "charlie"]
+    # Catch-up tokens minted at retirement cover the deferred pairs' unread
+    # content (obligations never dropped, at-most-one slots honored).
+    for agent in ("alpha", "charlie"):
+        pair = db._conn.execute(
+            "SELECT acknowledged_through_seq, required_through_seq, "
+            "queued_invocation_token FROM thread_reply_delivery_state "
+            "WHERE thread_id = 'THR-001' AND agent_name = ?",
+            (agent,),
+        ).fetchone()
+        if pair["acknowledged_through_seq"] < pair["required_through_seq"]:
+            assert pair["queued_invocation_token"] is not None
+    row = db._conn.execute(
+        "SELECT state, close_reason FROM thread_reply_exchange "
+        "WHERE thread_id = 'THR-001'",
+    ).fetchone()
+    assert row["state"] == "released"
+    assert row["close_reason"] == "exchange_disabled"

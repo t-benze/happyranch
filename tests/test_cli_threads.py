@@ -1224,3 +1224,55 @@ def test_threads_show_prints_mention_routing_line(monkeypatch, capsys):
     cmd_threads_show(argparse.Namespace(org="alpha", thread_id="THR-001", json=False))
     out = capsys.readouterr().out
     assert "mention routing: off" in out
+
+
+def test_threads_org_exchange_routing_write_posts_and_prints(monkeypatch, capsys):
+    from cli.commands.threads import cmd_threads_org_exchange_routing
+
+    fake = Mock()
+    fake.post.return_value = _json_response({
+        "reply_exchange_enabled": False,
+        "retired_catchup": 2,
+    })
+    _stub_client(monkeypatch, fake)
+
+    cmd_threads_org_exchange_routing(argparse.Namespace(
+        org="alpha", enabled=False, json=False,
+    ))
+    out = capsys.readouterr().out
+    assert "Org alpha reply exchange kill-switch: off" in out
+    assert "catch-up wakes minted: 2" in out
+    fake.post.assert_called_once_with(
+        "/api/v1/orgs/alpha/threads/exchange-routing",
+        json={"reply_exchange_enabled": False},
+    )
+
+
+def test_threads_org_exchange_routing_idempotent_noop_printed(monkeypatch, capsys):
+    from cli.commands.threads import cmd_threads_org_exchange_routing
+
+    fake = Mock()
+    fake.post.return_value = _json_response({
+        "reply_exchange_enabled": True,
+        "idempotent": True,
+    })
+    _stub_client(monkeypatch, fake)
+
+    cmd_threads_org_exchange_routing(argparse.Namespace(
+        org="alpha", enabled=True, json=False,
+    ))
+    out = capsys.readouterr().out
+    assert "Org alpha reply exchange kill-switch: on (no-op)" in out
+    assert "catch-up wakes minted" not in out
+
+
+def test_threads_org_exchange_routing_requires_enabled(monkeypatch, capsys):
+    from cli.commands.threads import cmd_threads_org_exchange_routing
+
+    fake = Mock()
+    _stub_client(monkeypatch, fake)
+    with pytest.raises(SystemExit):
+        cmd_threads_org_exchange_routing(argparse.Namespace(
+            org="alpha", enabled=None, json=False,
+        ))
+    assert not fake.post.called

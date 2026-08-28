@@ -28,6 +28,8 @@ exercised at the transaction boundary (entered/release discipline), never
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -1138,17 +1140,21 @@ def test_org_kill_switch_overrides_per_thread_flag(tmp_path):
 def test_exchange_routing_toggle_with_audit_is_atomic_and_idempotent(tmp_path):
     db = Database(tmp_path / "happyranch.db")
     _make_thread(db, participants=(EM, CH))
-    assert db.set_thread_exchange_routing_with_audit(
+    transitioned, arrivals = db.set_thread_exchange_routing_with_audit(
         "THR-001", enabled=False,
-    ) is True
+    )
+    assert transitioned is True
+    assert arrivals == []  # no open epoch to retire
     t = db.get_thread("THR-001")
     assert t.reply_exchange_enabled is False
     # mention_routing_enabled untouched (independent control).
     assert t.mention_routing_enabled is True
-    # Idempotent no-op: no write, no audit.
-    assert db.set_thread_exchange_routing_with_audit(
+    # Idempotent no-op: no write, no audit, no retirement.
+    transitioned, arrivals = db.set_thread_exchange_routing_with_audit(
         "THR-001", enabled=False,
-    ) is False
+    )
+    assert transitioned is False
+    assert arrivals == []
     rows = db._conn.execute(
         "SELECT COUNT(*) AS n FROM audit_log "
         "WHERE action = 'thread_exchange_routing_changed'",
@@ -1159,3 +1165,395 @@ def test_exchange_routing_toggle_with_audit_is_atomic_and_idempotent(tmp_path):
         db.set_thread_exchange_routing_with_audit(
             "THR-MISSING", enabled=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# TASK-5982 — coverage-safe retirement of open epochs on disable (rollback
+# compatibility). Disabling the per-thread flag or the org kill-switch
+# atomically CAS-closes/terminalizes each open epoch with a distinct
+# disable/rollback reason and mints exactly-one slot-checked catch-up per
+# uncovered deferred pair (never a fabricated watermark, never a hidden
+# resumable row). Re-enable creates only new epochs.
+# ---------------------------------------------------------------------------
+
+
+def test_per_thread_disable_retires_open_epoch_with_catch_up(tmp_path):
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    open_seq = _open_exchange_via_mention(db)
+    ex = _open_exchange(db)
+    assert ex is not None
+    assert int(ex["open_seq"]) == open_seq
+    # Deferred member CH holds an uncovered obligation (acked = seq-1).
+    ch_row = _pair_row(db, "THR-001", CH)
+    assert ch_row["acknowledged_through_seq"] < ch_row["required_through_seq"]
+    assert ch_row["queued_invocation_token"] is None
+
+    transitioned, arrivals = db.set_thread_exchange_routing_with_audit(
+        "THR-001", enabled=False,
+    )
+    assert transitioned is True
+    # Exactly-one slot-checked catch-up: CH mints; EM's priority wake is
+    # coalesced (at-most-one queued/running slot honored).
+    tokens = _tokens(arrivals)
+    assert len(tokens) == 1
+    ch_catchup = [a for a in arrivals if a.agent_name == CH][0]
+    assert ch_catchup.invocation_token == tokens[0]
+    assert ch_catchup.from_seq == int(ch_row["acknowledged_through_seq"]) + 1
+    assert ch_catchup.through_seq == int(ch_row["required_through_seq"])
+    # The token is the durable delivery-state queued slot (exactly-once
+    # enqueue ownership — the caller enqueues it after commit).
+    ch_after = _pair_row(db, "THR-001", CH)
+    assert ch_after["queued_invocation_token"] == tokens[0]
+
+    row = db._conn.execute(
+        "SELECT * FROM thread_reply_exchange WHERE thread_id = 'THR-001'",
+    ).fetchone()
+    assert row["state"] == "released"
+    assert row["close_reason"] == "exchange_disabled"
+    assert row["closed_at"] is not None
+    # Deferral rows released; closed audit truthful.
+    deferrals = _deferral_rows(db, "THR-001", int(row["exchange_id"]))
+    assert [d["state"] for d in deferrals] == ["released"]
+    closed = [a for a in _exchange_audits(db)
+              if a["action"] == "thread_exchange_closed"]
+    assert len(closed) == 1
+    assert closed[0]["payload"]["close_reason"] == "exchange_disabled"
+
+    # Shipped mention-routing mode is preserved after disable.
+    t = db.get_thread("THR-001")
+    assert t.reply_exchange_enabled is False
+    assert t.mention_routing_enabled is True
+    _seq, wake = _arrival(
+        db, mentions_body=f"@{EM} please", recipients=[EM, CH],
+    )
+    assert [a.agent_name for a in wake] == [EM]
+    assert _open_exchange(db) is None  # no new epoch while disabled
+
+
+def test_org_kill_switch_disable_retires_open_epochs_across_threads(tmp_path):
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, thread_id="THR-001", participants=(EM, CH))
+    _make_thread(db, thread_id="THR-002", participants=(EM, PL))
+    _open_exchange_via_mention(db, thread_id="THR-001")
+    _open_exchange_via_mention(db, thread_id="THR-002")
+
+    transitioned, arrivals = db.set_org_exchange_routing_with_audit(
+        enabled=False,
+    )
+    assert transitioned is True
+    # One catch-up per uncovered deferred pair across BOTH threads (EM's
+    # priority wakes are coalesced arrivals, not new tokens).
+    tokens = _tokens(arrivals)
+    assert len(tokens) == 2
+    assert sorted({a.agent_name for a in arrivals if a.invocation_token}) == [CH, PL]
+    for tid in ("THR-001", "THR-002"):
+        row = db._conn.execute(
+            "SELECT * FROM thread_reply_exchange WHERE thread_id = ?",
+            (tid,),
+        ).fetchone()
+        assert row["state"] == "released"
+        assert row["close_reason"] == "org_exchange_disabled"
+        assert db._thread_reply_exchange_enabled(tid) is False
+    # Per-thread flags untouched by the org switch.
+    for tid in ("THR-001", "THR-002"):
+        t = db.get_thread(tid)
+        assert t.reply_exchange_enabled is True
+        assert t.mention_routing_enabled is True
+
+    # Repeated disable: idempotent — no transition, no re-mint, no re-audit.
+    transitioned, arrivals = db.set_org_exchange_routing_with_audit(
+        enabled=False,
+    )
+    assert transitioned is False
+    assert arrivals == []
+
+
+def test_repeated_disable_is_idempotent_no_double_mint(tmp_path):
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    _open_exchange_via_mention(db)
+
+    t1, arrivals1 = db.set_thread_exchange_routing_with_audit(
+        "THR-001", enabled=False,
+    )
+    assert t1 is True
+    assert len(_tokens(arrivals1)) == 1
+    ch_row = _pair_row(db, "THR-001", CH)
+    token = ch_row["queued_invocation_token"]
+    assert token is not None
+
+    # A second disable is a true no-op: no transition, no new mint, and the
+    # epoch (already released) is a CAS miss — no duplicate close audit.
+    t2, arrivals2 = db.set_thread_exchange_routing_with_audit(
+        "THR-001", enabled=False,
+    )
+    assert t2 is False
+    assert arrivals2 == []
+    assert _pair_row(db, "THR-001", CH)["queued_invocation_token"] == token
+    closed = [a for a in _exchange_audits(db)
+              if a["action"] == "thread_exchange_closed"]
+    assert len(closed) == 1
+
+
+def test_disable_then_reenable_creates_new_epoch_only(tmp_path):
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    seq1 = _open_exchange_via_mention(db)
+    ex1 = _open_exchange(db)
+    assert ex1 is not None
+
+    t, arrivals = db.set_thread_exchange_routing_with_audit(
+        "THR-001", enabled=False,
+    )
+    assert t is True
+    assert len(_tokens(arrivals)) == 1
+
+    # Re-enable: no stale epoch to retire; a fresh epoch can open.
+    t, arrivals = db.set_thread_exchange_routing_with_audit(
+        "THR-001", enabled=True,
+    )
+    assert t is True
+    assert arrivals == []
+    seq2 = _open_exchange_via_mention(db)
+    ex2 = _open_exchange(db)
+    assert ex2 is not None
+    assert int(ex2["exchange_id"]) > int(ex1["exchange_id"])
+    assert int(ex2["open_seq"]) > int(ex1["open_seq"])
+    # The historical epoch stays terminal — re-enable never resurrects it.
+    rows = db._conn.execute(
+        "SELECT state, close_reason FROM thread_reply_exchange "
+        "WHERE thread_id = 'THR-001' ORDER BY exchange_id",
+    ).fetchall()
+    assert [(r["state"], r["close_reason"]) for r in rows] == [
+        ("released", "exchange_disabled"), ("open", None),
+    ]
+
+
+def test_historical_open_row_retired_on_disable_self_heal(tmp_path):
+    """Code-revert/redeploy-equivalent scenario: an open epoch left by
+    pre-fix code (flag already off, row still OPEN — exactly the dormant
+    resumable row the old disable produced). The next disable call
+    self-heals: it retires the stale row with catch-up even though the flag
+    does not transition (idempotent retry that still converges)."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    _open_exchange_via_mention(db)
+    # Simulate the pre-fix disable: flag flipped with the epoch left open.
+    db._conn.execute(
+        "UPDATE threads SET reply_exchange_enabled = 0 WHERE id = 'THR-001'",
+    )
+    db._conn.commit()
+    assert _open_exchange(db) is not None
+
+    transitioned, arrivals = db.set_thread_exchange_routing_with_audit(
+        "THR-001", enabled=False,
+    )
+    assert transitioned is False  # flag already off — no re-audit
+    assert len(_tokens(arrivals)) == 1  # but the stale epoch retires + catch-up
+    row = db._conn.execute(
+        "SELECT * FROM thread_reply_exchange WHERE thread_id = 'THR-001'",
+    ).fetchone()
+    assert row["state"] == "released"
+    assert row["close_reason"] == "exchange_disabled"
+
+    # Re-enable afterwards: nothing stale to resurrect; new epochs only.
+    transitioned, arrivals = db.set_thread_exchange_routing_with_audit(
+        "THR-001", enabled=True,
+    )
+    assert transitioned is True
+    assert arrivals == []
+    assert _open_exchange(db) is None
+
+
+def test_historical_open_row_retired_on_reenable(tmp_path):
+    """Code-revert/redeploy-equivalent: a stale open row exists while the
+    flag is off and the founder re-enables directly (no intervening disable
+    call). The re-enable retires the stale epoch BEFORE the flag flips so it
+    can never be resurrected."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    _open_exchange_via_mention(db)
+    db._conn.execute(
+        "UPDATE threads SET reply_exchange_enabled = 0 WHERE id = 'THR-001'",
+    )
+    db._conn.commit()
+    assert _open_exchange(db) is not None
+
+    transitioned, arrivals = db.set_thread_exchange_routing_with_audit(
+        "THR-001", enabled=True,
+    )
+    assert transitioned is True
+    assert len(_tokens(arrivals)) == 1
+    row = db._conn.execute(
+        "SELECT * FROM thread_reply_exchange WHERE thread_id = 'THR-001'",
+    ).fetchone()
+    assert row["state"] == "released"
+    assert row["close_reason"] == "exchange_disabled"
+    # No stale row remains to be consulted once enabled.
+    assert _open_exchange(db) is None
+
+
+def test_org_kill_switch_reenable_retires_stale_rows(tmp_path):
+    """Org kill-switch set false by a pre-fix/raw write (epoch left open),
+    then re-enabled through the store method: the stale epoch is retired
+    with the org reason before the switch clears."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    _open_exchange_via_mention(db)
+    db.upsert_org_setting(
+        "threads", json.dumps({"reply_exchange_enabled": False}),
+    )
+    assert _open_exchange(db) is not None  # dormant row, not yet retired
+
+    transitioned, arrivals = db.set_org_exchange_routing_with_audit(
+        enabled=True,
+    )
+    assert transitioned is True
+    assert len(_tokens(arrivals)) == 1
+    row = db._conn.execute(
+        "SELECT * FROM thread_reply_exchange WHERE thread_id = 'THR-001'",
+    ).fetchone()
+    assert row["state"] == "released"
+    assert row["close_reason"] == "org_exchange_disabled"
+    assert db._thread_reply_exchange_enabled("THR-001") is True
+    assert _open_exchange(db) is None
+
+
+def test_disable_retires_epoch_at_write_seam(tmp_path):
+    """Belt: a raw/pre-fix disable leaves an open row; the next
+    conversational write retires it (CAS-close + catch-up joining the
+    write's arrivals) and the message itself is mention-routed normally."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    _open_exchange_via_mention(db)
+    db._conn.execute(
+        "UPDATE threads SET reply_exchange_enabled = 0 WHERE id = 'THR-001'",
+    )
+    db._conn.commit()
+    assert _open_exchange(db) is not None
+
+    _seq, arrivals = _arrival(
+        db, mentions_body=f"@{EM} please", recipients=[EM, CH],
+    )
+    row = db._conn.execute(
+        "SELECT * FROM thread_reply_exchange WHERE thread_id = 'THR-001'",
+    ).fetchone()
+    assert row["state"] == "released"
+    assert row["close_reason"] == "exchange_disabled"
+    # CH's uncovered obligation is covered by the catch-up token minted at
+    # the write seam (exactly-once slot ownership).
+    assert _pair_row(db, "THR-001", CH)["queued_invocation_token"] is not None
+    # Mention routing mode intact: the message wakes the mention set.
+    assert EM in [a.agent_name for a in arrivals]
+    assert _open_exchange(db) is None
+
+
+def test_disable_retires_epoch_at_reaper_seam(tmp_path):
+    """Belt: a raw/pre-fix disable leaves an open row; the 30s reaper tick
+    retires it with catch-up (no sleeps — direct reaper call)."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    _open_exchange_via_mention(db)
+    db._conn.execute(
+        "UPDATE threads SET reply_exchange_enabled = 0 WHERE id = 'THR-001'",
+    )
+    db._conn.commit()
+
+    arrivals = db.reaper_sweep_reply_exchanges()
+    assert len(_tokens(arrivals)) == 1
+    row = db._conn.execute(
+        "SELECT * FROM thread_reply_exchange WHERE thread_id = 'THR-001'",
+    ).fetchone()
+    assert row["state"] == "released"
+    assert row["close_reason"] == "exchange_disabled"
+    # A second tick is a CAS miss — no double mint.
+    assert db.reaper_sweep_reply_exchanges() == []
+
+
+def test_disable_races_reaper_closure_cas_exactly_once(tmp_path, monkeypatch):
+    """Disable racing the reaper/closure over the SAME open epoch: the
+    RLock serializes the two transactions and the CAS makes the loser a
+    silent miss — exactly one catch-up mint, one close audit, no double
+    release. Deterministic entered/release seam (no timing sleeps, no
+    threading.Barrier)."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    _open_exchange_via_mention(db)
+
+    entered = threading.Event()
+    release = threading.Event()
+    real_close = Database._close_reply_exchange_uncommitted
+    call_count = {"n": 0}
+
+    def seamed_close(self, thread_id, exchange_id, *, reason):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            entered.set()
+            assert release.wait(timeout=15)
+        return real_close(self, thread_id, exchange_id, reason=reason)
+
+    monkeypatch.setattr(
+        Database, "_close_reply_exchange_uncommitted", seamed_close,
+    )
+    results: dict = {}
+
+    def do_disable():
+        results["disable"] = db.set_thread_exchange_routing_with_audit(
+            "THR-001", enabled=False,
+        )
+
+    def do_reaper():
+        results["reaper"] = db.reaper_sweep_reply_exchanges()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_disable = pool.submit(do_disable)
+        assert entered.wait(timeout=15)  # disable holds the lock inside close
+        f_reaper = pool.submit(do_reaper)  # reaper queues on the RLock
+        release.set()  # let the disable finish; the reaper then sees no open row
+        f_disable.result(timeout=15)
+        f_reaper.result(timeout=15)
+
+    transitioned, arrivals = results["disable"]
+    assert transitioned is True
+    assert len(_tokens(arrivals)) == 1
+    assert results["reaper"] == []  # CAS miss — epoch already terminal
+    assert call_count["n"] == 1  # exactly one close fired
+    row = db._conn.execute(
+        "SELECT * FROM thread_reply_exchange WHERE thread_id = 'THR-001'",
+    ).fetchone()
+    assert row["state"] == "released"
+    assert row["close_reason"] == "exchange_disabled"
+    closed = [a for a in _exchange_audits(db)
+              if a["action"] == "thread_exchange_closed"]
+    assert len(closed) == 1
+
+
+def test_disable_races_inflight_pierce_wake_coalesces_no_second_token(tmp_path):
+    """Disable racing an in-flight pierce wake: a deferred member already
+    holds a covering queued wake (mention-pierce) — retirement must NOT mint
+    a second token (slot-checked exactly-once); the existing wake covers the
+    residual range."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    _open_exchange_via_mention(db)
+    # Pierce-wake CH mid-exchange (mentions pierce without joining cohort).
+    _seq, arrivals = _arrival(
+        db, mentions_body=f"@{CH} please", recipients=[EM, CH],
+    )
+    ch_before = _pair_row(db, "THR-001", CH)
+    assert ch_before["queued_invocation_token"] is not None
+
+    transitioned, arrivals = db.set_thread_exchange_routing_with_audit(
+        "THR-001", enabled=False,
+    )
+    assert transitioned is True
+    # No second token for CH — the pierce wake owns the residual.
+    assert all(a.invocation_token is None for a in arrivals)
+    ch_after = _pair_row(db, "THR-001", CH)
+    assert ch_after["queued_invocation_token"] == ch_before["queued_invocation_token"]
+    row = db._conn.execute(
+        "SELECT * FROM thread_reply_exchange WHERE thread_id = 'THR-001'",
+    ).fetchone()
+    assert row["state"] == "released"
+    assert row["close_reason"] == "exchange_disabled"

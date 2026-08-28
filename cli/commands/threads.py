@@ -421,6 +421,46 @@ def cmd_threads_exchange_routing(args: argparse.Namespace) -> None:
     print(f"Thread {data['thread_id']} reply exchange: {state}{idempotent}")
 
 
+def cmd_threads_org_exchange_routing(args: argparse.Namespace) -> None:
+    """Read or toggle the org-wide strict-exchange kill-switch (TASK-5982).
+
+    The org kill-switch ``org_settings.threads.reply_exchange_enabled`` is
+    the one-write global rollback control for the strict mention-led
+    exchange: ``--enabled off`` atomically retires EVERY open exchange epoch
+    org-wide (CAS-close with the ``org_exchange_disabled`` reason +
+    exactly-one slot-checked catch-up per uncovered deferred pair) and
+    flips the switch; ``--enabled on`` retires any stale pre-disable epochs
+    first, then clears the switch (re-enable creates only new epochs).
+    Repeated disables are idempotent. ``mention_routing_enabled`` and
+    per-thread ``reply_exchange_enabled`` values are untouched.
+    """
+    import json as _json
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+    if args.enabled is None:
+        raise SystemExit(
+            "org-exchange-routing requires --enabled (on|off|true|false|1|0); "
+            "the kill-switch has no per-thread read surface"
+        )
+    r = client.post(
+        f"/api/v1/orgs/{slug}/threads/exchange-routing",
+        json={"reply_exchange_enabled": args.enabled},
+    )
+    if not _ok(r):
+        return
+    data = r.json()
+    if args.json:
+        print(_json.dumps(data, indent=2))
+        return
+    state = "on" if data["reply_exchange_enabled"] else "off"
+    idempotent = " (no-op)" if data.get("idempotent") else ""
+    retired = data.get("retired_catchup")
+    retired_note = f"; catch-up wakes minted: {retired}" if retired else ""
+    print(f"Org {slug} reply exchange kill-switch: {state}{idempotent}{retired_note}")
+
+
 def _parse_mention_routing_flag(value: str) -> bool:
     """Shared on/off/true/false/1/0 parse for the mention-routing flag.
 
@@ -880,6 +920,26 @@ def register(sub) -> None:
         "--json", action="store_true", help="Emit the raw API response",
     )
     p_threads_exchange_routing.set_defaults(func=cmd_threads_exchange_routing)
+
+    p_threads_org_exchange_routing = threads_sub.add_parser(
+        "org-exchange-routing",
+        help="Toggle the org-wide strict-exchange kill-switch "
+             "(one-write global rollback, TASK-5982)",
+    )
+    p_threads_org_exchange_routing.add_argument(
+        "--org", default=None, help="Org slug",
+    )
+    p_threads_org_exchange_routing.add_argument(
+        "--enabled", required=True, type=_parse_mention_routing_flag,
+        help="on|off|true|false|1|0 (required: the kill-switch is "
+             "write-only from the CLI)",
+    )
+    p_threads_org_exchange_routing.add_argument(
+        "--json", action="store_true", help="Emit the raw API response",
+    )
+    p_threads_org_exchange_routing.set_defaults(
+        func=cmd_threads_org_exchange_routing,
+    )
 
     p_threads_invite = threads_sub.add_parser("invite", help="Founder: invite a participant to a thread")
     p_threads_invite.add_argument("--org", default=None, help="Org slug")

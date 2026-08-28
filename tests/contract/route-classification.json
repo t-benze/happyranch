@@ -182,13 +182,12 @@
     "POST /api/v1/executors/runtime/register": "conformance-gated runtime-level executor registration (THR-088)",
     "POST /api/v1/executors/runtime/register-binary": "cli-only runtime-level binary registration via scoped token (THR-088)",
     "POST /api/v1/runtime/adapters/register": "agent-only adapter administration route — no browser consumer (THR-107 D3)",
-
     "POST /api/v1/runtime/adapters/submit": "cli-only runtime-level adapter submission via scoped token (THR-107 seq141)",
-
     "POST /api/v1/orgs/{slug}/skills/agent": "agent-only — B2 custom-skill creation with verified session provenance (THR-055)",
     "POST /api/v1/orgs/{slug}/skills/recover": "bearer-authenticated operator/CLI-only B2 canonical-package recovery; no browser client or consumer",
     "POST /api/v1/orgs/{slug}/custom-skills/agent-create": "agent-only — opaque session-binding, not exercised from the Web UI (THR-055 B2)",
     "GET /api/v1/orgs/{slug}/portability-preflight": "cli-only org-portability preflight — read-only, no browser/TS consumer (THR-187 Slice A)",
-    "POST /api/v1/orgs/{slug}/reconcile-portability": "founder-only org-portability reconciliation — no browser/TS consumer (THR-187 Slice A)"
+    "POST /api/v1/orgs/{slug}/reconcile-portability": "founder-only org-portability reconciliation — no browser/TS consumer (THR-187 Slice A)",
+    "POST /api/v1/orgs/{slug}/threads/exchange-routing": "org-wide strict-exchange kill-switch (TASK-5982) — operator/CLI-only rollback control, never browser-consumed; the per-thread exchange-routing toggle remains the web surface"
   }
 }

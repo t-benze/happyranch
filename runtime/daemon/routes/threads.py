@@ -2930,24 +2930,80 @@ async def set_thread_exchange_routing_endpoint(
 ) -> dict:
     """TASK-5966 — independent rollback control: toggle the per-thread
     strict-exchange switch (mode 2 of the 3-mode position model).
-    ``mention_routing_enabled`` is NEVER touched here."""
+    ``mention_routing_enabled`` is NEVER touched here.
+
+    TASK-5982: disabling (or re-enabling over a stale pre-disable epoch)
+    atomically retires the thread's open exchange epochs with the
+    ``exchange_disabled`` reason and mints exactly-one slot-checked catch-up
+    per uncovered deferred pair; the catch-up tokens are enqueued AFTER the
+    transaction commits (exactly-once ownership), exactly like every other
+    wake. Re-enable can create only new epochs — never resurrect historical
+    ones."""
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     async with org.db_lock:
-        transitioned = org.db.set_thread_exchange_routing_with_audit(
+        transitioned, arrivals = org.db.set_thread_exchange_routing_with_audit(
             thread_id, enabled=body.reply_exchange_enabled,
         )
-        if not transitioned:
-            return {
-                "thread_id": thread_id,
-                "reply_exchange_enabled": body.reply_exchange_enabled,
-                "idempotent": True,
-            }
+    tokens_to_enqueue: list[str] = [
+        a.invocation_token for a in arrivals if a.invocation_token is not None
+    ]
+    for token in tokens_to_enqueue:
+        await org.thread_queue.put(
+            ThreadJob(org_slug=slug, invocation_token=token),
+        )
+    if not transitioned and not tokens_to_enqueue:
+        return {
+            "thread_id": thread_id,
+            "reply_exchange_enabled": body.reply_exchange_enabled,
+            "idempotent": True,
+        }
     return {
         "thread_id": thread_id,
         "reply_exchange_enabled": body.reply_exchange_enabled,
+        "retired_catchup": len(tokens_to_enqueue),
     }
+
+
+class SetOrgExchangeRoutingBody(BaseModel):
+    # Strict bool (same wire contract as the per-thread toggle): the org
+    # kill-switch is a boolean — "yes"/1/etc. must not silently coerce.
+    reply_exchange_enabled: Annotated[bool, Field(strict=True)]
+
+
+@router.post("/threads/exchange-routing")
+async def set_org_exchange_routing_endpoint(
+    slug: str, body: SetOrgExchangeRoutingBody, org: OrgDep,
+) -> dict:
+    """TASK-5982 — org-wide kill-switch for the strict exchange (the
+    one-write global rollback control).
+
+    Disabling (true/absent -> false) atomically retires EVERY open exchange
+    epoch across ALL threads with the ``org_exchange_disabled`` reason +
+    exactly-one slot-checked catch-up per uncovered deferred pair; the
+    catch-up tokens are enqueued AFTER commit. Repeated disables are
+    idempotent (CAS per epoch; also self-heal stale pre-fix rows).
+    Re-enabling (false -> true/absent) retires any stale pre-disable epochs
+    first, then clears the switch — re-enable creates only new epochs and
+    never resurrects historical ones. ``mention_routing_enabled`` and
+    per-thread ``reply_exchange_enabled`` values are untouched. This route
+    has no web UI — it is the operator/CLI surface (never browser-consumed)."""
+    async with org.db_lock:
+        transitioned, arrivals = org.db.set_org_exchange_routing_with_audit(
+            enabled=body.reply_exchange_enabled,
+        )
+    tokens_to_enqueue: list[str] = [
+        a.invocation_token for a in arrivals if a.invocation_token is not None
+    ]
+    for token in tokens_to_enqueue:
+        await org.thread_queue.put(
+            ThreadJob(org_slug=slug, invocation_token=token),
+        )
+    resp: dict = {"reply_exchange_enabled": body.reply_exchange_enabled}
+    if not transitioned and not tokens_to_enqueue:
+        resp["idempotent"] = True
+    return resp
 
 
 # ---------------------------------------------------------------------------
