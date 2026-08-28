@@ -288,12 +288,21 @@ Traps:
   `agent_session_id = NULL` invalidation commit in ONE transaction BEFORE the
   full-prompt fallback; a failed fallback leaves the id NULL and the delivery
   watermark unadvanced. Classified ONLY from the executor that ran, reading
-  ONLY the proven return code and stream — claude legacy markers on stderr
-  (rc=1, probe `No conversation found with session ID: <uuid>`), codex
-  `no rollout found for thread id` + `(code -32600)` (rc=1 stderr), pi
-  `No session found matching` (rc=1 stderr). Cross-provider text, stdout-
-  only text, wrong rc, malformed/near-matches, and generic failure / auth /
-  quota / transport / ambiguous output never trigger the fresh retry.
+  ONLY the proven return code and stream, and REQUIRING the anchored
+  provider-declared signature bound to the regex-escaped attempted session id
+  — claude `No conversation found with session ID: <attempted-id>` (rc=1
+  stderr), codex `no rollout found for thread id <attempted-id>
+  (code -32600)` (rc=1 stderr), pi `No session found matching
+  '<attempted-id>'` (rc=1 stderr) — each verified 2026-08-28 to echo the
+  attempted id verbatim. Generic legacy substrings, cross-provider text,
+  stdout-only text, wrong rc, wrong/missing id, prefix/suffix near-matches,
+  a marker embedded in auth/quota/transport output, and generic failure /
+  auth / quota / transport / ambiguous output never trigger the fresh retry.
+- **Resume eligibility (<=0 watermark).** A stored provider id whose
+  `last_resumed_seq` is null/zero/negative (<= 0) is never eligible for
+  resume — the runner must make a fresh invocation with the complete
+  canonical transcript; resume requires a strictly positive delivered
+  frontier (plus the full contiguity proof).
 - **Lifecycle invalidation (THR-200).** Archive, successful executor switch, and
   agent termination clear resume state (id NULL, watermark 0). Each boundary is
   a database-owned transaction: the participant reset and its
@@ -321,7 +330,7 @@ Traps:
   task path and wake/dream runners always launch fresh. Pinned by
   `tests/test_thread_resume_parity.py`.
 - `ExecutorResult.agent_session_id` is not `ExecutorResult.session_id`.
-- **GH-688 Phase 1 claim gate + no-message-omission proof.** For a claimed conversational `REPLY`, a resumed session may use the delta only when the stored watermark is strictly below the claim's `running_from_seq` AND the ENTIRE required post-watermark range is proven present and contiguous at the production seam: the runner loads the canonical transcript UNCAPPED, independently queries the authoritative transcript max, and authorizes the delta only when every required claimed sequence exists (the claim's inclusive end must also exist). Truncated loads, internal holes, equal/ahead/null watermarks, and claim ends beyond the transcript fail closed to the genuinely complete canonical full prompt — a delta can never omit a message the delivery state requires. `last_resumed_seq` is observed session presentation and is never the delivery cursor.
+- **GH-688 Phase 1 claim gate + no-message-omission proof.** For a claimed conversational `REPLY`, a resumed session may use the delta only when the stored watermark is strictly below the claim's `running_from_seq` AND the ENTIRE required post-watermark range is proven present and contiguous at the production seam: the runner loads the canonical transcript UNCAPPED, independently queries the authoritative transcript max, and authorizes the delta only when every required claimed sequence exists (the claim's inclusive end must also exist). Truncated loads, internal holes, equal/ahead watermarks, a null/zero/negative (<= 0) watermark (a stored id with watermark <= 0 is never eligible), and claim ends beyond the transcript fail closed to the genuinely complete canonical full prompt — a delta can never omit a message the delivery state requires. `last_resumed_seq` is observed session presentation and is never the delivery cursor.
 
 ## Thread Task Followup
 

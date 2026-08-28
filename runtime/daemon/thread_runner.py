@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -353,28 +354,161 @@ def _decline_by_default_doctrine() -> str:
 
 
 # Executor-specific provider-declared session-not-found contracts. Each is
-# proven against the INSTALLED CLI (TASK-5977 audit + 2026-08-28 re-probe;
-# bounded local probes, no API traffic):
+# proven against the INSTALLED CLI (TASK-5977 audit + 2026-08-28 TASK-6008
+# re-probe; bounded local probes, no API traffic) and carries the exact
+# ATTEMPTED provider session id verbatim:
 #   - claude 2.1.241: rc=1, stderr `No conversation found with session ID:
-#     <uuid>` (legacy markers since THR-200)
+#     <uuid>` — the single evidence-backed complete form; the THR-200-era
+#     generic legacy markers ("session not found", "no session found", …)
+#     carry no immutable producer/CLI evidence and are NOT accepted.
 #   - codex 0.148.0: rc=1, stderr `Error: thread/resume: thread/resume
 #     failed: no rollout found for thread id <uuid> (code -32600)`
 #   - pi 0.84.2: rc=1, stderr `No session found matching '<id>'`
-# All three emit the marker on STDERR with exit code 1 and empty stdout.
-# Classification is dispatched on the executor that actually ran and reads
-# ONLY the proven stream (stderr_tail) with the proven return code (1), so
-# cross-provider text, stdout-only text, wrong rc, and near-matches never
-# invalidate state. A miss is safe (degrades to a normal failure — no fresh
-# retry, session id/watermark untouched — never a wrong answer).
-_CLAUDE_EVICTION_MARKERS = (
-    "no conversation found",
-    "session not found",
-    "no session found",
-    "could not find session",
-    "no such session",
-)
-_CODEX_EVICTION_SIGNATURES = ("no rollout found for thread id", "(code -32600)")
+# All three emit the signature on STDERR with exit code 1 and empty stdout,
+# and each echoes the attempted id verbatim (claude after ``session ID:``,
+# codex after ``thread id``, pi inside single quotes).
+# Classification is dispatched on the executor that actually ran, reads ONLY
+# the proven stream (stderr_tail — never the ``error`` envelope, which falls
+# back to stdout text when stderr is empty), requires the proven return code
+# (1), and requires the ANCHORED provider-declared signature immediately
+# bound to the regex-escaped attempted session id. Wrong/missing id,
+# prefix/suffix near-matches, cross-provider text, stdout-only text, wrong
+# rc, generic legacy substrings, a marker embedded in auth/quota/transport
+# output, and ambiguous output never match — a miss is safe (degrades to a
+# normal failure — no fresh retry, session id/watermark untouched — never a
+# wrong answer).
+_CLAUDE_EVICTION_SIGNATURE = "no conversation found with session id:"
+_CODEX_EVICTION_SIGNATURE = "no rollout found for thread id"
+_CODEX_EVICTION_JSON_RPC_CODE = "(code -32600)"
 _PI_EVICTION_SIGNATURE = "no session found matching"
+# Auth/quota/transport signal tokens: an otherwise matching eviction marker
+# EMBEDDED in such output is not the provider declaring the session missing
+# (a 401/429/timeout/network blob is not session eviction). The attempted id
+# is stripped from stderr before this scan so an id that happens to contain
+# such a digit/letter run (e.g. a hex id with "401") can never self-trigger.
+_AUTH_QUOTA_TRANSPORT_TOKENS = (
+    "unauthorized",
+    "authentication",
+    "forbidden",
+    "401",
+    "402",
+    "403",
+    "429",
+    "quota",
+    "rate limit",
+    "rate_limit",
+    "overloaded",
+    "payment",
+    "credit",
+    "billing",
+    "timeout",
+    "timed out",
+    "connection reset",
+    "connection refused",
+    "network error",
+    "dns",
+    "proxy",
+    "tls",
+    "ssl",
+    "certificate",
+    "panic:",
+    "internal error",
+    "segmentation fault",
+)
+
+
+def _escaped_attempted_id(attempted_session_id: str | None) -> str | None:
+    """Regex-escaped lowercase attempted session id, or None when absent."""
+    if not attempted_session_id:
+        return None
+    return re.escape(attempted_session_id.lower())
+
+
+def _contains_auth_quota_transport_token(stderr: str, attempted_session_id: str) -> bool:
+    """True when stderr (minus the attempted id, so a hex id containing a
+    token-like run can never self-trigger) carries any auth/quota/transport
+    signal token — such output is never the eviction contract."""
+    if attempted_session_id:
+        stderr = stderr.replace(attempted_session_id.lower(), "")
+    return any(token in stderr for token in _AUTH_QUOTA_TRANSPORT_TOKENS)
+
+
+def _is_claude_session_evicted(result, attempted_session_id: str) -> bool:
+    """Claude 2.1.241 proven contract: rc=1, stderr exactly
+    ``No conversation found with session ID: <attempted-id>``. Only the
+    single evidence-backed complete form bound to the attempted id matches;
+    the removed THR-200-era generic legacy substrings never match, and Pi's
+    distinct signature never matches (no shared-substring acceptance)."""
+    if getattr(result, "returncode", None) != 1:
+        return False
+    stderr = (getattr(result, "stderr_tail", None) or "").lower()
+    escaped = _escaped_attempted_id(attempted_session_id)
+    if escaped is None:
+        return False
+    bound = re.search(
+        rf"{_CLAUDE_EVICTION_SIGNATURE}\s*{escaped}\b", stderr
+    ) is not None
+    if not bound:
+        return False
+    # A marker embedded in auth/quota/transport output is not eviction.
+    return not _contains_auth_quota_transport_token(stderr, attempted_session_id)
+
+
+def _is_codex_session_evicted(result, attempted_session_id: str) -> bool:
+    """codex-cli 0.148.0 proven contract: rc=1, stderr exactly
+    ``no rollout found for thread id <attempted-id> (code -32600)`` — the
+    JSON-RPC code must immediately follow the bound attempted id."""
+    if getattr(result, "returncode", None) != 1:
+        return False
+    stderr = (getattr(result, "stderr_tail", None) or "").lower()
+    escaped = _escaped_attempted_id(attempted_session_id)
+    if escaped is None:
+        return False
+    bound = re.search(
+        rf"{_CODEX_EVICTION_SIGNATURE}\s*{escaped}\s*"
+        rf"{re.escape(_CODEX_EVICTION_JSON_RPC_CODE)}",
+        stderr,
+    ) is not None
+    if not bound:
+        return False
+    return not _contains_auth_quota_transport_token(stderr, attempted_session_id)
+
+
+def _is_pi_session_evicted(result, attempted_session_id: str) -> bool:
+    """pi 0.84.2 proven contract: rc=1, stderr exactly
+    ``No session found matching '<attempted-id>'`` — the id is quoted."""
+    if getattr(result, "returncode", None) != 1:
+        return False
+    stderr = (getattr(result, "stderr_tail", None) or "").lower()
+    escaped = _escaped_attempted_id(attempted_session_id)
+    if escaped is None:
+        return False
+    bound = re.search(
+        rf"{_PI_EVICTION_SIGNATURE}\s*'{escaped}'", stderr
+    ) is not None
+    if not bound:
+        return False
+    return not _contains_auth_quota_transport_token(stderr, attempted_session_id)
+
+
+def _classify_session_evicted(
+    executor_name: str, result, attempted_session_id: str | None,
+) -> bool:
+    """Provider-declared session-not-found classification for the executor
+    that ran, bound to the exact attempted session id. Only the proven
+    executor/rc/stderr/signature contract may trigger the transactional
+    invalidation + one fresh full-transcript retry. Wrong executor, wrong
+    rc, stdout-only text, wrong/missing id, prefix/suffix near-matches,
+    generic legacy substrings, a marker embedded in auth/quota/transport
+    output, malformed output, and ambiguous failures all return False — the
+    invocation is a plain failure and no resume state is invalidated."""
+    if executor_name == "codex":
+        return _is_codex_session_evicted(result, attempted_session_id)
+    if executor_name == "pi":
+        return _is_pi_session_evicted(result, attempted_session_id)
+    if executor_name == "claude":
+        return _is_claude_session_evicted(result, attempted_session_id)
+    return False
 
 
 # Executors whose provider-session resume contract is PROVEN against the
@@ -384,55 +518,6 @@ _PI_EVICTION_SIGNATURE = "no session found matching"
 # re-emitted). opencode is NOT installed here — its resume contract is an
 # unproven gap and it stays fresh (full prompt every turn).
 _RESUME_CAPABLE_EXECUTORS = frozenset({"claude", "codex", "pi"})
-
-
-def _is_claude_session_evicted(result) -> bool:
-    """Claude's established eviction contract (THR-200 legacy markers),
-    sharpened by the 2026-08-28 probe: rc=1 and the marker on STDERR only.
-    stdout-only text and wrong rc never match — the ``error`` envelope is not
-    inspected because it falls back to stdout text when stderr is empty.
-    Pi's exact declared signature is never accepted as Claude's, even though
-    it shares the ``no session found`` substring (cross-provider forbidden)."""
-    if getattr(result, "returncode", None) != 1:
-        return False
-    stderr = (getattr(result, "stderr_tail", None) or "").lower()
-    if _PI_EVICTION_SIGNATURE in stderr:
-        return False
-    return any(marker in stderr for marker in _CLAUDE_EVICTION_MARKERS)
-
-
-def _is_codex_session_evicted(result) -> bool:
-    """codex-cli 0.148.0 proven contract: rc=1, stderr carries the
-    no-rollout-for-thread-id signature including the JSON-RPC code
-    ``(code -32600)`` (recorded in the TASK-5977 audit)."""
-    if getattr(result, "returncode", None) != 1:
-        return False
-    stderr = (getattr(result, "stderr_tail", None) or "").lower()
-    return all(m in stderr for m in _CODEX_EVICTION_SIGNATURES)
-
-
-def _is_pi_session_evicted(result) -> bool:
-    """pi 0.84.2 proven contract: rc=1, stderr `No session found matching`."""
-    if getattr(result, "returncode", None) != 1:
-        return False
-    stderr = (getattr(result, "stderr_tail", None) or "").lower()
-    return _PI_EVICTION_SIGNATURE in stderr
-
-
-def _classify_session_evicted(executor_name: str, result) -> bool:
-    """Provider-declared session-not-found classification for the executor
-    that ran. Only the exact proven eviction contract may trigger the
-    transactional invalidation + one fresh full-transcript retry. Wrong
-    executor, wrong rc, stdout-only text, malformed/near-matches, and
-    auth/quota/transport/generic failures all return False — the invocation
-    is a plain failure and no resume state is invalidated."""
-    if executor_name == "codex":
-        return _is_codex_session_evicted(result)
-    if executor_name == "pi":
-        return _is_pi_session_evicted(result)
-    if executor_name == "claude":
-        return _is_claude_session_evicted(result)
-    return False
 
 
 def _delta_range_is_complete(
@@ -448,12 +533,19 @@ def _delta_range_is_complete(
     proves the ENTIRE required range ``(last_seq, max_seq]`` is present and
     contiguous: the load must reach the authoritative transcript max (no
     truncation — the caller must load uncapped) and every internal sequence
-    must exist (no holes). Equal/ahead/null watermarks (empty required range)
-    and any missing or truncated sequence fail closed to a full-transcript
-    fresh invocation.
+    must exist (no holes). A null/zero/negative (<= 0) watermark — an
+    ineligible delivered frontier — always fails closed, as do equal/ahead
+    watermarks (empty required range) and any missing or truncated sequence:
+    every one of those ships the complete canonical full-transcript fresh
+    prompt.
     """
+    if last_seq <= 0:
+        # Null/zero/negative watermark: a stored provider id is INELIGIBLE
+        # for delta resume (TASK-6007 HIGH 3) — always the complete canonical
+        # full transcript, never a delta against the stored id.
+        return False
     if max_seq <= last_seq:
-        # Equal, ahead, or null watermark — nothing new to ship as a delta.
+        # Equal or ahead watermark — nothing new to ship as a delta.
         return False
     if not messages or messages[-1].seq != max_seq:
         # Truncated load: the required range cannot be proven complete.
@@ -889,11 +981,15 @@ async def run_invocation(
                 f"(inclusive), in order. Consider every message in that range; "
                 f"do not skip any of them.\n"
             )
-        # Strict no-message-omission (TASK-5989): a resumed delta is
-        # authorized ONLY when the ENTIRE required post-watermark range is
-        # proven present and contiguous in the canonical transcript (loaded
-        # uncapped above; see _delta_range_is_complete). For a claimed REPLY
-        # the session watermark must stay strictly below the claim's
+        # Strict no-message-omission (TASK-5989) + resume eligibility
+        # (TASK-6007 HIGH 3): a resumed delta is authorized ONLY when the
+        # durable watermark is a strictly positive delivered frontier AND the
+        # ENTIRE required post-watermark range is proven present and
+        # contiguous in the canonical transcript (loaded uncapped above; see
+        # _delta_range_is_complete). A stored id whose watermark is null/
+        # zero/negative (<= 0) is INELIGIBLE — the runner must make a fresh
+        # invocation with the complete canonical transcript. For a claimed
+        # REPLY the session watermark must stay strictly below the claim's
         # running_from_seq AND the claim's inclusive end must exist in the
         # transcript; otherwise ``last_resumed_seq`` would silently control
         # (and drop) required delivery. Truncated loads, internal holes, and
@@ -906,6 +1002,7 @@ async def run_invocation(
         can_resume = (
             resume_capable
             and stored_sid
+            and last_seq > 0
             and (claim is None or (
                 last_seq < claim.running_from_seq
                 and claim.running_through_seq <= max_seq
@@ -991,7 +1088,7 @@ async def run_invocation(
             result = await loop.run_in_executor(None, lambda: _invoke(prompt, resume_sid))
 
             if (resume_capable and resume_sid and not result.success
-                    and _classify_session_evicted(executor_name, result)):
+                    and _classify_session_evicted(executor_name, result, resume_sid)):
                 # THR-200: the eviction audit AND the durable session-id
                 # invalidation commit in ONE transaction (see
                 # AuditLogger.log_agent_session_evicted_fallback /

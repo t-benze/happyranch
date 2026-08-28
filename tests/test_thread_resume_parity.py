@@ -16,9 +16,9 @@ These tests pin the seams:
 - TASK-5989 review: strict no-message-omission — a resumed delta is used
   only when the ENTIRE required post-watermark range is proven present and
   contiguous at the production seam (>10k transcripts, internal holes,
-  equal/ahead/null watermarks, truncated loads); and exact executor/rc/
-  stream/signature-specific eviction classification (positive + negative
-  matrix)
+  equal/ahead and null/zero/negative (<= 0) watermarks, truncated loads);
+  and exact executor/rc/stream/signature eviction classification bound to
+  the attempted session id (positive + negative matrix)
 - an explicit regression that TASK execution never passes a resume id
 """
 from __future__ import annotations
@@ -380,11 +380,23 @@ async def test_turn1_full_prompt_never_resumes_for_codex_and_pi(
     "executor,eviction_error",
     [
         # Exact stderr signatures recorded by the 2026-08-28 local probes
-        # (bounded, no API traffic) against the INSTALLED CLIs.
+        # (bounded, no API traffic) against the INSTALLED CLIs — each echoes
+        # the ATTEMPTED id verbatim.
         ("codex", "Error: thread/resume: thread/resume failed: no rollout "
                   "found for thread id 01a0-dead (code -32600)"),
         ("pi", "No session found matching '01a0-dead'"),
         ("claude", "No conversation found with session ID: 01a0-dead"),
+        # The anchored signature bound to the attempted id still classifies
+        # when wrapped in unrelated error/warning text (never in
+        # auth/quota/transport output — that is a negative, below).
+        ("codex", "Warning: stale config detected; continuing\n"
+                  "Error: thread/resume: thread/resume failed: no rollout "
+                  "found for thread id 01a0-dead (code -32600)\n"
+                  "Process finished with exit code 1"),
+        ("pi", "Error: no session found matching '01a0-dead' "
+               "(the session file may have expired)"),
+        ("claude", "No conversation found with session ID: 01a0-dead\n"
+                    "[debug] exiting"),
     ],
 )
 async def test_eviction_invalidates_then_single_full_retry(
@@ -426,25 +438,57 @@ async def test_eviction_invalidates_then_single_full_retry(
     [
         # Cross-provider text on the wrong executor must never classify.
         ("codex", "No session found matching '01a0-live'", "", 1),
-        ("codex", "no conversation found", "", 1),
+        ("codex", "no conversation found with session id: 01a0-live", "", 1),
         ("pi", "no rollout found for thread id 01a0-live (code -32600)", "", 1),
         ("claude", "no rollout found for thread id 01a0-live (code -32600)", "", 1),
         # Pi's exact declared signature must not be accepted as Claude's even
         # though it shares the "no session found" substring.
         ("claude", "No session found matching '01a0-live'", "", 1),
+        # Claude's THR-200-era generic legacy markers carry no immutable
+        # producer/CLI evidence and were REMOVED — each stays a negative.
+        ("claude", "session not found", "", 1),
+        ("claude", "no session found", "", 1),
+        ("claude", "could not find session", "", 1),
+        ("claude", "no such session", "", 1),
+        ("claude", "no conversation found", "", 1),  # bare marker, no id
+        ("claude", "no conversation was found", "", 1),  # near-miss marker
+        # Wrong attempted id: the signature names a DIFFERENT session.
+        ("claude", "No conversation found with session ID: 01a0-OTHER", "", 1),
+        ("codex", "no rollout found for thread id 01a0-OTHER (code -32600)", "", 1),
+        ("pi", "No session found matching '01a0-OTHER'", "", 1),
+        # Missing id: signature present without any id binding.
+        ("claude", "No conversation found with session ID:", "", 1),
+        ("codex", "no rollout found for thread id (code -32600)", "", 1),
+        ("pi", "No session found matching ''", "", 1),
+        # Prefix / suffix near-matches on the attempted id.
+        ("claude", "No conversation found with session ID: x01a0-live", "", 1),
+        ("claude", "No conversation found with session ID: 01a0-liveX", "", 1),
+        ("codex", "no rollout found for thread id x01a0-live (code -32600)", "", 1),
+        ("codex", "no rollout found for thread id 01a0-liveX (code -32600)", "", 1),
+        ("pi", "No session found matching 'x01a0-live'", "", 1),
+        ("pi", "No session found matching '01a0-liveX'", "", 1),
+        # An otherwise matching marker EMBEDDED in auth/quota/transport
+        # output is not the provider declaring the session missing.
+        ("claude", "API Error: 401 Unauthorized: no conversation found with "
+                    "session id 01a0-live", "", 1),
+        ("codex", "API Error: 429 rate limit exceeded: no rollout found for "
+                   "thread id 01a0-live", "", 1),
+        ("codex", "Error: authentication failed for thread id 01a0-live "
+                   "(code -32600)", "", 1),
+        ("pi", "Connection timed out: no session found matching '01a0-live' "
+                "is unavailable", "", 1),
         # Wrong return code with the exact signature.
         ("codex", "no rollout found for thread id 01a0-live (code -32600)", "", 2),
         ("pi", "No session found matching '01a0-live'", "", 3),
-        ("claude", "No conversation found", "", 2),
+        ("claude", "No conversation found with session ID: 01a0-live", "", 2),
         # stdout-only text (signature on the wrong stream) never classifies;
         # the failure envelope is stderr-derived so it stays clean too.
         ("codex", "", "no rollout found for thread id 01a0-live (code -32600)", 1),
         ("pi", "", "No session found matching '01a0-live'", 1),
-        ("claude", "", "No conversation found", 1),
+        ("claude", "", "No conversation found with session ID: 01a0-live", 1),
         # Malformed / near-match signatures.
         ("codex", "no rollout found for thread id 01a0-live", "", 1),  # no code
         ("pi", "No session found", "", 1),  # missing "matching"
-        ("claude", "no conversation was found", "", 1),  # near-miss marker
         # Auth / quota / transport / generic failures.
         ("codex", "API Error: 401 Unauthorized", "", 1),
         ("pi", "API Error: 429 Overloaded", "", 1),
@@ -673,13 +717,13 @@ async def test_equal_and_ahead_watermarks_never_resume_delta(
 
 
 @pytest.mark.asyncio
-async def test_null_watermark_with_stored_session_delta_covers_every_required_seq(
+async def test_null_watermark_with_stored_session_never_resumes(
     tmp_path, monkeypatch,
 ):
-    """A stored provider session with a NULL watermark (last_resumed_seq=0)
-    may resume with a delta ONLY because the ENTIRE required range (1..max)
-    is proven present and contiguous — the delta is the complete canonical
-    sequence set, so no message can be omitted."""
+    """A stored provider session with a NULL/zero watermark (last_resumed_seq
+    = 0) is INELIGIBLE for resume (TASK-6007 HIGH 3): the runner must make a
+    fresh invocation with the complete canonical transcript, never a delta
+    against the stored provider id."""
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.add_thread_participant("THR-001", "alice", added_by="founder")
@@ -694,10 +738,37 @@ async def test_null_watermark_with_stored_session_delta_covers_every_required_se
         db=db,
     )
     await coro
-    assert fake.calls[0].get("resume_session_id") == "01a0-null"
-    delta = fake.calls[0]["prompt"]
-    assert "New activity since your last turn follows" in delta
-    assert "m1" in delta and "m2 newest" in delta
+    assert "resume_session_id" not in fake.calls[0]
+    full = fake.calls[0]["prompt"]
+    assert "Full message history follows" in full
+    assert "m1" in full and "m2 newest" in full
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("last_seq", [0, -1])
+async def test_zero_and_negative_watermark_with_stored_session_never_resume(
+    tmp_path, monkeypatch, last_seq,
+):
+    """Zero AND negative stored watermarks with a stored id are ineligible:
+    fresh full canonical invocation, no resume, at the production seam."""
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m2 newest")
+    fake = _RecordingExec([_FakeResult(True, agent_session_id="01a0-zz")])
+    coro, db, fake = _run_reply_at_seq(
+        tmp_path, monkeypatch, "codex",
+        stored_sid="01a0-zz", last_seq=last_seq, triggering_seq=2, fake=fake,
+        db=db,
+    )
+    await coro
+    assert "resume_session_id" not in fake.calls[0]
+    full = fake.calls[0]["prompt"]
+    assert "Full message history follows" in full
+    assert "m1" in full and "m2 newest" in full
 
 
 @pytest.mark.parametrize(
@@ -705,10 +776,14 @@ async def test_null_watermark_with_stored_session_delta_covers_every_required_se
     [
         # Complete required range → authorized.
         ([1, 2, 3, 4, 5], 2, 5, True),
-        ([1, 2, 3], 0, 3, True),            # null watermark, full set present
+        ([1, 2, 3], 1, 3, True),
+        # Null/zero/negative watermark → fail closed (never a delta).
+        ([1, 2, 3], 0, 3, False),
+        ([1, 2, 3], -1, 3, False),
+        ([1, 2, 3], 0, 0, False),
+        ([], 0, 0, False),
         # Truncated load (does not reach the authoritative max) → fail closed.
         ([1, 2, 3, 4], 2, 5, False),
-        ([], 0, 0, False),
         # Internal hole in the required range → fail closed.
         ([1, 2, 3, 5], 2, 5, False),
         ([1, 3, 4, 5], 1, 5, False),          # hole right after the watermark

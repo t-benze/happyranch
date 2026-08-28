@@ -178,7 +178,14 @@ only when the ENTIRE required post-watermark range is proven present and
 contiguous in the canonical transcript (uncapped load + independent
 authoritative max-seq proof; see `protocol/05b-agent-runtime.md`) — so no
 required sequence is ever omitted; the equality state self-heals after one
-successfully settled full-prompt turn.
+successfully settled full-prompt turn. A stored provider id whose durable
+delivery watermark is null/zero/negative (<= 0) is never eligible for
+resume — the runner makes a fresh invocation with the complete canonical
+transcript. Eviction classification requires the anchored provider-declared
+rc=1 stderr signature bound to the exact attempted session id (the id is
+regex-escaped), never a generic legacy substring, wrong/missing id,
+prefix/suffix near-match, or a marker embedded in auth/quota/transport
+output.
 Prompt bodies travel via stdin for claude/pi/codex and via argv (guard-
 limited) for opencode/generic-CLI; encoded byte size is transport-only, never
 a cost or reset policy.

@@ -104,7 +104,10 @@ carries the resumable provider session id + delta watermark
   then authorizes a delta when every required claimed sequence exists (no
   truncation, no internal holes; a claimed REPLY additionally requires the
   claim's inclusive end to exist in the transcript). ``<``/``=``/``>``
-  watermark cases, equal/ahead/null watermarks, truncated loads, and any
+  watermark cases, equal/ahead watermarks, a null/zero/negative (<= 0)
+  watermark (a stored provider id with a durable watermark <= 0 is
+  INELIGIBLE for resume — the runner makes a fresh invocation with the
+  complete canonical transcript), truncated loads, and any
   missing internal sequence all fail closed to the genuinely complete
   canonical full-transcript fresh prompt — a delta can never omit a required
   sequence. The equality state (watermark == ``running_from_seq``) is NOT
@@ -131,13 +134,16 @@ carries the resumable provider session id + delta watermark
   transaction BEFORE the full-prompt fallback launch. If the fallback also
   fails, the id remains NULL and the delivery watermark does NOT advance —
   the next wake re-attempts the same range from a full prompt. The
-  classifier is executor-specific and reads ONLY the proven return code and
-  stream — claude (legacy markers on stderr, rc=1; probe: ``No conversation
-  found with session ID: <uuid>``), codex ``no rollout found for thread id``
-  + ``(code -32600)`` (rc=1, stderr, codex-cli 0.148.0), pi ``No session
-  found matching`` (rc=1, stderr, pi 0.84.2) — and never classifies
-  cross-provider text, stdout-only text, wrong rc, malformed/near-matches,
-  or auth/quota/transport/generic exit or ambiguous output as eviction (no
+  classifier is executor-specific, reads ONLY the proven return code and
+  stream, and REQUIRES the anchored provider-declared signature bound to the
+  exact attempted session id — claude ``No conversation found with session
+  ID: <attempted-id>``, codex ``no rollout found for thread id
+  <attempted-id> (code -32600)``, pi ``No session found matching
+  '<attempted-id>'`` (each rc=1, stderr, and verified 2026-08-28 to echo
+  the attempted id verbatim; the id is regex-escaped) — and never classifies
+  generic legacy substrings, cross-provider text, stdout-only text, wrong
+  rc, wrong/missing id, prefix/suffix near-matches, a marker embedded in
+  auth/quota/transport output, or ambiguous output as eviction (no
   fresh retry for those).
   (THR-187/THR-195 missing-session wedges are this mechanism; THR-198's
   healthy-session equality wedge needs only transport — no row change.)
