@@ -30,9 +30,15 @@ NO minted report token; one enabled-by-default kill switch (an org config
 
 Persistence uses only existing durable mechanisms (no schema/API/CLI change):
 the per-agent first-two run counter and cooldown are derived from the owning
-agent's daemon-marked cleanup task rows (``tasks.brief`` prefix marker —
-TASK-5552 §3's "fixed cleanup task marker"), and the per-agent durable thread
-identity is resolved by a fixed per-agent subject over ``threads.subject``.
+agent's daemon-marked cleanup task rows via an authoritative SQL-side
+``brief`` prefix filter (``Database.list_tasks_by_brief_prefix`` — no bounded
+scan of ordinary tasks can hide older cleanup rows, and a lookup failure is
+represented as indeterminate so triggering fails closed). The per-agent
+durable thread identity is resolved by daemon-cleanup provenance
+(``composed_from_task_id`` → the agent's daemon-marked cleanup task) plus the
+fixed per-agent subject, participant membership of the owning agent, open
+status, and the daemon's distinctive opening message — a fixed subject alone
+is not identity, and a user-created subject collision is never selected.
 
 Contract-relevant bounds (all documented in protocol/05b + 05c):
 
@@ -85,7 +91,7 @@ from datetime import time as _dt_time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from runtime.models import TaskRecord, TaskStatus
+from runtime.models import TaskRecord, TaskStatus, ThreadStatus
 
 if TYPE_CHECKING:
     from runtime.daemon.org_state import OrgState
@@ -137,12 +143,25 @@ _WARM_UP_SECONDS = 30.0
 _CLEANUP_BRIEF_MARKER = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)"
 
 # Per-agent durable founder-visible report thread. The fixed per-agent subject
-# is how the daemon resolves the durable thread identity per agent without any
-# new schema (consultant THR-195 seq 131: "one durable thread, not one per
-# run" — one per AGENT per the founder default).
+# is one component of the daemon's durable thread identity per agent (no new
+# schema — consultant THR-195 seq 131: "one durable thread, not one per run" —
+# one per AGENT per the founder default). Identity is NOT the subject alone:
+# a thread is the agent's report thread only when the subject matches AND its
+# daemon-cleanup provenance resolves (composed_from_task_id → one of the
+# agent's daemon-marked cleanup tasks) AND the owning agent is a participant
+# AND it is open (TASK-6043 finding 4).
 _REPORT_THREAD_SUBJECT_PREFIX = "HappyRanch system workspace cleanup reports"
 
-# Bound for the dedup/cooldown/run-count scan over one agent's recent tasks.
+# Distinctive daemon-composed opening line of every daemon report thread. A
+# user-created thread with the same subject (subject collision) never carries
+# this exact opening, so provenance is checked on the thread itself, not just
+# its subject.
+_REPORT_THREAD_OPENING_PREFIX = "Daemon-managed workspace cleanup reporting thread for"
+
+# Bound for the dedup/cooldown/run-count/provenance query over one agent's
+# daemon-marked cleanup tasks (SQL-side marker filter — never a scan over
+# ordinary tasks, so no exhaustion). Weekly cadence ≈ 52 rows/year; the bound
+# is purely defensive.
 _MAX_CLEANUP_TASK_SCAN = 1000
 
 
@@ -502,10 +521,15 @@ def _registered_worktree_stats(
     return stats
 
 
-def _iter_workspaces(paths: Any) -> tuple[list[Path], bool]:
-    """Sorted agent-workspace directories up to ``_MAX_WORKSPACES`` plus a
-    ``truncated`` flag set when more workspaces exist than the cap, so the
-    per-org trigger scan never unboundedly enumerates."""
+def _iter_workspaces(paths: Any, *, offset: int = 0) -> tuple[list[Path], bool]:
+    """One sorted batch of ``_MAX_WORKSPACES`` agent-workspace directories
+    starting at ``offset``, plus a ``truncated`` flag set when more
+    workspaces exist beyond this batch.
+
+    The per-org trigger scan pages through batches so every registered agent
+    workspace is processed (no alphabetical starvation beyond the first
+    batch) while each enumeration call stays bounded (TASK-6043 finding 5).
+    """
     try:
         workspaces_dir = paths.workspaces_dir
         if not workspaces_dir.exists():
@@ -517,8 +541,9 @@ def _iter_workspaces(paths: Any) -> tuple[list[Path], bool]:
             ),
             key=lambda p: p.name,
         )
-        truncated = len(all_workspaces) > _MAX_WORKSPACES
-        return all_workspaces[:_MAX_WORKSPACES], truncated
+        batch = all_workspaces[offset:offset + _MAX_WORKSPACES]
+        truncated = len(all_workspaces) > offset + _MAX_WORKSPACES
+        return batch, truncated
     except OSError:
         return [], False
 
@@ -633,44 +658,55 @@ def _as_aware_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _is_cleanup_brief(brief: str | None) -> bool:
-    return bool(brief and brief.startswith(_CLEANUP_BRIEF_MARKER))
+@dataclass
+class _CleanupTaskHistory:
+    """One agent's daemon-marked cleanup-task history (newest first).
 
+    ``latest`` feeds the weekly-window dedup, the non-terminal suppression,
+    and the seven-day cooldown; ``count`` is the per-agent "triggered runs so
+    far" (first-two report-only bookkeeping). Both derive from the tasks
+    table via the authoritative SQL-side marker filter — no bounded scan of
+    ordinary tasks can hide older cleanup rows (TASK-6043 finding 2).
 
-def _scan_cleanup_tasks(
-    db: "Database", agent: str,
-) -> tuple["TaskRecord | None", int]:
-    """Scan one agent's recent tasks (newest first) for daemon-marked cleanup
-    tasks. Returns ``(latest_cleanup_task, count)``.
-
-    Bounded by ``_MAX_CLEANUP_TASK_SCAN`` rows. The count is the per-agent
-    "triggered runs so far" (first-two report-only bookkeeping); the latest
-    row feeds the weekly-window dedup, the non-terminal suppression, and the
-    seven-day cooldown — all derived from the tasks table, no new state.
-    Any lookup error fails closed (returns ``(None, 0)`` → the caller skips
-    the trigger) so a dedup-blind daemon can never double-fire a run.
+    ``indeterminate`` is set when the history cannot be read authoritatively
+    (lookup error). Lifecycle/identity uncertainty must FAIL CLOSED for
+    triggering: a dedup-blind daemon must never double-fire a run, reset the
+    first-two counter, or bypass the cooldown (TASK-6043 finding 1).
     """
-    before: str | None = None
-    seen = 0
+
     latest: "TaskRecord | None" = None
-    for _ in range(_MAX_CLEANUP_TASK_SCAN // 100 + 1):
-        try:
-            page = db.list_tasks(
-                limit=100, assigned_agent=agent, before_task_id=before,
-            )
-        except Exception:
-            return None, 0
-        if not page:
-            break
-        for task in page:
-            if _is_cleanup_brief(task.brief):
-                seen += 1
-                if latest is None:
-                    latest = task
-        before = page[-1].id
-        if len(page) < 100:
-            break
-    return latest, seen
+    count: int = 0
+    indeterminate: bool = False
+
+
+def _cleanup_task_history(
+    db: "Database", agent: str,
+) -> _CleanupTaskHistory:
+    """Authoritative marker-filtered cleanup-task history for one agent.
+
+    SQL-side ``brief LIKE`` filter (``list_tasks_by_brief_prefix``): every
+    daemon-marked cleanup task of the agent is returned newest-first, so a
+    cleanup row can never be hidden behind newer ordinary tasks no matter how
+    many exist. Any lookup error is represented as ``indeterminate`` rather
+    than as a clean "no history" — callers must suppress the trigger.
+    """
+    try:
+        rows = db.list_tasks_by_brief_prefix(
+            _CLEANUP_BRIEF_MARKER,
+            assigned_agent=agent,
+            limit=_MAX_CLEANUP_TASK_SCAN,
+        )
+    except Exception:
+        logger.exception(
+            "workspace cleanup: task-history lookup failed for agent %s — "
+            "suppressing trigger (fail closed)",
+            agent,
+        )
+        return _CleanupTaskHistory(indeterminate=True)
+    return _CleanupTaskHistory(
+        latest=rows[0] if rows else None,
+        count=len(rows),
+    )
 
 
 @dataclass
@@ -701,7 +737,11 @@ def decide_cleanup_trigger(
     if now_local < occurrence:
         return CleanupTriggerDecision(False, "not_due")
 
-    latest, _count = _scan_cleanup_tasks(db, agent)
+    history = _cleanup_task_history(db, agent)
+    if history.indeterminate:
+        # Lifecycle/identity uncertainty fails closed for triggering.
+        return CleanupTriggerDecision(False, "history_indeterminate")
+    latest = history.latest
     if latest is None:
         return CleanupTriggerDecision(True, None)
     latest_utc = _as_aware_utc(latest.created_at)
@@ -722,14 +762,56 @@ def report_thread_subject(agent: str) -> str:
 
 
 def _find_report_thread(db: "Database", agent: str) -> str | None:
-    """Open thread id with this agent's fixed cleanup-report subject."""
+    """Resolve this agent's durable cleanup-report thread by identity.
+
+    A fixed subject alone is NOT identity (TASK-6043 finding 4). A thread is
+    the agent's durable report thread only when ALL hold:
+
+    - subject == the fixed per-agent subject (rejects unrelated threads),
+    - daemon-cleanup provenance: ``composed_from_task_id`` resolves to one
+      of this agent's daemon-marked cleanup tasks (SQL-side marker filter —
+      no presentation-page bound can hide an older thread),
+    - the owning agent is a participant (the participant-authorized,
+      task-bound ``threads send`` path requires membership),
+    - the thread is OPEN (a closed thread is never reused),
+    - the opening message carries the daemon's distinctive composition text
+      (rejects user-created subject collisions that otherwise match).
+
+    Any lookup error yields None (fail open to creation) — never a guessed
+    or unauthorized id.
+    """
     subject = report_thread_subject(agent)
     try:
-        for thread in db.list_threads(status="open", limit=500):
-            if thread.subject == subject:
-                return thread.id
+        cleanup_tasks = db.list_tasks_by_brief_prefix(
+            _CLEANUP_BRIEF_MARKER,
+            assigned_agent=agent,
+            limit=_MAX_CLEANUP_TASK_SCAN,
+        )
     except Exception:
         return None
+    for task in cleanup_tasks:  # newest cleanup task first
+        try:
+            candidates = db.list_threads_by_composed_from_task_id(task.id)
+        except Exception:
+            continue
+        for thread in candidates:
+            if thread.subject != subject:
+                continue
+            if thread.status is not ThreadStatus.OPEN:
+                continue
+            try:
+                if not db.is_thread_participant(thread.id, agent):
+                    continue
+                opening = db.get_thread_message_by_seq(thread.id, 1)
+            except Exception:
+                continue
+            if opening is None or not (
+                opening.body_markdown or ""
+            ).startswith(_REPORT_THREAD_OPENING_PREFIX):
+                # A subject-colliding thread without the daemon's opening
+                # message is user-created — never selected.
+                continue
+            return thread.id
     return None
 
 
@@ -961,9 +1043,23 @@ async def trigger_cleanup(
     seam into the daemon-composed brief.
 
     Fail-closed skip (returns None, never raises) when: the agent has no team
-    in this org, the fresh measurement is unavailable, or the agent's
-    workspace measures below the >= 1 GiB trigger threshold. Each skip is
-    audited so operators can see why no task was created.
+    in this org, the fresh measurement is unavailable, the agent's workspace
+    measures below the >= 1 GiB trigger threshold, or the agent's
+    daemon-marked cleanup-task history cannot be read authoritatively
+    (lifecycle/identity uncertainty fails closed). Each skip is audited so
+    operators can see why no task was created.
+
+    Atomic producer seam (TASK-6043 finding 3): the task id is allocated only
+    AFTER every awaited step (the bounded measurement and any thread work are
+    done first), and allocation + thread resolution + brief composition +
+    insertion run as one synchronous block under ``org.db_lock`` with no
+    awaits between ``next_task_id`` and ``insert_task`` — the same producer
+    discipline as ``Orchestrator.create_task``. No id is ever selected before
+    awaited work, so another producer cannot claim it mid-trigger and no
+    collision can leave a report thread falsely linked to an unrelated task.
+    The inserted task is a clean root (no parent, no thread dispatch); on the
+    (exceptional) insert failure the trigger compensates: audit, no enqueue,
+    return None.
     """
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
@@ -984,13 +1080,12 @@ async def trigger_cleanup(
         )
         return None
 
-    task_id = org.db.next_task_id()
-
     # Bounded, fail-open measurement of THE AGENT'S OWN workspace — the gate
     # for the >= 1 GiB founder threshold and the advisory snapshot packed at
     # trigger time. A disk gauge must never block the run; it runs in a
     # thread executor so the daemon event loop is never stalled by the
-    # (deadline-bounded) traversal.
+    # (deadline-bounded) traversal. NO task id is selected before this
+    # awaited measurement (TASK-6043 finding 3).
     loop = asyncio.get_running_loop()
     snapshot = await loop.run_in_executor(
         None,
@@ -1022,33 +1117,70 @@ async def trigger_cleanup(
         return None
 
     # Per-agent triggered-run counter (first-two report-only bookkeeping),
-    # derived from the owning agent's daemon-marked cleanup task rows.
-    _latest, run_count = _scan_cleanup_tasks(org.db, agent)
-    run_number = run_count + 1
+    # derived from the owning agent's daemon-marked cleanup task rows via the
+    # authoritative marker-filtered query. An indeterminate history (lookup
+    # error) fails closed: a dedup-blind daemon must not double-fire, reset
+    # the first-two counter, or bypass the cooldown (TASK-6043 finding 1).
+    history = _cleanup_task_history(org.db, agent)
+    if history.indeterminate:
+        org.db.insert_audit_log(
+            task_id="workspace-cleanup:skipped",
+            agent=agent,
+            action="workspace_cleanup_skipped",
+            payload={"reason": "history_indeterminate", "agent": agent},
+        )
+        return None
+    run_number = history.count + 1
 
-    # Per-agent durable founder-report thread (create-on-first-trigger). No
-    # minted token: the agent appends via the participant-authorized,
-    # task-bound send path during its session.
+    # Atomic producer block: id allocation, per-agent durable founder-report
+    # thread resolution/creation, brief composition, and task insertion all
+    # run synchronously under org.db_lock with no awaits between
+    # ``next_task_id`` and ``insert_task``. No minted token: the agent
+    # appends via the participant-authorized, task-bound send path during its
+    # session. A thread is only ever linked to the id this block actually
+    # inserts (never a pre-selected id that another producer could claim).
     thread_id: str | None = None
     async with org.db_lock:
+        task_id = org.db.next_task_id()
         thread_id = _resolve_or_create_report_thread(
             org, agent=agent, task_id=task_id,
         )
-
-    brief = compose_cleanup_brief(
-        org_slug=org.slug,
-        agent=agent,
-        task_id=task_id,
-        run_number=run_number,
-        snapshot=snapshot,
-        thread_id=thread_id,
-    )
-    org.db.insert_task(TaskRecord(
-        id=task_id,
-        brief=brief,
-        team=team,
-        assigned_agent=agent,
-    ))
+        brief = compose_cleanup_brief(
+            org_slug=org.slug,
+            agent=agent,
+            task_id=task_id,
+            run_number=run_number,
+            snapshot=snapshot,
+            thread_id=thread_id,
+        )
+        try:
+            org.db.insert_task(TaskRecord(
+                id=task_id,
+                brief=brief,
+                team=team,
+                assigned_agent=agent,
+            ))
+        except Exception:
+            # Compensation: an insert failure (e.g. an exceptional id
+            # collision with a concurrent producer) never enqueues a run and
+            # is audited loudly; the thread row, if created, carries no
+            # enqueued task behind it.
+            logger.exception(
+                "workspace cleanup: task insert failed for org %s agent %s "
+                "(task %s) — compensating, no run enqueued",
+                org.slug, agent, task_id,
+            )
+            org.db.insert_audit_log(
+                task_id="workspace-cleanup:skipped",
+                agent=agent,
+                action="workspace_cleanup_skipped",
+                payload={
+                    "reason": "task_insert_failed",
+                    "agent": agent,
+                    "task_id": task_id,
+                },
+            )
+            return None
     enqueue(org.slug, task_id)
 
     org.db.insert_audit_log(
@@ -1077,7 +1209,13 @@ async def trigger_cleanup(
 
 async def _tick_org(org: "OrgState", state: "DaemonState", now_utc: datetime) -> None:
     """One org's per-agent decision+trigger pass. Never raises (loop-level
-    isolation)."""
+    isolation).
+
+    Workspace enumeration is paged in bounded batches of ``_MAX_WORKSPACES``
+    so ALL registered agent workspaces are reached — an org with more than
+    one batch of agents never silently starves the alphabetically-later ones
+    (TASK-6043 finding 5).
+    """
     from runtime.orchestrator._paths import OrgPaths
     from runtime.orchestrator.org_config import (
         _resolve_timezone,
@@ -1091,25 +1229,35 @@ async def _tick_org(org: "OrgState", state: "DaemonState", now_utc: datetime) ->
         return
     tz = _resolve_timezone(cfg.timezone)[0]
 
-    workspaces, _truncated = _iter_workspaces(paths)
-    for workspace in workspaces:
-        agent = workspace.name
-        if org.teams.team_for_agent(agent) is None:
-            # Only registered org agents own cleanup runs (skips special dirs
-            # like ``_terminated`` and unregistered workspaces).
-            continue
-        decision = decide_cleanup_trigger(db=org.db, agent=agent, now_utc=now_utc, tz=tz)
-        if not decision.should_trigger:
-            # Skip reasons are derivable from the tasks table; only the
-            # trigger itself (and the fail-closed skips inside trigger_cleanup)
-            # carry audit rows, so the weekly loop never spams the ledger.
-            continue
-        await trigger_cleanup(
-            org,
-            agent=agent,
-            enqueue=lambda slug, tid: _enqueue_task(state, slug, tid),
-            now_utc=now_utc,
-        )
+    offset = 0
+    while True:
+        workspaces, truncated = _iter_workspaces(paths, offset=offset)
+        if not workspaces:
+            break
+        for workspace in workspaces:
+            agent = workspace.name
+            if org.teams.team_for_agent(agent) is None:
+                # Only registered org agents own cleanup runs (skips special
+                # dirs like ``_terminated`` and unregistered workspaces).
+                continue
+            decision = decide_cleanup_trigger(
+                db=org.db, agent=agent, now_utc=now_utc, tz=tz,
+            )
+            if not decision.should_trigger:
+                # Skip reasons are derivable from the tasks table; only the
+                # trigger itself (and the fail-closed skips inside
+                # trigger_cleanup) carry audit rows, so the weekly loop never
+                # spams the ledger.
+                continue
+            await trigger_cleanup(
+                org,
+                agent=agent,
+                enqueue=lambda slug, tid: _enqueue_task(state, slug, tid),
+                now_utc=now_utc,
+            )
+        if not truncated:
+            break
+        offset += _MAX_WORKSPACES
 
 
 def _enqueue_task(state: "DaemonState", slug: str, task_id: str) -> None:

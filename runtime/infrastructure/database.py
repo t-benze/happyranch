@@ -2584,6 +2584,69 @@ class Database:
         return results
 
     @_synchronized
+    def list_tasks_by_brief_prefix(
+        self,
+        brief_prefix: str,
+        *,
+        assigned_agent: str | None = None,
+        limit: int = 200,
+    ) -> list[TaskRecord]:
+        """Tasks whose brief starts with ``brief_prefix``, newest-first.
+
+        Authoritative SQL-side marker filter (THR-195 / TASK-6043): unlike a
+        bounded scan of recent ordinary tasks, an SQL ``brief LIKE`` filter
+        can never be exhausted by newer non-matching rows, so older
+        marker-matched rows cannot be hidden. ``%`` and ``_`` in the prefix
+        are escaped (treated literally). ``assigned_agent`` narrows to one
+        agent's rows when given.
+        """
+        escaped = (
+            brief_prefix.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        conditions = ["brief LIKE ? ESCAPE '\\'"]
+        params: list = [escaped + "%"]
+        if assigned_agent is not None:
+            conditions.append("assigned_agent = ?")
+            params.append(assigned_agent)
+        params.append(limit)
+        cursor = self._conn.execute(
+            f"SELECT * FROM tasks WHERE {' AND '.join(conditions)} "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            tuple(params),
+        )
+        return [
+            TaskRecord(
+                id=row["id"],
+                status=row["status"],
+                assigned_agent=row["assigned_agent"],
+                team=row["team"],
+                brief=row["brief"],
+                revision_count=row["revision_count"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                completed_at=row["completed_at"],
+                parent_task_id=row["parent_task_id"],
+                revisit_of_task_id=row["revisit_of_task_id"],
+                dispatched_from_thread_id=row["dispatched_from_thread_id"],
+                block_kind=row["block_kind"],
+                blocked_on_job_ids=row["blocked_on_job_ids"],
+                note=row["note"],
+                orchestration_step_count=row["orchestration_step_count"] or 0,
+                final_output_dir=row["final_output_dir"],
+                cancelled_at=row["cancelled_at"],
+                last_heartbeat=row["last_heartbeat"],
+                session_timeout_seconds=row["session_timeout_seconds"],
+                task_type=row["task_type"],
+                executor_pid=row["executor_pid"],
+                current_session_id=row["current_session_id"],
+                zombie_flagged_at=row["zombie_flagged_at"],
+            )
+            for row in cursor.fetchall()
+        ]
+
+    @_synchronized
     def list_tasks_by_thread(
         self, thread_id: str,
     ) -> list[dict]:
@@ -5083,6 +5146,25 @@ class Database:
             query += f"ORDER BY t.started_at DESC LIMIT ?"
             params = (limit,)
         cursor = self._conn.execute(query, params)
+        return [self._row_to_thread(r) for r in cursor.fetchall()]
+
+    @_synchronized
+    def list_threads_by_composed_from_task_id(
+        self, task_id: str,
+    ) -> list[ThreadRecord]:
+        """Threads composed from a given task (daemon-cleanup provenance).
+
+        Targeted identity lookup (THR-195 / TASK-6043) backed by the existing
+        ``idx_threads_composed_from_task`` index: unlike a bounded
+        presentation-page scan of open threads, this can locate an older
+        thread no matter how many newer threads exist. Ordered newest-started
+        first.
+        """
+        cursor = self._conn.execute(
+            "SELECT * FROM threads WHERE composed_from_task_id = ? "
+            "ORDER BY started_at DESC",
+            (task_id,),
+        )
         return [self._row_to_thread(r) for r in cursor.fetchall()]
 
     @_synchronized

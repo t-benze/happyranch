@@ -1159,27 +1159,50 @@ re-derived independently and immediately before any action.
 The responsible agent reports results to the founder in **one durable
 founder-visible thread PER AGENT** (consultant seq 131: "one durable thread,
 not one per run" — per-agent per the founder default). The daemon resolves
-the thread by a fixed per-agent subject, creates it on first trigger (the
-shared ``_create_agent_thread_locked`` compose helper, composer = the owning
-agent, recipient @founder — the owning agent is therefore a participant) and
-passes only the thread id in the brief. NO minted report token: the agent
-appends the report during its task session via the existing
-participant-authorized, task-bound ``happyranch threads send`` path
-(composer + task_id + session_id binding), which requires participant
-membership and a live task-session binding but no invocation token. Silence
-on that thread is the loop-stopped signal. Report content: measured
-before/after sizes, exact removals (none in report-only), skips, and any
-ambiguity (seq 130).
+the thread by AUTHORITATIVE IDENTITY, not by the fixed per-agent subject
+alone: a thread is the agent's durable report thread only when the subject
+matches AND its daemon-cleanup provenance resolves (``composed_from_task_id``
+→ one of the agent's daemon-marked cleanup tasks, queried by the existing
+``threads.composed_from_task_id`` index — no presentation-page bound can
+hide an older thread) AND the owning agent is a participant (the
+participant-authorized send requires membership) AND it is open AND its
+opening message carries the daemon's distinctive composition text (a
+user-created subject collision is never selected). It creates the thread on
+first trigger (the shared ``_create_agent_thread_locked`` compose helper,
+composer = the owning agent, recipient @founder — the owning agent is
+therefore a participant) and passes only the thread id in the brief. NO
+minted report token: the agent appends the report during its task session
+via the existing participant-authorized, task-bound ``happyranch threads
+send`` path (composer + task_id + session_id binding), which requires
+participant membership and a live task-session binding but no invocation
+token. Silence on that thread is the loop-stopped signal. Report content:
+measured before/after sizes, exact removals (none in report-only), skips,
+and any ambiguity (seq 130).
 
 Persistence is schema-free by design: the first-two run counter and the
 seven-day cooldown derive from the owning agent's daemon-marked cleanup task
-rows (``tasks.brief`` prefix marker — TASK-5552 §3's "fixed cleanup task
-marker"), and the per-agent thread identity is resolved by the fixed
-per-agent subject over ``threads.subject``. No schema/API/CLI/auth/permission
-change is introduced. A kill switch — ``workspace_cleanup.enabled`` in the
-org ``config.yaml`` (default true) — disables the capability per org; it is
-an existing daemon/org config mechanism with no new public API/CLI/UI
-surface.
+rows via an authoritative SQL-side ``brief`` prefix filter
+(``Database.list_tasks_by_brief_prefix`` — no bounded scan of ordinary tasks
+can hide older cleanup rows, and a lookup failure is represented as
+indeterminate so triggering FAILS CLOSED; a dedup-blind daemon can never
+double-fire, reset the first-two counter, or bypass the cooldown). The
+per-agent thread identity resolves as described above. No
+schema/API/CLI/auth/permission change is introduced. A kill switch —
+``workspace_cleanup.enabled`` in the org ``config.yaml`` (default true) —
+disables the capability per org; it is an existing daemon/org config
+mechanism with no new public API/CLI/UI surface.
+
+Trigger task creation uses the atomic producer discipline: the task id is
+allocated only after every awaited step (the bounded measurement and thread
+work are done first), and allocation + thread resolution + brief composition
++ insertion run as one synchronous block under ``org.db_lock`` with no awaits
+between ``next_task_id`` and ``insert_task`` — no id is ever selected before
+awaited work, so another producer cannot claim it mid-trigger and no
+collision can leave a report thread falsely linked to an unrelated task. The
+inserted task is a clean root; an insert failure compensates (audit, no
+enqueue). Workspace enumeration is paged in bounded batches of 64 per call
+across every registered agent workspace, so an org with more than one batch
+of agents never alphabetically starves the later ones.
 
 ---
 

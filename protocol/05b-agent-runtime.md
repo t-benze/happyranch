@@ -1295,8 +1295,16 @@ agent as composer/participant and @founder as recipient) via the existing
 participant-authorized, task-bound ``happyranch threads send`` path — NO
 minted report token. The first-two-run counter, the cooldown, and the
 per-agent thread identity are persisted through existing durable mechanisms
-only (the owning agent's daemon-marked task rows and ``threads.subject``) —
-no schema/API/CLI/auth change. A kill switch (``workspace_cleanup.enabled``
+only — the owning agent's daemon-marked cleanup task rows via an
+authoritative SQL-side ``brief`` prefix filter (no bounded scan of ordinary
+tasks can hide older cleanup rows; a lookup failure is represented as
+indeterminate and FAILS CLOSED for triggering) and ``threads.composed_from_task_id``
+provenance plus the fixed per-agent subject, participant membership of the
+owning agent, open status, and the daemon's distinctive opening message (a
+fixed subject alone is not identity) — no schema/API/CLI/auth change. The
+task id is allocated atomically at insertion (never before the awaited
+measurement), and workspace enumeration is paged in bounded batches so every
+registered agent is reached. A kill switch (``workspace_cleanup.enabled``
 in the org ``config.yaml``, default true) disables the capability per org.
 See 05c-orchestrator §Daemon-managed workspace cleanup scheduler for the
 full contract.
