@@ -1149,6 +1149,89 @@ def test_lifecycle_matrix_reentrancy_cells_encode_fail_closed_ruling() -> None:
     )
 
 
+_STALE_REENTRANCY_TOKENS = (
+    "returns immediately",
+    "return immediately",
+    "immediate-return",
+    "early success",
+    "success immediately",
+)
+
+
+def _assert_no_stale_immediate_return(low: str, context: str) -> None:
+    """Reject the TASK-5925 forbidden semantics wherever a re-entrancy cell
+    states same-thread close_all behavior: immediate-return/early-success
+    wording must never be normative in the lifecycle matrix."""
+    for stale in _STALE_REENTRANCY_TOKENS:
+        assert stale not in low, (
+            f"{context} must not encode stale immediate-return/early-success "
+            f"semantics ({stale!r} is the forbidden TASK-5925 behavior)"
+        )
+
+
+def test_lifecycle_matrix_m5_callback_reentrancy_encodes_fail_closed_ruling() -> None:
+    """The THR-097 seq140 founder ruling governs M5 (bulk close_all) as well:
+    M5's callback cell must NOT state that a same-thread re-entrant close_all
+    from a snapshot transport-close callback 'returns immediately' (the exact
+    stale semantics TASK-5936 flagged) and MUST encode the fail-closed
+    rejection — RuntimeError/non-success before any seal, membership
+    transition, cleanup acknowledgement, or success publication; callback
+    termination stays inside the acknowledgement barrier; a later close_all
+    reports terminal success or the persisted failure."""
+    doc = _load("lifecycle_matrix")
+    m5 = next(m for m in doc["mutations"] if m["id"] == "M5")
+    callbacks = m5["callbacks"]
+    low = callbacks.lower()
+    _assert_no_stale_immediate_return(low, "lifecycle_matrix M5 callbacks")
+    for token in (
+        "rejected",
+        "non-success",
+        "before any seal",
+        "acknowledgement barrier",
+        "terminal success",
+        "persisted",
+    ):
+        assert token in low, (
+            f"lifecycle_matrix M5 callbacks must encode the seq140 fail-closed "
+            f"ruling token {token!r}"
+        )
+    assert "RuntimeError" in callbacks, (
+        "lifecycle_matrix M5 callbacks must name the existing non-success "
+        "representation (RuntimeError)"
+    )
+
+
+def test_lifecycle_matrix_reentrancy_cells_cross_consistent() -> None:
+    """Cross-cell consistency: every cell that states same-thread re-entrant
+    close_all semantics — M5 (bulk close_all callbacks), M10 (re-entrant
+    close_all), M12 (concurrent waiters re-entry), M19 (transport-close
+    callback mutation) — must agree on the seq140 fail-closed non-success
+    rejection, tie success to the acknowledgement barrier, and NONE may carry
+    stale immediate-return / early-success semantics."""
+    doc = _load("lifecycle_matrix")
+    by_id = {m["id"]: m for m in doc["mutations"]}
+    cells = {
+        "M5": json.dumps(by_id["M5"]),
+        "M10": json.dumps(by_id["M10"]),
+        "M12": json.dumps(by_id["M12"]),
+        "M19": json.dumps(by_id["M19"]),
+    }
+    for mid, prose in cells.items():
+        low = prose.lower()
+        _assert_no_stale_immediate_return(low, f"lifecycle_matrix {mid}")
+        assert "rejected" in low, (
+            f"lifecycle_matrix {mid} must encode the fail-closed rejection "
+            "(seq140 same-thread re-entry)"
+        )
+        assert "non-success" in low, (
+            f"lifecycle_matrix {mid} must encode the fail-closed non-success result"
+        )
+        assert "acknowledg" in low, (
+            f"lifecycle_matrix {mid} must tie the re-entrant outcome to the "
+            "acknowledgement barrier (callback termination inside it; no early success)"
+        )
+
+
 def test_lifecycle_matrix_mutation_close_vs_revoke_cells_are_distinct() -> None:
     """The two close-vs-revoke orderings must state DISTINCT permitted outcomes:
     mutation-first (transport close acknowledged before revocation success) vs

@@ -110,7 +110,7 @@
       "membership_effect": "seal the registry + seal every registered wrapper + snapshot + clear membership",
       "seal_scope": "every registered wrapper",
       "linearization_point": "revocation_seal: setting _revoked + sealing wrappers + snapshot under the lifecycle lock, seal before snapshot",
-      "callbacks": "every snapshot transport close runs OUTSIDE the lock; same-thread re-entrant close_all from inside a callback returns immediately (thread-local guard); concurrent callers wait on the shared terminal result without holding a lock",
+      "callbacks": "every snapshot transport close runs OUTSIDE the lock; same-thread re-entrant close_all from inside a snapshot transport-close callback is rejected with fail-closed non-success (RuntimeError, the public API's existing non-success representation) BEFORE any seal, membership transition, cleanup acknowledgement, or success publication \u2014 never an immediate return that publishes success and never a self-inflight exclusion; the callback's own transport close terminates INSIDE the acknowledgement barrier and is acknowledged before the outer run or a later close_all from a normal context reports terminal success or the persisted failure (never erased); concurrent callers wait on the shared terminal result without holding a lock",
       "orderings": [
         {
           "ordering": "mutation_first",
