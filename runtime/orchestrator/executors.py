@@ -356,6 +356,59 @@ def _parse_claude_session_id(stdout: str) -> str | None:
     return sid if isinstance(sid, str) and sid else None
 
 
+def _parse_codex_session_id(stdout: str) -> str | None:
+    """Extract ``thread.started.thread_id`` from Codex's `--json` NDJSON stream.
+
+    Verified live on codex-cli 0.148.0: a fresh ``codex exec --json -`` and a
+    ``codex exec resume <id> --json -`` both emit exactly one
+    ``{"type":"thread.started","thread_id":"<uuid>",...}`` event first; the
+    resumed run re-emits the SAME thread_id. Best-effort: returns None on
+    empty/malformed/no-match output so a parse failure degrades to a fresh
+    invocation, never a wrong answer.
+    """
+    if not stdout:
+        return None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "thread.started":
+            continue
+        tid = obj.get("thread_id")
+        return tid if isinstance(tid, str) and tid else None
+    return None
+
+
+def _parse_pi_session_id(stdout: str) -> str | None:
+    """Extract the session header ``id`` from Pi's `--mode json` event stream.
+
+    Verified live on pi 0.84.2: the FIRST JSON line is always
+    ``{"type":"session","version":3,"id":"<uuid>",...}`` on both a fresh
+    ``pi -p --mode json`` and a ``pi -p --session <id> --mode json`` continue
+    (same id re-emitted). Best-effort: returns None on empty/malformed/
+    no-match output.
+    """
+    if not stdout:
+        return None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "session":
+            continue
+        sid = obj.get("id")
+        return sid if isinstance(sid, str) and sid else None
+    return None
+
+
 def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
     """Parse Claude Code ``--output-format json`` stdout for a structured
     terminal error reason on non-zero exit.
@@ -1167,6 +1220,7 @@ class CodexExecutor:
     def _build_argv(
         self,
         model: str | None = None,
+        resume_session_id: str | None = None,
     ) -> list[str]:
         """Build the argv list for a Codex subprocess launch.
 
@@ -1180,8 +1234,34 @@ class CodexExecutor:
                 sandbox_mode=self._sandbox_mode,
                 model=model,
                 model_arg=self._model_arg,
+                resume_session_id=resume_session_id,
             )
         # Compatibility fallback — bit-identical to the adapter path.
+        if resume_session_id:
+            # TASK-5977: resume routes through `codex exec resume <id>`. The
+            # resume subcommand has NO --sandbox flag (verified in its help on
+            # codex-cli 0.148.0), so the same workspace-write sandbox + network
+            # posture is carried as `-c` config overrides; stdin `-` keeps the
+            # prompt off argv.
+            cmd = [
+                _resolve_binary(self._profile_name),
+                "exec",
+                "resume",
+                resume_session_id,
+            ]
+            if model and self._model_arg:
+                for elem in self._model_arg:
+                    cmd.append(elem.replace("{model}", model))
+            cmd += [
+                "-c",
+                f'sandbox_mode="{self._sandbox_mode}"',
+                "-c",
+                "sandbox_workspace_write.network_access=true",
+                "--skip-git-repo-check",
+                "--json",
+                "-",
+            ]
+            return cmd
         cmd = [
             _resolve_binary(self._profile_name),
             "exec",
@@ -1217,13 +1297,14 @@ class CodexExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        resume_session_id: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
         org_slug: str | None = None,
         running: "RunningHandle | None" = None,
         throttle_backoff_seconds: Sequence[float] | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
-        cmd = self._build_argv(model=model)
+        cmd = self._build_argv(model=model, resume_session_id=resume_session_id)
         return _run_command(
             cmd,
             workspace,
@@ -1232,6 +1313,7 @@ class CodexExecutor:
             input_text=prompt,
             on_started=on_started,
             usage_parser=_parse_codex_usage,
+            session_id_parser=_parse_codex_session_id,
             provider="codex",
             on_throttle_event=on_throttle_event,
             pre_launch_validator=pre_launch_validator,
@@ -1257,7 +1339,7 @@ class CodexExecutor:
         timeout is applied at communicate-time in contained mode).
         """
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
-        cmd = self._build_argv(model=model)
+        cmd = self._build_argv(model=model, resume_session_id=resume_session_id)
         return build_command_launch_spec(
             cmd=cmd, workspace=workspace, input_text=prompt, org_slug=org_slug,
         )
@@ -1418,6 +1500,7 @@ class PiExecutor:
         self,
         prompt: str,
         model: str | None = None,
+        resume_session_id: str | None = None,
     ) -> list[str]:
         """Build the argv list for a Pi subprocess launch.
 
@@ -1431,6 +1514,7 @@ class PiExecutor:
                 prompt=prompt,
                 model=model,
                 model_arg=self._model_arg,
+                resume_session_id=resume_session_id,
             )
         # Compatibility fallback — bit-identical to the adapter path.
         # THR-200: the prompt is delivered via stdin (input_text), never argv.
@@ -1445,6 +1529,11 @@ class PiExecutor:
             "--mode",
             "json",
         ]
+        if resume_session_id:
+            # TASK-5977: `--session <id>` FAILS when the id is missing (the
+            # eviction signature the runner detects). Never `--session-id`,
+            # which would silently create a fresh session.
+            cmd += ["--session", resume_session_id]
         return cmd
 
     def run(
@@ -1456,13 +1545,15 @@ class PiExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        resume_session_id: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
         org_slug: str | None = None,
         running: "RunningHandle | None" = None,
         throttle_backoff_seconds: Sequence[float] | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
-        cmd = self._build_argv(prompt=prompt, model=model)
+        cmd = self._build_argv(prompt=prompt, model=model,
+                               resume_session_id=resume_session_id)
         return _run_command(
             cmd,
             workspace,
@@ -1471,6 +1562,7 @@ class PiExecutor:
             input_text=prompt,
             on_started=on_started,
             usage_parser=_parse_pi_usage,
+            session_id_parser=_parse_pi_session_id,
             provider="pi",
             on_throttle_event=on_throttle_event,
             pre_launch_validator=pre_launch_validator,
@@ -1496,7 +1588,8 @@ class PiExecutor:
         timeout is applied at communicate-time in contained mode).
         """
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
-        cmd = self._build_argv(prompt=prompt, model=model)
+        cmd = self._build_argv(prompt=prompt, model=model,
+                               resume_session_id=resume_session_id)
         return build_command_launch_spec(
             cmd=cmd, workspace=workspace, input_text=prompt, org_slug=org_slug,
         )

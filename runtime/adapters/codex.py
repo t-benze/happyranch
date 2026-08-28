@@ -22,6 +22,7 @@ class CodexAdapter:
         sandbox_mode: str,
         model: str | None = None,
         model_arg: list[str] | None = None,
+        resume_session_id: str | None = None,
     ) -> list[str]:
         """Build the argv list for a Codex subprocess launch.
 
@@ -30,8 +31,33 @@ class CodexAdapter:
             sandbox_mode: ``--sandbox`` value from Settings.
             model: Agent model id to inject, or None for CLI default.
             model_arg: Model arg template ``[flag, placeholder]`` or None.
+            resume_session_id: Conversation/session id (UUID) to resume via
+                ``codex exec resume <id>`` (verified live on codex-cli
+                0.148.0: the same ``thread.started.thread_id`` is re-emitted
+                after continuation and the prompt is read from stdin ``-``).
+
+        Fresh launches use ``exec --sandbox <mode>``; the resume subcommand
+        has NO ``--sandbox`` flag (verified in its help), so the same
+        workspace-write sandbox + localhost network posture is carried as
+        ``-c`` config overrides. Either way the prompt travels via stdin
+        (``input_text``), never argv (THR-200).
         """
-        cmd: list[str] = [cli_path, "exec"]
+        if resume_session_id:
+            cmd: list[str] = [cli_path, "exec", "resume", resume_session_id]
+            if model and model_arg:
+                for elem in model_arg:
+                    cmd.append(elem.replace("{model}", model))
+            cmd += [
+                "-c",
+                f'sandbox_mode="{sandbox_mode}"',
+                "-c",
+                "sandbox_workspace_write.network_access=true",
+                "--skip-git-repo-check",
+                "--json",
+                "-",
+            ]
+            return cmd
+        cmd = [cli_path, "exec"]
         if model and model_arg:
             for elem in model_arg:
                 cmd.append(elem.replace("{model}", model))

@@ -353,16 +353,30 @@ def _decline_by_default_doctrine() -> str:
 
 
 # Best-effort markers for "the resume target no longer exists in the agent CLI's
-# local session store" (TTL eviction / workspace move). Verify against the running
-# CLI during integration — a miss is safe (degrades to a normal failure, never a
-# wrong answer).
+# local session store" (TTL eviction / workspace move). Verified against the
+# running CLIs during the TASK-5977 contract audit:
+#   - claude: legacy markers (in production since THR-200)
+#   - codex 0.148.0: `Error: thread/resume: thread/resume failed: no rollout
+#     found for thread id <uuid> (code -32600)` on stderr, rc=1
+#   - pi 0.84.2: `No session found matching '<id>'` on stderr, rc=1
+# A miss is safe (degrades to a normal failure, never a wrong answer).
 _SESSION_NOT_FOUND_MARKERS = (
     "no conversation found",
     "session not found",
     "no session found",
     "could not find session",
     "no such session",
+    "no rollout found",
 )
+
+
+# Executors whose provider-session resume contract is PROVEN against the
+# installed CLI (TASK-5977 audit): claude (2.1.241, production since THR-200),
+# codex (0.148.0: `exec resume <thread_id> --json -`, same thread_id
+# re-emitted), pi (0.84.2: `-p --session <id> --mode json`, same session.id
+# re-emitted). opencode is NOT installed here — its resume contract is an
+# unproven gap and it stays fresh (full prompt every turn).
+_RESUME_CAPABLE_EXECUTORS = frozenset({"claude", "codex", "pi"})
 
 
 def _is_session_not_found(result) -> bool:
@@ -773,14 +787,15 @@ async def run_invocation(
     # --- Active-invocation lock (provider-agnostic, THR-042) ---
     # Every executor must acquire the per-(org, thread, agent) lock so no two
     # subprocess sessions for the same agent in the same thread run concurrently.
-    # Only Claude supports --resume and manages thread_session state; the lock
-    # now protects all providers against concurrent runs, not just Claude.
-    is_claude = executor_name == "claude"
+    # Only resume-capable executors (claude/codex/pi) support --resume/--session
+    # and manage thread_session state; the lock protects all providers against
+    # concurrent runs, not just Claude.
+    resume_capable = executor_name in _RESUME_CAPABLE_EXECUTORS
     invocation_guard = _invocation_lock(org_state, inv.thread_id, inv.agent_name)
     async with invocation_guard:
         stored_sid, last_seq = (
             org_state.db.get_thread_session(inv.thread_id, inv.agent_name)
-            if is_claude else (None, 0)
+            if resume_capable else (None, 0)
         )
         resume_sid: str | None = None
         # GitHub #688 Slice B: a claimed conversational REPLY must explicitly
@@ -805,7 +820,7 @@ async def run_invocation(
         # control (and drop) required delivery, so we fall back to the full
         # prompt. Non-REPLY invocations keep the legacy resume behavior.
         can_resume = (
-            is_claude
+            resume_capable
             and stored_sid
             and (claim is None or last_seq < claim.running_from_seq)
         )
@@ -887,7 +902,7 @@ async def run_invocation(
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, lambda: _invoke(prompt, resume_sid))
 
-            if (is_claude and resume_sid and not result.success
+            if (resume_capable and resume_sid and not result.success
                     and _is_session_not_found(result)):
                 # THR-200: the eviction audit AND the durable session-id
                 # invalidation commit in ONE transaction (see
@@ -899,7 +914,7 @@ async def run_invocation(
                 # a full prompt instead of a doomed resume against a stale
                 # provider session.
                 audit.log_agent_session_evicted_fallback(
-                    inv.thread_id, agent_name=inv.agent_name, executor="claude",
+                    inv.thread_id, agent_name=inv.agent_name, executor=executor_name,
                     stale_session_id=resume_sid,
                     error=str(getattr(result, "error", "") or ""),
                 )
@@ -970,7 +985,7 @@ async def run_invocation(
             #
             # On a CONSUMED/DECLINED turn, the subprocess produced a real callback;
             # the agent_session_id is valid and should be persisted for future resume.
-            if is_claude and result.success and getattr(result, "agent_session_id", None):
+            if resume_capable and result.success and getattr(result, "agent_session_id", None):
                 new_watermark = max(shown_seqs) if shown_seqs else last_seq
                 new_watermark = max(new_watermark, last_seq)
                 org_state.db.update_thread_session(
@@ -980,7 +995,7 @@ async def run_invocation(
                 )
                 if resume_sid:
                     audit.log_agent_session_reused(
-                        inv.thread_id, agent_name=inv.agent_name, executor="claude",
+                        inv.thread_id, agent_name=inv.agent_name, executor=executor_name,
                         agent_session_id=result.agent_session_id,
                         triggering_seq=inv.triggering_seq,
                     )
@@ -1007,7 +1022,7 @@ async def run_invocation(
         # Persist the (possibly forked / freshly-minted) session id + delta
         # watermark. Advanced only on a successful subprocess — a failed turn
         # leaves the watermark so the next resume re-includes the skipped messages.
-        if is_claude and result.success and getattr(result, "agent_session_id", None):
+        if resume_capable and result.success and getattr(result, "agent_session_id", None):
             new_watermark = max(shown_seqs) if shown_seqs else last_seq
             new_watermark = max(new_watermark, last_seq)
             org_state.db.update_thread_session(
@@ -1017,7 +1032,7 @@ async def run_invocation(
             )
             if resume_sid:
                 audit.log_agent_session_reused(
-                    inv.thread_id, agent_name=inv.agent_name, executor="claude",
+                    inv.thread_id, agent_name=inv.agent_name, executor=executor_name,
                     agent_session_id=result.agent_session_id,
                     triggering_seq=inv.triggering_seq,
                 )
@@ -1044,7 +1059,7 @@ async def run_invocation(
                 "auto-declined if you exit again without calling one of these."
             )
 
-            if is_claude and getattr(result, "agent_session_id", None):
+            if resume_capable and getattr(result, "agent_session_id", None):
                 # Resume the same agent session and append the nudge.
                 retry_prompt = nudge_prompt
                 retry_resume_sid: str | None = result.agent_session_id
@@ -1103,7 +1118,7 @@ async def run_invocation(
             if after.status in {ThreadInvocationStatus.CONSUMED, ThreadInvocationStatus.DECLINED}:
                 # The nudge worked — terminal callback happened during the
                 # re-invoke. Persist the retry session for future resume.
-                if (is_claude and retry_result is not None and retry_result.success
+                if (resume_capable and retry_result is not None and retry_result.success
                         and getattr(retry_result, "agent_session_id", None)):
                     new_watermark = max(shown_seqs) if shown_seqs else last_seq
                     new_watermark = max(new_watermark, last_seq)
@@ -1115,7 +1130,7 @@ async def run_invocation(
                     if retry_resume_sid:
                         audit.log_agent_session_reused(
                             inv.thread_id, agent_name=inv.agent_name,
-                            executor="claude",
+                            executor=executor_name,
                             agent_session_id=retry_result.agent_session_id,
                             triggering_seq=inv.triggering_seq,
                         )
@@ -1134,7 +1149,7 @@ async def run_invocation(
             # rc!=0 → no_callback: rc=N.
             if retry_result is not None and retry_result.success:
                 # Session may still be persistable (clean exit from the nudge).
-                if (is_claude and getattr(retry_result, "agent_session_id", None)):
+                if (resume_capable and getattr(retry_result, "agent_session_id", None)):
                     new_watermark = max(shown_seqs) if shown_seqs else last_seq
                     new_watermark = max(new_watermark, last_seq)
                     org_state.db.update_thread_session(

@@ -154,7 +154,10 @@ rejected merely for omitting optional usage fields.
 
 **Thread provider-session state (THR-200).** The per-``(thread, agent)``
 resumable provider session id + delta watermark on ``thread_participants``
-is a Claude-only optimization, never a correctness dependency (see
+is an optimization, never a correctness dependency, for the executors whose
+resume contract is PROVEN against the installed CLI (claude 2.1.241, codex
+0.148.0, pi 0.84.2 — TASK-5977 audit); opencode is an unproven gap and
+stays fresh (see
 `protocol/05b-agent-runtime.md`). Eviction — a provider-declared
 session-not-found on a resume attempt — invalidates the durable id in the
 SAME transaction as the eviction audit, BEFORE the full-prompt fallback

@@ -35,13 +35,14 @@ if [[ -n "${FAKE_CODEX_PLAN:-}" && -f "$FAKE_CODEX_PLAN" ]]; then
 fi
 
 # When the orchestrator runs Codex with `--json`, emit a real-shaped
-# `turn.completed` NDJSON event so `_parse_codex_usage` writes a
-# session_token_usage row. This mirrors codex-cli >= 0.137: the terminal
-# event is `turn.completed` carrying a `usage` object, and no model field is
-# emitted on any event. Without this, every fake-Codex session would leave
-# the row table empty.
+# NDJSON event stream so the parsers work: `thread.started` first (carrying
+# the stable thread_id, as on real codex-cli 0.148.0 — the TASK-5977 session
+# parser reads it), then the terminal `turn.completed` usage event (the
+# TASK-173 usage parser reads it). Mirrors codex-cli >= 0.137: the terminal
+# usage event is `turn.completed` and no model field is emitted.
 if [[ "$JSON_OUTPUT" == 1 ]]; then
     cat <<'EOF'
+{"type":"thread.started","thread_id":"01a0-fake-codex-thread","timestamp":"2026-01-01T00:00:00Z"}
 {"type":"turn.completed","usage":{"input_tokens":2000,"cached_input_tokens":150,"output_tokens":800,"reasoning_output_tokens":100}}
 EOF
 fi
