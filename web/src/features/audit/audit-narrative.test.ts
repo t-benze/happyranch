@@ -61,7 +61,6 @@ const KNOWN_ACTIONS: string[] = [
   'thread_renamed',
   'thread_pinned',
   'thread_unpinned',
-  'thread_mention_routing_changed',
   'thread_reply_wake_created',
   'thread_reply_wake_coalesced',
   'thread_reply_wake_claimed',
@@ -434,36 +433,5 @@ describe('thread reply delivery lifecycle (GH-688 Phase 1 Slice C)', () => {
     );
     expect(narrativeText(n)).toBe('dev_agent recovered a reply wake in THR-9.');
     expect(n.detail).toBe('replacement_queued · messages 1–3');
-  });
-});
-
-describe('thread mention routing (THR-198 Slice B)', () => {
-  it('thread_mention_routing_changed carries the new state in detail', () => {
-    const n = describeAuditEntry(
-      entry({
-        action: 'thread_mention_routing_changed',
-        agent: 'founder',
-        task_id: 'THR-9',
-        payload: { mention_routing_enabled: false },
-      }),
-    );
-    expect(narrativeText(n)).toBe('founder changed mention routing on THR-9.');
-    expect(n.detail).toBe('disabled');
-    expect(n.segments).toContainEqual({
-      kind: 'ref',
-      ref: { type: 'thread', id: 'THR-9', label: 'THR-9' },
-    });
-  });
-
-  it('thread_mention_routing_changed enabled detail', () => {
-    const n = describeAuditEntry(
-      entry({
-        action: 'thread_mention_routing_changed',
-        agent: 'founder',
-        task_id: 'THR-9',
-        payload: { mention_routing_enabled: true },
-      }),
-    );
-    expect(n.detail).toBe('enabled');
   });
 });

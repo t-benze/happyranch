@@ -252,15 +252,6 @@ export interface ThreadRecord {
    *  ``pinned_at`` column: false when never pinned, true while pinned. */
   pinned: boolean;
   pinned_at: string | null;
-  /** Per-thread mention-routing switch (THR-198). Mirrors the durable
-   *  ``threads.mention_routing_enabled`` column; the daemon wire is a real
-   *  boolean (never a string). */
-  mention_routing_enabled: boolean;
-  /** Per-thread strict reply-exchange switch (TASK-5966). Mirrors the
-   *  durable ``threads.reply_exchange_enabled`` column — the INDEPENDENT
-   *  rollback control for the mention-led exchange (mode 2 of the 3-mode
-   *  position model); ``mention_routing_enabled`` is never redefined. */
-  reply_exchange_enabled: boolean;
   /** Most recent message created_at (derived server-side). Informational on
    *  the wire (THR-209 msg 9: pinned ranking uses the immutable numeric
    *  thread ID, not activity). */

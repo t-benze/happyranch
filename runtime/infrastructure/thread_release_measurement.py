@@ -233,21 +233,6 @@ def _roster_at_write(conn: sqlite3.Connection, thread_id: str, created_at: str) 
     return [r["agent_name"] for r in rows]
 
 
-def _thread_mention_routing_enabled(conn: sqlite3.Connection, thread_id: str) -> bool:
-    """Read the per-thread setting; a missing row/column defaults to enabled
-    (the ratified default), so the replay never silently widens."""
-    try:
-        row = conn.execute(
-            "SELECT mention_routing_enabled FROM threads WHERE id = ?",
-            (thread_id,),
-        ).fetchone()
-    except sqlite3.OperationalError:
-        return True  # legacy DB without the Slice-A column
-    if row is None:
-        return True
-    return bool(row["mention_routing_enabled"])
-
-
 def _pct(part: int, total: int) -> float | None:
     """Percentage with an honest zero-denominator result: ``None`` (not
     measurable), never a fabricated 0."""
@@ -832,8 +817,9 @@ def replay_baseline(
 
     Roster at write time is reconstructed from current participants with
     ``added_at <= created_at`` (documented under-approximation). The Phase-2
-    wake set uses ``resolve_wake_set`` with the persisted per-thread setting
-    (all threads default-enabled). Read-only and deterministic.
+    wake set uses ``resolve_wake_set`` under UNCONDITIONAL mention routing
+    (TASK-6027 founder ruling — the persisted ``threads.mention_routing_enabled``
+    column is inert legacy and is not consulted). Read-only and deterministic.
     """
     start = parse_timestamp(window_start)
     end = parse_timestamp(window_end)
@@ -883,9 +869,6 @@ def replay_baseline(
             mentioned.add((row["thread_id"], row["seq"]))
         wake_sets[(row["thread_id"], row["seq"])] = resolve_wake_set(
             parsed, roster, row["speaker"],
-            mention_routing_enabled=_thread_mention_routing_enabled(
-                conn, row["thread_id"],
-            ),
         )
 
     mentioned_wakes = [

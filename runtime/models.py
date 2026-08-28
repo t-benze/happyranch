@@ -492,18 +492,6 @@ class ThreadRecord(BaseModel):
     # is pinned by the founder. Pinning changes display only — never identity,
     # participants, routing, unread state, lifecycle, or activity timestamps.
     pinned_at: datetime | None = None
-    # Phase-2 mention routing (THR-198): per-thread switch, DEFAULT ENABLED.
-    # Additive column with NOT NULL DEFAULT 1 — existing threads adopt the
-    # enabled default with no data migration or replay.
-    mention_routing_enabled: bool = True
-    # TASK-5966 strict mention-led exchange (THR-198 seq 194/195/196):
-    # INDEPENDENT rollback control. Additive column with NOT NULL DEFAULT 1.
-    # This is the separate exchange switch — ``mention_routing_enabled``
-    # keeps its shipped meaning. The exchange activates only when BOTH
-    # ``mention_routing_enabled`` AND ``reply_exchange_enabled`` are on and
-    # the org kill-switch (``org_settings.threads.reply_exchange_enabled``,
-    # absent = per-thread governs) does not disable it org-wide.
-    reply_exchange_enabled: bool = True
     # Most recent message created_at (derived; NULL for threads without
     # messages). Informational on the wire (THR-209 msg 9: pinned ranking
     # uses the immutable numeric thread ID, not activity).

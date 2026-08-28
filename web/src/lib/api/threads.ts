@@ -122,34 +122,6 @@ export const setThreadPinned = (
 ): Promise<{ thread_id: string; pinned: boolean; idempotent?: boolean }> =>
   request(`/orgs/${slug}/threads/${threadId}/pin`, { method: 'POST', body });
 
-export const setThreadMentionRouting = (
-  slug: string,
-  threadId: string,
-  body: { mention_routing_enabled: boolean },
-): Promise<{
-  thread_id: string;
-  mention_routing_enabled: boolean;
-  idempotent?: boolean;
-}> =>
-  request(`/orgs/${slug}/threads/${threadId}/mention-routing`, {
-    method: 'POST',
-    body,
-  });
-
-export const setThreadExchangeRouting = (
-  slug: string,
-  threadId: string,
-  body: { reply_exchange_enabled: boolean },
-): Promise<{
-  thread_id: string;
-  reply_exchange_enabled: boolean;
-  idempotent?: boolean;
-}> =>
-  request(`/orgs/${slug}/threads/${threadId}/exchange-routing`, {
-    method: 'POST',
-    body,
-  });
-
 export const abortReplies = (
   slug: string,
   threadId: string,

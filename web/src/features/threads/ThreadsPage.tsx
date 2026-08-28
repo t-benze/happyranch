@@ -54,7 +54,6 @@ import {
 } from '@/hooks/threads';
 import { ArchiveDialog } from './ArchiveDialog';
 import { InviteDialog } from './InviteDialog';
-import { MentionRoutingDialog } from './MentionRoutingDialog';
 import { RemoveParticipantDialog } from './RemoveParticipantDialog';
 import { NewThreadDialog } from '@/shared/threads/NewThreadDialog';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
@@ -539,8 +538,6 @@ export function ThreadsPage(): JSX.Element {
   >(undefined);
   const [showInvite, setShowInvite] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
-  // THR-198 Slice C: per-thread mention-routing dialog (founder settings surface).
-  const [showMentionRouting, setShowMentionRouting] = useState(false);
   // Participant pending removal — drives the confirm dialog; null keeps it closed.
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   const openNew = () => {
@@ -858,7 +855,6 @@ export function ThreadsPage(): JSX.Element {
           onTogglePin={(pinned) => void togglePin(pinned)}
           pinPending={pinMutation.isPending}
           pinError={pinError}
-          onOpenMentionRouting={() => setShowMentionRouting(true)}
           composer={
             <Composer
               agents={composerAgents}
@@ -908,13 +904,6 @@ export function ThreadsPage(): JSX.Element {
             threadId={threadId}
             open={showArchive}
             onClose={() => setShowArchive(false)}
-          />
-          <MentionRoutingDialog
-            threadId={threadId}
-            enabled={activeThread.data?.mention_routing_enabled ?? true}
-            exchangeEnabled={activeThread.data?.reply_exchange_enabled ?? true}
-            open={showMentionRouting}
-            onClose={() => setShowMentionRouting(false)}
           />
           <RemoveParticipantDialog
             threadId={threadId}
@@ -971,8 +960,6 @@ interface DetailColumnProps {
   onTogglePin: (pinned: boolean) => void;
   pinPending: boolean;
   pinError: string | null;
-  /* ---- THR-198 Slice C: mention-routing dialog ---- */
-  onOpenMentionRouting: () => void;
   composer: JSX.Element;
   slug: string | undefined;
 }
@@ -1000,7 +987,6 @@ function DetailColumn({
   onTogglePin,
   pinPending,
   pinError,
-  onOpenMentionRouting,
   composer,
   slug,
 }: DetailColumnProps): JSX.Element {
@@ -1133,9 +1119,6 @@ function DetailColumn({
             </Button>
             <Button variant="ghost" size="sm" onClick={onArchive} disabled={!open} title="Archive (A)">Archive</Button>
             {thread.status === 'archived' && <ResumeButton threadId={thread.thread_id} />}
-            <Button variant="ghost" size="sm" onClick={onOpenMentionRouting}>
-              {S.mentionRoutingAction}
-            </Button>
           </div>
         }
       />

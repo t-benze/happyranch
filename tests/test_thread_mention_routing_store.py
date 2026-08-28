@@ -165,9 +165,13 @@ def test_legacy_db_missing_columns_migrates_with_defaults(tmp_path):
     assert _column_info(db, "thread_messages", "mentions_json") == {
         "type": "TEXT", "notnull": 0, "dflt_value": None,
     }
-    # Existing rows survive; defaults apply: enabled=1, mentions_json=NULL.
+    # Existing rows survive; defaults apply: the inert legacy column keeps
+    # enabled=1 (schema compatibility only — never read/written for
+    # behavior), mentions_json=NULL. ThreadRecord no longer exposes the
+    # switch (TASK-6027 founder ruling — unconditional mention routing).
     t = db.get_thread("THR-001")
-    assert t is not None and t.mention_routing_enabled is True
+    assert t is not None
+    assert not hasattr(t, "mention_routing_enabled")
     row = db._conn.execute(
         "SELECT mention_routing_enabled FROM threads WHERE id='THR-001'"
     ).fetchone()
@@ -233,25 +237,36 @@ def test_inserts_work_on_both_shapes(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_thread_record_mention_routing_enabled_default_and_toggle(tmp_path):
+def test_mention_routing_enabled_is_inert_legacy_column_only(tmp_path):
+    """TASK-6027 founder ruling: ``mention_routing_enabled`` remains a
+    shipped schema-compat column (NOT NULL DEFAULT 1) but is NEVER exposed
+    on ThreadRecord, NEVER written through a store/product surface, and
+    NEVER read to alter routing (unconditional mention routing). A raw
+    persisted value of 0 must not change any behavior."""
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     t = db.get_thread("THR-001")
-    assert t.mention_routing_enabled is True
+    assert not hasattr(t, "mention_routing_enabled")
+    # The column exists with the shipped default (schema compat).
     row = db._conn.execute(
         "SELECT mention_routing_enabled FROM threads WHERE id='THR-001'"
     ).fetchone()
     assert row["mention_routing_enabled"] == 1
-
-    db.insert_thread(ThreadRecord(
-        id="THR-002", subject="y", mention_routing_enabled=False,
-    ))
-    t2 = db.get_thread("THR-002")
-    assert t2.mention_routing_enabled is False
-    row2 = db._conn.execute(
-        "SELECT mention_routing_enabled FROM threads WHERE id='THR-002'"
-    ).fetchone()
-    assert row2["mention_routing_enabled"] == 0
+    # A raw persisted 0 (legacy data) changes nothing: routing still
+    # narrows to the valid mention set.
+    db._conn.execute(
+        "UPDATE threads SET mention_routing_enabled = 0 WHERE id='THR-001'"
+    )
+    db._conn.commit()
+    for name in ("alpha", "bravo", "charlie"):
+        db.add_thread_participant("THR-001", name, added_by="founder")
+    arrivals = db.record_conversational_arrival(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE,
+        body_markdown="only @bravo please",
+        recipients=["alpha", "bravo", "charlie"],
+    )[1]
+    assert [a.agent_name for a in arrivals] == ["bravo"]
 
 
 def test_thread_message_mentions_roundtrip(tmp_path):

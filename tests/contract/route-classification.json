@@ -48,8 +48,6 @@
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/resume",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/pin",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/rename",
-    "POST /api/v1/orgs/{slug}/threads/{thread_id}/mention-routing",
-    "POST /api/v1/orgs/{slug}/threads/{thread_id}/exchange-routing",
     "GET /api/v1/orgs/{slug}/jobs/",
     "GET /api/v1/orgs/{slug}/jobs/{job_id}",
     "POST /api/v1/orgs/{slug}/jobs/{job_id}/run",
@@ -187,7 +185,6 @@
     "POST /api/v1/orgs/{slug}/skills/recover": "bearer-authenticated operator/CLI-only B2 canonical-package recovery; no browser client or consumer",
     "POST /api/v1/orgs/{slug}/custom-skills/agent-create": "agent-only — opaque session-binding, not exercised from the Web UI (THR-055 B2)",
     "GET /api/v1/orgs/{slug}/portability-preflight": "cli-only org-portability preflight — read-only, no browser/TS consumer (THR-187 Slice A)",
-    "POST /api/v1/orgs/{slug}/reconcile-portability": "founder-only org-portability reconciliation — no browser/TS consumer (THR-187 Slice A)",
-    "POST /api/v1/orgs/{slug}/threads/exchange-routing": "org-wide strict-exchange kill-switch (TASK-5982) — operator/CLI-only rollback control, never browser-consumed; the per-thread exchange-routing toggle remains the web surface"
+    "POST /api/v1/orgs/{slug}/reconcile-portability": "founder-only org-portability reconciliation — no browser/TS consumer (THR-187 Slice A)"
   }
 }

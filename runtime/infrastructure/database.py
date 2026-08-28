@@ -1188,8 +1188,7 @@ class Database:
                 summary TEXT,
                 transcript_path TEXT,
                 pinned_at TEXT,
-                mention_routing_enabled INTEGER NOT NULL DEFAULT 1,
-                reply_exchange_enabled INTEGER NOT NULL DEFAULT 1
+                mention_routing_enabled INTEGER NOT NULL DEFAULT 1
             );
             CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(status);
             CREATE INDEX IF NOT EXISTS idx_threads_started ON threads(started_at);
@@ -1341,8 +1340,7 @@ class Database:
                 closed_at        TEXT,
                 close_reason     TEXT CHECK (close_reason IN
                     ('quiescence','max_priority_wait','founder_aborted',
-                     'thread_archived','participant_removed','corrupt',
-                     'exchange_disabled','org_exchange_disabled')),
+                     'thread_archived','participant_removed','corrupt')),
                 deferred_count   INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (thread_id, exchange_id),
                 FOREIGN KEY (thread_id) REFERENCES threads(id)
@@ -1825,20 +1823,6 @@ class Database:
         try:
             self._conn.execute(
                 "ALTER TABLE thread_messages ADD COLUMN mentions_json TEXT"
-            )
-        except sqlite3.OperationalError:
-            pass
-        # TASK-5966 strict mention-led exchange (founder-ratified THR-198
-        # seq 194/195/196): independent rollback control. Additive column
-        # with NOT NULL DEFAULT 1, statement-identical to the fresh CREATE
-        # definition above. ``mention_routing_enabled`` keeps its shipped
-        # meaning — this flag is the SEPARATE exchange switch (mode 2 of the
-        # 3-mode position model: pure broadcast / shipped mention routing /
-        # strict exchange).
-        try:
-            self._conn.execute(
-                "ALTER TABLE threads ADD COLUMN "
-                "reply_exchange_enabled INTEGER NOT NULL DEFAULT 1"
             )
         except sqlite3.OperationalError:
             pass
@@ -5063,8 +5047,8 @@ class Database:
                 turn_cap, turns_used, summary,
                 transcript_path,
                 composed_by, composed_from_task_id, composed_from_dream_id,
-                pinned_at, mention_routing_enabled, reply_exchange_enabled
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                pinned_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.id,
                 t.subject,
@@ -5081,8 +5065,6 @@ class Database:
                 t.composed_from_task_id,
                 t.composed_from_dream_id,
                 t.pinned_at.isoformat() if t.pinned_at else None,
-                1 if t.mention_routing_enabled else 0,
-                1 if t.reply_exchange_enabled else 0,
             ),
         )
         self._conn.commit()
@@ -5108,12 +5090,6 @@ class Database:
             pinned_at=(
                 datetime.fromisoformat(row["pinned_at"]) if row["pinned_at"] else None
             ) if "pinned_at" in keys else None,
-            mention_routing_enabled=(
-                bool(row["mention_routing_enabled"])
-            ) if "mention_routing_enabled" in keys else True,
-            reply_exchange_enabled=(
-                bool(row["reply_exchange_enabled"])
-            ) if "reply_exchange_enabled" in keys else True,
             last_activity_at=(
                 datetime.fromisoformat(row["last_activity_at"]) if row["last_activity_at"] else None
             ) if "last_activity_at" in keys else None,
@@ -7188,25 +7164,10 @@ class Database:
             parse_mentions(body_markdown), participants, speaker,
         )
 
-    def _thread_mention_routing_enabled(self, thread_id: str) -> bool:
-        """Read the thread's per-thread mention-routing switch (THR-198).
-
-        Additive column with NOT NULL DEFAULT 1; a missing thread is treated
-        as enabled (the ratified default) so routing never silently widens on
-        a stale read inside a write transaction. Called under the connection
-        lock by the conversational seams only.
-        """
-        row = self._conn.execute(
-            "SELECT mention_routing_enabled FROM threads WHERE id = ?",
-            (thread_id,),
-        ).fetchone()
-        return bool(row["mention_routing_enabled"]) if row else True
-
     # ── TASK-5966 strict mention-led exchange: store seams ────────────────
     #
     # Founder-ratified (THR-198 seq 194/195/196; TASK-5939 verdict): strict
-    # exchange hold, an INDEPENDENT rollback control (never a redefinition of
-    # ``mention_routing_enabled``), additive exchange state, full-recipient
+    # exchange hold, additive exchange state, full-recipient
     # obligations, pre-claim attribution safeguard, frozen cohort, exactly one
     # range-covering catch-up per pair at closure, EXCHANGE_GRACE = 5 min,
     # absolute fail-open = 4 h. Any-burst deferral is explicitly excluded.
@@ -7218,72 +7179,6 @@ class Database:
     # watermarks stay contiguous); at closure every pair with
     # ``acknowledged < required`` gets ONE slot-checked catch-up wake covering
     # the full contiguous range. No gaps, no fabricated acks.
-
-    def _thread_reply_exchange_enabled(self, thread_id: str) -> bool:
-        """Mode-2 gate for the strict exchange (independent rollback control).
-
-        The exchange activates only when BOTH the shipped
-        ``mention_routing_enabled`` AND the new ``reply_exchange_enabled``
-        are on (3-mode position model: pure broadcast / shipped mention
-        routing / strict exchange), AND the org kill-switch
-        (``org_settings.threads.reply_exchange_enabled``) does not disable it
-        org-wide (absent → per-thread governs; ``false`` → disabled
-        everywhere — the one-write global rollback). Read raw at the store
-        seam, never a Python Settings field (MEM-110 import fan-out).
-        """
-        row = self._conn.execute(
-            "SELECT mention_routing_enabled, reply_exchange_enabled "
-            "FROM threads WHERE id = ?",
-            (thread_id,),
-        ).fetchone()
-        if row is None:
-            return True
-        if not (bool(row["mention_routing_enabled"])
-                and bool(row["reply_exchange_enabled"])):
-            return False
-        raw = self.get_org_setting("threads")
-        if raw is not None:
-            try:
-                data = json.loads(raw)
-            except (TypeError, ValueError):
-                data = {}
-            if data.get("reply_exchange_enabled") is False:
-                return False
-        return True
-
-    def _exchange_disable_reason(self, thread_id: str) -> str | None:
-        """TASK-5982 — the durable disable/rollback reason for a thread whose
-        strict exchange is currently OFF (``None`` when enabled).
-
-        Mirrors ``_thread_reply_exchange_enabled``'s three OFF conditions and
-        returns the most specific reason: the org kill-switch (one-write
-        global rollback) → ``org_exchange_disabled``; the per-thread
-        ``reply_exchange_enabled`` flag or the mode-1 precondition
-        ``mention_routing_enabled`` → ``exchange_disabled`` (the exchange is
-        off because one of its activation gates is off). The reason is the
-        ``close_reason`` used to CAS-close/terminalize open epochs with
-        coverage-safe catch-up on disable — never a suppress/drop, never a
-        fabricated acknowledgement.
-        """
-        row = self._conn.execute(
-            "SELECT mention_routing_enabled, reply_exchange_enabled "
-            "FROM threads WHERE id = ?",
-            (thread_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        raw = self.get_org_setting("threads")
-        if raw is not None:
-            try:
-                data = json.loads(raw)
-            except (TypeError, ValueError):
-                data = {}
-            if data.get("reply_exchange_enabled") is False:
-                return "org_exchange_disabled"
-        if not (bool(row["mention_routing_enabled"])
-                and bool(row["reply_exchange_enabled"])):
-            return "exchange_disabled"
-        return None
 
     def _get_open_exchange_uncommitted(self, thread_id: str):
         """The single OPEN exchange row for a thread, or None. Runs inside
@@ -7597,47 +7492,6 @@ class Database:
             )
         return arrivals
 
-    def _retire_open_exchanges_uncommitted(
-        self, thread_ids: list[str] | None, *, reason: str,
-    ) -> list[ThreadReplyArrival]:
-        """TASK-5982 — CAS-close/terminalize every OPEN exchange epoch for
-        the given threads (or EVERY thread when ``thread_ids`` is None) with
-        a distinct disable/rollback ``reason`` (``exchange_disabled`` for a
-        per-thread disable, ``org_exchange_disabled`` for the org kill
-        switch).
-
-        Coverage-safe retirement: each epoch goes ``open -> released`` with
-        the disable reason and its held deferral rows ``held -> released``,
-        and every pair with ``acknowledged < required`` gets exactly ONE
-        slot-checked catch-up (``_close_reply_exchange_uncommitted`` — CAS
-        per epoch, so a duplicate/racing evaluation is a silent miss with no
-        audit and no double mint; never a fabricated watermark). Runs inside
-        the open transaction; the caller commits and enqueues the returned
-        catch-up tokens after commit (exactly-once enqueue ownership — a
-        crash before enqueue is re-enqueued by startup recovery).
-        """
-        if thread_ids is None:
-            rows = self._conn.execute(
-                "SELECT DISTINCT thread_id FROM thread_reply_exchange "
-                "WHERE state = 'open'",
-            ).fetchall()
-        else:
-            placeholders = ",".join("?" for _ in thread_ids)
-            rows = self._conn.execute(
-                "SELECT DISTINCT thread_id FROM thread_reply_exchange "
-                f"WHERE thread_id IN ({placeholders}) AND state = 'open'",
-                tuple(thread_ids),
-            ).fetchall()
-        arrivals: list[ThreadReplyArrival] = []
-        for r in rows:
-            ex = self._get_open_exchange_uncommitted(r["thread_id"])
-            if ex is None:
-                continue
-            arrivals.extend(self._close_reply_exchange_uncommitted(
-                r["thread_id"], int(ex["exchange_id"]), reason=reason,
-            ))
-        return arrivals
-
     def _suppress_open_exchanges_uncommitted(
         self, thread_id: str, *, reason: str,
     ) -> None:
@@ -7682,19 +7536,11 @@ class Database:
         commit) when a close actually fired; [] otherwise.
 
         Closure fires when ANY of:
-          1. the strict exchange is DISABLED for this thread (per-thread
-             ``reply_exchange_enabled`` off, mode-1 ``mention_routing_enabled``
-             off, or the org kill-switch off) — TASK-5982 coverage-safe
-             retirement: open epochs are CAS-closed with the durable
-             disable reason (``exchange_disabled``/``org_exchange_disabled``)
-             and their uncovered deferred pairs get exactly one slot-checked
-             catch-up. Disable takes precedence over the time bounds below so
-             a disabled thread's open epoch is never left dormant/resumable.
-          2. quiescence + grace: no live cohort wake covering E AND
+          1. quiescence + grace: no live cohort wake covering E AND
              now - last_activity_at >= EXCHANGE_GRACE_SECONDS (5 min),
-          3. absolute bound: now - opened_at >= MAX_PRIORITY_WAIT_SECONDS
+          2. absolute bound: now - opened_at >= MAX_PRIORITY_WAIT_SECONDS
              (4 h, fail-open),
-          4. corruption (reconcile/sweep) — handled by the sweep, not here.
+          3. corruption (reconcile/sweep) — handled by the sweep, not here.
         Idempotent: every evaluation is a CAS; duplicates are silent misses.
         """
         now = datetime.now(timezone.utc)
@@ -7704,14 +7550,7 @@ class Database:
             (thread_id,),
         ).fetchall()
         arrivals: list[ThreadReplyArrival] = []
-        disable_reason = self._exchange_disable_reason(thread_id)
         for ex in rows:
-            if disable_reason is not None:
-                arrivals.extend(self._close_reply_exchange_uncommitted(
-                    thread_id, int(ex["exchange_id"]),
-                    reason=disable_reason,
-                ))
-                continue
             open_seq = int(ex["open_seq"])
             cohort = self._exchange_cohort_uncommitted(ex)
             live = self._exchange_has_live_cohort_wake(
@@ -7945,11 +7784,7 @@ class Database:
                 sent_from_task_id=sent_from_task_id,
                 mentions=mentions,
             )
-            exchange_enabled = self._thread_reply_exchange_enabled(thread_id)
-            open_exchange = (
-                self._get_open_exchange_uncommitted(thread_id)
-                if exchange_enabled else None
-            )
+            open_exchange = self._get_open_exchange_uncommitted(thread_id)
             if open_exchange is not None and seq > int(open_exchange["open_seq"]):
                 # Inside E: strict-hold resolution (U2).
                 wake_set = self._resolve_exchange_wake_set(
@@ -7961,13 +7796,11 @@ class Database:
                 if kind is ThreadMessageKind.MESSAGE:
                     self._extend_reply_exchange_uncommitted(thread_id, seq)
             else:
-                # Outside E (or the opening message itself): shipped Phase-2
-                # mention routing.
+                # Outside E (or the opening message itself): unconditional
+                # Phase-2 mention routing (valid mentions → exactly that
+                # set; zero valid mentions → broadcast).
                 wake_set = resolve_wake_set(
                     mentions or [], recipients, speaker,
-                    mention_routing_enabled=(
-                        self._thread_mention_routing_enabled(thread_id)
-                    ),
                 )
             # U0: wake-set members mint/coalesce exactly one queued REPLY.
             for name in wake_set:
@@ -7986,8 +7819,7 @@ class Database:
             # opening message's own wake set is the mention set (priority
             # mints); D members were obligation-raised above and are now held.
             if (
-                exchange_enabled
-                and self._get_open_exchange_uncommitted(thread_id) is None
+                self._get_open_exchange_uncommitted(thread_id) is None
                 and kind is ThreadMessageKind.MESSAGE
                 and speaker == "founder"
                 and mentions
@@ -8304,13 +8136,7 @@ class Database:
             # broadcast and are never mention-routed (documented pierce source
             # inside an exchange).
             if token_purpose is ThreadInvocationPurpose.REPLY:
-                exchange_enabled = self._thread_reply_exchange_enabled(
-                    thread_id,
-                )
-                open_exchange = (
-                    self._get_open_exchange_uncommitted(thread_id)
-                    if exchange_enabled else None
-                )
+                open_exchange = self._get_open_exchange_uncommitted(thread_id)
                 if open_exchange is not None and seq > int(
                     open_exchange["open_seq"],
                 ):
@@ -8325,11 +8151,9 @@ class Database:
                     )
                     self._extend_reply_exchange_uncommitted(thread_id, seq)
                 else:
+                    # Outside E: unconditional Phase-2 mention routing.
                     wake_set = resolve_wake_set(
                         mentions, recipients, speaker,
-                        mention_routing_enabled=(
-                            self._thread_mention_routing_enabled(thread_id)
-                        ),
                     )
             else:
                 wake_set = recipients
@@ -8855,238 +8679,6 @@ class Database:
             )
             self._conn.commit()
             return True
-        except BaseException:
-            self._conn.rollback()
-            raise
-
-    @_synchronized
-    def set_thread_mention_routing_uncommitted(
-        self, thread_id: str, *, enabled: bool,
-    ) -> None:
-        """Toggle a thread's mention-routing switch WITHOUT committing
-        (THR-198 Slice B).
-
-        Same contract as ``set_thread_pinned_uncommitted``: the caller owns
-        the surrounding transaction so the toggle and its
-        ``thread_mention_routing_changed`` audit row are atomic.
-        """
-        self._conn.execute(
-            "UPDATE threads SET mention_routing_enabled = ? WHERE id = ?",
-            (1 if enabled else 0, thread_id),
-        )
-
-    @_synchronized
-    def set_thread_mention_routing_with_audit(
-        self, thread_id: str, *, enabled: bool, actor: str = "founder",
-    ) -> bool:
-        """Atomic founder toggle of per-thread mention routing + audit row
-        (THR-198 Slice B).
-
-        ONE rollback-safe transaction: the authoritative
-        ``mention_routing_enabled`` read, the idempotence decision, the state
-        UPDATE, and the ``thread_mention_routing_changed`` audit row commit
-        together — and roll back together on ANY failure — so the setting can
-        never survive without its audit row and concurrent same-state
-        requests yield exactly one audit row for the one durable transition.
-
-        The audit row keeps the documented ``audit_log.task_id`` = THR-*
-        scope (``task_id`` = thread id), the founder ``actor``, and the
-        ``{mention_routing_enabled}`` payload shape.
-
-        Returns True when a durable transition occurred; False for a
-        same-state (no-op) save — true no-ops write nothing and are not
-        audited. Raises ValueError for an unknown thread.
-        """
-        try:
-            self._conn.execute("BEGIN IMMEDIATE")
-            row = self._conn.execute(
-                "SELECT mention_routing_enabled FROM threads WHERE id = ?",
-                (thread_id,),
-            ).fetchone()
-            if row is None:
-                raise ValueError(f"thread {thread_id} not found")
-            currently_enabled = bool(row["mention_routing_enabled"])
-            if currently_enabled == enabled:
-                self._conn.rollback()
-                return False
-            self.set_thread_mention_routing_uncommitted(
-                thread_id, enabled=enabled,
-            )
-            self.insert_audit_log_uncommitted(
-                task_id=thread_id,
-                agent=actor,
-                action="thread_mention_routing_changed",
-                payload={"mention_routing_enabled": enabled},
-            )
-            self._conn.commit()
-            return True
-        except BaseException:
-            self._conn.rollback()
-            raise
-
-    @_synchronized
-    def set_thread_exchange_routing_uncommitted(
-        self, thread_id: str, *, enabled: bool,
-    ) -> None:
-        """Toggle a thread's reply-exchange switch WITHOUT committing
-        (TASK-5966).
-
-        Same contract as ``set_thread_mention_routing_uncommitted``: the
-        caller owns the surrounding transaction so the toggle and its
-        ``thread_exchange_routing_changed`` audit row are atomic.
-        """
-        self._conn.execute(
-            "UPDATE threads SET reply_exchange_enabled = ? WHERE id = ?",
-            (1 if enabled else 0, thread_id),
-        )
-
-    @_synchronized
-    def set_thread_exchange_routing_with_audit(
-        self, thread_id: str, *, enabled: bool, actor: str = "founder",
-    ) -> tuple[bool, list[ThreadReplyArrival]]:
-        """Atomic founder toggle of per-thread reply-exchange routing +
-        audit row (TASK-5966 independent rollback control) with
-        TASK-5982 coverage-safe retirement of open epochs.
-
-        ONE rollback-safe transaction: the authoritative
-        ``reply_exchange_enabled`` read, the retirement of every OPEN
-        exchange epoch on this thread (CAS-close with the ``exchange_disabled``
-        reason + exactly-one slot-checked catch-up per uncovered deferred
-        pair), the idempotence decision, the state UPDATE, and the
-        ``thread_exchange_routing_changed`` audit row commit together — and
-        roll back together on ANY failure. Same-state requests are no-ops for
-        the flag (no write, no audit) but still self-heal stale open rows
-        left by pre-fix code (the code-revert/redeploy window): an already-
-        disabled retry retires them, and a re-enable retires them BEFORE the
-        flag flips so re-enable can never resurrect a historical epoch
-        (re-enable creates only new epochs). ``mention_routing_enabled`` is
-        NEVER touched — this is the separate mode-2 switch.
-
-        Returns ``(transitioned, arrivals)``: ``transitioned`` is True only
-        when the flag durably changed; ``arrivals`` are the catch-up wakes
-        minted by retiring open epochs (empty when none were open). The
-        caller enqueues ``arrivals``' tokens AFTER commit (exactly-once
-        slot-checked ownership — startup recovery re-enqueues if the process
-        dies mid-enqueue). Raises ValueError for an unknown thread.
-        """
-        try:
-            self._conn.execute("BEGIN IMMEDIATE")
-            row = self._conn.execute(
-                "SELECT reply_exchange_enabled FROM threads WHERE id = ?",
-                (thread_id,),
-            ).fetchone()
-            if row is None:
-                raise ValueError(f"thread {thread_id} not found")
-            currently_enabled = bool(row["reply_exchange_enabled"])
-            # Retire open epochs whenever the thread's exchange is (or
-            # becomes) disabled: on the 1->0 transition, on an already-0
-            # retry (self-heal), and on a 0->1 re-enable (stale pre-disable
-            # rows must never be resurrected). Skipped only for a same-state
-            # enable, where any open row is legitimately live.
-            arrivals = []
-            if not (currently_enabled and enabled):
-                arrivals = self._retire_open_exchanges_uncommitted(
-                    [thread_id], reason="exchange_disabled",
-                )
-            transitioned = currently_enabled != enabled
-            if transitioned:
-                self.set_thread_exchange_routing_uncommitted(
-                    thread_id, enabled=enabled,
-                )
-                self.insert_audit_log_uncommitted(
-                    task_id=thread_id,
-                    agent=actor,
-                    action="thread_exchange_routing_changed",
-                    payload={"reply_exchange_enabled": enabled},
-                )
-            self._conn.commit()
-            return transitioned, arrivals
-        except BaseException:
-            self._conn.rollback()
-            raise
-
-    @_synchronized
-    def set_org_exchange_routing_with_audit(
-        self, *, enabled: bool, actor: str = "founder",
-    ) -> tuple[bool, list[ThreadReplyArrival]]:
-        """TASK-5982 — org-wide kill-switch for the strict exchange
-        (the one-write global rollback control).
-
-        ONE rollback-safe transaction: the authoritative
-        ``org_settings.threads.reply_exchange_enabled`` read, the retirement
-        of EVERY open exchange epoch across ALL threads (CAS-close with the
-        ``org_exchange_disabled`` reason + exactly-one slot-checked catch-up
-        per uncovered deferred pair), the state upsert, and the
-        ``config:threads`` audit row commit together — and roll back together
-        on ANY failure.
-
-        Retirement fires whenever the kill-switch is or becomes OFF: the
-        true/absent -> false transition, an already-false retry (self-heal of
-        stale open rows left by pre-fix code), and the false -> true/absent
-        re-enable transition (stale pre-disable epochs are retired BEFORE the
-        switch clears so re-enable can never resurrect a historical epoch —
-        it creates only new epochs). Same-state ON retries retire nothing
-        (any open row is legitimately live). Idempotent: a duplicate
-        evaluation is a CAS miss per epoch (no audit, no double mint).
-
-        Returns ``(transitioned, arrivals)``: ``transitioned`` is True only
-        when the kill-switch durably changed; ``arrivals`` are the org-wide
-        catch-up wakes minted by retirement. The caller enqueues
-        ``arrivals``' tokens AFTER commit. ``mention_routing_enabled`` and
-        per-thread ``reply_exchange_enabled`` values are never touched.
-        """
-        try:
-            self._conn.execute("BEGIN IMMEDIATE")
-            raw = self.get_org_setting("threads")
-            current: dict = {}
-            if raw is not None:
-                try:
-                    parsed = json.loads(raw)
-                except (TypeError, ValueError):
-                    parsed = None
-                if isinstance(parsed, dict):
-                    current = parsed
-            currently_off = current.get("reply_exchange_enabled") is False
-            target_off = not enabled
-            transitioned = currently_off != target_off
-            arrivals: list[ThreadReplyArrival] = []
-            if currently_off or target_off:
-                arrivals = self._retire_open_exchanges_uncommitted(
-                    None, reason="org_exchange_disabled",
-                )
-            if transitioned:
-                merged = dict(current)
-                merged["reply_exchange_enabled"] = enabled
-                now = _now().isoformat()
-                self._conn.execute(
-                    "INSERT INTO org_settings (section, value_json, "
-                    "updated_at, updated_by) VALUES ('threads', ?, ?, ?) "
-                    "ON CONFLICT(section) DO UPDATE SET "
-                    "value_json = excluded.value_json, "
-                    "updated_at = excluded.updated_at, "
-                    "updated_by = excluded.updated_by",
-                    (json.dumps(merged), now, actor),
-                )
-                self.insert_audit_log_uncommitted(
-                    task_id="config:threads", agent=actor,
-                    action="org_config_write",
-                    payload={
-                        "section": "threads",
-                        "tiers": ["reply_exchange_enabled"],
-                        "before": {
-                            "reply_exchange_enabled": (
-                                False if currently_off else None
-                            ),
-                        },
-                        "after": {
-                            "reply_exchange_enabled": (
-                                False if target_off else None
-                            ),
-                        },
-                    },
-                )
-            self._conn.commit()
-            return transitioned, arrivals
         except BaseException:
             self._conn.rollback()
             raise

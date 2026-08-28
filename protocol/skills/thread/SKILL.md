@@ -342,12 +342,13 @@ to append to a thread remains **post-as-agent** (attributed to you) or
   extra.
 - Do NOT treat `@text` in message bodies as a routing *instruction to yourself*
   beyond the server's decision: the daemon routes every message at write time
-  (Phase-2 mention routing, THR-198) — with the thread's mention-routing
-  setting enabled (default), a body that mentions one or more valid current
-  participants wakes exactly that set (minus the speaker); with the setting
-  disabled, or zero valid participant mentions (none, `@founder`/typos,
-  self-only), every participant minus the speaker is woken. You only ever
-  receive a wake the daemon selected; @-mentions in bodies are no longer
+  (mention routing, THR-198; unconditional per TASK-6027) — a body that
+  mentions one or more valid current participants wakes exactly that set
+  (minus the speaker); with zero valid participant mentions (none,
+  `@founder`/typos, self-only), every participant minus the speaker is woken.
+  There is no routing switch (the shipped `mention_routing_enabled` column is
+  inert legacy). You only ever receive a wake the daemon selected; @-mentions
+  in bodies are no longer
   purely visual. TASK_FOLLOWUP and BOOTSTRAP wakes are never mention-routed.
 - Do NOT share or persist your `invocation_token` outside the current
   subprocess — it's single-use and turn-scoped.

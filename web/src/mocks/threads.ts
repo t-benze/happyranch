@@ -28,8 +28,6 @@ export const MOCK_THREADS: ThreadRecord[] = [
     last_speaker: 'engineering_head',
     pinned: false,
     pinned_at: null,
-    mention_routing_enabled: true,
-    reply_exchange_enabled: true,
     last_activity_at: null,
   },
   {
@@ -48,8 +46,6 @@ export const MOCK_THREADS: ThreadRecord[] = [
     last_speaker: 'support_lead',
     pinned: false,
     pinned_at: null,
-    mention_routing_enabled: true,
-    reply_exchange_enabled: true,
     last_activity_at: null,
   },
   {
@@ -68,8 +64,6 @@ export const MOCK_THREADS: ThreadRecord[] = [
     last_speaker: 'ops_lead',
     pinned: false,
     pinned_at: null,
-    mention_routing_enabled: true,
-    reply_exchange_enabled: true,
     last_activity_at: null,
   },
   {
@@ -88,8 +82,6 @@ export const MOCK_THREADS: ThreadRecord[] = [
     last_speaker: 'founder',
     pinned: false,
     pinned_at: null,
-    mention_routing_enabled: true,
-    reply_exchange_enabled: true,
     last_activity_at: null,
   },
 ];

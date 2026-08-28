@@ -645,10 +645,6 @@
     },
     {
       "method": "POST",
-      "path_template": "/api/v1/orgs/{slug}/threads/{thread_id}/mention-routing"
-    },
-    {
-      "method": "POST",
       "path_template": "/api/v1/orgs/{slug}/threads/{thread_id}/pin"
     },
     {

@@ -429,35 +429,29 @@ under-approximation that never fabricates coverage.
 ### 9.1 Deployment & rollback
 
 - **Deploy:** restart the daemon on the merged head. The new tables
-  (`thread_reply_exchange`, `thread_exchange_deferrals`) and the
-  `threads.reply_exchange_enabled` column are created by the idempotent
-  startup schema block — no migration file, no ALTER on shipped tables.
-- **Activation:** mode 2 (strict exchange) is on by default (per-thread
-  `reply_exchange_enabled=1`, org kill-switch absent → per-thread governs).
-  A thread runs the exchange only when BOTH `mention_routing_enabled` AND
-  `reply_exchange_enabled` are on.
-- **Rollback (one write, no migration):** set the org kill-switch
-  `org_settings.threads.reply_exchange_enabled=false` (via
-  `POST /orgs/{slug}/threads/exchange-routing` or `happyranch threads
-  org-exchange-routing --enabled off`; per-thread rollback via the existing
-  per-thread toggle) → mode 1 (shipped mention routing) everywhere.
-  The disable is **coverage-safe retirement**: every open exchange epoch is
-  atomically CAS-closed/terminalized with a DISTINCT disable reason
-  (`exchange_disabled` per-thread, `org_exchange_disabled` org-wide) and
-  every deferred pair with unacknowledged content gets exactly ONE
-  slot-checked range-covering catch-up wake (the same exactly-once enqueue
-  ownership as every other wake — startup recovery re-enqueues a minted
-  token if the process dies before enqueue). Obligations are never dropped,
-  watermarks stay monotonic and contiguous, no fabricated acknowledgements,
-  and no dormant resumable row is ever left behind. Repeated disables are
-  idempotent (CAS per epoch). **Re-enable creates only NEW epochs**
-  (write-time-frozen; **no historical backfill, no resurrection**); the
-  first re-enable after a revert/redeploy also retires any stale pre-disable
-  open rows (the belt: a raw operator DB write is additionally retired
-  within one reaper tick (30s) or at the next conversational write on the
-  affected thread). Reverting code also works — the tables are never read
-  or written while off. `mention_routing_enabled` values are untouched in
-  both directions (destructive retirement is explicitly deferred).
+  (`thread_reply_exchange`, `thread_exchange_deferrals`) are created by the
+  idempotent startup schema block — no migration file, no ALTER on shipped
+  tables. The proposed `threads.reply_exchange_enabled` column and the
+  `org_settings.threads.reply_exchange_enabled` org key were REMOVED before
+  shipping (TASK-6027 founder ruling).
+- **Activation:** mention routing and the strict mention-led exchange are
+  UNCONDITIONAL (TASK-6027) — there is no switch to activate. The exchange
+  opens on a founder-authored mention with P≠∅ and D≠∅; the shipped
+  `threads.mention_routing_enabled` column is an inert legacy compatibility
+  field (never read/written for behavior; persisted true/false values
+  cannot disable routing).
+- **Rollback is code-version rollback / operational containment only**
+  (TASK-6027 — the per-thread toggle, the org kill-switch, and the disable
+  retirement paths no longer exist). Reverting the code stops new
+  exchanges. An open exchange epoch from a reverted deploy is NOT stranded:
+  the normal idempotent closure bounds evaluate it at every seam (startup
+  reconcile 6e, the next conversational write, the 30s reaper tick) —
+  quiescence + 5-minute grace or the 4h absolute fail-open — releasing
+  every pair with unacknowledged content via exactly ONE slot-checked
+  range-covering catch-up (the same exactly-once enqueue ownership as every
+  other wake; startup recovery re-enqueues a minted token if the process
+  dies before enqueue). Obligations are never dropped and watermarks stay
+  monotonic. No dormant resumable row is ever left behind by a revert.
 
 ### 9.2 F1 acceptance (falsifiable, run against the live DB read-only)
 
@@ -490,8 +484,9 @@ under-approximation that never fabricates coverage.
 - catch-up wakes minted: <n>; coalesced releases: <n>
 - deferred wake sessions per burst: avg=<x> (expect →1)
 - G2 containment over F1 window: <covered>/<founder messages> (expect 0 loss)
-- rollback drill: org kill-switch off → mode 1 confirmed; open epochs
-  retired with `org_exchange_disabled` + catch-up wakes minted (count
-  recorded); re-enabled → only new epochs (no resurrection)
+- rollback drill: code-version rollback (revert deploy) → no new
+  exchanges; any open epoch closed by the normal bounds (quiescence+grace
+  or 4h fail-open) with exactly-one catch-up per uncovered deferred pair
+  (count recorded)
 - operator: <name/role>; noted anomalies: <none | ...>
 ```
