@@ -46,9 +46,11 @@ class DaemonState:
     metrics_store: MetricsStore | None = None
     # Throttle for periodic snapshot writes — monotonic timestamp of last write.
     _last_metrics_snapshot_at: float = 0.0
-    # Daemon-wide HostSessionSupervisor (THR-207 real-caller wiring): schedule
-    # fires run through it; the app lifespan drain calls its ``shutdown()``.
-    # Constructed in ``from_runtime``; ``None`` for idle/test states.
+    # Daemon-wide HostSessionSupervisor (THR-207 real-caller wiring): task,
+    # schedule, thread, dream, and wake producers run through it; the app
+    # lifespan drain calls its ``shutdown()`` before producer workers are
+    # cancelled. Constructed in ``from_runtime``; ``None`` for idle/test
+    # states (the producers then keep the legacy uncontained path).
     host_supervisor: "HostSessionSupervisor | None" = None
     # Bounded in-memory receipt + health store (THR-207 observability slice):
     # the supervisor's receipt publisher lands here, and the existing
@@ -93,9 +95,11 @@ class DaemonState:
         # fallback) and the configured 429 retry schedule owned by the
         # supervisor (finish/release/sleep/reacquire with original enqueue
         # age + fresh backend handle). The same 5/15/45 values the executor
-        # throttle used — no policy-default change. Task and schedule
-        # sessions run through it; thread/dream/wake producers stay on their
-        # current uncontained path.
+        # throttle used — no policy-default change. Task, schedule, thread,
+        # dream, and wake sessions run through it (thread/dream/wake via the
+        # worker loops below, which pass ``state.host_supervisor`` to each
+        # producer; when it is absent — tests / idle state — the producers
+        # keep the legacy uncontained path).
         from runtime.orchestrator.host_supervisor import (
             build_default_host_supervisor,
         )
