@@ -397,6 +397,15 @@ async def test_turn1_full_prompt_never_resumes_for_codex_and_pi(
                "(the session file may have expired)"),
         ("claude", "No conversation found with session ID: 01a0-dead\n"
                     "[debug] exiting"),
+        # Complete-line termination (TASK-6019): the observed provider stderr
+        # LINE must be exactly `No conversation found with session ID:
+        # <attempted-id>`; allowed whitespace around the signature/id and
+        # unrelated text on OTHER lines stay positive — only text ON the
+        # signature line after the id (hyphen/punctuation/words) is a
+        # suffix and must fail.
+        ("claude", "  No conversation found with session ID: 01a0-dead  "),
+        ("claude", "No conversation found with session ID: 01a0-dead \t\n"
+                    "[debug] exiting"),
     ],
 )
 async def test_eviction_invalidates_then_single_full_retry(
@@ -467,6 +476,27 @@ async def test_eviction_invalidates_then_single_full_retry(
         ("codex", "no rollout found for thread id 01a0-liveX (code -32600)", "", 1),
         ("pi", "No session found matching 'x01a0-live'", "", 1),
         ("pi", "No session found matching '01a0-liveX'", "", 1),
+        # Complete-line termination (TASK-6019 [HIGH]): the signature plus the
+        # attempted id must form the COMPLETE observed provider stderr line
+        # (`No conversation found with session ID: <attempted-id>`). The old \b
+        # word-boundary terminator accepted punctuation-led suffixes (e.g.
+        # attempted `01a0-live` vs stderr `... session ID: 01a0-live-suffix`);
+        # hyphen + multiple punctuation suffixes, and unrelated prefix/suffix
+        # text on the signature line, must never classify.
+        ("claude", "No conversation found with session ID: 01a0-live-suffix", "", 1),
+        ("claude", "No conversation found with session ID: 01a0-live-", "", 1),
+        ("claude", "No conversation found with session ID: 01a0-live.extra", "", 1),
+        ("claude", "No conversation found with session ID: 01a0-live:extra", "", 1),
+        ("claude", "No conversation found with session ID: 01a0-live!", "", 1),
+        ("claude", "No conversation found with session ID: 01a0-live,next", "", 1),
+        ("claude", "No conversation found with session ID: 01a0-live_under", "", 1),
+        ("claude", "No conversation found with session ID: 01a0-live-extra.suffix", "", 1),
+        ("claude", "No conversation found with session ID: 01a0-live trailing words", "", 1),
+        ("claude", "Error: No conversation found with session ID: 01a0-live", "", 1),
+        ("claude", "some prefix No conversation found with session ID: 01a0-live", "", 1),
+        ("claude", "prefix No conversation found with session ID: 01a0-live suffix", "", 1),
+        ("claude", "No conversation found with session ID: 01a0-live-suffix\n"
+                    "[debug] exiting", "", 1),
         # An otherwise matching marker EMBEDDED in auth/quota/transport
         # output is not the provider declaring the session missing.
         ("claude", "API Error: 401 Unauthorized: no conversation found with "

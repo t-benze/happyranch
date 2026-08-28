@@ -401,13 +401,18 @@ def _decline_by_default_doctrine() -> str:
 # Classification is dispatched on the executor that actually ran, reads ONLY
 # the proven stream (stderr_tail — never the ``error`` envelope, which falls
 # back to stdout text when stderr is empty), requires the proven return code
-# (1), and requires the ANCHORED provider-declared signature immediately
-# bound to the regex-escaped attempted session id. Wrong/missing id,
-# prefix/suffix near-matches, cross-provider text, stdout-only text, wrong
-# rc, generic legacy substrings, a marker embedded in auth/quota/transport
-# output, and ambiguous output never match — a miss is safe (degrades to a
-# normal failure — no fresh retry, session id/watermark untouched — never a
-# wrong answer).
+# (1), and requires the ANCHORED provider-declared signature bound to the
+# regex-escaped attempted session id. For claude the match is a COMPLETE-LINE
+# constraint: the signature must start a line and the attempted id must be
+# the last non-whitespace content on that line (whitespace-only padding
+# allowed; unrelated text on other lines tolerated) — the observed provider
+# contract is the one complete stderr line ``No conversation found with
+# session ID: <attempted-id>``. Wrong/missing id, prefix/suffix near-matches
+# (including punctuation-led suffixes a word boundary would accept),
+# cross-provider text, stdout-only text, wrong rc, generic legacy substrings,
+# a marker embedded in auth/quota/transport output, and ambiguous output
+# never match — a miss is safe (degrades to a normal failure — no fresh
+# retry, session id/watermark untouched — never a wrong answer).
 _CLAUDE_EVICTION_SIGNATURE = "no conversation found with session id:"
 _CODEX_EVICTION_SIGNATURE = "no rollout found for thread id"
 _CODEX_EVICTION_JSON_RPC_CODE = "(code -32600)"
@@ -466,18 +471,30 @@ def _contains_auth_quota_transport_token(stderr: str, attempted_session_id: str)
 
 def _is_claude_session_evicted(result, attempted_session_id: str) -> bool:
     """Claude 2.1.241 proven contract: rc=1, stderr exactly
-    ``No conversation found with session ID: <attempted-id>``. Only the
-    single evidence-backed complete form bound to the attempted id matches;
-    the removed THR-200-era generic legacy substrings never match, and Pi's
-    distinct signature never matches (no shared-substring acceptance)."""
+    ``No conversation found with session ID: <attempted-id>`` — the COMPLETE
+    observed provider stderr line. The signature must START a line and the
+    regex-escaped attempted id must be the last non-whitespace content on
+    that line (complete-line constraint; whitespace-only padding allowed,
+    unrelated text on OTHER lines tolerated) — punctuation-led or
+    alphanumeric suffixes (``01a0-live-suffix``, ``01a0-live.``, …) and any
+    prefix text on the signature line never match. The removed THR-200-era
+    generic legacy substrings never match, and Pi's distinct signature never
+    matches (no shared-substring acceptance)."""
     if getattr(result, "returncode", None) != 1:
         return False
     stderr = (getattr(result, "stderr_tail", None) or "").lower()
     escaped = _escaped_attempted_id(attempted_session_id)
     if escaped is None:
         return False
+    # The observed contract is one COMPLETE line: the signature starts the
+    # line, the attempted id terminates it (trailing whitespace allowed).
+    # ``^``/``$`` with MULTILINE anchor each line so a punctuation-led or
+    # alphanumeric suffix (the old ``\b`` word boundary accepted
+    # punctuation-led suffixes) and same-line prefix text can never match.
     bound = re.search(
-        rf"{_CLAUDE_EVICTION_SIGNATURE}\s*{escaped}\b", stderr
+        rf"^\s*{_CLAUDE_EVICTION_SIGNATURE}\s*{escaped}\s*$",
+        stderr,
+        re.MULTILINE,
     ) is not None
     if not bound:
         return False
