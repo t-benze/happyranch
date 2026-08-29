@@ -54,18 +54,35 @@
 > broadcast-copy rationale + iAC4; §5 no-list "@mention routing affordance
 > (broadcast-only, A2)" + its conforms-note; §6 D3 + the deferred-set sentence; §8
 > "@mention broadcast-only" honesty criterion; §A.2 delta row; §C.2 resolved-deltas
-> verification). **Current state** (ratified THR-198 matrix; merged Slice B
-> server-side routing + per-thread web control C1): per-thread mention routing is
-> **default-enabled**; a message with one/more **valid current-participant mentions**
-> wakes **exactly that set** (speaker excluded); **zero valid mentions**
-> (none/invalid/nonparticipant-only/self-only) **broadcasts**; a **disabled** thread
-> broadcasts; **TASK_FOLLOWUP/BOOTSTRAP are isolated and never mention-routed**; the
-> toggle is **founder-only** (direct thread-detail header button "Mention routing",
-> `POST /threads/{id}/mention-routing`, `happyranch threads mention-routing`);
-> routing is **not** priority/fairness, and there is **no new routing-feature
-> autocomplete or active-respondent fallback** (the composer's pre-existing
-> participant @-mention typing autocomplete is separate and unchanged). The
-> clauses below are retained verbatim as the
+> verification). *(Historical Phase-2 chronology — 2026-08: THR-198 Phase 2 shipped
+> per-thread mention routing, **default-enabled** with a founder-only per-thread web
+> control C1 (thread-detail header button "Mention routing", `POST
+> /threads/{id}/mention-routing`, `happyranch threads mention-routing`) and a
+> founder-only toggle. That per-thread control surface was **subsequently removed**
+> by the TASK-6027 founder-directed revision — see the **CURRENT STATE** note
+> below. The inline 🟢 SUPERSEDED (THR-198 Phase 2) markers throughout this document
+> retain the Phase-2 chronology as history.)*
+>
+> **🟢 CURRENT STATE (2026-08-28, TASK-6027 founder-directed revision) — mention
+> routing and the strict mention-led exchange are UNCONDITIONAL.** All three
+> settings/control surfaces are **REMOVED**: (1) the per-thread mention-routing
+> setting (the "Mention routing" button, `POST /threads/{id}/mention-routing`, and
+> `happyranch threads mention-routing` are deleted — no route, CLI verb, UI control,
+> or audit producer remains), (2) the per-thread `reply_exchange_enabled` switch
+> (proposed, unmerged — removed), and (3) the org-wide
+> `org_settings.threads.reply_exchange_enabled` kill switch (proposed, unmerged —
+> removed). The persisted `threads.mention_routing_enabled` column is retained
+> **only as inert compatibility storage** (schema compatibility) — never read to
+> alter behavior, never written or exposed through product surfaces, and persisted
+> true/false values cannot disable either behavior. Current behavior: a message
+> with one/more **valid current-participant mentions** wakes **exactly that set**
+> (speaker excluded); **zero valid mentions** (none/invalid/nonparticipant-only/
+> self-only) **broadcasts**; there is **no "disabled" thread state**;
+> **TASK_FOLLOWUP/BOOTSTRAP are isolated and never mention-routed**; the strict
+> mention-led exchange applies **priority/fallback semantics that ARE present**
+> (frozen priority cohorts, a 5-minute grace, and a 4-hour absolute fail-open
+> fallback); the composer's pre-existing participant @-mention typing autocomplete
+> is separate and unchanged. The clauses below are retained verbatim as the
 > 2026-06-17 audit trail; each carries an inline **🟢 SUPERSEDED (THR-198 Phase 2)**
 > marker. Contract: `docs/agent-guides/features-and-invariants.md` (Threads) and
 > `docs/superpowers/specs/2026-05-30-thread-broadcast-only-design.md` (supersession
@@ -968,15 +985,18 @@ parser** · **real-dollar figures** on any v1 surface (`$0.00 / not metered`, Q1
 rendered as functional (A1) · in-transcript **agent-own `ran:` cards** in Threads
 (D7) · Direction B "Mission Control" · reintroducing **Talks**. *(🟢 SUPERSEDED
 (THR-198 Phase 2): the **@mention routing** cut is SHIPPED — per-thread mention
-routing landed (Slice B + web control C1); the remaining cuts stand.)*
+routing landed (Slice B); the per-thread web control C1 was subsequently REMOVED
+by TASK-6027 (routing is unconditional — see the front-matter CURRENT STATE
+note); the remaining cuts stand.)*
 
 > **The finalised design now CONFORMS to all three of these cuts** (autonomy toggle,
 > @mention routing copy, KB "used by N agents · v3") — the §A deltas flagged in the
 > 2026-06-16 reconciliation are **RESOLVED in the finalised design**. The cuts remain
 > cuts (the design conforming does not reopen them). See §A. *(🟢 SUPERSEDED
 > (THR-198 Phase 2): the "@mention routing copy" cut is SHIPPED — per-thread mention
-> routing (with the C1 web control) landed after this PRD; the autonomy-toggle and
-> KB-label cuts remain.)*
+> routing landed after this PRD; the C1 web control was subsequently REMOVED by
+> TASK-6027 (routing is unconditional — see the front-matter CURRENT STATE note);
+> the autonomy-toggle and KB-label cuts remain.)*
 
 ---
 
@@ -995,8 +1015,9 @@ unread styling). **The one schema change promoted INTO v1: A4
 `composed_from_dream_id`** (additive, nullable, no backfill). **No new store for v1
 beyond A4** (deferred set: D1 dollar meter, D2 autonomy toggle, D3 @mention routing,
 D4 artifact↔PR, D5 KB rich-usage, D10 B.2 edit-route, D11 B.3 read-state).
-*(🟢 SUPERSEDED (THR-198 Phase 2): **D3 @mention routing SHIPPED** (Slice B + web
-control C1) — remove it from the deferred set; the "no new store for v1 beyond A4"
+*(🟢 SUPERSEDED (THR-198 Phase 2): **D3 @mention routing SHIPPED** (Slice B; the
+per-thread web control C1 was subsequently REMOVED by TASK-6027 — routing is
+unconditional) — remove it from the deferred set; the "no new store for v1 beyond A4"
 rule is unaffected (THR-198 added only additive columns to existing thread tables,
 not design-overhaul stores). All other D-items remain deferred.)*
 
@@ -1067,8 +1088,10 @@ RESOLVED** (the finalised design conforms to the locked decision in each case);
 | **A.3** | **K1** — KB usage label = "viewed N× (CLI)"; drop "used by N agents" + version | ✅ **RESOLVED.** `a-knowledge.html` now shows **"viewed 18× (CLI) · updated 2d ago"** / **"viewed 31× (CLI) · updated 5d ago"** — no "used by N agents", no version. Honest candidate labels ("from dream · proposed by … · pending review") retained. *(Was: "used by 4 agents · updated 2d ago · v3".)* | **Dropped from active deltas.** The locked honest label is already in the design. |
 
 > **🟢 SUPERSEDED (THR-198 Phase 2):** the A.2 disposition's "Real routing stays deferred
-> (D3)" is SHIPPED — per-thread mention routing landed (Slice B + per-thread web
-> control C1) with the ratified matrix; the composer/handle copy lines ship unchanged
+> (D3)" is SHIPPED — per-thread mention routing landed (Slice B); the per-thread web
+> control C1 was subsequently REMOVED by TASK-6027 (routing is unconditional — see
+> the front-matter CURRENT STATE note), with the ratified matrix; the
+> composer/handle copy lines ship unchanged
 > in the current product.
 
 > **No active §A deltas remain.** Nothing in the finalised design requires a founder

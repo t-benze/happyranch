@@ -7,10 +7,9 @@ write time) and the per-thread setting.
 
 Ratified first-release contract (THR-198 seq 108-110):
 
-    resolve_wake_set(mentioned, participants, speaker, enabled):
-      * disabled                        -> participants - speaker (broadcast)
-      * enabled + valid mentions        -> exactly that valid set
-      * enabled + zero valid mentions   -> participants - speaker (fallback)
+    resolve_wake_set(mentioned, participants, speaker):
+      * valid mentions        -> exactly that valid set
+      * zero valid mentions   -> participants - speaker (fallback)
         (including invalid/nonparticipant-only and self-only bodies)
 
 Slice A deliberately does NOT wire this into production wake routing —
@@ -78,19 +77,17 @@ def resolve_wake_set(
     mentioned: list[str],
     participants: list[str],
     speaker: str,
-    *,
-    mention_routing_enabled: bool,
 ) -> list[str]:
     """The ratified wake-set matrix. Pure — no I/O.
 
     ``participants`` is the live roster (typically ordered by the store's
     participant listing); the broadcast fallback preserves that order minus
     the speaker. Valid mentions route to exactly that set, in first-
-    occurrence order.
+    occurrence order. Mention routing is UNCONDITIONAL (founder ruling,
+    TASK-6027): the persisted ``threads.mention_routing_enabled`` column is
+    inert legacy and is never consulted to alter routing.
     """
     broadcast = [name for name in participants if name != speaker]
-    if not mention_routing_enabled:
-        return broadcast
     valid = valid_mentions(mentioned, participants, speaker)
     if valid:
         return valid

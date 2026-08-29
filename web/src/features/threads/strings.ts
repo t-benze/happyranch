@@ -65,15 +65,6 @@ export const THREADS_STRINGS = {
   unpinThread: (id: string) => `Unpin thread ${id}`,
   resumeAction: 'Resume',
 
-  /* THR-198 Slice C — per-thread mention routing control */
-  mentionRoutingAction: 'Mention routing',
-  mentionRoutingDialogTitle: 'Mention routing',
-  mentionRoutingToggleLabel: 'Route replies to mentioned participants',
-  mentionRoutingDescription:
-    'When on (default), a message that mentions one or more participants wakes exactly those participants — everyone else stays quiet until mentioned. When off, every message wakes all participants. This only chooses who gets woken; it is not priority, queueing, or fairness scheduling, and messages with no valid mentions always broadcast.',
-  mentionRoutingFailed: 'Routing change failed — restored to the previous state.',
-  mentionRoutingSaving: 'Saving…',
-
   /* System card labels */
   systemEventLabel: 'system',
 

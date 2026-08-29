@@ -38,6 +38,7 @@ from runtime.models import (
     ThreadReplyArrival,
     ThreadReplyClaim,
     ThreadReplyDeliveryState,
+    ThreadReplyExchangeProjection,
     ThreadReplyRecoveryEntry,
     ThreadReplySettlement,
     ReplyDeliveryProjection,
@@ -59,6 +60,17 @@ from runtime.daemon.thread_mentions import (
 
 def _parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+# ── TASK-5966 strict mention-led exchange bounds (founder-ratified) ──────
+# EXCHANGE_GRACE: idle-closure bound — an exchange closes when the cohort has
+# no live covering wake AND no conversational activity for this long
+# (founder verdict: FIVE minutes, not the design artifact's 15-minute
+# default).
+EXCHANGE_GRACE_SECONDS = 5 * 60
+# MAX_PRIORITY_WAIT: absolute fail-open bound from exchange open — the reaper
+# closes any exchange older than this (retained approved G1 = 4 hours).
+MAX_PRIORITY_WAIT_SECONDS = 4 * 60 * 60
 
 
 class LineageTooDeep(Exception):
@@ -1310,6 +1322,59 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_thread_reply_delivery_state_thread
                 ON thread_reply_delivery_state(thread_id);
 
+            -- TASK-5966 (strict mention-led exchange): additive exchange-epoch
+            -- gate. One row per mention-led exchange; rows are append-only and
+            -- ``state`` is the only mutable field. The partial unique index
+            -- enforces at most one OPEN exchange per thread (write-time
+            -- invariant). ``open_seq`` is the opening founder-mention message;
+            -- ``close_seq`` is the last conversational message inside E;
+            -- ``deferred_count`` = |D(E)| frozen at open (audit/measurement).
+            CREATE TABLE IF NOT EXISTS thread_reply_exchange (
+                thread_id        TEXT NOT NULL,
+                exchange_id      INTEGER NOT NULL,
+                state            TEXT NOT NULL CHECK (state IN ('open','released','suppressed')),
+                open_seq         INTEGER NOT NULL,
+                close_seq        INTEGER NOT NULL,
+                opened_at        TEXT NOT NULL,
+                last_activity_at TEXT NOT NULL,
+                closed_at        TEXT,
+                close_reason     TEXT CHECK (close_reason IN
+                    ('quiescence','max_priority_wait','founder_aborted',
+                     'thread_archived','participant_removed','corrupt')),
+                deferred_count   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (thread_id, exchange_id),
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_trex_open
+                ON thread_reply_exchange(thread_id) WHERE state = 'open';
+            CREATE INDEX IF NOT EXISTS idx_trex_state
+                ON thread_reply_exchange(state);
+            CREATE INDEX IF NOT EXISTS idx_trex_thread_seq
+                ON thread_reply_exchange(thread_id, open_seq);
+
+            -- Frozen per-(exchange, deferred agent) rows; D(E) is frozen at
+            -- open (write-time-frozen doctrine). Rows are audit/sweep
+            -- substrate: release is watermark-based (every pair with unread
+            -- content gets one slot-checked catch-up at closure, which is a
+            -- superset of D(E)).
+            CREATE TABLE IF NOT EXISTS thread_exchange_deferrals (
+                thread_id        TEXT NOT NULL,
+                exchange_id      INTEGER NOT NULL,
+                agent_name       TEXT NOT NULL,
+                state            TEXT NOT NULL CHECK (state IN ('held','released','suppressed')),
+                created_at       TEXT NOT NULL,
+                released_at      TEXT,
+                mint_token_prefix TEXT,
+                catchup_pending  INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (thread_id, exchange_id, agent_name),
+                FOREIGN KEY (thread_id, exchange_id)
+                    REFERENCES thread_reply_exchange(thread_id, exchange_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_txed_state
+                ON thread_exchange_deferrals(state);
+            CREATE INDEX IF NOT EXISTS idx_txed_thread
+                ON thread_exchange_deferrals(thread_id, exchange_id);
+
             CREATE TABLE IF NOT EXISTS jobs (
                 id                       TEXT PRIMARY KEY,
                 task_id                  TEXT NOT NULL,
@@ -1499,6 +1564,17 @@ class Database:
         try:
             self._conn.execute(
                 "ALTER TABLE thread_message_attachments ADD COLUMN thread_attachment_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+        # TASK-6057: ``thread_exchange_deferrals.catchup_pending`` (additive on
+        # this PR's own unmerged exchange table). Fresh DBs get it from the
+        # CREATE TABLE; DBs created by an earlier commit of this branch are
+        # upgraded best-effort (idempotent across restarts).
+        try:
+            self._conn.execute(
+                "ALTER TABLE thread_exchange_deferrals ADD COLUMN "
+                "catchup_pending INTEGER NOT NULL DEFAULT 0"
             )
         except sqlite3.OperationalError:
             pass
@@ -5046,8 +5122,8 @@ class Database:
                 turn_cap, turns_used, summary,
                 transcript_path,
                 composed_by, composed_from_task_id, composed_from_dream_id,
-                pinned_at, mention_routing_enabled
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                pinned_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.id,
                 t.subject,
@@ -5064,7 +5140,6 @@ class Database:
                 t.composed_from_task_id,
                 t.composed_from_dream_id,
                 t.pinned_at.isoformat() if t.pinned_at else None,
-                1 if t.mention_routing_enabled else 0,
             ),
         )
         self._conn.commit()
@@ -5090,9 +5165,6 @@ class Database:
             pinned_at=(
                 datetime.fromisoformat(row["pinned_at"]) if row["pinned_at"] else None
             ) if "pinned_at" in keys else None,
-            mention_routing_enabled=(
-                bool(row["mention_routing_enabled"])
-            ) if "mention_routing_enabled" in keys else True,
             last_activity_at=(
                 datetime.fromisoformat(row["last_activity_at"]) if row["last_activity_at"] else None
             ) if "last_activity_at" in keys else None,
@@ -5978,6 +6050,11 @@ class Database:
         Mirrors ``insert_audit_log_uncommitted`` / ``_append_thread_message_uncommitted``:
         the row joins the caller's open BEGIN IMMEDIATE transaction and is
         rolled back with it on any later failure.
+
+        TASK-6082 (founder ruling): the legacy ``threads.mention_routing_enabled``
+        column is OMITTED from the insert (TASK-6027 removed the field from
+        ``ThreadRecord`` — routing is unconditional), matching ``insert_thread``;
+        the shipped column keeps its NOT NULL DEFAULT 1 (inert storage).
         """
         self._conn.execute(
             """INSERT INTO threads (
@@ -5986,8 +6063,8 @@ class Database:
                 turn_cap, turns_used, summary,
                 transcript_path,
                 composed_by, composed_from_task_id, composed_from_dream_id,
-                pinned_at, mention_routing_enabled
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                pinned_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.id,
                 t.subject,
@@ -6004,7 +6081,6 @@ class Database:
                 t.composed_from_task_id,
                 t.composed_from_dream_id,
                 t.pinned_at.isoformat() if t.pinned_at else None,
-                1 if t.mention_routing_enabled else 0,
             ),
         )
 
@@ -6965,6 +7041,18 @@ class Database:
             → fail closed: clear the running slot, record a truthful
             diagnostic, never mint/return a runnable token.
 
+        Pending released-deferral catch-up markers (``catchup_pending = 1``)
+        are resolved by the post-loop reconciliation in the same transaction —
+        consumed by a covering slot, minted exactly once when the blocking slot
+        is terminal with no covering replacement, or cleared when fully
+        covered. Every FAIL-CLOSED branch above (both-slots corruption,
+        non-recoverable running slot, invalid queued started/ownership)
+        revokes the pair's pending marker ATOMICALLY in that same transaction,
+        so the reconciliation never mints a catch-up from state the branch
+        declared untrustworthy (TASK-6065): the marker survives only when the
+        blocking slot's terminal outcome was legitimately observed (settlement
+        or a recoverable restart terminalization).
+
         Repeat recovery is idempotent: after a running row is replaced its slot
         holds a queued token, so a second pass retains rather than re-mints.
         BOOTSTRAP / TASK_FOLLOWUP rows are never touched.
@@ -7019,6 +7107,18 @@ class Database:
                         ("corrupt_both_slots_on_recovery", now, now,
                          thread_id, agent_name),
                     )
+                    # TASK-6065: revoke any pending released-deferral catch-up
+                    # marker ATOMICALLY in the same transaction. The marker is
+                    # a promise to mint exactly one post-slot catch-up; this
+                    # fail-closed branch declared the pair's ownership state
+                    # untrustworthy and explicitly never mints, so the marker
+                    # must not survive into the post-loop reconciliation where
+                    # it would fabricate runnable ownership from corrupt state
+                    # (TASK-6063 reproduction). The revocation is audited with
+                    # the corruption diagnostic so the suppression is truthful.
+                    suppressed = self._clear_catchup_pending_uncommitted(
+                        thread_id, agent_name,
+                    )
                     # One truthful cancelled audit per corrupted pair — the
                     # pair-scoped sweep retired its owned obligations with a
                     # diagnostic reason; never mint a replacement.
@@ -7030,6 +7130,7 @@ class Database:
                             "boundary_seq": int(row["required_through_seq"] or 0),
                             "reason": "corrupt_both_slots_on_recovery",
                             "swept_count": swept.rowcount,
+                            "catchup_suppressed": suppressed > 0,
                         },
                     )
                     continue
@@ -7091,6 +7192,14 @@ class Database:
                             "last_terminal_reason = ?, last_terminal_at = ?, "
                             "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
                             (reason, now, now, thread_id, agent_name),
+                        )
+                        # TASK-6065: the non-recoverable running slot is an
+                        # invalid/malformed ownership classification — the
+                        # state is untrustworthy, so any pending released-
+                        # deferral catch-up marker is revoked in the same
+                        # transaction (never minted by the post-loop scan).
+                        self._clear_catchup_pending_uncommitted(
+                            thread_id, agent_name,
                         )
                         continue
 
@@ -7217,6 +7326,13 @@ class Database:
                             ("invalid_queued_started_on_recovery", now, now,
                              thread_id, agent_name),
                         )
+                        # TASK-6065: invalid queued ownership is a fail-closed
+                        # classification — revoke any pending released-deferral
+                        # catch-up marker in the same transaction so the
+                        # post-loop reconciliation can never mint from it.
+                        suppressed = self._clear_catchup_pending_uncommitted(
+                            thread_id, agent_name,
+                        )
                         self._emit_reply_wake_audit(
                             thread_id=thread_id, agent_name=agent_name,
                             action="thread_reply_wake_cancelled",
@@ -7225,6 +7341,7 @@ class Database:
                                 "boundary_seq": int(row["required_through_seq"] or 0),
                                 "reason": "invalid_queued_started_on_recovery",
                                 "swept_count": swept.rowcount,
+                                "catchup_suppressed": suppressed > 0,
                             },
                         )
                     else:
@@ -7237,6 +7354,99 @@ class Database:
                             ("invalid_queued_token_on_recovery", now, now,
                              thread_id, agent_name),
                         )
+                        # TASK-6065: invalid queued ownership is a fail-closed
+                        # classification — revoke any pending released-deferral
+                        # catch-up marker in the same transaction so the
+                        # post-loop reconciliation can never mint from it.
+                        self._clear_catchup_pending_uncommitted(
+                            thread_id, agent_name,
+                        )
+
+            # TASK-6057 — released-deferral post-slot catch-up reconciliation at
+            # the restart boundary. A closure that found a live but NON-covering
+            # slot (its immutable range ended before the released range) durably
+            # marked the pair's deferral row ``catchup_pending``; the branches
+            # above terminalized exactly the blocking slot (replacement minted /
+            # retained / cleared). This pass resolves every still-pending marker
+            # in the same transaction so the owed wake survives daemon restart:
+            #   * a covering slot exists (replacement/retained queued wake) → the
+            #     marker is satisfied, consume it;
+            #   * no slot and ``acknowledged < required`` → the blocking slot is
+            #     terminal with no covering replacement: mint exactly ONE
+            #     range-covering catch-up now and consume the marker
+            #     (exactly-once in this transaction);
+            #   * ``acknowledged == required`` (fully covered) → nothing owed,
+            #     consume the marker.
+            # TASK-6065 — the FAIL-CLOSED branches above (both-slots corruption,
+            # non-recoverable running slot, invalid queued started/ownership)
+            # each revoked the pair's pending marker ATOMICALLY in the same
+            # transaction, so the mint rule below can never fabricate runnable
+            # ownership from state those branches declared untrustworthy: an
+            # authoritative fail-closed terminal classification always survives
+            # into this reconciliation as a revoked marker, never as a mint.
+            for d in self._conn.execute(
+                "SELECT DISTINCT thread_id, agent_name "
+                "FROM thread_exchange_deferrals WHERE catchup_pending = 1",
+            ).fetchall():
+                thread_id = d["thread_id"]
+                agent_name = d["agent_name"]
+                srow = self._conn.execute(
+                    "SELECT * FROM thread_reply_delivery_state "
+                    "WHERE thread_id = ? AND agent_name = ?",
+                    (thread_id, agent_name),
+                ).fetchone()
+                if (
+                    srow is None
+                    or srow["queued_invocation_token"]
+                    or srow["running_invocation_token"]
+                ):
+                    self._clear_catchup_pending_uncommitted(thread_id, agent_name)
+                    continue
+                ack = int(srow["acknowledged_through_seq"] or 0)
+                req = int(srow["required_through_seq"] or 0)
+                if ack >= req:
+                    self._clear_catchup_pending_uncommitted(thread_id, agent_name)
+                    continue
+                token = self._mint_reply_invocation_uncommitted(
+                    thread_id, agent_name, ack + 1,
+                )
+                self._conn.execute(
+                    "UPDATE thread_reply_delivery_state SET "
+                    "queued_invocation_token = ?, updated_at = ? "
+                    "WHERE thread_id = ? AND agent_name = ?",
+                    (token, now, thread_id, agent_name),
+                )
+                self._clear_catchup_pending_uncommitted(thread_id, agent_name)
+                self._emit_reply_wake_audit(
+                    thread_id=thread_id, agent_name=agent_name,
+                    action="thread_reply_wake_created",
+                    payload={
+                        "agent_name": agent_name,
+                        "from_seq": ack + 1,
+                        "through_seq": req,
+                        "token_prefix": token[:8],
+                        "kind": "deferred_catch_up",
+                    },
+                )
+                self.insert_audit_log_uncommitted(
+                    task_id=thread_id, agent=agent_name,
+                    action="thread_deferral_catchup_minted",
+                    payload={
+                        "thread_id": thread_id,
+                        "agent_name": agent_name,
+                        "from_seq": ack + 1,
+                        "through_seq": req,
+                        "mint_token_prefix": token[:8],
+                        "kind": "recovery",
+                    },
+                )
+                results.append(ThreadReplyRecoveryEntry(
+                    thread_id=thread_id,
+                    agent_name=agent_name,
+                    invocation_token=token,
+                    kind="deferred_catchup",
+                ))
+
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -7397,19 +7607,689 @@ class Database:
             parse_mentions(body_markdown), participants, speaker,
         )
 
-    def _thread_mention_routing_enabled(self, thread_id: str) -> bool:
-        """Read the thread's per-thread mention-routing switch (THR-198).
+    # ── TASK-5966 strict mention-led exchange: store seams ────────────────
+    #
+    # Founder-ratified (THR-198 seq 194/195/196; TASK-5939 verdict): strict
+    # exchange hold, additive exchange state, full-recipient
+    # obligations, pre-claim attribution safeguard, frozen cohort, exactly one
+    # range-covering catch-up per pair at closure, EXCHANGE_GRACE = 5 min,
+    # absolute fail-open = 4 h. Any-burst deferral is explicitly excluded.
+    #
+    # Model A (exchange-epoch gate): ``thread_reply_exchange`` (1 row per
+    # exchange, the state machine) + ``thread_exchange_deferrals`` (frozen
+    # D(E), audit/sweep substrate). During E, held pairs get obligation-only
+    # raises (no token, no wake audit — at-most-one slots untouched,
+    # watermarks stay contiguous); at closure every pair with
+    # ``acknowledged < required`` gets ONE slot-checked catch-up wake covering
+    # the full contiguous range. No gaps, no fabricated acks.
 
-        Additive column with NOT NULL DEFAULT 1; a missing thread is treated
-        as enabled (the ratified default) so routing never silently widens on
-        a stale read inside a write transaction. Called under the connection
-        lock by the conversational seams only.
-        """
-        row = self._conn.execute(
-            "SELECT mention_routing_enabled FROM threads WHERE id = ?",
+    def _get_open_exchange_uncommitted(self, thread_id: str):
+        """The single OPEN exchange row for a thread, or None. Runs inside
+        an open transaction. The partial-unique index ``idx_trex_open`` makes
+        at most one such row exist by construction."""
+        return self._conn.execute(
+            "SELECT * FROM thread_reply_exchange "
+            "WHERE thread_id = ? AND state = 'open'",
             (thread_id,),
         ).fetchone()
-        return bool(row["mention_routing_enabled"]) if row else True
+
+    def _exchange_cohort_uncommitted(self, exchange_row) -> list[str]:
+        """The frozen priority cohort P(E) of an exchange, read from the
+        immutable ``M_open.mentions_json`` (no duplicated JSON column).
+        Fail-closed: a malformed/missing opening mention signal yields []
+        (the caller then treats the exchange as corrupt / quiescent-able)."""
+        opener = self._conn.execute(
+            "SELECT mentions_json FROM thread_messages "
+            "WHERE thread_id = ? AND seq = ?",
+            (exchange_row["thread_id"], exchange_row["open_seq"]),
+        ).fetchone()
+        if opener is None or not opener["mentions_json"]:
+            return []
+        try:
+            data = json.loads(opener["mentions_json"])
+        except (TypeError, ValueError):
+            return []
+        return [m for m in data if isinstance(m, str)]
+
+    def _raise_required_uncommitted(
+        self, thread_id: str, agent_name: str, seq: int,
+    ) -> None:
+        """U0 — obligation-only raise: advance ``required_through_seq`` to
+        ``seq`` for one recipient pair WITHOUT minting any wake and WITHOUT a
+        wake audit. Runs inside an open transaction (no commit).
+
+        This is the full-recipient obligation half of U0: every conversational
+        message raises ``required`` for EVERY recipient (I4 totality), while
+        only the resolved wake set mints. A missing pair row is created with
+        acknowledged = seq - 1 and NO token (obligation row; the next wake
+        covers the full range). ``seq <= required`` is an idempotent silent
+        no-op — deliberately NO audit (a duplicate/backdated notification
+        must not fabricate an event). Watermarks stay monotonic and
+        contiguous: ``acknowledged`` never moves, ``required`` only advances.
+        """
+        now = _now().isoformat()
+        row = self._conn.execute(
+            "SELECT required_through_seq FROM thread_reply_delivery_state "
+            "WHERE thread_id = ? AND agent_name = ?",
+            (thread_id, agent_name),
+        ).fetchone()
+        if row is None:
+            self._conn.execute(
+                "INSERT INTO thread_reply_delivery_state "
+                "(thread_id, agent_name, acknowledged_through_seq, "
+                "required_through_seq, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (thread_id, agent_name, seq - 1, seq, now),
+            )
+            return
+        required = int(row["required_through_seq"] or 0)
+        if seq <= required:
+            return
+        self._conn.execute(
+            "UPDATE thread_reply_delivery_state SET required_through_seq = ?, "
+            "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
+            (seq, now, thread_id, agent_name),
+        )
+
+    def _open_reply_exchange_uncommitted(
+        self,
+        *,
+        thread_id: str,
+        open_seq: int,
+        speaker: str,
+        mentions: list[str],
+        recipients: list[str],
+    ) -> int:
+        """Open a strict mention-led exchange inside the open transaction
+        (caller commits). Preconditions (caller-verified): no open exchange,
+        speaker == 'founder', ``mentions`` non-empty, deferred set non-empty,
+        exchange enabled. P(E) = ``mentions`` (frozen, read later from
+        ``M_open.mentions_json``); D(E) = recipients − speaker − P frozen
+        into ``thread_exchange_deferrals`` (held). Returns the new
+        exchange_id.
+        """
+        now = _now().isoformat()
+        deferred = [r for r in recipients if r not in mentions]
+        next_id = self._conn.execute(
+            "SELECT COALESCE(MAX(exchange_id), 0) + 1 "
+            "FROM thread_reply_exchange WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchone()[0]
+        self._conn.execute(
+            "INSERT INTO thread_reply_exchange (thread_id, exchange_id, "
+            "state, open_seq, close_seq, opened_at, last_activity_at, "
+            "deferred_count) VALUES (?, ?, 'open', ?, ?, ?, ?, ?)",
+            (thread_id, next_id, open_seq, open_seq, now, now, len(deferred)),
+        )
+        for name in deferred:
+            self._conn.execute(
+                "INSERT INTO thread_exchange_deferrals (thread_id, "
+                "exchange_id, agent_name, state, created_at) "
+                "VALUES (?, ?, ?, 'held', ?)",
+                (thread_id, next_id, name, now),
+            )
+        self.insert_audit_log_uncommitted(
+            task_id=thread_id, agent="founder",
+            action="thread_exchange_opened",
+            payload={
+                "thread_id": thread_id, "exchange_id": next_id,
+                "open_seq": open_seq, "priority": mentions,
+                "deferred": deferred,
+            },
+        )
+        for name in deferred:
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id, agent=name,
+                action="thread_deferral_held",
+                payload={
+                    "thread_id": thread_id, "exchange_id": next_id,
+                    "agent_name": name,
+                },
+            )
+        return next_id
+
+    def _extend_reply_exchange_uncommitted(
+        self, thread_id: str, seq: int,
+    ) -> None:
+        """Extend an open exchange: every conversational MESSAGE inside E
+        (any speaker) refreshes ``last_activity_at`` and advances
+        ``close_seq`` to the frontier. Runs inside the open transaction."""
+        now = _now().isoformat()
+        self._conn.execute(
+            "UPDATE thread_reply_exchange SET last_activity_at = ?, "
+            "close_seq = ? WHERE thread_id = ? AND state = 'open'",
+            (now, seq, thread_id),
+        )
+
+    def _resolve_exchange_wake_set(
+        self,
+        *,
+        thread_id: str,
+        mentions: list[str],
+        recipients: list[str],
+        open_exchange,
+    ) -> list[str]:
+        """U2 — strict-hold wake resolution inside an open exchange.
+
+        * ``M`` has valid mentions → wake set = exactly that mention set
+          (mention-pierce: newly mentioned / deferred members wake
+          immediately; the cohort is NOT altered — frozen).
+        * ``M`` has no valid mentions → wake set = the frozen cohort P(E)
+          only (seq 188: "only that cohort receives wakes"). No-mention
+          messages inside E NEVER broadcast to held members.
+
+        TASK_FOLLOWUP/BOOTSTRAP never reach here (callers keep the isolated
+        full-broadcast branch). ``recipients`` is the candidate set minus the
+        speaker; every recipient NOT in the wake set is held (obligation-only).
+        """
+        if mentions:
+            return [m for m in mentions if m in recipients]
+        cohort = self._exchange_cohort_uncommitted(open_exchange)
+        return [c for c in cohort if c in recipients]
+
+    def _pair_held_by_open_exchange(
+        self, thread_id: str, agent_name: str,
+    ) -> bool:
+        """True when ``agent_name`` is a held (non-cohort) member of an open
+        exchange on this thread. Used to suppress the settlement follow-on for
+        a held pair (the exchange's single catch-up at closure carries the
+        residual range). Runs inside the open transaction."""
+        row = self._get_open_exchange_uncommitted(thread_id)
+        if row is None:
+            return False
+        cohort = self._exchange_cohort_uncommitted(row)
+        return agent_name not in cohort
+
+    def _pair_catchup_pending_uncommitted(
+        self, thread_id: str, agent_name: str,
+    ) -> bool:
+        """True when the pair holds an unsatisfied released-deferral catch-up
+        obligation: any ``thread_exchange_deferrals`` row (across released
+        exchanges) with ``catchup_pending = 1``. Set at closure when the
+        pair's single live slot did not cover the released range; the owed
+        catch-up is minted exactly once when that slot reaches a terminal
+        outcome. Runs inside the open transaction."""
+        row = self._conn.execute(
+            "SELECT 1 FROM thread_exchange_deferrals "
+            "WHERE thread_id = ? AND agent_name = ? AND catchup_pending = 1 "
+            "LIMIT 1",
+            (thread_id, agent_name),
+        ).fetchone()
+        return row is not None
+
+    def _mark_catchup_pending_uncommitted(
+        self, thread_id: str, exchange_id: int, agent_name: str,
+    ) -> bool:
+        """Durably record a pending post-slot catch-up on THIS exchange's
+        deferral row (a D(E) member whose live slot did not cover the
+        released range at closure). Returns True when a row was actually
+        updated (the pair is a deferred member of this exchange). Runs
+        inside the open transaction."""
+        cur = self._conn.execute(
+            "UPDATE thread_exchange_deferrals SET catchup_pending = 1 "
+            "WHERE thread_id = ? AND exchange_id = ? AND agent_name = ? "
+            "AND state = 'released'",
+            (thread_id, exchange_id, agent_name),
+        )
+        return cur.rowcount > 0
+
+    def _clear_catchup_pending_uncommitted(
+        self, thread_id: str, agent_name: str,
+    ) -> int:
+        """Consume every pending catch-up marker for the pair — one
+        range-covering wake satisfies all of them. Runs inside the open
+        transaction. Returns the number of deferral rows whose marker was
+        actually cleared (0 when the pair held no pending marker), so a
+        caller can record a truthful audit of marker revocation."""
+        cur = self._conn.execute(
+            "UPDATE thread_exchange_deferrals SET catchup_pending = 0 "
+            "WHERE thread_id = ? AND agent_name = ?",
+            (thread_id, agent_name),
+        )
+        return cur.rowcount
+
+    def _exchange_has_live_cohort_wake(
+        self, thread_id: str, open_seq: int, cohort: list[str],
+    ) -> bool:
+        """Quiescence predicate: True when any cohort member has a live wake
+        whose coverage contains the exchange — a running wake with
+        ``running_through_seq >= open_seq`` (claimed coverage is immutable, so
+        a pre-arrival claim with running_through < open_seq is NOT live), or a
+        queued wake whose ``required_through_seq >= open_seq`` (the recovery
+        replacement keeps the cohort non-quiescent — daemon_restart is an
+        interruption, never terminal, while replacement work exists)."""
+        if not cohort:
+            return False
+        placeholders = ",".join("?" for _ in cohort)
+        row = self._conn.execute(
+            f"SELECT 1 FROM thread_reply_delivery_state WHERE thread_id = ? "
+            f"AND agent_name IN ({placeholders}) AND ("
+            f"(running_through_seq IS NOT NULL AND running_through_seq >= ?) "
+            f"OR (queued_invocation_token IS NOT NULL "
+            f"AND required_through_seq >= ?)) LIMIT 1",
+            (thread_id, *cohort, open_seq, open_seq),
+        ).fetchone()
+        return row is not None
+
+    def _close_reply_exchange_uncommitted(
+        self, thread_id: str, exchange_id: int, *, reason: str,
+    ) -> list[ThreadReplyArrival]:
+        """Atomic close/release of one exchange (inside the open transaction;
+        caller commits and enqueues the returned catch-up tokens after
+        commit).
+
+        E CAS ``open -> released`` (a duplicate evaluation is a CAS miss with
+        NO audit and NO mint — idempotent), deferral rows ``held -> released``,
+        then the watermark-based catch-up: for EVERY pair with
+        ``acknowledged < required`` and no queued/running slot, mint ONE
+        queued REPLY covering the full contiguous unread range (the
+        coverage-safe superset: frozen D(E), mid-E joiners, cohort members
+        with residual unread). A pair whose live slot GENUINELY covers the
+        released range is marked coalesced (no second token — at-most-one
+        slots honored); a pair whose live slot does NOT cover it (a running
+        wake with immutable ``running_through_seq < required`` — e.g. a
+        pre-exchange claim) is durably marked catch-up-pending: exactly ONE
+        post-slot catch-up is minted when the blocking slot reaches a
+        terminal outcome (failed/timeout settlement or recovery
+        terminalization), surviving daemon restart — never stranded.
+        """
+        now = _now().isoformat()
+        cur = self._conn.execute(
+            "UPDATE thread_reply_exchange SET state = 'released', "
+            "closed_at = ?, close_reason = ? "
+            "WHERE thread_id = ? AND exchange_id = ? AND state = 'open'",
+            (now, reason, thread_id, exchange_id),
+        )
+        if cur.rowcount == 0:
+            return []  # CAS miss — duplicate closure/reaper/settlement no-op
+        self._conn.execute(
+            "UPDATE thread_exchange_deferrals SET state = 'released', "
+            "released_at = ? WHERE thread_id = ? AND exchange_id = ? "
+            "AND state = 'held'",
+            (now, thread_id, exchange_id),
+        )
+        self.insert_audit_log_uncommitted(
+            task_id=thread_id, agent="founder",
+            action="thread_exchange_closed",
+            payload={
+                "thread_id": thread_id, "exchange_id": exchange_id,
+                "close_reason": reason, "closed_at": now,
+            },
+        )
+        arrivals: list[ThreadReplyArrival] = []
+        rows = self._conn.execute(
+            "SELECT * FROM thread_reply_delivery_state WHERE thread_id = ? "
+            "AND acknowledged_through_seq < required_through_seq",
+            (thread_id,),
+        ).fetchall()
+        for row in rows:
+            agent = row["agent_name"]
+            ack = int(row["acknowledged_through_seq"] or 0)
+            req = int(row["required_through_seq"] or 0)
+            if row["queued_invocation_token"] or row["running_invocation_token"]:
+                # Genuinely-covering predicate (TASK-6057): a live slot
+                # coalesces ONLY when its durable coverage contains the
+                # released range.
+                #   * running slot — the claimed range is IMMUTABLE
+                #     (running_through_seq snapshotted at claim): it covers
+                #     iff running_through_seq >= required. A pre-arrival
+                #     claim whose through-seq ends before the released range
+                #     does NOT cover (reviewer TASK-6056 counterexample).
+                #   * queued slot — covers at claim (running_through =
+                #     required-at-claim; required is monotonic), so it
+                #     always covers.
+                # A non-covering live slot blocks immediate minting
+                # (at-most-one slot invariant): the released deferral is
+                # durably marked catchup-pending and its exactly-one
+                # post-slot catch-up fires when the blocking slot reaches a
+                # terminal outcome — failed/timeout settlement, or recovery
+                # terminalization on restart. Never a second token.
+                non_covering = (
+                    row["running_invocation_token"] is not None
+                    and (
+                        row["running_through_seq"] is None
+                        or int(row["running_through_seq"]) < req
+                    )
+                )
+                if non_covering:
+                    if self._mark_catchup_pending_uncommitted(
+                        thread_id, exchange_id, agent,
+                    ):
+                        self.insert_audit_log_uncommitted(
+                            task_id=thread_id, agent=agent,
+                            action="thread_deferral_catchup_pending",
+                            payload={
+                                "thread_id": thread_id,
+                                "exchange_id": exchange_id,
+                                "agent_name": agent,
+                                "from_seq": ack + 1,
+                                "through_seq": req,
+                                "reason": "old_wake_does_not_cover",
+                            },
+                        )
+                    arrivals.append(ThreadReplyArrival(
+                        agent_name=agent, invocation_token=None,
+                        coalesced=True, from_seq=ack + 1, through_seq=req,
+                    ))
+                    continue
+                # Genuinely covering wake: coalesce — never a second token.
+                self._clear_catchup_pending_uncommitted(thread_id, agent)
+                arrivals.append(ThreadReplyArrival(
+                    agent_name=agent, invocation_token=None, coalesced=True,
+                    from_seq=ack + 1, through_seq=req,
+                ))
+                continue
+            token = self._mint_reply_invocation_uncommitted(
+                thread_id, agent, ack + 1,
+            )
+            self._conn.execute(
+                "UPDATE thread_reply_delivery_state SET "
+                "queued_invocation_token = ?, updated_at = ? "
+                "WHERE thread_id = ? AND agent_name = ?",
+                (token, now, thread_id, agent),
+            )
+            # A direct mint satisfies any pending catch-up from an earlier
+            # release (one range-covering wake covers all of them).
+            self._clear_catchup_pending_uncommitted(thread_id, agent)
+            self._emit_reply_wake_audit(
+                thread_id=thread_id, agent_name=agent,
+                action="thread_reply_wake_created",
+                payload={
+                    "agent_name": agent,
+                    "from_seq": ack + 1,
+                    "through_seq": req,
+                    "token_prefix": token[:8],
+                    "kind": "exchange_catch_up",
+                },
+            )
+            self._conn.execute(
+                "UPDATE thread_exchange_deferrals SET mint_token_prefix = ? "
+                "WHERE thread_id = ? AND exchange_id = ? "
+                "AND agent_name = ? AND state = 'released'",
+                (token[:8], thread_id, exchange_id, agent),
+            )
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id, agent=agent,
+                action="thread_deferral_released",
+                payload={
+                    "thread_id": thread_id, "exchange_id": exchange_id,
+                    "agent_name": agent, "mint_token_prefix": token[:8],
+                },
+            )
+            arrivals.append(ThreadReplyArrival(
+                agent_name=agent, invocation_token=token, coalesced=False,
+                from_seq=ack + 1, through_seq=req,
+            ))
+        # Deferral rows whose pair was already fully covered (pierce/ack==req)
+        # are released with no mint — record the coalesced audit. Rows whose
+        # catch-up is pending (a live non-covering slot at release) are
+        # audited by ``thread_deferral_catchup_pending`` in the loop above,
+        # never as coalesced.
+        held = self._conn.execute(
+            "SELECT agent_name FROM thread_exchange_deferrals "
+            "WHERE thread_id = ? AND exchange_id = ? "
+            "AND state = 'released' AND mint_token_prefix IS NULL "
+            "AND catchup_pending = 0",
+            (thread_id, exchange_id),
+        ).fetchall()
+        for drow in held:
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id, agent=drow["agent_name"],
+                action="thread_deferral_coalesced",
+                payload={
+                    "thread_id": thread_id, "exchange_id": exchange_id,
+                    "agent_name": drow["agent_name"],
+                },
+            )
+        return arrivals
+
+    def _suppress_open_exchanges_uncommitted(
+        self, thread_id: str, *, reason: str,
+    ) -> None:
+        """Suppress every OPEN exchange on a thread (abort / archive /
+        corruption / whole-thread discard). No catch-up is ever minted — the
+        human stopped. Deferral rows flip to suppressed. Idempotent CAS per
+        exchange. Runs inside the open transaction."""
+        now = _now().isoformat()
+        rows = self._conn.execute(
+            "SELECT exchange_id FROM thread_reply_exchange "
+            "WHERE thread_id = ? AND state = 'open'",
+            (thread_id,),
+        ).fetchall()
+        for r in rows:
+            cur = self._conn.execute(
+                "UPDATE thread_reply_exchange SET state = 'suppressed', "
+                "closed_at = ?, close_reason = ? "
+                "WHERE thread_id = ? AND exchange_id = ? AND state = 'open'",
+                (now, reason, thread_id, r["exchange_id"]),
+            )
+            if cur.rowcount == 0:
+                continue
+            self._conn.execute(
+                "UPDATE thread_exchange_deferrals SET state = 'suppressed' "
+                "WHERE thread_id = ? AND exchange_id = ? AND state = 'held'",
+                (thread_id, r["exchange_id"]),
+            )
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id, agent="founder",
+                action="thread_exchange_closed",
+                payload={
+                    "thread_id": thread_id, "exchange_id": r["exchange_id"],
+                    "close_reason": reason, "suppressed": True,
+                },
+            )
+
+    def _evaluate_exchange_closure(
+        self, thread_id: str,
+    ) -> list[ThreadReplyArrival]:
+        """Evaluate closure for the thread's OPEN exchange(s) inside the
+        open transaction. Returns catch-up arrivals (tokens to enqueue after
+        commit) when a close actually fired; [] otherwise.
+
+        Closure fires when ANY of:
+          1. quiescence + grace: no live cohort wake covering E AND
+             now - last_activity_at >= EXCHANGE_GRACE_SECONDS (5 min),
+          2. absolute bound: now - opened_at >= MAX_PRIORITY_WAIT_SECONDS
+             (4 h, fail-open),
+          3. corruption (reconcile/sweep) — handled by the sweep, not here.
+        Idempotent: every evaluation is a CAS; duplicates are silent misses.
+        """
+        now = datetime.now(timezone.utc)
+        rows = self._conn.execute(
+            "SELECT * FROM thread_reply_exchange WHERE thread_id = ? "
+            "AND state = 'open'",
+            (thread_id,),
+        ).fetchall()
+        arrivals: list[ThreadReplyArrival] = []
+        for ex in rows:
+            open_seq = int(ex["open_seq"])
+            cohort = self._exchange_cohort_uncommitted(ex)
+            live = self._exchange_has_live_cohort_wake(
+                thread_id, open_seq, cohort,
+            )
+            last_activity = datetime.fromisoformat(
+                ex["last_activity_at"].replace("Z", "+00:00")
+            )
+            opened = datetime.fromisoformat(
+                ex["opened_at"].replace("Z", "+00:00")
+            )
+            grace_elapsed = (now - last_activity).total_seconds() \
+                >= EXCHANGE_GRACE_SECONDS
+            absolute_elapsed = (now - opened).total_seconds() \
+                >= MAX_PRIORITY_WAIT_SECONDS
+            if absolute_elapsed:
+                arrivals.extend(self._close_reply_exchange_uncommitted(
+                    thread_id, int(ex["exchange_id"]),
+                    reason="max_priority_wait",
+                ))
+            elif not live and grace_elapsed:
+                arrivals.extend(self._close_reply_exchange_uncommitted(
+                    thread_id, int(ex["exchange_id"]),
+                    reason="quiescence",
+                ))
+        return arrivals
+
+    def _sweep_corrupt_exchanges_uncommitted(self) -> list[ThreadReplyArrival]:
+        """U5 — fail-closed corruption sweep over every open exchange (runs
+        in the startup reconcile transaction; caller commits + enqueues).
+        The five sweep classes:
+          1. ``held`` deferral row whose exchange is not ``open`` → aligned
+             to the exchange's terminal state;
+          2. ``held`` deferral row with NO exchange row → suppressed +
+             diagnostic, never minted;
+          3. open E whose opening ``mentions_json`` is malformed/missing →
+             suppressed + diagnostic (fail-closed; never blind-release);
+          4. ``close_seq < open_seq`` or ``last_activity_at`` in the future →
+             suppressed + diagnostic;
+          5. non-int/negative seq fields → fail-closed parse (bool-before-int
+             per MEM-304).
+        Returns catch-up arrivals for exchanges closed by this sweep (rare;
+        normally suppresses, never releases)."""
+        now = _now().isoformat()
+        arrivals: list[ThreadReplyArrival] = []
+        # Class 1/2: orphaned or misaligned held deferral rows.
+        held_rows = self._conn.execute(
+            "SELECT d.*, e.state AS exchange_state "
+            "FROM thread_exchange_deferrals d "
+            "LEFT JOIN thread_reply_exchange e "
+            "ON e.thread_id = d.thread_id AND e.exchange_id = d.exchange_id "
+            "WHERE d.state = 'held'",
+        ).fetchall()
+        for d in held_rows:
+            if d["exchange_state"] is None:
+                self._conn.execute(
+                    "UPDATE thread_exchange_deferrals SET state = 'suppressed' "
+                    "WHERE thread_id = ? AND exchange_id = ? AND agent_name = ? "
+                    "AND state = 'held'",
+                    (d["thread_id"], d["exchange_id"], d["agent_name"]),
+                )
+                self.insert_audit_log_uncommitted(
+                    task_id=d["thread_id"], agent=d["agent_name"],
+                    action="thread_deferral_suppressed",
+                    payload={
+                        "thread_id": d["thread_id"],
+                        "exchange_id": d["exchange_id"],
+                        "agent_name": d["agent_name"],
+                        "reason": "orphan_deferral_row",
+                    },
+                )
+            elif d["exchange_state"] != "open":
+                target = "released" if d["exchange_state"] == "released" \
+                    else "suppressed"
+                self._conn.execute(
+                    "UPDATE thread_exchange_deferrals SET state = ? "
+                    "WHERE thread_id = ? AND exchange_id = ? AND agent_name = ? "
+                    "AND state = 'held'",
+                    (target, d["thread_id"], d["exchange_id"], d["agent_name"]),
+                )
+        # Class 3/4/5: malformed open exchanges → suppress + diagnostic.
+        opens = self._conn.execute(
+            "SELECT * FROM thread_reply_exchange WHERE state = 'open'",
+        ).fetchall()
+        for ex in opens:
+            thread_id = ex["thread_id"]
+            exchange_id = int(ex["exchange_id"])
+            try:
+                open_seq = int(ex["open_seq"])
+                close_seq = int(ex["close_seq"])
+            except (TypeError, ValueError):
+                open_seq, close_seq = -1, -2
+            bad_seq = (
+                isinstance(ex["open_seq"], bool)  # bool-before-int (MEM-304)
+                or isinstance(ex["close_seq"], bool)
+                or open_seq < 1 or close_seq < open_seq
+            )
+            cohort = self._exchange_cohort_uncommitted(ex)
+            bad_mentions = not cohort
+            try:
+                last_activity = _parse_dt(ex["last_activity_at"])
+                future = last_activity > datetime.now(timezone.utc)
+            except (TypeError, ValueError):
+                future = True
+            if bad_seq or bad_mentions or future:
+                self._suppress_open_exchanges_uncommitted(
+                    thread_id, reason="corrupt",
+                )
+                self.insert_audit_log_uncommitted(
+                    task_id=thread_id, agent="founder",
+                    action="thread_exchange_corrupt",
+                    payload={
+                        "thread_id": thread_id, "exchange_id": exchange_id,
+                        "reason": (
+                            "bad_seq" if bad_seq else
+                            "bad_mentions" if bad_mentions else "future_activity"
+                        ),
+                    },
+                )
+        return arrivals
+
+    @_synchronized
+    def reconcile_reply_exchanges(self) -> list[ThreadReplyArrival]:
+        """U5 — startup exchange reconcile (daemon step 6e). One transaction:
+        corruption sweep first (fail-closed), then idempotent closure
+        evaluation for every open exchange. Returns catch-up arrivals whose
+        tokens the caller enqueues after commit."""
+        arrivals: list[ThreadReplyArrival] = []
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            arrivals.extend(self._sweep_corrupt_exchanges_uncommitted())
+            for ex in self._conn.execute(
+                "SELECT DISTINCT thread_id FROM thread_reply_exchange "
+                "WHERE state = 'open'",
+            ).fetchall():
+                arrivals.extend(self._evaluate_exchange_closure(ex["thread_id"]))
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return arrivals
+
+    @_synchronized
+    def reaper_sweep_reply_exchanges(self) -> list[ThreadReplyArrival]:
+        """U4 — reaper tick over every OPEN exchange (fail-open backstop).
+        Closes exchanges past the 4h absolute bound or quiescence+grace;
+        returns catch-up arrivals whose tokens the caller enqueues after
+        commit. CAS-protected: a concurrent close is a silent miss."""
+        arrivals: list[ThreadReplyArrival] = []
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            for ex in self._conn.execute(
+                "SELECT DISTINCT thread_id FROM thread_reply_exchange "
+                "WHERE state = 'open'",
+            ).fetchall():
+                arrivals.extend(self._evaluate_exchange_closure(ex["thread_id"]))
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return arrivals
+
+    @_synchronized
+    def list_reply_exchange_projections(
+        self, thread_id: str,
+    ) -> list[ThreadReplyExchangeProjection]:
+        """Exchange-level wire projection for a thread (server contract).
+        Returns the most recent exchange row in any state; empty for threads
+        that never opened an exchange. Truthful — never fabricated."""
+        rows = self._conn.execute(
+            "SELECT * FROM thread_reply_exchange WHERE thread_id = ? "
+            "ORDER BY exchange_id DESC LIMIT 1",
+            (thread_id,),
+        ).fetchall()
+        out: list[ThreadReplyExchangeProjection] = []
+        for row in rows:
+            out.append(ThreadReplyExchangeProjection(
+                thread_id=row["thread_id"],
+                exchange_id=int(row["exchange_id"]),
+                state=row["state"],  # type: ignore[arg-type]
+                open_seq=int(row["open_seq"]),
+                close_seq=int(row["close_seq"]),
+                opened_at=row["opened_at"],
+                last_activity_at=row["last_activity_at"],
+                closed_at=row["closed_at"],
+                close_reason=row["close_reason"],
+                deferred_count=int(row["deferred_count"] or 0),
+            ))
+        return out
 
     @_synchronized
     def record_conversational_arrival(
@@ -7423,13 +8303,18 @@ class Database:
         sent_from_task_id: str | None = None,
         recipients: list[str],
     ) -> tuple[int, list[ThreadReplyArrival]]:
-        """Atomic conversational-arrival: append the message and, for every
-        recipient (already excluding the speaker), raise required_through_seq
-        and create/coalesce exactly one queued REPLY.
+        """Atomic conversational-arrival: append the message, raise the
+        obligation watermark for EVERY recipient (U0 — full-recipient
+        obligations), and mint/coalesce exactly one queued REPLY for the
+        resolved WAKE SET only (mention routing; strict exchange hold while an
+        exchange is open). Held members get obligation-only raises — no token,
+        no wake audit.
 
         Returns (seq, arrivals). ``arrivals`` carry the newly-minted queue
-        tokens (invocation_token is None when coalesced); the caller enqueues
-        them ONLY after this transaction commits.
+        tokens (invocation_token is None when coalesced) — including any
+        exchange catch-up tokens minted by a stale-exchange closure evaluated
+        at the top of this write; the caller enqueues them ONLY after this
+        transaction commits.
         """
         arrivals: list[ThreadReplyArrival] = []
         try:
@@ -7437,6 +8322,9 @@ class Database:
             mentions = self._derive_conversational_mentions(
                 thread_id, speaker, kind, body_markdown,
             )
+            # TASK-5966: a stale exchange closes BEFORE the new message is
+            # classified (its catch-up tokens join this write's arrivals).
+            arrivals.extend(self._evaluate_exchange_closure(thread_id))
             seq = self._append_thread_message_uncommitted(
                 thread_id=thread_id,
                 speaker=speaker,
@@ -7446,26 +8334,55 @@ class Database:
                 sent_from_task_id=sent_from_task_id,
                 mentions=mentions,
             )
-            # Phase-2 mention routing (THR-198, Slice B): the wake set is
-            # resolved at write time from the persisted structured mention
-            # signal + the thread's default-enabled setting. Disabled or
-            # zero-valid fall back to the full recipient broadcast; valid
-            # mentions narrow to exactly that stable set. ``recipients`` is
-            # the caller-declared broadcast candidate set (participants minus
-            # speaker at every call site), so the broadcast fallback is
-            # byte-identical to pre-Slice-B behavior.
-            wake_set = resolve_wake_set(
-                mentions or [],
-                recipients,
-                speaker,
-                mention_routing_enabled=self._thread_mention_routing_enabled(
-                    thread_id,
-                ),
-            )
+            open_exchange = self._get_open_exchange_uncommitted(thread_id)
+            if open_exchange is not None and seq > int(open_exchange["open_seq"]):
+                # Inside E: strict-hold resolution (U2).
+                wake_set = self._resolve_exchange_wake_set(
+                    thread_id=thread_id,
+                    mentions=mentions or [],
+                    recipients=recipients,
+                    open_exchange=open_exchange,
+                )
+                if kind is ThreadMessageKind.MESSAGE:
+                    self._extend_reply_exchange_uncommitted(thread_id, seq)
+            else:
+                # Outside E (or the opening message itself): unconditional
+                # Phase-2 mention routing (valid mentions → exactly that
+                # set; zero valid mentions → broadcast).
+                wake_set = resolve_wake_set(
+                    mentions or [], recipients, speaker,
+                )
+            # U0: wake-set members mint/coalesce exactly one queued REPLY.
             for name in wake_set:
                 arrivals.append(
                     self._apply_arrival_uncommitted(thread_id, name, seq)
                 )
+            # U0: every OTHER recipient gets the obligation-only raise
+            # (full-recipient obligations — I4 totality; no token, no wake
+            # audit; watermarks stay contiguous and monotonic).
+            for name in recipients:
+                if name not in wake_set:
+                    self._raise_required_uncommitted(thread_id, name, seq)
+            # TASK-5966: a founder-authored MESSAGE with a non-empty valid
+            # mention set and a non-empty deferred set OPENS a new exchange
+            # (only when none is open after the stale-close above). The
+            # opening message's own wake set is the mention set (priority
+            # mints); D members were obligation-raised above and are now held.
+            if (
+                self._get_open_exchange_uncommitted(thread_id) is None
+                and kind is ThreadMessageKind.MESSAGE
+                and speaker == "founder"
+                and mentions
+            ):
+                deferred = [r for r in recipients if r not in mentions]
+                if deferred:
+                    self._open_reply_exchange_uncommitted(
+                        thread_id=thread_id,
+                        open_seq=seq,
+                        speaker=speaker,
+                        mentions=mentions,
+                        recipients=recipients,
+                    )
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -7492,9 +8409,30 @@ class Database:
           * arrivals during the run (``required > running_through``) yield
             exactly one post-settlement follow-on covering the retained
             unacknowledged range; it is the single wake for all of them.
-          * failed/timeout do NOT advance acknowledgement, mint no immediate
-            retry, and leave ``retry_required`` (``required > acknowledged``)
-            for the next conversational arrival to cover.
+            TASK-5966: a HELD pair (deferred member of an open exchange) has
+            that follow-on SUPPRESSED — the exchange's single range-covering
+            catch-up at closure carries the residual range
+            (``exchange_held=True``, ``retry_required`` stays False).
+          * failed/timeout do NOT advance acknowledgement and mint no
+            immediate retry, leaving ``retry_required``
+            (``required > acknowledged``) for the next conversational arrival
+            to cover — EXCEPT the owed post-slot catch-up of a released
+            deferral whose old slot never covered the released range (the
+            closure durably marked ``catchup_pending``): that exactly-one
+            range-covering wake is minted here so the release promise never
+            strands (TASK-6057).
+
+        The settled-audit payload is extended (founder-approved S4):
+        ``covered_from_seq``/``covered_through_seq`` = the authoritative
+        cover(S) (the immutable claimed range, or old acknowledged+1..required
+        for a never-claimed queued settlement), ``claimed_at`` =
+        ``thread_invocations.started_at``, ``minted_at`` =
+        ``thread_invocations.enqueued_at`` (the durable mint instant), and
+        ``exchange_held``. This is the tightened-D1 attribution substrate:
+        a wake claimed before M has ``running_through < M.seq`` (range
+        containment excludes it automatically) and ``claimed_at < M.created_at``
+        (the durable recorded form); a queued settlement attributes only
+        messages minted-at-or-before the wake.
         """
         now = _now().isoformat()
         row = self._conn.execute(
@@ -7508,13 +8446,21 @@ class Database:
         agent_name = row["agent_name"]
         acknowledged = int(row["acknowledged_through_seq"] or 0)
         required = int(row["required_through_seq"] or 0)
+        inv = self._conn.execute(
+            "SELECT started_at, enqueued_at FROM thread_invocations "
+            "WHERE invocation_token = ?",
+            (token,),
+        ).fetchone()
+        minted_at = inv["enqueued_at"] if inv is not None else None
         if row["running_invocation_token"] == token:
             running_through = int(row["running_through_seq"] or 0)
+            claimed_at = inv["started_at"] if inv is not None else None
         else:
             # A queued (not-yet-claimed) token: its delivery coverage is
             # acknowledged+1 .. required. Declining/replying to the whole
             # unclaimed wake acknowledges that full coverage.
             running_through = required
+            claimed_at = None
 
         if outcome == "reply":
             status = ThreadInvocationStatus.CONSUMED.value
@@ -7547,19 +8493,57 @@ class Database:
         )
 
         follow_on: str | None = None
-        if outcome in ("reply", "decline") and required > new_ack:
-            # Exactly one follow-on covering arrivals strictly after the
-            # immutable running range (``required > running_through``). Its
-            # triggering_seq is the first unacknowledged sequence.
-            follow_on = self._mint_reply_invocation_uncommitted(
-                thread_id, agent_name, new_ack + 1,
+        exchange_held = False
+        catchup_minted = False
+        if required > new_ack:
+            # A residual range remains. At most one wake may carry it:
+            #   * a held pair (member of an OPEN exchange) suppresses the
+            #     follow-on — the exchange's single catch-up at closure
+            #     carries the residual range (exchange_held=True);
+            #   * reply/decline mint exactly one follow-on covering arrivals
+            #     strictly after the immutable running range
+            #     (``required > running_through``);
+            #   * failed/timeout mint ONLY the owed post-slot catch-up of a
+            #     released deferral whose old slot never covered it (the
+            #     closure durably marked catchup_pending) — a plain
+            #     unacknowledged range gets no immediate retry (Phase-1
+            #     fail-open: the next conversational arrival covers it).
+            pending_catchup = self._pair_catchup_pending_uncommitted(
+                thread_id, agent_name,
             )
-            self._conn.execute(
-                "UPDATE thread_reply_delivery_state SET "
-                "queued_invocation_token = ?, updated_at = ? "
-                "WHERE thread_id = ? AND agent_name = ?",
-                (follow_on, now, thread_id, agent_name),
-            )
+            if self._pair_held_by_open_exchange(thread_id, agent_name):
+                exchange_held = True
+            elif outcome in ("reply", "decline") or pending_catchup:
+                follow_on = self._mint_reply_invocation_uncommitted(
+                    thread_id, agent_name, new_ack + 1,
+                )
+                self._conn.execute(
+                    "UPDATE thread_reply_delivery_state SET "
+                    "queued_invocation_token = ?, updated_at = ? "
+                    "WHERE thread_id = ? AND agent_name = ?",
+                    (follow_on, now, thread_id, agent_name),
+                )
+                if pending_catchup:
+                    # The minted wake is the owed post-slot catch-up (for a
+                    # reply/decline it is the natural follow-on; for a
+                    # failed/timeout it is the release promise honoured) —
+                    # consume the durable marker in the same transaction
+                    # (exactly-once; a crash rolls both back).
+                    catchup_minted = True
+                    self._clear_catchup_pending_uncommitted(
+                        thread_id, agent_name,
+                    )
+                    self.insert_audit_log_uncommitted(
+                        task_id=thread_id, agent=agent_name,
+                        action="thread_deferral_catchup_minted",
+                        payload={
+                            "thread_id": thread_id,
+                            "agent_name": agent_name,
+                            "from_seq": new_ack + 1,
+                            "through_seq": required,
+                            "mint_token_prefix": follow_on[:8],
+                        },
+                    )
 
         self._emit_reply_wake_audit(
             thread_id=thread_id, agent_name=agent_name,
@@ -7569,7 +8553,16 @@ class Database:
                 "outcome": outcome,
                 "acknowledged_through_seq": new_ack,
                 "required_through_seq": required,
-                "retry_required": (required > new_ack and follow_on is None),
+                "covered_from_seq": acknowledged + 1,
+                "covered_through_seq": running_through,
+                "claimed_at": claimed_at,
+                "minted_at": minted_at,
+                "exchange_held": exchange_held,
+                "catchup_minted": catchup_minted,
+                "retry_required": (
+                    required > new_ack and follow_on is None
+                    and not exchange_held
+                ),
                 "follow_on_token_prefix": follow_on[:8] if follow_on else None,
                 "decline_reason": decline_reason,
             },
@@ -7583,11 +8576,18 @@ class Database:
             required_through_seq=required,
             # ``retry_required`` is the residual-obligation diagnostic: True
             # only when the range is still unacknowledged AND no follow-on wake
-            # was minted to carry it (failure/timeout). A reply/decline that
-            # minted a follow-on has an active queued wake, so it is not
-            # retry_required.
-            retry_required=(required > new_ack and follow_on is None),
+            # was minted to carry it (failure/timeout without an owed
+            # catch-up). A reply/decline that minted a follow-on has an active
+            # queued wake, so it is not retry_required; a held suppression
+            # defers the range to the exchange catch-up, which is not a retry
+            # condition; a failed/timeout that honoured a released-deferral
+            # catch-up marker minted the owed wake, which is not a retry
+            # either.
+            retry_required=(
+                required > new_ack and follow_on is None and not exchange_held
+            ),
             follow_on_token=follow_on,
+            exchange_held=exchange_held,
         )
 
     @_synchronized
@@ -7618,6 +8618,43 @@ class Database:
         return settlement
 
     @_synchronized
+    def settle_conversational_reply_with_exchange(
+        self,
+        *,
+        token: str,
+        outcome: str,
+        decline_reason: str | None = None,
+    ) -> tuple[ThreadReplySettlement | None, list[ThreadReplyArrival]]:
+        """Settlement seam for caller-owned exchange enqueue (TASK-5966).
+
+        Same settlement transaction as ``settle_conversational_reply`` PLUS
+        the exchange closure evaluation on the settled thread — the design's
+        "every REPLY settlement is a closure evaluation point" — returning
+        any catch-up arrivals whose tokens the caller enqueues after commit.
+        A settlement on a thread with no open exchange is a no-op closure
+        evaluation. Used by the decline route (which can enqueue); the
+        runner's failure paths keep ``settle_conversational_reply`` and rely
+        on the reaper for closure.
+        """
+        arrivals: list[ThreadReplyArrival] = []
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            settlement = self._settle_reply_uncommitted(
+                token,
+                outcome=outcome,
+                decline_reason=decline_reason,
+            )
+            if settlement is not None:
+                arrivals = self._evaluate_exchange_closure(
+                    settlement.thread_id,
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return settlement, arrivals
+
+    @_synchronized
     def reply_conversational(
         self,
         *,
@@ -7641,6 +8678,9 @@ class Database:
         settlement: ThreadReplySettlement | None = None
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            # TASK-5966: a stale exchange closes before this reply is
+            # classified (catch-up tokens join this write's arrivals).
+            arrivals.extend(self._evaluate_exchange_closure(thread_id))
             participants = [
                 p["agent_name"] for p in self._conn.execute(
                     "SELECT agent_name FROM thread_participants WHERE thread_id = ?",
@@ -7679,26 +8719,44 @@ class Database:
                     "AND status = 'pending'",
                     (now, token),
                 )
+            recipients = [name for name in participants if name != speaker]
             # Phase-2 mention routing (THR-198, Slice B): REPLY tokens resolve
             # the broadcast at write time from the persisted structured
             # mention signal + the thread setting. TASK_FOLLOWUP and BOOTSTRAP
             # are ISOLATED — they keep the full participants-minus-speaker
-            # broadcast and are never mention-routed.
+            # broadcast and are never mention-routed (documented pierce source
+            # inside an exchange).
             if token_purpose is ThreadInvocationPurpose.REPLY:
-                wake_set = resolve_wake_set(
-                    mentions, participants, speaker,
-                    mention_routing_enabled=self._thread_mention_routing_enabled(
-                        thread_id,
-                    ),
-                )
+                open_exchange = self._get_open_exchange_uncommitted(thread_id)
+                if open_exchange is not None and seq > int(
+                    open_exchange["open_seq"],
+                ):
+                    # Inside E: strict-hold resolution (U2) — mention-pierce
+                    # or cohort-only; every other recipient is held
+                    # (obligation-only raise below).
+                    wake_set = self._resolve_exchange_wake_set(
+                        thread_id=thread_id,
+                        mentions=mentions,
+                        recipients=recipients,
+                        open_exchange=open_exchange,
+                    )
+                    self._extend_reply_exchange_uncommitted(thread_id, seq)
+                else:
+                    # Outside E: unconditional Phase-2 mention routing.
+                    wake_set = resolve_wake_set(
+                        mentions, recipients, speaker,
+                    )
             else:
-                wake_set = [
-                    name for name in participants if name != speaker
-                ]
+                wake_set = recipients
+            # U0: wake-set members mint/coalesce; every other recipient gets
+            # the obligation-only raise (full-recipient obligations).
             for name in wake_set:
                 arrivals.append(
                     self._apply_arrival_uncommitted(thread_id, name, seq)
                 )
+            for name in recipients:
+                if name not in wake_set:
+                    self._raise_required_uncommitted(thread_id, name, seq)
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -7888,6 +8946,16 @@ class Database:
                     "updated_at = ? WHERE thread_id = ?",
                     (decline_reason, now, now, thread_id),
                 )
+                # TASK-5966: whole-thread discard (abort/archive) SUPPRESSES
+                # any open exchange — no catch-up is ever minted (G5: the
+                # human stopped). Idempotent per-exchange CAS.
+                if decline_reason == "archive_started":
+                    _exchange_reason = "thread_archived"
+                else:
+                    _exchange_reason = "founder_aborted"
+                self._suppress_open_exchanges_uncommitted(
+                    thread_id, reason=_exchange_reason,
+                )
             else:
                 self._conn.execute(
                     "UPDATE thread_reply_delivery_state SET "
@@ -7898,6 +8966,17 @@ class Database:
                     "last_terminal_reason = ?, last_terminal_at = ?, "
                     "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
                     (decline_reason, now, now, thread_id, agent_name),
+                )
+                # TASK-5966: participant removal suppresses the removed
+                # agent's held deferral rows in any open exchange (the pair is
+                # terminal — a removed member never receives a catch-up). The
+                # exchange itself stays open; closure fires at the next
+                # evaluation point (write/reaper/reconcile) with proper
+                # enqueue, so no catch-up token can strand.
+                self._conn.execute(
+                    "UPDATE thread_exchange_deferrals SET state = 'suppressed' "
+                    "WHERE thread_id = ? AND agent_name = ? AND state = 'held'",
+                    (thread_id, agent_name),
                 )
             for pr in merged:
                 pair_agent = pr["agent_name"]
@@ -8188,71 +9267,6 @@ class Database:
                 agent=actor,
                 action="thread_pinned" if pinned else "thread_unpinned",
                 payload={"pinned": pinned},
-            )
-            self._conn.commit()
-            return True
-        except BaseException:
-            self._conn.rollback()
-            raise
-
-    @_synchronized
-    def set_thread_mention_routing_uncommitted(
-        self, thread_id: str, *, enabled: bool,
-    ) -> None:
-        """Toggle a thread's mention-routing switch WITHOUT committing
-        (THR-198 Slice B).
-
-        Same contract as ``set_thread_pinned_uncommitted``: the caller owns
-        the surrounding transaction so the toggle and its
-        ``thread_mention_routing_changed`` audit row are atomic.
-        """
-        self._conn.execute(
-            "UPDATE threads SET mention_routing_enabled = ? WHERE id = ?",
-            (1 if enabled else 0, thread_id),
-        )
-
-    @_synchronized
-    def set_thread_mention_routing_with_audit(
-        self, thread_id: str, *, enabled: bool, actor: str = "founder",
-    ) -> bool:
-        """Atomic founder toggle of per-thread mention routing + audit row
-        (THR-198 Slice B).
-
-        ONE rollback-safe transaction: the authoritative
-        ``mention_routing_enabled`` read, the idempotence decision, the state
-        UPDATE, and the ``thread_mention_routing_changed`` audit row commit
-        together — and roll back together on ANY failure — so the setting can
-        never survive without its audit row and concurrent same-state
-        requests yield exactly one audit row for the one durable transition.
-
-        The audit row keeps the documented ``audit_log.task_id`` = THR-*
-        scope (``task_id`` = thread id), the founder ``actor``, and the
-        ``{mention_routing_enabled}`` payload shape.
-
-        Returns True when a durable transition occurred; False for a
-        same-state (no-op) save — true no-ops write nothing and are not
-        audited. Raises ValueError for an unknown thread.
-        """
-        try:
-            self._conn.execute("BEGIN IMMEDIATE")
-            row = self._conn.execute(
-                "SELECT mention_routing_enabled FROM threads WHERE id = ?",
-                (thread_id,),
-            ).fetchone()
-            if row is None:
-                raise ValueError(f"thread {thread_id} not found")
-            currently_enabled = bool(row["mention_routing_enabled"])
-            if currently_enabled == enabled:
-                self._conn.rollback()
-                return False
-            self.set_thread_mention_routing_uncommitted(
-                thread_id, enabled=enabled,
-            )
-            self.insert_audit_log_uncommitted(
-                task_id=thread_id,
-                agent=actor,
-                action="thread_mention_routing_changed",
-                payload={"mention_routing_enabled": enabled},
             )
             self._conn.commit()
             return True

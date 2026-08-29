@@ -92,12 +92,12 @@ def test_allowlist_empty_denies_everything() -> None:
 
 
 def test_allowlist_from_route_policy_fixture(route_policy_fixture) -> None:
-    """The full normative allow-list (134 entries) is consumed structurally."""
+    """The full normative allow-list (133 entries; the mention-routing entry was removed with the route by TASK-6027) is consumed structurally."""
     entries = [
         AllowEntry(str(e["method"]), str(e["path_template"]))
         for e in route_policy_fixture["allow"]
     ]
-    assert len(entries) == 134
+    assert len(entries) == 133
     al = AllowList(entries)
     # Positive controls from the threat matrix:
     assert al.match("GET", "/api/v1/health") is not None

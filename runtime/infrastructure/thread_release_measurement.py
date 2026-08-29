@@ -96,6 +96,31 @@ from typing import Any
 #: Slice-B merge timestamp.
 RATIFIED_EPOCH = "2026-08-26T14:25:23Z"
 
+#: TASK-5966 F1 rollout measurement boundary — the daemon restart that first
+#: runs the strict mention-led exchange code. A SEPARATE boundary from the
+#: Phase-2 epoch/window: the exchange changes the decline/wake populations
+#: wholesale, so F1 metrics are never mixed into the Phase-2 G1/G2/G3
+#: numbers. ``RATIFIED_EPOCH`` and the August 2026 baseline window are
+#: preserved untouched. Write-time-frozen: messages written before the F1
+#: epoch never open exchanges (no historical backfill).
+RATIFIED_EPOCH_F1 = "2026-08-28T06:22:21Z"
+
+#: F1 exchange gates (falsifiable, founder-ratified):
+#:   * no-pierce: ``sum(wake_created)`` for held pairs inside open exchanges
+#:     is ZERO (except the three documented pierce sources: mention, a
+#:     pre-existing queued wake claimed mid-E, TASK_FOLLOWUP/BOOTSTRAP);
+#:   * exactly-one catch-up: per deferred pair per exchange,
+#:     ``count(queued tokens covering [open_seq, close_seq]) in {0, 1}``
+#:     (0 only when a pierce/coalesce already covered it);
+#:   * N-to-1: per founder-mention-led burst, per deferred pair, wake
+#:     sessions drop from up to 5 (shipped) to exactly 1;
+#:   * G2 coverage containment over the F1 window is at baseline.
+REQUIRED_F1 = (
+    "zero wakes for held pairs inside open exchanges except the three "
+    "documented pierces; exactly one range-covering catch-up per deferred "
+    "pair per exchange; N-to-1 burst compression; G2 containment at baseline"
+)
+
 #: Baseline window: calendar month August 2026, happyranch org (seq 85-87).
 RATIFIED_BASELINE_START = "2026-08-01T00:00:00Z"
 RATIFIED_BASELINE_END = "2026-09-01T00:00:00Z"
@@ -206,21 +231,6 @@ def _roster_at_write(conn: sqlite3.Connection, thread_id: str, created_at: str) 
         (thread_id, created_at),
     ).fetchall()
     return [r["agent_name"] for r in rows]
-
-
-def _thread_mention_routing_enabled(conn: sqlite3.Connection, thread_id: str) -> bool:
-    """Read the per-thread setting; a missing row/column defaults to enabled
-    (the ratified default), so the replay never silently widens."""
-    try:
-        row = conn.execute(
-            "SELECT mention_routing_enabled FROM threads WHERE id = ?",
-            (thread_id,),
-        ).fetchone()
-    except sqlite3.OperationalError:
-        return True  # legacy DB without the Slice-A column
-    if row is None:
-        return True
-    return bool(row["mention_routing_enabled"])
 
 
 def _pct(part: int, total: int) -> float | None:
@@ -807,8 +817,9 @@ def replay_baseline(
 
     Roster at write time is reconstructed from current participants with
     ``added_at <= created_at`` (documented under-approximation). The Phase-2
-    wake set uses ``resolve_wake_set`` with the persisted per-thread setting
-    (all threads default-enabled). Read-only and deterministic.
+    wake set uses ``resolve_wake_set`` under UNCONDITIONAL mention routing
+    (TASK-6027 founder ruling — the persisted ``threads.mention_routing_enabled``
+    column is inert legacy and is not consulted). Read-only and deterministic.
     """
     start = parse_timestamp(window_start)
     end = parse_timestamp(window_end)
@@ -858,9 +869,6 @@ def replay_baseline(
             mentioned.add((row["thread_id"], row["seq"]))
         wake_sets[(row["thread_id"], row["seq"])] = resolve_wake_set(
             parsed, roster, row["speaker"],
-            mention_routing_enabled=_thread_mention_routing_enabled(
-                conn, row["thread_id"],
-            ),
         )
 
     mentioned_wakes = [

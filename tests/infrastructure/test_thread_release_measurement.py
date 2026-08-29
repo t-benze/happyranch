@@ -1280,7 +1280,11 @@ def test_live_broadcast_fallback_not_mentioned() -> None:
     assert live.org_declines == 2
 
 
-def test_live_disabled_thread_signal_still_counts_as_mentioned() -> None:
+def test_live_legacy_persisted_false_signal_still_counts_as_mentioned() -> None:
+    """TASK-6027: a legacy persisted ``mention_routing_enabled = 0`` is an
+    inert column value — the persisted signal is non-empty, so the message
+    is still a mentioned message for G1 (the column never alters
+    behavior/measurement)."""
     conn = _conn()
     _add_thread(conn, "T1", mention_routing_enabled=0)
     _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
@@ -1288,9 +1292,6 @@ def test_live_disabled_thread_signal_still_counts_as_mentioned() -> None:
                  mentions='["alice"]')
     _add_invocation(conn, "T1", "alice", 1, "2026-08-27T00:01:00Z",
                     status="declined")
-    # The persisted signal is non-empty even for a disabled thread (the
-    # setting only changes the WAKE SET, not the signal) — so the message is
-    # still a mentioned message for G1.
     live = m.measure_live_window(conn, epoch=EPOCH, as_of="2026-08-27T12:00:00Z")
     assert live.mentioned_messages == 1
     assert live.mentioned_wakes == 1
@@ -1903,7 +1904,10 @@ def test_replay_self_only_mention_is_zero_valid_broadcast() -> None:
     assert rep.zero_loss_violations == 0
 
 
-def test_replay_disabled_thread_broadcasts_even_when_mentioned() -> None:
+def test_replay_legacy_persisted_false_still_routes_to_mention_set() -> None:
+    """TASK-6027: a legacy persisted ``mention_routing_enabled = 0`` is
+    INERT — the replay routes UNCONDITIONALLY to the valid mention set
+    (retained = the mention set, never the broadcast)."""
     conn = _conn()
     _add_thread(conn, "T1", mention_routing_enabled=0)
     _add_participant(conn, "T1", "alice", "2026-08-01T00:00:00Z")
@@ -1916,13 +1920,17 @@ def test_replay_disabled_thread_broadcasts_even_when_mentioned() -> None:
                     status="consumed")
 
     rep = m.replay_baseline(conn, window_start=AUG_START, window_end=AUG_END)
-    # Message is mentioned (signal present) but the disabled thread broadcasts
-    # → retained = both agents.
+    # Message is mentioned; routing is unconditional → retained = the valid
+    # mention set only (alice), never the broadcast.
     assert rep.mentioned_messages == 1
-    assert rep.retained_wakes == 2
+    assert rep.retained_wakes == 1
     assert rep.projected_declines == 1
-    assert rep.projected_decline_rate_pct == 50.0
-    assert rep.zero_loss_violations == 0  # bob's wake survives
+    assert rep.projected_decline_rate_pct == 100.0
+    # Honest G2: bob consumed a baseline (broadcast-era) REPLY for this
+    # message but is not in the mention set → a GENUINE zero-loss violation
+    # (bob is a roster member, so it is never an artifact candidate).
+    assert rep.zero_loss_violations == 1
+    assert rep.zero_loss_artifact_candidates == 0
 
 
 def test_replay_zero_loss_artifact_candidate_separated() -> None:
