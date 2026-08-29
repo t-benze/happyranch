@@ -30,9 +30,24 @@ Invariants (THR-181 / KB escalation-bounded-self-resume-ruling):
   work, cancellation/block/session state, adverse child review verdicts,
   zombie/partial-work evidence, org permission digest, DB schema digest) are
   captured with provenance into the evaluation snapshot; a server-PROVEN
-  must-escalate fact (adverse child verdict, partial-work evidence) forces
-  ESCALATE regardless of what the untrusted reason prose claims — neither a
-  misleading nor an omitted reason can authorize CONTINUE_SAME_ROOT.
+  must-escalate fact (adverse child verdict, partial-work evidence, DB-schema
+  drift vs the release-pinned schema) forces ESCALATE regardless of what the
+  untrusted reason prose claims, and a protected-surface change during the
+  attempt (org permission digest or live schema digest drift) fails closed
+  with the matched clause — neither a misleading nor an omitted reason can
+  authorize CONTINUE_SAME_ROOT.
+* CONTINUE_SAME_ROOT is granted ONLY when the proposed reason is a BYTE-EXACT
+  member of the release-controlled closed routine set
+  (``CONTINUE_ACCEPTED_REASONS``) AND every server-derived predicate is
+  clean: the server then has complete knowledge of the prose, so the grant
+  never depends on keyword classification or the completeness/truthfulness
+  of untrusted reason prose for any protected boundary. Any other reason —
+  including a semantically similar paraphrase — is not verifiable as routine
+  and fails closed to ESCALATE. The exact narrow permitted action (return the
+  current root to pending + re-enqueue) is additionally server-proven safe
+  across every protected category (fixed audited transaction; no schema/
+  permission/auth/compatibility/destructive/external side effects; spend
+  bounded by the budget fence; reversible and re-escalatable).
 * The final continuation CAS atomically re-validates the COMPLETE current
   fence set at consumption time (candidate/policy/input identity, manager
   ownership and session, exact team, root status, cancellation, block/
@@ -71,6 +86,7 @@ from runtime.orchestrator.authority_policy import (
     ACTION_CONTINUE_SAME_ROOT,
     ACTION_ESCALATE_TO_FOUNDER,
     CLOSED_ACTIONS,
+    CONTINUE_ACCEPTED_REASONS,
     PROMPT_DIGEST,
     PROMPT_ID,
     PROMPT_VERSION,
@@ -155,6 +171,119 @@ def _sha256(text: str) -> str:
 _APPROVED_VERDICTS = frozenset({"APPROVE", "PASS"})
 
 
+# The release-expected DB schema digest: the schema a FRESH Database() built
+# from the CURRENT code creates. Any divergence of the live DB from this
+# release schema is an authoritative schema/migration drift signal — the
+# surface the continuation would operate on is not the reviewed release
+# surface, so a schema/migration condition is in flight and the attempt must
+# escalate. Computed once per process and cached.
+_release_schema_digest_cache: str | None = None
+
+
+def _release_schema_digest() -> str:
+    """Digest of the sqlite_master DDL a fresh Database() creates with the
+    current code (the release-pinned schema surface). Cached after first
+    computation; never raises (returns "unavailable" on any defect, which
+    fails closed as a drift signal)."""
+    global _release_schema_digest_cache
+    if _release_schema_digest_cache is not None:
+        return _release_schema_digest_cache
+    try:
+        import tempfile
+        from pathlib import Path as _Path
+        from runtime.infrastructure.database import Database
+        with tempfile.TemporaryDirectory() as td:
+            fresh = Database(_Path(td) / "fresh-authority-schema.db")
+            try:
+                _release_schema_digest_cache = _live_schema_digest(fresh)
+            finally:
+                try:
+                    fresh._conn.close()
+                except Exception:
+                    pass
+    except Exception:
+        _release_schema_digest_cache = "unavailable"
+    return _release_schema_digest_cache
+
+
+def _live_schema_digest(db) -> str:
+    """Digest of the live DB's sqlite_master DDL (same canonical query the
+    release digest uses, so the two are directly comparable)."""
+    try:
+        rows = db.execute(
+            "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"
+        ).fetchall()
+        return _sha256("\n".join(str(r[0]) for r in rows))
+    except Exception:
+        return "unavailable"
+
+
+def _permission_digest(orch: "Orchestrator", agent: str) -> str:
+    """Digest of the current org permission surface (org_config + the active
+    agent definition). ``orch`` may be None in unit contexts — the digest
+    then degrades to "unavailable" (a change is then treated as drift,
+    failing closed)."""
+    if orch is None:
+        return "unavailable"
+    parts: list[str] = []
+    try:
+        from runtime.orchestrator.org_config import load_org_config
+        parts.append(load_org_config(orch._paths).model_dump_json(sort_keys=True))
+    except Exception:
+        parts.append("org_config:unavailable")
+    try:
+        from runtime.orchestrator.prompt_loader import load_agent
+        ad = load_agent(orch._paths, agent)
+        if ad is not None:
+            parts.append(
+                json.dumps(
+                    {"name": ad.name, "allow_rules": sorted(ad.allow_rules)},
+                    sort_keys=True,
+                )
+            )
+        else:
+            parts.append("agent_def:unavailable")
+    except Exception:
+        parts.append("agent_def:unavailable")
+    return _sha256("\x1f".join(parts))
+
+
+def _is_accepted_routine_reason(reason: str) -> bool:
+    """Server predicate over the prose: the proposed reason is a BYTE-EXACT
+    member of the release-controlled closed routine set. The server then has
+    complete knowledge of the reason's content, so a CONTINUE grant never
+    depends on keyword classification, completeness, or truthfulness of
+    untrusted prose. Any other reason is not verifiable as routine and fails
+    closed to ESCALATE."""
+    return reason in CONTINUE_ACCEPTED_REASONS
+
+
+def _during_attempt_drift_clause(
+    orch: "Orchestrator",
+    agent: str,
+    snapshot: "AuthorityInputSnapshot",
+) -> str | None:
+    """Authoritative server predicate at the post-evaluation recheck: if the
+    org permission surface or the live DB schema digest captured in the
+    snapshot changed while the evaluator ran, a permission/sandbox/allow-rule
+    or schema condition is in flight and the attempt fails closed with the
+    matched clause. A read defect fails closed too (digest unknown)."""
+    facts = snapshot.structured_facts
+    try:
+        perm = json.loads(facts.get("org_permission", "{}"))
+        if perm.get("digest") and perm["digest"] != _permission_digest(orch, agent):
+            return "esc-permission-sandbox-allow"
+    except (TypeError, ValueError):
+        return "esc-permission-sandbox-allow"
+    try:
+        schema = json.loads(facts.get("db_schema", "{}"))
+        if schema.get("digest") and schema["digest"] != _live_schema_digest(orch._db):
+            return "esc-schema-overloaded-column"
+    except (TypeError, ValueError):
+        return "esc-schema-overloaded-column"
+    return None
+
+
 def _server_fact_clause(structured_facts: dict[str, str]) -> str | None:
     """Return the policy clause id that the structured SERVER facts PROVE.
 
@@ -174,6 +303,14 @@ def _server_fact_clause(structured_facts: dict[str, str]) -> str | None:
         partial = json.loads(structured_facts.get("partial_work", "{}"))
         if partial.get("value"):
             return "esc-partial-work"
+    except (TypeError, ValueError):
+        pass
+    try:
+        schema = json.loads(structured_facts.get("db_schema", "{}"))
+        if schema.get("drift"):
+            # The live DB schema is not the release-pinned schema: an
+            # authoritative schema/migration drift signal.
+            return "esc-schema-overloaded-column"
     except (TypeError, ValueError):
         pass
     return None
@@ -411,9 +548,13 @@ class StrictFakeAuthorityEvaluator:
         """Deterministic closed classification over the reason prose.
 
         Mirrors the Engineering policy: any must-escalate category marker
-        matches its clause and returns ESCALATE; only the narrow routine
-        same-root pattern returns CONTINUE_SAME_ROOT; everything else fails
-        closed to ESCALATE (clause esc-ambiguity-novelty).
+        matches its clause and returns ESCALATE. CONTINUE_SAME_ROOT is
+        returned ONLY for a BYTE-EXACT member of the release-controlled
+        closed routine set (``CONTINUE_ACCEPTED_REASONS``) — the server then
+        has complete knowledge of the prose, so the grant never depends on
+        keyword classification or the completeness/truthfulness of untrusted
+        prose. Everything else fails closed to ESCALATE (clause
+        esc-ambiguity-novelty).
         """
         lowered = reason.lower()
         markers: tuple[tuple[tuple[str, ...], str], ...] = (
@@ -443,17 +584,18 @@ class StrictFakeAuthorityEvaluator:
         for keywords, clause_id in markers:
             if any(kw in lowered for kw in keywords):
                 return AuthorityDisposition.ESCALATE.value, clause_id, ACTION_ESCALATE_TO_FOUNDER
-        # Narrow routine same-root pattern: ONLY a same-root re-dispatch of
-        # already-completed work, no must-escalate marker above.
-        if ("same-root" in lowered or "same root" in lowered) and (
-            "routine" in lowered or "follow-through" in lowered or "re-dispatch" in lowered
-        ):
+        # Narrow routine same-root pattern: ONLY a byte-exact member of the
+        # release-controlled closed routine set — the server has complete
+        # knowledge of the prose, so no must-escalate content can be hidden,
+        # omitted, or misstated behind keywords.
+        if _is_accepted_routine_reason(reason):
             return (
                 AuthorityDisposition.CONTINUE_SAME_ROOT.value,
                 "cont-routine-same-root",
                 ACTION_CONTINUE_SAME_ROOT,
             )
-        # Fail closed.
+        # Fail closed: an unverifiable reason is ambiguous (the server cannot
+        # prove the routine condition from untrusted prose).
         return (
             AuthorityDisposition.ESCALATE.value,
             "esc-ambiguity-novelty",
@@ -476,6 +618,18 @@ class StrictFakeAuthorityEvaluator:
             )
         elif snapshot.reason in self._pinned:
             disposition, clause_id, action = self._pinned[snapshot.reason]
+            # The server gate outranks any pinned verdict: a CONTINUE for a
+            # reason that is not a byte-exact release-controlled routine
+            # phrase is not verifiable as routine and fails closed.
+            if (
+                disposition == AuthorityDisposition.CONTINUE_SAME_ROOT.value
+                and not _is_accepted_routine_reason(snapshot.reason)
+            ):
+                disposition, clause_id, action = (
+                    AuthorityDisposition.ESCALATE.value,
+                    "esc-ambiguity-novelty",
+                    ACTION_ESCALATE_TO_FOUNDER,
+                )
         else:
             disposition, clause_id, action = self.classify_reason(snapshot.reason)
         code = (
@@ -952,7 +1106,10 @@ def _server_evidence(
     an immutable provenance digest where applicable — the reason prose can
     never establish or alter a server fact. Returns ``(facts, matched)`` where
     ``matched`` lists the policy must-escalate clause ids the server state
-    PROVES (the hook forces ESCALATE for those regardless of the evaluator).
+    PROVES (the hook forces ESCALATE for those regardless of the evaluator):
+    an adverse child review verdict (esc-adverse-review-qa), partial-work/
+    zombie evidence (esc-partial-work), and DB-schema drift vs the
+    release-pinned schema (esc-schema-overloaded-column).
     """
     db = orch._db
     facts: dict[str, str] = {}
@@ -1085,50 +1242,34 @@ def _server_evidence(
     if zombie:
         matched.append("esc-partial-work")
 
-    # Protected-boundary provenance digests: the org permission/allow-rule
-    # surface and the current DB schema, so the evaluator sees authoritative
-    # server state (a digest change is provenance evidence, never a gate).
-    perm_parts: list[str] = []
-    try:
-        from runtime.orchestrator.org_config import load_org_config
-        perm_parts.append(load_org_config(orch._paths).model_dump_json(sort_keys=True))
-    except Exception:
-        perm_parts.append("org_config:unavailable")
-    try:
-        from runtime.orchestrator.prompt_loader import load_agent
-        ad = load_agent(orch._paths, current.assigned_agent or agent)
-        if ad is not None:
-            perm_parts.append(
-                json.dumps(
-                    {"name": ad.name, "allow_rules": sorted(ad.allow_rules)},
-                    sort_keys=True,
-                )
-            )
-        else:
-            perm_parts.append("agent_def:unavailable")
-    except Exception:
-        perm_parts.append("agent_def:unavailable")
+    # Protected-boundary digests: the org permission/allow-rule surface and
+    # the current DB schema, so the evaluator sees authoritative server state.
+    # The permission digest is provenance (no release baseline exists for the
+    # org-local surface); the permission boundary is enforced by the
+    # closed-pattern CONTINUE gate + a during-attempt change recheck (step 8b)
+    # + the action-safety proof. The DB schema digest IS a gate: a live schema
+    # that differs from the release-pinned schema (a fresh Database() built
+    # from the current code) is an authoritative schema/migration drift signal
+    # that forces esc-schema-overloaded-column regardless of reason prose.
     facts["org_permission"] = json.dumps(
         {
-            "digest": _sha256("\x1f".join(perm_parts)),
+            "digest": _permission_digest(orch, current.assigned_agent or agent),
             "source": "org_config/agent_def",
         },
         sort_keys=True,
     )
-    try:
-        rows = db.execute(
-            "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"
-        ).fetchall()
-        schema_sql = "\n".join(str(r[0]) for r in rows)
-        facts["db_schema"] = json.dumps(
-            {"digest": _sha256(schema_sql), "source": "sqlite_master"},
-            sort_keys=True,
-        )
-    except Exception:
-        facts["db_schema"] = json.dumps(
-            {"digest": "unavailable", "source": "sqlite_master"},
-            sort_keys=True,
-        )
+    live_schema_digest = _live_schema_digest(db)
+    schema_drift = live_schema_digest != _release_schema_digest()
+    facts["db_schema"] = json.dumps(
+        {
+            "digest": live_schema_digest,
+            "drift": schema_drift,
+            "source": "sqlite_master",
+        },
+        sort_keys=True,
+    )
+    if schema_drift:
+        matched.append("esc-schema-overloaded-column")
 
     # The release-controlled policy binding (immutable identity).
     facts["team_policy"] = json.dumps(
@@ -1406,9 +1547,18 @@ def run_authority_hook(
     verdict = _normalize_result(policy, candidate_id, input_digest, result)
 
     # ---- 6b. SERVER-DERIVED must-escalate gate. A server-PROVEN fact
-    # (adverse child review verdict, partial-work/zombie evidence) forces
-    # ESCALATE regardless of the evaluator verdict — neither misleading nor
-    # omitted reason prose can authorize CONTINUE_SAME_ROOT. ----
+    # (adverse child review verdict, partial-work/zombie evidence, DB-schema
+    # drift vs the release-pinned schema) forces ESCALATE regardless of the
+    # evaluator verdict — neither misleading nor omitted reason prose can
+    # authorize CONTINUE_SAME_ROOT. Additionally, the closed-pattern gate:
+    # a CONTINUE_SAME_ROOT verdict is honored ONLY when the proposed reason
+    # is a byte-exact member of the release-controlled routine phrase set
+    # (the server then has complete knowledge of the prose). Any other prose
+    # — a paraphrase that omits, misstates, or hides a protected boundary —
+    # is not verifiable as routine and fails closed to ESCALATE. This gate is
+    # the structural resolution of the protected-boundary finding: the
+    # CONTINUE grant never depends on keyword classification or the
+    # completeness/truthfulness of untrusted reason prose.
     server_clause = _server_fact_clause(snapshot.structured_facts)
     if server_clause is not None:
         verdict = _NormalizedVerdict(
@@ -1425,6 +1575,25 @@ def run_authority_hook(
         )
         if server_clause not in server_clauses:
             server_clauses.append(server_clause)
+    elif (
+        verdict.disposition == AuthorityDisposition.CONTINUE_SAME_ROOT
+        and not _is_accepted_routine_reason(snapshot.reason)
+    ):
+        verdict = _NormalizedVerdict(
+            AuthorityDisposition.ESCALATE,
+            AuthorityDispositionCode.ESCALATE,
+            "esc-ambiguity-novelty",
+            ACTION_ESCALATE_TO_FOUNDER,
+            verdict.confidence,
+            verdict.uncertainty_codes,
+            verdict.evidence_refs,
+            verdict.rationale_digest,
+            verdict.response_digest,
+            error="continue verdict for a non-accepted reason (not a byte-exact "
+            "release-controlled routine phrase)",
+        )
+        if "esc-ambiguity-novelty" not in server_clauses:
+            server_clauses.append("esc-ambiguity-novelty")
 
     # ---- 7. Record the single immutable evaluation (atomic created->evaluated) ----
     try:
@@ -1473,19 +1642,43 @@ def run_authority_hook(
     current = db.get_task(task.id)
     fresh_fences = _eligible_fences(orch, current, agent)
     fresh_failed = [n for n, fr in fresh_fences.items() if not fr.passed]
-    if _is_terminal_or_cancelled(current) or fresh_failed:
+    # Permission/schema surface drift during the attempt is an authoritative
+    # server predicate: the org permission digest and the live DB schema
+    # digest captured in the snapshot must still match at this point, else a
+    # permission/sandbox/allow-rule or schema change landed mid-evaluation
+    # and the attempt fails closed with the matched clause.
+    drift_clause = _during_attempt_drift_clause(orch, agent, snapshot)
+    if _is_terminal_or_cancelled(current) or fresh_failed or drift_clause is not None:
         try:
             db.consume_authority_candidate(candidate_id)
         except Exception:
             pass
+        drift_verdict = verdict
+        if drift_clause is not None:
+            drift_verdict = _NormalizedVerdict(
+                AuthorityDisposition.ESCALATE,
+                AuthorityDispositionCode.ESCALATE,
+                drift_clause,
+                ACTION_ESCALATE_TO_FOUNDER,
+                verdict.confidence,
+                verdict.uncertainty_codes,
+                verdict.evidence_refs,
+                verdict.rationale_digest,
+                verdict.response_digest,
+                error=f"protected surface changed during evaluation: {drift_clause}",
+            )
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CANCELLED_STALE,
             policy=policy, snapshot=snapshot, candidate_id=candidate_id,
-            fences=fences, lifecycle="evaluated", verdict=verdict,
+            fences=fences, lifecycle="evaluated", verdict=drift_verdict,
             error=(
-                "fence changed during evaluation: "
-                + ", ".join(sorted(fresh_failed))
-                if fresh_failed else "task cancelled/terminal during evaluation"
+                f"protected surface changed during evaluation: {drift_clause}"
+                if drift_clause is not None
+                else (
+                    "fence changed during evaluation: "
+                    + ", ".join(sorted(fresh_failed))
+                    if fresh_failed else "task cancelled/terminal during evaluation"
+                )
             ),
         )
         return "escalate"

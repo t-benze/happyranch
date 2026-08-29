@@ -1155,6 +1155,297 @@ def test_server_fact_gate_overrides_pinned_continue(runtime, db, monkeypatch):
     assert db.list_authority_candidates_for_root("T-ROOT")[0].disposition.value == "escalate"
 
 
+# ── (m) adversarial protected-boundary omission/misleading (finding 3) ────
+#
+# The structural resolution of the protected-boundary finding: CONTINUE_SAME_
+# ROOT is granted ONLY when (1) every server-derived must-escalate predicate
+# is clean AND (2) the proposed reason is a BYTE-EXACT member of the
+# release-controlled closed routine set (the server then has complete
+# knowledge of the prose — the grant never depends on keyword classification
+# or the completeness/truthfulness of untrusted reason prose). The tests
+# below drive the REAL shipping seam (run_step -> run_authority_hook) with a
+# benign/omitted/misleading reason per protected category and prove the hook
+# fails closed to ESCALATE.
+
+# Each protected category of the policy, with a BENIGN paraphrase that
+# omits/misstates the category condition (the manager's real concern is the
+# category, but the prose does not say so and is not the exact release-
+# controlled routine phrase). The hook must fail closed to ESCALATE.
+ADVERSARIAL_OMITTED_REASONS: list[tuple[str, str]] = [
+    ("schema/migration/overloaded-column",
+     "routine same-root re-dispatch of the completed work"),
+    ("permission/sandbox/allow-rule",
+     "same-root follow-through, all green"),
+    ("auth/credentials/security/privacy/data access",
+     "re-dispatch same root, nothing blocking"),
+    ("compatibility",
+     "routine same-root continuation"),
+    ("spend/budget",
+     "follow through on the same root now"),
+    ("destructive/irreversible",
+     "same root, keep going"),
+    ("external/product/deploy",
+     "routine continuation of this root"),
+    ("ambiguity/novelty",
+     "re-dispatch the same root"),
+    ("partial work",
+     "continue the same root please"),
+    ("exhausted limits",
+     "same-root routine re-run"),
+    ("cancellation/live-work",
+     "keep this root going"),
+    ("successor/supersede/fresh-root",
+     "routine same-root loop"),
+]
+
+
+@pytest.mark.parametrize("category,reason", ADVERSARIAL_OMITTED_REASONS)
+def test_adversarial_omitted_benign_reason_fails_closed(runtime, db, monkeypatch, category, reason):
+    """A benign reason that OMITS the protected category is not the exact
+    release-controlled routine phrase — the server cannot verify the prose as
+    routine, so the hook fails closed to ESCALATE (esc-ambiguity-novelty) for
+    EVERY protected category. No continuation is possible."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", reason, monkeypatch)
+
+    t = db.get_task("T-ROOT")
+    assert t.status == TaskStatus.ESCALATED, category
+    assert _escalation_rows(db, "T-ROOT"), category
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED, category
+    assert row["payload"]["disposition"] == "escalate", category
+    assert row["payload"]["clause_id"] == "esc-ambiguity-novelty", category
+    # The reason was never able to authorize continuation.
+    cands = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(cands) == 1
+    assert cands[0].disposition.value == "escalate", category
+
+
+# A MISLEADING reason: it frames the escalation as routine BUT smuggles the
+# protected-category condition into the prose. Keyword detection in ANY
+# position must escalate with the matched clause — and even without it the
+# reason is not the exact routine phrase, so CONTINUE is unreachable.
+ADVERSARIAL_MISLEADING_REASONS: list[tuple[str, str]] = [
+    ("esc-schema-overloaded-column",
+     "routine same-root follow-through (the schema migration is approved)"),
+    ("esc-permission-sandbox-allow",
+     "routine same-root follow-through, allow-rule change is trivial"),
+    ("esc-auth-credentials-security",
+     "routine same-root follow-through, no credential handling needed"),
+    ("esc-compatibility",
+     "routine same-root follow-through, v0/v1 compat is fine"),
+    ("esc-spend-budget",
+     "routine same-root follow-through, spend is within budget"),
+    ("esc-destructive-irreversible",
+     "routine same-root follow-through, deletion is reversible"),
+    ("esc-external-product-deploy",
+     "routine same-root follow-through, the deploy window is open"),
+    ("esc-adverse-review-qa",
+     "routine same-root follow-through, the REVISE is a formality"),
+    ("esc-ambiguity-novelty",
+     "routine same-root follow-through, novel condition but manageable"),
+    ("esc-partial-work",
+     "routine same-root follow-through, partial work is fine"),
+    ("esc-exhausted-limits",
+     "routine same-root follow-through, the retry ceiling is not a blocker"),
+    ("esc-cancellation-live-work",
+     "routine same-root follow-through, no live children"),
+    ("esc-successor-supersede-revisit",
+     "routine same-root follow-through, successor is not needed"),
+]
+
+
+@pytest.mark.parametrize("clause_id,reason", ADVERSARIAL_MISLEADING_REASONS)
+def test_adversarial_misleading_reason_escalates_with_clause(runtime, db, monkeypatch, clause_id, reason):
+    """A routine-framed reason that smuggles a protected-category marker must
+    ESCALATE with the matched policy clause (and can never continue)."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", reason, monkeypatch)
+
+    t = db.get_task("T-ROOT")
+    assert t.status == TaskStatus.ESCALATED, clause_id
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED, clause_id
+    assert row["payload"]["clause_id"] == clause_id, reason
+    # The matched clause is a must-escalate clause of the release policy.
+    clause = POLICY.clause_by_id(clause_id)
+    assert clause is not None and clause.action == "escalate_to_founder", clause_id
+    # Even if the evaluator were (wrongly) pinned to CONTINUE, the hook's
+    # closed-pattern gate must reject a non-exact reason.
+    fake2 = StrictFakeAuthorityEvaluator(pinned={
+        reason: ("continue_same_root", "cont-routine-same-root", ACTION_CONTINUE_SAME_ROOT),
+    })
+    _seed_root(db, task_id="T-M2")
+    orch2 = _make_orch(runtime, db, evaluator=fake2)
+    _run_escalate_step(orch2, "T-M2", reason, monkeypatch)
+    assert db.get_task("T-M2").status == TaskStatus.ESCALATED, clause_id
+    row2 = _hook_outcome_rows(db, "T-M2")[0]
+    assert row2["payload"]["outcome"] == OUTCOME_ESCALATED, clause_id
+    assert row2["payload"]["clause_id"] == "esc-ambiguity-novelty"
+
+
+def test_adversarial_reason_omitted_empty_fails_closed(runtime, db, monkeypatch):
+    """An EMPTY reason (nothing stated at all) can never continue — the
+    server has no prose to verify, so the attempt fails closed to ESCALATE."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", "", monkeypatch)
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED
+    assert row["payload"]["clause_id"] == "esc-ambiguity-novelty"
+
+
+def test_server_gate_schema_drift_escalates(runtime, db, monkeypatch):
+    """The DB schema digest IS a gate, not provenance: when the live DB
+    schema diverges from the release-pinned schema (a schema/migration
+    condition is in flight), even the EXACT release-controlled routine phrase
+    cannot continue — the server-proven esc-schema-overloaded-column forces
+    ESCALATE."""
+    _seed_root(db)
+    # Mutate the live schema: authoritative drift vs the release-pinned
+    # schema a fresh Database() creates.
+    db.execute("CREATE TABLE drift_sentinel (id INTEGER PRIMARY KEY)")
+    db._conn.commit()
+    fake = StrictFakeAuthorityEvaluator()
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED
+    assert row["payload"]["clause_id"] == "esc-schema-overloaded-column"
+    cands = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(cands) == 1
+    assert cands[0].disposition.value == "escalate"
+
+
+def test_server_gate_permission_surface_change_during_attempt_escalates(runtime, db, monkeypatch):
+    """A permission/sandbox/allow-rule surface change landing WHILE the
+    evaluator runs is an authoritative server predicate: the exact routine
+    phrase cannot continue — the attempt fails closed with
+    esc-permission-sandbox-allow."""
+    from runtime.orchestrator.prompt_loader import _agent_path as _ap
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    _seed_claimed_root(db)
+    agent_path = _ap(runtime, "engineering_head", pending=False)
+    assert agent_path.exists()
+    fake = StrictFakeAuthorityEvaluator()
+    real_evaluate = fake.evaluate
+
+    def change_permission_then_evaluate(snapshot):
+        # Mutate the org permission surface (allow rules) mid-evaluation: a
+        # REAL parsed allow-rule change, not an unparsed tail append.
+        ad = AgentDef(
+            name="engineering_head", team="engineering", role="manager",
+            executor="claude", allow_rules=("happyranch", "git"), repos={},
+            enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+            system_prompt="You are engineering_head.", description="", model=None,
+        )
+        agent_path.write_text(render_agent_text(ad))
+        return real_evaluate(snapshot)
+    fake.evaluate = change_permission_then_evaluate
+
+    orch = _make_orch(runtime, db, evaluator=fake)
+    out = run_authority_hook(orch, db.get_task("T-ROOT"), "engineering_head", CONTINUE_REASON, 7)
+    assert out == "escalate"
+    assert db.get_task("T-ROOT").status == TaskStatus.IN_PROGRESS  # never continued
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_CANCELLED_STALE
+    assert row["payload"]["clause_id"] == "esc-permission-sandbox-allow"
+    # The evaluation is still recorded (auditable) — never a continuation.
+    cands = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(cands) == 1
+    assert cands[0].lifecycle_state.value == "consumed"
+    assert db.get_authority_evaluation(cands[0].id) is not None
+    # No continuation audit row, no pending flip.
+    continued = [
+        a for a in db.get_audit_logs("T-ROOT")
+        if a["action"] == AUDIT_ACTION_CONTINUED_SAME_ROOT
+    ]
+    assert continued == []
+
+
+def test_server_fence_budget_exhausted_benign_reason_escalates(runtime, db, monkeypatch):
+    """Exhausted limits are a server-owned mechanical fence: even the exact
+    routine phrase cannot reach evaluation when the orchestration budget is
+    exhausted — the hook records ineligible and returns escalate (the caller
+    proceeds through the existing escalation path; no continuation)."""
+    from runtime.config import Settings as _Settings
+    _seed_claimed_root(db)
+    db.update_task(
+        "T-ROOT", orchestration_step_count=_Settings().max_orchestration_steps,
+    )
+    fake = StrictFakeAuthorityEvaluator()
+    orch = _make_orch(runtime, db, evaluator=fake)
+    out = run_authority_hook(
+        orch, db.get_task("T-ROOT"), "engineering_head", CONTINUE_REASON, 7,
+    )
+    assert out == "escalate"
+    # Never continued: the root stayed claimed (in_progress), no pending flip.
+    assert db.get_task("T-ROOT").status == TaskStatus.IN_PROGRESS
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_INELIGIBLE
+    assert "budget_exhausted" in row["payload"]["fence_results"]
+    assert db.list_authority_candidates_for_root("T-ROOT") == []
+
+
+def test_server_fence_revise_budget_exhausted_benign_reason_escalates(runtime, db, monkeypatch):
+    """The revise-round ceiling is the same server-owned mechanical fence: a
+    root at the ceiling cannot be continued — the hook fails closed."""
+    runtime.org_config_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime.org_config_path.write_text("max_revise_rounds: 2\n")
+    _seed_claimed_root(db)
+    db.update_task("T-ROOT", revision_count=2)
+    fake = StrictFakeAuthorityEvaluator()
+    orch = _make_orch(runtime, db, evaluator=fake)
+    out = run_authority_hook(
+        orch, db.get_task("T-ROOT"), "engineering_head", CONTINUE_REASON, 7,
+    )
+    assert out == "escalate"
+    assert db.get_task("T-ROOT").status == TaskStatus.IN_PROGRESS
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_INELIGIBLE
+    assert "budget_exhausted" in row["payload"]["fence_results"]
+    assert db.list_authority_candidates_for_root("T-ROOT") == []
+
+
+def test_strict_fake_rejects_pinned_continue_for_non_accepted_reason():
+    """Defense in depth at the CI fake: a pinned CONTINUE for a reason that is
+    not a byte-exact release-controlled routine phrase fails closed."""
+    fake = StrictFakeAuthorityEvaluator(pinned={
+        "routine same-root re-dispatch": (
+            "continue_same_root", "cont-routine-same-root", ACTION_CONTINUE_SAME_ROOT,
+        ),
+    })
+    result = fake.evaluate(_make_snapshot(reason="routine same-root re-dispatch"))
+    assert result.disposition.value == "escalate"
+    assert result.clause_id == "esc-ambiguity-novelty"
+
+
+def test_accepted_routine_phrase_is_release_controlled():
+    """The positive CONTROL phrase is exactly the release-controlled routine
+    phrase; the closed set is small and documented in the policy module."""
+    from runtime.orchestrator.authority_policy import (
+        CONTINUE_ACCEPTED_REASONS,
+        CONTINUE_ROUTINE_PHRASE,
+    )
+    assert CONTINUE_ROUTINE_PHRASE == CONTINUE_REASON
+    assert CONTINUE_ACCEPTED_REASONS == frozenset({CONTINUE_REASON})
+    # The fake only continues on exact membership.
+    d, c, a = StrictFakeAuthorityEvaluator.classify_reason(CONTINUE_REASON)
+    assert (d, c, a) == ("continue_same_root", "cont-routine-same-root", ACTION_CONTINUE_SAME_ROOT)
+    d2, c2, a2 = StrictFakeAuthorityEvaluator.classify_reason(
+        "routine same-root follow-through"  # same words, different bytes
+    )
+    assert d2 == "escalate" and c2 == "esc-ambiguity-novelty"
+
+
 # ── (l) consumption-time full-fence recheck races (finding 2) ────────────
 
 def _mutate_before_commit(db, mutate: str) -> None:
