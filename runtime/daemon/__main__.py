@@ -195,7 +195,10 @@ def _sweep_on_startup(
                 # never ran (the daemon died before that point).
                 orchestrator._audit.log_completion_report(report=orphaned_report)
                 from runtime.orchestrator.run_step import _consume_completion_report
-                _consume_completion_report(orchestrator, task_id, orphaned_report)
+                _consume_completion_report(
+                    orchestrator, task_id, orphaned_report,
+                    result_row_id=orphaned_result_row.get("id"),
+                )
                 continue
 
             # Dead or undeterminable (no orphaned result to consume):

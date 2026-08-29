@@ -125,6 +125,17 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Terminal statuses that must never be continued by the authority hook
+# (mirrors ``authority._TERMINAL_STATUSES``; kept here so the DB-level
+# consumption recheck needs no orchestrator import).
+_AUTHORITY_TERMINAL_STATUSES = frozenset({
+    "completed", "failed", "superseded", "cancelled",
+})
+
+# Child task-result verdicts that do NOT block a same-root continuation.
+_AUTHORITY_APPROVED_VERDICTS = frozenset({"APPROVE", "PASS"})
+
+
 def _authority_claim_key(
     root_task_id: str,
     manager_session_id: str,
@@ -8930,6 +8941,23 @@ class Database:
         self,
         *,
         task_id: str,
+        candidate_id: str,
+        expected_manager_agent: str,
+        expected_session: str,
+        expected_team: str,
+        expected_policy_id: str,
+        expected_policy_version: str,
+        expected_policy_digest: str,
+        expected_prompt_id: str,
+        expected_prompt_version: str,
+        expected_prompt_digest: str,
+        expected_model_id: str,
+        expected_model_version: str,
+        expected_model_digest: str,
+        expected_input_digest: str,
+        expected_causal_event_id: str,
+        expected_max_orchestration_steps: int,
+        expected_max_revise_rounds: int,
         expected_status: TaskStatus,
         expected_block_kind: BlockKind | None,
         note: str,
@@ -8940,16 +8968,24 @@ class Database:
         """THR-181 Track A: atomic same-root continuation CAS + full audit.
 
         Executes the authority hook's CONTINUE_SAME_ROOT permitted action in
-        ONE transaction: the still-claimed root (gated on
-        ``expected_status`` / ``expected_block_kind`` / ``cancelled_at IS
-        NULL``) is returned to PENDING with the policy note, and BOTH the
-        ``authority_continued_same_root`` and ``authority_hook`` audit rows
-        are appended atomically. Any failure rolls the whole transaction
-        back — the audit can never be lost while a continuation survives, so
-        an audit failure can never permit continuation.
+        ONE transaction. Before the still-claimed root is returned to PENDING,
+        the COMPLETE current fence set is atomically re-validated against
+        live state — every category the hook used before/during evaluation
+        (candidate/policy/input identity, manager ownership and session,
+        exact team, root status, cancellation, block/active-work, revisit/
+        thread/successor lineage, orchestration and revise budgets, zombie/
+        partial-work evidence, adverse child verdicts). Any drift that landed
+        while the evaluator ran — cancellation, session/manager/team change,
+        block, active work, a successor/revisit/thread signal, an exhausted
+        budget, partial-work evidence, an adverse child verdict, or a
+        candidate/policy/input mismatch — rolls the whole transaction back
+        and returns False (no continuation).
 
-        Returns False when the CAS gate fails (cancellation/staleness won, or
-        another consumer moved the row) without writing anything.
+        Only when every recheck passes are BOTH the
+        ``authority_continued_same_root`` and ``authority_hook`` audit rows
+        appended atomically with the continuation, so an audit failure can
+        never permit continuation. Returns False (nothing written) when any
+        gate fails.
         """
         now = datetime.now(timezone.utc).isoformat()
         block_sql = (
@@ -8960,6 +8996,103 @@ class Database:
         block_args = () if expected_block_kind is None else (expected_block_kind.value,)
         self._conn.execute("BEGIN")
         try:
+            # -- 1. Candidate identity recheck (immutable claim tuple) --
+            cand = self._conn.execute(
+                """SELECT id, root_task_id, manager_session_id, causal_event_id,
+                          policy_id, policy_version, policy_digest,
+                          prompt_id, prompt_version, prompt_digest,
+                          model_id, model_version, model_digest,
+                          snapshot_digest, lifecycle_state
+                   FROM authority_candidates WHERE id = ?""",
+                (candidate_id,),
+            ).fetchone()
+            if cand is None:
+                self._conn.rollback()
+                return False
+            if not (
+                cand["root_task_id"] == task_id
+                and cand["manager_session_id"] == expected_session
+                and cand["causal_event_id"] == expected_causal_event_id
+                and cand["policy_id"] == expected_policy_id
+                and cand["policy_version"] == expected_policy_version
+                and cand["policy_digest"] == expected_policy_digest
+                and cand["prompt_id"] == expected_prompt_id
+                and cand["prompt_version"] == expected_prompt_version
+                and cand["prompt_digest"] == expected_prompt_digest
+                and cand["model_id"] == expected_model_id
+                and cand["model_version"] == expected_model_version
+                and cand["model_digest"] == expected_model_digest
+                and cand["snapshot_digest"] == expected_input_digest
+                and cand["lifecycle_state"] == "consumed"
+            ):
+                self._conn.rollback()
+                return False
+
+            # -- 2. Complete task fence recheck against live state --
+            t = self._conn.execute(
+                """SELECT status, block_kind, cancelled_at, assigned_agent,
+                          current_session_id, team, revisit_of_task_id,
+                          dispatched_from_thread_id, active_chain, active_fanout,
+                          blocked_on_job_ids, orchestration_step_count,
+                          revision_count, zombie_flagged_at
+                   FROM tasks WHERE id = ?""",
+                (task_id,),
+            ).fetchone()
+            if t is None:
+                self._conn.rollback()
+                return False
+            terminal = t["status"] in _AUTHORITY_TERMINAL_STATUSES
+            budget_ok = (
+                t["orchestration_step_count"] < expected_max_orchestration_steps
+                and (
+                    expected_max_revise_rounds <= 0
+                    or t["revision_count"] < expected_max_revise_rounds
+                )
+            )
+            if not (
+                t["assigned_agent"] == expected_manager_agent
+                and t["current_session_id"] == expected_session
+                and t["team"] == expected_team
+                and t["status"] == expected_status.value
+                and (t["block_kind"] is None if expected_block_kind is None else t["block_kind"] == expected_block_kind.value)
+                and t["cancelled_at"] is None
+                and not terminal
+                and t["active_chain"] is None
+                and t["active_fanout"] is None
+                and t["blocked_on_job_ids"] is None
+                and t["revisit_of_task_id"] is None
+                and (t["dispatched_from_thread_id"] in (None, ""))
+                and budget_ok
+                and t["zombie_flagged_at"] is None
+            ):
+                self._conn.rollback()
+                return False
+
+            # -- 3. Successor lineage recheck --
+            succ = self._conn.execute(
+                "SELECT 1 FROM manager_supersessions WHERE successor_task_id = ? LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if succ is not None:
+                self._conn.rollback()
+                return False
+
+            # -- 4. Adverse child-verdict recheck (latest persisted verdict) --
+            children = self._conn.execute(
+                "SELECT id FROM tasks WHERE parent_task_id = ?", (task_id,),
+            ).fetchall()
+            for child in children:
+                latest = self._conn.execute(
+                    "SELECT verdict FROM task_results WHERE task_id = ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (child["id"],),
+                ).fetchone()
+                verdict = latest["verdict"] if latest is not None else None
+                if verdict is not None and verdict not in _AUTHORITY_APPROVED_VERDICTS:
+                    self._conn.rollback()
+                    return False
+
+            # -- 5. Atomic continuation + audit rows --
             cur = self._conn.execute(
                 f"""UPDATE tasks
                    SET status = ?, block_kind = NULL, note = ?, updated_at = ?

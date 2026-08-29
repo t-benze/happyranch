@@ -26,6 +26,23 @@ Invariants (THR-181 / KB escalation-bounded-self-resume-ruling):
   audit_log outcome row (the denominator), or fails closed so that no
   continuation can occur even when recording is impossible.
 * Server-owned mechanical fences are non-overridable by any policy output.
+* Structured SERVER-derived facts (budget counters/ceilings, lineage, active
+  work, cancellation/block/session state, adverse child review verdicts,
+  zombie/partial-work evidence, org permission digest, DB schema digest) are
+  captured with provenance into the evaluation snapshot; a server-PROVEN
+  must-escalate fact (adverse child verdict, partial-work evidence) forces
+  ESCALATE regardless of what the untrusted reason prose claims — neither a
+  misleading nor an omitted reason can authorize CONTINUE_SAME_ROOT.
+* The final continuation CAS atomically re-validates the COMPLETE current
+  fence set at consumption time (candidate/policy/input identity, manager
+  ownership and session, exact team, root status, cancellation, block/
+  active-work, revisit/thread/successor lineage, budgets, zombie/partial-
+  work, adverse child verdicts) inside the same transaction as the
+  continuation + audit rows.
+* Candidate identity is derived from the IMMUTABLE task-result/session
+  causality (the persisted ``task_results`` row id), never from a freshly
+  written orchestration-step audit id — so real restart/recovery re-entry
+  cannot mint a second candidate or evaluation.
 * Historical census eligibility is NEVER consulted; reachability depends only
   on a release-controlled policy for the team and a current manager-owned
   root.
@@ -132,6 +149,34 @@ _TERMINAL_STATUSES = frozenset({
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# Verified-approve verdict vocabulary used by the adverse-review server fact.
+_APPROVED_VERDICTS = frozenset({"APPROVE", "PASS"})
+
+
+def _server_fact_clause(structured_facts: dict[str, str]) -> str | None:
+    """Return the policy clause id that the structured SERVER facts PROVE.
+
+    The server derives these facts from authoritative runtime/database state
+    (never from the untrusted reason prose). When a fact is present the
+    attempt must escalate regardless of what the reason text claims — a
+    misleading or omitted reason cannot authorize continuation. Both the
+    hook (shipping seam) and the strict CI fake apply this gate.
+    """
+    try:
+        adverse = json.loads(structured_facts.get("adverse_review", "{}"))
+        if adverse.get("value"):
+            return "esc-adverse-review-qa"
+    except (TypeError, ValueError):
+        pass
+    try:
+        partial = json.loads(structured_facts.get("partial_work", "{}"))
+        if partial.get("value"):
+            return "esc-partial-work"
+    except (TypeError, ValueError):
+        pass
+    return None
 
 
 def _is_terminal_or_cancelled(task: "TaskRecord | None") -> bool:
@@ -419,7 +464,17 @@ class StrictFakeAuthorityEvaluator:
 
     def evaluate(self, snapshot: AuthorityInputSnapshot) -> AuthorityEvaluationResult:
         self._validate_snapshot(snapshot)
-        if snapshot.reason in self._pinned:
+        # Server-derived facts OUTRANK reason prose (and any pinned verdict):
+        # a server-proven must-escalate fact forces ESCALATE even when the
+        # untrusted reason omits or misstates the condition.
+        server_clause = _server_fact_clause(snapshot.structured_facts)
+        if server_clause is not None:
+            disposition, clause_id, action = (
+                AuthorityDisposition.ESCALATE.value,
+                server_clause,
+                ACTION_ESCALATE_TO_FOUNDER,
+            )
+        elif snapshot.reason in self._pinned:
             disposition, clause_id, action = self._pinned[snapshot.reason]
         else:
             disposition, clause_id, action = self.classify_reason(snapshot.reason)
@@ -869,6 +924,225 @@ def _record_hook_outcome(
         return None
 
 
+def _current_budget_ceilings(orch: "Orchestrator") -> tuple[int, int]:
+    """The CURRENT release-controlled budget ceilings (orchestration steps,
+    revise rounds). ``max_revise_rounds <= 0`` means the revise budget is
+    disabled (unlimited). Re-read at every call site so the consumption-time
+    recheck uses the freshest ceilings, not the evaluation-time ones."""
+    max_steps = orch._settings.max_orchestration_steps
+    org_cap = 0
+    try:
+        from runtime.orchestrator.org_config import load_org_config
+        org_cap = load_org_config(orch._paths).max_revise_rounds
+    except Exception:
+        org_cap = 0
+    return max_steps, org_cap
+
+
+def _server_evidence(
+    orch: "Orchestrator",
+    current: "TaskRecord",
+    agent: str,
+    policy: "AuthorityPolicy",
+    fences: dict[str, AuthorityFenceResult],
+) -> tuple[dict[str, str], list[str]]:
+    """Collect authoritative server/runtime facts for the evaluation snapshot.
+
+    Every fact is a JSON-encoded ``{"value": ..., "source": ...}`` object with
+    an immutable provenance digest where applicable — the reason prose can
+    never establish or alter a server fact. Returns ``(facts, matched)`` where
+    ``matched`` lists the policy must-escalate clause ids the server state
+    PROVES (the hook forces ESCALATE for those regardless of the evaluator).
+    """
+    db = orch._db
+    facts: dict[str, str] = {}
+    matched: list[str] = []
+
+    # Mechanical fence outcomes (same objects recorded on the candidate).
+    facts["fence_results"] = json.dumps(
+        {
+            name: fr.model_dump(mode="json")
+            for name, fr in sorted(fences.items())
+        },
+        sort_keys=True,
+    )
+
+    # Budget counters + current ceilings.
+    max_steps, org_cap = _current_budget_ceilings(orch)
+    budget_exhausted = (
+        current.orchestration_step_count >= max_steps
+        or (org_cap > 0 and current.revision_count >= org_cap)
+    )
+    facts["budget"] = json.dumps(
+        {
+            "value": {
+                "orchestration_step_count": current.orchestration_step_count,
+                "max_orchestration_steps": max_steps,
+                "revision_count": current.revision_count,
+                "max_revise_rounds": org_cap,
+                "exhausted": budget_exhausted,
+            },
+            "source": "tasks/settings/org_config",
+        },
+        sort_keys=True,
+    )
+
+    # Lineage: revisit / parent / successor / thread / fresh-root.
+    is_successor = _is_successor_root(db, current.id)
+    is_fresh_root = (
+        current.parent_task_id is None
+        and current.revisit_of_task_id is None
+        and not is_successor
+    )
+    facts["lineage"] = json.dumps(
+        {
+            "value": {
+                "revisit_of_task_id": current.revisit_of_task_id or "",
+                "parent_task_id": current.parent_task_id or "",
+                "is_successor": is_successor,
+                "thread_origin": bool(current.dispatched_from_thread_id),
+                "is_fresh_root": is_fresh_root,
+            },
+            "source": "tasks/manager_supersessions",
+        },
+        sort_keys=True,
+    )
+
+    # Active work / block / cancellation / session state.
+    facts["active_work"] = json.dumps(
+        {
+            "value": {
+                "active_chain": current.active_chain or "",
+                "active_fanout": current.active_fanout or "",
+                "blocked_on_job_ids": current.blocked_on_job_ids or "",
+            },
+            "source": "tasks",
+        },
+        sort_keys=True,
+    )
+    facts["cancellation"] = json.dumps(
+        {
+            "value": {
+                "cancelled": current.cancelled_at is not None,
+                "status": current.status.value,
+            },
+            "source": "tasks",
+        },
+        sort_keys=True,
+    )
+    facts["block_state"] = json.dumps(
+        {
+            "value": {"block_kind": current.block_kind.value if current.block_kind else None},
+            "source": "tasks",
+        },
+        sort_keys=True,
+    )
+    facts["session"] = json.dumps(
+        {
+            "value": {
+                "current_session_id": current.current_session_id or "",
+                "manager_agent": current.assigned_agent or agent,
+            },
+            "source": "tasks",
+        },
+        sort_keys=True,
+    )
+
+    # Adverse review/QA: a child whose LATEST persisted verdict is a
+    # non-approve verdict is an authoritative must-escalate fact.
+    adverse: list[dict[str, str]] = []
+    for child_id in db.get_children(current.id):
+        latest = db.execute(
+            "SELECT verdict FROM task_results WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (child_id,),
+        ).fetchone()
+        verdict = latest["verdict"] if latest is not None else None
+        if verdict and verdict not in _APPROVED_VERDICTS:
+            adverse.append({"task_id": child_id, "verdict": str(verdict)})
+    has_adverse = bool(adverse)
+    facts["adverse_review"] = json.dumps(
+        {
+            "value": has_adverse,
+            "children": adverse[:5],
+            "source": "task_results",
+        },
+        sort_keys=True,
+    )
+    if has_adverse:
+        matched.append("esc-adverse-review-qa")
+
+    # Partial-work evidence: the daemon flagged this task's session as dead
+    # mid-turn (zombie reaper) — the authoritative partial-work signal.
+    zombie = current.zombie_flagged_at is not None
+    facts["partial_work"] = json.dumps(
+        {
+            "value": zombie,
+            "source": "tasks.zombie_flagged_at",
+        },
+        sort_keys=True,
+    )
+    if zombie:
+        matched.append("esc-partial-work")
+
+    # Protected-boundary provenance digests: the org permission/allow-rule
+    # surface and the current DB schema, so the evaluator sees authoritative
+    # server state (a digest change is provenance evidence, never a gate).
+    perm_parts: list[str] = []
+    try:
+        from runtime.orchestrator.org_config import load_org_config
+        perm_parts.append(load_org_config(orch._paths).model_dump_json(sort_keys=True))
+    except Exception:
+        perm_parts.append("org_config:unavailable")
+    try:
+        from runtime.orchestrator.prompt_loader import load_agent
+        ad = load_agent(orch._paths, current.assigned_agent or agent)
+        if ad is not None:
+            perm_parts.append(
+                json.dumps(
+                    {"name": ad.name, "allow_rules": sorted(ad.allow_rules)},
+                    sort_keys=True,
+                )
+            )
+        else:
+            perm_parts.append("agent_def:unavailable")
+    except Exception:
+        perm_parts.append("agent_def:unavailable")
+    facts["org_permission"] = json.dumps(
+        {
+            "digest": _sha256("\x1f".join(perm_parts)),
+            "source": "org_config/agent_def",
+        },
+        sort_keys=True,
+    )
+    try:
+        rows = db.execute(
+            "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"
+        ).fetchall()
+        schema_sql = "\n".join(str(r[0]) for r in rows)
+        facts["db_schema"] = json.dumps(
+            {"digest": _sha256(schema_sql), "source": "sqlite_master"},
+            sort_keys=True,
+        )
+    except Exception:
+        facts["db_schema"] = json.dumps(
+            {"digest": "unavailable", "source": "sqlite_master"},
+            sort_keys=True,
+        )
+
+    # The release-controlled policy binding (immutable identity).
+    facts["team_policy"] = json.dumps(
+        {
+            "policy_id": policy.id,
+            "policy_version": policy.version,
+            "policy_digest": policy.digest,
+            "source": "authority_policy.py",
+        },
+        sort_keys=True,
+    )
+    return facts, matched
+
+
 def _eligible_fences(
     orch: "Orchestrator",
     current: "TaskRecord",
@@ -914,13 +1188,7 @@ def _eligible_fences(
         and current.active_fanout is None
         and current.blocked_on_job_ids is None
     )
-    max_steps = orch._settings.max_orchestration_steps
-    org_cap = 0
-    try:
-        from runtime.orchestrator.org_config import load_org_config
-        org_cap = load_org_config(orch._paths).max_revise_rounds
-    except Exception:
-        org_cap = 0
+    max_steps, org_cap = _current_budget_ceilings(orch)
     budget_ok = (
         current.orchestration_step_count < max_steps
         and (org_cap <= 0 or current.revision_count < org_cap)
@@ -948,12 +1216,20 @@ def run_authority_hook(
     task: "TaskRecord",
     agent: str,
     reason: str,
-    step_audit_id: int | None,
+    result_row_id: int | None,
 ) -> str:
     """The pre-escalation authority hook. Returns ``"continue_same_root"``
     (the named same-root permitted action was executed and audited) or
     ``"escalate"`` (fail closed — the caller proceeds through the exact
     existing escalation path). Never raises into the caller.
+
+    ``result_row_id`` is the immutable ``task_results`` row id whose
+    CompletionReport produced this escalate decision — the causal event
+    identity. It is stable across restart/recovery re-entry (the boot sweep
+    and zombie reaper rebuild the report from the SAME row), so a replayed
+    attempt cannot mint a second candidate or evaluation. When it is absent
+    no immutable causality exists: the hook fails closed with a
+    ``capture_failure`` outcome and never creates a candidate.
     """
     policy = POLICY_BY_TEAM.get(task.team)
     if policy is None:
@@ -976,22 +1252,34 @@ def run_authority_hook(
         )
         return "escalate"
 
-    # ---- 2. Immutable input snapshot (candidate id is the deterministic
-    # claim derivation, so it is known before the CAS INSERT) ----
-    reason_digest = _sha256(reason or "")
-    causal_event_id = f"step:{step_audit_id}" if step_audit_id is not None else "step:unknown"
-    causal_event_digest = _sha256(
-        json.dumps(
-            {"action": "escalate", "step_audit_id": step_audit_id},
-            sort_keys=True,
+    # ---- 1b. Immutable causal identity REQUIRED. The candidate claim tuple
+    # is derived from the persisted task-result row (stable across restart),
+    # NEVER from a freshly written orchestration-step audit id (which a
+    # restart re-entry would re-mint and turn into a second candidate). ----
+    if result_row_id is None:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            policy=policy, fences=fences,
+            error="no immutable task-result row id for causal identity",
         )
-    )
+        return "escalate"
+
+    # ---- 2. Immutable input snapshot (candidate id is the deterministic
+    # claim derivation, so it is known before the CAS INSERT). Structured
+    # SERVER facts carry authoritative provenance; the reason prose can never
+    # establish or alter them. ----
+    reason_digest = _sha256(reason or "")
+    causal_event_id = f"result:{result_row_id}"
+    causal_event_digest = _sha256(f"task-result:{result_row_id}")
     evaluator = orch._authority_evaluator
     manager_session_id = current.current_session_id or ""
     model_id = evaluator.model_id if evaluator is not None else "none"
     model_version = evaluator.model_version if evaluator is not None else "v1"
     model_digest = (
         evaluator.model_digest if evaluator is not None else _sha256("none:v1")
+    )
+    structured_facts, server_clauses = _server_evidence(
+        orch, current, agent, policy, fences,
     )
     candidate_id = f"AUTH-CAND-{_authority_claim_key(
         current.id,
@@ -1021,18 +1309,7 @@ def run_authority_hook(
         model_id=model_id,
         model_version=model_version,
         model_digest=model_digest,
-        structured_facts={
-            "root_task_id": current.id,
-            "team": current.team,
-            "manager_agent": current.assigned_agent or agent,
-            "manager_session_id": manager_session_id,
-            "orchestration_step_count": str(current.orchestration_step_count),
-            "max_orchestration_steps": str(orch._settings.max_orchestration_steps),
-            "revision_count": str(current.revision_count),
-            "revisit_of_task_id": current.revisit_of_task_id or "",
-            "cancelled_at": "set" if current.cancelled_at is not None else "unset",
-            "dispatched_from_thread_id": current.dispatched_from_thread_id or "",
-        },
+        structured_facts=structured_facts,
     )
     input_digest = snapshot.digest()
 
@@ -1128,6 +1405,27 @@ def run_authority_hook(
             )
     verdict = _normalize_result(policy, candidate_id, input_digest, result)
 
+    # ---- 6b. SERVER-DERIVED must-escalate gate. A server-PROVEN fact
+    # (adverse child review verdict, partial-work/zombie evidence) forces
+    # ESCALATE regardless of the evaluator verdict — neither misleading nor
+    # omitted reason prose can authorize CONTINUE_SAME_ROOT. ----
+    server_clause = _server_fact_clause(snapshot.structured_facts)
+    if server_clause is not None:
+        verdict = _NormalizedVerdict(
+            AuthorityDisposition.ESCALATE,
+            AuthorityDispositionCode.ESCALATE,
+            server_clause,
+            ACTION_ESCALATE_TO_FOUNDER,
+            verdict.confidence,
+            verdict.uncertainty_codes,
+            verdict.evidence_refs,
+            verdict.rationale_digest,
+            verdict.response_digest,
+            error=f"server-derived must-escalate fact: {server_clause}",
+        )
+        if server_clause not in server_clauses:
+            server_clauses.append(server_clause)
+
     # ---- 7. Record the single immutable evaluation (atomic created->evaluated) ----
     try:
         db.record_authority_evaluation(
@@ -1166,11 +1464,16 @@ def run_authority_hook(
         )
         return "escalate"
 
-    # ---- 8b. Cancellation/staleness re-check AFTER evaluation (a cancel
-    # landing while the evaluator ran is still recorded — the LLM call is
-    # auditable — but it can never continue). ----
+    # ---- 8b. FULL fence re-check AFTER evaluation. Any coupled eligibility
+    # category that changed while the evaluator ran (cancellation, budget
+    # exhaustion, block/active-work, lineage, manager/session/team, etc.)
+    # closes the window: the evaluation is still recorded (auditable) but it
+    # can never continue. The authoritative atomic re-validation happens at
+    # the final continuation CAS (step 11); this is the fail-fast pre-check.
     current = db.get_task(task.id)
-    if _is_terminal_or_cancelled(current):
+    fresh_fences = _eligible_fences(orch, current, agent)
+    fresh_failed = [n for n, fr in fresh_fences.items() if not fr.passed]
+    if _is_terminal_or_cancelled(current) or fresh_failed:
         try:
             db.consume_authority_candidate(candidate_id)
         except Exception:
@@ -1179,7 +1482,11 @@ def run_authority_hook(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CANCELLED_STALE,
             policy=policy, snapshot=snapshot, candidate_id=candidate_id,
             fences=fences, lifecycle="evaluated", verdict=verdict,
-            error="task cancelled/terminal during evaluation",
+            error=(
+                "fence changed during evaluation: "
+                + ", ".join(sorted(fresh_failed))
+                if fresh_failed else "task cancelled/terminal during evaluation"
+            ),
         )
         return "escalate"
 
@@ -1268,9 +1575,32 @@ def run_authority_hook(
             "action": verdict.action,
             "disposition_code": verdict.disposition_code.value,
         }
+        # Fresh ceilings at consumption time (release-controlled; may have
+        # changed while the evaluator ran) — the DB recheck compares the
+        # CURRENT task counters against these. ``current`` was re-fetched at
+        # step 8b; ``current.status``/``block_kind`` are the expected values
+        # for the atomic CAS.
+        fresh_max_steps, fresh_revise_cap = _current_budget_ceilings(orch)
         try:
             committed = db.commit_authority_continue_same_root(
                 task_id=task.id,
+                candidate_id=candidate_id,
+                expected_manager_agent=current.assigned_agent or agent,
+                expected_session=current.current_session_id or "",
+                expected_team=current.team,
+                expected_policy_id=policy.id,
+                expected_policy_version=policy.version,
+                expected_policy_digest=policy.digest,
+                expected_prompt_id=PROMPT_ID,
+                expected_prompt_version=PROMPT_VERSION,
+                expected_prompt_digest=PROMPT_DIGEST,
+                expected_model_id=model_id,
+                expected_model_version=model_version,
+                expected_model_digest=model_digest,
+                expected_input_digest=input_digest,
+                expected_causal_event_id=causal_event_id,
+                expected_max_orchestration_steps=fresh_max_steps,
+                expected_max_revise_rounds=fresh_revise_cap,
                 expected_status=current.status,
                 expected_block_kind=current.block_kind,
                 note=note,

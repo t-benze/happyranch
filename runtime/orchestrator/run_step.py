@@ -296,15 +296,35 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         return
 
     orch._log_step_result(task_id, result, report)
-    _consume_completion_report(orch, task_id, report)
+    # THR-181 Track A: resolve the IMMUTABLE task-result row id whose
+    # CompletionReport produced this decision. The authority hook derives its
+    # candidate claim from it, so restart/recovery re-entry of the SAME row
+    # maps to the SAME candidate (never a second evaluation).
+    result_row_id = None
+    if report is not None and isinstance(
+        getattr(result, "session_id", None), str
+    ) and result.session_id:
+        _result_row = db.get_latest_task_result(task_id, agent, result.session_id)
+        if _result_row is not None:
+            result_row_id = _result_row["id"]
+    _consume_completion_report(orch, task_id, report, result_row_id=result_row_id)
 
 
-def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> None:
+def _consume_completion_report(
+    orch: "Orchestrator", task_id: str, report,
+    *, result_row_id: int | None = None,
+) -> None:
     """Consume a persisted CompletionReport and apply its transition.
 
     Used both inline in ``run_step_impl`` (after ``_log_step_result``) and
     from the boot sweep when an orphaned (unconsumed) ``task_result`` row is
     discovered for a task whose executor process died mid-turn.
+
+    ``result_row_id`` is the immutable ``task_results`` row id that produced
+    ``report`` — the authority hook binds its candidate identity to it so a
+    restart replay cannot mint a second candidate/evaluation. When omitted it
+    is resolved deterministically to the latest task_results row for the
+    task (the row every shipping call site built the report from).
 
     Re-fetches the task from the DB so it works from any call site (the
     inline ``run_step_impl`` call site already has the task in scope, but
@@ -316,6 +336,14 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
     if task is None:
         return
     agent = task.assigned_agent or "unknown"
+    if result_row_id is None and report is not None:
+        row = db.execute(
+            "SELECT id FROM task_results WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if row is not None:
+            result_row_id = row["id"]
     # ``orchestration_step_count`` was already incremented by
     # ``try_claim_for_step`` at the top of ``run_step_impl``; use its
     # current value (not +1) for audit-log keying.
@@ -434,7 +462,7 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
         # proceeds through the exact existing escalation path below.
         from runtime.orchestrator.authority import run_authority_hook
         hook_outcome = run_authority_hook(
-            orch, task, agent, reason, _step_audit_id,
+            orch, task, agent, reason, result_row_id,
         )
         if hook_outcome == "continue_same_root":
             # Same-root continuation already executed (audited): the root
