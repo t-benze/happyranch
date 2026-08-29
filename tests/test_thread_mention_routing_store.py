@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,7 @@ from runtime.models import (
     ThreadInvocationPurpose,
     ThreadMessageKind,
     ThreadRecord,
+    ThreadStatus,
 )
 
 # ---------------------------------------------------------------------------
@@ -267,6 +269,66 @@ def test_mention_routing_enabled_is_inert_legacy_column_only(tmp_path):
         recipients=["alpha", "bravo", "charlie"],
     )[1]
     assert [a.agent_name for a in arrivals] == ["bravo"]
+
+
+def test_insert_thread_uncommitted_omits_legacy_column_and_keeps_alignment(tmp_path):
+    """TASK-6082 founder ruling: main's THR-195 ``_insert_thread_uncommitted``
+    writer (used by the workspace-cleanup seam) must OMIT the legacy
+    ``mention_routing_enabled`` column and its bound value, mirroring the
+    TASK-6027 ``insert_thread`` shape, so a ThreadRecord WITHOUT the field
+    inserts successfully. Every adjacent column must land at its own
+    position (a dropped bound value would shift the rest and corrupt the
+    row); the omitted column then receives its shipped SQLite DEFAULT
+    (inert legacy storage)."""
+    db = Database(tmp_path / "happyranch.db")
+    started_at = datetime(2026, 8, 29, 5, 0, 0)
+    archived_at = datetime(2026, 8, 29, 6, 0, 0)
+    pinned_at = datetime(2026, 8, 29, 7, 0, 0)
+    t = ThreadRecord(
+        id="THR-SHIFT-1",
+        subject="column shift probe",
+        status=ThreadStatus.ARCHIVED,
+        started_at=started_at,
+        archived_at=archived_at,
+        forwarded_from_id="FWD-1",
+        forwarded_from_kind="thread",
+        turn_cap=42,
+        turns_used=7,
+        summary="summary-text",
+        transcript_path="/tmp/probe.md",
+        composed_by="alpha",
+        composed_from_task_id="T-9",
+        composed_from_dream_id="D-3",
+        pinned_at=pinned_at,
+    )
+    # TASK-6027: the model carries no mention_routing_enabled field.
+    assert not hasattr(t, "mention_routing_enabled")
+    db._conn.execute("BEGIN IMMEDIATE")
+    db._insert_thread_uncommitted(t)
+    db._conn.commit()
+
+    row = db._conn.execute(
+        "SELECT * FROM threads WHERE id='THR-SHIFT-1'"
+    ).fetchone()
+    assert row["id"] == "THR-SHIFT-1"
+    assert row["subject"] == "column shift probe"
+    assert row["status"] == "archived"
+    assert row["started_at"] == started_at.isoformat()
+    assert row["archived_at"] == archived_at.isoformat()
+    assert row["forwarded_from_id"] == "FWD-1"
+    assert row["forwarded_from_kind"] == "thread"
+    assert row["turn_cap"] == 42
+    assert row["turns_used"] == 7
+    assert row["summary"] == "summary-text"
+    assert row["transcript_path"] == "/tmp/probe.md"
+    assert row["composed_by"] == "alpha"
+    assert row["composed_from_task_id"] == "T-9"
+    assert row["composed_from_dream_id"] == "D-3"
+    assert row["pinned_at"] == pinned_at.isoformat()
+    # The omitted legacy column keeps its shipped DEFAULT — inert storage.
+    assert row["mention_routing_enabled"] == 1
+    # Model round-trip stays field-less (never re-exposed).
+    assert not hasattr(db.get_thread("THR-SHIFT-1"), "mention_routing_enabled")
 
 
 def test_thread_message_mentions_roundtrip(tmp_path):

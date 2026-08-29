@@ -6050,6 +6050,11 @@ class Database:
         Mirrors ``insert_audit_log_uncommitted`` / ``_append_thread_message_uncommitted``:
         the row joins the caller's open BEGIN IMMEDIATE transaction and is
         rolled back with it on any later failure.
+
+        TASK-6082 (founder ruling): the legacy ``threads.mention_routing_enabled``
+        column is OMITTED from the insert (TASK-6027 removed the field from
+        ``ThreadRecord`` — routing is unconditional), matching ``insert_thread``;
+        the shipped column keeps its NOT NULL DEFAULT 1 (inert storage).
         """
         self._conn.execute(
             """INSERT INTO threads (
@@ -6058,8 +6063,8 @@ class Database:
                 turn_cap, turns_used, summary,
                 transcript_path,
                 composed_by, composed_from_task_id, composed_from_dream_id,
-                pinned_at, mention_routing_enabled
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                pinned_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 t.id,
                 t.subject,
@@ -6076,7 +6081,6 @@ class Database:
                 t.composed_from_task_id,
                 t.composed_from_dream_id,
                 t.pinned_at.isoformat() if t.pinned_at else None,
-                1 if t.mention_routing_enabled else 0,
             ),
         )
 
