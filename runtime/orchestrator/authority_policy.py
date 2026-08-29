@@ -199,6 +199,21 @@ BYTE-EXACT member of the release-controlled closed routine set
 (CONTINUE_ACCEPTED_REASONS); the server cannot verify any other prose, so any
 paraphrase, omission, or misleading wording fails closed to ESCALATE.
 
+A granted continuation is a SINGLE-USE mechanically restricted envelope
+(founder option B). Unit 1 (implemented): the envelope is minted atomically
+with the continuation and the daemon-mediated completion/decision acceptance
+point accepts ONLY the exact permitted decision (`done` — routine completion
+of the SAME root) while it is active; every other decision/status family
+(escalate, supersede, fresh-root/revisit, child/delegate/fanout, blocked,
+cross-root/team action, external commitment, protected-boundary mutation) is
+audited and fails closed into the existing ordinary founder-escalation path
+and never silently discarded, and the authority hook is not re-run. Unit 2
+(NOT yet implemented): the executor turn-scoped allow-set narrowing and
+alternate-route rejection. Until Unit 2 lands, the continued turn's daemon-
+side decision acceptance is the only mechanically restricted surface. No
+fixed phrase, closed pattern, or reason truthfulness is safety proof on its
+own: the mechanical envelope is the fence.
+
 Any ambiguity, malformed/missing/unknown output, timeout, provider error,
 policy/team/version/digest mismatch, audit persistence failure, protected
 boundary, cancellation, any exhausted limit, stale/CAS conflict,

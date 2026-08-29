@@ -48,6 +48,27 @@ Invariants (THR-181 / KB escalation-bounded-self-resume-ruling):
   across every protected category (fixed audited transaction; no schema/
   permission/auth/compatibility/destructive/external side effects; spend
   bounded by the budget fence; reversible and re-escalatable).
+* FOUNDER OPTION B — the single-use continuation envelope (Unit 1,
+  daemon-owned issuance + consumption): every CONTINUE_SAME_ROOT commit
+  atomically mints a single-use ``authority_continue_envelopes`` row
+  (bound to the evaluation/candidate, the immutable causal task-result
+  row, the matched policy clause, and the exact permitted action;
+  ``active -> consumed | violated`` exactly-once with a DB-enforced finite
+  lifecycle). While the envelope is ACTIVE the daemon-mediated completion/
+  decision acceptance point (``_consume_completion_report``, shared by
+  run_step inline, the boot sweep, and the zombie reaper) accepts ONLY the
+  exact permitted decision (``done`` — routine completion of the SAME
+  root); every other decision/status family (escalate, supersede,
+  delegate/fanout, blocked, …) is audited and fails closed into the
+  EXISTING ordinary founder-escalation path WITHOUT re-running the hook
+  (the continuation is single-use; the continued turn cannot re-grant).
+  Cancellation/session-failure/restart windows spend the envelope
+  fail-closed so the continuation is never re-used. A fixed phrase or
+  untrusted reason truthfulness is NEVER safety proof on its own — the
+  mechanical envelope is the fence. The executor turn-scoped allow-set
+  narrowing and alternate-route rejection (Unit 2) are NOT implemented in
+  this unit; the continued turn's daemon-side decision acceptance remains
+  the only mechanically restricted surface until Unit 2 lands.
 * The final continuation CAS atomically re-validates the COMPLETE current
   fence set at consumption time (candidate/policy/input identity, manager
   ownership and session, exact team, root status, cancellation, block/
@@ -114,6 +135,8 @@ OUTCOME_CAPTURE_FAILURE = "capture_failure"
 
 AUDIT_ACTION_HOOK_OUTCOME = "authority_hook"
 AUDIT_ACTION_CONTINUED_SAME_ROOT = "authority_continued_same_root"
+AUDIT_ACTION_ENVELOPE_CONSUMED = "authority_continue_envelope_consumed"
+AUDIT_ACTION_ENVELOPE_VIOLATED = "authority_continue_envelope_violated"
 
 # Production evaluator bounds. A bounded invocation is part of the fail-closed
 # contract: a hang must surface as a timeout disposition, never a stall.
@@ -1555,10 +1578,11 @@ def run_authority_hook(
     # is a byte-exact member of the release-controlled routine phrase set
     # (the server then has complete knowledge of the prose). Any other prose
     # — a paraphrase that omits, misstates, or hides a protected boundary —
-    # is not verifiable as routine and fails closed to ESCALATE. This gate is
-    # the structural resolution of the protected-boundary finding: the
-    # CONTINUE grant never depends on keyword classification or the
-    # completeness/truthfulness of untrusted reason prose.
+    # is not verifiable as routine and fails closed to ESCALATE. Neither the
+    # closed pattern nor reason truthfulness is safety proof on its own: the
+    # single-use continuation ENVELOPE (minted atomically with the commit and
+    # enforced at the daemon-side decision acceptance point) is the
+    # mechanical fence that restricts the continued turn.
     server_clause = _server_fact_clause(snapshot.structured_facts)
     if server_clause is not None:
         verdict = _NormalizedVerdict(
@@ -1767,6 +1791,7 @@ def run_authority_hook(
             "clause_id": verdict.clause_id,
             "action": verdict.action,
             "disposition_code": verdict.disposition_code.value,
+            "envelope_id": f"CONT-{candidate_id}",
         }
         # Fresh ceilings at consumption time (release-controlled; may have
         # changed while the evaluator ran) — the DB recheck compares the
@@ -1800,6 +1825,9 @@ def run_authority_hook(
                 audit_agent=agent,
                 authority_continue_payload=continue_payload,
                 hook_outcome_payload=outcome_payload,
+                envelope_clause_id=verdict.clause_id,
+                envelope_action=verdict.action,
+                envelope_causal_event_digest=causal_event_digest,
             )
         except Exception as exc:
             _record_hook_outcome(
