@@ -399,6 +399,7 @@ Operational settings come from two places, highest precedence first:
 
    ```yaml
    queue_workers: 6
+   host_global_session_cap: 13
    session_timeout_seconds: 1800
    ```
 
@@ -412,7 +413,8 @@ If a value isn't set in either, the code default applies. The file is optional �
 | `HAPPYRANCH_PI_CLI_PATH` | `pi` | Default command name for pi (metadata only — executor launch requires `executors.json` pin) |
 | `HAPPYRANCH_PERMISSION_MODE` | `auto` | Claude Code permission mode |
 | `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
-| `HAPPYRANCH_QUEUE_WORKERS` | `3` | Max agent sessions running at once (daemon-wide, across all orgs). Raise it if tasks queue up waiting for a free slot; the limit is shared, so a busy org can still use every slot. Must be a positive integer. Takes effect on daemon restart. |
+| `HAPPYRANCH_QUEUE_WORKERS` | `6` | Task `run_step` slots (daemon-wide, across all orgs). Must be positive. Takes effect on daemon restart. |
+| `HAPPYRANCH_HOST_GLOBAL_SESSION_CAP` | `13` | Healthy enforcement-capable host-session admission cap. Capability fallbacks can reduce the effective cap (macOS/no-enforcement remains 4). Must be positive. Takes effect on daemon restart. |
 | `HAPPYRANCH_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; see overrides below |
 | `HAPPYRANCH_DAEMON_PORT` | `8765` | Port the daemon binds to (`0` = ephemeral, old behaviour) |
 | `HAPPYRANCH_ORG_SLUG` | _(unset)_ | Default org slug for per-org CLI commands |

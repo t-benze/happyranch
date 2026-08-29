@@ -63,6 +63,16 @@ hard limits); a future Windows backend uses Job Objects (job-wide limits,
 kill-on-close) without changing callers. Windows is **not implemented or
 advertised** in any current slice.
 
+The controlled capacity rollout uses restart-required daemon settings:
+`queue_workers=6` and `host_global_session_cap=13`. A healthy backend that
+guarantees enforcement exposes all 13 producer slots (6 task + 4 thread +
+dream + wake + schedule). The Linux shadow 11 remains non-binding; macOS and
+no-enforcement/degraded selection remain conservatively bound to 4. Reload
+never resizes the live worker pool or supervisor policy. Paired rollback is
+`queue_workers=4` plus `host_global_session_cap=11`, followed by a controlled
+restart; FIFO admission and terminal cleanup drain excess work without
+residue or stranded leases.
+
 **Load-bearing ordering invariants** (enforced by the supervisor core, honored
 by every later wiring slice):
 
@@ -264,7 +274,8 @@ by a pressure gate keeps its age and `stall_reason`; aging is preserved
 across 429 retry re-entry (original enqueue time). Effective cap is the
 minimum of the configured cap and **binding** capability caps (never
 OS-name-derived): with enforcement guaranteed the Linux `<=11` ceiling stays a
-non-binding shadow input over the 11-slot producer envelope; without
+retained non-binding shadow input under the configured 13-slot producer
+envelope; without
 enforcement the binding cap (macOS 4) applies — missing enforcement tightens
 admission. Cancellation while queued removes the request without launch.
 Admission is backpressure, not task failure.

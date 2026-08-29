@@ -16,7 +16,9 @@ def test_missing_config_yaml_uses_defaults(monkeypatch: pytest.MonkeyPatch, tmp_
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
     monkeypatch.delenv("HAPPYRANCH_QUEUE_WORKERS", raising=False)
     # No config.yaml present — must not raise, falls through to code defaults.
-    assert Settings().queue_workers == 3
+    settings = Settings()
+    assert settings.queue_workers == 6
+    assert settings.host_global_session_cap == 13
 
 
 def test_config_yaml_overrides_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -24,10 +26,12 @@ def test_config_yaml_overrides_defaults(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.delenv("HAPPYRANCH_QUEUE_WORKERS", raising=False)
     (tmp_path / "config.yaml").write_text(
         "queue_workers: 6\n"
+        "host_global_session_cap: 13\n"
         "session_timeout_seconds: 900\n"
     )
     s = Settings()
     assert s.queue_workers == 6
+    assert s.host_global_session_cap == 13
     assert s.session_timeout_seconds == 900
 
 
@@ -44,3 +48,15 @@ def test_queue_workers_must_be_positive(monkeypatch: pytest.MonkeyPatch, tmp_pat
     (tmp_path / "config.yaml").write_text("queue_workers: 0\n")
     with pytest.raises(ValueError, match="greater than 0"):
         Settings()
+
+
+def test_capacity_rollback_config_is_accepted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+    monkeypatch.delenv("HAPPYRANCH_QUEUE_WORKERS", raising=False)
+    monkeypatch.delenv("HAPPYRANCH_HOST_GLOBAL_SESSION_CAP", raising=False)
+    (tmp_path / "config.yaml").write_text(
+        "queue_workers: 4\n"
+        "host_global_session_cap: 11\n"
+    )
+    settings = Settings()
+    assert (settings.queue_workers, settings.host_global_session_cap) == (4, 11)

@@ -76,6 +76,31 @@ def test_state_from_runtime_constructs_supervisor(tmp_path, monkeypatch):
     assert state.host_supervisor._backoff_seconds == tuple(
         settings.executor_rate_limit_backoff_seconds
     )
+    assert state.host_supervisor._policy.global_session_cap == 13
+    assert state.host_supervisor._policy.producer_envelope == 13
+    # Settings are startup snapshots. Mutating this test instance cannot
+    # hot-resize the already-constructed admission controller.
+    settings.host_global_session_cap = 11
+    settings.queue_workers = 4
+    assert state.host_supervisor._admission.cap() == 4  # fallback stays conservative
+    assert state.host_supervisor._policy.global_session_cap == 13
     # Every loaded org's orchestrator is wired to the daemon-wide supervisor.
     for org in state.orgs.values():
         assert org.orchestrator._host_supervisor is state.host_supervisor
+
+
+def test_state_capacity_override_supports_clean_rollback(tmp_path, monkeypatch):
+    from runtime.config import Settings
+    from runtime.daemon.state import DaemonState
+    from runtime.platform.passthrough_backend import PassthroughBackend
+    from runtime.runtime import RuntimeDir
+    import runtime.platform.backend_factory as backend_factory_mod
+
+    monkeypatch.setattr(backend_factory_mod, "select_session_backend", PassthroughBackend)
+    state = DaemonState.from_runtime(
+        RuntimeDir.init(tmp_path / "rt"),
+        Settings(queue_workers=4, host_global_session_cap=11),
+    )
+    assert state.host_supervisor._policy.producer_envelope == 11
+    assert state.host_supervisor._policy.global_session_cap == 11
+    assert state.host_supervisor._admission.cap() == 4

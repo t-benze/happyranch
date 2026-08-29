@@ -13,7 +13,7 @@ shared ceiling**:
 
 | Pool | Site | Cap before this change |
 | --- | --- | --- |
-| Task `run_step` workers | `app.py` → `queue.start_workers(n=settings.queue_workers)` | `queue_workers` (default 3; deployed 6) |
+| Task `run_step` workers | `app.py` → `queue.start_workers(n=settings.queue_workers)` | `queue_workers` (default/deployed 6) |
 | Thread-reply workers | `app.py::_lifespan` → `[thread_worker_loop(...) for _ in range(4)]` | hard-coded 4 |
 
 Peak concurrent subprocesses for a single provider was therefore **additive**
@@ -137,7 +137,7 @@ thread-scoped audit rows do.
 
 ## Scope deliberately left unchanged
 
-- The hard-coded `range(4)` thread pool and `queue_workers` stay as
+- The hard-coded `range(4)` thread pool and configured `queue_workers` stay as
   **producers**; the semaphore is the real consumer-side cap. Resizing pools is
   unnecessary once the ceiling exists.
 - `thread_runner._invocation_lock` (per-`(org, thread, agent)`, provider-agnostic,

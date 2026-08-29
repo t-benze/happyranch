@@ -112,6 +112,32 @@ def test_admission_order_is_enqueue_order():
     assert ctl.released_total() == 3
 
 
+def test_thirteenth_slot_admits_and_fourteenth_waits_then_drains():
+    """The 6-task producer rollout can consume the full healthy 13-slot
+    envelope; one excess request backpressures and is not stranded."""
+    ctl = AdmissionController(cap=13, monotonic=time.monotonic)
+    leases = [ctl.acquire(make_request(f"r{i}")) for i in range(13)]
+    results: list = []
+    waiter = threading.Thread(
+        target=_run_acquire,
+        args=(ctl, make_request("r13"), results),
+    )
+    waiter.start()
+    deadline = time.monotonic() + 5
+    while ctl.queue_depth() != 1 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert (ctl.active_count(), ctl.queue_depth(), results) == (13, 1, [])
+
+    leases[-1].release()
+    waiter.join(timeout=5)
+    assert not waiter.is_alive()
+    assert results[0][0] == "lease"
+    for lease in leases[:-1]:
+        lease.release()
+    assert (ctl.active_count(), ctl.queue_depth()) == (0, 0)
+    assert ctl.admitted_total() == ctl.released_total() == 14
+
+
 # ── queued cancellation ──────────────────────────────────────────────
 
 
@@ -331,6 +357,13 @@ def test_linux_shadow_cap_is_non_binding():
     # Even a global cap above the envelope must not be reduced by the shadow.
     p2 = canary_policy(global_session_cap=16)
     assert p2.effective_cap(enforcement_guaranteed=True) == 16
+
+
+def test_rollout_policy_exposes_all_six_task_slots_on_healthy_linux():
+    p = canary_policy(global_session_cap=13, producer_envelope=13)
+    assert p.producer_envelope == 13  # 6 task + 4 thread + dream + wake + schedule
+    assert p.effective_cap(enforcement_guaranteed=True) == 13
+    assert p.effective_cap(enforcement_guaranteed=False) == 4
 
 
 def test_macos_binding_cap_applies_only_when_enforcement_missing():

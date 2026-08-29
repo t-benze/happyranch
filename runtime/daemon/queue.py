@@ -96,7 +96,7 @@ class TaskQueue:
                     pass
                 self._queue.task_done()
 
-    def start_workers(self, dispatcher: _Dispatcher, n: int = 3) -> None:
+    def start_workers(self, dispatcher: _Dispatcher, n: int = 6) -> None:
         for _ in range(n):
             self._worker_tasks.append(
                 asyncio.create_task(self._worker_loop(dispatcher))

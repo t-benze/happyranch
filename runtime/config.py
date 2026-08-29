@@ -67,7 +67,10 @@ class Settings(BaseSettings):
     # Number of run_step worker slots (daemon-wide, shared across all orgs).
     # Each slot blocks on one agent subprocess for the whole session, so this
     # caps concurrent agent sessions. Must be positive.
-    queue_workers: int = Field(default=3, gt=0)
+    queue_workers: int = Field(default=6, gt=0)
+    # Daemon-wide HostSessionSupervisor admission ceiling. This is paired
+    # with the producer envelope at startup and is not hot-reloadable.
+    host_global_session_cap: int = Field(default=13, gt=0)
 
     # Executor throttle (issue #85). A process-wide, per-provider gate inside
     # ``executors._run_command`` that caps concurrent provider subprocesses,

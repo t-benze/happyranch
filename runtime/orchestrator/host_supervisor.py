@@ -232,7 +232,7 @@ class PolicySnapshot:
     """Immutable per-invocation policy snapshot.
 
     Explicit **canary inputs only** — never derived from host resources
-    (CPU count, RAM) at runtime. The Linux ``<=11`` ceiling is a non-binding
+    (CPU count, RAM) at runtime. The Linux ``<=11`` shadow is a non-binding
     shadow input (initial Linux safety is containment plus pressure gates);
     the macOS cap of 4 is a binding input. The cleanup grace is a measured
     low-single-digit canary input, not a universal final constant. Final
@@ -293,20 +293,22 @@ class PolicySnapshot:
 def canary_policy(
     *,
     cleanup_grace_seconds: float = 5.0,
-    global_session_cap: int = 11,
+    global_session_cap: int = 13,
+    producer_envelope: int = 13,
     best_effort_survivor_threshold: int = 3,
     sample_interval_seconds: float = 1.0,
 ) -> PolicySnapshot:
     """The founder-approved canary policy inputs.
 
-    Linux cap 11 = non-binding shadow over the 11-slot producer envelope
-    (4 task + 4 thread + 1 dream + 1 wake + 1 schedule); macOS cap 4 =
+    Linux shadow 11 remains non-binding under guaranteed enforcement. The
+    default producer envelope is 13 slots (6 task + 4 thread + 1 dream +
+    1 wake + 1 schedule); macOS cap 4 =
     intentionally binding. Cleanup grace is a measured low-single-digit
     canary input. All values are explicit inputs, never host-derived.
     """
     return PolicySnapshot(
         global_session_cap=global_session_cap,
-        producer_envelope=11,
+        producer_envelope=producer_envelope,
         linux_shadow_cap=CapPolicy(value=11, binding=False),
         macos_binding_cap=CapPolicy(value=4, binding=True),
         cleanup_grace_seconds=cleanup_grace_seconds,
