@@ -68,10 +68,13 @@ for every stdin-capable built-in:
   Verified by canary: piped stdin becomes the SOLE user prompt (``role:
   user`` / ``type: text``, exact bytes) with no argv message.
 - **Codex**: unchanged — ``codex exec ... --json -`` already reads stdin.
-- **OpenCode and generic-CLI profiles remain argv-based and behaviorally
-  unchanged** until their stdin contracts are separately proven (OpenCode's
-  official docs only promise positional ``[message..]``; generic-CLI prompt
-  transport is profile-defined via ``{prompt}`` template substitution).
+- **OpenCode** (pinned 1.18.25, TASK-6080 audit): ``opencode run`` with NO
+  positional message reads the sole user prompt from stdin (verified live:
+  a 606,099-byte prompt through a pipe completes; the same payload as an
+  argv element fails at the kernel single-argument limit).
+- **generic-CLI profiles remain argv-based** (prompt transport is
+  profile-defined via ``{prompt}`` template substitution) until their
+  stdin contracts are separately proven.
 
 Before any Popen, ``_run_command`` runs a **portable pre-spawn argv guard**:
 when the prompt travels via argv (``input_text`` is None), every argv element
@@ -90,12 +93,13 @@ carries the resumable provider session id + delta watermark
 
 - **Resume is an optimization, never a correctness dependency**, for the
   executors whose provider-session contract is PROVEN against the installed
-  CLI (TASK-5977 audit, THR-200 seq 31) — claude (pinned 2.1.241, in
-  production since THR-200), codex (installed codex-cli 0.148.0), and pi
-  (installed pi 0.84.2); the SQLite transcript is canonical for every
-  executor. OpenCode is an UNPROVEN gap on this machine (no binary, no
-  registry entry): it stays fresh (full prompt every turn) and must not
-  resume until its contract is independently proven. A GH-688 claimed REPLY
+  CLI (TASK-5977 + TASK-6080 audits, THR-200 seq 31) — claude (pinned
+  2.1.241, in production since THR-200), codex (installed codex-cli
+  0.148.0), pi (installed pi 0.84.2), and opencode (installed 1.18.25); the
+  SQLite transcript is canonical for every executor. Generic-CLI and
+  custom-adapter profiles stay fresh (full prompt every turn) — their
+  resume contract is not part of the standard envelope (see the custom-CLI
+  decision matrix, TASK-6080). A GH-688 claimed REPLY
   may resume with a delta ONLY when the stored watermark is strictly below
   the claim's ``running_from_seq`` AND the ENTIRE required post-watermark
   range is proven present and contiguous at the production seam: the runner
@@ -115,20 +119,26 @@ carries the resumable provider session id + delta watermark
   full-prompt turn both watermarks converge to the same frontier and resume
   eligibility returns. Do not implement a standalone watermark-comparison
   change.
-- **Per-executor resume argv (evidence-backed, TASK-5977)**: claude
-  ``claude -p ... --output-format json --resume <id>``; codex
+- **Per-executor resume argv (evidence-backed, TASK-5977/TASK-6080)**:
+  claude ``claude -p ... --output-format json --resume <id>``; codex
   ``codex exec resume <thread_id> --json -`` (the resume subcommand has NO
   ``--sandbox`` flag, so the same workspace-write sandbox + localhost
   network posture is carried as ``-c sandbox_mode="workspace-write" -c
   sandbox_workspace_write.network_access=true``; ``-`` reads the prompt from
   stdin — large-prompt-safe); pi ``pi -p --mode json --session <id>``
   (``--session`` FAILS when the id is missing — the eviction signature;
-  ``--session-id`` would silently create a fresh session and is never used).
-  All three read the prompt via stdin (``input_text``) — never argv.
+  ``--session-id`` would silently create a fresh session and is never used);
+  opencode ``opencode run -s <id> --dir <workspace> --format json`` with the
+  prompt on stdin (the SAME project directory is REQUIRED — an opencode
+  session is bound to its project dir and a different ``--dir`` hangs
+  rather than failing fast; the thread workspace ``<org>/workspaces/<agent>``
+  is stable across turns, and org relocation / workspace-path changes must
+  invalidate stored opencode session ids).
+  All four read the prompt via stdin (``input_text``) — never argv.
   Verified live: each emits its stable id on a fresh non-interactive run
   (claude ``.session_id``; codex ``thread.started.thread_id``; pi session
-  header ``id``) and re-emits the SAME id after non-interactive
-  continuation.
+  header ``id``; opencode ``sessionID`` NDJSON field) and re-emits the SAME
+  id after non-interactive continuation.
 - **Eviction (provider-declared session-not-found)**: the eviction audit and
   the durable ``agent_session_id = NULL`` invalidation commit in ONE
   transaction BEFORE the full-prompt fallback launch. If the fallback also
@@ -144,7 +154,14 @@ carries the resumable provider session id + delta watermark
   <attempted-id> (code -32600)`` (the CLI envelope is part of the observed
   line), pi ``No session found matching
   '<attempted-id>'`` (each rc=1, stderr, and verified 2026-08-28 to echo
-  the attempted id verbatim; the id is regex-escaped) — and never classifies
+  the attempted id verbatim; the id is regex-escaped) — and opencode
+  1.18.25 (rc=1, stdout EMPTY, stderr exactly one physical line
+  ``Error: Session not found`` after ANSI-SGR stripping; the attempted id
+  is NOT echoed, so classification is complete-line rather than ID-anchored;
+  a global auth/quota/transport token veto is deliberately not applied —
+  the complete-line anchor + empty-stdout requirement reject the embedding
+  class, and an unrelated warning line containing a token would falsely
+  veto a genuine eviction) — and never classifies
   generic legacy substrings, cross-provider text, stdout-only text, wrong
   rc, wrong/missing id, prefix/suffix near-matches, a marker embedded in
   auth/quota/transport output, or ambiguous output as eviction (no
@@ -165,6 +182,11 @@ carries the resumable provider session id + delta watermark
   state goes with it — no redundant clear). The proven contracts do NOT
   require executor/model/config fingerprint invalidation (codex and pi
   resume across model/config changes), so no fingerprint column is added.
+  EXCEPTION (TASK-6080): an opencode session is bound to its project
+  directory — resume is only safe for the IDENTICAL workspace path, so org
+  relocation or any workspace-path change must invalidate stored opencode
+  thread session ids (schema-free; a relocation-time sweep is a separate
+  founder-gated follow-up).
 
 **Thread reply delivery lifecycle (GH-688 Phase 1).** Conversational
 ``REPLY`` wakes are coalesced and durably tracked per ``(thread_id,

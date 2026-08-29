@@ -213,7 +213,58 @@ def test_parse_pi_session_id_malformed_or_missing_returns_none():
     assert _parse_pi_session_id("not json") is None
     assert _parse_pi_session_id('{"type":"agent_start"}') is None
     assert _parse_pi_session_id('{"type":"session","version":3}') is None  # no id
-    assert _parse_pi_session_id('{"type":"session","id":123}') is None
+    assert _parse_pi_session_id('{"type":"session","version":3,"id":42}') is None
+
+
+def test_parse_opencode_session_id_from_step_start():
+    """opencode 1.18.25 `--format json` NDJSON: EVERY event carries the
+    top-level ``sessionID``; the parser returns the first one seen (the
+    ``step_start`` event, matching the observed fresh-run output)."""
+    from runtime.orchestrator.executors import _parse_opencode_session_id
+    stream = (
+        '{"type":"step_start","timestamp":1787978082641,'
+        '"sessionID":"ses_fb433ade8ffeh55zGEozUE3mey",'
+        '"part":{"id":"prt_01","sessionID":"ses_fb433ade8ffeh55zGEozUE3mey",'
+        '"type":"step-start"}}\n'
+        '{"type":"text","timestamp":1787978082916,'
+        '"sessionID":"ses_fb433ade8ffeh55zGEozUE3mey",'
+        '"part":{"type":"text","text":"OK"}}\n'
+        '{"type":"step_finish","timestamp":1787978082916,'
+        '"sessionID":"ses_fb433ade8ffeh55zGEozUE3mey",'
+        '"part":{"type":"step-finish","reason":"stop","tokens":{}}}\n'
+    )
+    assert _parse_opencode_session_id(stream) == "ses_fb433ade8ffeh55zGEozUE3mey"
+
+
+def test_parse_opencode_session_id_resume_emits_same_id():
+    """After continuation opencode re-emits the SAME sessionID — the parser
+    must return it (replacement ids are also fine: the runner persists
+    whatever the provider emits)."""
+    from runtime.orchestrator.executors import _parse_opencode_session_id
+    stream = (
+        '{"type":"step_start","timestamp":1,'
+        '"sessionID":"ses_fb433ade8ffeh55zGEozUE3mey","part":{}}\n'
+    )
+    assert _parse_opencode_session_id(stream) == "ses_fb433ade8ffeh55zGEozUE3mey"
+
+
+def test_parse_opencode_session_id_malformed_or_missing_returns_none():
+    from runtime.orchestrator.executors import _parse_opencode_session_id
+    assert _parse_opencode_session_id("") is None
+    assert _parse_opencode_session_id("not json") is None
+    # Non-dict JSON lines are skipped without error.
+    assert _parse_opencode_session_id('["step_start"]\n') is None
+    # Events without a sessionID field, non-string sessionID, or an
+    # empty-string sessionID never yield an id.
+    assert _parse_opencode_session_id('{"type":"step_start"}') is None
+    assert _parse_opencode_session_id('{"type":"step_start","sessionID":42}') is None
+    assert _parse_opencode_session_id('{"type":"step_start","sessionID":""}') is None
+    # A JSON error event (auth/transport class) carries a minted sessionID —
+    # still captured best-effort; resume eligibility gates on stored state.
+    assert _parse_opencode_session_id(
+        '{"type":"error","sessionID":"ses_fb43169fbffez2iDYBQ26mOdMg",'
+        '"error":{"name":"UnknownError"}}'
+    ) == "ses_fb43169fbffez2iDYBQ26mOdMg"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -335,7 +386,8 @@ def test_pi_executor_task_style_run_never_resumes(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("executor,sid", [("codex", "01a0-codex-prior"),
-                                          ("pi", "01a0-pi-prior")])
+                                          ("pi", "01a0-pi-prior"),
+                                          ("opencode", "ses_opencode-prior")])
 async def test_turn2_resumes_with_delta_for_codex_and_pi(
     tmp_path, monkeypatch, executor, sid,
 ):
@@ -402,6 +454,21 @@ async def test_turn1_full_prompt_never_resumes_for_codex_and_pi(
                 "process finished with exit code 1"),
         ("claude", "No conversation found with session ID: 01a0-dead\n"
                     "[debug] exiting"),
+        # opencode 1.18.25 (TASK-6080 audit): the attempted id is NOT echoed;
+        # the contract is rc=1 + empty stdout + ONE physical stderr line
+        # `Error: Session not found` (ANSI-SGR codes stripped). Unrelated text
+        # on OTHER lines stays positive; only text on the signature line is a
+        # negative. Unlike claude/codex/pi no global auth/quota/transport
+        # token veto applies — the complete-line anchor + empty-stdout
+        # requirement already reject the embedding class, and a token on an
+        # unrelated line would falsely veto a genuine eviction.
+        ("opencode", "Error: Session not found"),
+        ("opencode", "\x1b[91m\x1b[1mError: \x1b[0mSession not found"),
+        ("opencode", "Ignoring 1 permissions.allow entry...\n"
+                      "Error: Session not found\n"
+                      "process finished with exit code 1"),
+        ("opencode", "Error: 401 unauthorized\nError: Session not found"),
+        ("opencode", "Error: Session not found\r\n"),
         # Horizontal whitespace (space/tab) is permitted where the observed
         # contract permits spacing — leading/trailing padding and multiple
         # spaces at the id/code boundaries stay positive for every executor.
@@ -409,6 +476,8 @@ async def test_turn1_full_prompt_never_resumes_for_codex_and_pi(
                   "found for thread id  01a0-dead  (code -32600)  "),
         ("pi", "  No session found matching  '01a0-dead'  "),
         ("claude", "\tNo conversation found with session ID: 01a0-dead\t"),
+        ("opencode", "  Error: Session not found  "),
+        ("opencode", "\tError: Session not found\t"),
         # Complete-line termination (TASK-6019): the observed provider stderr
         # LINE must be exactly `No conversation found with session ID:
         # <attempted-id>`; allowed whitespace around the signature/id and
@@ -673,6 +742,24 @@ async def test_eviction_observed_audit_corpus_line_classifies(
         ("pi", "API Error: 429 Overloaded", "", 1),
         ("claude", "Connection reset by peer", "", 1),
         ("codex", "panic: runtime error", "", 1),
+        # opencode 1.18.25 negatives (TASK-6080 audit): wrong rc, stdout-only
+        # text, same-line prefix/suffix, split LF/CRLF forms, unrelated
+        # stderr, and the empty-id silent-fresh case never classify. The
+        # attempted id is NOT echoed by opencode, so these negatives carry
+        # the same 01a0-live placeholder the other executors use.
+        ("opencode", "Error: Session not found", "", 0),   # wrong rc (fresh path)
+        ("opencode", "Error: Session not found", "", 2),   # wrong rc
+        ("opencode", "", "Error: Session not found", 1),   # stdout-only
+        ("opencode", "Error: Session not found.", "", 1),  # punctuation suffix
+        ("opencode", "Error: Session not found - retry later", "", 1),
+        ("opencode", "xError: Session not found", "", 1),  # same-line prefix
+        ("opencode", "prefix Error: Session not found", "", 1),
+        ("opencode", "Error: Session not foundx", "", 1),  # same-line suffix
+        ("opencode", "Error: Session\nnot found", "", 1),  # LF split
+        ("opencode", "Error: Session\r\nnot found", "", 1),  # CRLF split
+        ("opencode", "Error: Failed to change directory to /nonexistent", "", 1),
+        ("opencode", "agent \"nosuch\" not found. Falling back to default", "", 0),
+        ("opencode", "sessionID", "", 1),  # unrelated word on the line
     ],
 )
 async def test_eviction_negative_matrix_never_invalidates_or_retries(
@@ -1002,23 +1089,45 @@ async def test_equality_watermark_uses_full_prompt_for_codex(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_opencode_stays_fresh_even_with_stale_stored_session(
+async def test_opencode_fresh_first_wake_full_then_persists_new_id(
     tmp_path, monkeypatch,
 ):
-    """OpenCode's resume contract is an unproven gap (not installed) — a
-    participant must stay fresh even if a stale session row exists."""
+    """A stored opencode session row + eligible positive watermark resumes
+    with the delta; a fresh first wake (no stored id) ships the FULL
+    canonical transcript and persists the minted session id for the next
+    turn (TASK-6080)."""
     db, fake = await _run_reply(
         tmp_path, monkeypatch, "opencode",
-        stored_sid="01a0-stale", last_seq=1,
-        fake=_RecordingExec([_FakeResult(True, agent_session_id=None)]),
+        stored_sid=None, last_seq=0,
+        fake=_RecordingExec([_FakeResult(True, agent_session_id="ses_fb433ade8ffeh55zGEozUE3mey")]),
     )
     assert "resume_session_id" not in fake.calls[0]
-    assert "m1" in fake.calls[0]["prompt"] and "m2 newest" in fake.calls[0]["prompt"]
-    # opencode emits no session id → the runner never touches the row; a
-    # stale row is left for lifecycle invalidation (archive/switch/termination),
-    # never resumed and never read.
+    full = fake.calls[0]["prompt"]
+    assert "m1" in full and "m2 newest" in full  # complete canonical transcript
     stored, seq = db.get_thread_session("THR-001", "alice")
-    assert stored == "01a0-stale" and seq == 1  # untouched
+    assert stored == "ses_fb433ade8ffeh55zGEozUE3mey" and seq == 2
+
+
+@pytest.mark.asyncio
+async def test_opencode_stored_id_zero_watermark_stays_fresh(
+    tmp_path, monkeypatch,
+):
+    """TASK-6007 HIGH 3 preserved for opencode: a stored provider id whose
+    durable delivery watermark is <= 0 is INELIGIBLE — the wake ships the
+    complete canonical full transcript, never a delta against the stored
+    id (opencode ``-s ""`` would silently start fresh, so an empty/zero
+    frontier must never wire resume)."""
+    db, fake = await _run_reply(
+        tmp_path, monkeypatch, "opencode",
+        stored_sid="ses_stale-zero", last_seq=0,
+        fake=_RecordingExec([_FakeResult(True, agent_session_id="ses_fb433ade8ffeh55zGEozUE3mey")]),
+    )
+    assert "resume_session_id" not in fake.calls[0]
+    full = fake.calls[0]["prompt"]
+    assert "m1" in full and "m2 newest" in full
+    # The fresh minted id replaces the ineligible stored id.
+    stored, seq = db.get_thread_session("THR-001", "alice")
+    assert stored == "ses_fb433ade8ffeh55zGEozUE3mey" and seq == 2
 
 
 @pytest.mark.asyncio
@@ -1118,14 +1227,15 @@ def test_executor_run_default_never_resumes_across_providers():
     import inspect
     from runtime.orchestrator import executors as ex_mod
 
-    for cls_name in ("ClaudeExecutor", "CodexExecutor", "PiExecutor"):
+    for cls_name in ("ClaudeExecutor", "CodexExecutor", "PiExecutor",
+                      "OpencodeExecutor"):
         cls = getattr(ex_mod, cls_name)
         sig = inspect.signature(cls.run)
         param = sig.parameters["resume_session_id"]
         assert param.default is None, (
             f"{cls_name}.run resume_session_id default must be None"
         )
-    for cls_name in ("OpencodeExecutor", "GenericCliExecutor"):
+    for cls_name in ("GenericCliExecutor", "CustomAdapterExecutor"):
         cls = getattr(ex_mod, cls_name)
         sig = inspect.signature(cls.run)
         assert "resume_session_id" not in sig.parameters, (

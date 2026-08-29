@@ -576,6 +576,55 @@ def _is_pi_session_evicted(result, attempted_session_id: str) -> bool:
     return not _contains_auth_quota_transport_token(stderr, attempted_session_id)
 
 
+# ANSI SGR escape sequences are stripped from stderr before the opencode
+# signature match: the installed 1.18.25 CLI emits color codes around its
+# error line even when stderr is a pipe (observed raw:
+# ``\x1b[91m\x1b[1mError: \x1b[0mSession not found\n``).
+_ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+# opencode 1.18.25 eviction contract: rc=1, stdout EMPTY, stderr exactly one
+# physical line ``Error: Session not found`` (ANSI-stripped). Unlike
+# claude/codex/pi the attempted session id is NOT echoed in the message
+# (verified live: four bogus ids plus a really-deleted session all produce the
+# identical line), so classification is complete-line rather than ID-anchored.
+_OPENCODE_EVICTION_SIGNATURE = "error: session not found"
+
+
+def _is_opencode_session_evicted(result, attempted_session_id: str) -> bool:
+    """opencode 1.18.25 proven contract (TASK-6080 live audit, no API
+    traffic beyond minimal free-model probes): rc=1, stdout EMPTY, stderr
+    exactly one physical line ``Error: Session not found`` after ANSI-SGR
+    stripping. The attempted id is NOT echoed by opencode, so the signature is
+    the complete line — an exact per-line match with only horizontal
+    whitespace permitted; LF/CRLF split forms, same-line prefix/suffix text,
+    unrelated stderr lines (``Failed to change directory ...``, usage text),
+    stdout JSON error events (invalid-model/unknown-server errors), wrong rc,
+    cross-provider signatures, and empty attempted id never match. stdout must
+    be EMPTY because a run that performed any work would have emitted NDJSON
+    step events; a genuine eviction fails at session lookup before any model
+    step. ``-s ""`` silently starts fresh (rc=0) — never classified, and the
+    runner only ever wires a stored non-empty id. A global auth/quota/transport
+    token veto is deliberately NOT applied: the complete-line anchor makes
+    embedding impossible, and an unrelated warning line containing a token
+    would falsely veto a genuine eviction."""
+    if not attempted_session_id:
+        return False
+    if getattr(result, "returncode", None) != 1:
+        return False
+    if (getattr(result, "stdout_tail", None) or "").strip():
+        return False
+    stderr = _ANSI_SGR_RE.sub(
+        "", getattr(result, "stderr_tail", None) or ""
+    )
+    # ``\r`` removed so a CRLF physical line still matches ``$`` exactly.
+    stderr = stderr.replace("\r", "").lower()
+    return re.search(
+        rf"^[ \t]*{_OPENCODE_EVICTION_SIGNATURE}[ \t]*$",
+        stderr,
+        re.MULTILINE,
+    ) is not None
+
+
 def _classify_session_evicted(
     executor_name: str, result, attempted_session_id: str | None,
 ) -> bool:
@@ -593,6 +642,8 @@ def _classify_session_evicted(
         return _is_pi_session_evicted(result, attempted_session_id)
     if executor_name == "claude":
         return _is_claude_session_evicted(result, attempted_session_id)
+    if executor_name == "opencode":
+        return _is_opencode_session_evicted(result, attempted_session_id)
     return False
 
 
@@ -600,9 +651,11 @@ def _classify_session_evicted(
 # installed CLI (TASK-5977 audit): claude (2.1.241, production since THR-200),
 # codex (0.148.0: `exec resume <thread_id> --json -`, same thread_id
 # re-emitted), pi (0.84.2: `-p --session <id> --mode json`, same session.id
-# re-emitted). opencode is NOT installed here — its resume contract is an
-# unproven gap and it stays fresh (full prompt every turn).
-_RESUME_CAPABLE_EXECUTORS = frozenset({"claude", "codex", "pi"})
+# re-emitted), opencode (1.18.25, TASK-6080 audit: `run -s <id> --dir <ws>
+# --format json` with the prompt on stdin, same sessionID re-emitted; resume
+# REQUIRES the identical project directory). Every other profile (generic-CLI,
+# custom-adapter) stays fresh (full prompt every turn).
+_RESUME_CAPABLE_EXECUTORS = frozenset({"claude", "codex", "pi", "opencode"})
 
 
 def _delta_range_is_complete(

@@ -241,9 +241,10 @@ def test_opencode_executor_launches_run_with_workspace_dir(mock_subprocess, tmp_
     assert cmd[cmd.index("--dir") + 1] == str(workspace)
     assert "--format" in cmd
     assert cmd[cmd.index("--format") + 1] == "json"
-    # opencode >= 1.14.0 uses positional prompt (issue #216); the prompt is the
-    # last argument (after --format json).
-    sent = cmd[-1]
+    # THR-200/TASK-6080: the prompt travels via stdin (input_text), never
+    # argv — no positional message element on the command line.
+    assert not any("Implement Alipay support" in el for el in cmd)
+    sent = mock_subprocess.Popen.return_value.communicate.call_args.kwargs["input"]
     assert sent.endswith("Implement Alipay support")
     assert "<session-lifetime>" in sent
     # Permission discipline lives in opencode.json — bypass flag must NOT be present.
