@@ -188,11 +188,18 @@ class PendingHandle:
     Returned by ``SessionBackend.prepare``. If the invocation is cancelled
     before launch, or launch never happens, callers must ``abandon`` it so
     partial scope state (if any) is torn down.
+
+    ``invocation_kind`` / ``executor_profile`` carry the bounded receipt
+    attribution sourced from the ``AdmissionRequest`` (THR-207 Slice C) so
+    the eventual ``Receipt`` can be attributed honestly on every backend.
+    Empty values mean the producer did not attribute the request.
     """
 
     backend: str
     token: str
     request_id: str
+    invocation_kind: str = ""
+    executor_profile: str = ""
 
 
 @dataclass(frozen=True)
@@ -204,6 +211,11 @@ class RunningHandle:
     the PID; the opaque ``token`` is the only authority for teardown and
     measurement. ``process`` is the underlying subprocess so the executor
     launch body can ``communicate()``/read ``returncode``.
+
+    ``invocation_kind`` / ``executor_profile`` carry the bounded receipt
+    attribution sourced from the ``AdmissionRequest`` (THR-207 Slice C) so
+    the eventual ``Receipt`` can be attributed honestly on every backend.
+    Empty values mean the producer did not attribute the request.
     """
 
     backend: str
@@ -212,6 +224,8 @@ class RunningHandle:
     root_pid: int
     start_identity: str
     process: subprocess.Popen | None = None
+    invocation_kind: str = ""
+    executor_profile: str = ""
 
 
 @dataclass(frozen=True)
@@ -283,6 +297,14 @@ class Receipt:
     ``unavailable`` values are ``None``, never fabricated zeros. ``survivors``
     is bounded by the backend's census; ``enforcement_events`` is a bounded
     event log (e.g. ``oom``, ``throttle``, ``job_limit``).
+
+    ``invocation_kind`` and ``executor_profile`` are the bounded receipt
+    attribution sourced only from existing ``AdmissionRequest`` data and
+    populated honestly by every backend at ``finish`` (THR-207 Slice C).
+    Empty strings mean the producer did not attribute the request; the
+    operator surfaces redact/bucket them (``bounded_executor_profile`` /
+    ``bounded_invocation_kind``) so externally-influenced values stay
+    bounded and never create dynamic aggregate-map cardinality.
     """
 
     backend: str
@@ -300,6 +322,8 @@ class Receipt:
     sample_gaps: tuple[float, ...] = ()
     enforcement_events: tuple[str, ...] = ()
     survivors: tuple[SurvivorRecord, ...] = ()
+    invocation_kind: str = ""
+    executor_profile: str = ""
 
 
 @dataclass(frozen=True)

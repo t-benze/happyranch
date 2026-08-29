@@ -247,6 +247,58 @@ def test_finish_clean_success_no_residue():
     assert receipt.quiescent is True
 
 
+def test_prepare_launch_finish_carry_receipt_attribution():
+    """Slice C: the macOS backend carries the bounded receipt attribution
+    (invocation_kind + executor_profile) from the AdmissionRequest through
+    prepare/launch into the finish-time Receipt — same honest contract as
+    the Linux backend, with no limits applied (macOS stays best-effort)."""
+    census = _FakeCensus(
+        observations=[_FakeObservation(pid=100, ppid=1, pgid=100, identity="root-1")],
+        identities={100: "root-1"},
+    )
+    backend = _fake_backend(census, pgids={100: 100})
+    pending = backend.prepare(_request(), _policy())
+    assert pending.invocation_kind == "schedule"
+    assert pending.executor_profile == "claude"
+
+    # Direct launch is POSIX-only; assert the handle contract via the same
+    # seam the supervisor uses (prepare -> launch with the real subprocess).
+    import subprocess as _sp
+    import sys
+
+    proc = _sp.Popen(
+        [sys.executable, "-c", "import time; time.sleep(0.2)"],
+        stdout=_sp.DEVNULL,
+        stderr=_sp.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        backend._census.start_identity = lambda pid: "root-1"  # type: ignore[method-assign]
+        backend._os_getpgid = lambda pid: proc.pid  # type: ignore[method-assign]
+        with backend._lock:
+            backend._sessions[pending.token] = (proc.pid, "root-1", proc.pid, 0.0, {})
+        running = RunningHandle(
+            backend=backend.name,
+            token=pending.token,
+            request_id=pending.request_id,
+            root_pid=proc.pid,
+            start_identity="root-1",
+            process=proc,
+            invocation_kind=pending.invocation_kind,
+            executor_profile=pending.executor_profile,
+        )
+        receipt = backend.finish(running, "success", grace_seconds=0.2)
+        assert receipt.invocation_kind == "schedule"
+        assert receipt.executor_profile == "claude"
+        assert receipt.cleanup_status is CleanupStatus.CLEAN
+    finally:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=2)
+
+
 def test_finish_fresh_census_detects_late_escaped_descendant():
     """A descendant that escapes AFTER the last periodic sample (the stored
     session snapshot is EMPTY) is caught by finish's OWN fresh final

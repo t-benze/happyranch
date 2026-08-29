@@ -169,7 +169,11 @@ class MacOSProcessGroupBackend:
             raise BackendPrepareError("logical_id is required")
         token = f"pg-{request.logical_id}-{uuid.uuid4().hex[:8]}"
         return PendingHandle(
-            backend=_BACKEND_NAME, token=token, request_id=request.logical_id
+            backend=_BACKEND_NAME,
+            token=token,
+            request_id=request.logical_id,
+            invocation_kind=request.invocation_kind,
+            executor_profile=request.executor_profile,
         )
 
     def launch(self, pending: PendingHandle, spec) -> RunningHandle:
@@ -220,6 +224,8 @@ class MacOSProcessGroupBackend:
             root_pid=proc.pid,
             start_identity=identity,
             process=proc,
+            invocation_kind=pending.invocation_kind,
+            executor_profile=pending.executor_profile,
         )
 
     def sampler(self) -> Callable[[RunningHandle], ResourceSample]:
@@ -340,6 +346,8 @@ class MacOSProcessGroupBackend:
                     samples=samples,
                     survivors=survivors,
                     sample_prefix_gap=sample_prefix_gap,
+                    invocation_kind=running.invocation_kind,
+                    executor_profile=running.executor_profile,
                 )
             return self._receipt(
                 terminal_reason=terminal_reason,
@@ -352,6 +360,8 @@ class MacOSProcessGroupBackend:
                 samples=samples,
                 survivors=survivors,
                 sample_prefix_gap=sample_prefix_gap,
+                invocation_kind=running.invocation_kind,
+                executor_profile=running.executor_profile,
             )
 
         # ── graceful TERM of the group, bounded by the measured grace ──
@@ -371,6 +381,8 @@ class MacOSProcessGroupBackend:
                 samples=samples,
                 survivors=survivors,
                 sample_prefix_gap=sample_prefix_gap,
+                invocation_kind=running.invocation_kind,
+                executor_profile=running.executor_profile,
             )
         self._signal_group(pgid, signal.SIGTERM)
         deadline = started + grace_seconds
@@ -403,6 +415,8 @@ class MacOSProcessGroupBackend:
             samples=samples,
             survivors=survivors,
             sample_prefix_gap=sample_prefix_gap,
+            invocation_kind=running.invocation_kind,
+            executor_profile=running.executor_profile,
         )
 
     def _receipt(
@@ -416,6 +430,8 @@ class MacOSProcessGroupBackend:
         samples: tuple[ResourceSample, ...],
         survivors: tuple[SurvivorRecord, ...],
         sample_prefix_gap: float = 0.0,
+        invocation_kind: str = "",
+        executor_profile: str = "",
     ) -> Receipt:
         memory, cpu, process = merge_sample_peaks(samples)
         gaps = sample_gaps(samples)
@@ -443,6 +459,8 @@ class MacOSProcessGroupBackend:
             sample_gaps=gaps,
             enforcement_events=(),
             survivors=survivors,
+            invocation_kind=invocation_kind,
+            executor_profile=executor_profile,
         )
 
     def abandon(self, pending: PendingHandle) -> None:

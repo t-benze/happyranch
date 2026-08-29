@@ -1074,9 +1074,37 @@ or config change:
   probe evidence string (a failed probe can embed raw exception text) are
   dropped; the stable backend classification stays observable.
 
+**Slice C bounded enforcement + receipt attribution (THR-207).** Real
+supervised sessions get the founder-approved **fixed initial Linux
+enforcement policy** (`runtime/platform/enforcement_policy.py`) — an
+immutable per-invocation envelope selected deterministically from the
+existing `AdmissionRequest.invocation_kind` and applied **only** by the
+healthy Linux systemd/cgroup-v2 backend at `launch`: task sessions
+`MemoryHigh=14G` (soft throttle) / `MemoryMax=24G` (hard ceiling) /
+`TasksMax=1024`; thread/dream/wake/schedule (and any unknown kind,
+conservatively) `MemoryHigh=2G` / `MemoryMax=4G` (exactly) / `TasksMax=1024`;
+**no `CPUQuota`** is ever emitted for real sessions (the probe keeps its
+deliberately tiny probe-only values and they are never confused with session
+policy). Properties are emitted as exact byte integers and **verified as
+applied** byte-for-byte in the scope's cgroup (`memory.high` / `memory.max`
+/ `pids.max`) at launch — a mismatch fails the launch closed, never a
+silent best-effort claim of guaranteed limits. Selection is immutable
+across 429 retry/reacquire. macOS stays honestly capped/best-effort (no
+limits applied); the passthrough/unsupported/degraded backends remain
+explicit about unavailable enforcement. Receipts also carry **bounded
+attribution** (`invocation_kind` + `executor_profile`, sourced only from
+existing `AdmissionRequest` data) populated honestly by every backend at
+`finish`; the store aggregates by the fixed canonical invocation-kind
+vocabulary (unknown kinds fold into one `other` bucket — no dynamic
+attribution keys) and the authed recent window carries the bounded kind +
+length/character-redacted executor profile, while the unauthenticated
+`/health` never exposes per-receipt attribution (the recent window stays
+dropped).
+
 **Boundedness:** at most 64 receipts retained (oldest dropped); aggregate
-maps keyed by the fixed terminal-reason / cleanup-status vocabularies, never
-by session/org/task identity; survivor-identity list and evidence/event
+maps keyed by the fixed terminal-reason / cleanup-status vocabularies (and
+the fixed canonical invocation-kind vocabulary for attribution), never by
+session/org/task identity; survivor-identity list and evidence/event
 strings truncated; peak aggregates grouped **per provenance** (kernel values
 never blended with sampled); `unavailable` values counted, never rendered as
 fabricated zeros. **Publication failure is operationally contained** at the
@@ -1292,6 +1320,78 @@ workspaces/
 > ``runtime/portability/roots.py`` is the authoritative exhaustive direct-org-root
 > classification (allow / named exclusion / reject); see 05c-orchestrator
 > §Organization portability.
+
+**Daemon-managed workspace cleanup scheduler (THR-195 seq 129).** Cleanup is a
+**daemon-managed, system-default capability** independent of all user
+Schedules. The daemon runs a periodic loop
+(``runtime/daemon/workspace_cleanup_scheduler.py``, registered in
+``runtime/daemon/app.py``) that measures EACH AGENT's own workspace on a
+bounded, fail-open budget and, per agent, when the weekly occurrence is due
+and unserviced, no prior cleanup task of that agent is non-terminal, the
+seven-day per-agent cooldown has elapsed, and the agent's workspace totals
+>= 1 GiB (founder-approved defaults, TASK-6036), triggers an ordinary root
+task ASSIGNED TO THAT OWNING AGENT with a **daemon-composed brief** that
+packs the fresh measurement as **ADVISORY** context at trigger time. It never
+uses, creates, or modifies a Schedule, never injects anything into the shared
+session-prompt seam (``protocol_doc_manifest``), and never performs cleanup
+itself. Ordinary task, thread, wake, dream, and Schedule-spawned sessions are
+byte-identical to a runtime without the feature.
+
+The packed block is advisory sizing context ONLY. It is **stale on arrival**,
+is **not an eligibility list** and **not a candidate list**, labels no path
+safe, and recommends no removal — every path and fact must be re-derived
+independently and immediately before any action. It contains only aggregate
+measurements/status for the owning agent's workspace: ``measured_at``;
+total and largest workspace sizes; registered-worktree counts joined to task
+status (``TASK-\d+`` prefix match handles suffixed worktree names like
+``TASK-5567-base691``; unknown or missing tasks are unclassified, never
+assumed terminal); dependency-directory (``node_modules``/``.venv``)
+counts/sizes including the inside-``.claude/worktrees`` split; and live
+sessions by agent from ``SessionTracker``. It never enumerates paths and
+never uses pending jobs or ``blocked_on_job_ids`` as liveness. Measurement
+is explicitly bounded (one wall-clock deadline shared across every
+subprocess — each git call receives ``min(per-call cap, remaining)`` with
+expiry re-checked after every call and after the last repository — plus
+entry/depth/workspace/repo/worktree caps) and fail-open: every timeout,
+error, or cardinality-cap hit yields an explicit ``measurement unavailable``
+advisory note and can never block daemon operation or task/session spawning.
+
+Cadence and trigger policy: weekly (Sunday 03:30 in the org's effective
+timezone), at most one trigger per weekly window per agent (a missed window
+is never replayed), one run at a time (a later occurrence fires only after
+the preceding cleanup task of that agent is terminal), a seven-day per-agent
+cooldown, and a per-agent >= 1 GiB workspace-total threshold. The first TWO
+triggered runs per agent are **STRICTLY report-only** (TASK-5552 §6
+rollout: inventory and nothing else); from run #3 the daemon composes the
+approved TASK-5552 §4 fixed normalized cleanup brief (bounded, Git-aware,
+non-force, action-time-re-derived eligibility). The advisory block itself
+never authorizes removal in either variant. The responsible agent reports
+results to the founder in ONE durable founder-visible thread PER AGENT (fixed
+per-agent subject, created by the daemon on first trigger with the owning
+agent as composer/participant and @founder as recipient) via the existing
+participant-authorized, task-bound ``happyranch threads send`` path — NO
+minted report token. The first-two-run counter, the cooldown, and the
+per-agent thread identity are persisted through existing durable mechanisms
+only — the owning agent's daemon-marked cleanup task rows via an
+authoritative SQL-side ``brief`` prefix filter (no bounded scan of ordinary
+tasks can hide older cleanup rows; a lookup failure is represented as
+indeterminate and FAILS CLOSED for triggering) and ``threads.composed_from_task_id``
+provenance plus the fixed per-agent subject, participant membership of the
+owning agent, open status, and the daemon's distinctive opening message (a
+fixed subject alone is not identity). The thread-identity lookup is
+tri-state (found / absent / indeterminate): only an authoritative absence
+may create the thread; any lookup error fails closed — no duplicate thread,
+no task, no enqueue — with an audited reason (TASK-6046). On the first
+trigger the report thread and the cleanup task are created in ONE atomic
+transaction (rollback leaves ZERO residue across every affected durable
+table; nothing is enqueued; a later retry succeeds exactly once).
+No schema/API/CLI/auth change. The
+task id is allocated atomically at insertion (never before the awaited
+measurement), and workspace enumeration is paged in bounded batches so every
+registered agent is reached. A kill switch (``workspace_cleanup.enabled``
+in the org ``config.yaml``, default true) disables the capability per org.
+See 05c-orchestrator §Daemon-managed workspace cleanup scheduler for the
+full contract.
 
 ### Three layers of memory
 

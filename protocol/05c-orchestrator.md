@@ -965,6 +965,26 @@ the existing operator surfaces without any schema change. Receipt aggregates
 duration, residue counts) and the residue admission gate/census ride the
 same block; publication failures are contained at the supervisor seam.
 
+**Slice C bounded enforcement + receipt attribution (THR-207).** Real
+supervised sessions apply the founder-approved **fixed initial Linux
+enforcement policy** (`runtime/platform/enforcement_policy.py`) — an
+immutable per-invocation envelope selected deterministically from the
+existing `AdmissionRequest.invocation_kind` and applied **only** by the
+healthy Linux systemd/cgroup-v2 capability backend: task sessions
+`MemoryHigh=14G` / `MemoryMax=24G` / `TasksMax=1024`; thread/dream/wake/
+schedule (and any unknown kind, conservatively) `MemoryHigh=2G` /
+`MemoryMax=4G` (exactly) / `TasksMax=1024`; **no `CPUQuota`** for real
+sessions (probe values stay probe-only). Exact byte properties are emitted
+at launch and **verified as applied** in the scope's cgroup (fail-closed on
+mismatch); selection is immutable across 429 retry/reacquire. macOS stays
+honestly capped/best-effort; passthrough/unsupported/degraded backends stay
+explicit about unavailable enforcement. Receipts carry bounded attribution
+(`invocation_kind` + redacted `executor_profile`) aggregated by the fixed
+canonical invocation-kind vocabulary (unknown kinds fold into one `other`
+bucket — no dynamic attribution keys); per-receipt attribution reaches only
+the authed `/metrics` recent window, never the unauthenticated `/health`
+(per-receipt detail stays dropped there).
+
 ### Timeout handling
 
 Blocked tasks don't wait forever:
@@ -1128,6 +1148,110 @@ a different table and different triggers. Agent Todos are agent-owned,
 agent-driven Schedule records with a dedicated scheduler/runner/spawn-callback
 pipeline. The two systems coexist and do not share data or scheduling
 infrastructure.
+
+**Daemon-managed workspace cleanup scheduler (THR-195 seq 129).** Workspace
+cleanup is a **daemon-managed, system-default capability** that runs on its
+own without user configuration and is fully independent of user Schedules
+(founder ruling THR-195 seq 129; manager resolution seq 130; implementation
+direction seq 131; per-agent defaults TASK-6036). The daemon registers a
+periodic loop (``runtime/daemon/workspace_cleanup_scheduler.py`` — the sixth
+daemon-owned loop alongside dream/schedule/zombie/direct-connect, one
+registration in ``runtime/daemon/app.py``) that, per agent workspace:
+
+1. **Measures** the OWNING AGENT's workspace with an explicit bounded,
+   fail-open budget: one true wall-clock deadline shared across all
+   collection — each git subprocess receives ``min(per-call cap, remaining
+   deadline)`` and expiry is re-checked after every subprocess and after the
+   last repository; workspace/repo/worktree cardinality caps propagate
+   truncation. Every timeout, error, or cap hit yields an explicit
+   ``measurement unavailable`` advisory status and can never block daemon
+   operation or task/session spawning.
+2. **Decides** on the weekly occurrence (Sunday 03:30 in the org's effective
+   timezone; TASK-5552 §6). At most one trigger per weekly window per agent
+   (a missed window is never replayed), one run at a time (a later
+   occurrence fires only after the preceding cleanup task of that agent is
+   terminal — TASK-5552 §3), a seven-day per-agent cooldown, and the
+   founder threshold: trigger only when the agent's workspace totals
+   >= 1 GiB.
+3. **Triggers** an ordinary root task ASSIGNED TO THE OWNING AGENT
+   (``insert_task`` + ``enqueue_task`` — the same pattern the Schedule spawn
+   callback uses, minus the Schedule) with a **daemon-composed brief** that
+   carries the fresh advisory snapshot at trigger time. The brief is never a
+   Schedule brief: no Schedule is looked up, created, or modified, and
+   nothing is persisted in any Schedule field. The first TWO triggered runs
+   per agent are STRICTLY report-only (TASK-5552 §6 rollout); from run #3
+   the brief is the approved TASK-5552 §4 fixed normalized cleanup contract
+   (bounded, Git-aware, non-force, action-time-re-derived eligibility).
+
+The packed advisory block is sizing context ONLY: **stale on arrival**, **not
+an eligibility list**, **not a candidate list**, labels no path safe,
+recommends no removal, contains only aggregate counts/sizes/status for the
+owning agent's workspace, never enumerates paths, and never uses pending
+jobs or ``blocked_on_job_ids`` as liveness. Every path and fact must be
+re-derived independently and immediately before any action.
+
+The responsible agent reports results to the founder in **one durable
+founder-visible thread PER AGENT** (consultant seq 131: "one durable thread,
+not one per run" — per-agent per the founder default). The daemon resolves
+the thread by AUTHORITATIVE IDENTITY, not by the fixed per-agent subject
+alone: a thread is the agent's durable report thread only when the subject
+matches AND its daemon-cleanup provenance resolves (``composed_from_task_id``
+→ one of the agent's daemon-marked cleanup tasks, queried by the existing
+``threads.composed_from_task_id`` index — no presentation-page bound can
+hide an older thread) AND the owning agent is a participant (the
+participant-authorized send requires membership) AND it is open AND its
+opening message carries the daemon's distinctive composition text (a
+user-created subject collision is never selected). The identity lookup is
+**tri-state**: an authoritative absence is the ONLY state that may create a
+thread; a lookup error is ``indeterminate`` and FAILS CLOSED — no duplicate
+thread, no task, no enqueue — with an audited reason (TASK-6046). It creates
+the thread on first trigger ATOMICALLY WITH THE CLEANUP TASK (see the
+producer contract below; composer = the owning agent, recipient @founder —
+the owning agent is therefore a participant) and passes only the thread id
+in the brief. NO
+minted report token: the agent appends the report during its task session
+via the existing participant-authorized, task-bound ``happyranch threads
+send`` path (composer + task_id + session_id binding), which requires
+participant membership and a live task-session binding but no invocation
+token. Silence on that thread is the loop-stopped signal. Report content:
+measured before/after sizes, exact removals (none in report-only), skips,
+and any ambiguity (seq 130).
+
+Persistence is schema-free by design: the first-two run counter and the
+seven-day cooldown derive from the owning agent's daemon-marked cleanup task
+rows via an authoritative SQL-side ``brief`` prefix filter
+(``Database.list_tasks_by_brief_prefix`` — no bounded scan of ordinary tasks
+can hide older cleanup rows, and a lookup failure is represented as
+indeterminate so triggering FAILS CLOSED; a dedup-blind daemon can never
+double-fire, reset the first-two counter, or bypass the cooldown). The
+per-agent thread identity resolves as described above. No
+schema/API/CLI/auth/permission change is introduced. A kill switch —
+``workspace_cleanup.enabled`` in the org ``config.yaml`` (default true) —
+disables the capability per org; it is an existing daemon/org config
+mechanism with no new public API/CLI/UI surface.
+
+Trigger task production is **rollback-safe and atomic** (TASK-6046): the
+task id is allocated only after every awaited step (the bounded measurement
+is done first), and allocation + tri-state thread-identity resolution +
+brief composition + insertion run as one synchronous block under
+``org.db_lock`` with no awaits between ``next_task_id`` and the insert — no
+id is ever selected before awaited work, so another producer cannot claim it
+mid-trigger and no collision can leave a report thread falsely linked to an
+unrelated task. On an agent's FIRST trigger the report thread (row,
+participant, opening message, turn accounting, and the
+``thread_started``/``thread_message_sent`` audit rows) and the cleanup task
+are written in ONE transaction
+(``Database.insert_cleanup_report_thread_and_task`` — the existing
+BEGIN IMMEDIATE/COMMIT/rollback compound pattern); on ANY failure every
+durable row rolls back — ZERO residue across threads/participants/messages/
+turns/audits/tasks — nothing is enqueued, and a later retry succeeds exactly
+once. When the thread already exists only the task is inserted, so an insert
+failure can never leave thread residue either. The inserted task is a clean
+root (no parent, no thread dispatch); every compensation path is audited
+(``workspace-cleanup:skipped`` with the exact reason). Workspace enumeration
+is paged in bounded batches of 64 per call across every registered agent
+workspace, so an org with more than one batch of agents never alphabetically
+starves the later ones.
 
 ---
 

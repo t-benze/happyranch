@@ -19,7 +19,15 @@ from runtime.remote_access.identity import ConnectorIdentity
 
 @dataclass(frozen=True)
 class DeviceAuthorization:
-    """A paired device's authorization record."""
+    """A paired device's authorization record.
+
+    ``credential_digest`` (THR-097 Unit 3A Supported-DIY lane) is the sha256
+    digest of the device's pairing credential — the verifier material the
+    customer-owned-network adapter checks on every request. Only the digest
+    is ever stored; the raw credential is generated once at pairing-redeem
+    time and never persisted, logged, or rendered. Absent (None) keeps the
+    managed/harness paths unchanged.
+    """
 
     device_id: str
     tenant_id: str
@@ -27,18 +35,34 @@ class DeviceAuthorization:
     authorization_epoch: int
     expires_at: datetime
     revoked: bool = False
+    credential_digest: str | None = None
+
+
+@dataclass(frozen=True)
+class PendingPairing:
+    """A single-use, expiring local pairing token awaiting redemption.
+
+    Only the sha256 digest of the code is persisted (never the code itself);
+    ``consumed`` marks single-use redemption so a replayed code denies
+    identically to an absent one (no credential-existence oracle).
+    """
+
+    code_digest: str
+    expires_at: datetime
+    consumed: bool = False
 
 
 @dataclass
 class TrustState:
-    """In-memory trust state: connector identity, paired devices, and the
-    monotonic pairing/revocation epochs."""
+    """In-memory trust state: connector identity, paired devices, pending
+    local pairing tokens, and the monotonic pairing/revocation epochs."""
 
     connector_identity: ConnectorIdentity | None
     pairing_epoch: int
     revocation_epoch: int
     devices: dict[str, DeviceAuthorization] = field(default_factory=dict)
     current_device_id: str | None = None
+    pending_pairings: dict[str, PendingPairing] = field(default_factory=dict)
 
     def apply_pairing(self, device: DeviceAuthorization) -> None:
         """Pair/re-pair a device; epochs are monotonic (rollback rejected)."""
@@ -61,6 +85,24 @@ class TrustState:
             raise ValueError("revocation epoch rollback rejected")
         self.revocation_epoch = epoch
         for device in self.devices.values():
+            object.__setattr__(device, "revoked", True)
+
+    def _revoke_device(self, device_id: str, epoch: int) -> None:
+        """Revoke ONE paired device at a monotonic epoch (Supported-DIY
+        lost-device flow); other devices stay authorized. The epoch still
+        advances monotonically (rollback rejected) so a persisted revocation
+        cannot be replayed away.
+
+        PRIVATE: like ``_apply_revocation``, reachable only through the
+        authoritative ``RevocationCoordinator`` transaction (contract §9) so
+        live-stream closure always precedes the state change. Revoking a
+        device that is no longer paired still advances the epoch (deny side).
+        """
+        if epoch <= self.revocation_epoch:
+            raise ValueError("revocation epoch rollback rejected")
+        self.revocation_epoch = epoch
+        device = self.devices.get(device_id)
+        if device is not None:
             object.__setattr__(device, "revoked", True)
 
 

@@ -222,8 +222,12 @@ def test_passthrough_backend_lifecycle_is_residue_free():
     )
     pending = backend.prepare(request, policy)
     assert pending.request_id == "SCHEDULE-X"
+    assert pending.invocation_kind == "schedule"
+    assert pending.executor_profile == "claude"
     running = backend.launch(pending, LaunchSpec(argv=("a",)))
     assert running.root_pid == 0  # no subprocess exists here (diagnostic)
+    assert running.invocation_kind == "schedule"
+    assert running.executor_profile == "claude"
     receipt = backend.finish(running, "success", 5.0)
     assert receipt.backend == "passthrough"
     assert receipt.cleanup_status == CleanupStatus.CLEAN
@@ -231,6 +235,11 @@ def test_passthrough_backend_lifecycle_is_residue_free():
     assert receipt.survivors == ()
     assert receipt.memory_peak_bytes is None
     assert receipt.memory_peak_provenance == MeasurementProvenance.UNAVAILABLE
+    # Slice C: the no-enforcement backend still attributes the receipt
+    # honestly (bounded attribution from the AdmissionRequest) — but it
+    # applies NO limits (all capabilities remain unavailable).
+    assert receipt.invocation_kind == "schedule"
+    assert receipt.executor_profile == "claude"
     backend.abandon(pending)  # no-op, no residue
     recovered = backend.recover("tok")
     assert recovered.recovered is False

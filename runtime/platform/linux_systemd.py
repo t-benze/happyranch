@@ -54,6 +54,18 @@ snapshot carries no approved limit values — 16/64/72/4096/2800 remain
 unapproved measurement candidates); the probe proves the enforcement
 machinery itself works, and lifecycle containment (launch inside the scope,
 whole-tree stop, emptiness verification) is what Slice B wires.
+
+Slice C (THR-207) ships the founder-approved **fixed initial Linux
+enforcement policy** for real session scopes: task sessions get
+``MemoryHigh=14G`` / ``MemoryMax=24G`` and thread/dream/wake/schedule (and
+any unknown kind, conservatively) get ``MemoryHigh=2G`` / ``MemoryMax=4G``,
+with ``TasksMax=1024`` for every supervised session and **no ``CPUQuota``**
+(see ``runtime/platform/enforcement_policy.py``). The immutable per-
+invocation envelope is resolved from the existing ``AdmissionRequest``
+``invocation_kind`` at ``prepare``/``launch`` and verified as applied to the
+scope's cgroup at launch (fail-closed). The probe's deliberately tiny
+probe-only limit values (16M/4/10% incl. ``CPUQuota``) are untouched and
+are never confused with real session policy.
 """
 
 from __future__ import annotations
@@ -66,8 +78,9 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
+from runtime.platform.enforcement_policy import enforcement_policy_for
 from runtime.platform.process_census import (
     LinuxProcReader,
     ProcessTreeCensus,
@@ -92,6 +105,9 @@ from runtime.platform.session_backend import (
     SessionBackend,
     SurvivorRecord,
 )
+
+if TYPE_CHECKING:
+    from runtime.platform.enforcement_policy import SessionEnforcementPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -488,6 +504,38 @@ class LinuxSystemdBackend:
             applied[name] = got is not None and got.split()[0] == want.split()[0]
         return applied
 
+    def _session_limits_applied(
+        self, cg: str, policy: "SessionEnforcementPolicy"
+    ) -> tuple[bool, str]:
+        """Verify the session enforcement envelope is applied to *cg*.
+
+        Real-session Slice C check: the scope's cgroup files must hold the
+        exact per-invocation envelope resolved from the ``AdmissionRequest``
+        ``invocation_kind`` — ``memory.high`` (MemoryHigh soft throttle),
+        ``memory.max`` (MemoryMax hard ceiling) and ``pids.max``
+        (TasksMax). The ENTIRE normalized file value must equal the
+        expected value exactly — a token-prefix match would silently accept
+        a suffixed or extra-token value that was not the property that
+        landed; any mismatch is a containment failure (fail-closed).
+        ``_read_file`` strips the kernel's trailing newline / outer
+        whitespace (the real cgroup v2 file shape), nothing else.
+        ``CPUQuota`` is deliberately never emitted for real sessions, so
+        ``cpu.max`` is not part of this verification.
+        """
+        expected = {
+            "memory.high": str(policy.memory_high_bytes),
+            "memory.max": str(policy.memory_max_bytes),
+            "pids.max": str(policy.tasks_max),
+        }
+        missing: list[str] = []
+        for name, want in expected.items():
+            got = self._read_file(cg, name)
+            if got is None or got != want:
+                missing.append(f"{name}={got!r} (want {want})")
+        if missing:
+            return False, "; ".join(missing)
+        return True, "envelope-applied"
+
     def _read_file(self, cg: str, name: str) -> str | None:
         try:
             with open(
@@ -572,12 +620,23 @@ class LinuxSystemdBackend:
     # ── lifecycle ─────────────────────────────────────────────────
 
     def prepare(self, request, policy) -> PendingHandle:
-        """Reserve the per-session scope unit name; no scope exists yet."""
+        """Reserve the per-session scope unit name; no scope exists yet.
+
+        Carries the bounded receipt attribution (``invocation_kind`` /
+        ``executor_profile``) from the ``AdmissionRequest`` onto the pending
+        handle so ``launch`` can resolve the immutable per-invocation
+        enforcement envelope and the eventual ``Receipt`` is attributed
+        honestly (THR-207 Slice C).
+        """
         if not request.logical_id:
             raise BackendPrepareError("logical_id is required")
         unit = f"{_UNIT_PREFIX}{request.logical_id}-{uuid.uuid4().hex[:8]}.scope"
         return PendingHandle(
-            backend=_BACKEND_NAME, token=unit, request_id=request.logical_id
+            backend=_BACKEND_NAME,
+            token=unit,
+            request_id=request.logical_id,
+            invocation_kind=request.invocation_kind,
+            executor_profile=request.executor_profile,
         )
 
     def launch(self, pending: PendingHandle, spec) -> RunningHandle:
@@ -586,13 +645,28 @@ class LinuxSystemdBackend:
         ``systemd-run --user --scope`` execs the target inside the transient
         scope (blocking stdio/PID model), so the returned handle's
         ``process`` is the contained target; membership is verified by
-        reading the process's own cgroup before the handle is returned."""
+        reading the process's own cgroup before the handle is returned.
+
+        **Slice C enforcement (THR-207):** real session scopes emit the
+        immutable per-invocation envelope resolved from
+        ``pending.invocation_kind`` — exact ``MemoryHigh`` / ``MemoryMax`` /
+        ``TasksMax`` properties (never ``CPUQuota``). After the scope
+        materializes, the applied cgroup files (``memory.high`` /
+        ``memory.max`` / ``pids.max``) are verified byte-for-byte against the
+        envelope; a mismatch raises :class:`BackendLaunchError` (fail-closed:
+        a scope that claims guaranteed limits but did not apply them is not
+        containment). The probe's tiny probe-only limit values are untouched
+        and never confused with this session policy.
+        """
         unit = pending.token
+        policy = enforcement_policy_for(pending.invocation_kind)
+        properties = policy.systemd_properties()
         try:
             proc = self._systemd_run_scope(
                 unit,
                 self._slice_name,
                 tuple(spec.argv),
+                properties=properties,
                 spec_stdin=spec.stdin,
                 spec_stdout=spec.stdout,
                 spec_stderr=spec.stderr,
@@ -611,9 +685,50 @@ class LinuxSystemdBackend:
                 self._safe_stop(unit)
                 proc.kill()
                 raise BackendLaunchError(f"scope {unit} was not created")
-            # The process ran and exited before we could resolve the scope —
-            # finish() will observe the unit gone and report CLEAN.
-            cg = ""
+            # The target exited before ``_wait_for_cgroup`` resolved the
+            # scope. This branch is TERMINAL and FAIL-CLOSED by contract:
+            # an already-exited process must never yield a RunningHandle —
+            # the caller would bind it, fire ``on_started`` with a dead PID,
+            # and enter ``launch_body``. The cgroup is resolved through the
+            # transient unit's ControlGroup (the established authoritative
+            # seam ``finish`` already uses) ONLY to record the exact
+            # applied-limits verification as diagnostic evidence — even
+            # when ControlGroup remains queryable and memory.high /
+            # memory.max / pids.max exactly match, the outcome is the same:
+            # the scope is stopped, the (already-dead) process killed, and
+            # BackendLaunchError is raised so the caller abandons the
+            # pending handle (admission released exactly once), freezes
+            # SPAWN_FAILURE, and no ``on_started`` callback or receipt is
+            # ever published.
+            cg = self._control_group_of(unit)
+            if cg:
+                applied, detail = self._session_limits_applied(cg, policy)
+                evidence = (
+                    f"exact session envelope applied ({detail})"
+                    if applied
+                    else f"session envelope NOT applied ({detail})"
+                )
+            else:
+                evidence = "scope already collected (no ControlGroup evidence)"
+            self._safe_stop(unit)
+            proc.kill()
+            raise BackendLaunchError(
+                f"scope {unit} exited before its session enforcement "
+                "envelope could be verified (fail-closed: an exited target "
+                f"never returns a RunningHandle); applied-limits evidence: "
+                f"{evidence}"
+            )
+        # Slice C: verify the enforcement envelope was actually applied to
+        # the scope's cgroup — a guaranteed limit that did not land is a
+        # containment failure, never a silent best-effort claim.
+        ok, evidence = self._session_limits_applied(cg, policy)
+        if not ok:
+            self._safe_stop(unit)
+            proc.kill()
+            raise BackendLaunchError(
+                f"scope {unit} did not apply the session enforcement "
+                f"envelope ({evidence})"
+            )
         root_pid = proc.pid
         identity = self._census.start_identity(root_pid) or ""
         state = _LaunchState(unit=unit, cgroup=cg, root_pid=root_pid, started_at=self._monotonic())
@@ -629,6 +744,8 @@ class LinuxSystemdBackend:
             root_pid=root_pid,
             start_identity=identity,
             process=proc,
+            invocation_kind=pending.invocation_kind,
+            executor_profile=pending.executor_profile,
         )
 
     def _start_exit_capture(
@@ -668,8 +785,10 @@ class LinuxSystemdBackend:
         """
         cg = state.cgroup
         if not cg:
-            # The scope never materialized (or already exited before launch
-            # resolved it) — there is no cgroup to capture while alive.
+            # Defensive guard: launch fails closed without a resolved cgroup
+            # (THR-207 Slice C — no unverified enforced session is ever
+            # reported launched), so a launch-state cgroup is always
+            # populated on this path; there is nothing to capture otherwise.
             return
         pid = proc.pid
 
@@ -1118,6 +1237,8 @@ class LinuxSystemdBackend:
             sample_gaps=gaps,
             enforcement_events=enforcement_events,
             survivors=survivors,
+            invocation_kind=running.invocation_kind,
+            executor_profile=running.executor_profile,
         )
 
     def abandon(self, pending: PendingHandle) -> None:

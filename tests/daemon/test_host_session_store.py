@@ -66,6 +66,8 @@ def make_receipt(
     enforcement_events: tuple[str, ...] = (),
     survivors: tuple[SurvivorRecord, ...] = (),
     backend: str = "fake",
+    invocation_kind: str = "",
+    executor_profile: str = "",
 ) -> Receipt:
     return Receipt(
         backend=backend,
@@ -83,6 +85,8 @@ def make_receipt(
         sample_gaps=sample_gaps,
         enforcement_events=enforcement_events,
         survivors=survivors,
+        invocation_kind=invocation_kind,
+        executor_profile=executor_profile,
     )
 
 
@@ -306,6 +310,80 @@ def test_recent_summary_carries_provenance_and_bounded_fields() -> None:
     assert summary["survivors_count"] == 2
 
 
+# ---------------------------------------------------------------------------
+# Slice C: bounded receipt attribution (invocation_kind + executor_profile)
+# ---------------------------------------------------------------------------
+
+
+def test_by_invocation_kind_aggregate_is_bounded_and_fixed_vocabulary() -> None:
+    """Attribution aggregation uses the FIXED canonical kind vocabulary:
+    unknown/empty kinds fold into a single ``other`` bucket, so the
+    aggregate map cardinality can never grow with input (no dynamic
+    attribution keys)."""
+    store = HostSessionStore()
+    store.publish(make_receipt(invocation_kind="task"))
+    store.publish(make_receipt(invocation_kind="thread"))
+    store.publish(make_receipt(invocation_kind="dream"))
+    store.publish(make_receipt(invocation_kind="wake"))
+    store.publish(make_receipt(invocation_kind="schedule"))
+    for hostile_kind in ("", "mystery", "TASK", "custom-kind-123", "executor:attack"):
+        store.publish(make_receipt(invocation_kind=hostile_kind))
+    snap = store.snapshot()
+    assert snap["by_invocation_kind"] == {
+        "task": 1,
+        "thread": 1,
+        "dream": 1,
+        "wake": 1,
+        "schedule": 1,
+        "other": 5,
+    }
+    # Cardinality never exceeds the canonical vocabulary + 1 ``other`` bucket.
+    assert set(snap["by_invocation_kind"].keys()) <= {
+        "task", "thread", "dream", "wake", "schedule", "other",
+    }
+
+
+def test_recent_summary_carries_bounded_attribution() -> None:
+    """The authed recent window attributes each receipt with a bounded
+    invocation kind and a redacted executor profile (length/character
+    conservative redaction for the externally-influenced value)."""
+    store = HostSessionStore()
+    store.publish(
+        make_receipt(
+            invocation_kind="task",
+            executor_profile="claude",
+        )
+    )
+    store.publish(
+        make_receipt(
+            invocation_kind="unknown-kind",
+            executor_profile="evil\nprofile" + "x" * 200,
+        )
+    )
+    snap = store.snapshot()
+    task_summary = snap["recent"][-1]
+    assert task_summary["invocation_kind"] == "task"
+    assert task_summary["executor_profile"] == "claude"
+    hostile_summary = snap["recent"][0]
+    # Unknown kind folds to the fixed ``other`` bucket; the profile is
+    # redacted: length-bounded, control chars scrubbed, never raw input.
+    assert hostile_summary["invocation_kind"] == "other"
+    assert len(hostile_summary["executor_profile"]) <= 64
+    assert "\n" not in hostile_summary["executor_profile"]
+    assert hostile_summary["executor_profile"].startswith("evil_profile")
+
+
+def test_attribution_never_creates_dynamic_aggregate_keys() -> None:
+    """Adversarial: 100 distinct hostile invocation-kind values still produce
+    the SAME fixed key set — only the ``other`` bucket count grows."""
+    store = HostSessionStore(max_receipts=128)
+    for i in range(100):
+        store.publish(make_receipt(invocation_kind=f"kind-{i}"))
+    snap = store.snapshot()
+    assert set(snap["by_invocation_kind"].keys()) == {"other"}
+    assert snap["by_invocation_kind"]["other"] == 100
+
+
 def test_publish_is_thread_safe() -> None:
     import threading
 
@@ -477,6 +555,8 @@ def test_health_wired_adds_bounded_non_sensitive_host_sessions(tmp_home, app) ->
         cleanup_status=CleanupStatus.INCOMPLETE,
         survivors=(make_survivor(4000),),
         memory_peak_bytes=777,
+        invocation_kind="task",
+        executor_profile="claude",
     )
     state.host_session_store.publish(receipt)
     # Route the receipt through the residue accountant (the real publish path)
@@ -498,10 +578,50 @@ def test_health_wired_adds_bounded_non_sensitive_host_sessions(tmp_home, app) ->
     # Receipt aggregate is still observable on the public surface.
     assert hs["receipts"]["published_total"] == 1
     assert hs["receipts"]["by_terminal_reason"][TerminalReason.FAILURE.value] == 1
-    # Never leaks survivor identities (PIDs / start identities) anywhere.
+    # Slice C: the bounded kind aggregate IS observable (fixed vocabulary,
+    # non-sensitive counts) but per-receipt attribution detail is not.
+    assert hs["receipts"]["by_invocation_kind"] == {"task": 1}
     blob = json.dumps(body)
+    # Never leaks survivor identities (PIDs / start identities) anywhere.
     assert "4000" not in blob
     assert "start_identity" not in blob
+    # Never leaks per-receipt attribution (recent window is dropped public).
+    assert "executor_profile" not in blob
+
+
+def test_metrics_authed_surface_carries_bounded_attribution(
+    tmp_home, app, auth_headers
+) -> None:
+    """Slice C: the bearer-authed /metrics surface carries the explicitly
+    bounded receipt attribution — per-receipt bounded kind + redacted
+    executor profile in the recent window, and the fixed-vocabulary
+    by_invocation_kind aggregate — without schema/route/config change."""
+    client = TestClient(app)
+    state = client.app.state.daemon
+    state.host_session_store.publish(
+        make_receipt(
+            terminal_reason=TerminalReason.SUCCESS.value,
+            invocation_kind="task",
+            executor_profile="claude",
+        )
+    )
+    state.host_session_store.publish(
+        make_receipt(
+            terminal_reason=TerminalReason.SUCCESS.value,
+            invocation_kind="schedule",
+            executor_profile="pi",
+        )
+    )
+    r = client.get("/api/v1/metrics", headers=auth_headers)
+    assert r.status_code == 200
+    hs = r.json()["host_sessions"]
+    assert hs["receipts"]["by_invocation_kind"] == {"task": 1, "schedule": 1}
+    recent = hs["receipts"]["recent"]
+    assert {row["invocation_kind"] for row in recent} == {"task", "schedule"}
+    assert {row["executor_profile"] for row in recent} == {"claude", "pi"}
+    # Redacted/bounded per-receipt attribution stays JSON-safe.
+    blob = json.dumps(hs)
+    assert "claude" in blob and "pi" in blob
 
 
 def test_health_host_sessions_reflects_admission_backpressure(tmp_home, app) -> None:

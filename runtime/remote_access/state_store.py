@@ -60,16 +60,21 @@ revocation epoch) and is out of scope for this Unit-3 local mechanism.
 """
 from __future__ import annotations
 
+import contextlib
+import copy
 import hashlib
 import json
 import os
 import stat
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
-from runtime.remote_access.authorization import DeviceAuthorization, TrustState
+import fcntl
+
+from runtime.remote_access.authorization import DeviceAuthorization, PendingPairing, TrustState
 from runtime.remote_access.identity import ConnectorIdentity
 from runtime.remote_access.policy import canonical_json
 # The non-normative local envelope (not a founder-gated schema). Bumping the
@@ -91,11 +96,26 @@ ANCHOR_KIND = "connector-trust-state-anchor-nonnormative"
 _STATE_DIR_MODE = 0o700
 _STATE_FILE_MODE = 0o600
 
+# Default bound on the owner-only inter-process transaction lock acquire
+# (flock). Ceremony operations are short (load + mutate + two small atomic
+# writes); a holder that hangs past this bound fails the waiter closed with
+# ``StateStoreError`` instead of blocking forever (fail closed on
+# contention). ``LOCK_ACQUIRE_SLEEP`` is the non-blocking retry interval.
+DEFAULT_LOCK_TIMEOUT_SECONDS = 30.0
+_LOCK_ACQUIRE_SLEEP = 0.02
+
 _ENVELOPE_KEYS = frozenset({"version", "kind", "generation", "payload", "digest"})
 _ANCHOR_KEYS = frozenset({"version", "kind", "generation", "snapshot_digest", "digest"})
 
 _PAYLOAD_KEYS = frozenset(
-    {"connector_identity", "pairing_epoch", "revocation_epoch", "current_device_id", "devices"}
+    {
+        "connector_identity",
+        "pairing_epoch",
+        "revocation_epoch",
+        "current_device_id",
+        "devices",
+        "pending_pairings",
+    }
 )
 _IDENTITY_KEYS = frozenset({"tenant_id", "home_id", "connector_id"})
 _DEVICE_KEYS = frozenset(
@@ -106,8 +126,14 @@ _DEVICE_KEYS = frozenset(
         "authorization_epoch",
         "expires_at",
         "revoked",
+        "credential_digest",
     }
 )
+# credential_digest is OPTIONAL (Unit 3A additive): pre-3A envelopes that
+# predate it must still load (absent = None); a present value is validated
+# strictly. Unknown keys are still rejected via ``_DEVICE_KEYS``.
+_DEVICE_REQUIRED_KEYS = _DEVICE_KEYS - {"credential_digest"}
+_PENDING_KEYS = frozenset({"code_digest", "expires_at", "consumed"})
 
 
 class StateStoreError(Exception):
@@ -199,7 +225,7 @@ def _state_from_payload(payload: dict[str, Any]) -> TrustState:
         unknown_device = set(raw) - _DEVICE_KEYS
         if unknown_device:
             raise CorruptTrustStateError("trust state device record has unknown keys")
-        missing_device = _DEVICE_KEYS - set(raw)
+        missing_device = _DEVICE_REQUIRED_KEYS - set(raw)
         if missing_device:
             raise CorruptTrustStateError("trust state device record incomplete")
         stored_id = _require_str(raw, "device_id")
@@ -208,6 +234,20 @@ def _state_from_payload(payload: dict[str, Any]) -> TrustState:
         revoked = raw.get("revoked")
         if not isinstance(revoked, bool):
             raise CorruptTrustStateError("trust state revoked must be a boolean")
+        # Unit 3A Supported-DIY: the pairing-credential digest is OPTIONAL in
+        # the non-normative envelope (managed/harness records predate it).
+        # Present must be a non-empty 64-hex sha256 digest; anything else
+        # fails closed. Absent stays None (no credential enforcement).
+        credential_digest = raw.get("credential_digest")
+        if credential_digest is not None:
+            if (
+                not isinstance(credential_digest, str)
+                or len(credential_digest) != 64
+                or any(c not in "0123456789abcdef" for c in credential_digest)
+            ):
+                raise CorruptTrustStateError(
+                    "trust state device credential_digest must be a sha256 hex digest"
+                )
         devices[device_id] = DeviceAuthorization(
             device_id=stored_id,
             tenant_id=_require_str(raw, "tenant_id"),
@@ -215,7 +255,38 @@ def _state_from_payload(payload: dict[str, Any]) -> TrustState:
             authorization_epoch=_require_int(raw, "authorization_epoch"),
             expires_at=_require_tz_datetime(raw.get("expires_at")),
             revoked=revoked,
+            credential_digest=credential_digest,
         )
+
+    pending_raw = payload.get("pending_pairings")
+    pending_pairings: dict[str, PendingPairing] = {}
+    if pending_raw is not None:
+        if not isinstance(pending_raw, dict):
+            raise CorruptTrustStateError("trust state pending_pairings must be an object")
+        for device_name, raw in pending_raw.items():
+            if not isinstance(device_name, str) or not device_name.strip():
+                raise CorruptTrustStateError("trust state pending pairing name must be a string")
+            if not isinstance(raw, dict):
+                raise CorruptTrustStateError("trust state pending pairing record must be an object")
+            unknown_pending = set(raw) - _PENDING_KEYS
+            if unknown_pending:
+                raise CorruptTrustStateError("trust state pending pairing has unknown keys")
+            missing_pending = _PENDING_KEYS - set(raw)
+            if missing_pending:
+                raise CorruptTrustStateError("trust state pending pairing incomplete")
+            code_digest = _require_str(raw, "code_digest")
+            if len(code_digest) != 64 or any(c not in "0123456789abcdef" for c in code_digest):
+                raise CorruptTrustStateError(
+                    "trust state pending pairing code_digest must be a sha256 hex digest"
+                )
+            consumed = raw.get("consumed")
+            if not isinstance(consumed, bool):
+                raise CorruptTrustStateError("trust state pending pairing consumed must be a boolean")
+            pending_pairings[device_name] = PendingPairing(
+                code_digest=code_digest,
+                expires_at=_require_tz_datetime(raw.get("expires_at")),
+                consumed=consumed,
+            )
 
     current_device_id = payload.get("current_device_id")
     if current_device_id is not None:
@@ -231,6 +302,7 @@ def _state_from_payload(payload: dict[str, Any]) -> TrustState:
         revocation_epoch=revocation_epoch,
         devices=devices,
         current_device_id=current_device_id,
+        pending_pairings=pending_pairings,
     )
 
 
@@ -257,8 +329,17 @@ def _payload_from_state(state: TrustState) -> dict[str, Any]:
                 "authorization_epoch": device.authorization_epoch,
                 "expires_at": device.expires_at.isoformat(),
                 "revoked": device.revoked,
+                "credential_digest": device.credential_digest,
             }
             for device_id, device in sorted(state.devices.items())
+        },
+        "pending_pairings": {
+            device_name: {
+                "code_digest": pending.code_digest,
+                "expires_at": pending.expires_at.isoformat(),
+                "consumed": pending.consumed,
+            }
+            for device_name, pending in sorted(state.pending_pairings.items())
         },
     }
 
@@ -280,12 +361,101 @@ class AtomicFileTrustStateStore:
         path: Path,
         default_state: TrustState,
         anchor_path: Path | None = None,
+        lock_timeout: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
     ) -> None:
         self._path = Path(path)
         self._anchor_path = (
             Path(anchor_path) if anchor_path is not None else Path(str(path) + ".anchor")
         )
         self._default_state = default_state
+        self._lock_timeout = lock_timeout
+
+    # ── the one serialized mutation boundary (TASK-6045) ──────────────────
+
+    @contextlib.contextmanager
+    def transaction(self) -> Iterator["_TrustStateTransaction"]:
+        """The ONE serialized inter-process mutation boundary for the
+        trust-state pair: acquire the owner-only flock, LOAD the current
+        persisted state, compute the next monotonic generation, yield the
+        transaction handle, and on normal exit PUBLISH the snapshot+anchor
+        pair at that generation — all under the same lock. An exception in
+        the body publishes NOTHING (fail closed); ``tx.commit()`` publishes
+        immediately (the deny side must be durable before a surfaced
+        failure); ``tx.abort()`` publishes nothing on normal exit (a deny
+        path has no side effect, not even a generation bump).
+
+        Two processes can no longer both observe generation N, both pass a
+        generation check, and both write N+1: the load, the generation
+        computation, the snapshot publication, and the anchor publication
+        are ONE serialized boundary (the TASK-6044 reviewer [HIGH] finding-1
+        check-then-save race is closed). Reads stay lock-free and fail
+        closed on a torn pair exactly as before.
+
+        The working copy handed to the transaction body is a DEEP COPY of
+        the loaded state (mirroring ``InMemoryTrustStateStore``), so an
+        abort or an exception discards the mutation even on FIRST-RUN —
+        ``load()`` returns the mutable ``_default_state`` when no pair
+        exists, and the transaction handle must never alias it (the
+        TASK-6047 reviewer [HIGH] finding: a discarded first-run mutation
+        leaked into later same-process loads/transactions).
+        """
+        with self._lock_file():
+            tx = _TrustStateTransaction(self, self.load(), self._next_generation())
+            try:
+                yield tx
+            except BaseException:
+                # Never publish on failure (fail closed); a committed deny
+                # side is already durable via ``tx.commit()``.
+                raise
+            else:
+                tx.commit()
+
+    @contextlib.contextmanager
+    def _lock_file(self) -> Iterator[None]:
+        """Owner-only INTER-PROCESS lock (``fcntl.flock``) over the state
+        pair. The lock file lives beside the snapshot (``<state>.lock``),
+        owner-only (0600; the parent directory is tightened to 0700 exactly
+        like the snapshot writes), and is a STABLE inode that is NEVER
+        unlinked: flock is bound to the open file description, so unlinking
+        a held lock file would let a second inode be locked concurrently
+        (the classic lock-file unlink race). There is no stale-lock
+        recovery procedure to perform: the kernel releases the flock
+        automatically when the holder's descriptor closes or its process
+        dies (crash/outage fail open to the next legitimate writer). A
+        bounded non-blocking acquire fails closed with ``StateStoreError``
+        when the lock stays contended past ``lock_timeout``.
+        """
+        lock_path = Path(str(self._path) + ".lock")
+        parent = lock_path.parent
+        fd: int | None = None
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+            os.chmod(parent, _STATE_DIR_MODE)
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, _STATE_FILE_MODE)
+            # Tighten unconditionally: a pre-existing lock file with loose
+            # permissions holds no data — tightening is always safe and the
+            # file must never be group/world readable.
+            os.fchmod(fd, _STATE_FILE_MODE)
+            deadline = time.monotonic() + self._lock_timeout
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise StateStoreError(
+                            "trust state lock contended; retry the ceremony operation"
+                        )
+                    time.sleep(_LOCK_ACQUIRE_SLEEP)
+        except OSError as exc:
+            if fd is not None:
+                os.close(fd)
+            raise StateStoreError("trust state lock unavailable") from exc
+        try:
+            yield
+        finally:
+            # Closing the descriptor releases the flock (also on crash).
+            os.close(fd)
 
     # ── TrustStateStore protocol ──────────────────────────────────────────
 
@@ -363,25 +533,35 @@ class AtomicFileTrustStateStore:
         return _state_from_payload(payload)
 
     def save(self, state: TrustState) -> None:
-        next_generation = self._next_generation()
+        """Publish *state* at the next monotonic generation, under the SAME
+        owner-only inter-process lock as ``transaction()`` — a direct save
+        (install/test writers) can never interleave with a ceremony
+        transaction and can never observe/regress the anchored generation.
+        """
+        with self._lock_file():
+            self._write_pair(state, self._next_generation())
+
+    def _write_pair(self, state: TrustState, generation: int) -> None:
+        """Publish the snapshot then the companion anchor at *generation*
+        (snapshot first, then anchor; a crash between the two leaves a
+        mismatched pair that ``load()`` rejects — never a stale state).
+        Only ever called while holding the inter-process lock."""
         payload = _payload_from_state(state)
         envelope = {
             "version": ENVELOPE_VERSION,
             "kind": ENVELOPE_KIND,
-            "generation": next_generation,
+            "generation": generation,
             "payload": payload,
             "digest": hashlib.sha256(canonical_json(payload)).hexdigest(),
         }
         envelope_bytes = json.dumps(
             envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False
         ).encode("utf-8")
-        # Snapshot first, then anchor. A crash between the two leaves a
-        # mismatched pair that load() rejects (never a stale state).
         self._write_bytes(self._path, envelope_bytes)
         anchor_payload = {
             "version": ANCHOR_VERSION,
             "kind": ANCHOR_KIND,
-            "generation": next_generation,
+            "generation": generation,
             "snapshot_digest": hashlib.sha256(envelope_bytes).hexdigest(),
         }
         anchor = dict(anchor_payload)
@@ -543,3 +723,50 @@ class AtomicFileTrustStateStore:
                     os.unlink(tmp_name)
                 except OSError:
                     pass
+
+
+class _TrustStateTransaction:
+    """Handle yielded by ``AtomicFileTrustStateStore.transaction()``.
+
+    ``state`` is a DEEP COPY of the working state loaded under the
+    inter-process lock (never the store's mutable ``_default_state`` — an
+    abort or exception must discard the mutation, not leak it into later
+    same-process loads); ``generation`` is the exact monotonic generation
+    this commit publishes. ``commit()`` publishes the pair immediately
+    (idempotent) — used when the deny side must be durable BEFORE a failure
+    is surfaced; ``abort()`` suppresses the normal-exit publish (a deny
+    path has no side effect, not even a generation bump). An exception in
+    the transaction body always suppresses the publish.
+    """
+
+    __slots__ = ("_store", "_state", "_generation", "_published", "_aborted")
+
+    def __init__(
+        self, store: AtomicFileTrustStateStore, state: TrustState, generation: int
+    ) -> None:
+        self._store = store
+        self._state = copy.deepcopy(state)
+        self._generation = generation
+        self._published = False
+        self._aborted = False
+
+    @property
+    def state(self) -> TrustState:
+        return self._state
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    def commit(self) -> None:
+        """Publish the snapshot+anchor pair NOW at the transaction's
+        generation (idempotent; a later abort cannot unpublish)."""
+        if self._published or self._aborted:
+            return
+        self._store._write_pair(self._state, self._generation)
+        self._published = True
+
+    def abort(self) -> None:
+        """Suppress the normal-exit publish: the mutation is discarded, no
+        pair write and no generation bump occurs."""
+        self._aborted = True
