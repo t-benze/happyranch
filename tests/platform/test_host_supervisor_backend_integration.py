@@ -116,6 +116,12 @@ def test_supervisor_clean_success_with_surviving_descendant_real(backend):
 
 
 def test_supervisor_nonzero_preserves_primary_reason_real(backend):
+    """A nonzero target exit preserves the primary reason through the whole
+    lifecycle. The target lives long enough for launch to verify the applied
+    enforcement envelope (Slice C), the body observes the nonzero exit, and
+    finish tears the scope down (killing the backgrounded descendant) with a
+    CLEAN receipt. An INSTANT exit is the fail-closed fast-exit case and is
+    covered by ``test_supervisor_fast_exit_fails_closed_real``."""
     supervisor = _make_supervisor(backend)
 
     def launch_body(running):
@@ -130,12 +136,54 @@ def test_supervisor_nonzero_preserves_primary_reason_real(backend):
 
     outcome = supervisor.run(
         _request("sched-fail"),
-        launch_spec=LaunchSpec(argv=("sh", "-c", "exit 3")),
+        launch_spec=LaunchSpec(argv=("sh", "-c", "sleep 60 & sleep 0.5; exit 3")),
         launch_body=launch_body,
     )
     assert outcome.terminal_reason is TerminalReason.FAILURE
     assert outcome.receipt is not None
     assert outcome.receipt.cleanup_status is CleanupStatus.CLEAN
+
+
+def test_supervisor_fast_exit_fails_closed_real(backend):
+    """Slice C fail-closed fast-exit contract against the REAL systemd
+    backend: a target that exits before the scope cgroup can be resolved is
+    never reported as a normally launched enforced session. The supervisor
+    surfaces SPAWN_FAILURE with the fail-closed verification error, releases
+    the admission lease exactly once, publishes no receipt, and leaves no
+    lingering scope unit."""
+    published: list = []
+    supervisor = HostSessionSupervisor(
+        backend=backend,
+        policy=canary_policy(sample_interval_seconds=0.1),
+        publisher=published.append,
+        sampler=DescendantSampler(
+            census=ProcessTreeCensus(backend._reader)
+        ).sample,
+    )
+    before = supervisor._admission.released_total()
+    request = _request("sched-fast-exit")
+    outcome = supervisor.run(
+        request,
+        launch_spec=LaunchSpec(argv=("sh", "-c", "exit 3")),
+        launch_body=lambda running: LaunchResult(
+            success=False, duration_seconds=0.0, returncode=3
+        ),
+    )
+    assert outcome.terminal_reason is TerminalReason.SPAWN_FAILURE
+    assert outcome.receipt is None  # nothing published on fail-closed launch
+    assert "envelope could be verified" in (outcome.error or "")
+    assert published == []
+    assert supervisor._admission.released_total() == before + 1  # exactly once
+    # No residue: the transient scope was collected (no unit remains under
+    # this logical id's scope-name prefix).
+    _, out = backend._systemctl(
+        "list-units",
+        "--all",
+        "--no-legend",
+        f"happyranch-session-{request.logical_id}-*.scope",
+        timeout=5,
+    )
+    assert out.strip() == ""
 
 
 def test_supervisor_shutdown_mid_body_finishes_exactly_once_real(backend):
