@@ -240,34 +240,53 @@ settled rows after replies/declines/failures. No `task_id` semantics changed.
 - It does **not** claim any production observation of Phase-1 behavior.
 - It does **not** change schema, auth, permissions, or the
   `audit_log.task_id` scope convention.
-- It does **not** open Phase 2 (mention priority, `addressed_to_json`
-  writer/doctrine, fairness) — that remains gated on a separate founder
-  decision (THR-198 seq 7/10/20).
-  **Update (THR-198 seq 108-110, 2026-08-25):** the founder approved the
-  Phase-2 mention-routing program. **Slice A (additive storage + pure
-  resolver) landed** `threads.mention_routing_enabled` (INTEGER NOT NULL
-  DEFAULT 1) and `thread_messages.mentions_json` (TEXT), both additive and
-  idempotent, with store-seam persistence of derived mentions. **Slice B
-  (this PR) enables production mention routing** — the resolver is wired
-  into every conversational REPLY wake-selection seam at write time with
-  the per-thread setting and the ratified matrix (disabled/zero-valid →
-  broadcast; valid participant mentions → exactly that set), plus the
-  founder-only `POST /threads/{id}/mention-routing` toggle and
-  `happyranch threads mention-routing` CLI (audited
-  `thread_mention_routing_changed`). TASK_FOLLOWUP/BOOTSTRAP stay isolated;
-  GH-688 per-pair coalescing/claim/settlement/follow-on/rollback semantics
-  are preserved. **Slice C (merged) adds the per-thread web control** — a
-  founder-only direct "Mention routing" button in the thread-detail header
-  opens a dialog whose switch truthfully renders the thread's
-  current state, persists explicit changes through the same strict-boolean
-  API, prevents duplicate mutation in flight, and rolls back + surfaces a
-  visible error on failure. **Slice D (merged) ships the read-only Phase-2
-  release-measurement harness and release-record format** (§8 below); it
-  performs no production observation — the founder-approved acceptance
-  measurement remains **pending** at the Phase-2 epoch and is recorded only
-  when the window completes. Mention **priority/fairness, autocomplete, and
-  active-respondent fallback remain out of scope**; `addressed_to_json`
-  remains unwritten/unread with its separate cleanup plan.
+
+> **HISTORICAL (2026-06-17 original text; superseded by the THR-198 Phase-2
+> program approval below, then by TASK-6027):** it does **not** open Phase 2
+> (mention priority, `addressed_to_json` writer/doctrine, fairness) — that
+> remained gated on a separate founder decision (THR-198 seq 7/10/20) until the
+> 2026-08-25 approval below.
+>
+> **HISTORICAL rollout chronology (THR-198 seq 108-110, 2026-08-25, through
+> Slices A–D; superseded in its control-surface details by TASK-6027).** The
+> founder approved the Phase-2 mention-routing program. **Slice A (additive
+> storage + pure resolver) landed** `threads.mention_routing_enabled` (INTEGER
+> NOT NULL DEFAULT 1) and `thread_messages.mentions_json` (TEXT), both additive
+> and idempotent, with store-seam persistence of derived mentions. **Slice B
+> (this PR) enabled production mention routing** — the resolver was wired into
+> every conversational REPLY wake-selection seam at write time with the
+> per-thread setting and the ratified matrix (disabled/zero-valid → broadcast;
+> valid participant mentions → exactly that set), plus the founder-only `POST
+> /threads/{id}/mention-routing` toggle and `happyranch threads mention-routing`
+> CLI (audited `thread_mention_routing_changed`). TASK_FOLLOWUP/BOOTSTRAP stayed
+> isolated; GH-688 per-pair coalescing/claim/settlement/follow-on/rollback
+> semantics were preserved. **Slice C (merged) added the per-thread web
+> control** — a founder-only direct "Mention routing" button in the
+> thread-detail header opened a dialog whose switch truthfully rendered the
+> thread's current state, persisted explicit changes through the same
+> strict-boolean API, prevented duplicate mutation in flight, and rolled back +
+> surfaced a visible error on failure. **Slice D (merged) ships the read-only
+> Phase-2 release-measurement harness and release-record format** (§8 below); it
+> performs no production observation — the founder-approved acceptance
+> measurement remains **pending** at the Phase-2 epoch and is recorded only when
+> the window completes.
+>
+> **CURRENT STATE (2026-08-28, TASK-6027 founder ruling) — unconditional, no
+> switches.** All three settings/control surfaces were REMOVED: the per-thread
+> mention-routing setting (the "Mention routing" button/dialog, `POST
+> /threads/{id}/mention-routing`, `happyranch threads mention-routing`, and the
+> `thread_mention_routing_changed` audit producer), the per-thread
+> `reply_exchange_enabled` switch, and the org-wide
+> `org_settings.threads.reply_exchange_enabled` kill switch. Mention routing and
+> the strict mention-led exchange are **UNCONDITIONAL**: there is no per-thread
+> "disabled" state, no toggle to activate or operate, and no
+> route/CLI/audit/dialog/switch to run — persisted
+> `threads.mention_routing_enabled` values (inert legacy compatibility storage
+> only) cannot disable either behavior. The strict exchange's priority/fallback
+> semantics **ARE present** (frozen priority cohorts, 5-minute grace, 4-hour
+> absolute fail-open — §9). Rollback is code-version rollback / operational
+> containment only (§9.1). `addressed_to_json` remains unwritten/unread with its
+> separate cleanup plan.
 
 ## 8. Phase-2 mention-routing release measurement (THR-198 Slice D)
 
@@ -411,5 +430,82 @@ under-approximation that never fabricates coverage.
   (<x>%), zero-loss violations=<n> (artifacts=<n>)
 - interim: <true/false> — true ⇒ values are not a release result
 - malformed mentions_json: <n>
+- operator: <name/role>; noted anomalies: <none | ...>
+```
+
+---
+
+## 9. TASK-5966 — strict mention-led exchange (F1) addendum
+
+> **Status:** merged code is inert until a daemon restart loads it. The
+> **F1 epoch** is that restart (`RATIFIED_EPOCH_F1 =
+> 2026-08-28T06:22:21Z` in `runtime/infrastructure/thread_release_measurement.py`
+> — record the ACTUAL restart instant, not the merge time). The Phase-2
+> epoch/window (`2026-08-26T14:25:23Z`) and its G1/G2/G3 criteria are
+> **preserved untouched**; F1 is a **separate measurement boundary** because
+> the exchange changes the decline/wake populations wholesale (seq 189/194).
+
+### 9.1 Deployment & rollback
+
+- **Deploy:** restart the daemon on the merged head. The new tables
+  (`thread_reply_exchange`, `thread_exchange_deferrals`) are created by the
+  idempotent startup schema block — no migration file, no ALTER on shipped
+  tables. The proposed `threads.reply_exchange_enabled` column and the
+  `org_settings.threads.reply_exchange_enabled` org key were REMOVED before
+  shipping (TASK-6027 founder ruling).
+- **Activation:** mention routing and the strict mention-led exchange are
+  UNCONDITIONAL (TASK-6027) — there is no switch to activate. The exchange
+  opens on a founder-authored mention with P≠∅ and D≠∅; the shipped
+  `threads.mention_routing_enabled` column is an inert legacy compatibility
+  field (never read/written for behavior; persisted true/false values
+  cannot disable routing).
+- **Rollback is code-version rollback / operational containment only**
+  (TASK-6027 — the per-thread toggle, the org kill-switch, and the disable
+  retirement paths no longer exist). Reverting the code stops new
+  exchanges. An open exchange epoch from a reverted deploy is NOT stranded:
+  the normal idempotent closure bounds evaluate it at every seam (startup
+  reconcile 6e, the next conversational write, the 30s reaper tick) —
+  quiescence + 5-minute grace or the 4h absolute fail-open — releasing
+  every pair with unacknowledged content via exactly ONE slot-checked
+  range-covering catch-up (the same exactly-once enqueue ownership as every
+  other wake; startup recovery re-enqueues a minted token if the process
+  dies before enqueue). Obligations are never dropped and watermarks stay
+  monotonic. No dormant resumable row is ever left behind by a revert.
+
+### 9.2 F1 acceptance (falsifiable, run against the live DB read-only)
+
+- **No-pierce:** `sum(wake_created)` for held pairs inside open exchanges is
+  ZERO except the three documented pierce sources (mention of the agent, a
+  pre-existing queued wake claimed mid-exchange, TASK_FOLLOWUP/BOOTSTRAP
+  isolated broadcasts).
+- **Exactly-one catch-up:** per deferred pair per exchange,
+  `count(queued tokens covering [open_seq, close_seq]) in {0, 1}` (0 only
+  when a pierce/coalesce already covered it).
+- **N-to-1:** per founder-mention-led burst, per deferred pair, wake sessions
+  drop from up to 5 (shipped) to exactly 1 (fresh corpus: 17 bursts,
+  25 sessions saved).
+- **G2 containment over the F1 window is at baseline** (0 losses).
+- **Bounds:** `EXCHANGE_GRACE = 5 min` idle close (quiescence + no live
+  cohort wake), `MAX_PRIORITY_WAIT = 4 h` absolute fail-open (reaper,
+  30s tick), abort/archive → suppressed (no catch-up).
+- **Replay acceptance:** THR-097 #116 range replay (deferred pairs → exactly
+  1 catch-up each), the 17 founder-mention-led burst corpus, THR-198 #136
+  preclaimed-wake fixture (pre-arrival settlement never covering; exactly one
+  catch-up), and the adversarial race/restart/corruption suite in
+  `tests/test_thread_reply_exchange.py`.
+
+### 9.3 F1 release record (append to the record above)
+
+```markdown
+- f1_epoch (UTC): <actual restart instant>
+- exchange rows: opened=<n>, released=<n>, suppressed=<n> (reasons)
+- held wake audits while open (no-pierce violations): <n> (expect 0)
+- catch-up wakes minted: <n>; coalesced releases: <n>
+- deferred wake sessions per burst: avg=<x> (expect →1)
+- G2 containment over F1 window: <covered>/<founder messages> (expect 0 loss)
+- rollback drill: code-version rollback (revert deploy) → no new
+  exchanges; any open epoch closed by the normal bounds (quiescence+grace
+  or 4h fail-open) with exactly-one catch-up per uncovered deferred pair
+  (count recorded)
 - operator: <name/role>; noted anomalies: <none | ...>
 ```

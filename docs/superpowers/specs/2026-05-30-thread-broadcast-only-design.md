@@ -21,6 +21,16 @@ control** (founder-only direct "Mention routing" thread-detail header button
 persist through the strict-boolean `POST /threads/{id}/mention-routing`
 API, in-flight duplicate prevention, failure rollback + visible error,
 and keyboard/switch accessibility). **Slice D (merged) ships the read-only Phase-2 release-measurement harness** (`runtime/infrastructure/thread_release_measurement.py`; `docs/operations/gh-688-phase1-release-checklist.md` §8) reproducing the ratified acceptance metrics (mentioned-message saving 293/499→~24/204, founder coverage 698/0-loss, org-wide decline report-only) over the Phase-2 epoch `2026-08-26T14:25:23Z` with interim labeling until the one-month window completes; **the observation itself remains pending** — a shipped diagnostic is not proof of the population outcome.
+**SUPERSEDED (2026-08-28, TASK-6027 founder ruling — unconditional routing):** the per-thread `mention_routing_enabled` switch and every
+user-visible surface for it (founder toggle API, CLI verb, web control,
+wire field, audit event) were REMOVED. Mention routing is unconditional —
+the resolver always routes valid mentions to exactly that set and zero
+valid mentions to the broadcast; the shipped `threads.mention_routing_enabled`
+column remains only as an inert legacy compatibility field (never read to
+alter behavior, never written/exposed through product surfaces). The
+strict mention-led exchange (TASK-5966) is likewise unconditional (no
+`reply_exchange_enabled` column, no org kill-switch); rollback is
+code-version rollback / operational containment only.
 **Origin:** Founder-reported pattern on THR-011 (tourism-org, 2026-05-29): the founder addressed seq 10 to `["finance_agent"]` only; finance_agent's seq 11 prose-mentioned `@admin_head 你那边合同库归档...` but its structured `addressed_to_json` was empty; no invocation was ever minted for admin_head, so the hand-off was silently dropped. Founder diagnosis: structured `addressed_to` invites exactly this class of silent-drop bug, and every reasonable thread should broadcast to all participants.
 **Relates to:**
 - `docs/superpowers/specs/2026-05-13-threads-design.md` — the threads primitive this changes.

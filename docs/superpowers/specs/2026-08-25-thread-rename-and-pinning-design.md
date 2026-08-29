@@ -193,8 +193,11 @@ sentences) to stay in parity with the audit row shapes.
   any qualifying (filtered) thread is pinned; Archived and All buckets are
   single flat lists (no section headers, no pin rank);
   rows carry per-row pin toggles; the detail header carries direct Rename,
-  Pin/Unpin, Archive, and Mention routing buttons (plus Resume when archived),
-  all keyboard-accessible with accessible labels.
+  Pin/Unpin, and Archive buttons (plus Resume when archived) — the "Mention
+  routing" button listed in earlier revisions was REMOVED by TASK-6027 (mention
+  routing and the strict mention-led exchange are unconditional — see
+  `docs/agent-guides/features-and-invariants.md` (Threads)); all controls are
+  keyboard-accessible with accessible labels.
 
 ## Tests
 

@@ -106,58 +106,51 @@ def test_valid_empty_inputs():
 
 
 # ---------------------------------------------------------------------------
-# resolve_wake_set — the ratified matrix
-# ---------------------------------------------------------------------------
+# resolve_wake_set — the ratified matrix (UNCONDITIONAL mention routing;
+# TASK-6027 founder ruling — the persisted ``mention_routing_enabled`` column
+# is inert legacy and is never consulted)
 
 ROSTER = ["alpha", "bravo", "charlie"]
 
 
-def test_disabled_broadcasts_regardless_of_mentions():
-    for mentioned in ([], ["alpha"], ["alpha", "bravo"], ["nobody"], ["alpha", "nobody"]):
-        assert resolve_wake_set(
-            mentioned, ROSTER, "founder", mention_routing_enabled=False,
-        ) == ["alpha", "bravo", "charlie"]
-
-
-def test_enabled_zero_mentions_broadcasts():
+def test_zero_mentions_broadcasts():
     assert resolve_wake_set(
-        [], ROSTER, "founder", mention_routing_enabled=True,
+        [], ROSTER, "founder",
     ) == ["alpha", "bravo", "charlie"]
 
 
-def test_enabled_single_valid_mention_routes_to_that_agent():
+def test_single_valid_mention_routes_to_that_agent():
     assert resolve_wake_set(
-        ["bravo"], ROSTER, "founder", mention_routing_enabled=True,
+        ["bravo"], ROSTER, "founder",
     ) == ["bravo"]
 
 
-def test_enabled_multiple_valid_mentions_routes_to_exactly_that_set():
+def test_multiple_valid_mentions_routes_to_exactly_that_set():
     assert resolve_wake_set(
-        ["charlie", "alpha"], ROSTER, "founder", mention_routing_enabled=True,
+        ["charlie", "alpha"], ROSTER, "founder",
     ) == ["charlie", "alpha"]
 
 
-def test_enabled_valid_plus_invalid_routes_to_valid_only():
+def test_valid_plus_invalid_routes_to_valid_only():
     assert resolve_wake_set(
         ["bravo", "@founder", "nobody"], ROSTER, "founder",
-        mention_routing_enabled=True,
     ) == ["bravo"]
 
 
-def test_enabled_invalid_only_broadcasts():
+def test_invalid_only_broadcasts():
     # @founder literal, typos, terminated/non-participant names.
     for mentioned in (["founder"], ["nobody"], ["typo_agent"], ["founder", "nobody"]):
         assert resolve_wake_set(
-            mentioned, ROSTER, "founder", mention_routing_enabled=True,
+            mentioned, ROSTER, "founder",
         ) == ["alpha", "bravo", "charlie"]
 
 
-def test_enabled_self_only_broadcasts():
+def test_self_only_broadcasts():
     assert resolve_wake_set(
-        ["bravo"], ROSTER, "bravo", mention_routing_enabled=True,
+        ["bravo"], ROSTER, "bravo",
     ) == ["alpha", "charlie"]
     assert resolve_wake_set(
-        ["bravo", "alpha"], ROSTER, "bravo", mention_routing_enabled=True,
+        ["bravo", "alpha"], ROSTER, "bravo",
     ) == ["alpha"]
 
 
@@ -165,7 +158,7 @@ def test_participant_removed_after_mention_falls_back_to_broadcast():
     # A mention of an agent who left the roster is invalid at resolve time.
     roster = ["alpha", "bravo"]
     assert resolve_wake_set(
-        ["charlie"], roster, "founder", mention_routing_enabled=True,
+        ["charlie"], roster, "founder",
     ) == ["alpha", "bravo"]
 
 
@@ -173,20 +166,18 @@ def test_participant_added_after_mention_becomes_valid():
     # A mention of a newly-added participant resolves to that set.
     roster = ["alpha", "bravo", "charlie"]
     assert resolve_wake_set(
-        ["charlie"], roster, "founder", mention_routing_enabled=True,
+        ["charlie"], roster, "founder",
     ) == ["charlie"]
 
 
 def test_enabled_stable_dedup_in_wake_set():
     assert resolve_wake_set(
-        ["bravo", "alpha", "bravo"], ROSTER, "founder", mention_routing_enabled=True,
+        ["bravo", "alpha", "bravo"], ROSTER, "founder",
     ) == ["bravo", "alpha"]
 
 
 def test_speaker_never_in_own_wake_set():
-    for enabled in (True, False):
-        wake = resolve_wake_set(
-            ["alpha", "bravo", "charlie"], ROSTER, "alpha",
-            mention_routing_enabled=enabled,
-        )
-        assert "alpha" not in wake
+    wake = resolve_wake_set(
+        ["alpha", "bravo", "charlie"], ROSTER, "alpha",
+    )
+    assert "alpha" not in wake

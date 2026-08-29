@@ -33,8 +33,6 @@ import type {
   ResumeResult,
   SendFollowUpArgs,
   SendFollowUpResult,
-  SetThreadMentionRoutingArgs,
-  SetThreadMentionRoutingResult,
   SetThreadPinArgs,
   SetThreadPinResult,
   ThreadsApi,
@@ -263,7 +261,6 @@ function useComposeThread(): MutationLike<ComposeArgs, ComposeResult> {
         last_speaker: 'founder',
         pinned: false,
         pinned_at: null,
-        mention_routing_enabled: true,
         last_activity_at: startedAt,
       };
       store.threads = [rec, ...store.threads];
@@ -523,29 +520,6 @@ function useSetThreadPinned(threadId: string): MutationLike<SetThreadPinArgs, Se
   });
 }
 
-function useSetThreadMentionRouting(
-  threadId: string,
-): MutationLike<SetThreadMentionRoutingArgs, SetThreadMentionRoutingResult> {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (body: SetThreadMentionRoutingArgs) => {
-      await sleep(120);
-      const idx = store.threads.findIndex((t) => t.thread_id === threadId);
-      if (idx >= 0) {
-        store.threads[idx] = {
-          ...store.threads[idx],
-          mention_routing_enabled: body.mention_routing_enabled,
-        };
-      }
-      return { thread_id: threadId, mention_routing_enabled: body.mention_routing_enabled };
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
-      qc.invalidateQueries({ queryKey: ['mock-threads'] });
-    },
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Exposed surface
 // ---------------------------------------------------------------------------
@@ -566,7 +540,6 @@ export const mockThreadsApi: ThreadsApi = {
   useAbortReplies,
   useRenameThread,
   useSetThreadPinned,
-  useSetThreadMentionRouting,
 };
 
 /** Test-only: reset the in-memory store to the canonical fixtures. */

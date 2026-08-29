@@ -132,11 +132,19 @@ def test_speaker_never_in_own_wake_set(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# disabled — full broadcast regardless of mentions
+# TASK-6027 — the shipped ``mention_routing_enabled`` column is INERT legacy
 # ---------------------------------------------------------------------------
+#
+# Founder ruling (TASK-6027): mention routing is UNCONDITIONAL. The
+# ``threads.mention_routing_enabled`` column remains in the schema for
+# compatibility (NOT NULL DEFAULT 1) but is never read to alter behavior,
+# never written through a product surface, and never exposed on the wire.
+# Persisted true/false values must not disable routing after upgrade.
 
 
 def _set_enabled(db: Database, thread_id: str, enabled: bool) -> None:
+    """Raw DB write simulating a legacy persisted value (only the inert
+    column changes - no store/product surface writes it anymore)."""
     db._conn.execute(
         "UPDATE threads SET mention_routing_enabled = ? WHERE id = ?",
         (1 if enabled else 0, thread_id),
@@ -144,21 +152,44 @@ def _set_enabled(db: Database, thread_id: str, enabled: bool) -> None:
     db._conn.commit()
 
 
-def test_disabled_broadcasts_even_with_valid_mentions(tmp_path):
+def test_persisted_false_setting_never_disables_routing(tmp_path):
     db = Database(tmp_path / "happyranch.db")
     _make_thread(db)
     _set_enabled(db, "THR-001", False)
-    for body in ("@bravo", "@bravo @charlie", "no mentions"):
+    # Valid mentions still route to exactly that set (routing unconditional).
+    # A fresh thread per body: a founder mention with a deferred set opens a
+    # strict exchange, which (correctly) holds later no-mention messages to
+    # the frozen cohort - exchange semantics are covered in
+    # tests/test_thread_reply_exchange.py.
+    for body, expected in (
+        ("@bravo", ["bravo"]),
+        ("@bravo @charlie", ["bravo", "charlie"]),
+    ):
+        tid = f"THR-{len(expected)}"
+        _make_thread(db, tid)
         assert _arrival_wake_names(
-            db, "THR-001", speaker="founder", body=body,
+            db, tid, speaker="founder", body=body,
             recipients=["alpha", "bravo", "charlie"],
-        ) == ["alpha", "bravo", "charlie"], body
+        ) == expected, body
+    # Zero valid mentions still broadcast (no exchange: empty mention set).
+    tid = "THR-B"
+    _make_thread(db, tid)
+    assert _arrival_wake_names(
+        db, tid, speaker="founder", body="no mentions",
+        recipients=["alpha", "bravo", "charlie"],
+    ) == ["alpha", "bravo", "charlie"]
 
 
 def test_setting_defaults_to_enabled_for_new_threads(tmp_path):
     db = Database(tmp_path / "happyranch.db")
     _make_thread(db)
-    assert db.get_thread("THR-001").mention_routing_enabled is True
+    # The inert legacy column keeps the shipped default; the ThreadRecord
+    # model no longer exposes the switch (unconditional routing).
+    row = db._conn.execute(
+        "SELECT mention_routing_enabled FROM threads WHERE id='THR-001'"
+    ).fetchone()
+    assert row["mention_routing_enabled"] == 1
+    assert not hasattr(db.get_thread("THR-001"), "mention_routing_enabled")
 
 
 # ---------------------------------------------------------------------------
@@ -265,23 +296,35 @@ def test_task_followup_reply_never_mention_routed(tmp_path):
 def test_participant_removed_after_write_does_not_revoke_minted_wake(tmp_path):
     """The routing decision is frozen at write time: a wake minted for a
     mentioned participant survives their later removal; the NEXT message
-    re-resolves against the current roster (mention now invalid -> broadcast)."""
+    re-resolves against the current roster (mention now invalid -> broadcast).
+
+    Uses a NON-founder speaker so no strict exchange opens (exchanges are
+    founder-authored; the exchange's own removal semantics are covered in
+    tests/test_thread_reply_exchange.py) - this stays a pure mention-routing
+    contract test."""
     db = Database(tmp_path / "happyranch.db")
     _make_thread(db)
     assert _arrival_wake_names(
-        db, "THR-001", speaker="founder", body="@charlie please",
+        db, "THR-001", speaker="bravo", body="@charlie please",
         recipients=["alpha", "bravo", "charlie"],
     ) == ["charlie"]
     # Charlie leaves the thread AFTER the write.
     db.remove_thread_participant("THR-001", "charlie")
-    # The already-minted wake is untouched (pair row still exists).
+    # The already-minted wake is untouched (pair row still exists). U0
+    # full-recipient obligations also created a row for every recipient
+    # (only the wake-set member holds a queued token).
     states = db.list_reply_delivery_states()
-    assert [s.agent_name for s in states] == ["charlie"]
-    # The next message re-resolves: @charlie is now invalid -> broadcast.
+    by_name = {s.agent_name: s for s in states}
+    assert set(by_name) == {"alpha", "bravo", "charlie"}
+    assert by_name["charlie"].queued_invocation_token is not None
+    assert by_name["alpha"].queued_invocation_token is None
+    assert by_name["bravo"].queued_invocation_token is None
+    # The next message re-resolves: @charlie is now invalid -> broadcast
+    # (minus the speaker).
     assert _arrival_wake_names(
-        db, "THR-001", speaker="founder", body="@charlie again",
+        db, "THR-001", speaker="bravo", body="@charlie again",
         recipients=["alpha", "bravo"],
-    ) == ["alpha", "bravo"]
+    ) == ["alpha"]
 
 
 def test_participant_added_after_write_is_not_retroactively_woken(tmp_path):
@@ -367,8 +410,11 @@ def test_mentioned_burst_still_coalesces_per_pair(tmp_path):
 
 
 def test_non_mentioned_participant_pair_untouched_by_narrowed_wake(tmp_path):
-    """When a message routes only to the mentioned set, the non-mentioned
-    pairs keep their existing watermarks — no required raise, no mint."""
+    """F1 (TASK-5966, founder-approved S3): when a message routes only to the
+    mentioned set, the non-mentioned pairs get the OBLIGATION raise (U0
+    full-recipient obligations — required advances, watermark stays
+    contiguous) but NO mint and NO wake audit. Wake-mint eligibility is
+    separated from obligation advancement."""
     db = Database(tmp_path / "happyranch.db")
     _make_thread(db)
     _seq1, arrivals = db.record_conversational_arrival(
@@ -386,10 +432,17 @@ def test_non_mentioned_participant_pair_untouched_by_narrowed_wake(tmp_path):
     )
     assert [a.agent_name for a in arrivals2] == ["bravo"]
     states = {s.agent_name: s for s in db.list_reply_delivery_states()}
-    # Only bravo's pair has a required raise past the acknowledged tail.
+    # Only bravo's pair mints (wake set == mention set); acknowledged
+    # watermarks stay at the settled tail for every pair.
     assert states["bravo"].required_through_seq == _seq2
-    assert states["alpha"].required_through_seq == _seq1
-    assert states["charlie"].required_through_seq == _seq1
+    assert states["bravo"].queued_invocation_token is not None
+    # Non-mentioned pairs: obligation raise only — required advances to the
+    # message seq, acknowledged stays at the settled tail, NO token, NO mint.
+    for agent in ("alpha", "charlie"):
+        assert states[agent].required_through_seq == _seq2
+        assert states[agent].acknowledged_through_seq == _seq1
+        assert states[agent].queued_invocation_token is None
+        assert states[agent].running_invocation_token is None
 
 
 def test_settle_followon_still_minted_after_mentioned_arrival(tmp_path):
@@ -450,101 +503,3 @@ def test_arrival_failure_rolls_back_message_mentions_and_wakes(tmp_path, monkeyp
         "SELECT COUNT(*) AS n FROM thread_messages WHERE thread_id='THR-001'"
     ).fetchone()["n"]
     assert n == 1, "failed arrival must roll back its message + mentions write"
-
-
-# ---------------------------------------------------------------------------
-# per-thread settings store method (write parity, audit-shaped)
-# ---------------------------------------------------------------------------
-
-
-def test_set_mention_routing_with_audit_toggles_and_audits(tmp_path):
-    db = Database(tmp_path / "happyranch.db")
-    _make_thread(db)
-    assert db.get_thread("THR-001").mention_routing_enabled is True
-
-    transitioned = db.set_thread_mention_routing_with_audit(
-        "THR-001", enabled=False,
-    )
-    assert transitioned is True
-    assert db.get_thread("THR-001").mention_routing_enabled is False
-
-    transitioned = db.set_thread_mention_routing_with_audit(
-        "THR-001", enabled=True,
-    )
-    assert transitioned is True
-    assert db.get_thread("THR-001").mention_routing_enabled is True
-
-    rows = db._conn.execute(
-        "SELECT action, task_id, agent, payload FROM audit_log "
-        "WHERE action = 'thread_mention_routing_changed' "
-        "ORDER BY id",
-    ).fetchall()
-    assert [r["action"] for r in rows] == [
-        "thread_mention_routing_changed",
-        "thread_mention_routing_changed",
-    ]
-    assert all(r["task_id"] == "THR-001" for r in rows)
-    assert all(r["agent"] == "founder" for r in rows)
-    assert [r["payload"] for r in rows] == [
-        '{"mention_routing_enabled": false}',
-        '{"mention_routing_enabled": true}',
-    ]
-
-
-def test_set_mention_routing_same_state_is_idempotent_noop(tmp_path):
-    db = Database(tmp_path / "happyranch.db")
-    _make_thread(db)
-    assert db.set_thread_mention_routing_with_audit(
-        "THR-001", enabled=True,
-    ) is False
-    n = db._conn.execute(
-        "SELECT COUNT(*) AS n FROM audit_log "
-        "WHERE action = 'thread_mention_routing_changed'",
-    ).fetchone()["n"]
-    assert n == 0
-
-
-def test_set_mention_routing_unknown_thread_raises(tmp_path):
-    db = Database(tmp_path / "happyranch.db")
-    with pytest.raises(ValueError):
-        db.set_thread_mention_routing_with_audit("THR-NOPE", enabled=False)
-
-
-def test_set_mention_routing_audit_failure_rolls_back_toggle(tmp_path, monkeypatch):
-    db = Database(tmp_path / "happyranch.db")
-    _make_thread(db)
-
-    def _boom(*_args, **_kwargs):
-        raise RuntimeError("audit write failed")
-
-    monkeypatch.setattr(db, "insert_audit_log_uncommitted", _boom)
-    with pytest.raises(RuntimeError):
-        db.set_thread_mention_routing_with_audit("THR-001", enabled=False)
-    monkeypatch.undo()
-    # The toggle rolled back with the audit — no durable unaudited mutation.
-    assert db.get_thread("THR-001").mention_routing_enabled is True
-    n = db._conn.execute(
-        "SELECT COUNT(*) AS n FROM audit_log "
-        "WHERE action = 'thread_mention_routing_changed'",
-    ).fetchone()["n"]
-    assert n == 0
-
-
-def test_disabled_setting_applies_to_next_write_only(tmp_path):
-    """Toggling mid-flight applies to FUTURE arrivals only (write-time
-    routing): a wake already minted under the enabled default keeps its
-    claimed range even after the setting flips to disabled."""
-    db = Database(tmp_path / "happyranch.db")
-    _make_thread(db)
-    _seq1, arrivals = db.record_conversational_arrival(
-        thread_id="THR-001", speaker="founder",
-        kind=ThreadMessageKind.MESSAGE, body_markdown="@bravo one",
-        recipients=["alpha", "bravo", "charlie"],
-    )
-    assert [a.agent_name for a in arrivals] == ["bravo"]
-    db.set_thread_mention_routing_with_audit("THR-001", enabled=False)
-    # Next write broadcasts (disabled) — including the same mention.
-    assert _arrival_wake_names(
-        db, "THR-001", speaker="founder", body="@bravo two",
-        recipients=["alpha", "bravo", "charlie"],
-    ) == ["alpha", "bravo", "charlie"]

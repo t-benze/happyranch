@@ -1080,7 +1080,6 @@ def _thread_row_to_dict(t: ThreadRecord) -> dict:
         "last_speaker": t.last_speaker,
         "pinned": t.pinned_at is not None,
         "pinned_at": t.pinned_at.isoformat() if t.pinned_at else None,
-        "mention_routing_enabled": t.mention_routing_enabled,
         "last_activity_at": t.last_activity_at.isoformat() if t.last_activity_at else None,
     }
 
@@ -1488,7 +1487,7 @@ async def decline_thread_endpoint(
         if inv is None:
             raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
         if inv.purpose is ThreadInvocationPurpose.REPLY:
-            settlement = org.db.settle_conversational_reply(
+            settlement, catch_up = org.db.settle_conversational_reply_with_exchange(
                 token=body.invocation_token,
                 outcome="decline",
                 decline_reason=reason,
@@ -1502,6 +1501,12 @@ async def decline_thread_endpoint(
                 ok = True
                 if settlement.follow_on_token is not None:
                     tokens_to_enqueue.append(settlement.follow_on_token)
+                # TASK-5966: catch-up tokens minted by the closure evaluation
+                # at this settlement (decline route owns the enqueue).
+                tokens_to_enqueue.extend(
+                    a.invocation_token for a in catch_up
+                    if a.invocation_token is not None
+                )
         else:
             ok = org.db.mark_invocation_declined(
                 body.invocation_token, decline_reason=reason,
@@ -2872,45 +2877,6 @@ async def set_thread_pin_endpoint(
     return {"thread_id": thread_id, "pinned": body.pinned}
 
 
-class SetThreadMentionRoutingBody(BaseModel):
-    # Strict bool: mention routing is a boolean contract — "yes"/1/etc. must
-    # not silently coerce into an enable/disable (THR-198, mirrors /pin).
-    mention_routing_enabled: Annotated[bool, Field(strict=True)]
-
-
-@router.post("/threads/{thread_id}/mention-routing")
-async def set_thread_mention_routing_endpoint(
-    slug: str, thread_id: str, body: SetThreadMentionRoutingBody, org: OrgDep,
-) -> dict:
-    t = org.db.get_thread(thread_id)
-    if t is None:
-        raise HTTPException(status_code=404, detail={"code": "not_found"})
-    async with org.db_lock:
-        # Atomic (THR-198 Slice B): authoritative ``mention_routing_enabled``
-        # read + idempotence decision + state UPDATE + ``
-        # thread_mention_routing_changed`` audit row happen in ONE
-        # rollback-safe transaction under this lock. Concurrent same/opposite
-        # requests re-read durable state inside their transaction (never a
-        # stale pre-lock snapshot), so no transition is misclassified and an
-        # audit failure rolls back the toggle — no durable unaudited
-        # transition.
-        transitioned = org.db.set_thread_mention_routing_with_audit(
-            thread_id, enabled=body.mention_routing_enabled,
-        )
-        if not transitioned:
-            # Same-state no-op: nothing to write, nothing to audit.
-            return {
-                "thread_id": thread_id,
-                "mention_routing_enabled": body.mention_routing_enabled,
-                "idempotent": True,
-            }
-    return {
-        "thread_id": thread_id,
-        "mention_routing_enabled": body.mention_routing_enabled,
-    }
-
-
-# ---------------------------------------------------------------------------
 # POST /threads/{id}/abort-replies — founder aborts pending reply invocations
 # ---------------------------------------------------------------------------
 

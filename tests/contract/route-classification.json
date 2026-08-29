@@ -48,7 +48,6 @@
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/resume",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/pin",
     "POST /api/v1/orgs/{slug}/threads/{thread_id}/rename",
-    "POST /api/v1/orgs/{slug}/threads/{thread_id}/mention-routing",
     "GET /api/v1/orgs/{slug}/jobs/",
     "GET /api/v1/orgs/{slug}/jobs/{job_id}",
     "POST /api/v1/orgs/{slug}/jobs/{job_id}/run",
@@ -181,9 +180,7 @@
     "POST /api/v1/executors/runtime/register": "conformance-gated runtime-level executor registration (THR-088)",
     "POST /api/v1/executors/runtime/register-binary": "cli-only runtime-level binary registration via scoped token (THR-088)",
     "POST /api/v1/runtime/adapters/register": "agent-only adapter administration route — no browser consumer (THR-107 D3)",
-
     "POST /api/v1/runtime/adapters/submit": "cli-only runtime-level adapter submission via scoped token (THR-107 seq141)",
-
     "POST /api/v1/orgs/{slug}/skills/agent": "agent-only — B2 custom-skill creation with verified session provenance (THR-055)",
     "POST /api/v1/orgs/{slug}/skills/recover": "bearer-authenticated operator/CLI-only B2 canonical-package recovery; no browser client or consumer",
     "POST /api/v1/orgs/{slug}/custom-skills/agent-create": "agent-only — opaque session-binding, not exercised from the Web UI (THR-055 B2)",

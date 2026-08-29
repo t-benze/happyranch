@@ -35,7 +35,7 @@ def assert_policy_denied(exc: PolicyError, deny: str, audit: str) -> None:
 def test_consumer_loads_normative_fixture(route_policy_fixture) -> None:
     consumer = build_consumer(route_policy_fixture)
     consumer.require_current(now=NOW())  # must not raise
-    assert len(consumer.allowlist_entries) == 134
+    assert len(consumer.allowlist_entries) == 133
     assert consumer.default_behavior == "deny_unclassified"
     assert consumer.decision_order[0] == "authenticate"
     assert consumer.decision_order[-1] == "redact"

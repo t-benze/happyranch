@@ -921,6 +921,48 @@ async def test_trigger_creates_per_agent_report_thread_without_minted_token(
     assert "BOOTSTRAP" not in task.brief
 
 
+def test_cleanup_report_thread_inserts_without_mention_routing_enabled_field(
+    tmp_path,
+):
+    """TASK-6082 founder ruling: the THR-195 workspace-cleanup seam
+    (``insert_cleanup_report_thread_and_task`` -> ``_insert_thread_uncommitted``)
+    must insert a ThreadRecord that has NO ``mention_routing_enabled`` field
+    (TASK-6027 unconditional routing) without AttributeError, and the
+    persisted row keeps the inert legacy column at its shipped SQLite
+    DEFAULT with every adjacent field at its own position."""
+    db = Database(tmp_path / "db.sqlite")
+    task = TaskRecord(
+        id="T-CLEAN-1",
+        brief="cleanup brief",
+        team="engineering",
+        assigned_agent="dev_agent",
+    )
+    thread_id = db.insert_cleanup_report_thread_and_task(
+        thread_id="THR-CLEAN-1",
+        subject="Cleanup report",
+        composer="dev_agent",
+        opening_body="opening body",
+        initial_recipients=[],
+        turn_cap=500,
+        task=task,
+    )
+    assert thread_id == "THR-CLEAN-1"
+    t = db.get_thread(thread_id)
+    assert t.subject == "Cleanup report"
+    assert t.turn_cap == 500
+    assert t.composed_by == "dev_agent"
+    assert t.composed_from_task_id == "T-CLEAN-1"
+    assert not hasattr(t, "mention_routing_enabled")
+    # The inert legacy column receives its shipped DEFAULT, not a shift.
+    row = db._conn.execute(
+        "SELECT mention_routing_enabled FROM threads WHERE id='THR-CLEAN-1'"
+    ).fetchone()
+    assert row["mention_routing_enabled"] == 1
+    # The atomic producer also inserted the task and the composer participant.
+    assert db.get_task("T-CLEAN-1") is not None
+    assert db.is_thread_participant("THR-CLEAN-1", "dev_agent")
+
+
 @pytest.mark.asyncio
 async def test_trigger_reuses_same_thread_on_next_run(tmp_path, test_settings, monkeypatch):
     monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
