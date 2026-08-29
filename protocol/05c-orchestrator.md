@@ -156,8 +156,13 @@ rejected merely for omitting optional usage fields.
 resumable provider session id + delta watermark on ``thread_participants``
 is an optimization, never a correctness dependency, for the executors whose
 resume contract is PROVEN against the installed CLI (claude 2.1.241, codex
-0.148.0, pi 0.84.2 — TASK-5977 audit); opencode is an unproven gap and
-stays fresh (see
+0.148.0, pi 0.84.2 — TASK-5977 audit; opencode 1.18.25 — TASK-6080 audit:
+`run -s <id> --dir <ws> --format json`, stdin prompt, same sessionID
+re-emitted, eviction = rc=1 + empty stdout + one complete LF/CRLF-delimited
+stderr line exactly `Error: Session not found` after ANSI-SGR stripping;
+unrelated physical lines may coexist, but same-line prefix/suffix and
+cross-line assembly never match; resume REQUIRES the identical project directory);
+generic-CLI and registered custom-adapter profiles stay fresh (see
 `protocol/05b-agent-runtime.md`). Eviction — a provider-declared
 session-not-found on a resume attempt — invalidates the durable id in the
 SAME transaction as the eviction audit, BEFORE the full-prompt fallback
@@ -186,8 +191,9 @@ rc=1 stderr signature bound to the exact attempted session id (the id is
 regex-escaped), never a generic legacy substring, wrong/missing id,
 prefix/suffix near-match, or a marker embedded in auth/quota/transport
 output.
-Prompt bodies travel via stdin for claude/pi/codex and via argv (guard-
-limited) for opencode/generic-CLI; encoded byte size is transport-only, never
+Prompt bodies travel via stdin for claude/pi/codex/opencode (opencode
+large-prompt stdin verified live on 1.18.25) and via argv (guard-
+limited) for generic-CLI; encoded byte size is transport-only, never
 a cost or reset policy.
 For a first conformance-probe failure the canonical ledger state is
 ``failed_retryable`` with ``retry_eligible: true``. The normal flow retry is a

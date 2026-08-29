@@ -409,6 +409,36 @@ def _parse_pi_session_id(stdout: str) -> str | None:
     return None
 
 
+def _parse_opencode_session_id(stdout: str) -> str | None:
+    """Extract the top-level ``sessionID`` from opencode 1.18.25
+    `--format json` NDJSON events.
+
+    Verified live on opencode 1.18.25: EVERY JSON event (``step_start``,
+    ``text``, ``step_finish``) carries the top-level ``"sessionID"`` field
+    (``ses_``-prefixed); a fresh ``opencode run --dir <ws> --format json`` and
+    a resumed ``opencode run -s <id> --dir <ws> --format json`` both emit the
+    SAME sessionID (stable across continuation, like codex/pi). Best-effort:
+    returns None on empty/malformed/no-match output so a parse failure
+    degrades to a fresh invocation, never a wrong answer.
+    """
+    if not stdout:
+        return None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        sid = obj.get("sessionID")
+        if isinstance(sid, str) and sid:
+            return sid
+    return None
+
+
 def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
     """Parse Claude Code ``--output-format json`` stdout for a structured
     terminal error reason on non-zero exit.
@@ -1359,6 +1389,13 @@ class OpencodeExecutor:
     We deliberately do NOT pass ``--dangerously-skip-permissions``: the
     permission file is the enforcement surface, and bypassing it would
     erase the per-prefix discipline that CLAUDE.md mandates.
+
+    THR-200/TASK-6080: the prompt travels via stdin (``input_text``), never
+    argv — verified live on opencode 1.18.25 (a 606,099-byte prompt through
+    a pipe; the argv form fails at the kernel single-argument limit). Thread
+    provider-session resume uses ``-s <id>`` (same project directory), the
+    session id is parsed from the ``sessionID`` NDJSON field, and the id is
+    STABLE across continuation (same id re-emitted).
     """
 
     def __init__(
@@ -1376,22 +1413,25 @@ class OpencodeExecutor:
     def _build_argv(
         self,
         workspace: str,
-        prompt: str,
         model: str | None = None,
+        resume_session_id: str | None = None,
     ) -> list[str]:
         """Build the argv list for an opencode subprocess launch.
 
         Delegates to the first-party adapter when available (D2); otherwise
         falls back to the D2-inline compatibility construction (producing
-        bit-identical argv).
+        bit-identical argv). The prompt is NOT an argv element — the caller
+        delivers it via stdin (THR-200); ``opencode run`` with no positional
+        message reads the sole user prompt from stdin (verified 1.18.25).
         """
         if self._adapter is not None:
             return self._adapter.build_argv(
                 cli_path=_resolve_binary(self._profile_name),
                 workspace=workspace,
-                prompt=prompt,
+                prompt="",
                 model=model,
                 model_arg=self._model_arg,
+                resume_session_id=resume_session_id,
             )
         # Compatibility fallback — bit-identical to the adapter path.
         cmd = [
@@ -1401,12 +1441,18 @@ class OpencodeExecutor:
         if model and self._model_arg:
             for elem in self._model_arg:
                 cmd.append(elem.replace("{model}", model))
+        if resume_session_id:
+            # TASK-6080: `-s <id>` FAILS with rc=1 ``Error: Session not
+            # found`` (empty stdout, one stderr line) when the id is missing
+            # — the eviction signature the runner detects. An empty id would
+            # silently start fresh, so resume is only wired for a stored
+            # non-empty id.
+            cmd += ["-s", resume_session_id]
         cmd += [
             "--dir",
             workspace,
             "--format",
             "json",
-            prompt,
         ]
         return cmd
 
@@ -1419,25 +1465,29 @@ class OpencodeExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        resume_session_id: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
         org_slug: str | None = None,
         running: "RunningHandle | None" = None,
         throttle_backoff_seconds: Sequence[float] | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
-        # opencode >= 1.14.0 rejects --prompt; use positional prompt (issue #216).
+        # opencode >= 1.14.0 rejects --prompt; the prompt travels via stdin
+        # (input_text), never argv (THR-200).
         cmd = self._build_argv(
             workspace=str(workspace),
-            prompt=prompt,
             model=model,
+            resume_session_id=resume_session_id,
         )
         return _run_command(
             cmd,
             workspace,
             session_id,
             timeout_seconds,
+            input_text=prompt,
             on_started=on_started,
             usage_parser=_parse_opencode_usage,
+            session_id_parser=_parse_opencode_session_id,
             provider="opencode",
             on_throttle_event=on_throttle_event,
             pre_launch_validator=pre_launch_validator,
@@ -1458,19 +1508,19 @@ class OpencodeExecutor:
         timeout_seconds: int = 1800,
     ) -> "LaunchSpec":
         """The supervisor ``LaunchSpec`` for a contained opencode launch
-        (THR-207 task-producer wiring); the prompt travels via argv (opencode
-        rejects ``--prompt``), so the argv-too-large gate applies.
+        (THR-207 task-producer wiring); stdin carries the prompt (THR-200),
+        so the argv-too-large gate does not apply.
         ``timeout_seconds`` is accepted for seam uniformity (applied at
         communicate-time in contained mode).
         """
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(
             workspace=str(workspace),
-            prompt=prompt,
             model=model,
+            resume_session_id=resume_session_id,
         )
         return build_command_launch_spec(
-            cmd=cmd, workspace=workspace, input_text=None, org_slug=org_slug,
+            cmd=cmd, workspace=workspace, input_text=prompt, org_slug=org_slug,
         )
 
 

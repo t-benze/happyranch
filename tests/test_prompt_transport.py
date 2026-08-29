@@ -15,6 +15,7 @@ Covers:
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -101,15 +102,26 @@ def _huge_prompt_for_stdin() -> str:
 
 @patch("runtime.orchestrator.executors.subprocess.Popen")
 def test_argv_guard_rejects_oversized_prompt_before_spawn(mock_popen, tmp_path, runtime):
-    """An argv transport (opencode) with a prompt over the platform-safe
-    limit fails deterministically with the normalized category and Popen is
-    never reached."""
+    """An argv transport (generic-CLI template) with a prompt over the
+    platform-safe limit fails deterministically with the normalized category
+    and Popen is never reached. (opencode is stdin-capable since TASK-6080
+    and is no longer covered by the argv guard.)"""
+    from runtime.orchestrator.executors import GenericCliExecutor
+
     workspace = tmp_path / "ws"
     workspace.mkdir()
     over = _big_prompt(_max_argv_element_bytes() + 1)
 
-    ex = OpencodeExecutor(opencode_cli_path="opencode")
-    result = ex.run(workspace=workspace, prompt=over, session_id="sess-x")
+    ex = GenericCliExecutor(
+        profile_name="test-cli",
+        argv_template=["test-cli", "--prompt", "{prompt}"],
+        provider="test-cli",
+    )
+    with patch(
+        "runtime.orchestrator.executors._resolve_binary",
+        return_value=str(tmp_path / "bin" / "test-cli"),
+    ):
+        result = ex.run(workspace=workspace, prompt=over, session_id="sess-x")
 
     assert result.success is False
     assert is_prompt_transport_too_large(result)
@@ -123,7 +135,11 @@ def test_argv_guard_rejects_oversized_prompt_before_spawn(mock_popen, tmp_path, 
 @patch("runtime.orchestrator.executors.subprocess.Popen")
 def test_argv_guard_boundary_at_limit_is_preserved(mock_popen, tmp_path, runtime):
     """A prompt exactly AT the platform-safe limit still launches (guard is
-    strictly `>`): known smaller/equal argv executions are preserved."""
+    strictly `>`): known smaller/equal argv executions are preserved. Uses
+    generic-CLI — the remaining argv transport (opencode is stdin-capable
+    since TASK-6080)."""
+    from runtime.orchestrator.executors import GenericCliExecutor
+
     workspace = tmp_path / "ws"
     workspace.mkdir()
     # The executor prepends the session-lifetime preamble to the prompt, so
@@ -134,8 +150,16 @@ def test_argv_guard_boundary_at_limit_is_preserved(mock_popen, tmp_path, runtime
     assert len((_SESSION_LIFETIME_PREAMBLE + at_limit).encode("utf-8")) == element_limit
     mock_popen.return_value = _popen_mock(stdout="ok")
 
-    ex = OpencodeExecutor(opencode_cli_path="opencode")
-    result = ex.run(workspace=workspace, prompt=at_limit, session_id="sess-x")
+    ex = GenericCliExecutor(
+        profile_name="test-cli",
+        argv_template=["test-cli", "--prompt", "{prompt}"],
+        provider="test-cli",
+    )
+    with patch(
+        "runtime.orchestrator.executors._resolve_binary",
+        return_value=str(tmp_path / "bin" / "test-cli"),
+    ):
+        result = ex.run(workspace=workspace, prompt=at_limit, session_id="sess-x")
 
     assert result.success is True
     mock_popen.assert_called_once()
@@ -143,7 +167,8 @@ def test_argv_guard_boundary_at_limit_is_preserved(mock_popen, tmp_path, runtime
 
 @patch("runtime.orchestrator.executors.subprocess.Popen")
 def test_argv_guard_small_prompt_unaffected(mock_popen, tmp_path, runtime):
-    """Small argv prompts behave exactly as before (opencode positional)."""
+    """Small prompts behave exactly as before (opencode delivers via stdin
+    since TASK-6080; small prompts travel through the pipe, not argv)."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     mock_popen.return_value = _popen_mock(stdout="ok")
@@ -154,7 +179,9 @@ def test_argv_guard_small_prompt_unaffected(mock_popen, tmp_path, runtime):
     assert result.success is True
     cmd = mock_popen.call_args[0][0]
     assert cmd[0].endswith("opencode")
-    assert any("hello opencode" in el for el in cmd)  # argv transport unchanged
+    assert not any("hello opencode" in el for el in cmd)
+    sent = mock_popen.return_value.communicate.call_args.kwargs["input"]
+    assert sent.endswith("hello opencode")
 
 
 @patch("runtime.orchestrator.executors.subprocess.Popen")
@@ -341,19 +368,26 @@ def test_codex_unchanged_stdin_dash(mock_popen, tmp_path, runtime):
 
 
 @patch("runtime.orchestrator.executors.subprocess.Popen")
-def test_opencode_stays_argv_based(mock_popen, tmp_path, runtime):
-    """OpenCode remains argv-based and behaviorally unchanged (its stdin
-    contract is not yet proven) — small prompts still travel in argv."""
+def test_opencode_prompt_via_stdin_not_argv(mock_popen, tmp_path, runtime):
+    """OpenCode 1.18.25 (TASK-6080 audit): the prompt body travels via
+    stdin (input_text); argv keeps run/-s/--dir/--format json with no prompt
+    element and stdin DEVNULL is replaced by PIPE."""
     workspace = tmp_path / "ws"
     workspace.mkdir()
     mock_popen.return_value = _popen_mock(stdout="ok")
     ex = OpencodeExecutor(opencode_cli_path="opencode")
-    result = ex.run(workspace=workspace, prompt="argv prompt", session_id="sess-x")
+    result = ex.run(workspace=workspace, prompt="opencode prompt", session_id="sess-x",
+                    resume_session_id="ses_abc")
     assert result.success is True
     cmd = mock_popen.call_args[0][0]
-    assert any("argv prompt" in el for el in cmd)
-    # input_text is None → stdin DEVNULL, communicate gets no input.
-    assert mock_popen.return_value.communicate.call_args.kwargs.get("input") is None
+    assert cmd[0].endswith("opencode")
+    assert not any("opencode prompt" in el for el in cmd)
+    # stdin transport: communicate got the prompt, stdin=PIPE.
+    proc = mock_popen.return_value
+    sent = proc.communicate.call_args.kwargs["input"]
+    assert sent.endswith("opencode prompt")
+    call_kwargs = mock_popen.call_args.kwargs
+    assert call_kwargs.get("stdin") == subprocess.PIPE
 
 
 def test_max_argv_element_bytes_platform_safe():

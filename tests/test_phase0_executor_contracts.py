@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -457,16 +458,20 @@ class TestCmdBaselines:
             ex = OpencodeExecutor(opencode_cli_path="opencode")
             ex.run(workspace, prompt="hello world", session_id="sess-X")
 
-        # [opencode, "run", "--dir", <workspace>, "--format", "json", <prompt>]
+        # [opencode, "run", "--dir", <workspace>, "--format", "json"] — the
+        # prompt travels via stdin (input_text), never argv (THR-200).
         self._assert_argv_structure(
-            captured_cmd, binary_ends_with="/opencode", expected_len=7,
-            prompt_index=6, prompt_contains=["hello world"],
+            captured_cmd, binary_ends_with="/opencode", expected_len=6,
         )
         assert captured_cmd[1] == "run"
         assert captured_cmd[2] == "--dir"
         assert captured_cmd[3] == str(workspace)
         assert captured_cmd[4] == "--format"
         assert captured_cmd[5] == "json"
+        assert not any("hello world" in el for el in captured_cmd)
+        # stdin carried the prompt (preamble + body).
+        sent = fake_proc.communicate.call_args.kwargs["input"]
+        assert "hello world" in sent and _SESSION_LIFETIME_PREAMBLE.strip() in sent
 
     def test_opencode_cmd_with_model(self, tmp_path: Path):
         workspace = tmp_path / "ws"
@@ -484,10 +489,9 @@ class TestCmdBaselines:
                    model="gemini-2.5-pro")
 
         # [opencode, "run", "-m", "gemini-2.5-pro", "--dir", <workspace>,
-        #  "--format", "json", <prompt>]
+        #  "--format", "json"] — prompt via stdin.
         self._assert_argv_structure(
-            captured_cmd, binary_ends_with="/opencode", expected_len=9,
-            prompt_index=8, prompt_contains=["hi"],
+            captured_cmd, binary_ends_with="/opencode", expected_len=8,
         )
         assert captured_cmd[1] == "run"
         assert captured_cmd[2] == "-m"
@@ -496,6 +500,55 @@ class TestCmdBaselines:
         assert captured_cmd[5] == str(workspace)
         assert captured_cmd[6] == "--format"
         assert captured_cmd[7] == "json"
+        assert not any("hi" == el or "hi" in el for el in captured_cmd)
+
+    def test_opencode_cmd_with_resume(self, tmp_path: Path):
+        """TASK-6080: resume routes through ``-s <id>`` (same project dir);
+        the prompt still travels via stdin and never appears in argv."""
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        fake_proc = _make_popen_mock(stdout='{"messages":[]}')
+        captured_cmd: list[str] = []
+
+        def _capture(cmd, **kw):
+            captured_cmd.extend(cmd)
+            return fake_proc
+
+        with patch("runtime.orchestrator.executors.subprocess.Popen", _capture):
+            ex = OpencodeExecutor(opencode_cli_path="opencode")
+            ex.run(workspace, prompt="delta", session_id="sess-X",
+                   resume_session_id="ses_fb433ade8ffeh55zGEozUE3mey")
+
+        # [opencode, "run", "-s", <id>, "--dir", <workspace>, "--format", "json"]
+        self._assert_argv_structure(
+            captured_cmd, binary_ends_with="/opencode", expected_len=8,
+        )
+        assert captured_cmd[1] == "run"
+        assert captured_cmd[2] == "-s"
+        assert captured_cmd[3] == "ses_fb433ade8ffeh55zGEozUE3mey"
+        assert captured_cmd[4] == "--dir"
+        assert captured_cmd[5] == str(workspace)
+        assert captured_cmd[6] == "--format"
+        assert captured_cmd[7] == "json"
+        assert not any("delta" in el for el in captured_cmd)
+        sent = fake_proc.communicate.call_args.kwargs["input"]
+        assert "delta" in sent
+
+    def test_opencode_build_launch_spec_stdin_transport(self, tmp_path: Path):
+        """The contained-launch spec must carry the prompt on stdin
+        (stdin=PIPE) so the argv-too-large gate never fires for opencode:
+        an oversized prompt must NOT raise PromptTransportTooLargeError and
+        no prompt bytes may appear in argv."""
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        big = "x" * 200_000  # far beyond the single-argv limit
+        ex = OpencodeExecutor(opencode_cli_path="opencode")
+        spec = ex.build_launch_spec(
+            workspace=workspace, prompt=big, session_id="sess-X",
+            resume_session_id=None,
+        )
+        assert spec.stdin == subprocess.PIPE
+        assert not any(big in el for el in spec.argv)
 
     # -- Pi -----------------------------------------------------------------
 
@@ -2007,6 +2060,8 @@ class TestFirstPartyAdapterCatalog:
             workspace="/tmp/ws",
             prompt="hello",
         )
+        # THR-200/TASK-6080: the prompt is NOT an argv element — the caller
+        # delivers it via stdin. The argv is binary + run + --dir/--format json.
         expected = [
             "/usr/local/bin/opencode",
             "run",
@@ -2014,9 +2069,32 @@ class TestFirstPartyAdapterCatalog:
             "/tmp/ws",
             "--format",
             "json",
-            "hello",
         ]
         assert cmd == expected
+        assert not any("hello" in el for el in cmd)
+
+    def test_opencode_adapter_build_argv_with_resume(self):
+        """TASK-6080: resume injects ``-s <id>`` between run and --dir."""
+        from runtime.adapters import OpencodeAdapter
+
+        adapter = OpencodeAdapter()
+        cmd = adapter.build_argv(
+            cli_path="/usr/local/bin/opencode",
+            workspace="/tmp/ws",
+            prompt="delta",
+            resume_session_id="ses_fb433ade8ffeh55zGEozUE3mey",
+        )
+        assert cmd == [
+            "/usr/local/bin/opencode",
+            "run",
+            "-s",
+            "ses_fb433ade8ffeh55zGEozUE3mey",
+            "--dir",
+            "/tmp/ws",
+            "--format",
+            "json",
+        ]
+        assert not any("delta" in el for el in cmd)
 
     def test_opencode_adapter_build_argv_with_model(self):
         from runtime.adapters import OpencodeAdapter
@@ -4260,7 +4338,6 @@ class TestD10D11DataDrivenFactory:
             elif isinstance(ex, OpencodeExecutor):
                 argv = ex._build_argv(
                     workspace="/tmp/test_ws",
-                    prompt="_parity_test_prompt_",
                     model=fake_model,
                 )
             elif isinstance(ex, PiExecutor):

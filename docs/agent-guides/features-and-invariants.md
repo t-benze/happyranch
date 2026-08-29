@@ -277,7 +277,7 @@ Claude-backed thread participants reuse their Claude session across turns. State
 
 Implementation: `runtime/daemon/thread_runner.py`, `runtime/orchestrator/executors.py`, `runtime/infrastructure/database.py`, and `runtime/infrastructure/audit_logger.py`.
 
-**TASK-5977 (THR-200 seq 31) parity:** the same resume machinery is proven and shipped for **codex** (installed codex-cli 0.148.0: `codex exec resume <thread_id> --json -`, same `thread.started.thread_id` re-emitted after continuation, prompt via stdin) and **pi** (installed pi 0.84.2: `pi -p --mode json --session <id>`, same session header `id` re-emitted, prompt via stdin). OpenCode is an UNPROVEN gap (no binary on this machine) — it stays fresh. Evidence-backed per-executor support matrix lives in `protocol/05b-agent-runtime.md` (Thread provider-session lifecycle).
+**TASK-5977 (THR-200 seq 31) parity:** the same resume machinery is proven and shipped for **codex** (installed codex-cli 0.148.0: `codex exec resume <thread_id> --json -`, same `thread.started.thread_id` re-emitted after continuation, prompt via stdin) and **pi** (installed pi 0.84.2: `pi -p --mode json --session <id>`, same session header `id` re-emitted, prompt via stdin). **TASK-6080 (THR-200 seq 48):** the same envelope now ships for **opencode** (installed 1.18.25: `opencode run -s <id> --dir <workspace> --format json` with the prompt on stdin, same top-level `sessionID` re-emitted after continuation; eviction = rc=1 + empty stdout + one complete LF/CRLF-delimited physical stderr line exactly `Error: Session not found` after ANSI stripping; unrelated physical lines may coexist, but same-line prefix/suffix and cross-line assembly never match; resume REQUIRES the identical project directory — the thread workspace `<org>/workspaces/<agent>` is stable across turns, and org relocation / workspace-path changes must invalidate stored opencode ids). Generic-CLI and registered custom-adapter profiles remain fresh-only by design (their resume contract is not part of the standard envelope — decision matrix in TASK-6080). Evidence-backed per-executor support matrix lives in `protocol/05b-agent-runtime.md` (Thread provider-session lifecycle).
 
 Traps:
 
@@ -297,7 +297,12 @@ Traps:
   observed COMPLETE line including the CLI envelope; only horizontal
   whitespace may pad it), pi `No session found matching
   '<attempted-id>'` (rc=1 stderr) — each verified 2026-08-28 to echo the
-  attempted id verbatim. Generic legacy substrings, cross-provider text,
+  attempted id verbatim; opencode 1.18.25 is the exception — rc=1 + EMPTY
+  stdout + one complete LF/CRLF-delimited physical stderr line exactly
+  `Error: Session not found` after ANSI-SGR stripping (the id is NOT echoed;
+  unrelated physical lines may coexist, but same-line prefix/suffix and
+  cross-line assembly never match; no global auth/quota/transport token veto
+  is applied). Generic legacy substrings, cross-provider text,
   stdout-only text, wrong rc, wrong/missing id, prefix/suffix near-matches,
   a marker embedded in auth/quota/transport output, and generic failure /
   auth / quota / transport / ambiguous output never trigger the fresh retry.
@@ -318,12 +323,16 @@ Traps:
   the row and its session state together (no redundant clear).
 - **No fingerprint invalidation.** The proven codex/pi contracts resume across
   model/config changes, so no executor/model/config fingerprint column is added.
+  EXCEPTION: opencode sessions are bound to their project directory — resume
+  is safe only for the identical workspace path; org relocation / workspace
+  path changes must invalidate stored opencode session ids (schema-free;
+  relocation-time sweep is a separate founder-gated follow-up).
 - **Equality self-heals (THR-200).** `last_resumed_seq == running_from_seq` runs
   the full prompt (never omits a required sequence) and recovers after one
   successfully settled full-prompt turn — no watermark-comparison change.
-- **Transport (THR-200).** Claude/Pi/Codex deliver the prompt on stdin
-  (pinned-version canaries) — resume prompts included; opencode/generic-CLI
-  stay argv-based with a pre-spawn `prompt_transport_too_large` guard. Encoded
+- **Transport (THR-200).** Claude/Pi/Codex/OpenCode deliver the prompt on stdin
+  (pinned-version canaries) — resume prompts included; generic-CLI stays
+  argv-based with a pre-spawn `prompt_transport_too_large` guard. Encoded
   byte size is transport-only, never a cost/reset policy.
 - **pi uses `--session`, never `--session-id`.** `--session` fails when the id
   is missing (the eviction signature); `--session-id` would silently CREATE a

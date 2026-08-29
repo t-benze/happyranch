@@ -137,6 +137,15 @@ def fake_codex(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def fake_opencode(tmp_path: Path) -> Path:
+    src = Path(__file__).parent / "fake_opencode.sh"
+    dst = tmp_path / "fake_opencode.sh"
+    dst.write_bytes(src.read_bytes())
+    dst.chmod(0o755)
+    return dst
+
+
+@pytest.fixture
 def fake_claude_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Pre-declare FAKE_CLAUDE_PLAN so the daemon inherits it at launch time.
 
@@ -155,6 +164,18 @@ def fake_codex_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     """Pre-declare FAKE_CODEX_PLAN so the daemon inherits it at launch time."""
     plan_path = tmp_path / "plan_codex.sh"
     monkeypatch.setenv("FAKE_CODEX_PLAN", str(plan_path))
+    return plan_path
+
+
+@pytest.fixture
+def fake_opencode_thread_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Pre-declare FAKE_OPENCODE_THREAD_PLAN so the daemon inherits it.
+
+    Same shape as fake_claude_thread_plan_env but routes to a separate
+    script for thread invocations (detected by `Your invocation_token:`).
+    """
+    plan_path = tmp_path / "thread_plan_opencode.sh"
+    monkeypatch.setenv("FAKE_OPENCODE_THREAD_PLAN", str(plan_path))
     return plan_path
 
 
@@ -183,14 +204,17 @@ def live_daemon(
     runtime,
     fake_claude,
     fake_codex,
+    fake_opencode,
     fake_claude_plan_env,
     fake_codex_plan_env,
     fake_claude_thread_plan_env,
+    fake_opencode_thread_plan_env,
     monkeypatch,
 ):
     """Start the daemon via scripts/daemon.sh and stop it after the test."""
     monkeypatch.setenv("HAPPYRANCH_CLAUDE_CLI_PATH", str(fake_claude))
     monkeypatch.setenv("HAPPYRANCH_CODEX_CLI_PATH", str(fake_codex))
+    monkeypatch.setenv("HAPPYRANCH_OPENCODE_CLI_PATH", str(fake_opencode))
     # Disable executor launch spacing (issue #85) so integration runs stay fast
     # and deterministic — the 1.5s default would serialize same-provider launches.
     monkeypatch.setenv("HAPPYRANCH_EXECUTOR_LAUNCH_SPACING_SECONDS", "0")
@@ -200,6 +224,7 @@ def live_daemon(
     save_registry({
         "claude": str(fake_claude),
         "codex": str(fake_codex),
+        "opencode": str(fake_opencode),
     })
     from runtime.daemon import runtimes as runtimes_mod
 
@@ -229,6 +254,7 @@ def live_daemon_idle(
     tmp_home,
     fake_claude,
     fake_codex,
+    fake_opencode,
     fake_claude_plan_env,
     fake_codex_plan_env,
     monkeypatch,
@@ -236,6 +262,7 @@ def live_daemon_idle(
     """Start the daemon with no active runtime registered yet."""
     monkeypatch.setenv("HAPPYRANCH_CLAUDE_CLI_PATH", str(fake_claude))
     monkeypatch.setenv("HAPPYRANCH_CODEX_CLI_PATH", str(fake_codex))
+    monkeypatch.setenv("HAPPYRANCH_OPENCODE_CLI_PATH", str(fake_opencode))
     # Disable executor launch spacing (issue #85) — see live_daemon.
     monkeypatch.setenv("HAPPYRANCH_EXECUTOR_LAUNCH_SPACING_SECONDS", "0")
     script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
