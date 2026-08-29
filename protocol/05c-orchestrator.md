@@ -158,8 +158,10 @@ is an optimization, never a correctness dependency, for the executors whose
 resume contract is PROVEN against the installed CLI (claude 2.1.241, codex
 0.148.0, pi 0.84.2 — TASK-5977 audit; opencode 1.18.25 — TASK-6080 audit:
 `run -s <id> --dir <ws> --format json`, stdin prompt, same sessionID
-re-emitted, eviction = rc=1 + empty stdout + one stderr line `Error:
-Session not found`, resume REQUIRES the identical project directory);
+re-emitted, eviction = rc=1 + empty stdout + one complete LF/CRLF-delimited
+stderr line exactly `Error: Session not found` after ANSI-SGR stripping;
+unrelated physical lines may coexist, but same-line prefix/suffix and
+cross-line assembly never match; resume REQUIRES the identical project directory);
 generic-CLI and registered custom-adapter profiles stay fresh (see
 `protocol/05b-agent-runtime.md`). Eviction — a provider-declared
 session-not-found on a resume attempt — invalidates the durable id in the

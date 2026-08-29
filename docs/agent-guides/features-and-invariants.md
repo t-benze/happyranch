@@ -277,7 +277,7 @@ Claude-backed thread participants reuse their Claude session across turns. State
 
 Implementation: `runtime/daemon/thread_runner.py`, `runtime/orchestrator/executors.py`, `runtime/infrastructure/database.py`, and `runtime/infrastructure/audit_logger.py`.
 
-**TASK-5977 (THR-200 seq 31) parity:** the same resume machinery is proven and shipped for **codex** (installed codex-cli 0.148.0: `codex exec resume <thread_id> --json -`, same `thread.started.thread_id` re-emitted after continuation, prompt via stdin) and **pi** (installed pi 0.84.2: `pi -p --mode json --session <id>`, same session header `id` re-emitted, prompt via stdin). **TASK-6080 (THR-200 seq 48):** the same envelope now ships for **opencode** (installed 1.18.25: `opencode run -s <id> --dir <workspace> --format json` with the prompt on stdin, same top-level `sessionID` re-emitted after continuation; eviction = rc=1 + empty stdout + one physical stderr line `Error: Session not found` after ANSI stripping, complete-line classified since opencode does not echo the attempted id; resume REQUIRES the identical project directory — the thread workspace `<org>/workspaces/<agent>` is stable across turns, and org relocation / workspace-path changes must invalidate stored opencode ids). Generic-CLI and registered custom-adapter profiles remain fresh-only by design (their resume contract is not part of the standard envelope — decision matrix in TASK-6080). Evidence-backed per-executor support matrix lives in `protocol/05b-agent-runtime.md` (Thread provider-session lifecycle).
+**TASK-5977 (THR-200 seq 31) parity:** the same resume machinery is proven and shipped for **codex** (installed codex-cli 0.148.0: `codex exec resume <thread_id> --json -`, same `thread.started.thread_id` re-emitted after continuation, prompt via stdin) and **pi** (installed pi 0.84.2: `pi -p --mode json --session <id>`, same session header `id` re-emitted, prompt via stdin). **TASK-6080 (THR-200 seq 48):** the same envelope now ships for **opencode** (installed 1.18.25: `opencode run -s <id> --dir <workspace> --format json` with the prompt on stdin, same top-level `sessionID` re-emitted after continuation; eviction = rc=1 + empty stdout + one complete LF/CRLF-delimited physical stderr line exactly `Error: Session not found` after ANSI stripping; unrelated physical lines may coexist, but same-line prefix/suffix and cross-line assembly never match; resume REQUIRES the identical project directory — the thread workspace `<org>/workspaces/<agent>` is stable across turns, and org relocation / workspace-path changes must invalidate stored opencode ids). Generic-CLI and registered custom-adapter profiles remain fresh-only by design (their resume contract is not part of the standard envelope — decision matrix in TASK-6080). Evidence-backed per-executor support matrix lives in `protocol/05b-agent-runtime.md` (Thread provider-session lifecycle).
 
 Traps:
 
@@ -298,11 +298,11 @@ Traps:
   whitespace may pad it), pi `No session found matching
   '<attempted-id>'` (rc=1 stderr) — each verified 2026-08-28 to echo the
   attempted id verbatim; opencode 1.18.25 is the exception — rc=1 + EMPTY
-  stdout + exactly one physical stderr line `Error: Session not found` after
-  ANSI-SGR stripping (the id is NOT echoed, so classification is
-  complete-line rather than ID-anchored; no global auth/quota/transport token
-  veto — the complete-line anchor + empty-stdout requirement reject the
-  embedding class). Generic legacy substrings, cross-provider text,
+  stdout + one complete LF/CRLF-delimited physical stderr line exactly
+  `Error: Session not found` after ANSI-SGR stripping (the id is NOT echoed;
+  unrelated physical lines may coexist, but same-line prefix/suffix and
+  cross-line assembly never match; no global auth/quota/transport token veto
+  is applied). Generic legacy substrings, cross-provider text,
   stdout-only text, wrong rc, wrong/missing id, prefix/suffix near-matches,
   a marker embedded in auth/quota/transport output, and generic failure /
   auth / quota / transport / ambiguous output never trigger the fresh retry.

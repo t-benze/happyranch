@@ -455,13 +455,12 @@ async def test_turn1_full_prompt_never_resumes_for_codex_and_pi(
         ("claude", "No conversation found with session ID: 01a0-dead\n"
                     "[debug] exiting"),
         # opencode 1.18.25 (TASK-6080 audit): the attempted id is NOT echoed;
-        # the contract is rc=1 + empty stdout + ONE physical stderr line
-        # `Error: Session not found` (ANSI-SGR codes stripped). Unrelated text
-        # on OTHER lines stays positive; only text on the signature line is a
-        # negative. Unlike claude/codex/pi no global auth/quota/transport
-        # token veto applies — the complete-line anchor + empty-stdout
-        # requirement already reject the embedding class, and a token on an
-        # unrelated line would falsely veto a genuine eviction.
+        # the contract is rc=1 + empty stdout + one complete physical stderr
+        # line exactly equal to `Error: Session not found` after ANSI-SGR
+        # stripping. Unrelated text on OTHER lines stays positive; only text
+        # on the signature line is a negative. Unlike claude/codex/pi no
+        # global auth/quota/transport token veto applies — a token on an
+        # unrelated line must not veto a genuine eviction line.
         ("opencode", "Error: Session not found"),
         ("opencode", "\x1b[91m\x1b[1mError: \x1b[0mSession not found"),
         ("opencode", "Ignoring 1 permissions.allow entry...\n"
@@ -469,15 +468,13 @@ async def test_turn1_full_prompt_never_resumes_for_codex_and_pi(
                       "process finished with exit code 1"),
         ("opencode", "Error: 401 unauthorized\nError: Session not found"),
         ("opencode", "Error: Session not found\r\n"),
-        # Horizontal whitespace (space/tab) is permitted where the observed
-        # contract permits spacing — leading/trailing padding and multiple
-        # spaces at the id/code boundaries stay positive for every executor.
+        # Horizontal whitespace is permitted only for the three id-bound
+        # provider contracts. OpenCode's signature-only physical line is a
+        # literal contract and therefore has no padding allowance.
         ("codex", "  Error: thread/resume: thread/resume failed: no rollout "
                   "found for thread id  01a0-dead  (code -32600)  "),
         ("pi", "  No session found matching  '01a0-dead'  "),
         ("claude", "\tNo conversation found with session ID: 01a0-dead\t"),
-        ("opencode", "  Error: Session not found  "),
-        ("opencode", "\tError: Session not found\t"),
         # Complete-line termination (TASK-6019): the observed provider stderr
         # LINE must be exactly `No conversation found with session ID:
         # <attempted-id>`; allowed whitespace around the signature/id and
@@ -755,8 +752,14 @@ async def test_eviction_observed_audit_corpus_line_classifies(
         ("opencode", "xError: Session not found", "", 1),  # same-line prefix
         ("opencode", "prefix Error: Session not found", "", 1),
         ("opencode", "Error: Session not foundx", "", 1),  # same-line suffix
+        ("opencode", " Error: Session not found", "", 1),  # whitespace prefix
+        ("opencode", "Error: Session not found\t", "", 1),  # whitespace suffix
         ("opencode", "Error: Session\nnot found", "", 1),  # LF split
         ("opencode", "Error: Session\r\nnot found", "", 1),  # CRLF split
+        ("opencode", "401 unauthorized: Error: Session not found", "", 1),
+        ("opencode", "Error: Session not found (quota exceeded)", "", 1),
+        ("opencode", "transport error: Error: Session not found", "", 1),
+        ("claude", "Error: Session not found", "", 1),  # wrong executor
         ("opencode", "Error: Failed to change directory to /nonexistent", "", 1),
         ("opencode", "agent \"nosuch\" not found. Falling back to default", "", 0),
         ("opencode", "sessionID", "", 1),  # unrelated word on the line

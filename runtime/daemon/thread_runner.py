@@ -582,23 +582,23 @@ def _is_pi_session_evicted(result, attempted_session_id: str) -> bool:
 # ``\x1b[91m\x1b[1mError: \x1b[0mSession not found\n``).
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-# opencode 1.18.25 eviction contract: rc=1, stdout EMPTY, stderr exactly one
-# physical line ``Error: Session not found`` (ANSI-stripped). Unlike
+# opencode 1.18.25 eviction contract: rc=1, stdout EMPTY, and one complete
+# physical stderr line exactly ``Error: Session not found`` (ANSI-stripped).
+# Unrelated physical lines may coexist. Unlike
 # claude/codex/pi the attempted session id is NOT echoed in the message
 # (verified live: four bogus ids plus a really-deleted session all produce the
 # identical line), so classification is complete-line rather than ID-anchored.
-_OPENCODE_EVICTION_SIGNATURE = "error: session not found"
+_OPENCODE_EVICTION_SIGNATURE = "Error: Session not found"
 
 
 def _is_opencode_session_evicted(result, attempted_session_id: str) -> bool:
     """opencode 1.18.25 proven contract (TASK-6080 live audit, no API
     traffic beyond minimal free-model probes): rc=1, stdout EMPTY, stderr
-    exactly one physical line ``Error: Session not found`` after ANSI-SGR
-    stripping. The attempted id is NOT echoed by opencode, so the signature is
-    the complete line — an exact per-line match with only horizontal
-    whitespace permitted; LF/CRLF split forms, same-line prefix/suffix text,
-    unrelated stderr lines (``Failed to change directory ...``, usage text),
-    stdout JSON error events (invalid-model/unknown-server errors), wrong rc,
+    containing a complete physical line exactly ``Error: Session not found``
+    after ANSI-SGR stripping. The attempted id is NOT echoed by opencode, so
+    the signature is an exact per-line literal; unrelated physical lines may
+    coexist, but LF/CRLF split forms, same-line prefix/suffix text, stdout JSON
+    error events (invalid-model/unknown-server errors), wrong rc,
     cross-provider signatures, and empty attempted id never match. stdout must
     be EMPTY because a run that performed any work would have emitted NDJSON
     step events; a genuine eviction fails at session lookup before any model
@@ -613,16 +613,14 @@ def _is_opencode_session_evicted(result, attempted_session_id: str) -> bool:
         return False
     if (getattr(result, "stdout_tail", None) or "").strip():
         return False
-    stderr = _ANSI_SGR_RE.sub(
-        "", getattr(result, "stderr_tail", None) or ""
+    stderr = _ANSI_SGR_RE.sub("", getattr(result, "stderr_tail", None) or "")
+    # Split only on the proven LF/CRLF physical-line forms. In particular,
+    # never let a regex anchor or whitespace token assemble a match across
+    # line boundaries.
+    return any(
+        line == _OPENCODE_EVICTION_SIGNATURE
+        for line in re.split(r"\r\n|\n", stderr)
     )
-    # ``\r`` removed so a CRLF physical line still matches ``$`` exactly.
-    stderr = stderr.replace("\r", "").lower()
-    return re.search(
-        rf"^[ \t]*{_OPENCODE_EVICTION_SIGNATURE}[ \t]*$",
-        stderr,
-        re.MULTILINE,
-    ) is not None
 
 
 def _classify_session_evicted(

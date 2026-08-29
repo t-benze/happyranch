@@ -155,12 +155,13 @@ carries the resumable provider session id + delta watermark
   line), pi ``No session found matching
   '<attempted-id>'`` (each rc=1, stderr, and verified 2026-08-28 to echo
   the attempted id verbatim; the id is regex-escaped) — and opencode
-  1.18.25 (rc=1, stdout EMPTY, stderr exactly one physical line
-  ``Error: Session not found`` after ANSI-SGR stripping; the attempted id
-  is NOT echoed, so classification is complete-line rather than ID-anchored;
+  1.18.25 (rc=1, stdout EMPTY, with one complete LF/CRLF-delimited physical
+  stderr line exactly ``Error: Session not found`` after ANSI-SGR stripping;
+  unrelated physical lines may coexist, but same-line prefix/suffix and
+  cross-line assembly never match; the attempted id is NOT echoed;
   a global auth/quota/transport token veto is deliberately not applied —
-  the complete-line anchor + empty-stdout requirement reject the embedding
-  class, and an unrelated warning line containing a token would falsely
+  the exact-line match + empty-stdout requirement reject the embedding class,
+  and an unrelated warning line containing a token would falsely
   veto a genuine eviction) — and never classifies
   generic legacy substrings, cross-provider text, stdout-only text, wrong
   rc, wrong/missing id, prefix/suffix near-matches, a marker embedded in
