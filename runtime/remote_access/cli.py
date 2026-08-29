@@ -1,20 +1,30 @@
-"""Linux connector CLI (THR-097 phase unit 3).
+"""Linux connector CLI (THR-097 phase unit 3 + Unit 3A).
 
 Operator surface for the supervised Linux connector:
 
 - ``run`` — the systemd ``Type=notify`` foreground loop (readiness-gated
   listener; SIGTERM/SIGINT stop the listener before exit). Requires
-  ``--lab-only`` when the config carries a lab provider, and fails closed
-  (exit 1) when the config has no concrete lab provider/listener at all —
-  READY=1 is never emitted without a proven bound listener.
+  ``--lab-only`` when the config carries a lab provider and ``--diy`` when
+  it carries the Supported-DIY customer-owned-network provider, and fails
+  closed (exit 1) when the config has no concrete provider/listener at all
+  — READY=1 is never emitted without a proven bound listener.
 - ``install`` / ``uninstall`` / ``start`` / ``stop`` / ``restart`` /
   ``enable`` / ``disable`` / ``status`` — systemd service lifecycle.
 - ``readiness`` — evaluate the five gates; exit 0 only when ready.
-- ``diagnose`` — redacted local diagnostics (never the daemon bearer).
+- ``diagnose`` — redacted local diagnostics (never the daemon bearer, never
+  pairing codes/credentials).
 - ``upgrade`` / ``rollback`` — unit replacement with auto-rollback.
+- **Supported-DIY ceremony (THR-097 Unit 3A):** ``pair`` issues a one-time
+  pairing code (printed ONCE, never logged); ``list-devices`` shows the
+  paired devices (redacted); ``revoke`` revokes one device or all
+  (persisted; the connector closes live streams at its next
+  reconciliation); ``remove-device`` removes a device and
+  its credential; ``pairing-status`` reports truthful lifecycle states;
+  ``recovery --factory-reset`` deletes BOTH snapshot+anchor files to return
+  to the first-run deny-all default (explicit operator action).
 
 No daemon, auth, schema, permission-model, or dependency change; this is the
-packaging surface only.
+packaging + ceremony surface only.
 """
 from __future__ import annotations
 
@@ -25,6 +35,8 @@ import sys
 from pathlib import Path
 
 from runtime.remote_access.lab_provider import LAB_ONLY_BANNER
+from runtime.remote_access.pairing import PairingError, PairingManager
+from runtime.remote_access.state_store import CorruptTrustStateError, StateStoreError
 from runtime.remote_access.supervisor import (
     ConnectorConfig,
     ConnectorConfigError,
@@ -37,7 +49,7 @@ _DEFAULT_CONFIG = "~/.happyranch/remote_access/config.json"
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="happyranch-connector",
-        description="HappyRanch supervised Linux remote-access connector (THR-097 unit 3)",
+        description="HappyRanch supervised Linux remote-access connector (THR-097 unit 3 / unit 3A)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -46,9 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--config", default=_DEFAULT_CONFIG, help="connector config JSON path")
         return p
 
-    add_lifecycle("run", "foreground readiness loop (systemd Type=notify)").add_argument(
-        "--lab-only", action="store_true", help="required when the config carries a lab provider"
-    )
+    run = add_lifecycle("run", "foreground readiness loop (systemd Type=notify)")
+    run.add_argument("--lab-only", action="store_true", help="required when the config carries a lab provider")
+    run.add_argument("--diy", action="store_true", help="required when the config carries the Supported-DIY provider")
     install = add_lifecycle("install", "render + install the systemd unit")
     install.add_argument("--no-enable", action="store_true", help="do not enable on boot")
     add_lifecycle("uninstall", "stop, disable, and remove the systemd unit")
@@ -60,6 +72,20 @@ def build_parser() -> argparse.ArgumentParser:
     add_lifecycle("status", "print the connector service status")
     add_lifecycle("readiness", "evaluate the five readiness gates (exit 0 only when ready)")
     add_lifecycle("diagnose", "redacted local diagnostics")
+
+    pair = add_lifecycle("pair", "issue a one-time pairing code for a device (Supported-DIY ceremony)")
+    pair.add_argument("--device", required=True, help="human-readable device name (e.g. macbook-pro)")
+    add_lifecycle("list-devices", "list paired devices (redacted — never credentials/digests)")
+    revoke = add_lifecycle("revoke", "revoke one device or all devices (persisted; the connector closes live streams at its next reconciliation)")
+    revoke.add_argument("--device", default=None, help="device name to revoke; omit to revoke ALL")
+    remove = add_lifecycle("remove-device", "remove a device and its credential entirely")
+    remove.add_argument("--device", required=True, help="device name to remove")
+    add_lifecycle("pairing-status", "truthful Supported-DIY pairing/revocation lifecycle status")
+    recovery = add_lifecycle(
+        "recovery",
+        "factory-reset the local trust state (delete BOTH snapshot+anchor files -> first-run deny-all)",
+    )
+    recovery.add_argument("--factory-reset", action="store_true", help="confirm the destructive factory reset")
     upgrade = add_lifecycle("upgrade", "install the new unit over a backup and restart")
     upgrade.add_argument("--no-verify", dest="verify_start", action="store_false", help="skip start verification")
     add_lifecycle("rollback", "restore the most recent unit backup and restart")
@@ -85,9 +111,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    # Lab-only double-gating: the config must carry lab_only AND the operator
-    # must pass --lab-only on `run` (never silently started as a product).
+    # Provider opt-in double-gating: the config must carry the provider AND
+    # the operator must pass the matching flag on `run` (never silently
+    # started as a product, never a provider-less READY).
     if args.command == "run":
+        if config.lab is not None and config.diy is not None:
+            print("error: config carries both lab and diy providers (mutually exclusive)", file=sys.stderr)
+            return 1
         if config.lab is not None:
             if not args.lab_only:
                 print(
@@ -96,6 +126,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
             print(f"{LAB_ONLY_BANNER}", file=sys.stderr)
+        if config.diy is not None:
+            if not args.diy:
+                print(
+                    "error: config carries the Supported-DIY provider; pass --diy",
+                    file=sys.stderr,
+                )
+                return 1
 
     supervisor = ConnectorSupervisor(config=config)
     try:
@@ -148,10 +185,102 @@ def main(argv: list[str] | None = None) -> int:
             outcome = supervisor.rollback()
             _print_json(outcome.__dict__)
             return 0 if outcome.ok else 1
+        if args.command in {"pair", "list-devices", "revoke", "remove-device", "pairing-status", "recovery"}:
+            return _run_ceremony(args, supervisor)
     except (ConnectorConfigError, OSError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 1
+
+
+def _run_ceremony(args, supervisor: ConnectorSupervisor) -> int:
+    """Supported-DIY pairing/revocation/recovery ceremony surface. All
+    ceremony commands operate on the approved trust-state store (digests
+    only) and render NO credential material."""
+    try:
+        if args.command == "pair":
+            issued = supervisor.pairing_manager().issue_pairing_code(args.device)
+            # The code is printed ONCE for the operator to relay to the away
+            # client; it is never stored, logged, or repeated.
+            print(f"pairing code for device '{issued.device_name}': {issued.code}")
+            print(f"expires at: {issued.expires_at.isoformat()}")
+            print("hand this code to the away client ONCE; it cannot be replayed.")
+            return 0
+        if args.command == "list-devices":
+            _print_json(
+                {
+                    "devices": [
+                        {
+                            "device_id": d.device_id,
+                            "authorization_epoch": d.authorization_epoch,
+                            "expires_at": d.expires_at.isoformat(),
+                            "revoked": d.revoked,
+                            "paired": d.paired,
+                        }
+                        for d in supervisor.pairing_manager().list_devices()
+                    ]
+                }
+            )
+            return 0
+        if args.command == "revoke":
+            outcome = supervisor.pairing_manager().revoke(device_id=args.device)
+            target = args.device or "ALL devices"
+            # Cross-process honesty (TASK-6039 reviewer [CRITICAL] finding 2):
+            # this CLI process is NOT the connector process serving the live
+            # streams — it must never report stream closure it cannot prove.
+            # The revocation is persisted; the connector closes any live
+            # streams at its next reconciliation (bounded by poll_seconds).
+            print(
+                f"revoked {target}: revocation epoch {outcome.epoch} persisted; "
+                f"the connector closes any live streams at its next "
+                f"reconciliation"
+            )
+            return 0
+        if args.command == "remove-device":
+            supervisor.pairing_manager().remove_device(args.device)
+            print(f"removed device '{args.device}' and its credential")
+            return 0
+        if args.command == "pairing-status":
+            _print_json(supervisor.pairing_manager().pairing_status())
+            return 0
+        if args.command == "recovery":
+            if not args.factory_reset:
+                print(
+                    "refusing: recovery --factory-reset deletes BOTH the trust-state "
+                    "snapshot and its companion anchor (returns to the first-run "
+                    "deny-all default). Pass --factory-reset to confirm.",
+                    file=sys.stderr,
+                )
+                return 1
+            return _factory_reset(supervisor)
+    except (PairingError, StateStoreError, CorruptTrustStateError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 1
+
+
+def _factory_reset(supervisor: ConnectorSupervisor) -> int:
+    """Explicit operator factory-reset of the LOCAL trust state per the
+    store's crash-consistency contract: delete BOTH files (snapshot + anchor)
+    so the next load returns the fresh deny-all default. Deleting exactly one
+    of the pair would be partial state (fail closed), so both must go."""
+    state_path = Path(supervisor.config.state_path).expanduser()
+    snapshot = state_path
+    anchor = Path(str(state_path) + ".anchor")
+    removed = []
+    for path in (snapshot, anchor):
+        try:
+            if path.exists() or path.is_symlink():
+                path.unlink()
+                removed.append(str(path))
+        except OSError as exc:
+            print(f"error: cannot remove {path}: {exc}", file=sys.stderr)
+            return 1
+    if not removed:
+        print("no trust state present (first run); nothing to reset")
+        return 0
+    print("factory reset complete: removed " + ", ".join(removed))
+    return 0
 
 
 def _run_foreground(supervisor: ConnectorSupervisor) -> int:

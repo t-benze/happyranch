@@ -118,3 +118,39 @@ class RevocationCoordinator:
         if failures:
             raise RevocationIncomplete(epoch, failures)
         return epoch
+
+    def revoke_device(self, device_id: str, epoch: int) -> int:
+        """Revoke ONE paired device at a monotonic epoch (Supported-DIY
+        lost-device flow). Runs the SAME authoritative transaction shape as
+        ``revoke`` — re-entrancy guarded, serialized, fail-closed stream
+        closure FIRST (conservatively ALL live streams are closed: stream
+        attribution to a device is a later refinement; closing more than
+        needed is the safe side), then the targeted per-device trust-state
+        application, then signal subscribers. Other devices remain
+        authorized. Raises ``RevocationIncomplete`` exactly like ``revoke``
+        when a stream failed to close (the deny side is still applied).
+        """
+        if getattr(self._in_revoke, "active", False):
+            raise RuntimeError("re-entrant revocation transaction rejected")
+        if epoch <= self.state.revocation_epoch:
+            raise ValueError("revocation epoch rollback rejected")
+        self._in_revoke.active = True
+        try:
+            with self._tx_lock:
+                if epoch <= self.state.revocation_epoch:
+                    raise ValueError("revocation epoch rollback rejected")
+                failures: tuple[str, ...] = ()
+                try:
+                    self.registry.close_all()
+                except StreamCloseError as exc:
+                    failures = exc.stream_ids
+                # Private by contract: per-device revocation is applied only
+                # through this transaction, after stream closure (§9 order).
+                self.state._revoke_device(device_id, epoch)
+                if self.signal is not None:
+                    self.signal.fire(epoch)
+        finally:
+            self._in_revoke.active = False
+        if failures:
+            raise RevocationIncomplete(epoch, failures)
+        return epoch

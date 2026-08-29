@@ -534,6 +534,26 @@ class StreamRegistry:
         with self._lock:
             return stream_id in self._streams
 
+    def open_count(self) -> int:
+        """Number of live registered streams — a real linearization point on
+        the lifecycle lock. Advisory read used by the supervisor's revocation
+        reconciliation to close live streams after a cross-process revoke
+        WITHOUT sealing an empty registry (sealing an empty registry would
+        refuse future streams for legitimately re-paired devices)."""
+        with self._lock:
+            return len(self._streams)
+
+    @property
+    def sealed(self) -> bool:
+        """True once ``close_all`` has sealed this one-shot registry (the
+        linearization point of the lifecycle lock). The supervisor rotates
+        the authoritative runtime after a reconciled revocation EXACTLY when
+        the registry is sealed — a sealed registry would otherwise refuse
+        every future stream for the remaining process lifetime (TASK-6044
+        finding 2)."""
+        with self._lock:
+            return self._revoked
+
     def raise_if_open(self, stream_id: str) -> None:
         """Fail closed when the stream is NOT a member of the registry (a
         closed/never-registered stream must not be used). Synchronized on the

@@ -27,7 +27,9 @@ from runtime.remote_access.credentials import (
     StaticDaemonCredentialProvider,
     SystemdCredentialProvider,
 )
+from runtime.remote_access.diy_provider import DiyProviderAdapter, DiyProviderConfig, DiyProviderError
 from runtime.remote_access.gateway import ConnectorGateway, GatewayContext
+from runtime.remote_access.httpd import BaseConnectorHandler
 from runtime.remote_access.identity import (
     ConnectorIdentity,
     DeviceProof,
@@ -46,6 +48,8 @@ from runtime.remote_access.models import (
     NormalizedTarget,
     RemoteRequest,
 )
+from runtime.remote_access.network import NetworkConfig, NetworkAddressError
+from runtime.remote_access.pairing import PairingCredentialVerifier, PairingManager
 from runtime.remote_access.revocation import RevocationCoordinator, RevocationIncomplete
 from runtime.remote_access.state import InMemoryTrustStateStore, TrustStateStore
 from runtime.remote_access.state_store import (
@@ -68,13 +72,20 @@ __all__ = [
     "DeviceAuthorization",
     "DeviceProof",
     "DeviceProofVerifier",
+    "DiyProviderAdapter",
+    "DiyProviderConfig",
+    "DiyProviderError",
     "FileDaemonCredentialProvider",
     "ForwardedResponse",
     "GatewayContext",
     "Header",
     "InMemoryTrustStateStore",
     "LoopbackViolation",
+    "NetworkAddressError",
+    "NetworkConfig",
     "NormalizedTarget",
+    "PairingCredentialVerifier",
+    "PairingManager",
     "ProofVerdict",
     "RemoteRequest",
     "ReplayGuardingVerifier",

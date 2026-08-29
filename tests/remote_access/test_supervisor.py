@@ -34,6 +34,8 @@ from runtime.remote_access.state_store import (
     StateStoreError,
 )
 from runtime.remote_access.streams import StreamRegistry
+
+from .fake_daemon import FakeDaemon
 from runtime.remote_access.supervisor import (
     ConnectorConfig,
     ConnectorConfigError,
@@ -44,6 +46,79 @@ from runtime.remote_access.supervisor import (
 from .conftest import NOW, build_consumer, default_identity
 
 _UNSET = object()
+
+# A real customer-owned-network bind address for the supervisor-seam socket
+# tests: the host's first non-loopback IPv4 (hairpin to self is a genuine TCP
+# path through the kernel stack). Skipped with reason when the host has none.
+def _host_network_ipv4() -> str | None:
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        parts = line.split()
+        for i, part in enumerate(parts):
+            if part == "inet" and i + 1 < len(parts):
+                addr = parts[i + 1].split("/")[0]
+                if addr.startswith("127."):
+                    continue
+                try:
+                    from runtime.remote_access.network import validate_customer_network_address
+
+                    validate_customer_network_address(addr)
+                    return addr
+                except Exception:
+                    continue
+    return None
+
+
+NETWORK_IPV4 = _host_network_ipv4()
+BEARER = "supervisor-seam-bearer-7"
+
+
+def _tailscale_stub(tmp_path, address: str) -> str:
+    """A stub ``tailscale ip -4`` executable resolving to *address* — the
+    REAL shipping resolution path (TailscaleCliResolver -> subprocess ->
+    validation) without requiring a live tailnet on the test host."""
+    stub = tmp_path / "tailscale-stub"
+    stub.write_text(f"#!/bin/sh\nprintf '%s\\n' '{address}'\n")
+    stub.chmod(0o755)
+    return str(stub)
+
+def _sse_closed_after(resp, timeout: float = 8.0) -> bool:
+    """True when the SSE connection closes within *timeout* seconds (EOF or
+    connection error). select-bounded via the response's own buffered reader
+    (http.client nulls ``conn.sock`` on Connection: close responses, but the
+    response's ``fp`` stays the live channel)."""
+    import select
+    import time as _time
+
+    fp = resp.fp
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        try:
+            ready, _, _ = select.select([fp], [], [], 0.2)
+        except (OSError, ValueError):
+            return True  # fd gone — closed
+        if not ready:
+            continue
+        try:
+            chunk = resp.read1(1024)
+        except Exception:
+            return True  # reset/refused/closed-file — the stream is gone
+        if not chunk:
+            return True  # EOF — closed
+    return False
+
+
 
 
 class FakeManager:
@@ -1003,3 +1078,482 @@ class TestManagedPaths:
         supervisor = _supervisor(tmp_path, config=cfg)
         spec = supervisor.unit_spec()
         assert "--lab-only" not in spec.exec_start
+
+
+# ── Supported-DIY provider wiring (THR-097 Unit 3A) ─────────────────────────
+
+
+def _diy_config(tmp_path, **overrides) -> ConnectorConfig:
+    from runtime.remote_access.diy_provider import DiyProviderConfig
+    from runtime.remote_access.network import NetworkConfig
+
+    fields = dict(
+        tenant_id="diy",
+        home_id="home-a",
+        connector_id="connector-a",
+        daemon_port=8999,
+        daemon_token_path=str(tmp_path / "daemon.token"),
+        policy_path=str(tmp_path / "policy.json"),
+        state_path=str(tmp_path / "state.json"),
+        unit_name="happyranch-connector.service",
+        system=False,
+        lab=None,
+        diy=DiyProviderConfig(
+            network=NetworkConfig(mode="tailscale"),
+            bind_port=8443,
+        ),
+    )
+    fields.update(overrides)
+    return ConnectorConfig(**fields)
+
+
+class TestDiyConfig:
+    def test_lab_and_diy_mutually_exclusive(self, tmp_path) -> None:
+        config = _config(tmp_path, lab=True)
+        from runtime.remote_access.diy_provider import DiyProviderConfig
+        from runtime.remote_access.network import NetworkConfig
+
+        config.diy = DiyProviderConfig(
+            network=NetworkConfig(mode="tailscale")
+        )
+        with pytest.raises(ConnectorConfigError, match="mutually exclusive"):
+            config.validate()
+
+    def test_config_file_round_trip_preserves_diy(self, tmp_path) -> None:
+        config = _diy_config(tmp_path)
+        path = tmp_path / "diy.json"
+        config.to_file(path)
+        loaded = ConnectorConfig.from_file(path)
+        assert loaded.diy is not None
+        assert loaded.diy.network.mode == "tailscale"
+        assert loaded.diy.bind_port == 8443
+        assert loaded.lab is None
+
+    def test_diy_config_validation_errors_fail_closed(self, tmp_path) -> None:
+        from runtime.remote_access.diy_provider import DiyProviderConfig
+        from runtime.remote_access.network import NetworkConfig
+
+        config = _diy_config(
+            tmp_path, diy=DiyProviderConfig(network=NetworkConfig(mode="explicit", address="0.0.0.0"))
+        )
+        with pytest.raises(ConnectorConfigError, match="diy"):
+            config.validate()
+
+    def test_unit_spec_carries_diy_flag(self, tmp_path) -> None:
+        config = _diy_config(tmp_path)
+        supervisor = ConnectorSupervisor(config=config)
+        spec = supervisor.unit_spec()
+        assert "--diy" in spec.exec_start
+
+    def test_initial_state_has_no_devices_for_diy(self, tmp_path) -> None:
+        config = _diy_config(tmp_path)
+        supervisor = ConnectorSupervisor(config=config)
+        state = supervisor.initial_state()
+        assert state.devices == {}
+        assert state.connector_identity is not None
+
+    def test_pairing_manager_persists_across_restart(self, tmp_path) -> None:
+        config = _diy_config(tmp_path)
+        supervisor = ConnectorSupervisor(config=config)
+        pairing = supervisor.pairing_manager()
+        issued = pairing.issue_pairing_code("macbook-pro")
+        credential = pairing.redeem_pairing(issued.code)
+        assert credential is not None
+        # Fresh supervisor over the same files:
+        fresh = ConnectorSupervisor(config=config)
+        state = fresh.pairing_manager().load_state()
+        assert "macbook-pro" in state.devices
+        assert state.devices["macbook-pro"].credential_digest is not None
+
+    def test_build_diy_provider(self, tmp_path, route_policy_fixture) -> None:
+        config = _diy_config(tmp_path)
+        supervisor = _supervisor(tmp_path, config=config, policy=build_consumer(route_policy_fixture))
+        provider = supervisor.build_diy_provider()
+        assert provider is not None
+        # A lab-only config has no diy provider.
+        lab_config = _config(tmp_path, lab=True)
+        lab_supervisor = _supervisor(tmp_path, config=lab_config, policy=build_consumer(route_policy_fixture))
+        assert lab_supervisor.build_diy_provider() is None
+
+    def test_diy_provider_listens_via_supervisor(self, tmp_path, route_policy_fixture) -> None:
+        """The supervisor's readiness-gated start actually brings the DIY
+        listener up on the resolved customer-network address."""
+        import subprocess
+
+        from runtime.remote_access.diy_provider import DiyProviderConfig
+        from runtime.remote_access.network import NetworkConfig
+        from runtime.remote_access.readiness import ConnectorReadiness
+
+        # Find a real non-loopback IPv4 (as in the adapter acceptance tests).
+        try:
+            out = subprocess.run(
+                ["ip", "-4", "-o", "addr", "show"], capture_output=True, text=True, check=False, timeout=10
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            pytest.skip("no ip tool for a real-network listener test")
+        addr = None
+        for line in out.splitlines():
+            parts = line.split()
+            for i, p in enumerate(parts):
+                if p == "inet" and i + 1 < len(parts):
+                    candidate = parts[i + 1].split("/")[0]
+                    if not candidate.startswith("127."):
+                        addr = candidate
+        if addr is None:
+            pytest.skip("host has no non-loopback IPv4 for a real listener test")
+
+        from runtime.remote_access.diy_provider import DiyProviderConfig as DPC
+        from runtime.remote_access.network import NetworkConfig as NC
+
+        config = _diy_config(
+            tmp_path,
+            diy=DPC(network=NC(mode="tailscale", tailscale_cli=_tailscale_stub(tmp_path, addr)), bind_port=0),
+        )
+        supervisor = _supervisor(
+            tmp_path, config=config, policy=build_consumer(route_policy_fixture)
+        )
+
+        class Ready:
+            def evaluate(self, now):
+                from runtime.remote_access.readiness import GateResult, ReadinessReport
+
+                gates = {n: GateResult(True, f"{n}_ok", n) for n in ConnectorReadiness.GATE_NAMES}
+                return ReadinessReport(ready=True, gates=gates)
+
+        provider = supervisor.build_diy_provider()
+        provider._readiness = Ready()  # noqa: SLF001 — test seam
+        provider.start()
+        try:
+            assert provider.listening is True
+            assert provider.bound_port is not None
+            assert provider.bind_address == addr
+        finally:
+            provider.stop()
+
+
+# ── Authoritative live-stream registry (TASK-6039 reviewer [CRITICAL] finding 2) ──
+
+
+@pytest.mark.skipif(
+    NETWORK_IPV4 is None,
+    reason="host has no non-loopback IPv4 address for a customer-network socket test",
+)
+def test_revoke_at_supervisor_seam_closes_live_streams(tmp_path, route_policy_fixture) -> None:
+    """REVOKE through the SUPERVISOR wiring must close the REAL live SSE
+    streams the shipping provider serves — ONE authoritative registry shared
+    by the gateway ctx factory, the provider, and the pairing manager (never
+    an unrelated empty registry reporting false success)."""
+    import http.client as _http
+
+    from runtime.remote_access.diy_provider import DEVICE_CREDENTIAL_HEADER
+    from runtime.remote_access.diy_provider import DiyProviderConfig as DPC
+    from runtime.remote_access.network import NetworkConfig as NC
+
+    from .fake_daemon import FakeDaemon
+
+    daemon = FakeDaemon(BEARER, hold_open=True)
+    daemon.start()
+    try:
+        token_path = tmp_path / "daemon.token"
+        token_path.write_text(BEARER)
+        token_path.chmod(0o600)
+        config = _diy_config(
+            tmp_path,
+            daemon_port=daemon.port,
+            diy=DPC(
+                network=NC(mode="tailscale", tailscale_cli=_tailscale_stub(tmp_path, NETWORK_IPV4)),
+                bind_port=0,
+            ),
+        )
+        # Policy built against the REAL clock (the adapter stamps requests
+        # with datetime.now; the conftest NOW is a fixed historical instant
+        # that would fail the policy freshness gate).
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+        real_now = _dt.now(_tz.utc)
+        policy = build_consumer(
+            route_policy_fixture, issued_at=real_now - _td(seconds=60), now=real_now
+        )
+        supervisor = _supervisor(tmp_path, config=config, policy=policy)
+        provider = supervisor.build_diy_provider()
+        assert provider is not None
+        provider.start()
+        try:
+            pairing = supervisor.pairing_manager()
+            issued = pairing.issue_pairing_code("macbook-pro")
+            credential = pairing.redeem_pairing(issued.code)
+            assert credential is not None
+            conn = _http.HTTPConnection(NETWORK_IPV4, provider.bound_port, timeout=10)
+            conn.connect()
+            conn.sock.settimeout(2)  # type: ignore[union-attr]
+            conn.request(
+                "GET",
+                "/api/v1/orgs/acme/threads/T-1/tail",
+                headers={DEVICE_CREDENTIAL_HEADER: credential, "Accept": "text/event-stream"},
+            )
+            sock = conn.sock  # captured BEFORE getresponse consumes it
+            resp = conn.getresponse()
+            assert resp.status == 200
+            # The daemon flushed the SSE headers and is HOLDING the body
+            # open: the stream is genuinely in flight.
+            assert daemon.started.wait(timeout=10)
+            outcome = pairing.revoke("macbook-pro")
+            assert outcome.complete is True
+            assert _sse_closed_after(resp), "supervisor-wired revoke must close the live SSE stream"
+            conn.close()
+        finally:
+            provider.stop()
+    finally:
+        daemon.stop()
+
+
+# ── Runtime rotation after cross-process revocation (TASK-6045 reviewer [HIGH] finding 2) ──
+#
+# The stream registry is ONE-SHOT: ``close_all`` seals it permanently, so the
+# cross-process reconciliation that closes genuinely in-flight SSE streams
+# MUST rotate the authoritative runtime — registry, pairing manager, provider
+# adapter, and every captured ctx-factory reference — at a fail-closed
+# lifecycle boundary (listener down during the handoff), or the shipping
+# process stays sealed forever and a re-paired/current device can never open
+# a new stream. These regressions prove the rotation at the supervisor seam.
+
+def _diy_supervisor_with_real_provider(tmp_path, route_policy_fixture, daemon):
+    """A supervisor wired to a REAL DIY provider (no injected fake) whose
+    readiness is deterministically ready, so ``_start_provider`` runs the
+    shipping adapter and ``_rotate_runtime`` can restart it. The policy is
+    built against the REAL clock (the adapter stamps requests with
+    datetime.now; the conftest NOW is a fixed historical instant that would
+    fail the policy freshness gate)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    from runtime.remote_access.diy_provider import DiyProviderConfig
+    from runtime.remote_access.network import NetworkConfig
+
+    real_now = _dt.now(_tz.utc)
+    policy = build_consumer(
+        route_policy_fixture, issued_at=real_now - _td(seconds=60), now=real_now
+    )
+    # The daemon token file the FileDaemonCredentialProvider reads on the
+    # final loopback hop (mirrors the shipping-seam test setup).
+    token_path = tmp_path / "daemon.token"
+    token_path.write_text(BEARER)
+    token_path.chmod(0o600)
+    config = _diy_config(
+        tmp_path,
+        daemon_port=daemon.port,
+        diy=DiyProviderConfig(
+            network=NetworkConfig(
+                mode="tailscale", tailscale_cli=_tailscale_stub(tmp_path, NETWORK_IPV4)
+            ),
+            bind_port=0,
+        ),
+    )
+    supervisor = ConnectorSupervisor(
+        config=config,
+        manager=FakeManager(),
+        readiness=_FakeReadiness(ready=True),
+        policy=policy,
+        notify_fn=lambda state: None,
+    )
+    return supervisor
+
+
+def _open_sse(host, port, credential, daemon):
+    import http.client as _http
+
+    from runtime.remote_access.diy_provider import DEVICE_CREDENTIAL_HEADER
+
+    conn = _http.HTTPConnection(host, port, timeout=10)
+    conn.connect()
+    conn.sock.settimeout(2)  # type: ignore[union-attr]
+    conn.request(
+        "GET",
+        "/api/v1/orgs/acme/threads/T-1/tail",
+        headers={DEVICE_CREDENTIAL_HEADER: credential, "Accept": "text/event-stream"},
+    )
+    resp = conn.getresponse()
+    assert resp.status == 200, (
+        "expected the SSE stream to open (status %s)" % resp.status
+    )
+    # The daemon flushed the SSE headers and is HOLDING the body open: the
+    # stream is genuinely in flight and registry-tracked.
+    assert daemon.started.wait(timeout=10)
+    return conn, resp
+
+
+@pytest.mark.skipif(
+    NETWORK_IPV4 is None,
+    reason="host has no non-loopback IPv4 address for a customer-network socket test",
+)
+class TestReconciliationRotation:
+    def test_cross_process_revoke_closes_stream_then_rotation_reopens_repair(
+        self, tmp_path, route_policy_fixture,
+    ) -> None:
+        """The FULL finding-2 regression at the supervisor seam: a persisted
+        cross-process revoke closes the genuinely in-flight SSE AND the
+        authoritative runtime is ROTATED (fresh registry, fresh pairing
+        manager, fresh provider + ctx factory, listener restarted), so a
+        RE-PAIRED device opens a NEW SSE in the SAME process lifetime."""
+
+        daemon = FakeDaemon(BEARER, hold_open=True)
+        daemon.start()
+        try:
+            supervisor = _diy_supervisor_with_real_provider(tmp_path, route_policy_fixture, daemon)
+            assert supervisor._start_provider() is True
+            provider_before = supervisor._provider
+            assert provider_before is not None and provider_before.listening
+            registry_before = supervisor.registry
+            pairing_before = supervisor.pairing_manager()
+            issued = pairing_before.issue_pairing_code("macbook-pro")
+            credential = pairing_before.redeem_pairing(issued.code)
+            assert credential is not None
+            conn, resp = _open_sse(NETWORK_IPV4, provider_before.bound_port, credential, daemon)
+            try:
+                # SEPARATE process semantics: a fresh store instance over the
+                # same files persists the revocation epoch (no live streams
+                # in that process — an unrelated empty registry).
+                state_path = Path(supervisor.config.state_path).expanduser()
+                fresh = AtomicFileTrustStateStore(state_path, supervisor.initial_state())
+                state = fresh.load()
+                from runtime.remote_access.revocation import RevocationCoordinator as _Coord
+
+                _Coord(state, StreamRegistry()).revoke(
+                    max(state.pairing_epoch, state.revocation_epoch) + 1
+                )
+                fresh.save(state)
+                # The run-loop reconciliation closes the stream AND rotates.
+                supervisor._reconcile_revocation()
+                assert _sse_closed_after(resp), "reconcile must close the live SSE"
+                # The authoritative runtime was rotated at a fail-closed
+                # boundary (listener down during the handoff).
+                assert supervisor.registry is not registry_before
+                assert supervisor.pairing_manager() is not pairing_before
+                provider_after = supervisor._provider
+                assert provider_after is not None and provider_after is not provider_before
+                assert provider_after.listening
+                assert provider_after._ctx_factory is not provider_before._ctx_factory
+            finally:
+                conn.close()
+            # RE-PAIR: a fresh credential opens a NEW SSE in the SAME process
+            # (the old one-shot registry is gone; the shipping process is not
+            # permanently sealed).
+            pairing_after = supervisor.pairing_manager()
+            issued2 = pairing_after.issue_pairing_code("macbook-pro")
+            credential2 = pairing_after.redeem_pairing(issued2.code)
+            assert credential2 is not None and credential2 != credential
+            conn2, resp2 = _open_sse(NETWORK_IPV4, provider_after.bound_port, credential2, daemon)
+            try:
+                assert resp2.status == 200, (
+                    "re-paired device must open a NEW SSE after rotation "
+                    f"(status {resp2.status})"
+                )
+            finally:
+                conn2.close()
+            # The OLD (revoked) credential remains denied.
+            conn3 = _http_deny_probe(NETWORK_IPV4, provider_after.bound_port, credential)
+            try:
+                assert conn3.status == 403
+            finally:
+                conn3.close()
+        finally:
+            daemon.stop()
+
+    def test_targeted_revoke_rotation_unaffected_device_still_opens_and_ws_denied(
+        self, tmp_path, route_policy_fixture,
+    ) -> None:
+        """A TARGETED cross-process revoke of one device closes the live SSE,
+        rotates the runtime, and an UNAFFECTED current credential opens a NEW
+        SSE afterwards; the revoked credential and WebSocket upgrades remain
+        denied (allow-list unchanged)."""
+        daemon = FakeDaemon(BEARER, hold_open=True)
+        daemon.start()
+        try:
+            supervisor = _diy_supervisor_with_real_provider(tmp_path, route_policy_fixture, daemon)
+            assert supervisor._start_provider() is True
+            provider = supervisor._provider
+            pairing = supervisor.pairing_manager()
+            issued_a = pairing.issue_pairing_code("macbook-pro")
+            cred_a = pairing.redeem_pairing(issued_a.code)
+            issued_b = pairing.issue_pairing_code("phone")
+            cred_b = pairing.redeem_pairing(issued_b.code)
+            assert cred_a and cred_b
+            conn, resp = _open_sse(NETWORK_IPV4, provider.bound_port, cred_a, daemon)
+            try:
+                state_path = Path(supervisor.config.state_path).expanduser()
+                fresh = AtomicFileTrustStateStore(state_path, supervisor.initial_state())
+                state = fresh.load()
+                from runtime.remote_access.revocation import RevocationCoordinator as _Coord
+
+                _Coord(state, StreamRegistry()).revoke_device(
+                    "macbook-pro", max(state.pairing_epoch, state.revocation_epoch) + 1
+                )
+                fresh.save(state)
+                supervisor._reconcile_revocation()
+                assert _sse_closed_after(resp)
+            finally:
+                conn.close()
+            provider_after = supervisor._provider
+            # Unaffected current device: opens a NEW SSE after the targeted
+            # revoke (the process was not sealed).
+            conn_b, resp_b = _open_sse(NETWORK_IPV4, provider_after.bound_port, cred_b, daemon)
+            try:
+                assert resp_b.status == 200, (
+                    "unaffected current credential must open a NEW SSE after "
+                    f"a targeted revoke (status {resp_b.status})"
+                )
+                # WebSocket denial retained after rotation: an Upgrade request
+                # with a CURRENT credential is denied at the allow-list and
+                # never forwarded.
+                import http.client as _http
+
+                from runtime.remote_access.diy_provider import DEVICE_CREDENTIAL_HEADER
+
+                daemon_requests_before = len(daemon.requests)
+                conn_ws = _http.HTTPConnection(NETWORK_IPV4, provider_after.bound_port, timeout=10)
+                conn_ws.request(
+                    "GET",
+                    "/api/v1/orgs/acme/threads/T-1/tail",
+                    headers={
+                        DEVICE_CREDENTIAL_HEADER: cred_b,
+                        "Upgrade": "websocket",
+                        "Connection": "Upgrade",
+                    },
+                )
+                ws_resp = conn_ws.getresponse()
+                ws_resp.read()
+                conn_ws.close()
+                assert ws_resp.status == 403
+                # The WebSocket upgrade was never forwarded to the daemon
+                # (only the two legitimate SSE streams above reached /tail).
+                assert not any(
+                    r["path"].endswith("/tail")
+                    for r in daemon.requests[daemon_requests_before:]
+                )
+            finally:
+                conn_b.close()
+            # The revoked device's credential remains denied (identical deny).
+            conn_a = _http_deny_probe(NETWORK_IPV4, provider_after.bound_port, cred_a)
+            try:
+                assert conn_a.status == 403
+            finally:
+                conn_a.close()
+        finally:
+            daemon.stop()
+
+
+def _http_deny_probe(host, port, credential):
+    """Open an SSE request that must be DENIED (revoked/unknown credential);
+    returns the response object (caller closes it)."""
+    import http.client as _http
+
+    from runtime.remote_access.diy_provider import DEVICE_CREDENTIAL_HEADER
+
+    conn = _http.HTTPConnection(host, port, timeout=10)
+    conn.request(
+        "GET",
+        "/api/v1/orgs/acme/threads/T-1/tail",
+        headers={DEVICE_CREDENTIAL_HEADER: credential, "Accept": "text/event-stream"},
+    )
+    resp = conn.getresponse()
+    resp.read()
+    return resp

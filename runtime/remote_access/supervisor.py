@@ -37,6 +37,12 @@ from runtime.remote_access.credentials import (
     FileDaemonCredentialProvider,
     SystemdCredentialProvider,
 )
+from runtime.remote_access.diy_provider import (
+    DiyProviderAdapter,
+    DiyProviderConfig,
+    DiyProviderError,
+    make_diy_context_factory,
+)
 from runtime.remote_access.forwarding import LOOPBACK_HOST, HttpLoopbackForwarder, LoopbackTarget
 from runtime.remote_access.gateway import GatewayContext
 from runtime.remote_access.identity import (
@@ -52,6 +58,8 @@ from runtime.remote_access.lab_provider import (
     LabProviderConfig,
     LabProviderError,
 )
+from runtime.remote_access.network import NetworkAddressError, NetworkConfig
+from runtime.remote_access.pairing import PairingManager
 from runtime.remote_access.policy import PolicyEnvelope, RoutePolicyConsumer
 from runtime.remote_access.readiness import ConnectorReadiness, ReadinessReport
 from runtime.remote_access.service_manager import (
@@ -66,7 +74,7 @@ from runtime.remote_access.state_store import (
     CorruptTrustStateError,
     StateStoreError,
 )
-from runtime.remote_access.streams import StreamRegistry
+from runtime.remote_access.streams import StreamCloseError, StreamRegistry
 from runtime.remote_access.stripping import CredentialScanner
 from runtime.remote_access.systemd_unit import ConnectorUnitSpec, render_connector_unit
 
@@ -117,6 +125,8 @@ class ConnectorConfig:
     poll_seconds: float = DEFAULT_POLL_SECONDS
     # LAB-ONLY conformance provider (never a product/DIY lane)
     lab: LabProviderConfig | None = None
+    # Supported-DIY customer-owned-network provider (THR-097 Unit 3A)
+    diy: DiyProviderConfig | None = None
 
     def validate(self) -> None:
         if not (self.tenant_id and self.home_id and self.connector_id):
@@ -129,14 +139,25 @@ class ConnectorConfig:
             raise ConnectorConfigError("policy_path is required")
         if self.lab is not None and self.lab.lab_only is not True:
             raise ConnectorConfigError("lab provider requires lab_only: true")
+        if self.lab is not None and self.diy is not None:
+            raise ConnectorConfigError("lab and diy providers are mutually exclusive")
+        if self.diy is not None:
+            try:
+                self.diy.validate()
+            except (DiyProviderError, NetworkAddressError) as exc:
+                raise ConnectorConfigError(f"invalid diy provider config: {exc}") from exc
 
     @classmethod
     def from_file(cls, path: Path) -> "ConnectorConfig":
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
         lab_raw = raw.pop("lab", None)
+        diy_raw = raw.pop("diy", None)
         config = cls(**raw)
         if lab_raw is not None:
             config.lab = LabProviderConfig(**lab_raw)
+        if diy_raw is not None:
+            network_raw = diy_raw.pop("network", None) or {}
+            config.diy = DiyProviderConfig(network=NetworkConfig(**network_raw), **diy_raw)
         config.validate()
         return config
 
@@ -207,6 +228,17 @@ class ConnectorSupervisor:
         self._notify_fn = notify_fn or (lambda state: sd_notify(state))
         self._provider: LabProviderAdapter | None = None
         self._provider_running = False
+        # ONE authoritative live-stream registry and ONE pairing manager per
+        # process, shared by the gateway ctx factories, the provider adapter,
+        # and the ceremony surface — in-process revocation closes the REAL
+        # shipping streams, never an unrelated empty registry (TASK-6039
+        # reviewer [CRITICAL] finding 2).
+        self._registry: StreamRegistry | None = None
+        self._pairing_manager: PairingManager | None = None
+        # The revocation epoch the run loop has already reconciled (streams
+        # closed): cross-process revoke/remove from the CLI is closed here
+        # within one poll interval.
+        self._reconciled_revocation_epoch: int = 0
 
     # ── construction helpers (CLI path) ───────────────────────────────────
 
@@ -225,12 +257,24 @@ class ConnectorSupervisor:
             )
         return self._state_store
 
+    @property
+    def registry(self) -> StreamRegistry:
+        """The ONE authoritative live-stream registry for this process,
+        shared by the gateway ctx factories, the provider adapters, and the
+        pairing manager: a revocation closes the REAL shipping streams
+        (never an unrelated empty registry reporting false success)."""
+        if self._registry is None:
+            self._registry = StreamRegistry()
+        return self._registry
+
     def initial_state(self) -> TrustState:
         """First-run state: connector identity + (lab-only) lab device pairing.
 
         In lab mode the explicit lab config is the pairing ceremony (clearly
         LAB-ONLY — never a product pairing path); the state store persists it
-        so revocation stays effective across restarts.
+        so revocation stays effective across restarts. The Supported-DIY lane
+        starts with NO paired devices: pairing is the explicit local ceremony
+        (``pair``/``POST /pair``) — the operator approves each device.
         """
         state = TrustState(
             connector_identity=self._configured_identity(),
@@ -293,7 +337,9 @@ class ConnectorSupervisor:
         )
 
     def build_ctx_factory(self) -> Callable[[datetime], GatewayContext]:
-        """Wire the full gateway context used by the lab provider."""
+        """Wire the full gateway context used by the LAB provider (a fixed
+        lab proof — clearly LAB-ONLY, never a product pairing path). Streams
+        register in the ONE authoritative process registry."""
         config = self.config
         identity_ = self._configured_identity()
         lab_device = config.lab.lab_device_id if config.lab else "lab-client-1"
@@ -301,7 +347,7 @@ class ConnectorSupervisor:
         forwarder = HttpLoopbackForwarder(
             LoopbackTarget(LOOPBACK_HOST, config.daemon_port)
         )
-        registry = StreamRegistry()
+        registry = self.registry
 
         def factory(now: datetime) -> GatewayContext:
             state = self.state_store.load()
@@ -328,6 +374,48 @@ class ConnectorSupervisor:
 
         return factory
 
+    def build_diy_ctx_factory(self):
+        """Wire the per-request gateway context factory for the Supported-DIY
+        provider: the device proof is derived from the presented
+        ``X-HappyRanch-Device-Credential`` (THR-034 wire contract), verified
+        by the production pairing verifier. Streams register in the ONE
+        authoritative process registry shared with the pairing manager, so
+        in-process revoke closes the REAL shipping streams."""
+        config = self.config
+        identity_ = self._configured_identity()
+        credential_provider = self.credential_provider()
+        forwarder = HttpLoopbackForwarder(
+            LoopbackTarget(LOOPBACK_HOST, config.daemon_port)
+        )
+        return make_diy_context_factory(
+            identity=identity_,
+            pairing=self.pairing_manager(),
+            policy=self.load_policy(),
+            credential_provider=credential_provider,
+            forwarder=forwarder,
+            registry=self.registry,
+            now_fn=self._now_fn,
+        )
+
+    def pairing_manager(self) -> PairingManager:
+        """The ONE authoritative Supported-DIY pairing ceremony manager for
+        this process, bound to the shared authoritative stream registry —
+        revocation closes the REAL shipping streams, never an unrelated
+        empty registry. Cached so the provider, the ctx factory, and the
+        ceremony surface all mutate/verify through the SAME instance."""
+        if self._pairing_manager is None:
+            config = self.config
+            diy = config.diy
+            self._pairing_manager = PairingManager(
+                state_store=self.state_store,
+                identity=self._configured_identity(),
+                now_fn=self._now_fn,
+                code_ttl_seconds=diy.token_ttl_seconds if diy else 300,
+                credential_ttl_days=diy.credential_ttl_days if diy else 365,
+                registry=self.registry,
+            )
+        return self._pairing_manager
+
     def build_provider(self) -> LabProviderAdapter | None:
         """Construct a FRESH lab adapter. A stopped ``ThreadingHTTPServer``
         cannot be restarted, so each start after a stop builds a new adapter
@@ -338,6 +426,20 @@ class ConnectorSupervisor:
             config=self.config.lab,
             readiness=self.build_readiness(),
             ctx_factory=self.build_ctx_factory(),
+        )
+
+    def build_diy_provider(self) -> DiyProviderAdapter | None:
+        """Construct a FRESH Supported-DIY adapter (same restart rule as the
+        lab adapter). Returns None when no diy provider is configured."""
+        config = self.config
+        if config.diy is None:
+            return None
+        return DiyProviderAdapter(
+            config=config.diy,
+            readiness=self.build_readiness(),
+            pairing=self.pairing_manager(),
+            identity=self._configured_identity(),
+            ctx_factory=self.build_diy_ctx_factory(),
         )
 
     # ── readiness / diagnostics ───────────────────────────────────────────
@@ -378,6 +480,21 @@ class ConnectorSupervisor:
                 "bound_port": adapter.bound_port if adapter else None,
                 "banner": LAB_ONLY_BANNER,
             }
+        elif self.config.diy is not None:
+            adapter = self.build_diy_provider()
+            pairing = self.pairing_manager()
+            try:
+                pairing_status = pairing.pairing_status()
+            except StateStoreError:
+                pairing_status = {"error": "state_unavailable"}
+            provider = {
+                "type": "diy",
+                "listening": bool(adapter and adapter.listening),
+                "bound_port": adapter.bound_port if adapter else None,
+                "bind_address": adapter.bind_address if adapter else None,
+                "network_mode": self.config.diy.network.mode,
+                "pairing": pairing_status,
+            }
         return {
             "role": "happyranch-connector",
             "unit_name": self.config.unit_name,
@@ -414,9 +531,9 @@ class ConnectorSupervisor:
         if args is None:
             # The default unit points --config at the MANAGED config path (the
             # dedicated service user's state directory) — never at a
-            # ~/.happyranch path the hardened unit cannot read. A lab provider
-            # config carries the only provider that exists, so the rendered
-            # unit passes --lab-only (never silently started as a product).
+            # ~/.happyranch path the hardened unit cannot read. The rendered
+            # unit passes the provider opt-in flag (--lab-only / --diy) so a
+            # provider is never silently started without its explicit opt-in.
             args = (
                 "/opt/happyranch/venv/bin/python",
                 "-m",
@@ -427,6 +544,8 @@ class ConnectorSupervisor:
             )
             if cfg.lab is not None:
                 args += ("--lab-only",)
+            if cfg.diy is not None:
+                args += ("--diy",)
         return ConnectorUnitSpec(
             unit_name=cfg.unit_name,
             exec_start=args,
@@ -468,6 +587,7 @@ class ConnectorSupervisor:
             exec_start=cfg.exec_start,
             poll_seconds=cfg.poll_seconds,
             lab=cfg.lab,
+            diy=cfg.diy,
             managed_dir_root=cfg.managed_dir_root,
         )
 
@@ -709,13 +829,13 @@ class ConnectorSupervisor:
         """
         poll_seconds = poll_seconds if poll_seconds is not None else self.config.poll_seconds
         # A RUNNABLE configuration REQUIRES a concrete listener provider (a lab
-        # config or an injected adapter): without one, READY=1 could never be
-        # backed by a proven bound listener. Reject provider-less run
-        # configurations at startup — fail closed, never READY. Non-run
+        # config, a diy config, or an injected adapter): without one, READY=1
+        # could never be backed by a proven bound listener. Reject provider-less
+        # run configurations at startup — fail closed, never READY. Non-run
         # construction (status/readiness/diagnose/install) stays valid.
-        if self.config.lab is None and self._injected_provider is None:
+        if self.config.lab is None and self.config.diy is None and self._injected_provider is None:
             raise ConnectorConfigError(
-                "refusing to run: no lab provider configured — the connector "
+                "refusing to run: no lab/diy provider configured — the connector "
                 "has no listener to bring up, so READY would be false"
             )
         iterations = 0
@@ -737,8 +857,78 @@ class ConnectorSupervisor:
                     self._notify_fn("STOPPING=1\n")
                 else:
                     self._notify_fn("STATUS=waiting for readiness\n")
+            self._reconcile_revocation()
             wait_fn(poll_seconds)
         return 0
+
+    def _reconcile_revocation(self) -> None:
+        """Cross-process revocation closure at the REAL shipping seam
+        (TASK-6039 reviewer [CRITICAL] finding 2 / TASK-6044 reviewer [HIGH]
+        finding 2): the operator's ``revoke``/``remove-device`` CLI runs in a
+        SEPARATE process and persists the revocation epoch; the connector
+        process closes its live streams on the next loop pass (bounded by
+        ``poll_seconds``, fail closed) and then ROTATES the authoritative
+        live-stream runtime.
+
+        Rotation is mandatory because the stream registry is ONE-SHOT:
+        ``close_all`` seals it permanently, and the pairing manager, the ctx
+        factory, and the provider adapter all capture it. Without rotation a
+        reconciled revocation would leave the shipping process permanently
+        sealed — a re-paired or unaffected current device could never open a
+        new stream (TASK-6044 finding 2). ``_rotate_runtime`` drops the
+        listener FIRST (no request/stream is admitted during the handoff),
+        clears the cached registry + pairing manager, rebuilds the provider
+        and every captured ctx-factory reference, and restarts the listener
+        at a readiness-gated fail-closed boundary."""
+        if self.config.diy is None and self.config.lab is None:
+            return
+        try:
+            state = self.state_store.load()
+        except StateStoreError:
+            # Fail closed: the readiness gate already stops the listener on
+            # unusable state; nothing to close here.
+            return
+        if state.revocation_epoch <= self._reconciled_revocation_epoch:
+            return
+        registry = self.registry
+        sealed = registry.sealed
+        if registry.open_count() > 0:
+            try:
+                registry.close_all()
+            except StreamCloseError:
+                pass  # registry sealed; no live stream survives (fail closed)
+            sealed = True
+        self._reconciled_revocation_epoch = state.revocation_epoch
+        # The authoritative registry is (now or already) sealed — one-shot:
+        # rotate the whole runtime so the process is never permanently
+        # sealed. When nothing was sealed (revoke with no live streams and
+        # no earlier seal) there is no rotation and therefore no listener
+        # gap — the common CLI-revoke-while-idle path stays seamless.
+        if sealed:
+            self._rotate_runtime()
+
+    def _rotate_runtime(self) -> None:
+        """Rotate the authoritative live-stream runtime at a fail-closed
+        lifecycle boundary after a persisted revocation: stop the provider
+        listener (no request/stream is admitted during the handoff), drop
+        the cached one-shot registry and pairing manager, rebuild the
+        provider adapter and every captured ctx-factory reference against a
+        FRESH registry, and restart the listener only when readiness still
+        passes (else the run loop brings it up when ready). The old registry
+        is sealed (denies) and the listener is down (refuses) until the new
+        runtime is live — nothing is admitted against a half-rotated state."""
+        was_running = self._provider_running
+        if was_running:
+            self._stop_provider()
+        # The one-shot registry and the cached ceremony manager are captured
+        # by the old ctx factory and provider: rebuild them all from scratch.
+        self._registry = None
+        self._pairing_manager = None
+        if was_running and self.readiness_report().ready:
+            # Rebuild the provider (fresh registry + pairing manager + ctx
+            # factory) and reopen the listener. On any failure the loop
+            # re-evaluates readiness and retries — fail closed, no READY.
+            self._start_provider()
 
     def shutdown(self) -> None:
         """Deterministic stop: drop the listener before exiting."""
@@ -752,6 +942,8 @@ class ConnectorSupervisor:
         failure returns False — the caller must never emit READY."""
         if self._injected_provider is not None:
             provider = self._injected_provider
+        elif self.config.diy is not None:
+            provider = self.build_diy_provider()
         else:
             provider = self.build_provider()
         if provider is None:
@@ -761,7 +953,7 @@ class ConnectorSupervisor:
             return False
         try:
             provider.start()
-        except LabProviderError:
+        except (LabProviderError, DiyProviderError):
             # fail-closed: readiness passed but the provider refused to bind
             # (e.g. bind conflict) — keep the loop re-evaluating; no listener.
             self._notify_fn("STATUS=provider failed to start; no listener\n")
