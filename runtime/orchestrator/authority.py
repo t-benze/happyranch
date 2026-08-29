@@ -138,6 +138,122 @@ AUDIT_ACTION_CONTINUED_SAME_ROOT = "authority_continued_same_root"
 AUDIT_ACTION_ENVELOPE_CONSUMED = "authority_continue_envelope_consumed"
 AUDIT_ACTION_ENVELOPE_VIOLATED = "authority_continue_envelope_violated"
 
+# ── Unit 2: turn-scoped executor allow set (founder option B) ────────────
+# The continued manager turn may use ONLY the minimum commands/tools needed
+# to perform the single permitted same-root action (``done`` — routine
+# completion of the SAME root) and report it. The set is mechanically
+# derived from the immutable Unit-1 envelope identity (never from prose or
+# the agent's own request), and it NEVER broadens or alters the global/
+# baseline per-agent permission generation (``allow_rules_for_agent`` /
+# ``bash_allow_prefixes_for_agent`` stay untouched).
+#
+# Read/Grep/Glob (inspect the task context) + Write (author the completion
+# payload file) + the single ``happyranch report-completion`` bash channel
+# are the minimum for the ``done`` decision. NO general bash, NO git/gh,
+# NO other ``happyranch`` verb (jobs/threads/kb/memory/artifacts/cancel/…):
+# alternate daemon routes cannot be reached from the narrowed turn. The
+# daemon-owned Unit-1 decision gate remains the authoritative acceptance
+# fence (defense in depth — the executor allow set narrows the surface, it
+# does not replace the gate).
+_CONTINUATION_DONE_ALLOWED_TOOLS_CLI: tuple[str, ...] = (
+    "Read",
+    "Grep",
+    "Glob",
+    "Write",
+    "Bash(happyranch report-completion *)",
+)
+
+# Raw bash prefixes for the opencode permission map (opencode.json renders
+# each as ``"<prefix> *": "allow"`` with ``"*": "deny"`` as the default).
+_CONTINUATION_DONE_ALLOWED_BASH_PREFIXES: tuple[str, ...] = (
+    "happyranch report-completion",
+)
+
+# Executors with a runtime-owned per-command allow surface that the daemon
+# can mechanically narrow for one turn. Claude: ``--allowedTools`` on the
+# CLI. Opencode: the per-workspace ``opencode.json`` permission map that the
+# daemon itself writes (turn-scoped write/restore). Executors WITHOUT such a
+# surface (codex sandbox flags, pi, generic CLI, custom adapters) cannot be
+# mechanically narrowed to ``happyranch report-completion``-only, so the
+# continued turn is REFUSED pre-launch (fail closed into the existing
+# ordinary founder-escalation lifecycle) — an unrestricted continued turn is
+# never launched on them.
+_TURN_SCOPED_ALLOW_EXECUTORS: frozenset[str] = frozenset({"claude", "opencode"})
+
+
+@dataclass(frozen=True)
+class ContinuationTurnAllowSet:
+    """The mechanically narrowed, turn-scoped executor allow set for ONE
+    continued manager turn, derived from the ACTIVE single-use continuation
+    envelope (immutable Unit-1 identity: envelope id + root + manager +
+    policy + clause + exact permitted action).
+
+    Carried from the launch resolver (``resolve_continuation_turn_allow_set``)
+    into the executor launch so the continued turn's process is constructed
+    with the narrowed allow set — it never inherits the ordinary manager
+    executor permissions.
+
+    ``refused=True`` is a fail-closed refusal marker (no launch): the
+    envelope is ACTIVE but the launch cannot proceed with any allow set
+    (identity mismatch at launch, or an unsupported permitted action).
+    """
+    envelope_id: str
+    permitted_action: str
+    permitted_decision: str
+    allowed_tools_cli: tuple[str, ...] = _CONTINUATION_DONE_ALLOWED_TOOLS_CLI
+    allowed_bash_prefixes: tuple[str, ...] = _CONTINUATION_DONE_ALLOWED_BASH_PREFIXES
+    refused: bool = False
+    refused_reason: str | None = None
+
+
+def resolve_continuation_turn_allow_set(
+    db, root_task_id: str, manager_agent: str,
+) -> "ContinuationTurnAllowSet | None":
+    """Resolve the turn-scoped allow set for the CURRENT launch from the
+    ACTIVE single-use continuation envelope — the launch-time envelope
+    identity check.
+
+    Returns None when no envelope is ACTIVE (ordinary turn — byte-identical
+    ordinary executor launch). When an envelope IS active but its immutable
+    identity does not match the current root/manager, or its permitted
+    action has no mechanical allow set (unsupported action), returns a
+    ``ContinuationTurnAllowSet`` with ``refused=True`` and a bounded
+    ``refused_reason`` — the caller MUST fail closed (spend the envelope as
+    violated + ordinary founder escalation), never launch an unrestricted
+    turn.
+    """
+    env = db.get_active_authority_continue_envelope(root_task_id)
+    if env is None:
+        return None
+    if env["root_task_id"] != root_task_id or env["manager_agent"] != manager_agent:
+        return ContinuationTurnAllowSet(
+            envelope_id=env["id"],
+            permitted_action=env["action"],
+            permitted_decision="",
+            refused=True,
+            refused_reason="envelope identity mismatch at launch",
+        )
+    if env["action"] != ACTION_CONTINUE_SAME_ROOT:
+        return ContinuationTurnAllowSet(
+            envelope_id=env["id"],
+            permitted_action=env["action"],
+            permitted_decision="",
+            refused=True,
+            refused_reason=f"unsupported permitted action {env['action']!r}",
+        )
+    return ContinuationTurnAllowSet(
+        envelope_id=env["id"],
+        permitted_action=env["action"],
+        permitted_decision="done",
+    )
+
+
+def executor_supports_turn_scoped_allow_set(provider: str) -> bool:
+    """True when ``provider`` has a runtime-owned per-command allow surface
+    the daemon can mechanically narrow for one turn. Executors outside this
+    set refuse the continued turn pre-launch (fail closed)."""
+    return provider in _TURN_SCOPED_ALLOW_EXECUTORS
+
 # Production evaluator bounds. A bounded invocation is part of the fail-closed
 # contract: a hang must surface as a timeout disposition, never a stall.
 DEFAULT_EVALUATOR_TIMEOUT_SECONDS = 60.0

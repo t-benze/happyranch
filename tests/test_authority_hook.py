@@ -404,7 +404,7 @@ def test_continue_header_shown_to_manager_on_next_step(runtime, db, monkeypatch)
     _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
 
     captured = {}
-    def capture(task_id, agent, prompt, on_session_started=None):
+    def capture(task_id, agent, prompt, on_session_started=None, turn_allow_set=None):
         captured["prompt"] = prompt
         raise RuntimeError("abort after prompt build")
     monkeypatch.setattr(orch, "_run_agent", capture)

@@ -230,8 +230,76 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         db.update_task(task_id, assigned_agent=agent)
 
     prompt = _build_agent_prompt(orch, task, agent)
+    # THR-181 Track A (founder option B) Unit 2: resolve the turn-scoped
+    # executor allow set from the ACTIVE single-use continuation envelope
+    # IMMEDIATELY BEFORE LAUNCH (the launch-time envelope identity check).
+    # Ordinary turns (no active envelope) get None -> byte-identical ordinary
+    # executor launch. When the envelope is ACTIVE, the continued turn may
+    # launch ONLY on an executor with a runtime-owned per-command allow
+    # surface (claude --allowedTools / opencode permission map) with the
+    # mechanically narrowed allow set; an unsupported executor (codex/pi/
+    # generic CLI/custom adapter), an unsupported permitted action, or an
+    # envelope identity mismatch at launch fails closed BEFORE launch: the
+    # envelope is spent as violated and the root enters the EXISTING ordinary
+    # founder-escalation lifecycle (never an unrestricted continued turn).
+    turn_allow_set = None
     try:
-        result, report = orch._run_agent(task_id, agent, prompt)
+        from runtime.orchestrator.authority import (
+            executor_supports_turn_scoped_allow_set as _supports_turn_scope,
+            resolve_continuation_turn_allow_set as _resolve_turn_allow_set,
+        )
+        turn_allow_set = _resolve_turn_allow_set(db, task_id, agent)
+        if turn_allow_set is not None:
+            if turn_allow_set.refused:
+                _spend_envelope_as_violation(
+                    orch, db, task_id, agent, db.get_active_authority_continue_envelope(task_id),
+                    decision_family="launch_refused",
+                    error=turn_allow_set.refused_reason or "launch refused",
+                )
+                _escalate_continued_turn_violation(
+                    orch, task_id, agent, attempted="launch_refused",
+                )
+                return
+            provider = orch._resolve_executor_name(agent)
+            if not _supports_turn_scope(provider):
+                _spend_envelope_as_violation(
+                    orch, db, task_id, agent, db.get_active_authority_continue_envelope(task_id),
+                    decision_family="launch_refused",
+                    error=(
+                        f"executor {provider} has no runtime-owned per-command "
+                        "allow surface; continuation turn refused pre-launch"
+                    ),
+                )
+                _escalate_continued_turn_violation(
+                    orch, task_id, agent, attempted="launch_refused",
+                )
+                return
+    except Exception:
+        # Resolution failure must never produce an unrestricted continued
+        # turn: spend the envelope fail-closed and escalate ordinarily.
+        logger.exception("run_step %s: continuation allow-set resolution failed", task_id)
+        active_env = None
+        try:
+            active_env = db.get_active_authority_continue_envelope(task_id)
+        except Exception:  # pragma: no cover - defensive
+            pass
+        if active_env is not None:
+            _spend_envelope_as_violation(
+                orch, db, task_id, agent, active_env,
+                decision_family="launch_refused",
+                error="continuation allow-set resolution failed",
+            )
+            _escalate_continued_turn_violation(
+                orch, task_id, agent, attempted="launch_refused",
+            )
+            return
+    try:
+        if turn_allow_set is None:
+            result, report = orch._run_agent(task_id, agent, prompt)
+        else:
+            result, report = orch._run_agent(
+                task_id, agent, prompt, turn_allow_set=turn_allow_set,
+            )
     except Exception as exc:
         note = f"agent invocation failed: {exc}"
         _fail(orch, task_id, note=note)
@@ -1784,7 +1852,11 @@ def _resolved_escalation_header_if_applicable(
             "completion of the SAME root. Every other decision (escalate, "
             "supersede, delegate/fanout, blocked) fails closed to ordinary "
             "founder escalation; the continuation is single-use and cannot "
-            "be re-granted.\n\n"
+            "be re-granted. Your executor allow set is MECHANICALLY NARROWED "
+            "for this turn: only the `happyranch report-completion` channel "
+            "(plus the read/write tools needed to author the report) is "
+            "permitted — no git/gh, no jobs, no threads, no other commands. "
+            "You may only finish the same root with `done` and report it.\n\n"
         )
     if last_resolved is None:
         return None

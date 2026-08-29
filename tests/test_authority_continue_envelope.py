@@ -174,7 +174,9 @@ def _run_continued_step(
     escalate row). Mirrors the real completion route + orchestrator."""
     decision_raw = _decision_json(decision)
 
-    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+    def fake_run_agent(
+        task_id, agent, prompt, on_session_started=None, turn_allow_set=None,
+    ):
         orch.db.update_task(task_id, current_session_id=session)
         orch.db.insert_task_result(
             task_id=task_id, agent=agent, session_id=session,
@@ -445,7 +447,7 @@ def test_continued_turn_blocked_fails_closed(runtime, db, monkeypatch):
 
     # A blocked report from the continued turn (no jobs submitted — the
     # route-level gate rejects those) is outside the envelope.
-    def fake_run_agent_blocked(task_id, agent, prompt, on_session_started=None):
+    def fake_run_agent_blocked(task_id, agent, prompt, on_session_started=None, turn_allow_set=None):
         orch.db.update_task(task_id, current_session_id="sess-y")
         orch.db.insert_task_result(
             task_id=task_id, agent=agent, session_id="sess-y",
@@ -510,7 +512,7 @@ def test_continued_turn_malformed_output_fails_closed(runtime, db, monkeypatch):
     _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
     assert db.get_active_authority_continue_envelope("T-ROOT") is not None
 
-    def fake_run_agent_malformed(task_id, agent, prompt, on_session_started=None):
+    def fake_run_agent_malformed(task_id, agent, prompt, on_session_started=None, turn_allow_set=None):
         orch.db.update_task(task_id, current_session_id="sess-y")
         raw = "this is not json"
         orch.db.insert_task_result(
@@ -716,7 +718,7 @@ def test_session_failure_spends_envelope_fail_closed(runtime, db, monkeypatch):
 
     # Continued turn's session dies without a decision: run_step's failure
     # path spends the envelope and fails the root (no continuation leak).
-    def fake_run_agent_dead(task_id, agent, prompt, on_session_started=None):
+    def fake_run_agent_dead(task_id, agent, prompt, on_session_started=None, turn_allow_set=None):
         orch.db.update_task(task_id, current_session_id="sess-y")
         return _make_result(success=False, session="sess-y"), None
     monkeypatch.setattr(orch, "_run_agent", fake_run_agent_dead)
@@ -897,7 +899,7 @@ def test_continued_turn_prompt_carries_mechanical_restriction(runtime, db, monke
 
     captured = {}
 
-    def capture(task_id, agent, prompt, on_session_started=None):
+    def capture(task_id, agent, prompt, on_session_started=None, turn_allow_set=None):
         captured["prompt"] = prompt
         raise RuntimeError("abort after prompt build")
     monkeypatch.setattr(orch, "_run_agent", capture)
