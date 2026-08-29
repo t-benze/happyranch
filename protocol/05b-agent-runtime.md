@@ -1350,7 +1350,14 @@ tasks can hide older cleanup rows; a lookup failure is represented as
 indeterminate and FAILS CLOSED for triggering) and ``threads.composed_from_task_id``
 provenance plus the fixed per-agent subject, participant membership of the
 owning agent, open status, and the daemon's distinctive opening message (a
-fixed subject alone is not identity) — no schema/API/CLI/auth change. The
+fixed subject alone is not identity). The thread-identity lookup is
+tri-state (found / absent / indeterminate): only an authoritative absence
+may create the thread; any lookup error fails closed — no duplicate thread,
+no task, no enqueue — with an audited reason (TASK-6046). On the first
+trigger the report thread and the cleanup task are created in ONE atomic
+transaction (rollback leaves ZERO residue across every affected durable
+table; nothing is enqueued; a later retry succeeds exactly once).
+No schema/API/CLI/auth change. The
 task id is allocated atomically at insertion (never before the awaited
 measurement), and workspace enumeration is paged in bounded batches so every
 registered agent is reached. A kill switch (``workspace_cleanup.enabled``

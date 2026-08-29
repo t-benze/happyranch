@@ -5961,6 +5961,197 @@ class Database:
                 (task_id, uploaded_by, "task_attachment_added", audit_payload, audit_ts),
             )
 
+    # --- Cleanup-report thread + task atomic producer (THR-195) ----------
+    #
+    # TASK-6046 finding 1: the daemon's cleanup trigger previously created the
+    # report thread (committing thread/participant/message/turn/audit rows)
+    # BEFORE inserting the task, so an insert failure left an OPEN thread
+    # claiming a nonexistent task. The fix is one atomic producer operation:
+    # thread + task commit or roll back together (KB
+    # ``atomic-multi-table-persistence`` — composite method, single
+    # BEGIN IMMEDIATE/COMMIT with rollback), so any failure leaves ZERO
+    # durable residue and a later retry succeeds exactly once.
+
+    def _insert_thread_uncommitted(self, t: ThreadRecord) -> None:
+        """Insert a thread row WITHOUT committing — caller owns the transaction.
+
+        Mirrors ``insert_audit_log_uncommitted`` / ``_append_thread_message_uncommitted``:
+        the row joins the caller's open BEGIN IMMEDIATE transaction and is
+        rolled back with it on any later failure.
+        """
+        self._conn.execute(
+            """INSERT INTO threads (
+                id, subject, started_at, archived_at, status,
+                forwarded_from_id, forwarded_from_kind,
+                turn_cap, turns_used, summary,
+                transcript_path,
+                composed_by, composed_from_task_id, composed_from_dream_id,
+                pinned_at, mention_routing_enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                t.id,
+                t.subject,
+                t.started_at.isoformat(),
+                t.archived_at.isoformat() if t.archived_at else None,
+                t.status.value,
+                t.forwarded_from_id,
+                t.forwarded_from_kind,
+                t.turn_cap,
+                t.turns_used,
+                t.summary,
+                t.transcript_path,
+                t.composed_by,
+                t.composed_from_task_id,
+                t.composed_from_dream_id,
+                t.pinned_at.isoformat() if t.pinned_at else None,
+                1 if t.mention_routing_enabled else 0,
+            ),
+        )
+
+    def _add_thread_participant_uncommitted(
+        self, thread_id: str, agent_name: str, *, added_by: str,
+    ) -> bool:
+        """Insert a thread participant WITHOUT committing (caller owns the
+        transaction). Returns True if inserted, False if duplicate."""
+        try:
+            self._conn.execute(
+                "INSERT INTO thread_participants (thread_id, agent_name, added_at, added_by) "
+                "VALUES (?, ?, ?, ?)",
+                (thread_id, agent_name, _now().isoformat(), added_by),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def _increment_thread_turns_used_uncommitted(
+        self, thread_id: str, *, by: int = 1,
+    ) -> None:
+        """Raise ``threads.turns_used`` WITHOUT committing (caller owns the
+        transaction)."""
+        self._conn.execute(
+            "UPDATE threads SET turns_used = turns_used + ? WHERE id = ?",
+            (by, thread_id),
+        )
+
+    @_synchronized
+    def insert_cleanup_report_thread_and_task(
+        self,
+        *,
+        thread_id: str,
+        subject: str,
+        composer: str,
+        opening_body: str,
+        initial_recipients: list[str],
+        turn_cap: int,
+        task: TaskRecord,
+    ) -> str:
+        """Atomically create a cleanup-report thread AND insert the task it was
+        composed from, in ONE BEGIN IMMEDIATE / COMMIT transaction.
+
+        The daemon's per-agent founder-report thread (row, composer
+        participant, opening message, turn accounting, and the canonical
+        ``thread_started`` / ``thread_message_sent`` audit rows) and the task
+        row commit or roll back together (KB ``atomic-multi-table-persistence``;
+        same compound pattern as ``insert_task_with_attachments`` /
+        ``try_delegate_many``). On ANY exception the whole batch rolls back —
+        zero durable residue in every affected table — nothing is enqueued by
+        the caller, and a later retry succeeds exactly once (TASK-6046 finding
+        1). A report thread can never survive claiming a task that was not
+        inserted, and a task can never dangle without its thread.
+
+        Thread semantics mirror ``_create_agent_thread_locked`` for the
+        founder-only report thread: the owning agent is the composer and
+        participant; the opening message is appended as seq 1 with the mention
+        signal derived exactly the same way (``_derive_conversational_mentions``
+        — the daemon's opening carries no @mentions, so the wake set is empty);
+        one turn is counted; the two audit payloads match ``AuditLogger``
+        shapes. @founder is NOT a participant row (spec §3.3) and no agent
+        recipients exist, so no reply wake is derived. The inserted task is a
+        clean root (no parent, no thread dispatch). ``thread_id`` and ``task.id``
+        must be caller-allocated under ``org.db_lock``.
+
+        Returns the thread id. Raises on failure (nothing persisted).
+        """
+        thread = ThreadRecord(
+            id=thread_id,
+            subject=subject,
+            turn_cap=turn_cap,
+            composed_by=composer,
+            composed_from_task_id=task.id,
+        )
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            self._insert_thread_uncommitted(thread)
+            self._add_thread_participant_uncommitted(
+                thread_id, composer, added_by=composer,
+            )
+            mentions = self._derive_conversational_mentions(
+                thread_id, composer, ThreadMessageKind.MESSAGE, opening_body,
+            )
+            seq = self._append_thread_message_uncommitted(
+                thread_id=thread_id,
+                speaker=composer,
+                kind=ThreadMessageKind.MESSAGE,
+                body_markdown=opening_body,
+                mentions=mentions,
+            )
+            self._increment_thread_turns_used_uncommitted(thread_id, by=1)
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id,
+                agent=composer,
+                action="thread_started",
+                payload={
+                    "subject": subject,
+                    "initial_recipients": initial_recipients,
+                    "forwarded_from_id": None,
+                    "composed_by": composer,
+                    "composed_from_task_id": task.id,
+                    "composed_from_dream_id": None,
+                },
+            )
+            self.insert_audit_log_uncommitted(
+                task_id=thread_id,
+                agent=composer,
+                action="thread_message_sent",
+                payload={"seq": seq, "kind": "message"},
+            )
+            self._conn.execute(
+                """INSERT INTO tasks (id, status, assigned_agent, team, brief,
+                   revision_count, created_at, updated_at, completed_at, parent_task_id,
+                   revisit_of_task_id, dispatched_from_thread_id,
+                   block_kind, note,
+                   orchestration_step_count, session_timeout_seconds, task_type, active_fanout,
+                   current_session_id, zombie_flagged_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    task.id,
+                    task.status.value,
+                    task.assigned_agent,
+                    task.team,
+                    task.brief,
+                    task.revision_count,
+                    task.created_at.isoformat(),
+                    task.updated_at.isoformat(),
+                    task.completed_at.isoformat() if task.completed_at else None,
+                    task.parent_task_id,
+                    task.revisit_of_task_id,
+                    task.dispatched_from_thread_id,
+                    task.block_kind.value if task.block_kind else None,
+                    task.note,
+                    task.orchestration_step_count,
+                    task.session_timeout_seconds,
+                    task.task_type,
+                    task.active_fanout,
+                    task.current_session_id,
+                    task.zombie_flagged_at.isoformat() if task.zombie_flagged_at else None,
+                ),
+            )
+            self._conn.commit()
+            return thread_id
+        except Exception:
+            self._conn.rollback()
+            raise
+
     @_synchronized
     def get_task_attachment(
         self, task_id: str, storage_key: str

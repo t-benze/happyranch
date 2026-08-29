@@ -1181,10 +1181,14 @@ matches AND its daemon-cleanup provenance resolves (``composed_from_task_id``
 hide an older thread) AND the owning agent is a participant (the
 participant-authorized send requires membership) AND it is open AND its
 opening message carries the daemon's distinctive composition text (a
-user-created subject collision is never selected). It creates the thread on
-first trigger (the shared ``_create_agent_thread_locked`` compose helper,
-composer = the owning agent, recipient @founder — the owning agent is
-therefore a participant) and passes only the thread id in the brief. NO
+user-created subject collision is never selected). The identity lookup is
+**tri-state**: an authoritative absence is the ONLY state that may create a
+thread; a lookup error is ``indeterminate`` and FAILS CLOSED — no duplicate
+thread, no task, no enqueue — with an audited reason (TASK-6046). It creates
+the thread on first trigger ATOMICALLY WITH THE CLEANUP TASK (see the
+producer contract below; composer = the owning agent, recipient @founder —
+the owning agent is therefore a participant) and passes only the thread id
+in the brief. NO
 minted report token: the agent appends the report during its task session
 via the existing participant-authorized, task-bound ``happyranch threads
 send`` path (composer + task_id + session_id binding), which requires
@@ -1206,17 +1210,28 @@ schema/API/CLI/auth/permission change is introduced. A kill switch —
 disables the capability per org; it is an existing daemon/org config
 mechanism with no new public API/CLI/UI surface.
 
-Trigger task creation uses the atomic producer discipline: the task id is
-allocated only after every awaited step (the bounded measurement and thread
-work are done first), and allocation + thread resolution + brief composition
-+ insertion run as one synchronous block under ``org.db_lock`` with no awaits
-between ``next_task_id`` and ``insert_task`` — no id is ever selected before
-awaited work, so another producer cannot claim it mid-trigger and no
-collision can leave a report thread falsely linked to an unrelated task. The
-inserted task is a clean root; an insert failure compensates (audit, no
-enqueue). Workspace enumeration is paged in bounded batches of 64 per call
-across every registered agent workspace, so an org with more than one batch
-of agents never alphabetically starves the later ones.
+Trigger task production is **rollback-safe and atomic** (TASK-6046): the
+task id is allocated only after every awaited step (the bounded measurement
+is done first), and allocation + tri-state thread-identity resolution +
+brief composition + insertion run as one synchronous block under
+``org.db_lock`` with no awaits between ``next_task_id`` and the insert — no
+id is ever selected before awaited work, so another producer cannot claim it
+mid-trigger and no collision can leave a report thread falsely linked to an
+unrelated task. On an agent's FIRST trigger the report thread (row,
+participant, opening message, turn accounting, and the
+``thread_started``/``thread_message_sent`` audit rows) and the cleanup task
+are written in ONE transaction
+(``Database.insert_cleanup_report_thread_and_task`` — the existing
+BEGIN IMMEDIATE/COMMIT/rollback compound pattern); on ANY failure every
+durable row rolls back — ZERO residue across threads/participants/messages/
+turns/audits/tasks — nothing is enqueued, and a later retry succeeds exactly
+once. When the thread already exists only the task is inserted, so an insert
+failure can never leave thread residue either. The inserted task is a clean
+root (no parent, no thread dispatch); every compensation path is audited
+(``workspace-cleanup:skipped`` with the exact reason). Workspace enumeration
+is paged in bounded batches of 64 per call across every registered agent
+workspace, so an org with more than one batch of agents never alphabetically
+starves the later ones.
 
 ---
 

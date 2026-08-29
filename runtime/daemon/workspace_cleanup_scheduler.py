@@ -38,7 +38,15 @@ durable thread identity is resolved by daemon-cleanup provenance
 (``composed_from_task_id`` → the agent's daemon-marked cleanup task) plus the
 fixed per-agent subject, participant membership of the owning agent, open
 status, and the daemon's distinctive opening message — a fixed subject alone
-is not identity, and a user-created subject collision is never selected.
+is not identity, and a user-created subject collision is never selected. The
+identity lookup is TRI-STATE (found / absent / indeterminate): only an
+authoritative absence may create a thread; any lookup error fails closed —
+no duplicate thread, no task, no enqueue — with an audited reason (TASK-6046
+finding 2). On an agent's first trigger the report thread (row, participant,
+opening message, turn, audits) and the cleanup task are created in ONE
+atomic transaction (``Database.insert_cleanup_report_thread_and_task``) —
+any failure rolls back every durable row (zero residue), nothing is
+enqueued, and a later retry succeeds exactly once (TASK-6046 finding 1).
 
 Contract-relevant bounds (all documented in protocol/05b + 05c):
 
@@ -761,7 +769,35 @@ def report_thread_subject(agent: str) -> str:
     return f"{_REPORT_THREAD_SUBJECT_PREFIX} — {agent}"
 
 
-def _find_report_thread(db: "Database", agent: str) -> str | None:
+def _report_thread_opening(task_id: str, agent: str) -> str:
+    """Daemon-composed opening line of the per-agent report thread."""
+    return (
+        f"Daemon-managed workspace cleanup reporting thread for {agent}. "
+        f"Cleanup run {task_id} was triggered; the owning agent appends its "
+        f"report here (one durable thread per agent)."
+    )
+
+
+@dataclass
+class _ReportThreadResolution:
+    """Tri-state outcome of the per-agent report-thread identity lookup.
+
+    - ``found``: an authoritative thread matches every identity check.
+    - ``absent``: the scan completed authoritatively with no match — ONLY
+      this state may create a new thread.
+    - ``indeterminate``: a lookup errored, so absence is NOT proven. The
+      trigger must fail closed (no duplicate thread, no task, no enqueue)
+      with an explicit audited reason (TASK-6046 finding 2).
+    """
+
+    state: str
+    thread_id: str | None = None
+    reason: str | None = None
+
+
+def _find_report_thread(
+    db: "Database", agent: str,
+) -> _ReportThreadResolution:
     """Resolve this agent's durable cleanup-report thread by identity.
 
     A fixed subject alone is NOT identity (TASK-6043 finding 4). A thread is
@@ -777,8 +813,10 @@ def _find_report_thread(db: "Database", agent: str) -> str | None:
     - the opening message carries the daemon's distinctive composition text
       (rejects user-created subject collisions that otherwise match).
 
-    Any lookup error yields None (fail open to creation) — never a guessed
-    or unauthorized id.
+    Tri-state (TASK-6046 finding 2): a non-matching candidate is an
+    authoritative negative, but ANY lookup error means absence is NOT proven
+    — the result is ``indeterminate`` and the caller must fail closed rather
+    than create a duplicate thread.
     """
     subject = report_thread_subject(agent)
     try:
@@ -788,22 +826,47 @@ def _find_report_thread(db: "Database", agent: str) -> str | None:
             limit=_MAX_CLEANUP_TASK_SCAN,
         )
     except Exception:
-        return None
+        logger.exception(
+            "workspace cleanup: report-thread history lookup failed for "
+            "agent %s — thread identity indeterminate (fail closed)",
+            agent,
+        )
+        return _ReportThreadResolution(
+            "indeterminate", reason="cleanup_history_lookup_failed",
+        )
     for task in cleanup_tasks:  # newest cleanup task first
         try:
             candidates = db.list_threads_by_composed_from_task_id(task.id)
         except Exception:
-            continue
+            logger.exception(
+                "workspace cleanup: report-thread provenance lookup failed "
+                "for agent %s task %s — thread identity indeterminate "
+                "(fail closed)",
+                agent, task.id,
+            )
+            return _ReportThreadResolution(
+                "indeterminate", reason="provenance_lookup_failed",
+            )
         for thread in candidates:
             if thread.subject != subject:
                 continue
             if thread.status is not ThreadStatus.OPEN:
                 continue
             try:
-                if not db.is_thread_participant(thread.id, agent):
-                    continue
+                is_participant = db.is_thread_participant(thread.id, agent)
                 opening = db.get_thread_message_by_seq(thread.id, 1)
             except Exception:
+                logger.exception(
+                    "workspace cleanup: report-thread membership/opening "
+                    "lookup failed for agent %s thread %s — thread identity "
+                    "indeterminate (fail closed)",
+                    agent, thread.id,
+                )
+                return _ReportThreadResolution(
+                    "indeterminate", reason="participant_or_opening_lookup_failed",
+                )
+            if not is_participant:
+                # Authoritative negative: the owning agent is not a member.
                 continue
             if opening is None or not (
                 opening.body_markdown or ""
@@ -811,67 +874,8 @@ def _find_report_thread(db: "Database", agent: str) -> str | None:
                 # A subject-colliding thread without the daemon's opening
                 # message is user-created — never selected.
                 continue
-            return thread.id
-    return None
-
-
-def _resolve_or_create_report_thread(
-    org: "OrgState", *, agent: str, task_id: str,
-) -> str | None:
-    """Resolve this agent's durable report thread; create it on first trigger
-    (dream-complete pattern) with the owning agent as composer/participant and
-    @founder as recipient. Returns the thread id, or None when the thread
-    cannot be created (fail-open: the run still proceeds with a
-    compose-a-new-thread fallback instruction).
-
-    No invocation token is minted: the agent appends its report during the
-    task session via the existing participant-authorized, task-bound
-    ``threads send`` path (composer + task_id + session_id), which requires no
-    token — only participant membership (guaranteed by this creation) and a
-    live task-session binding.
-    """
-    from runtime.daemon.routes.threads import FOUNDER_LITERAL
-    from runtime.daemon.routes.threads import _create_agent_thread_locked
-    from runtime.orchestrator.org_config import (
-        OrgConfig,
-        resolve_org_setting_threads,
-    )
-
-    existing = _find_report_thread(org.db, agent)
-    if existing is not None:
-        return existing
-
-    subject = report_thread_subject(agent)
-    opening = (
-        f"Daemon-managed workspace cleanup reporting thread for {agent}. "
-        f"Cleanup run {task_id} was triggered; the owning agent appends its "
-        f"report here (one durable thread per agent)."
-    )
-    try:
-        turn_cap = resolve_org_setting_threads(
-            org.db, code_default=OrgConfig(),
-        )["default_turn_cap"]
-        # Same shared compose helper the dream-complete route uses for
-        # founder-only threads: identical participant/turn/audit semantics.
-        # Composer = the owning agent (its workspace exists), recipients =
-        # [@founder] only, so no agent recipient is woken on creation.
-        thread_id, _seq, _tokens, _addressed = _create_agent_thread_locked(
-            org,
-            composer=agent,
-            subject=subject,
-            body_text=opening,
-            recipients=[FOUNDER_LITERAL],
-            turn_cap=turn_cap,
-            composed_from_task_id=task_id,
-        )
-        return thread_id
-    except Exception:
-        logger.exception(
-            "workspace cleanup: report thread creation failed for org %s "
-            "(agent %s)",
-            org.slug, agent,
-        )
-        return None
+            return _ReportThreadResolution("found", thread_id=thread.id)
+    return _ReportThreadResolution("absent")
 
 
 # ── brief composition ─────────────────────────────────────────────────────
@@ -1050,16 +1054,29 @@ async def trigger_cleanup(
     operators can see why no task was created.
 
     Atomic producer seam (TASK-6043 finding 3): the task id is allocated only
-    AFTER every awaited step (the bounded measurement and any thread work are
-    done first), and allocation + thread resolution + brief composition +
-    insertion run as one synchronous block under ``org.db_lock`` with no
-    awaits between ``next_task_id`` and ``insert_task`` — the same producer
-    discipline as ``Orchestrator.create_task``. No id is ever selected before
-    awaited work, so another producer cannot claim it mid-trigger and no
-    collision can leave a report thread falsely linked to an unrelated task.
-    The inserted task is a clean root (no parent, no thread dispatch); on the
-    (exceptional) insert failure the trigger compensates: audit, no enqueue,
-    return None.
+    AFTER every awaited step (the bounded measurement is done first), and
+    allocation + thread identity resolution + brief composition + insertion
+    run as one synchronous block under ``org.db_lock`` with no awaits between
+    ``next_task_id`` and the insert — the same producer discipline as
+    ``Orchestrator.create_task``. No id is ever selected before awaited work,
+    so another producer cannot claim it mid-trigger and no collision can
+    leave a report thread falsely linked to an unrelated task.
+
+    Rollback-safe producer (TASK-6046 finding 1): on the FIRST trigger the
+    report thread (row, participant, opening message, turn, audits) and the
+    cleanup task it was composed from are created in ONE atomic
+    transaction (``Database.insert_cleanup_report_thread_and_task``) — any
+    failure rolls back EVERY durable row (zero residue), nothing is
+    enqueued, and a later retry succeeds exactly once. When the thread
+    already exists only the task is inserted, so an insert failure can never
+    leave thread residue either. The inserted task is a clean root (no
+    parent, no thread dispatch); every compensation path is audited.
+
+    Fail-closed thread identity (TASK-6046 finding 2): the per-agent
+    report-thread lookup is tri-state (found / absent / indeterminate). Only
+    an authoritative absence may create the thread; a lookup error is
+    ``indeterminate`` and suppresses the whole trigger — no duplicate
+    thread, no task, no enqueue — with an explicit audited reason.
     """
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
@@ -1132,19 +1149,51 @@ async def trigger_cleanup(
         return None
     run_number = history.count + 1
 
-    # Atomic producer block: id allocation, per-agent durable founder-report
-    # thread resolution/creation, brief composition, and task insertion all
+    # Read-only thread-config pre-validation OUTSIDE the lock (KB
+    # atomic-multi-table-persistence phase 1): the turn cap is a stable org
+    # setting — never a TOCTOU target — and resolving it here keeps the
+    # producer block purely a write path.
+    from runtime.daemon.routes.threads import FOUNDER_LITERAL
+    from runtime.orchestrator.org_config import (
+        OrgConfig,
+        resolve_org_setting_threads,
+    )
+    turn_cap = resolve_org_setting_threads(
+        org.db, code_default=OrgConfig(),
+    )["default_turn_cap"]
+
+    # Rollback-safe atomic producer block: task-id allocation, tri-state
+    # report-thread identity resolution, brief composition, and insertion all
     # run synchronously under org.db_lock with no awaits between
-    # ``next_task_id`` and ``insert_task``. No minted token: the agent
-    # appends via the participant-authorized, task-bound send path during its
-    # session. A thread is only ever linked to the id this block actually
-    # inserts (never a pre-selected id that another producer could claim).
+    # ``next_task_id`` and the insert. No minted token: the agent appends via
+    # the participant-authorized, task-bound send path during its session. A
+    # thread is only ever linked to the id this block actually inserts (never
+    # a pre-selected id that another producer could claim).
     thread_id: str | None = None
     async with org.db_lock:
         task_id = org.db.next_task_id()
-        thread_id = _resolve_or_create_report_thread(
-            org, agent=agent, task_id=task_id,
-        )
+        # Tri-state identity: only authoritative absence may create a thread.
+        # A lookup error is indeterminate — fail closed (no duplicate thread,
+        # no task, no enqueue) with an explicit audited reason.
+        resolution = _find_report_thread(org.db, agent)
+        if resolution.state == "indeterminate":
+            org.db.insert_audit_log(
+                task_id="workspace-cleanup:skipped",
+                agent=agent,
+                action="workspace_cleanup_skipped",
+                payload={
+                    "reason": "report_thread_indeterminate",
+                    "agent": agent,
+                    "detail": resolution.reason,
+                },
+            )
+            return None
+        thread_id = resolution.thread_id
+        if thread_id is None:
+            # Allocate the thread id under the same lock the atomic write
+            # uses — no other thread producer can interleave (the compose
+            # routes hold org.db_lock across next_thread_id + insert).
+            thread_id = org.db.next_thread_id()
         brief = compose_cleanup_brief(
             org_slug=org.slug,
             agent=agent,
@@ -1154,20 +1203,43 @@ async def trigger_cleanup(
             thread_id=thread_id,
         )
         try:
-            org.db.insert_task(TaskRecord(
-                id=task_id,
-                brief=brief,
-                team=team,
-                assigned_agent=agent,
-            ))
+            if resolution.state == "absent":
+                # First trigger for this agent: report thread + task in ONE
+                # atomic transaction. On any failure EVERY row (thread,
+                # participant, opening message, turns, audits, task) rolls
+                # back — zero residue, no enqueue; a later retry succeeds
+                # exactly once (TASK-6046 finding 1).
+                org.db.insert_cleanup_report_thread_and_task(
+                    thread_id=thread_id,
+                    subject=report_thread_subject(agent),
+                    composer=agent,
+                    opening_body=_report_thread_opening(task_id, agent),
+                    initial_recipients=[FOUNDER_LITERAL],
+                    turn_cap=turn_cap,
+                    task=TaskRecord(
+                        id=task_id,
+                        brief=brief,
+                        team=team,
+                        assigned_agent=agent,
+                    ),
+                )
+            else:
+                # Thread already exists: insert only the task (no thread work
+                # that could leave residue on failure).
+                org.db.insert_task(TaskRecord(
+                    id=task_id,
+                    brief=brief,
+                    team=team,
+                    assigned_agent=agent,
+                ))
         except Exception:
-            # Compensation: an insert failure (e.g. an exceptional id
-            # collision with a concurrent producer) never enqueues a run and
-            # is audited loudly; the thread row, if created, carries no
-            # enqueued task behind it.
+            # Compensation: the atomic producer rolled back (or the plain
+            # insert failed before any thread work). Zero durable residue, no
+            # enqueue; the skip is audited loudly so operators see why no
+            # task was created and a later retry succeeds cleanly.
             logger.exception(
                 "workspace cleanup: task insert failed for org %s agent %s "
-                "(task %s) — compensating, no run enqueued",
+                "(task %s) — atomic producer rolled back, no run enqueued",
                 org.slug, agent, task_id,
             )
             org.db.insert_audit_log(
