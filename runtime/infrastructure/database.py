@@ -8620,13 +8620,16 @@ class Database:
         )
         return [dict(row) for row in cur.fetchall()]
 
-    # --- THR-181 Track A Slice 1: authority candidate/evaluation/audit API ---
+    # --- THR-181 Track A: authority candidate/evaluation/audit API ---
     #
     # Narrow, additive persistence for the pre-escalation authority-evaluation
-    # foundation. No evaluator is invoked here and no policy is enforced — these
-    # methods only persist/read controlled records. Prose-bearing content is
-    # stored as digests; raw bearer/provider credentials, task prose, and
-    # unredacted model exchanges are never accepted or persisted.
+    # foundation, consumed by the authority hook (runtime/orchestrator/
+    # authority.py). No evaluator is invoked HERE and no policy is enforced
+    # HERE — these methods only persist/read controlled records — but they are
+    # the durable surface the hook claims, records, and consumes through.
+    # Prose-bearing content is stored as digests; raw bearer/provider
+    # credentials, task prose, and unredacted model exchanges are never
+    # accepted or persisted.
 
     @_synchronized
     def claim_authority_candidate(
@@ -8921,6 +8924,86 @@ class Database:
         )
         self._conn.commit()
         return cur.rowcount == 1
+
+    @_synchronized
+    def commit_authority_continue_same_root(
+        self,
+        *,
+        task_id: str,
+        expected_status: TaskStatus,
+        expected_block_kind: BlockKind | None,
+        note: str,
+        audit_agent: str,
+        authority_continue_payload: dict,
+        hook_outcome_payload: dict,
+    ) -> bool:
+        """THR-181 Track A: atomic same-root continuation CAS + full audit.
+
+        Executes the authority hook's CONTINUE_SAME_ROOT permitted action in
+        ONE transaction: the still-claimed root (gated on
+        ``expected_status`` / ``expected_block_kind`` / ``cancelled_at IS
+        NULL``) is returned to PENDING with the policy note, and BOTH the
+        ``authority_continued_same_root`` and ``authority_hook`` audit rows
+        are appended atomically. Any failure rolls the whole transaction
+        back — the audit can never be lost while a continuation survives, so
+        an audit failure can never permit continuation.
+
+        Returns False when the CAS gate fails (cancellation/staleness won, or
+        another consumer moved the row) without writing anything.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        block_sql = (
+            "block_kind IS NULL"
+            if expected_block_kind is None
+            else "block_kind = ?"
+        )
+        block_args = () if expected_block_kind is None else (expected_block_kind.value,)
+        self._conn.execute("BEGIN")
+        try:
+            cur = self._conn.execute(
+                f"""UPDATE tasks
+                   SET status = ?, block_kind = NULL, note = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND {block_sql}
+                     AND cancelled_at IS NULL""",
+                (
+                    TaskStatus.PENDING.value,
+                    note,
+                    now,
+                    task_id,
+                    expected_status.value,
+                )
+                + block_args,
+            )
+            if cur.rowcount != 1:
+                self._conn.rollback()
+                return False
+            self._conn.execute(
+                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    task_id,
+                    audit_agent,
+                    "authority_continued_same_root",
+                    json.dumps(authority_continue_payload),
+                    now,
+                ),
+            )
+            self._conn.execute(
+                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    task_id,
+                    audit_agent,
+                    "authority_hook",
+                    json.dumps(hook_outcome_payload),
+                    now,
+                ),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def _authority_candidate_from_row(self, row) -> AuthorityCandidate:
         return AuthorityCandidate(

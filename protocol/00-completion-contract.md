@@ -406,6 +406,8 @@ Example: a task that must land a pull request waits on that PR's external CI thr
 
 **Escalation:** Only a **root** task (`task_type='task'`, no parent) escalates to the founder. A non-root subtask that would escalate instead **fails** and hands back to its parent; bounded failure-recovery (TASK-573) carries it up, and the root escalates if it cannot resolve.
 
+**Pre-escalation authority hook (THR-181 Track A):** before a **current manager-owned Engineering root's** proposed escalation is committed, the orchestrator runs exactly one audited LLM authority evaluation of the proposed reason against the immutable, release-controlled Engineering policy `engineering/pre-escalation-authority@v1` (see `05c-orchestrator.md` §THR-181 for hook ordering, the fail-closed matrix, the audit denominator, and restart/CAS behavior). The policy is semantic authority only; server-owned mechanical fences are non-overridable and no policy output may override one. The only semantic results are `ESCALATE` (the exact existing escalation path) and `CONTINUE_SAME_ROOT` (the named same-root permitted action: return the current root to pending for another manager decision step). Every ambiguity, error, mismatch, timeout, audit failure, cancellation, exhausted limit, stale/CAS conflict, restart-incomplete state, or successor/supersede/revisit/fresh-root signal fails closed to ESCALATE. Historical census eligibility is never consulted.
+
 See `docs/superpowers/specs/2026-06-03-subtask-composite-task-design.md` for the design rationale.
 
 ## Mid-task learnings

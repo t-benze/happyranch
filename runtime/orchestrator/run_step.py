@@ -420,6 +420,27 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
             return
         # Root: park in escalated for the founder (try_escalate* now writes the
         # top-level ESCALATED status; behavior otherwise unchanged).
+        # THR-181 Track A: BEFORE the manager root's proposed escalation is
+        # committed, run exactly one audited LLM authority evaluation of the
+        # proposed reason against the release-controlled policy for this
+        # team (Engineering v1). The hook returns "continue_same_root" only
+        # when the policy's narrow continue clause matched and the named
+        # same-root permitted action was executed + audited atomically;
+        # EVERY other outcome — ambiguity, malformed/missing/unknown output,
+        # timeout/provider error, policy/team/digest mismatch, audit failure,
+        # cancellation, exhausted limits, stale/CAS conflict, restart-
+        # incomplete state, ineligibility, or any successor/supersede/
+        # revisit/fresh-root signal — fails closed to "escalate", which
+        # proceeds through the exact existing escalation path below.
+        from runtime.orchestrator.authority import run_authority_hook
+        hook_outcome = run_authority_hook(
+            orch, task, agent, reason, _step_audit_id,
+        )
+        if hook_outcome == "continue_same_root":
+            # Same-root continuation already executed (audited): the root
+            # returned to pending for its next manager decision step and was
+            # re-enqueued. The escalation is NOT committed.
+            return
         # Atomic CAS: transition to ESCALATED only if not cancelled
         # or terminal. Closes the post-_is_already_terminal race (Codex P2 on
         # PR #34) by serializing against /cancel via the Database RLock.
@@ -1502,11 +1523,13 @@ def _resolved_escalation_header_if_applicable(
     orch: "Orchestrator", task_id: str,
 ) -> str | None:
     """Return a 2-3 line header on the first manager step after a founder
-    `resolve-escalation --continue`, otherwise None.
+    `resolve-escalation --continue` OR an authority-policy same-root
+    continuation, otherwise None.
 
-    Trigger: the most recent `escalation_resolved` audit entry for this task
-    has a higher row id than the most recent `orchestration_step` entry —
-    i.e. the founder continued AND the manager hasn't run yet. Audit `id` is
+    Trigger: the most recent `escalation_resolved` OR
+    `authority_continued_same_root` audit entry for this task has a higher
+    row id than the most recent `orchestration_step` entry — i.e. the
+    continuation happened AND the manager hasn't run yet. Audit `id` is
     autoincrement, so id-ordering is equivalent to chronological ordering.
     Once the manager produces its first decision after re-enqueue,
     `log_orchestration_step` writes a row with a higher id and this helper
@@ -1514,13 +1537,31 @@ def _resolved_escalation_header_if_applicable(
     """
     logs = orch._db.get_audit_logs(task_id)
     last_resolved = None
+    last_authority_continue = None
     last_step = None
     for entry in logs:
         action = entry["action"]
         if action == "escalation_resolved":
             last_resolved = entry
+        elif action == "authority_continued_same_root":
+            last_authority_continue = entry
         elif action == "orchestration_step":
             last_step = entry
+    if last_authority_continue is not None and (
+        last_step is None or last_step["id"] < last_authority_continue["id"]
+    ):
+        payload = last_authority_continue["payload"] or {}
+        policy_id = payload.get("policy_id", "(unknown policy)")
+        policy_version = payload.get("policy_version", "?")
+        clause_id = payload.get("clause_id", "(unknown clause)")
+        action = payload.get("action", "(unknown action)")
+        return (
+            f"AUTHORITY POLICY CONTINUED SAME ROOT: policy {policy_id} "
+            f"v{policy_version} matched clause {clause_id} "
+            f"(permitted action: {action}).\n"
+            "Your proposed escalation was not committed; continue the same "
+            "root within that permitted action.\n\n"
+        )
     if last_resolved is None:
         return None
     if last_step is not None and last_step["id"] > last_resolved["id"]:

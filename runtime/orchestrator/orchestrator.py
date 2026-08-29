@@ -86,6 +86,7 @@ class Orchestrator:
         paths: OrgPaths,
         slug: str,
         teams: TeamsRegistry,
+        authority_evaluator=None,
     ) -> None:
         self._db = db
         self._settings = settings
@@ -93,6 +94,11 @@ class Orchestrator:
         self._slug = slug
         self._audit = AuditLogger(db)
         self._teams = teams
+        # THR-181 Track A: deterministic injectable evaluator seam. The daemon
+        # wires the production subprocess evaluator; CI wires the strict fake.
+        # None disables evaluation (the hook fails closed to ESCALATE), which
+        # is the deterministic posture for orchestrator unit tests.
+        self._authority_evaluator = authority_evaluator
         self._queue: "TaskQueue | None" = None  # wired by daemon
         self._sessions: "SessionTracker | None" = None  # wired by daemon
         self._notifier = None  # wired by daemon

@@ -834,20 +834,22 @@ class ScheduleRecord(BaseModel):
 
 # ── THR-181 Track A: durable authority candidate/evaluation/audit foundation ──
 #
-# Slice 1 is an isolated, additive persistence foundation. These models define
-# the typed vocabulary for the authority_* tables in database.py. They are NOT
-# wired into any runtime surface yet — no evaluator invocation, policy
-# enforcement, selection/activation, or Exit-B behavior exists in this slice.
-# Every prose-bearing field is stored as a *digest* (never the raw content),
-# and every state/disposition value is a closed StrEnum mirrored by a SQLite
-# CHECK constraint so the DB itself rejects unknown values.
+# Slice 1 supplied the isolated, additive persistence foundation; the
+# pre-escalation authority hook (runtime/orchestrator/authority.py) now runs
+# one audited LLM evaluation before a manager root's proposed escalation is
+# committed (Engineering policy v1), consuming these records via the
+# database.py persistence API. The vocabularies below are closed StrEnums
+# mirrored by SQLite CHECK constraints. Every prose-bearing field is stored
+# as a *digest* (never the raw content); raw bearer/provider credentials,
+# task prose, and unredacted model exchanges are never accepted or
+# persisted.
 
 
 class AuthorityLifecycleState(StrEnum):
     """Controlled candidate lifecycle. Mirrored by a SQLite CHECK constraint."""
     CREATED = "created"          # claimed, not yet evaluated
     EVALUATED = "evaluated"      # a single evaluation disposition recorded
-    CONSUMED = "consumed"        # disposition consumed exactly once (later slice)
+    CONSUMED = "consumed"        # disposition consumed exactly once (hook CAS)
 
 
 class AuthorityDisposition(StrEnum):
