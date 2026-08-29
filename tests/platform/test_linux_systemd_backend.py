@@ -595,13 +595,16 @@ def test_launch_fast_exit_fails_closed_when_scope_already_collected():
     assert all("envelope-applied" not in argv for argv in calls)
 
 
-def test_launch_fast_exit_verifies_via_control_group_seam(tmp_path):
-    """When the target exits before ``_wait_for_cgroup`` resolves but the
-    transient scope is still queryable, launch resolves the cgroup through
-    the authoritative ControlGroup seam and STILL verifies the applied
-    envelope exactly (via the real ``_read_file`` path) before returning
-    the RunningHandle — verification is never skipped on the fast-exit
-    path."""
+def test_launch_fast_exit_fails_closed_even_when_cgroup_still_available(tmp_path):
+    """THE exact reviewer fast-exit case: the target exits before
+    ``_wait_for_cgroup`` resolves, yet the transient scope's ControlGroup is
+    STILL queryable and memory.high / memory.max / pids.max STILL hold the
+    exact envelope. The launch branch for an already-exited process is
+    TERMINAL and FAIL-CLOSED: the exact applied-limits verification still
+    runs through the real ``_read_file`` path (never skipped — its outcome
+    is preserved as diagnostic evidence in the error), then the scope is
+    stopped, the dead process killed, and BackendLaunchError is raised.
+    A successful RunningHandle is NEVER returned for an exited process."""
     backend = LinuxSystemdBackend()
     backend._cgroup_root = os.fspath(tmp_path)
     cgdir = tmp_path / "cg"
@@ -620,18 +623,26 @@ def test_launch_fast_exit_verifies_via_control_group_seam(tmp_path):
             return (0, "/cg")
         return (0, "")
 
-    _install_fast_exit(backend, systemctl)
+    calls = _install_fast_exit(backend, systemctl)
     pending = backend.prepare(_request(), _policy())
-    running = backend.launch(pending, LaunchSpec(argv=("sh", "-c", "exit 0")))
-    assert isinstance(running, RunningHandle)
-    assert running.token == pending.token
-    assert running.invocation_kind == "schedule"
+    with pytest.raises(
+        BackendLaunchError,
+        match="exited before its session enforcement envelope could be verified",
+    ) as excinfo:
+        backend.launch(pending, LaunchSpec(argv=("sh", "-c", "exit 0")))
+    # The exact envelope was verified (diagnostic evidence preserved) yet the
+    # launch still failed closed — verification is never skipped AND never
+    # converts an exited target into a successful handle.
+    assert "exact session envelope applied" in str(excinfo.value)
+    # Scope/process cleanup was issued before the raise.
+    assert any("stop" in argv for argv in calls)
 
 
 def test_launch_fast_exit_fails_closed_on_envelope_mismatch(tmp_path):
     """A fast-exit target whose resolvable scope did NOT apply the exact
     envelope is a containment failure: launch raises BackendLaunchError
-    after issuing the scope stop (never a silent unverified handle)."""
+    after issuing the scope stop (never a silent unverified handle). The
+    mismatch detail is preserved as diagnostic evidence in the error."""
     backend = LinuxSystemdBackend()
     backend._cgroup_root = os.fspath(tmp_path)
     cgdir = tmp_path / "cg"
@@ -648,9 +659,12 @@ def test_launch_fast_exit_fails_closed_on_envelope_mismatch(tmp_path):
     calls = _install_fast_exit(backend, systemctl)
     pending = backend.prepare(_request(), _policy())
     with pytest.raises(
-        BackendLaunchError, match="did not apply the session enforcement envelope"
-    ):
+        BackendLaunchError,
+        match="exited before its session enforcement envelope could be verified",
+    ) as excinfo:
         backend.launch(pending, LaunchSpec(argv=("sh", "-c", "exit 0")))
+    assert "session envelope NOT applied" in str(excinfo.value)
+    assert "memory.high" in str(excinfo.value)
     assert any("stop" in argv for argv in calls)
 
 def test_prepare_and_launch_carry_receipt_attribution():

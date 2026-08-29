@@ -18,6 +18,7 @@ down, no live daemon is touched.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 
@@ -78,6 +79,21 @@ def _request(logical_id="sched-e2e"):
         logical_id=logical_id,
         executor_profile="claude",
     )
+
+
+class _ExitedProc:
+    """A fake launched process that has already exited (returncode set)."""
+
+    returncode = 0
+    pid = 424242
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        # Real Popen.kill() no-ops once the process is reaped (returncode is
+        # set), matching the fast-exit semantics this fake models.
+        return None
 
 
 def test_supervisor_clean_success_with_surviving_descendant_real(backend):
@@ -184,6 +200,88 @@ def test_supervisor_fast_exit_fails_closed_real(backend):
         timeout=5,
     )
     assert out.strip() == ""
+
+
+def test_supervisor_fast_exit_fails_closed_while_cgroup_still_available(tmp_path):
+    """Deterministic adversarial regression for the exact reviewer case: the
+    target exits before ``_wait_for_cgroup`` resolves, yet the transient
+    scope's ControlGroup is STILL queryable and memory.high / memory.max /
+    pids.max STILL hold the exact envelope (reproduced with fixed seams, not
+    timing). The supervisor surfaces SPAWN_FAILURE with no RunningHandle,
+    never enters the launch body, never fires ``on_started``, publishes no
+    receipt, and releases the admission lease exactly once after
+    scope/process cleanup. Not probe-gated by construction: every seam the
+    fast-exit race needs is deterministic, so this runs on any host."""
+    backend = LinuxSystemdBackend()
+    backend._cgroup_root = os.fspath(tmp_path)
+    cgdir = tmp_path / "cg"
+    cgdir.mkdir()
+    for name, value in {
+        "memory.high": str(2 * 1024**3),
+        "memory.max": str(4 * 1024**3),
+        "pids.max": "1024",
+    }.items():
+        (cgdir / name).write_text(value + "\n", encoding="utf-8")
+
+    calls: list[list[str]] = []
+
+    def run(argv, timeout=10.0):
+        calls.append(list(argv))
+        # ControlGroup stays queryable; stop is a no-op (scope already gone).
+        if "show" in argv:
+            return (0, "/cg")
+        return (0, "")
+
+    backend._run = run  # type: ignore[method-assign]
+    backend._systemd_run_scope = (  # type: ignore[method-assign]
+        lambda unit, slice_name, argv, **kwargs: _ExitedProc()
+    )
+    backend._wait_for_cgroup = (  # type: ignore[method-assign]
+        lambda unit, proc, timeout=None: None
+    )
+    backend._start_exit_capture = lambda state, proc: None  # type: ignore[method-assign]
+
+    published: list = []
+    started: list = []
+    body_entered = {"n": 0}
+
+    def launch_body(running):
+        body_entered["n"] += 1
+        raise AssertionError("launch body must never run for an exited target")
+
+    supervisor = HostSessionSupervisor(
+        backend=backend,
+        policy=canary_policy(sample_interval_seconds=0.1),
+        publisher=published.append,
+    )
+    before = supervisor._admission.released_total()
+    outcome = supervisor.run(
+        AdmissionRequest(
+            org="test",
+            invocation_kind="schedule",
+            logical_id="sched-cg-avail",
+            executor_profile="claude",
+            on_started=started.append,
+        ),
+        launch_spec=LaunchSpec(argv=("sh", "-c", "exit 0")),
+        launch_body=launch_body,
+    )
+    assert outcome.terminal_reason is TerminalReason.SPAWN_FAILURE
+    assert outcome.receipt is None  # no finish, no receipt, no publication
+    assert outcome.cleanup_status is None
+    assert started == []  # on_started never fired (no RunningHandle was bound)
+    assert body_entered["n"] == 0  # launch body never entered
+    assert published == []  # no receipt published
+    assert supervisor._admission.released_total() == before + 1  # exactly once
+    # Scope/process cleanup: launch stopped the scope before raising and the
+    # supervisor abandoned the pending handle (idempotent second stop).
+    assert any("stop" in argv for argv in calls)
+    # The fail-closed error carries the exact applied-limits diagnostic
+    # evidence — the verification ran and its outcome is preserved.
+    assert "exited before its session enforcement envelope could be verified" in (
+        outcome.error or ""
+    )
+    assert "exact session envelope applied" in (outcome.error or "")
 
 
 def test_supervisor_shutdown_mid_body_finishes_exactly_once_real(backend):

@@ -433,6 +433,15 @@ Linux systemd/cgroup-v2 capability backend at `launch`:
   as applied** byte-for-byte in the scope's cgroup (`memory.high` /
   `memory.max` / `pids.max`) at launch — a mismatch fails the launch closed
   (never a silent best-effort claim of guaranteed limits).
+* An **already-exited target is terminal and fail-closed**: when the process
+  exits before launch resolves its scope, launch never returns a
+  RunningHandle — even if the transient scope's ControlGroup is still
+  queryable and the three files exactly match. The exact applied-limits
+  verification still runs and is preserved as diagnostic evidence in the
+  raised :class:`BackendLaunchError`, then the scope is stopped and the
+  dead process killed; the caller abandons the pending handle
+  (SPAWN_FAILURE, admission released exactly once, no ``on_started``
+  callback, no receipt).
 * Selection is immutable and deterministic: the same kind resolves to the
   same frozen policy, including across 429 retry/reacquire. macOS stays
   honestly capped/best-effort (no limits applied); passthrough/unsupported/

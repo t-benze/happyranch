@@ -686,22 +686,37 @@ class LinuxSystemdBackend:
                 proc.kill()
                 raise BackendLaunchError(f"scope {unit} was not created")
             # The target exited before ``_wait_for_cgroup`` resolved the
-            # scope. Slice C forbids reporting successful launch without
-            # authoritative exact verification of the applied enforcement
-            # envelope, so this is NOT a normal RunningHandle path: resolve
-            # the cgroup through the transient unit's ControlGroup (the
-            # established authoritative seam ``finish`` already uses). If
-            # the scope is already collected — or its files do not hold the
-            # exact values — fail closed: the caller abandons the pending
-            # handle (admission released), freezes SPAWN_FAILURE, and no
-            # ``on_started`` callback or receipt was ever published.
+            # scope. This branch is TERMINAL and FAIL-CLOSED by contract:
+            # an already-exited process must never yield a RunningHandle —
+            # the caller would bind it, fire ``on_started`` with a dead PID,
+            # and enter ``launch_body``. The cgroup is resolved through the
+            # transient unit's ControlGroup (the established authoritative
+            # seam ``finish`` already uses) ONLY to record the exact
+            # applied-limits verification as diagnostic evidence — even
+            # when ControlGroup remains queryable and memory.high /
+            # memory.max / pids.max exactly match, the outcome is the same:
+            # the scope is stopped, the (already-dead) process killed, and
+            # BackendLaunchError is raised so the caller abandons the
+            # pending handle (admission released exactly once), freezes
+            # SPAWN_FAILURE, and no ``on_started`` callback or receipt is
+            # ever published.
             cg = self._control_group_of(unit)
-        if not cg:
+            if cg:
+                applied, detail = self._session_limits_applied(cg, policy)
+                evidence = (
+                    f"exact session envelope applied ({detail})"
+                    if applied
+                    else f"session envelope NOT applied ({detail})"
+                )
+            else:
+                evidence = "scope already collected (no ControlGroup evidence)"
             self._safe_stop(unit)
+            proc.kill()
             raise BackendLaunchError(
                 f"scope {unit} exited before its session enforcement "
-                "envelope could be verified (fail-closed: no authoritative "
-                "applied-limits evidence)"
+                "envelope could be verified (fail-closed: an exited target "
+                f"never returns a RunningHandle); applied-limits evidence: "
+                f"{evidence}"
             )
         # Slice C: verify the enforcement envelope was actually applied to
         # the scope's cgroup — a guaranteed limit that did not land is a
