@@ -9268,6 +9268,19 @@ class Database:
             (root_task_id,),
         ).fetchone()
 
+    def get_latest_authority_continue_envelope(self, root_task_id: str):
+        """Return the newest durable continuation envelope in any state.
+
+        Absence from this historical view, rather than absence from the
+        ACTIVE-only view, is the only condition that identifies a genuinely
+        ordinary turn.
+        """
+        return self._conn.execute(
+            "SELECT * FROM authority_continue_envelopes "
+            "WHERE root_task_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (root_task_id,),
+        ).fetchone()
+
     def get_authority_continue_envelope(self, envelope_id: str):
         """Return the envelope row by id (any state), or None."""
         return self._conn.execute(

@@ -252,7 +252,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         if turn_allow_set is not None:
             if turn_allow_set.refused:
                 _spend_envelope_as_violation(
-                    orch, db, task_id, agent, db.get_active_authority_continue_envelope(task_id),
+                    orch, db, task_id, agent, db.get_latest_authority_continue_envelope(task_id),
                     decision_family="launch_refused",
                     error=turn_allow_set.refused_reason or "launch refused",
                 )
@@ -289,10 +289,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 decision_family="launch_refused",
                 error="continuation allow-set resolution failed",
             )
-            _escalate_continued_turn_violation(
-                orch, task_id, agent, attempted="launch_refused",
-            )
-            return
+        _escalate_continued_turn_violation(
+            orch, task_id, agent, attempted="launch_refused",
+        )
+        return
     try:
         if turn_allow_set is None:
             result, report = orch._run_agent(task_id, agent, prompt)
@@ -301,6 +301,19 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
                 task_id, agent, prompt, turn_allow_set=turn_allow_set,
             )
     except Exception as exc:
+        from runtime.orchestrator.authority import ContinuationLaunchRefused
+        if isinstance(exc, ContinuationLaunchRefused):
+            try:
+                db.spend_authority_continue_envelope_if_active(
+                    task_id, audit_agent=agent,
+                    error="continuation launch-adjacent revalidation refused",
+                )
+            except Exception:
+                logger.exception("run_step %s: could not spend refused envelope", task_id)
+            _escalate_continued_turn_violation(
+                orch, task_id, agent, attempted="launch_refused",
+            )
+            return
         note = f"agent invocation failed: {exc}"
         _fail(orch, task_id, note=note)
         _enqueue_parent_if_waiting(orch, task_id, root_auto_revisit_spawned=False)

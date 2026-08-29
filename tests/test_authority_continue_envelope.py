@@ -914,9 +914,7 @@ def test_continued_turn_prompt_carries_mechanical_restriction(runtime, db, monke
 
 
 def test_continued_turn_prompt_absent_without_active_envelope(runtime, db, monkeypatch):
-    """Fail-closed header gating: a continuation audit row WITHOUT an active
-    envelope must NOT present the continued turn as a continuation — the
-    root runs as an ordinary turn (no mechanical-restriction header)."""
+    """Spent durable continuation history refuses; it is never ordinary."""
     fake = StrictFakeAuthorityEvaluator()
     _seed_root(db)
     orch = _make_orch(runtime, db, evaluator=fake)
@@ -929,12 +927,14 @@ def test_continued_turn_prompt_absent_without_active_envelope(runtime, db, monke
         error="test: continuation window closed",
     ) is True
 
-    captured = {}
+    captured = []
 
     def capture(task_id, agent, prompt, on_session_started=None):
-        captured["prompt"] = prompt
-        raise RuntimeError("abort after prompt build")
+        captured.append(prompt)
+        raise AssertionError("spent continuation history must not launch")
     monkeypatch.setattr(orch, "_run_agent", capture)
     orch.run_step("T-ROOT")
 
-    assert "AUTHORITY POLICY CONTINUED SAME ROOT:" not in captured["prompt"]
+    assert captured == []
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+    assert any(a["action"] == "escalation" for a in db.get_audit_logs("T-ROOT"))

@@ -42,10 +42,12 @@ from runtime.models import TaskStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.authority import (
     AUDIT_ACTION_ENVELOPE_VIOLATED,
+    ContinuationLaunchRefused,
     _CONTINUATION_DONE_ALLOWED_BASH_PREFIXES,
     _CONTINUATION_DONE_ALLOWED_TOOLS_CLI,
     StrictFakeAuthorityEvaluator,
     executor_supports_turn_scoped_allow_set,
+    revalidate_continuation_launch,
     resolve_continuation_turn_allow_set,
 )
 from runtime.orchestrator.authority_policy import ACTION_CONTINUE_SAME_ROOT
@@ -214,9 +216,7 @@ def test_ordinary_turn_resolves_none(runtime, db, monkeypatch):
     assert resolve_continuation_turn_allow_set(db, "T-ROOT", "engineering_head") is None
 
 
-def test_consumed_envelope_resolves_none(runtime, db, monkeypatch):
-    """A spent envelope no longer restricts any launch — but the continuation
-    window is over, so the resolver returns None (ordinary turn)."""
+def test_consumed_envelope_refuses(runtime, db, monkeypatch):
     fake = StrictFakeAuthorityEvaluator()
     _seed_root(db)
     orch = _make_orch(runtime, db, evaluator=fake)
@@ -224,7 +224,93 @@ def test_consumed_envelope_resolves_none(runtime, db, monkeypatch):
     assert db.spend_authority_continue_envelope_if_active(
         "T-ROOT", audit_agent="engineering_head", error="test: spent",
     ) is True
-    assert resolve_continuation_turn_allow_set(db, "T-ROOT", "engineering_head") is None
+    resolved = resolve_continuation_turn_allow_set(db, "T-ROOT", "engineering_head")
+    assert resolved is not None
+    assert resolved.refused is True
+    assert "non-active" in resolved.refused_reason
+
+
+@pytest.mark.parametrize("spent_state", ["consumed", "violated"])
+def test_run_step_spent_envelope_history_refuses_without_launch(
+    runtime, db, monkeypatch, spent_state,
+):
+    """Recovery/replay of a root with durable spent history escalates with
+    zero executor launch; it can never become an ordinary manager turn."""
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=StrictFakeAuthorityEvaluator())
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+    env = dict(db.get_active_authority_continue_envelope("T-ROOT"))
+    db.update_task("T-ROOT", status=TaskStatus.IN_PROGRESS)
+    decision = "done" if spent_state == "consumed" else "launch_refused"
+    assert db.consume_authority_continue_envelope(
+        envelope_id=env["id"], root_task_id="T-ROOT", decision_family=decision,
+        expected_manager_agent=env["manager_agent"],
+        expected_session_id=env["manager_session_id"],
+        expected_causal_event_id=env["causal_event_id"],
+        expected_causal_event_digest=env["causal_event_digest"],
+        expected_policy_id=env["policy_id"],
+        expected_policy_version=env["policy_version"],
+        expected_policy_digest=env["policy_digest"],
+        expected_clause_id=env["clause_id"], expected_action=env["action"],
+        audit_agent="engineering_head",
+    ) == spent_state
+    db.update_task("T-ROOT", status=TaskStatus.PENDING)
+    launched = []
+    monkeypatch.setattr(orch, "_run_agent", lambda *a, **k: launched.append(a))
+
+    orch.run_step("T-ROOT")
+
+    assert launched == []
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+    assert any(a["action"] == "escalation" for a in db.get_audit_logs("T-ROOT"))
+
+
+def test_run_step_resolution_uncertainty_refuses_without_launch(runtime, db, monkeypatch):
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=StrictFakeAuthorityEvaluator())
+    launched = []
+    monkeypatch.setattr(orch, "_run_agent", lambda *a, **k: launched.append(a))
+    monkeypatch.setattr(
+        db, "get_latest_authority_continue_envelope",
+        lambda _root: (_ for _ in ()).throw(RuntimeError("database unavailable")),
+    )
+
+    orch.run_step("T-ROOT")
+
+    assert launched == []
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+    escalations = [a for a in db.get_audit_logs("T-ROOT") if a["action"] == "escalation"]
+    assert len(escalations) == 1
+    assert "authority-continuation envelope violation" in escalations[0]["payload"]["reason"]
+
+
+def test_launch_adjacent_task_read_uncertainty_refuses_without_launch(
+    runtime, db, monkeypatch,
+):
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=StrictFakeAuthorityEvaluator())
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+    db.update_task("T-ROOT", status=TaskStatus.IN_PROGRESS)
+    expected = resolve_continuation_turn_allow_set(
+        db, "T-ROOT", "engineering_head",
+    )
+    assert expected is not None and not expected.refused
+    real_get_task = db.get_task
+    reads = 0
+
+    def fail_launch_adjacent_read(task_id):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            raise RuntimeError("database unavailable at launch")
+        return real_get_task(task_id)
+
+    monkeypatch.setattr(db, "get_task", fail_launch_adjacent_read)
+
+    with pytest.raises(ContinuationLaunchRefused, match="resolution uncertainty"):
+        revalidate_continuation_launch(
+            db, "T-ROOT", "engineering_head", expected,
+        )
 
 
 def test_envelope_identity_mismatch_at_launch_refuses(runtime, db, monkeypatch):
@@ -253,7 +339,7 @@ def test_unsupported_permitted_action_refuses(runtime, db, monkeypatch):
     fake_env = dict(env)
     fake_env["action"] = "escalate_to_founder"
     monkeypatch.setattr(
-        db, "get_active_authority_continue_envelope",
+        db, "get_latest_authority_continue_envelope",
         lambda root: fake_env,
     )
     allow_set = resolve_continuation_turn_allow_set(db, "T-ROOT", "engineering_head")

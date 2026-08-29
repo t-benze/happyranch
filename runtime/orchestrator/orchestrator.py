@@ -898,6 +898,11 @@ class Orchestrator:
                 agent_name=agent_name,
                 task_id=task_id,
             )
+            if turn_allow_set is not None:
+                from runtime.orchestrator.authority import revalidate_continuation_launch
+                revalidate_continuation_launch(
+                    self._db, task_id, agent_name, turn_allow_set,
+                )
 
         # The orchestrator relies on the start-task skill to bridge prompt →
         # agent work → completion callback. If the workspace was bootstrapped
