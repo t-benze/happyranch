@@ -529,14 +529,16 @@ async def test_resume_not_found_falls_back_to_full(tmp_path, monkeypatch):
     db.add_thread_participant("THR-001", "alice", added_by="founder")
     db.append_thread_message(thread_id="THR-001", speaker="founder",
                              kind=ThreadMessageKind.MESSAGE, body_markdown="m1")
-    db.update_thread_session("THR-001", "alice", agent_session_id="claude-evicted", last_resumed_seq=0)
-    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
+    db.append_thread_message(thread_id="THR-001", speaker="founder",
+                             kind=ThreadMessageKind.MESSAGE, body_markdown="m2")
+    db.update_thread_session("THR-001", "alice", agent_session_id="claude-evicted", last_resumed_seq=1)
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=2)
     ws = tmp_path / "workspaces" / "alice"; ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
 
-    evicted = FakeExecutorResult(success=False, error="No conversation found for session claude-evicted")
+    evicted = FakeExecutorResult(success=False, error="Command exited with code 1: No conversation found for session claude-evicted")
     evicted.returncode = 1
-    evicted.stderr_tail = "No conversation found"
+    evicted.stderr_tail = "No conversation found with session ID: claude-evicted"
     evicted.agent_session_id = None
 
     import runtime.daemon.thread_runner as runner_mod
@@ -580,7 +582,7 @@ async def test_eviction_fallback_failure_invalidates_id_keeps_watermark(tmp_path
 
     evicted = FakeExecutorResult(success=False, error="No conversation found for session claude-stale")
     evicted.returncode = 1
-    evicted.stderr_tail = "No conversation found"
+    evicted.stderr_tail = "No conversation found with session ID: claude-stale"
     evicted.agent_session_id = None
     fallback_failed = FakeExecutorResult(success=False, error="Command exited with code 1: boom")
     fallback_failed.returncode = 1
@@ -1819,7 +1821,11 @@ async def test_thread_invocation_session_not_found_fallback_forwards_model(
         thread_id="THR-001", speaker="founder",
         kind=ThreadMessageKind.MESSAGE, body_markdown="hi",
     )
-    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="follow-up",
+    )
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=2)
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -1846,8 +1852,12 @@ async def test_thread_invocation_session_not_found_fallback_forwards_model(
             all_model_kwargs.append(kwargs.get("model"))
             if call_count[0] == 1:
                 # First invocation: resume attempt fails with session-not-found
+                # (production shape: the exact anchored marker lands on stderr
+                # with the ATTEMPTED id, rc=1 — the classifier reads
+                # stderr_tail only, never the error envelope).
                 result = FakeExecutorResult(success=False, error="No session found")
                 result.returncode = 1
+                result.stderr_tail = "No conversation found with session ID: stale-sid"
                 return result
             else:
                 return FakeExecutorResult(success=True)
@@ -1858,7 +1868,7 @@ async def test_thread_invocation_session_not_found_fallback_forwards_model(
     )
 
     # Stub thread_session so resume is attempted.
-    db.update_thread_session("THR-001", "alice", agent_session_id="stale-sid", last_resumed_seq=0)
+    db.update_thread_session("THR-001", "alice", agent_session_id="stale-sid", last_resumed_seq=1)
 
     org = FakeOrgState(db=db, root=tmp_path)
     await run_invocation(

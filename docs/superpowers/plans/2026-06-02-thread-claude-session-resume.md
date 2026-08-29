@@ -1,5 +1,14 @@
 # Thread `claude -p --resume` Session Reuse Implementation Plan
 
+> **Superseded in part by TASK-5977 (THR-200 seq 31).** The thread provider-session
+> resume machinery is no longer Claude-only: Codex (codex-cli 0.148.0) and Pi
+> (pi 0.84.2) resume with the same correctness properties via
+> `codex exec resume <thread_id> --json -` and `pi -p --mode json --session <id>`
+> respectively (contract proven live during the TASK-5977 audit; OpenCode is an
+> unproven gap and stays fresh). The DB/audit/lifecycle machinery described below
+> is executor-agnostic and unchanged. See `protocol/05b-agent-runtime.md`
+> (Thread provider-session lifecycle) for the current evidence-backed matrix.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make Claude-backed thread participants reuse their Claude session across turns via `claude -p --resume <session_id>`, shipping only the new-message delta each turn instead of re-tokenizing the full transcript and workspace `CLAUDE.md`.
