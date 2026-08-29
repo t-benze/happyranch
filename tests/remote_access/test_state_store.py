@@ -749,3 +749,473 @@ class TestCompanionMonotonicAnchor:
         path.write_text(json.dumps(json.loads(raw), indent=4))
         with pytest.raises(CorruptTrustStateError):
             store.load()
+
+# ── Supported-DIY additive envelope fields (THR-097 Unit 3A) ───────────────
+
+
+class TestDiyEnvelopeFields:
+    def test_credential_digest_and_pending_pairings_round_trip(self, tmp_path) -> None:
+        """credential_digest (device) and pending_pairings (payload) persist
+        through save/load with full pair validation."""
+        from datetime import timedelta
+
+        from runtime.remote_access.authorization import PendingPairing
+        from runtime.remote_access.identity import ConnectorIdentity
+
+        identity = ConnectorIdentity(
+            tenant_id="diy", home_id="home-a", connector_id="connector-a"
+        )
+        state = TrustState(connector_identity=identity, pairing_epoch=0, revocation_epoch=0)
+        state.apply_pairing(
+            DeviceAuthorization(
+                device_id="macbook-pro",
+                tenant_id="diy",
+                home_id="home-a",
+                authorization_epoch=1,
+                expires_at=NOW() + timedelta(days=365),
+                credential_digest="a" * 64,
+            )
+        )
+        state.pending_pairings["phone"] = PendingPairing(
+            code_digest="b" * 64,
+            expires_at=NOW() + timedelta(minutes=5),
+        )
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", state)
+        store.save(state)
+        loaded = AtomicFileTrustStateStore(tmp_path / "trust-state.json", state).load()
+        assert loaded.devices["macbook-pro"].credential_digest == "a" * 64
+        assert loaded.pending_pairings["phone"].code_digest == "b" * 64
+        assert loaded.pending_pairings["phone"].consumed is False
+
+    def test_old_envelope_without_new_fields_still_loads(self, tmp_path) -> None:
+        """Existing v2 envelopes that predate the Unit-3A fields (no
+        credential_digest / no pending_pairings) must still load: the new
+        fields are OPTIONAL (absent = None / {})."""
+        import hashlib
+        import json as _json
+
+        from runtime.remote_access.policy import canonical_json
+        from runtime.remote_access.state_store import (
+            ANCHOR_KIND,
+            ANCHOR_VERSION,
+            ENVELOPE_KIND,
+            ENVELOPE_VERSION,
+        )
+
+        # Build a PRE-3A envelope+anchor pair by hand (the anchor's
+        # snapshot_digest must cover the exact bytes — no new fields).
+        payload = {
+            "connector_identity": {
+                "tenant_id": "diy",
+                "home_id": "home-a",
+                "connector_id": "connector-a",
+            },
+            "pairing_epoch": 1,
+            "revocation_epoch": 0,
+            "current_device_id": None,
+            "devices": {
+                "legacy-device": {
+                    "device_id": "legacy-device",
+                    "tenant_id": "diy",
+                    "home_id": "home-a",
+                    "authorization_epoch": 1,
+                    "expires_at": (NOW() + timedelta(days=30)).isoformat(),
+                    "revoked": False,
+                }
+            },
+        }
+        envelope = {
+            "version": ENVELOPE_VERSION,
+            "kind": ENVELOPE_KIND,
+            "generation": 1,
+            "payload": payload,
+            "digest": hashlib.sha256(canonical_json(payload)).hexdigest(),
+        }
+        snapshot_bytes = _json.dumps(
+            envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        anchor = {
+            "version": ANCHOR_VERSION,
+            "kind": ANCHOR_KIND,
+            "generation": 1,
+            "snapshot_digest": hashlib.sha256(snapshot_bytes).hexdigest(),
+        }
+        anchor["digest"] = hashlib.sha256(canonical_json(anchor)).hexdigest()
+        snapshot_path = tmp_path / "trust-state.json"
+        snapshot_path.write_bytes(snapshot_bytes)
+        anchor_path = Path(str(snapshot_path) + ".anchor")
+        anchor_path.write_bytes(
+            _json.dumps(anchor, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        )
+        snapshot_path.chmod(0o600)
+        anchor_path.chmod(0o600)
+
+        from runtime.remote_access.authorization import TrustState as TS
+        from runtime.remote_access.identity import ConnectorIdentity
+
+        identity = ConnectorIdentity(
+            tenant_id="diy", home_id="home-a", connector_id="connector-a"
+        )
+        default = TS(connector_identity=identity, pairing_epoch=0, revocation_epoch=0)
+        loaded = AtomicFileTrustStateStore(snapshot_path, default).load()
+        assert loaded.devices["legacy-device"].credential_digest is None
+        assert loaded.pending_pairings == {}
+
+    def test_invalid_credential_digest_fails_closed(self, tmp_path) -> None:
+        from datetime import timedelta
+
+        from runtime.remote_access.identity import ConnectorIdentity
+
+        identity = ConnectorIdentity(
+            tenant_id="diy", home_id="home-a", connector_id="connector-a"
+        )
+        state = TrustState(connector_identity=identity, pairing_epoch=0, revocation_epoch=0)
+        state.apply_pairing(
+            DeviceAuthorization(
+                device_id="macbook-pro",
+                tenant_id="diy",
+                home_id="home-a",
+                authorization_epoch=1,
+                expires_at=NOW() + timedelta(days=365),
+                credential_digest="not-a-sha256",  # wrong shape
+            )
+        )
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", state)
+        store.save(state)
+        with pytest.raises(CorruptTrustStateError):
+            AtomicFileTrustStateStore(tmp_path / "trust-state.json", state).load()
+
+    def test_invalid_pending_pairing_digest_fails_closed(self, tmp_path) -> None:
+        from datetime import timedelta
+
+        from runtime.remote_access.authorization import PendingPairing
+        from runtime.remote_access.identity import ConnectorIdentity
+
+        identity = ConnectorIdentity(
+            tenant_id="diy", home_id="home-a", connector_id="connector-a"
+        )
+        state = TrustState(connector_identity=identity, pairing_epoch=0, revocation_epoch=0)
+        state.pending_pairings["phone"] = PendingPairing(
+            code_digest="short", expires_at=NOW() + timedelta(minutes=5)
+        )
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", state)
+        store.save(state)
+        with pytest.raises(CorruptTrustStateError):
+            AtomicFileTrustStateStore(tmp_path / "trust-state.json", state).load()
+
+
+class TestInterProcessTransaction:
+    """TASK-6045 finding-1 regressions: the ceremony mutation boundary is an
+    OWNER-ONLY INTER-PROCESS transaction (fcntl.flock) covering load,
+    generation validation, snapshot publication, and anchor publication as
+    one serialized mutation boundary — never a per-process threading lock or
+    a check-then-save optimistic guard.
+
+    Lock-path audit (write surfaces): the lock file lives beside the
+    snapshot (``<state>.lock``), owner-only (0600, directory 0700), is
+    deliberately NEVER unlinked (flock is bound to the open file description;
+    unlinking a held lock file would let a second inode be locked
+    concurrently), and has no stale-lock recovery need: the kernel releases
+    the flock automatically when the holder's descriptor closes or its
+    process dies (tested below). A bounded acquire fails closed with
+    ``StateStoreError`` on contention — the mutation is not applied.
+    """
+
+    def test_transaction_publishes_on_normal_exit(self, tmp_path) -> None:
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        with store.transaction() as tx:
+            tx.state.devices["device-a"] = _paired_state().devices["device-a"]
+        fresh = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        loaded = fresh.load()
+        assert "device-a" in loaded.devices
+        assert fresh.anchored_generation() == 1
+
+    def test_transaction_abort_publishes_nothing(self, tmp_path) -> None:
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        with store.transaction() as tx:
+            tx.state.devices["device-a"] = _paired_state().devices["device-a"]
+            tx.abort()
+        # No pair was written: a fresh store still sees the first-run default
+        # and the anchor/generation stay absent (deny path has NO side effect,
+        # not even a generation bump).
+        fresh = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        assert fresh.load().devices == {}
+        assert fresh.anchored_generation() is None
+
+    def test_transaction_exception_publishes_nothing(self, tmp_path) -> None:
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        with pytest.raises(RuntimeError):
+            with store.transaction() as tx:
+                tx.state.devices["device-a"] = _paired_state().devices["device-a"]
+                raise RuntimeError("boom")
+        fresh = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        assert fresh.load().devices == {}
+        assert fresh.anchored_generation() is None
+
+    def test_transaction_commit_before_raise_persists_deny_side(self, tmp_path) -> None:
+        """The revoke/remove RevocationIncomplete path must persist the
+        applied epoch BEFORE surfacing the failure (deny side is the safe
+        side and must be durable)."""
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        with pytest.raises(RuntimeError):
+            with store.transaction() as tx:
+                tx.state.revocation_epoch = 1
+                tx.commit()
+                raise RuntimeError("closure imperfect")
+        fresh = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        assert fresh.load().revocation_epoch == 1
+
+    def test_transaction_generations_are_monotonic(self, tmp_path) -> None:
+        store = AtomicFileTrustStateStore(tmp_path / "trust-state.json", _fresh_state())
+        for expected in (1, 2, 3):
+            with store.transaction() as tx:
+                tx.state.revocation_epoch = expected
+            assert store.anchored_generation() == expected
+
+    def test_lock_file_owner_only_and_never_unlinked(self, tmp_path) -> None:
+        import os
+
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with store.transaction() as tx:
+            tx.state.revocation_epoch = 1
+        lock_path = tmp_path / "trust-state.json.lock"
+        assert lock_path.exists(), "the transaction must create the owner-only lock file"
+        mode = stat.S_IMODE(lock_path.stat().st_mode)
+        assert mode & 0o077 == 0, f"lock file permissions too loose: {mode:o}"
+        assert stat.S_IMODE(tmp_path.stat().st_mode) & 0o077 == 0
+        assert lock_path.stat().st_size == 0
+        # The lock file is a persistent inode, NOT part of the state pair:
+        # load()/anchored_generation() ignore it, and factory-reset must not
+        # need to delete it (deleting a held lock file would break exclusion).
+        assert store.anchored_generation() == 1
+        with store.transaction() as tx:
+            tx.state.revocation_epoch = 2
+        assert lock_path.exists()
+
+    def test_contended_lock_fails_closed_with_timeout(self, tmp_path) -> None:
+        """While another open file description holds the flock, a bounded
+        transaction acquire fails closed (StateStoreError) and NO state is
+        written; after the holder releases, the same mutation succeeds."""
+        import fcntl
+        import os
+
+        path = tmp_path / "trust-state.json"
+        lock_path = tmp_path / "trust-state.json.lock"
+        store = AtomicFileTrustStateStore(path, _fresh_state(), lock_timeout=0.3)
+        holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            with pytest.raises(StateStoreError, match="contended"):
+                with store.transaction() as tx:
+                    tx.state.revocation_epoch = 1
+            fresh = AtomicFileTrustStateStore(path, _fresh_state())
+            assert fresh.load().revocation_epoch == 0
+            assert fresh.anchored_generation() is None
+        finally:
+            fcntl.flock(holder, fcntl.LOCK_UN)
+            os.close(holder)
+        # The holder released: the transaction now succeeds (fail closed on
+        # contention, never a permanently wedged store).
+        with store.transaction() as tx:
+            tx.state.revocation_epoch = 1
+        assert AtomicFileTrustStateStore(path, _fresh_state()).load().revocation_epoch == 1
+
+    def test_save_serializes_under_the_same_interprocess_lock(self, tmp_path) -> None:
+        """A plain ``save`` (install/test writer) acquires the SAME lock as a
+        transaction — a direct save cannot interleave with a transaction."""
+        import fcntl
+        import os
+
+        path = tmp_path / "trust-state.json"
+        lock_path = tmp_path / "trust-state.json.lock"
+        store = AtomicFileTrustStateStore(path, _fresh_state(), lock_timeout=0.3)
+        holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            with pytest.raises(StateStoreError, match="contended"):
+                store.save(_paired_state())
+        finally:
+            fcntl.flock(holder, fcntl.LOCK_UN)
+            os.close(holder)
+        store.save(_paired_state())
+        assert AtomicFileTrustStateStore(path, _fresh_state()).load().devices
+
+    def test_stale_lock_auto_recovered_after_holder_crash(self, tmp_path) -> None:
+        """A holder that dies (crash/outage) releases the flock automatically:
+        the kernel drops the lock when the descriptor closes at process exit —
+        there is no stale-lock recovery procedure to perform, and a subsequent
+        transaction succeeds immediately (fail open to the next legitimate
+        writer, never wedged)."""
+        import subprocess
+        import sys
+
+        path = tmp_path / "trust-state.json"
+        lock_path = tmp_path / "trust-state.json.lock"
+        crash = (
+            "import fcntl, os, sys\n"
+            f"fd = os.open({str(lock_path)!r}, os.O_CREAT | os.O_RDWR, 0o600)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+            "os._exit(0)\n"
+        )
+        subprocess.run([sys.executable, "-c", crash], check=True, timeout=30)
+        store = AtomicFileTrustStateStore(path, _fresh_state(), lock_timeout=2.0)
+        with store.transaction() as tx:
+            tx.state.revocation_epoch = 1
+        assert AtomicFileTrustStateStore(path, _fresh_state()).load().revocation_epoch == 1
+
+
+class TestFirstRunTransactionIsolation:
+    """TASK-6047 [HIGH] regressions: the FIRST-RUN transaction working copy
+    must never alias the store's mutable ``_default_state``. An abort or an
+    exception in the transaction body discards the mutation — a later
+    ``load()`` OR a following transaction on the SAME store observes none of
+    the discarded device/pairing/revocation state, no snapshot/anchor pair is
+    published, and a later valid commit still works and is loadable.
+
+    The pre-existing abort/exception tests construct a FRESH store and only
+    assert the persisted pair is untouched — they never observe the leaked
+    mutation inside ``self._default_state``. These tests use the SAME store
+    (the reviewer's probe shape) so the alias is exercised.
+    """
+
+    @staticmethod
+    def _no_pair_published(path: Path) -> None:
+        assert not path.exists(), "abort/exception must publish no snapshot"
+        assert not _anchor_path(path).exists(), "abort/exception must publish no anchor"
+
+    @staticmethod
+    def _device(device_id: str = "ghost") -> DeviceAuthorization:
+        return DeviceAuthorization(
+            device_id=device_id,
+            tenant_id="tenant-a",
+            home_id="home-a",
+            authorization_epoch=1,
+            expires_at=NOW() + timedelta(days=30),
+        )
+
+    def test_first_run_abort_discards_device_and_later_commit_works(self, tmp_path) -> None:
+        """A first-run abort of a device mutation must not leak into the SAME
+        store's later load()/transactions, and a later valid commit must
+        still publish a loadable pair (the store is never wedged)."""
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with store.transaction() as tx:
+            tx.state.devices["ghost"] = self._device()
+            tx.abort()
+        self._no_pair_published(path)
+        # Same store, no fresh-store masking: the discarded mutation is gone.
+        assert store.load().devices == {}
+        assert store.anchored_generation() is None
+        # A following transaction on the same store observes none of it.
+        with store.transaction() as tx:
+            assert "ghost" not in tx.state.devices
+            tx.state.revocation_epoch = 1
+        # The later valid commit is durable and loadable by a fresh store.
+        fresh = AtomicFileTrustStateStore(path, _fresh_state())
+        loaded = fresh.load()
+        assert loaded.revocation_epoch == 1
+        assert "ghost" not in loaded.devices
+        assert fresh.anchored_generation() == 1
+
+    def test_first_run_exception_discards_device(self, tmp_path) -> None:
+        """A first-run exception after a device mutation must discard it on
+        the same store (no leak, no published pair)."""
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with pytest.raises(RuntimeError):
+            with store.transaction() as tx:
+                tx.state.devices["ghost"] = self._device()
+                raise RuntimeError("boom")
+        self._no_pair_published(path)
+        assert store.load().devices == {}
+        with store.transaction() as tx:
+            assert "ghost" not in tx.state.devices
+
+    def test_first_run_abort_discards_pending_pairing(self, tmp_path) -> None:
+        """A first-run abort of a pairing-code mutation (pending_pairings)
+        must not leak into the same store."""
+        from runtime.remote_access.authorization import PendingPairing
+
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with store.transaction() as tx:
+            tx.state.pending_pairings["phone"] = PendingPairing(
+                code_digest="a" * 64,
+                expires_at=NOW() + timedelta(minutes=5),
+            )
+            tx.abort()
+        self._no_pair_published(path)
+        assert store.load().pending_pairings == {}
+        with store.transaction() as tx:
+            assert "phone" not in tx.state.pending_pairings
+
+    def test_first_run_exception_discards_pending_pairing(self, tmp_path) -> None:
+        """A first-run exception after a pairing-code mutation must discard
+        it on the same store."""
+        from runtime.remote_access.authorization import PendingPairing
+
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with pytest.raises(RuntimeError):
+            with store.transaction() as tx:
+                tx.state.pending_pairings["phone"] = PendingPairing(
+                    code_digest="a" * 64,
+                    expires_at=NOW() + timedelta(minutes=5),
+                )
+                raise RuntimeError("boom")
+        self._no_pair_published(path)
+        assert store.load().pending_pairings == {}
+        with store.transaction() as tx:
+            assert "phone" not in tx.state.pending_pairings
+
+    def test_first_run_abort_discards_revocation(self, tmp_path) -> None:
+        """A first-run abort of a revocation mutation (epoch + revoked flag)
+        must not leak into the same store."""
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with store.transaction() as tx:
+            tx.state.devices["device-a"] = self._device("device-a")
+            tx.state.revocation_epoch = 1
+            for dev in tx.state.devices.values():
+                object.__setattr__(dev, "revoked", True)
+            tx.abort()
+        self._no_pair_published(path)
+        loaded = store.load()
+        assert loaded.devices == {}
+        assert loaded.revocation_epoch == 0
+        with store.transaction() as tx:
+            assert tx.state.revocation_epoch == 0
+            assert tx.state.devices == {}
+
+    def test_first_run_exception_discards_revocation(self, tmp_path) -> None:
+        """A first-run exception after a revocation mutation must discard it
+        on the same store."""
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with pytest.raises(RuntimeError):
+            with store.transaction() as tx:
+                tx.state.revocation_epoch = 1
+                raise RuntimeError("boom")
+        self._no_pair_published(path)
+        loaded = store.load()
+        assert loaded.revocation_epoch == 0
+        assert loaded.devices == {}
+        with store.transaction() as tx:
+            assert tx.state.revocation_epoch == 0
+
+    def test_persisted_abort_does_not_leak_into_same_store(self, tmp_path) -> None:
+        """After a first commit, an abort of a later transaction must also
+        not leak into the same store's next load (isolation holds in the
+        persisted path too)."""
+        path = tmp_path / "trust-state.json"
+        store = AtomicFileTrustStateStore(path, _fresh_state())
+        with store.transaction() as tx:
+            tx.state.devices["device-a"] = self._device("device-a")
+        with store.transaction() as tx:
+            tx.state.devices["ghost"] = self._device()
+            tx.abort()
+        loaded = store.load()
+        assert "device-a" in loaded.devices
+        assert "ghost" not in loaded.devices
+        assert store.anchored_generation() == 1
