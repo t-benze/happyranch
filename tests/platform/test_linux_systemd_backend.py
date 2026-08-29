@@ -77,8 +77,20 @@ def _kill_fake_processes():
     _FAKE_PROCESSES.clear()
 
 
-def _fake_launch_ok(backend: LinuxSystemdBackend, *, cg: str) -> None:
-    """Make ``launch`` succeed deterministically without a real scope."""
+def _fake_launch_ok(
+    backend: LinuxSystemdBackend,
+    *,
+    cg: str,
+    limits_ok: bool = True,
+) -> None:
+    """Make ``launch`` succeed deterministically without a real scope.
+
+    By default the Slice C applied-envelope verification is stubbed to pass
+    (``limits_ok=True``); pass ``limits_ok=False`` to exercise the fail-
+    closed mismatch path. The real verification is exercised by the real
+    integration suites (probe-gated) and by ``_session_limits_applied``
+    unit tests with fake cgroup file reads.
+    """
 
     def systemd_run_scope(unit, slice_name, argv, **kwargs):
         proc = subprocess.Popen(
@@ -95,9 +107,13 @@ def _fake_launch_ok(backend: LinuxSystemdBackend, *, cg: str) -> None:
     def start_identity(pid):
         return "boot-1"
 
+    def session_limits_applied(cg_path, policy):
+        return (limits_ok, "envelope-applied" if limits_ok else "stub-mismatch")
+
     backend._systemd_run_scope = systemd_run_scope  # type: ignore[method-assign]
     backend._wait_for_cgroup = wait_for_cgroup  # type: ignore[method-assign]
     backend._census.start_identity = start_identity  # type: ignore[method-assign]
+    backend._session_limits_applied = session_limits_applied  # type: ignore[method-assign]
 
 
 def _running(backend: LinuxSystemdBackend, token: str, pid: int = 9000) -> RunningHandle:
@@ -300,6 +316,388 @@ def test_launch_verifies_scope_membership():
     with backend._launched_lock:
         state = backend._launched[pending.token]
     assert state.cgroup == "/user.slice/happyranch.slice/test.scope"
+
+
+# ── Slice C: enforcement property emission + applied verification ────
+
+
+def _capture_launch_properties(backend: LinuxSystemdBackend, request) -> list:
+    """Launch with a fake systemd-run that records the requested properties."""
+    captured: list = []
+
+    def systemd_run_scope(unit, slice_name, argv, **kwargs):
+        captured.append(kwargs.get("properties", ()))
+        proc = subprocess.Popen(
+            ["sleep", "300"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        _FAKE_PROCESSES.append(proc)
+        return proc
+
+    def wait_for_cgroup(unit, proc, timeout=None):
+        return "/user.slice/happyranch.slice/test.scope"
+
+    def session_limits_applied(cg_path, policy):
+        return (True, "envelope-applied")
+
+    backend._systemd_run_scope = systemd_run_scope  # type: ignore[method-assign]
+    backend._wait_for_cgroup = wait_for_cgroup  # type: ignore[method-assign]
+    backend._census.start_identity = lambda pid: "boot-1"  # type: ignore[method-assign]
+    backend._session_limits_applied = session_limits_applied  # type: ignore[method-assign]
+    pending = backend.prepare(request, _policy())
+    backend.launch(pending, LaunchSpec(argv=("sleep", "5")))
+    return captured
+
+
+def _task_request():
+    from runtime.orchestrator.host_supervisor import AdmissionRequest
+
+    return AdmissionRequest(
+        org="test", invocation_kind="task", logical_id="task-1",
+        executor_profile="claude",
+    )
+
+
+def test_launch_emits_exact_task_enforcement_properties():
+    """Slice C: a real session scope for a task invocation emits the exact
+    founder-approved envelope — MemoryHigh=14G, MemoryMax=24G, TasksMax=1024 —
+    and deliberately NO CPUQuota property."""
+    backend = LinuxSystemdBackend()
+    captured = _capture_launch_properties(backend, _task_request())
+    assert len(captured) == 1
+    props = dict(captured[0])
+    assert props == {
+        "MemoryHigh": str(14 * 1024**3),
+        "MemoryMax": str(24 * 1024**3),
+        "TasksMax": "1024",
+    }
+    assert "CPUQuota" not in props
+    assert all("CPU" not in k for k in props)
+
+
+def test_launch_emits_exact_light_enforcement_properties():
+    """Slice C: thread/dream/wake/schedule scopes emit the light envelope —
+    MemoryHigh=2G, MemoryMax=4G (the founder ruling fixes MemoryMax at
+    exactly 4G), TasksMax=1024 — and no CPUQuota."""
+    for kind in ("thread", "dream", "wake", "schedule"):
+        backend = LinuxSystemdBackend()
+        from runtime.orchestrator.host_supervisor import AdmissionRequest
+
+        request = AdmissionRequest(
+            org="test", invocation_kind=kind, logical_id=f"{kind}-1",
+            executor_profile="pi",
+        )
+        captured = _capture_launch_properties(backend, request)
+        props = dict(captured[0])
+        assert props == {
+            "MemoryHigh": str(2 * 1024**3),
+            "MemoryMax": str(4 * 1024**3),
+            "TasksMax": "1024",
+        }, kind
+        assert "CPUQuota" not in props
+
+
+def test_launch_unknown_kind_emits_light_envelope_never_task():
+    """A future/unknown invocation kind is conservatively contained: it gets
+    the light envelope — never the task-sized envelope."""
+    backend = LinuxSystemdBackend()
+    from runtime.orchestrator.host_supervisor import AdmissionRequest
+
+    request = AdmissionRequest(
+        org="test", invocation_kind="mystery-kind", logical_id="m-1",
+        executor_profile="claude",
+    )
+    captured = _capture_launch_properties(backend, request)
+    props = dict(captured[0])
+    assert props == {
+        "MemoryHigh": str(2 * 1024**3),
+        "MemoryMax": str(4 * 1024**3),
+        "TasksMax": "1024",
+    }
+    assert props["MemoryMax"] != str(24 * 1024**3)
+
+
+def test_launch_applied_limits_mismatch_fails_closed():
+    """A scope whose cgroup did not actually apply the envelope is a
+    containment failure: launch raises BackendLaunchError (never a silent
+    best-effort claim of guaranteed limits)."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg", limits_ok=False)
+    _install_fake_run(backend, lambda argv: (0, ""))
+    pending = backend.prepare(_request(), _policy())
+    with pytest.raises(BackendLaunchError, match="did not apply the session enforcement envelope"):
+        backend.launch(pending, LaunchSpec(argv=("sleep", "5")))
+
+
+def test_session_limits_applied_verifies_cgroup_files_exactly():
+    """The applied-envelope verification compares the cgroup files
+    (memory.high / memory.max / pids.max) byte-for-byte with the policy; a
+    missing, partial or wrong value fails (fail-closed)."""
+    from runtime.platform.enforcement_policy import (
+        LIGHT_ENFORCEMENT_POLICY,
+        TASK_ENFORCEMENT_POLICY,
+    )
+
+    backend = LinuxSystemdBackend()
+    _install_fake_read_file(
+        backend,
+        {
+            "memory.high": str(2 * 1024**3),
+            "memory.max": str(4 * 1024**3),
+            "pids.max": "1024",
+        },
+    )
+    ok, evidence = backend._session_limits_applied("/cg", LIGHT_ENFORCEMENT_POLICY)
+    assert ok is True
+    assert evidence == "envelope-applied"
+    # Wrong memory.high (soft throttle mismatch) fails.
+    _install_fake_read_file(
+        backend, {"memory.high": str(1), "memory.max": str(4 * 1024**3), "pids.max": "1024"}
+    )
+    ok, evidence = backend._session_limits_applied("/cg", LIGHT_ENFORCEMENT_POLICY)
+    assert ok is False
+    assert "memory.high" in evidence
+    # Missing files fail (never silently claimed).
+    _install_fake_read_file(backend, {})
+    ok, evidence = backend._session_limits_applied("/cg", LIGHT_ENFORCEMENT_POLICY)
+    assert ok is False
+    assert "memory.high" in evidence and "pids.max" in evidence
+    # cpu.max is NOT part of the session verification (no CPUQuota emitted).
+    assert "cpu.max" not in evidence
+    # The task envelope verifies against its own exact values.
+    _install_fake_read_file(
+        backend,
+        {
+            "memory.high": str(14 * 1024**3),
+            "memory.max": str(24 * 1024**3),
+            "pids.max": "1024",
+        },
+    )
+    ok, evidence = backend._session_limits_applied("/cg", TASK_ENFORCEMENT_POLICY)
+    assert ok is True
+
+
+def test_session_limits_applied_rejects_suffix_extra_tokens_and_mismatch(tmp_path):
+    """The applied-envelope verification compares the ENTIRE normalized
+    cgroup file value against the expected value (fail-closed). A suffix
+    appended to an otherwise-correct value, an extra token after it, or a
+    plain wrong value must all fail for memory.high, memory.max and
+    pids.max — the old token-prefix comparison silently accepted the first
+    two. The kernel's real file shape (value + trailing newline) still
+    verifies: ``_read_file`` strips outer whitespace, matching cgroup v2
+    file semantics."""
+    from runtime.platform.enforcement_policy import LIGHT_ENFORCEMENT_POLICY
+
+    backend = LinuxSystemdBackend()
+    backend._cgroup_root = os.fspath(tmp_path)
+    cgdir = tmp_path / "cg"
+    cgdir.mkdir()
+    base = {
+        "memory.high": str(2 * 1024**3),
+        "memory.max": str(4 * 1024**3),
+        "pids.max": "1024",
+    }
+
+    def write(files):
+        for name, value in files.items():
+            (cgdir / name).write_text(value, encoding="utf-8")
+
+    write(base)
+    ok, evidence = backend._session_limits_applied("/cg", LIGHT_ENFORCEMENT_POLICY)
+    assert ok is True
+    assert evidence == "envelope-applied"
+    for name in ("memory.high", "memory.max", "pids.max"):
+        # Suffix appended to the exact value fails.
+        write({name: base[name] + "junk"})
+        ok, evidence = backend._session_limits_applied("/cg", LIGHT_ENFORCEMENT_POLICY)
+        assert ok is False and name in evidence, f"suffix {name}: {evidence}"
+        # Extra token after the exact value fails.
+        write({name: base[name] + " 999"})
+        ok, evidence = backend._session_limits_applied("/cg", LIGHT_ENFORCEMENT_POLICY)
+        assert ok is False and name in evidence, f"extra-token {name}: {evidence}"
+        # Plain value mismatch fails.
+        write({name: str(int(base[name]) + 1)})
+        ok, evidence = backend._session_limits_applied("/cg", LIGHT_ENFORCEMENT_POLICY)
+        assert ok is False and name in evidence, f"mismatch {name}: {evidence}"
+    # The kernel's real file shape (value + trailing newline) verifies.
+    write({name: base[name] + "\n" for name in base})
+    ok, evidence = backend._session_limits_applied("/cg", LIGHT_ENFORCEMENT_POLICY)
+    assert ok is True
+
+
+class _ExitedProc:
+    """A fake launched process that has already exited (returncode set)."""
+
+    returncode = 0
+    pid = 424242
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        # Real Popen.kill() no-ops once the process is reaped (returncode is
+        # set), matching the fast-exit semantics this fake models.
+        return None
+
+
+def _install_fast_exit(backend, systemctl_script):
+    """Fast-exit launch fakes: systemd-run returns an already-exited proc,
+    ``_wait_for_cgroup`` resolves nothing (the process exited), and the
+    systemctl seam answers ControlGroup / stop per *systemctl_script*.
+    Returns the recorded systemctl call log."""
+    calls: list[list[str]] = []
+
+    def run(argv, timeout=10.0):
+        calls.append(list(argv))
+        return systemctl_script(list(argv))
+
+    backend._run = run  # type: ignore[method-assign]
+    backend._systemd_run_scope = (  # type: ignore[method-assign]
+        lambda unit, slice_name, argv, **kwargs: _ExitedProc()
+    )
+    backend._wait_for_cgroup = lambda unit, proc, timeout=None: None  # type: ignore[method-assign]
+    backend._start_exit_capture = lambda state, proc: None  # type: ignore[method-assign]
+    return calls
+
+
+def test_launch_fast_exit_fails_closed_when_scope_already_collected():
+    """A target that exits before ``_wait_for_cgroup`` resolves the scope
+    must NOT report a normal RunningHandle: an enforced session is never
+    reported as launched without authoritative exact verification of
+    MemoryHigh/MemoryMax/TasksMax. When the transient scope is already
+    collected (no ControlGroup evidence), launch fails closed AFTER issuing
+    the scope stop — the caller abandons the pending handle (admission
+    released), freezes SPAWN_FAILURE, and no ``on_started`` callback or
+    receipt was published (cleanup-before-release, no residue)."""
+    backend = LinuxSystemdBackend()
+
+    def systemctl(argv):
+        # The scope is gone: no ControlGroup is queryable; stop is a no-op.
+        return (1, "") if "show" in argv else (0, "")
+
+    calls = _install_fast_exit(backend, systemctl)
+
+    def must_not_verify(cg, policy):
+        raise AssertionError("_session_limits_applied must not run without a cgroup")
+
+    backend._session_limits_applied = must_not_verify  # type: ignore[method-assign]
+    pending = backend.prepare(_request(), _policy())
+    with pytest.raises(
+        BackendLaunchError,
+        match="exited before its session enforcement envelope could be verified",
+    ):
+        backend.launch(pending, LaunchSpec(argv=("sh", "-c", "exit 0")))
+    # Failure cleanup contract: the scope stop was issued before the raise.
+    assert any("stop" in argv for argv in calls)
+    # Verification was not skipped by returning a handle — it could not be
+    # obtained, so launch failed closed instead.
+    assert all("envelope-applied" not in argv for argv in calls)
+
+
+def test_launch_fast_exit_fails_closed_even_when_cgroup_still_available(tmp_path):
+    """THE exact reviewer fast-exit case: the target exits before
+    ``_wait_for_cgroup`` resolves, yet the transient scope's ControlGroup is
+    STILL queryable and memory.high / memory.max / pids.max STILL hold the
+    exact envelope. The launch branch for an already-exited process is
+    TERMINAL and FAIL-CLOSED: the exact applied-limits verification still
+    runs through the real ``_read_file`` path (never skipped — its outcome
+    is preserved as diagnostic evidence in the error), then the scope is
+    stopped, the dead process killed, and BackendLaunchError is raised.
+    A successful RunningHandle is NEVER returned for an exited process."""
+    backend = LinuxSystemdBackend()
+    backend._cgroup_root = os.fspath(tmp_path)
+    cgdir = tmp_path / "cg"
+    cgdir.mkdir()
+    light = {
+        "memory.high": str(2 * 1024**3),
+        "memory.max": str(4 * 1024**3),
+        "pids.max": "1024",
+    }
+    for name, value in light.items():
+        (cgdir / name).write_text(value + "\n", encoding="utf-8")
+
+    def systemctl(argv):
+        # The scope still exists: ControlGroup resolves /cg; stop is a no-op.
+        if "show" in argv:
+            return (0, "/cg")
+        return (0, "")
+
+    calls = _install_fast_exit(backend, systemctl)
+    pending = backend.prepare(_request(), _policy())
+    with pytest.raises(
+        BackendLaunchError,
+        match="exited before its session enforcement envelope could be verified",
+    ) as excinfo:
+        backend.launch(pending, LaunchSpec(argv=("sh", "-c", "exit 0")))
+    # The exact envelope was verified (diagnostic evidence preserved) yet the
+    # launch still failed closed — verification is never skipped AND never
+    # converts an exited target into a successful handle.
+    assert "exact session envelope applied" in str(excinfo.value)
+    # Scope/process cleanup was issued before the raise.
+    assert any("stop" in argv for argv in calls)
+
+
+def test_launch_fast_exit_fails_closed_on_envelope_mismatch(tmp_path):
+    """A fast-exit target whose resolvable scope did NOT apply the exact
+    envelope is a containment failure: launch raises BackendLaunchError
+    after issuing the scope stop (never a silent unverified handle). The
+    mismatch detail is preserved as diagnostic evidence in the error."""
+    backend = LinuxSystemdBackend()
+    backend._cgroup_root = os.fspath(tmp_path)
+    cgdir = tmp_path / "cg"
+    cgdir.mkdir()
+    (cgdir / "memory.high").write_text("1", encoding="utf-8")  # wrong soft limit
+    (cgdir / "memory.max").write_text(str(4 * 1024**3), encoding="utf-8")
+    (cgdir / "pids.max").write_text("1024", encoding="utf-8")
+
+    def systemctl(argv):
+        if "show" in argv:
+            return (0, "/cg")
+        return (0, "")
+
+    calls = _install_fast_exit(backend, systemctl)
+    pending = backend.prepare(_request(), _policy())
+    with pytest.raises(
+        BackendLaunchError,
+        match="exited before its session enforcement envelope could be verified",
+    ) as excinfo:
+        backend.launch(pending, LaunchSpec(argv=("sh", "-c", "exit 0")))
+    assert "session envelope NOT applied" in str(excinfo.value)
+    assert "memory.high" in str(excinfo.value)
+    assert any("stop" in argv for argv in calls)
+
+def test_prepare_and_launch_carry_receipt_attribution():
+    """The bounded attribution (invocation_kind + executor_profile) sourced
+    from the AdmissionRequest rides the pending/running handles so the
+    finish-time receipt is attributed honestly."""
+    backend = LinuxSystemdBackend()
+    pending = backend.prepare(_request(), _policy())
+    assert pending.invocation_kind == "schedule"
+    assert pending.executor_profile == "claude"
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, ""))
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "5")))
+    assert running.invocation_kind == "schedule"
+    assert running.executor_profile == "claude"
+
+
+def test_finish_attributes_receipt_from_running_handle():
+    """The Linux finish receipt carries the bounded attribution so operator
+    surfaces can attribute receipts to a producer kind + executor profile."""
+    backend = LinuxSystemdBackend()
+    _fake_launch_ok(backend, cg="/cg")
+    _install_fake_run(backend, lambda argv: (0, ""))
+    _install_fake_read_file(
+        backend, {"memory.current": "0", "pids.current": "0", "cpu.stat": "usage_usec 0\n"}
+    )
+    pending = backend.prepare(_request(), _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "5")))
+    _install_fake_run(backend, lambda argv: (0, "inactive" if "is-active" in argv else ""))
+    receipt = backend.finish(running, "success", grace_seconds=0.1)
+    assert receipt is not None
+    assert receipt.invocation_kind == "schedule"
+    assert receipt.executor_profile == "claude"
 
 
 # ── finish: ordering and status mapping (deterministic) ──────────────
@@ -971,6 +1369,7 @@ def test_exit_watcher_captures_live_and_final_values():
 
     backend._systemd_run_scope = systemd_run_scope  # type: ignore[method-assign]
     backend._wait_for_cgroup = lambda unit, proc, timeout=None: "/cg"  # type: ignore[method-assign]
+    backend._session_limits_applied = lambda cg_path, policy: (True, "envelope-applied")  # type: ignore[method-assign]
     reads = []
     # Real fds (from /dev/null) so the watcher's close of the "opened"
     # counter files never touches pytest's stdio descriptors.
@@ -1070,6 +1469,7 @@ def test_watcher_capture_failure_is_contained():
 
     backend._systemd_run_scope = systemd_run_scope  # type: ignore[method-assign]
     backend._wait_for_cgroup = lambda unit, proc, timeout=None: "/cg"  # type: ignore[method-assign]
+    backend._session_limits_applied = lambda cg_path, policy: (True, "envelope-applied")  # type: ignore[method-assign]
 
     def boom(cg):
         raise RuntimeError("watcher boom")
@@ -1126,6 +1526,7 @@ def test_exit_watcher_old_kernel_shape_captures_memory_cpu_natural_exit():
 
     backend._systemd_run_scope = systemd_run_scope  # type: ignore[method-assign]
     backend._wait_for_cgroup = lambda unit, proc, timeout=None: "/cg"  # type: ignore[method-assign]
+    backend._session_limits_applied = lambda cg_path, policy: (True, "envelope-applied")  # type: ignore[method-assign]
     _devnull_fds = [os.open(os.devnull, os.O_RDONLY) for _ in range(2)]
 
     def fake_open(cg):
@@ -1174,6 +1575,7 @@ def test_exit_watcher_final_read_captures_terminal_window_growth():
 
     backend._systemd_run_scope = systemd_run_scope  # type: ignore[method-assign]
     backend._wait_for_cgroup = lambda unit, proc, timeout=None: "/cg"  # type: ignore[method-assign]
+    backend._session_limits_applied = lambda cg_path, policy: (True, "envelope-applied")  # type: ignore[method-assign]
     _devnull_fds = [os.open(os.devnull, os.O_RDONLY) for _ in range(3)]
 
     def fake_open(cg):
@@ -1235,6 +1637,7 @@ def test_exit_watcher_falls_back_to_waitid_when_pidfd_unavailable(monkeypatch):
 
     backend._systemd_run_scope = systemd_run_scope  # type: ignore[method-assign]
     backend._wait_for_cgroup = lambda unit, proc, timeout=None: "/cg"  # type: ignore[method-assign]
+    backend._session_limits_applied = lambda cg_path, policy: (True, "envelope-applied")  # type: ignore[method-assign]
     _devnull_fds = [os.open(os.devnull, os.O_RDONLY) for _ in range(3)]
 
     def fake_open(cg):
@@ -1414,6 +1817,7 @@ def test_exit_watcher_partial_final_read_records_per_counter_validity():
 
     backend._systemd_run_scope = systemd_run_scope  # type: ignore[method-assign]
     backend._wait_for_cgroup = lambda unit, proc, timeout=None: "/cg"  # type: ignore[method-assign]
+    backend._session_limits_applied = lambda cg_path, policy: (True, "envelope-applied")  # type: ignore[method-assign]
     _devnull_fds = [os.open(os.devnull, os.O_RDONLY) for _ in range(3)]
 
     def fake_open(cg):
@@ -1467,6 +1871,7 @@ def test_probe_process_peak_capability_tracks_pids_peak():
 
     backend._systemd_run_scope = lambda *a, **k: _FakeProc()
     backend._wait_for_cgroup = lambda unit, proc, timeout=None: "/cg"
+    backend._session_limits_applied = lambda cg_path, policy: (True, "envelope-applied")  # type: ignore[method-assign]
     backend._applied_limits = lambda cg: {
         "memory.max": True, "pids.max": True, "cpu.max": True,
     }
@@ -1581,6 +1986,72 @@ def _launch_sleep(backend, argv=("sleep", "60")) -> RunningHandle:
 
 
 @real_integration
+def test_launch_applies_task_enforcement_envelope_real(real_backend):
+    """Slice C real enforcement: a task session scope applies the exact
+    founder-approved envelope — MemoryHigh=14G / MemoryMax=24G /
+    TasksMax=1024 in the cgroup files — and the probe-only CPUQuota value
+    is never applied to a real session."""
+    from runtime.orchestrator.host_supervisor import AdmissionRequest
+
+    backend = real_backend
+    request = AdmissionRequest(
+        org="test", invocation_kind="task", logical_id="task-real-1",
+        executor_profile="claude",
+    )
+    pending = backend.prepare(request, _policy())
+    running = backend.launch(pending, LaunchSpec(argv=("sleep", "60")))
+    try:
+        assert running.invocation_kind == "task"
+        assert running.executor_profile == "claude"
+        cg = backend._proc_cgroup(running.root_pid)
+        assert cg is not None
+        assert backend._read_file(cg, "memory.high") == str(14 * 1024**3)
+        assert backend._read_file(cg, "memory.max") == str(24 * 1024**3)
+        assert backend._read_file(cg, "pids.max") == "1024"
+        # The probe-only CPUQuota (10% -> "10000 100000") must never land on
+        # a real session scope: cpu.max stays inherited ("max"/slice value)
+        # or is absent when the cpu controller is not enabled on this
+        # subtree — either way it is never the probe quota value.
+        cpu_max = backend._read_file(cg, "cpu.max")
+        if cpu_max is not None:
+            assert cpu_max.split()[0] != "10000"
+    finally:
+        receipt = backend.finish(running, "success", grace_seconds=3.0)
+        assert receipt.invocation_kind == "task"
+        assert receipt.executor_profile == "claude"
+        assert receipt.cleanup_status is CleanupStatus.CLEAN
+
+
+@real_integration
+def test_launch_applies_light_enforcement_envelope_real(real_backend):
+    """Slice C real enforcement: thread/dream/wake/schedule sessions apply
+    the light envelope — MemoryHigh=2G / MemoryMax=4G (exactly) /
+    TasksMax=1024 — verified on a real scope."""
+    from runtime.orchestrator.host_supervisor import AdmissionRequest
+
+    backend = real_backend
+    for kind in ("thread", "dream", "wake", "schedule"):
+        request = AdmissionRequest(
+            org="test", invocation_kind=kind, logical_id=f"{kind}-real-1",
+            executor_profile="pi",
+        )
+        pending = backend.prepare(request, _policy())
+        running = backend.launch(pending, LaunchSpec(argv=("sleep", "60")))
+        try:
+            assert running.invocation_kind == kind
+            cg = backend._proc_cgroup(running.root_pid)
+            assert cg is not None
+            assert backend._read_file(cg, "memory.high") == str(2 * 1024**3), kind
+            assert backend._read_file(cg, "memory.max") == str(4 * 1024**3), kind
+            assert backend._read_file(cg, "pids.max") == "1024", kind
+        finally:
+            receipt = backend.finish(running, "success", grace_seconds=3.0)
+            assert receipt.invocation_kind == kind
+            assert receipt.executor_profile == "pi"
+            assert receipt.cleanup_status is CleanupStatus.CLEAN
+
+
+@real_integration
 def test_launch_into_scope_real(real_backend):
     running = _launch_sleep(real_backend)
     try:
@@ -1627,9 +2098,14 @@ def test_finish_clean_success_with_surviving_descendant_real(real_backend):
 
 @real_integration
 def test_finish_nonzero_preserves_primary_reason_real(real_backend):
+    """A nonzero target exit preserves the primary reason through finish.
+    The target lives long enough for launch to verify the applied
+    enforcement envelope (Slice C — an instant exit fails closed at launch
+    and is covered by the deterministic fast-exit unit tests); the finish
+    receipt carries the primary reason with a CLEAN teardown."""
     pending = real_backend.prepare(_request(), _policy())
     running = real_backend.launch(
-        pending, LaunchSpec(argv=("sh", "-c", "exit 3"))
+        pending, LaunchSpec(argv=("sh", "-c", "sleep 60 & sleep 0.5; exit 3"))
     )
     deadline = time.monotonic() + 5
     while running.process.poll() is None and time.monotonic() < deadline:

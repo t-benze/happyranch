@@ -40,6 +40,10 @@ import threading
 from collections import Counter, deque
 from typing import TYPE_CHECKING, Any
 
+from runtime.platform.enforcement_policy import (
+    bounded_executor_profile,
+    bounded_invocation_kind,
+)
 from runtime.platform.session_backend import (
     MeasurementProvenance,
     Receipt,
@@ -116,12 +120,18 @@ class HostSessionStore:
             published_total = self._published_total
         by_terminal = Counter(r.terminal_reason for r in receipts)
         by_cleanup = Counter(r.cleanup_status.value for r in receipts)
+        # Attribution aggregate: keyed by the FIXED canonical invocation-kind
+        # vocabulary (unknown kinds fold into a single ``other`` bucket) —
+        # never by session/org/task identity and never a dynamic key per
+        # distinct raw value (THR-207 Slice C: no dynamic attribution keys).
+        by_invocation_kind = Counter(bounded_invocation_kind(r.invocation_kind) for r in receipts)
         durations = [r.cleanup_duration_seconds for r in receipts]
         return {
             "published_total": published_total,
             "window_size": len(receipts),
             "by_terminal_reason": dict(by_terminal),
             "by_cleanup_status": dict(by_cleanup),
+            "by_invocation_kind": dict(by_invocation_kind),
             "quiescent_count": sum(1 for r in receipts if r.quiescent),
             "with_residue_count": sum(1 for r in receipts if r.survivors),
             "cleanup_duration_seconds": {
@@ -185,6 +195,8 @@ def _summarize_receipt(receipt: Receipt) -> dict[str, Any]:
         "cleanup_duration_seconds": receipt.cleanup_duration_seconds,
         "quiescent": receipt.quiescent,
         "wall_time_seconds": receipt.wall_time_seconds,
+        "invocation_kind": bounded_invocation_kind(receipt.invocation_kind),
+        "executor_profile": bounded_executor_profile(receipt.executor_profile),
         "memory_peak_bytes": receipt.memory_peak_bytes,
         "memory_peak_provenance": receipt.memory_peak_provenance.value,
         "cpu_total_seconds": receipt.cpu_total_seconds,

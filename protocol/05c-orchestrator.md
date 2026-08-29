@@ -965,6 +965,26 @@ the existing operator surfaces without any schema change. Receipt aggregates
 duration, residue counts) and the residue admission gate/census ride the
 same block; publication failures are contained at the supervisor seam.
 
+**Slice C bounded enforcement + receipt attribution (THR-207).** Real
+supervised sessions apply the founder-approved **fixed initial Linux
+enforcement policy** (`runtime/platform/enforcement_policy.py`) — an
+immutable per-invocation envelope selected deterministically from the
+existing `AdmissionRequest.invocation_kind` and applied **only** by the
+healthy Linux systemd/cgroup-v2 capability backend: task sessions
+`MemoryHigh=14G` / `MemoryMax=24G` / `TasksMax=1024`; thread/dream/wake/
+schedule (and any unknown kind, conservatively) `MemoryHigh=2G` /
+`MemoryMax=4G` (exactly) / `TasksMax=1024`; **no `CPUQuota`** for real
+sessions (probe values stay probe-only). Exact byte properties are emitted
+at launch and **verified as applied** in the scope's cgroup (fail-closed on
+mismatch); selection is immutable across 429 retry/reacquire. macOS stays
+honestly capped/best-effort; passthrough/unsupported/degraded backends stay
+explicit about unavailable enforcement. Receipts carry bounded attribution
+(`invocation_kind` + redacted `executor_profile`) aggregated by the fixed
+canonical invocation-kind vocabulary (unknown kinds fold into one `other`
+bucket — no dynamic attribution keys); per-receipt attribution reaches only
+the authed `/metrics` recent window, never the unauthenticated `/health`
+(per-receipt detail stays dropped there).
+
 ### Timeout handling
 
 Blocked tasks don't wait forever:

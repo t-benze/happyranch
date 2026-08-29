@@ -76,11 +76,19 @@ class PassthroughBackend:
     # ── lifecycle ─────────────────────────────────────────────────
 
     def prepare(self, request, policy) -> PendingHandle:
-        """Reserve an opaque handle; no containment state is created."""
+        """Reserve an opaque handle; no containment state is created.
+
+        Carries the bounded receipt attribution (``invocation_kind`` /
+        ``executor_profile``) from the ``AdmissionRequest`` so the eventual
+        ``Receipt`` is attributed honestly on this no-enforcement backend
+        too (THR-207 Slice C).
+        """
         return PendingHandle(
             backend=_BACKEND_NAME,
             token=f"passthrough-{request.logical_id}",
             request_id=request.logical_id,
+            invocation_kind=request.invocation_kind,
+            executor_profile=request.executor_profile,
         )
 
     def launch(self, pending: PendingHandle, spec) -> RunningHandle:
@@ -96,6 +104,8 @@ class PassthroughBackend:
             root_pid=0,
             start_identity="",
             process=None,
+            invocation_kind=pending.invocation_kind,
+            executor_profile=pending.executor_profile,
         )
 
     def sample(self, running: RunningHandle) -> ResourceSample:
@@ -137,6 +147,8 @@ class PassthroughBackend:
             sample_gaps=(),
             enforcement_events=(),
             survivors=(),
+            invocation_kind=running.invocation_kind,
+            executor_profile=running.executor_profile,
         )
 
     def abandon(self, pending: PendingHandle) -> None:
