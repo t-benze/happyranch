@@ -1159,3 +1159,389 @@ def test_reply_exchange_close_reason_check_has_no_disable_reasons(tmp_path):
     ).fetchone()["sql"]
     assert "exchange_disabled" not in ddl
     assert "org_exchange_disabled" not in ddl
+
+
+# ---------------------------------------------------------------------------
+# TASK-6057 — post-slot catch-up for released deferrals whose live slot does
+# not cover the released range (reviewer TASK-6056 HIGH finding).
+#
+# Counterexample shape: a deferred pair owns a PRE-EXCHANGE running wake whose
+# immutable claimed range ends before open_seq; priority settles; grace (or
+# the 4h reaper) closes the exchange; the old wake then fails/timeouts. The
+# released deferral must NOT strand: exactly ONE range-covering post-slot
+# catch-up is minted when the blocking slot reaches a terminal outcome, and
+# the durable marker survives daemon restart.
+# ---------------------------------------------------------------------------
+
+
+def _pre_claim_deferred_scenario(
+    db: Database, *, priority_outcome: str = "decline",
+) -> str:
+    """Build the reviewer counterexample: seq 1 pre-exchange wake for CH
+    (consultant_head) claimed, immutable running range 1..1; seq 2 founder
+    mention @EM opens E with P={EM}, D={CH}; CH held, required -> 2; the
+    priority cohort's cascade fully terminalizes with ``priority_outcome``.
+    Returns CH's pre-exchange token."""
+    _seq1, arrivals = _arrival(db, recipients=[CH])
+    ch_token = next(a.invocation_token for a in arrivals
+                    if a.agent_name == CH)
+    claim = _claim(db, ch_token)
+    assert claim.running_through_seq == 1
+    _open_exchange_via_mention(db)   # seq 2: P={EM}, D={CH}
+    ch = _pair_row(db, "THR-001", CH)
+    assert int(ch["required_through_seq"]) == 2
+    assert ch["running_invocation_token"] == ch_token
+    _settle_cascade(db, "THR-001", EM, outcome=priority_outcome)
+    return ch_token
+
+
+def _close_via_grace(db: Database):
+    _backdate_exchange(db, "THR-001", last_activity_ago=timedelta(
+        seconds=EXCHANGE_GRACE_SECONDS + 1,
+    ))
+    return db.reaper_sweep_reply_exchanges()
+
+
+def _close_via_four_hours(db: Database):
+    _backdate_exchange(db, "THR-001", opened_ago=timedelta(
+        seconds=MAX_PRIORITY_WAIT_SECONDS + 1,
+    ))
+    return db.reaper_sweep_reply_exchanges()
+
+
+def _deferral(db: Database, agent: str):
+    return db._conn.execute(
+        "SELECT * FROM thread_exchange_deferrals "
+        "WHERE thread_id = 'THR-001' AND agent_name = ? ORDER BY exchange_id",
+        (agent,),
+    ).fetchall()
+
+
+def test_grace_closure_non_covering_old_wake_failed_mints_post_slot_catchup(
+    tmp_path,
+):
+    """Reviewer counterexample: closure reports the released deferral as
+    pending (never coalesced-into-a-covering-wake); the old wake FAILS; the
+    exactly-one range-covering catch-up is minted — no stranding."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db)
+    arrivals = _close_via_grace(db)
+    ex = db._conn.execute(
+        "SELECT * FROM thread_reply_exchange WHERE thread_id = 'THR-001'",
+    ).fetchone()
+    assert ex["state"] == "released"
+    assert ex["close_reason"] == "quiescence"
+    # No catch-up minted at closure: the old wake occupies the pair's single
+    # slot (at-most-one invariant). The deferral is durably marked pending.
+    assert all(a.invocation_token is None for a in arrivals)
+    ch = _pair_row(db, "THR-001", CH)
+    assert ch["running_invocation_token"] == ch_token  # old wake still live
+    drow = _deferral(db, CH)
+    assert len(drow) == 1
+    assert drow[0]["state"] == "released"
+    assert drow[0]["catchup_pending"] == 1
+    assert drow[0]["mint_token_prefix"] is None
+    pending_audits = [a for a in _exchange_audits(db)
+                      if a["action"] == "thread_deferral_catchup_pending"]
+    assert len(pending_audits) == 1
+    assert pending_audits[0]["payload"]["reason"] == "old_wake_does_not_cover"
+    # The old wake FAILS (a terminal outcome): the owed catch-up fires.
+    settlement = _settle(db, ch_token, outcome="failed")
+    assert settlement is not None
+    assert settlement.acknowledged_through_seq == 0
+    assert settlement.required_through_seq == 2
+    assert settlement.retry_required is False      # not stranded
+    assert settlement.follow_on_token is not None  # the owed catch-up
+    ch = _pair_row(db, "THR-001", CH)
+    assert ch["queued_invocation_token"] == settlement.follow_on_token
+    assert ch["running_invocation_token"] is None
+    assert int(ch["acknowledged_through_seq"]) == 0
+    assert int(ch["required_through_seq"]) == 2
+    # Durable marker consumed exactly once; the wake covers the full range.
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    minted_audits = [a for a in _exchange_audits(db)
+                     if a["action"] == "thread_deferral_catchup_minted"]
+    assert len(minted_audits) == 1
+    settled = [a for a in _wake_audits(db)
+               if a["action"] == "thread_reply_wake_settled"
+               and a["agent"] == CH][-1]
+    assert settled["payload"]["catchup_minted"] is True
+    assert settled["payload"]["retry_required"] is False
+    # At-most-one slot preserved throughout: exactly one queued wake now.
+    assert ch["queued_invocation_token"] and ch["running_invocation_token"] is None
+
+
+def test_grace_closure_non_covering_old_wake_timeout_mints_post_slot_catchup(
+    tmp_path,
+):
+    """Same counterexample with a TIMEOUT terminal outcome."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db)
+    _close_via_grace(db)
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    settlement = _settle(db, ch_token, outcome="timeout")
+    assert settlement is not None
+    assert settlement.retry_required is False
+    assert settlement.follow_on_token is not None
+    ch = _pair_row(db, "THR-001", CH)
+    assert ch["queued_invocation_token"] == settlement.follow_on_token
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+
+
+def test_grace_closure_non_covering_old_wake_reply_uses_natural_follow_on(
+    tmp_path,
+):
+    """Reply terminal outcome: the natural follow-on (2..2) IS the owed
+    catch-up — exactly one wake, marker consumed, no double mint."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db)
+    _close_via_grace(db)
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    settlement = _settle(db, ch_token, outcome="reply")
+    assert settlement.acknowledged_through_seq == 1   # claimed coverage only
+    assert settlement.retry_required is False
+    assert settlement.follow_on_token is not None     # 2..2 follow-on
+    ch = _pair_row(db, "THR-001", CH)
+    assert ch["queued_invocation_token"] == settlement.follow_on_token
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    minted = [a for a in _exchange_audits(db)
+              if a["action"] == "thread_deferral_catchup_minted"]
+    assert len(minted) == 1
+    # No second wake anywhere for CH.
+    created = [a for a in _wake_audits(db)
+               if a["action"] == "thread_reply_wake_created"
+               and a["agent"] == CH]
+    assert len(created) == 1  # only the closure-era wake at seq 1
+
+
+def test_grace_closure_non_covering_old_wake_decline_uses_natural_follow_on(
+    tmp_path,
+):
+    """Decline terminal outcome: same exactly-one semantics as reply."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db)
+    _close_via_grace(db)
+    settlement = _settle(db, ch_token, outcome="decline")
+    assert settlement.acknowledged_through_seq == 1
+    assert settlement.retry_required is False
+    assert settlement.follow_on_token is not None
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    assert _pair_row(db, "THR-001", CH)["queued_invocation_token"] is not None
+
+
+def test_priority_reply_variant_still_mints_deferred_catchup(tmp_path):
+    """The priority cohort settles with REPLY (not decline); the deferred
+    pair's old wake fails afterwards; the catch-up still fires."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db, priority_outcome="reply")
+    _close_via_grace(db)
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    settlement = _settle(db, ch_token, outcome="failed")
+    assert settlement.follow_on_token is not None
+    assert settlement.retry_required is False
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+
+
+def test_four_hour_fail_open_closure_non_covering_old_wake_failed_mints_catchup(
+    tmp_path,
+):
+    """4-hour absolute reaper (fail-open) closes the exchange; the released
+    deferral's old wake fails; exactly one catch-up — not stranded."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db)
+    arrivals = _close_via_four_hours(db)
+    ex = db._conn.execute(
+        "SELECT * FROM thread_reply_exchange WHERE thread_id = 'THR-001'",
+    ).fetchone()
+    assert ex["state"] == "released"
+    assert ex["close_reason"] == "max_priority_wait"
+    assert all(a.invocation_token is None for a in arrivals)
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    settlement = _settle(db, ch_token, outcome="timeout")
+    assert settlement.follow_on_token is not None
+    assert settlement.retry_required is False
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    ch = _pair_row(db, "THR-001", CH)
+    assert ch["queued_invocation_token"] is not None
+    assert ch["running_invocation_token"] is None
+
+
+def test_restart_between_release_and_old_slot_settlement_recoverable_running(
+    tmp_path,
+):
+    """Daemon restarts AFTER closure set the marker and BEFORE the old wake
+    settles. The running wake is recoverable: it is terminalized as
+    daemon_restart, replaced by ONE queued wake covering the full released
+    range, and the marker is consumed — no second mint, no stranding."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db)
+    _close_via_grace(db)
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    entries = db.recover_reply_delivery_state()
+    ch_entries = [e for e in entries if e.agent_name == CH]
+    # Exactly one replacement (covering 1..2) — never a second deferred mint.
+    assert len(ch_entries) == 1
+    assert ch_entries[0].kind == "replacement_queued"
+    ch = _pair_row(db, "THR-001", CH)
+    assert ch["queued_invocation_token"] == ch_entries[0].invocation_token
+    assert ch["running_invocation_token"] is None
+    assert int(ch["acknowledged_through_seq"]) == 0
+    assert int(ch["required_through_seq"]) == 2
+    # The replacement covers the released range: marker consumed.
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    inv = _invocation_row(db, ch_token)
+    assert inv["status"] == "failed"
+    assert inv["decline_reason"] == "daemon_restart"
+    # The replacement is claimable and covers the full released range.
+    claim = _claim(db, ch_entries[0].invocation_token)
+    assert claim.running_through_seq == 2
+
+
+def test_restart_between_release_and_old_slot_settlement_nonrecoverable_running(
+    tmp_path,
+):
+    """Restart with a NON-recoverable running wake (terminal receipt): the
+    slot is cleared fail-closed, and the pending marker fires the owed
+    catch-up at the recovery boundary — the release promise survives
+    restart."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db)
+    _close_via_grace(db)
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    # Corrupt the old receipt so recovery cannot replace it (already terminal).
+    db._conn.execute(
+        "UPDATE thread_invocations SET status = 'consumed' "
+        "WHERE invocation_token = ?", (ch_token,),
+    )
+    db._conn.commit()
+    entries = db.recover_reply_delivery_state()
+    ch_entries = [e for e in entries if e.agent_name == CH]
+    assert len(ch_entries) == 1
+    assert ch_entries[0].kind == "deferred_catchup"
+    ch = _pair_row(db, "THR-001", CH)
+    assert ch["queued_invocation_token"] == ch_entries[0].invocation_token
+    assert ch["running_invocation_token"] is None
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    assert _invocation_row(db, ch_entries[0].invocation_token)["purpose"] \
+        == ThreadInvocationPurpose.REPLY.value
+    # Recovery-issued mint is audited distinctly.
+    minted = [a for a in _exchange_audits(db)
+              if a["action"] == "thread_deferral_catchup_minted"]
+    assert len(minted) == 1
+    assert minted[0]["payload"]["kind"] == "recovery"
+
+
+def test_genuinely_covering_slot_coalesces_without_marker(tmp_path):
+    """A running wake whose immutable claimed range genuinely covers the
+    released range coalesces at closure — no marker, and its later failure
+    is the plain Phase-1 fail-open (retry_required), never a deferred-mint."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    _open_exchange_via_mention(db)   # seq 1: P={EM}, D={CH}; CH required=1
+    # seq 2: mention pierce wakes CH; claim covers 1..2 (required=2 at claim).
+    _seq2, arrivals = _arrival(
+        db, mentions_body=f"@{CH} now", recipients=[EM, CH],
+    )
+    ch_token = next(a.invocation_token for a in arrivals
+                    if a.agent_name == CH)
+    claim = _claim(db, ch_token)
+    assert claim.running_through_seq == 2
+    _settle_cascade(db, "THR-001", EM, outcome="decline")
+    arrivals2 = _close_via_grace(db)
+    # CH coalesced into its genuinely covering wake: no marker, no mint.
+    ch_coalesced = [a for a in arrivals2 if a.agent_name == CH]
+    assert len(ch_coalesced) == 1
+    assert ch_coalesced[0].invocation_token is None
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    assert not [a for a in _exchange_audits(db)
+                if a["action"] == "thread_deferral_catchup_pending"]
+    # The wake covered the release; its failure is a plain delivery failure
+    # (documented Phase-1 fail-open: retry_required for the next arrival).
+    settlement = _settle(db, ch_token, outcome="failed")
+    assert settlement.follow_on_token is None
+    assert settlement.retry_required is True
+    assert not [a for a in _exchange_audits(db)
+                if a["action"] == "thread_deferral_catchup_minted"]
+
+
+def test_pre_exchange_queued_slot_coalesces_without_marker(tmp_path):
+    """A PRE-EXCHANGE QUEUED wake covers the released range at claim
+    (running_through = required-at-claim; required is monotonic) — it
+    coalesces at closure with no marker and no post-slot mint."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    _seq1, arrivals = _arrival(db, recipients=[CH])
+    ch_token = next(a.invocation_token for a in arrivals
+                    if a.agent_name == CH)
+    assert _pair_row(db, "THR-001", CH)["queued_invocation_token"] == ch_token
+    _open_exchange_via_mention(db)   # CH held; required -> 2 (queued intact)
+    _settle_cascade(db, "THR-001", EM, outcome="decline")
+    arrivals2 = _close_via_grace(db)
+    ch_coalesced = [a for a in arrivals2 if a.agent_name == CH]
+    assert len(ch_coalesced) == 1
+    assert ch_coalesced[0].invocation_token is None
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    assert not [a for a in _exchange_audits(db)
+                if a["action"] == "thread_deferral_catchup_pending"]
+    # Claimed now, the queued wake covers the full released range.
+    claim = _claim(db, ch_token)
+    assert claim.running_through_seq == 2
+
+
+def test_duplicate_closure_and_settlement_after_marker_are_exactly_once(
+    tmp_path,
+):
+    """Duplicate closure/reaper evaluations after the marker are CAS
+    no-ops; the post-slot settlement mints exactly once."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db)
+    _close_via_grace(db)
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    # Duplicate reaper sweep: released exchange — no evaluation, no change.
+    assert db.reaper_sweep_reply_exchanges() == []
+    assert db.reconcile_reply_exchanges() == []
+    ch = _pair_row(db, "THR-001", CH)
+    assert ch["running_invocation_token"] == ch_token
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    # Settlement fires the catch-up exactly once.
+    settlement = _settle(db, ch_token, outcome="failed")
+    assert settlement.follow_on_token is not None
+    minted = [a for a in _exchange_audits(db)
+              if a["action"] == "thread_deferral_catchup_minted"]
+    assert len(minted) == 1
+    # A second settlement of the same token is a no-op (already terminal).
+    assert _settle(db, ch_token, outcome="failed") is None
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    ch = _pair_row(db, "THR-001", CH)
+    assert ch["queued_invocation_token"] == settlement.follow_on_token
+    assert ch["running_invocation_token"] is None
+    assert int(ch["acknowledged_through_seq"]) == 0
+    assert int(ch["required_through_seq"]) == 2
+
+
+def test_pending_marker_cleared_by_later_covering_wake(tmp_path):
+    """A marker left pending is consumed by any later covering wake (e.g. a
+    new arrival minting the full residual range) — one wake satisfies it."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db)
+    _close_via_grace(db)
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    # A new conversational message arrives and mints CH a covering wake
+    # (the old slot still runs — coalesced raise; after it settles failed,
+    # the owed catch-up carries 2..3).
+    _arrival(db, recipients=[EM, CH])   # seq 3
+    settlement = _settle(db, ch_token, outcome="failed")
+    assert settlement.follow_on_token is not None
+    claim = _claim(db, settlement.follow_on_token)
+    assert claim.running_through_seq == 3   # covers the full residual 2..3
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0

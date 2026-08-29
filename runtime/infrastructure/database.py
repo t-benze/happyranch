@@ -1365,6 +1365,7 @@ class Database:
                 created_at       TEXT NOT NULL,
                 released_at      TEXT,
                 mint_token_prefix TEXT,
+                catchup_pending  INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (thread_id, exchange_id, agent_name),
                 FOREIGN KEY (thread_id, exchange_id)
                     REFERENCES thread_reply_exchange(thread_id, exchange_id)
@@ -1563,6 +1564,17 @@ class Database:
         try:
             self._conn.execute(
                 "ALTER TABLE thread_message_attachments ADD COLUMN thread_attachment_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+        # TASK-6057: ``thread_exchange_deferrals.catchup_pending`` (additive on
+        # this PR's own unmerged exchange table). Fresh DBs get it from the
+        # CREATE TABLE; DBs created by an earlier commit of this branch are
+        # upgraded best-effort (idempotent across restarts).
+        try:
+            self._conn.execute(
+                "ALTER TABLE thread_exchange_deferrals ADD COLUMN "
+                "catchup_pending INTEGER NOT NULL DEFAULT 0"
             )
         except sqlite3.OperationalError:
             pass
@@ -7024,6 +7036,85 @@ class Database:
                             ("invalid_queued_token_on_recovery", now, now,
                              thread_id, agent_name),
                         )
+
+            # TASK-6057 — released-deferral post-slot catch-up reconciliation at
+            # the restart boundary. A closure that found a live but NON-covering
+            # slot (its immutable range ended before the released range) durably
+            # marked the pair's deferral row ``catchup_pending``; the branches
+            # above terminalized exactly the blocking slot (replacement minted /
+            # retained / cleared). This pass resolves every still-pending marker
+            # in the same transaction so the owed wake survives daemon restart:
+            #   * a covering slot exists (replacement/retained queued wake) → the
+            #     marker is satisfied, consume it;
+            #   * no slot and ``acknowledged < required`` → the blocking slot is
+            #     terminal with no covering replacement: mint exactly ONE
+            #     range-covering catch-up now and consume the marker
+            #     (exactly-once in this transaction);
+            #   * ``acknowledged == required`` (fully covered) → nothing owed,
+            #     consume the marker.
+            for d in self._conn.execute(
+                "SELECT DISTINCT thread_id, agent_name "
+                "FROM thread_exchange_deferrals WHERE catchup_pending = 1",
+            ).fetchall():
+                thread_id = d["thread_id"]
+                agent_name = d["agent_name"]
+                srow = self._conn.execute(
+                    "SELECT * FROM thread_reply_delivery_state "
+                    "WHERE thread_id = ? AND agent_name = ?",
+                    (thread_id, agent_name),
+                ).fetchone()
+                if (
+                    srow is None
+                    or srow["queued_invocation_token"]
+                    or srow["running_invocation_token"]
+                ):
+                    self._clear_catchup_pending_uncommitted(thread_id, agent_name)
+                    continue
+                ack = int(srow["acknowledged_through_seq"] or 0)
+                req = int(srow["required_through_seq"] or 0)
+                if ack >= req:
+                    self._clear_catchup_pending_uncommitted(thread_id, agent_name)
+                    continue
+                token = self._mint_reply_invocation_uncommitted(
+                    thread_id, agent_name, ack + 1,
+                )
+                self._conn.execute(
+                    "UPDATE thread_reply_delivery_state SET "
+                    "queued_invocation_token = ?, updated_at = ? "
+                    "WHERE thread_id = ? AND agent_name = ?",
+                    (token, now, thread_id, agent_name),
+                )
+                self._clear_catchup_pending_uncommitted(thread_id, agent_name)
+                self._emit_reply_wake_audit(
+                    thread_id=thread_id, agent_name=agent_name,
+                    action="thread_reply_wake_created",
+                    payload={
+                        "agent_name": agent_name,
+                        "from_seq": ack + 1,
+                        "through_seq": req,
+                        "token_prefix": token[:8],
+                        "kind": "deferred_catch_up",
+                    },
+                )
+                self.insert_audit_log_uncommitted(
+                    task_id=thread_id, agent=agent_name,
+                    action="thread_deferral_catchup_minted",
+                    payload={
+                        "thread_id": thread_id,
+                        "agent_name": agent_name,
+                        "from_seq": ack + 1,
+                        "through_seq": req,
+                        "mint_token_prefix": token[:8],
+                        "kind": "recovery",
+                    },
+                )
+                results.append(ThreadReplyRecoveryEntry(
+                    thread_id=thread_id,
+                    agent_name=agent_name,
+                    invocation_token=token,
+                    kind="deferred_catchup",
+                ))
+
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -7376,6 +7467,51 @@ class Database:
         cohort = self._exchange_cohort_uncommitted(row)
         return agent_name not in cohort
 
+    def _pair_catchup_pending_uncommitted(
+        self, thread_id: str, agent_name: str,
+    ) -> bool:
+        """True when the pair holds an unsatisfied released-deferral catch-up
+        obligation: any ``thread_exchange_deferrals`` row (across released
+        exchanges) with ``catchup_pending = 1``. Set at closure when the
+        pair's single live slot did not cover the released range; the owed
+        catch-up is minted exactly once when that slot reaches a terminal
+        outcome. Runs inside the open transaction."""
+        row = self._conn.execute(
+            "SELECT 1 FROM thread_exchange_deferrals "
+            "WHERE thread_id = ? AND agent_name = ? AND catchup_pending = 1 "
+            "LIMIT 1",
+            (thread_id, agent_name),
+        ).fetchone()
+        return row is not None
+
+    def _mark_catchup_pending_uncommitted(
+        self, thread_id: str, exchange_id: int, agent_name: str,
+    ) -> bool:
+        """Durably record a pending post-slot catch-up on THIS exchange's
+        deferral row (a D(E) member whose live slot did not cover the
+        released range at closure). Returns True when a row was actually
+        updated (the pair is a deferred member of this exchange). Runs
+        inside the open transaction."""
+        cur = self._conn.execute(
+            "UPDATE thread_exchange_deferrals SET catchup_pending = 1 "
+            "WHERE thread_id = ? AND exchange_id = ? AND agent_name = ? "
+            "AND state = 'released'",
+            (thread_id, exchange_id, agent_name),
+        )
+        return cur.rowcount > 0
+
+    def _clear_catchup_pending_uncommitted(
+        self, thread_id: str, agent_name: str,
+    ) -> None:
+        """Consume every pending catch-up marker for the pair — one
+        range-covering wake satisfies all of them. Runs inside the open
+        transaction."""
+        self._conn.execute(
+            "UPDATE thread_exchange_deferrals SET catchup_pending = 0 "
+            "WHERE thread_id = ? AND agent_name = ?",
+            (thread_id, agent_name),
+        )
+
     def _exchange_has_live_cohort_wake(
         self, thread_id: str, open_seq: int, cohort: list[str],
     ) -> bool:
@@ -7412,8 +7548,14 @@ class Database:
         ``acknowledged < required`` and no queued/running slot, mint ONE
         queued REPLY covering the full contiguous unread range (the
         coverage-safe superset: frozen D(E), mid-E joiners, cohort members
-        with residual unread). Pairs with an existing covering wake are
-        marked coalesced (no second token — at-most-one slots honored).
+        with residual unread). A pair whose live slot GENUINELY covers the
+        released range is marked coalesced (no second token — at-most-one
+        slots honored); a pair whose live slot does NOT cover it (a running
+        wake with immutable ``running_through_seq < required`` — e.g. a
+        pre-exchange claim) is durably marked catch-up-pending: exactly ONE
+        post-slot catch-up is minted when the blocking slot reaches a
+        terminal outcome (failed/timeout settlement or recovery
+        terminalization), surviving daemon restart — never stranded.
         """
         now = _now().isoformat()
         cur = self._conn.execute(
@@ -7449,7 +7591,53 @@ class Database:
             ack = int(row["acknowledged_through_seq"] or 0)
             req = int(row["required_through_seq"] or 0)
             if row["queued_invocation_token"] or row["running_invocation_token"]:
-                # Existing covering wake: coalesce — never a second token.
+                # Genuinely-covering predicate (TASK-6057): a live slot
+                # coalesces ONLY when its durable coverage contains the
+                # released range.
+                #   * running slot — the claimed range is IMMUTABLE
+                #     (running_through_seq snapshotted at claim): it covers
+                #     iff running_through_seq >= required. A pre-arrival
+                #     claim whose through-seq ends before the released range
+                #     does NOT cover (reviewer TASK-6056 counterexample).
+                #   * queued slot — covers at claim (running_through =
+                #     required-at-claim; required is monotonic), so it
+                #     always covers.
+                # A non-covering live slot blocks immediate minting
+                # (at-most-one slot invariant): the released deferral is
+                # durably marked catchup-pending and its exactly-one
+                # post-slot catch-up fires when the blocking slot reaches a
+                # terminal outcome — failed/timeout settlement, or recovery
+                # terminalization on restart. Never a second token.
+                non_covering = (
+                    row["running_invocation_token"] is not None
+                    and (
+                        row["running_through_seq"] is None
+                        or int(row["running_through_seq"]) < req
+                    )
+                )
+                if non_covering:
+                    if self._mark_catchup_pending_uncommitted(
+                        thread_id, exchange_id, agent,
+                    ):
+                        self.insert_audit_log_uncommitted(
+                            task_id=thread_id, agent=agent,
+                            action="thread_deferral_catchup_pending",
+                            payload={
+                                "thread_id": thread_id,
+                                "exchange_id": exchange_id,
+                                "agent_name": agent,
+                                "from_seq": ack + 1,
+                                "through_seq": req,
+                                "reason": "old_wake_does_not_cover",
+                            },
+                        )
+                    arrivals.append(ThreadReplyArrival(
+                        agent_name=agent, invocation_token=None,
+                        coalesced=True, from_seq=ack + 1, through_seq=req,
+                    ))
+                    continue
+                # Genuinely covering wake: coalesce — never a second token.
+                self._clear_catchup_pending_uncommitted(thread_id, agent)
                 arrivals.append(ThreadReplyArrival(
                     agent_name=agent, invocation_token=None, coalesced=True,
                     from_seq=ack + 1, through_seq=req,
@@ -7464,6 +7652,9 @@ class Database:
                 "WHERE thread_id = ? AND agent_name = ?",
                 (token, now, thread_id, agent),
             )
+            # A direct mint satisfies any pending catch-up from an earlier
+            # release (one range-covering wake covers all of them).
+            self._clear_catchup_pending_uncommitted(thread_id, agent)
             self._emit_reply_wake_audit(
                 thread_id=thread_id, agent_name=agent,
                 action="thread_reply_wake_created",
@@ -7494,11 +7685,15 @@ class Database:
                 from_seq=ack + 1, through_seq=req,
             ))
         # Deferral rows whose pair was already fully covered (pierce/ack==req)
-        # are released with no mint — record the coalesced audit.
+        # are released with no mint — record the coalesced audit. Rows whose
+        # catch-up is pending (a live non-covering slot at release) are
+        # audited by ``thread_deferral_catchup_pending`` in the loop above,
+        # never as coalesced.
         held = self._conn.execute(
             "SELECT agent_name FROM thread_exchange_deferrals "
             "WHERE thread_id = ? AND exchange_id = ? "
-            "AND state = 'released' AND mint_token_prefix IS NULL",
+            "AND state = 'released' AND mint_token_prefix IS NULL "
+            "AND catchup_pending = 0",
             (thread_id, exchange_id),
         ).fetchall()
         for drow in held:
@@ -7883,9 +8078,14 @@ class Database:
             that follow-on SUPPRESSED — the exchange's single range-covering
             catch-up at closure carries the residual range
             (``exchange_held=True``, ``retry_required`` stays False).
-          * failed/timeout do NOT advance acknowledgement, mint no immediate
-            retry, and leave ``retry_required`` (``required > acknowledged``)
-            for the next conversational arrival to cover.
+          * failed/timeout do NOT advance acknowledgement and mint no
+            immediate retry, leaving ``retry_required``
+            (``required > acknowledged``) for the next conversational arrival
+            to cover — EXCEPT the owed post-slot catch-up of a released
+            deferral whose old slot never covered the released range (the
+            closure durably marked ``catchup_pending``): that exactly-one
+            range-covering wake is minted here so the release promise never
+            strands (TASK-6057).
 
         The settled-audit payload is extended (founder-approved S4):
         ``covered_from_seq``/``covered_through_seq`` = the authoritative
@@ -7959,15 +8159,26 @@ class Database:
 
         follow_on: str | None = None
         exchange_held = False
-        if outcome in ("reply", "decline") and required > new_ack:
-            # Exactly one follow-on covering arrivals strictly after the
-            # immutable running range (``required > running_through``). Its
-            # triggering_seq is the first unacknowledged sequence. TASK-5966:
-            # a held pair's follow-on is SUPPRESSED (the exchange's catch-up
-            # covers the residual range at closure).
+        catchup_minted = False
+        if required > new_ack:
+            # A residual range remains. At most one wake may carry it:
+            #   * a held pair (member of an OPEN exchange) suppresses the
+            #     follow-on — the exchange's single catch-up at closure
+            #     carries the residual range (exchange_held=True);
+            #   * reply/decline mint exactly one follow-on covering arrivals
+            #     strictly after the immutable running range
+            #     (``required > running_through``);
+            #   * failed/timeout mint ONLY the owed post-slot catch-up of a
+            #     released deferral whose old slot never covered it (the
+            #     closure durably marked catchup_pending) — a plain
+            #     unacknowledged range gets no immediate retry (Phase-1
+            #     fail-open: the next conversational arrival covers it).
+            pending_catchup = self._pair_catchup_pending_uncommitted(
+                thread_id, agent_name,
+            )
             if self._pair_held_by_open_exchange(thread_id, agent_name):
                 exchange_held = True
-            else:
+            elif outcome in ("reply", "decline") or pending_catchup:
                 follow_on = self._mint_reply_invocation_uncommitted(
                     thread_id, agent_name, new_ack + 1,
                 )
@@ -7977,6 +8188,27 @@ class Database:
                     "WHERE thread_id = ? AND agent_name = ?",
                     (follow_on, now, thread_id, agent_name),
                 )
+                if pending_catchup:
+                    # The minted wake is the owed post-slot catch-up (for a
+                    # reply/decline it is the natural follow-on; for a
+                    # failed/timeout it is the release promise honoured) —
+                    # consume the durable marker in the same transaction
+                    # (exactly-once; a crash rolls both back).
+                    catchup_minted = True
+                    self._clear_catchup_pending_uncommitted(
+                        thread_id, agent_name,
+                    )
+                    self.insert_audit_log_uncommitted(
+                        task_id=thread_id, agent=agent_name,
+                        action="thread_deferral_catchup_minted",
+                        payload={
+                            "thread_id": thread_id,
+                            "agent_name": agent_name,
+                            "from_seq": new_ack + 1,
+                            "through_seq": required,
+                            "mint_token_prefix": follow_on[:8],
+                        },
+                    )
 
         self._emit_reply_wake_audit(
             thread_id=thread_id, agent_name=agent_name,
@@ -7991,6 +8223,7 @@ class Database:
                 "claimed_at": claimed_at,
                 "minted_at": minted_at,
                 "exchange_held": exchange_held,
+                "catchup_minted": catchup_minted,
                 "retry_required": (
                     required > new_ack and follow_on is None
                     and not exchange_held
@@ -8008,10 +8241,13 @@ class Database:
             required_through_seq=required,
             # ``retry_required`` is the residual-obligation diagnostic: True
             # only when the range is still unacknowledged AND no follow-on wake
-            # was minted to carry it (failure/timeout). A reply/decline that
-            # minted a follow-on has an active queued wake, so it is not
-            # retry_required; a held suppression defers the range to the
-            # exchange catch-up, which is not a retry condition either.
+            # was minted to carry it (failure/timeout without an owed
+            # catch-up). A reply/decline that minted a follow-on has an active
+            # queued wake, so it is not retry_required; a held suppression
+            # defers the range to the exchange catch-up, which is not a retry
+            # condition; a failed/timeout that honoured a released-deferral
+            # catch-up marker minted the owed wake, which is not a retry
+            # either.
             retry_required=(
                 required > new_ack and follow_on is None and not exchange_held
             ),

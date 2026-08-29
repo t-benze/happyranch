@@ -532,6 +532,23 @@ export function describeAuditEntry(e: AuditEntry): AuditNarrative {
       segs.push(tx('.'));
       break;
     }
+    case 'thread_deferral_catchup_pending': {
+      segs.push(tx(' released; catch-up deferred until the blocking wake ends'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      detail = detailOf(rangeOf(p));
+      break;
+    }
+    case 'thread_deferral_catchup_minted': {
+      segs.push(tx(' received the deferred catch-up wake'));
+      if (scope) segs.push(tx(' in '), rf(scope));
+      segs.push(tx('.'));
+      detail = detailOf(
+        str(p, 'mint_token_prefix'),
+        rangeOf(p),
+      );
+      break;
+    }
     case 'thread_deferral_suppressed': {
       segs.push(tx(' deferral was suppressed'));
       if (scope) segs.push(tx(' in '), rf(scope));

@@ -635,7 +635,7 @@ class ThreadReplyRecoveryEntry(BaseModel):
     thread_id: str
     agent_name: str
     invocation_token: str
-    kind: Literal["retained_queued", "replacement_queued"]
+    kind: Literal["retained_queued", "replacement_queued", "deferred_catchup"]
 
 
 class ThreadReplyArrival(BaseModel):
@@ -674,11 +674,14 @@ class ThreadReplySettlement(BaseModel):
     """Result of settling a conversational REPLY terminal path.
 
     ``follow_on_token`` is at most one newly-minted queued REPLY covering
-    arrivals strictly after the immutable running range (reply/decline only).
+    arrivals strictly after the immutable running range — the reply/decline
+    follow-on, or the owed post-slot catch-up of a released deferral whose
+    old slot never covered the released range (TASK-6057: minted on
+    failed/timeout too, never a plain immediate retry).
     ``retry_required`` is the residual-obligation diagnostic: True only when
     ``required_through_seq`` still exceeds the acknowledged watermark AND no
-    follow-on wake was minted to carry it (failure/timeout leave the range
-    unacknowledged with no immediate retry).
+    follow-on wake was minted to carry it (failure/timeout without an owed
+    catch-up).
 
     TASK-5966 strict mention-led exchange: ``exchange_held`` is True when the
     pair was a held (deferred) member of an open exchange and its follow-on
