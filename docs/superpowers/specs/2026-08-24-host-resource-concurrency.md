@@ -39,7 +39,16 @@
 > admission/backpressure/residue/capability view, with publication failures
 > contained at the supervisor seam. No schema migration, dependency, config,
 > provider/pool/spacing, or producer wiring changes; thread/dream/wake stay
-> unwired.
+> unwired. Slice C (this PR) ships the founder-approved **fixed initial
+> Linux enforcement policy** for real session scopes (task
+> `MemoryHigh=14G`/`MemoryMax=24G`; thread/dream/wake/schedule
+> `MemoryHigh=2G`/`MemoryMax=4G` exactly; `TasksMax=1024` for every
+> supervised session; **no `CPUQuota`**) selected immutably from the existing
+> `AdmissionRequest.invocation_kind` and applied only by the healthy Linux
+> systemd/cgroup-v2 capability backend, plus **bounded receipt attribution**
+> (`invocation_kind` + `executor_profile` sourced only from existing
+> `AdmissionRequest` data) carried through `Receipt` and the existing bounded
+> health/metrics payloads.
 
 ## Decision in one page
 
@@ -396,6 +405,59 @@ conservative best-effort survivor threshold. These are never derived from
 host resources (CPU count, RAM) at runtime. `16 / 64 GiB / 72 GiB / 4096
 PIDs / 2800% CPU` remain unapproved measurement candidates.
 
+### Fixed initial Linux enforcement policy (Slice C, founder-approved)
+
+In addition to the admission canary inputs, real supervised sessions get an
+**immutable per-invocation enforcement envelope** (`runtime/platform/
+enforcement_policy.py`) selected deterministically from the existing
+`AdmissionRequest.invocation_kind` and applied **only** by the healthy
+Linux systemd/cgroup-v2 capability backend at `launch`:
+
+| invocation kind(s) | MemoryHigh (soft throttle) | MemoryMax (hard ceiling) | TasksMax | CPUQuota |
+|---|---|---|---|---|
+| `task` | 14G | 24G | 1024 | never emitted |
+| `thread` / `dream` / `wake` / `schedule` | 2G | 4G (exactly) | 1024 | never emitted |
+| unknown kind | 2G (conservative — never the task envelope) | 4G | 1024 | never emitted |
+
+* **MemoryHigh vs MemoryMax semantics are load-bearing**: MemoryHigh is the
+  **soft throttle** (above it the kernel slows the cgroup — the session
+  keeps running, degraded); MemoryMax is the **hard ceiling** (above it the
+  cgroup is OOM-killed/refused). Soft throttle always sits strictly below
+  the hard ceiling, or the ceiling is meaningless. Names/docs/tests never
+  conflate the two.
+* **No `CPUQuota` is emitted for real sessions.** The probe keeps its
+  deliberately tiny probe-only values (16M / 4 tasks / 10% CPU incl.
+  `CPUQuota`) and they are never confused with real session policy.
+* Properties are emitted as exact byte integers
+  (`--property=MemoryHigh=.../MemoryMax=.../TasksMax=...`) and **verified
+  as applied** byte-for-byte in the scope's cgroup (`memory.high` /
+  `memory.max` / `pids.max`) at launch — a mismatch fails the launch closed
+  (never a silent best-effort claim of guaranteed limits).
+* Selection is immutable and deterministic: the same kind resolves to the
+  same frozen policy, including across 429 retry/reacquire. macOS stays
+  honestly capped/best-effort (no limits applied); passthrough/unsupported/
+  degraded backends remain explicit about unavailable enforcement.
+
+### Bounded receipt attribution (Slice C)
+
+Receipts carry **bounded attribution sourced only from existing
+`AdmissionRequest` data** — `invocation_kind` and `executor_profile` —
+populated honestly by every backend at `finish` (Linux, macOS,
+passthrough, and test fakes). The bounded store:
+
+* aggregates by the **fixed canonical invocation-kind vocabulary** (task /
+  thread / dream / wake / schedule); unknown/empty kinds fold into a
+  single `other` bucket, so aggregate-map cardinality never grows with
+  input (**no dynamic attribution keys**);
+* carries the bounded kind + **redacted executor profile** per receipt in
+  the authed `/metrics` recent window (length-bounded to 64 chars,
+  character-scrubbed to `[A-Za-z0-9._-]` — the profile is externally
+  influenced registry/config data);
+* keeps the unauthenticated `/health` **non-sensitive**: the per-receipt
+  recent window stays dropped there, so per-receipt attribution never
+  reaches the public surface (only the fixed-vocabulary counts remain
+  observable, like the existing by-terminal-reason/by-cleanup aggregates).
+
 ## Rollout sequencing
 
 - **A — common shadow core (PR #715):** contracts, admission, lifecycle,
@@ -451,8 +513,11 @@ PIDs / 2800% CPU` remain unapproved measurement candidates.
   no-callback nudge re-invoke run as additional supervised phases, each
   publishing its own honest bounded receipt. The legacy uncontained path
   remains when the supervisor is absent (tests / idle state).
-- **C — bounded enforcement:** canary Linux limits chosen from measured
-  receipts; macOS remains honestly capped.
+- **C — bounded enforcement + receipt attribution (this PR):** the founder-
+  approved fixed initial Linux policy above is applied to real session
+  scopes (exact systemd-run properties, applied-verified, no CPUQuota),
+  and receipts carry the bounded attribution. macOS remains honestly
+  capped.
 - **D — evidence-based policy proposal:** only then propose session/resource
   limits, fairness complexity if needed, and provider-ceiling/spacing changes.
 - **E — future Windows backend:** separate supported-platform release after

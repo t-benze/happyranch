@@ -1074,9 +1074,37 @@ or config change:
   probe evidence string (a failed probe can embed raw exception text) are
   dropped; the stable backend classification stays observable.
 
+**Slice C bounded enforcement + receipt attribution (THR-207).** Real
+supervised sessions get the founder-approved **fixed initial Linux
+enforcement policy** (`runtime/platform/enforcement_policy.py`) — an
+immutable per-invocation envelope selected deterministically from the
+existing `AdmissionRequest.invocation_kind` and applied **only** by the
+healthy Linux systemd/cgroup-v2 backend at `launch`: task sessions
+`MemoryHigh=14G` (soft throttle) / `MemoryMax=24G` (hard ceiling) /
+`TasksMax=1024`; thread/dream/wake/schedule (and any unknown kind,
+conservatively) `MemoryHigh=2G` / `MemoryMax=4G` (exactly) / `TasksMax=1024`;
+**no `CPUQuota`** is ever emitted for real sessions (the probe keeps its
+deliberately tiny probe-only values and they are never confused with session
+policy). Properties are emitted as exact byte integers and **verified as
+applied** byte-for-byte in the scope's cgroup (`memory.high` / `memory.max`
+/ `pids.max`) at launch — a mismatch fails the launch closed, never a
+silent best-effort claim of guaranteed limits. Selection is immutable
+across 429 retry/reacquire. macOS stays honestly capped/best-effort (no
+limits applied); the passthrough/unsupported/degraded backends remain
+explicit about unavailable enforcement. Receipts also carry **bounded
+attribution** (`invocation_kind` + `executor_profile`, sourced only from
+existing `AdmissionRequest` data) populated honestly by every backend at
+`finish`; the store aggregates by the fixed canonical invocation-kind
+vocabulary (unknown kinds fold into one `other` bucket — no dynamic
+attribution keys) and the authed recent window carries the bounded kind +
+length/character-redacted executor profile, while the unauthenticated
+`/health` never exposes per-receipt attribution (the recent window stays
+dropped).
+
 **Boundedness:** at most 64 receipts retained (oldest dropped); aggregate
-maps keyed by the fixed terminal-reason / cleanup-status vocabularies, never
-by session/org/task identity; survivor-identity list and evidence/event
+maps keyed by the fixed terminal-reason / cleanup-status vocabularies (and
+the fixed canonical invocation-kind vocabulary for attribution), never by
+session/org/task identity; survivor-identity list and evidence/event
 strings truncated; peak aggregates grouped **per provenance** (kernel values
 never blended with sampled); `unavailable` values counted, never rendered as
 fabricated zeros. **Publication failure is operationally contained** at the
