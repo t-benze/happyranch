@@ -747,6 +747,12 @@ async def test_eviction_observed_audit_corpus_line_classifies(
         ("opencode", "Error: Session not found", "", 0),   # wrong rc (fresh path)
         ("opencode", "Error: Session not found", "", 2),   # wrong rc
         ("opencode", "", "Error: Session not found", 1),   # stdout-only
+        ("opencode", "Error: Session not found", " ", 1),
+        ("opencode", "Error: Session not found", "\t", 1),
+        ("opencode", "Error: Session not found", "\n", 1),
+        ("opencode", "Error: Session not found", "\r\n", 1),
+        ("opencode", "Error: Session not found", " \t\n\r\n ", 1),
+        ("opencode", "Error: Session not found", None, 1),
         ("opencode", "Error: Session not found.", "", 1),  # punctuation suffix
         ("opencode", "Error: Session not found - retry later", "", 1),
         ("opencode", "xError: Session not found", "", 1),  # same-line prefix

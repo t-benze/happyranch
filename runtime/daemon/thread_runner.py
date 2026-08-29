@@ -611,7 +611,7 @@ def _is_opencode_session_evicted(result, attempted_session_id: str) -> bool:
         return False
     if getattr(result, "returncode", None) != 1:
         return False
-    if (getattr(result, "stdout_tail", None) or "").strip():
+    if getattr(result, "stdout_tail", None) != "":
         return False
     stderr = _ANSI_SGR_RE.sub("", getattr(result, "stderr_tail", None) or "")
     # Split only on the proven LF/CRLF physical-line forms. In particular,
