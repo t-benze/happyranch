@@ -291,9 +291,11 @@ def test_opencode_reply_then_resume_across_two_turns(
     assert "opencode reply" in reply1["body_markdown"]
 
     # Post a second message → turn 2 must resume the stored opencode session.
+    # Founder messages append via POST /threads/{id}/send (the /messages
+    # route is GET-only; the /reply route is the agent-callback surface).
     r = httpx.post(
-        f"{base}/threads/{thread_id}/messages",
-        json={"speaker": "founder", "body_markdown": "second message"},
+        f"{base}/threads/{thread_id}/send",
+        json={"body_markdown": "second message"},
         headers=_auth_headers(),
         timeout=10.0,
     )

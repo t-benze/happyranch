@@ -208,6 +208,7 @@ def live_daemon(
     fake_claude_plan_env,
     fake_codex_plan_env,
     fake_claude_thread_plan_env,
+    fake_opencode_thread_plan_env,
     monkeypatch,
 ):
     """Start the daemon via scripts/daemon.sh and stop it after the test."""

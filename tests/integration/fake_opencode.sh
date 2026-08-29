@@ -49,7 +49,7 @@ ORG_SLUG="${ORG_PARENT##*/}"
 # Thread invocation detection — same markers fake_claude.sh uses.
 THREAD_INVOCATION_TOKEN=$(echo "$PROMPT" | awk -F': ' '/^Your invocation_token for this turn is: /{print $2; exit}')
 if [[ -n "$THREAD_INVOCATION_TOKEN" ]]; then
-    THREAD_ID=$(echo "$PROMPT" | awk '/^You are participating in thread /{
+    THREAD_ID=$(echo "$PROMPT" | awk '/^(You are participating in|Continuing) thread /{
         match($0, /THR-[0-9]+/); print substr($0, RSTART, RLENGTH); exit
     }')
     PURPOSE_LINE=$(echo "$PROMPT" | awk '/^  Message [0-9]+ addressed/{print "reply"; exit} /^  The founder has added you/{print "bootstrap"; exit} /^  This thread is being archived/{print "close_out"; exit} /^  Task TASK-[0-9]+ that you dispatched/{print "task_followup"; exit}')
