@@ -1408,9 +1408,13 @@ def test_restart_between_release_and_old_slot_settlement_nonrecoverable_running(
     tmp_path,
 ):
     """Restart with a NON-recoverable running wake (terminal receipt): the
-    slot is cleared fail-closed, and the pending marker fires the owed
-    catch-up at the recovery boundary — the release promise survives
-    restart."""
+    slot is cleared fail-closed and the pending catch-up marker is REVOKED in
+    the same transaction — the authoritative fail-closed classification
+    survives into marker reconciliation, so recovery never mints a catch-up
+    from untrustworthy state (TASK-6065; supersedes the TASK-6057
+    release-promise-survives-restart behavior for the invalid-ownership
+    class). The retained unacknowledged range is served by the next
+    conversational arrival (documented Phase-1 fail-open)."""
     db = Database(tmp_path / "happyranch.db")
     _make_thread(db, participants=(EM, CH))
     ch_token = _pre_claim_deferred_scenario(db)
@@ -1424,19 +1428,26 @@ def test_restart_between_release_and_old_slot_settlement_nonrecoverable_running(
     db._conn.commit()
     entries = db.recover_reply_delivery_state()
     ch_entries = [e for e in entries if e.agent_name == CH]
-    assert len(ch_entries) == 1
-    assert ch_entries[0].kind == "deferred_catchup"
+    assert ch_entries == []          # zero returned arrivals
     ch = _pair_row(db, "THR-001", CH)
-    assert ch["queued_invocation_token"] == ch_entries[0].invocation_token
+    assert ch["queued_invocation_token"] is None
     assert ch["running_invocation_token"] is None
+    assert ch["last_terminal_reason"] \
+        == "running_already_terminal_on_recovery"
+    assert int(ch["acknowledged_through_seq"]) == 0
+    assert int(ch["required_through_seq"]) == 2
+    # Marker terminally revoked (never minted from untrustworthy state).
     assert _deferral(db, CH)[0]["catchup_pending"] == 0
-    assert _invocation_row(db, ch_entries[0].invocation_token)["purpose"] \
-        == ThreadInvocationPurpose.REPLY.value
-    # Recovery-issued mint is audited distinctly.
-    minted = [a for a in _exchange_audits(db)
-              if a["action"] == "thread_deferral_catchup_minted"]
-    assert len(minted) == 1
-    assert minted[0]["payload"]["kind"] == "recovery"
+    assert not [a for a in _exchange_audits(db)
+                if a["action"] == "thread_deferral_catchup_minted"]
+    # Idempotent repeat recovery + restart safety: nothing minted ever again.
+    assert db.recover_reply_delivery_state() == []
+    db._conn.close()
+    db2 = Database(tmp_path / "happyranch.db")
+    assert db2.recover_reply_delivery_state() == []
+    assert _deferral(db2, CH)[0]["catchup_pending"] == 0
+    assert _pair_row(db2, "THR-001", CH)["queued_invocation_token"] is None
+    assert _pair_row(db2, "THR-001", CH)["running_invocation_token"] is None
 
 
 def test_genuinely_covering_slot_coalesces_without_marker(tmp_path):
@@ -1545,3 +1556,312 @@ def test_pending_marker_cleared_by_later_covering_wake(tmp_path):
     claim = _claim(db, settlement.follow_on_token)
     assert claim.running_through_seq == 3   # covers the full residual 2..3
     assert _deferral(db, CH)[0]["catchup_pending"] == 0
+
+
+# ---------------------------------------------------------------------------
+# TASK-6065 — fail-closed recovery branches revoke the pending marker
+# ---------------------------------------------------------------------------
+#
+# The TASK-6063 reviewer counterexample: ``catchup_pending = 1`` PLUS both
+# ownership slots populated. Recovery records
+# ``corrupt_both_slots_on_recovery`` and clears the slots, but the post-loop
+# marker reconciliation then saw no slot with ack < required and minted a
+# ``deferred_catchup`` — fabricating runnable ownership from state the
+# corruption branch declared untrustworthy. The structural repair: every
+# fail-closed recovery classification (both-slots corruption, non-recoverable
+# running slot, invalid queued started/ownership) revokes the pair's pending
+# marker ATOMICALLY in the same transaction, so the authoritative terminal
+# classification survives into marker reconciliation as a revoked marker,
+# never as a mint. These regressions prove, per branch, ZERO minted tokens,
+# ZERO returned arrivals, marker terminally cleared, truthful terminal
+# reason/audit, idempotent repeat recovery, and restart safety.
+
+
+def test_both_slots_corruption_with_pending_marker_mints_nothing(tmp_path):
+    """TASK-6063 exact reproduction: catchup_pending=1 plus BOTH queued and
+    running slots populated. Recovery records corrupt_both_slots_on_recovery,
+    clears both slots, and revokes the pending marker in the same transaction
+    — the post-loop reconciliation mints no deferred_catchup (zero tokens,
+    zero returned arrivals, marker terminally cleared)."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db)
+    _close_via_grace(db)
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    # Corrupt: populate the queued slot too — both ownership slots set.
+    db._conn.execute("BEGIN IMMEDIATE")
+    extra = db._mint_reply_invocation_uncommitted("THR-001", CH, 3)
+    db._conn.execute(
+        "UPDATE thread_reply_delivery_state SET queued_invocation_token = ? "
+        "WHERE thread_id = 'THR-001' AND agent_name = ?", (extra, CH),
+    )
+    db._conn.commit()
+    entries = db.recover_reply_delivery_state()
+    ch_entries = [e for e in entries if e.agent_name == CH]
+    assert ch_entries == []            # zero returned arrivals
+    ch = _pair_row(db, "THR-001", CH)
+    assert ch["queued_invocation_token"] is None
+    assert ch["running_invocation_token"] is None
+    assert ch["last_terminal_reason"] == "corrupt_both_slots_on_recovery"
+    assert int(ch["acknowledged_through_seq"]) == 0
+    assert int(ch["required_through_seq"]) == 2
+    # Marker terminally revoked — never minted from corrupt state.
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    # Both owned pending REPLY receipts retired by the pair-scoped sweep.
+    for tok in (ch_token, extra):
+        inv = _invocation_row(db, tok)
+        assert inv["status"] == "failed"
+        assert inv["decline_reason"] == "corrupt_both_slots_on_recovery"
+    # Truthful audit: one cancelled wake with the marker revocation flagged.
+    cancelled = [a for a in _wake_audits(db)
+                 if a["action"] == "thread_reply_wake_cancelled"]
+    assert len(cancelled) == 1
+    assert cancelled[0]["payload"]["reason"] \
+        == "corrupt_both_slots_on_recovery"
+    assert cancelled[0]["payload"]["catchup_suppressed"] is True
+    assert not [a for a in _exchange_audits(db)
+                if a["action"] == "thread_deferral_catchup_minted"]
+    # Idempotent repeat recovery + restart safety.
+    assert db.recover_reply_delivery_state() == []
+    db._conn.close()
+    db2 = Database(tmp_path / "happyranch.db")
+    assert db2.recover_reply_delivery_state() == []
+    row2 = _pair_row(db2, "THR-001", CH)
+    assert row2["queued_invocation_token"] is None
+    assert row2["running_invocation_token"] is None
+    assert _deferral(db2, CH)[0]["catchup_pending"] == 0
+
+
+def test_invalid_queued_started_with_pending_marker_mints_nothing(tmp_path):
+    """Queued slot referencing a STARTED receipt (invalid queued ownership)
+    with a pending marker: the pair-scoped sweep retires the owned pending
+    REPLY, the queued slot is cleared fail-closed, and the pending marker is
+    revoked in the same transaction — zero minted/returned tokens."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db)
+    _close_via_grace(db)
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    # Move the claimed (started) receipt into the QUEUED slot: a queued wake
+    # must be unstarted, so this is invalid queued ownership.
+    db._conn.execute(
+        "UPDATE thread_reply_delivery_state SET "
+        "queued_invocation_token = running_invocation_token, "
+        "running_invocation_token = NULL, "
+        "running_from_seq = NULL, running_through_seq = NULL "
+        "WHERE thread_id = 'THR-001' AND agent_name = ?", (CH,),
+    )
+    db._conn.commit()
+    entries = db.recover_reply_delivery_state()
+    ch_entries = [e for e in entries if e.agent_name == CH]
+    assert ch_entries == []
+    ch = _pair_row(db, "THR-001", CH)
+    assert ch["queued_invocation_token"] is None
+    assert ch["running_invocation_token"] is None
+    assert ch["last_terminal_reason"] \
+        == "invalid_queued_started_on_recovery"
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    # The started queued receipt was retired by the pair-scoped sweep.
+    assert _invocation_row(db, ch_token)["decline_reason"] \
+        == "invalid_queued_started_on_recovery"
+    assert _invocation_row(db, ch_token)["status"] == "failed"
+    # Truthful audit: one cancelled wake with the marker revocation flagged.
+    cancelled = [a for a in _wake_audits(db)
+                 if a["action"] == "thread_reply_wake_cancelled"]
+    assert len(cancelled) == 1
+    assert cancelled[0]["payload"]["catchup_suppressed"] is True
+    assert not [a for a in _exchange_audits(db)
+                if a["action"] == "thread_deferral_catchup_minted"]
+    assert db.recover_reply_delivery_state() == []
+
+
+def test_invalid_queued_token_with_pending_marker_mints_nothing(tmp_path):
+    """Queued slot referencing a TERMINAL receipt (invalid queued ownership)
+    with a pending marker: the queued slot is cleared fail-closed and the
+    pending marker is revoked in the same transaction — zero minted/returned
+    tokens."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db)
+    _close_via_grace(db)
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    # Point the queued slot at a TERMINAL receipt (the running receipt was
+    # consumed): invalid queued ownership.
+    db._conn.execute(
+        "UPDATE thread_invocations SET status = 'consumed' "
+        "WHERE invocation_token = ?", (ch_token,),
+    )
+    db._conn.execute(
+        "UPDATE thread_reply_delivery_state SET "
+        "queued_invocation_token = running_invocation_token, "
+        "running_invocation_token = NULL, "
+        "running_from_seq = NULL, running_through_seq = NULL "
+        "WHERE thread_id = 'THR-001' AND agent_name = ?", (CH,),
+    )
+    db._conn.commit()
+    entries = db.recover_reply_delivery_state()
+    ch_entries = [e for e in entries if e.agent_name == CH]
+    assert ch_entries == []
+    ch = _pair_row(db, "THR-001", CH)
+    assert ch["queued_invocation_token"] is None
+    assert ch["running_invocation_token"] is None
+    assert ch["last_terminal_reason"] \
+        == "invalid_queued_token_on_recovery"
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    assert not [a for a in _exchange_audits(db)
+                if a["action"] == "thread_deferral_catchup_minted"]
+    assert db.recover_reply_delivery_state() == []
+
+
+def _corrupt_running_terminal(db: Database, tok: str) -> None:
+    db._conn.execute(
+        "UPDATE thread_invocations SET status = 'consumed' "
+        "WHERE invocation_token = ?", (tok,),
+    )
+    db._conn.commit()
+
+
+def _corrupt_running_missing(db: Database, tok: str) -> None:
+    db._conn.execute(
+        "UPDATE thread_reply_delivery_state SET running_invocation_token = "
+        "'no-such-token-0000' WHERE thread_id = 'THR-001' AND agent_name = ?",
+        (CH,),
+    )
+    db._conn.commit()
+
+
+def _corrupt_running_wrong_pair(db: Database, tok: str) -> None:
+    other = db._conn.execute(
+        "SELECT invocation_token FROM thread_invocations "
+        "WHERE thread_id = 'THR-001' AND agent_name = 'engineering_manager' "
+        "LIMIT 1",
+    ).fetchone()["invocation_token"]
+    db._conn.execute(
+        "UPDATE thread_reply_delivery_state SET running_invocation_token = ? "
+        "WHERE thread_id = 'THR-001' AND agent_name = ?", (other, CH),
+    )
+    db._conn.commit()
+
+
+def _corrupt_running_malformed_range(db: Database, tok: str) -> None:
+    db._conn.execute(
+        "UPDATE thread_reply_delivery_state SET running_from_seq = 5, "
+        "running_through_seq = 1 "
+        "WHERE thread_id = 'THR-001' AND agent_name = ?", (CH,),
+    )
+    db._conn.commit()
+
+
+def _corrupt_running_missing_start(db: Database, tok: str) -> None:
+    db._conn.execute(
+        "UPDATE thread_invocations SET started_at = NULL "
+        "WHERE invocation_token = ?", (tok,),
+    )
+    db._conn.commit()
+
+
+@pytest.mark.parametrize(
+    "corrupt_fn,expected_reason",
+    [
+        (_corrupt_running_terminal,
+         "running_already_terminal_on_recovery"),
+        (_corrupt_running_missing,
+         "invalid_running_token_on_recovery"),
+        (_corrupt_running_wrong_pair,
+         "invalid_running_token_on_recovery"),
+        (_corrupt_running_malformed_range,
+         "malformed_running_range_on_recovery"),
+        (_corrupt_running_missing_start,
+         "running_missing_start_evidence_on_recovery"),
+    ],
+)
+def test_nonrecoverable_running_variants_with_pending_marker_mint_nothing(
+    tmp_path, corrupt_fn, expected_reason,
+):
+    """Every invalid/malformed RUNNING ownership subclass with a pending
+    marker: the slot is cleared fail-closed, the marker is revoked in the
+    same transaction, and recovery returns zero tokens — never minting a
+    catch-up from state it declared untrustworthy."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db)
+    _close_via_grace(db)
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    corrupt_fn(db, ch_token)
+    entries = db.recover_reply_delivery_state()
+    ch_entries = [e for e in entries if e.agent_name == CH]
+    assert ch_entries == []            # zero returned arrivals
+    ch = _pair_row(db, "THR-001", CH)
+    assert ch["queued_invocation_token"] is None
+    assert ch["running_invocation_token"] is None
+    assert ch["last_terminal_reason"] == expected_reason
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    assert not [a for a in _exchange_audits(db)
+                if a["action"] == "thread_deferral_catchup_minted"]
+    # Idempotent repeat recovery + restart safety.
+    assert db.recover_reply_delivery_state() == []
+    db._conn.close()
+    db2 = Database(tmp_path / "happyranch.db")
+    assert db2.recover_reply_delivery_state() == []
+    assert _deferral(db2, CH)[0]["catchup_pending"] == 0
+    row2 = _pair_row(db2, "THR-001", CH)
+    assert row2["queued_invocation_token"] is None
+    assert row2["running_invocation_token"] is None
+
+
+def test_orphan_delivery_row_with_pending_marker_mints_nothing(tmp_path):
+    """A pending marker whose pair has NO delivery-state row at all: the
+    post-loop reconciliation clears the orphaned marker and never mints
+    (the same fail-closed class as the orphan deferral sweep)."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    _pre_claim_deferred_scenario(db)
+    _close_via_grace(db)
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    # Orphan the marker: delete the pair's delivery-state row entirely.
+    db._conn.execute(
+        "DELETE FROM thread_reply_delivery_state "
+        "WHERE thread_id = 'THR-001' AND agent_name = ?", (CH,),
+    )
+    db._conn.commit()
+    entries = db.recover_reply_delivery_state()
+    ch_entries = [e for e in entries if e.agent_name == CH]
+    assert ch_entries == []
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    assert not [a for a in _exchange_audits(db)
+                if a["action"] == "thread_deferral_catchup_minted"]
+    assert db.recover_reply_delivery_state() == []
+
+
+def test_abort_with_pending_marker_mints_nothing_and_clears_marker(tmp_path):
+    """Abort/archive/removal suppression with a pending marker: the discard
+    sets acknowledged = required (full coverage), so the post-loop
+    reconciliation clears the marker and never mints a wake after the human
+    stopped (G5 suppression preserved across the marker lifecycle)."""
+    db = Database(tmp_path / "happyranch.db")
+    _make_thread(db, participants=(EM, CH))
+    ch_token = _pre_claim_deferred_scenario(db)
+    _close_via_grace(db)
+    assert _deferral(db, CH)[0]["catchup_pending"] == 1
+    # Whole-thread abort: terminal suppression for every pair.
+    db.discard_reply_delivery(
+        thread_id="THR-001", decline_reason="founder_aborted",
+        status=ThreadInvocationStatus.FAILED, agent_name=None,
+    )
+    ch = _pair_row(db, "THR-001", CH)
+    assert int(ch["acknowledged_through_seq"]) \
+        == int(ch["required_through_seq"])
+    assert ch["queued_invocation_token"] is None
+    assert ch["running_invocation_token"] is None
+    assert ch["last_terminal_reason"] == "founder_aborted"
+    # The exchange is suppressed — no catch-up, and no marker-driven mint on
+    # a later restart (the scan sees full coverage and clears the marker).
+    assert not [a for a in _exchange_audits(db)
+                if a["action"] == "thread_deferral_catchup_minted"]
+    entries = db.recover_reply_delivery_state()
+    assert entries == []
+    assert _deferral(db, CH)[0]["catchup_pending"] == 0
+    db._conn.close()
+    db2 = Database(tmp_path / "happyranch.db")
+    assert db2.recover_reply_delivery_state() == []
+    assert _deferral(db2, CH)[0]["catchup_pending"] == 0

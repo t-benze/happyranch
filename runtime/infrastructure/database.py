@@ -6764,6 +6764,18 @@ class Database:
             → fail closed: clear the running slot, record a truthful
             diagnostic, never mint/return a runnable token.
 
+        Pending released-deferral catch-up markers (``catchup_pending = 1``)
+        are resolved by the post-loop reconciliation in the same transaction —
+        consumed by a covering slot, minted exactly once when the blocking slot
+        is terminal with no covering replacement, or cleared when fully
+        covered. Every FAIL-CLOSED branch above (both-slots corruption,
+        non-recoverable running slot, invalid queued started/ownership)
+        revokes the pair's pending marker ATOMICALLY in that same transaction,
+        so the reconciliation never mints a catch-up from state the branch
+        declared untrustworthy (TASK-6065): the marker survives only when the
+        blocking slot's terminal outcome was legitimately observed (settlement
+        or a recoverable restart terminalization).
+
         Repeat recovery is idempotent: after a running row is replaced its slot
         holds a queued token, so a second pass retains rather than re-mints.
         BOOTSTRAP / TASK_FOLLOWUP rows are never touched.
@@ -6818,6 +6830,18 @@ class Database:
                         ("corrupt_both_slots_on_recovery", now, now,
                          thread_id, agent_name),
                     )
+                    # TASK-6065: revoke any pending released-deferral catch-up
+                    # marker ATOMICALLY in the same transaction. The marker is
+                    # a promise to mint exactly one post-slot catch-up; this
+                    # fail-closed branch declared the pair's ownership state
+                    # untrustworthy and explicitly never mints, so the marker
+                    # must not survive into the post-loop reconciliation where
+                    # it would fabricate runnable ownership from corrupt state
+                    # (TASK-6063 reproduction). The revocation is audited with
+                    # the corruption diagnostic so the suppression is truthful.
+                    suppressed = self._clear_catchup_pending_uncommitted(
+                        thread_id, agent_name,
+                    )
                     # One truthful cancelled audit per corrupted pair — the
                     # pair-scoped sweep retired its owned obligations with a
                     # diagnostic reason; never mint a replacement.
@@ -6829,6 +6853,7 @@ class Database:
                             "boundary_seq": int(row["required_through_seq"] or 0),
                             "reason": "corrupt_both_slots_on_recovery",
                             "swept_count": swept.rowcount,
+                            "catchup_suppressed": suppressed > 0,
                         },
                     )
                     continue
@@ -6890,6 +6915,14 @@ class Database:
                             "last_terminal_reason = ?, last_terminal_at = ?, "
                             "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
                             (reason, now, now, thread_id, agent_name),
+                        )
+                        # TASK-6065: the non-recoverable running slot is an
+                        # invalid/malformed ownership classification — the
+                        # state is untrustworthy, so any pending released-
+                        # deferral catch-up marker is revoked in the same
+                        # transaction (never minted by the post-loop scan).
+                        self._clear_catchup_pending_uncommitted(
+                            thread_id, agent_name,
                         )
                         continue
 
@@ -7016,6 +7049,13 @@ class Database:
                             ("invalid_queued_started_on_recovery", now, now,
                              thread_id, agent_name),
                         )
+                        # TASK-6065: invalid queued ownership is a fail-closed
+                        # classification — revoke any pending released-deferral
+                        # catch-up marker in the same transaction so the
+                        # post-loop reconciliation can never mint from it.
+                        suppressed = self._clear_catchup_pending_uncommitted(
+                            thread_id, agent_name,
+                        )
                         self._emit_reply_wake_audit(
                             thread_id=thread_id, agent_name=agent_name,
                             action="thread_reply_wake_cancelled",
@@ -7024,6 +7064,7 @@ class Database:
                                 "boundary_seq": int(row["required_through_seq"] or 0),
                                 "reason": "invalid_queued_started_on_recovery",
                                 "swept_count": swept.rowcount,
+                                "catchup_suppressed": suppressed > 0,
                             },
                         )
                     else:
@@ -7035,6 +7076,13 @@ class Database:
                             "updated_at = ? WHERE thread_id = ? AND agent_name = ?",
                             ("invalid_queued_token_on_recovery", now, now,
                              thread_id, agent_name),
+                        )
+                        # TASK-6065: invalid queued ownership is a fail-closed
+                        # classification — revoke any pending released-deferral
+                        # catch-up marker in the same transaction so the
+                        # post-loop reconciliation can never mint from it.
+                        self._clear_catchup_pending_uncommitted(
+                            thread_id, agent_name,
                         )
 
             # TASK-6057 — released-deferral post-slot catch-up reconciliation at
@@ -7052,6 +7100,13 @@ class Database:
             #     (exactly-once in this transaction);
             #   * ``acknowledged == required`` (fully covered) → nothing owed,
             #     consume the marker.
+            # TASK-6065 — the FAIL-CLOSED branches above (both-slots corruption,
+            # non-recoverable running slot, invalid queued started/ownership)
+            # each revoked the pair's pending marker ATOMICALLY in the same
+            # transaction, so the mint rule below can never fabricate runnable
+            # ownership from state those branches declared untrustworthy: an
+            # authoritative fail-closed terminal classification always survives
+            # into this reconciliation as a revoked marker, never as a mint.
             for d in self._conn.execute(
                 "SELECT DISTINCT thread_id, agent_name "
                 "FROM thread_exchange_deferrals WHERE catchup_pending = 1",
@@ -7502,15 +7557,18 @@ class Database:
 
     def _clear_catchup_pending_uncommitted(
         self, thread_id: str, agent_name: str,
-    ) -> None:
+    ) -> int:
         """Consume every pending catch-up marker for the pair — one
         range-covering wake satisfies all of them. Runs inside the open
-        transaction."""
-        self._conn.execute(
+        transaction. Returns the number of deferral rows whose marker was
+        actually cleared (0 when the pair held no pending marker), so a
+        caller can record a truthful audit of marker revocation."""
+        cur = self._conn.execute(
             "UPDATE thread_exchange_deferrals SET catchup_pending = 0 "
             "WHERE thread_id = ? AND agent_name = ?",
             (thread_id, agent_name),
         )
+        return cur.rowcount
 
     def _exchange_has_live_cohort_wake(
         self, thread_id: str, open_seq: int, cohort: list[str],
