@@ -240,6 +240,19 @@ class SessionTracker:
         with self._lock:
             return len(self._active)
 
+    def iter_active(self) -> list[tuple[str, str, str]]:
+        """Snapshot of ``(task_id, agent_name, session_id)`` per active session.
+
+        Read-only advisory accessor (THR-195 / TASK-5971): lets the daemon
+        report live sessions by agent without exposing the tracker's internal
+        maps. Returns a snapshot safe to iterate without holding the lock.
+        """
+        with self._lock:
+            return [
+                (task_id, agent, session_id)
+                for (task_id, agent), session_id in self._active.items()
+            ]
+
     def clear(self, task_id: str, agent: str) -> None:
         binding_lease = self._get_binding_lease(task_id, agent)
         with binding_lease:

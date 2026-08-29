@@ -296,6 +296,19 @@ async def _lifespan(app: FastAPI):
         direct_connect_projection_sweep_loop(state)
     )
 
+    # ── Daemon-managed workspace cleanup scheduler (THR-195 seq 129) ──
+    # System-default capability independent of user Schedules: the daemon
+    # periodically measures workspace aggregates and triggers a report-only
+    # cleanup task for the responsible agent with fresh advisory context.
+    # Measurement is bounded + fail-open, so this loop can never block
+    # daemon operation or task/session spawning.
+    from runtime.daemon.workspace_cleanup_scheduler import (
+        workspace_cleanup_scheduler_loop,
+    )
+    workspace_cleanup_scheduler_task = asyncio.create_task(
+        workspace_cleanup_scheduler_loop(state)
+    )
+
     # ── Dashboard projection cold-start + periodic refresh ────────────
     # THR-129: per-org durable last-known-good cache, refreshed every 10s.
     # Load persisted snapshot synchronously (never block the event loop),
@@ -361,6 +374,7 @@ async def _lifespan(app: FastAPI):
             t.cancel()
         zombie_reaper_task.cancel()
         direct_connect_projection_sweep_task.cancel()
+        workspace_cleanup_scheduler_task.cancel()
         from runtime.daemon.jobs_runner import terminate_all_inflight
         await terminate_all_inflight(grace_seconds=5)
         await state.queue.stop()

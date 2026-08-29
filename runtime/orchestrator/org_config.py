@@ -188,6 +188,12 @@ class OrgConfig:
     threads_enabled: bool = True
     threads_default_turn_cap: int = 500
     threads_invocation_timeout_seconds: int | None = None
+    # THR-195 / TASK-6036: daemon-managed workspace cleanup scheduler kill
+    # switch (enabled by default). Set ``workspace_cleanup.enabled: false``
+    # in the org config.yaml to disable the capability for this org. This is
+    # an existing daemon/org config mechanism only — no new public
+    # API/CLI/UI surface.
+    workspace_cleanup_enabled: bool = True
     # THR-032 Phase 2: char budget for the per-task MEMORY-DIGEST push block.
     # Default ~1500 chars ≈ a dozen pointer lines; set to 0 to disable the
     # digest entirely. Must be >= 0.
@@ -816,6 +822,31 @@ def _parse_threads(block: dict, path: str) -> dict:
     return kwargs
 
 
+def _parse_workspace_cleanup(block: dict, path: str) -> dict:
+    """Parse the workspace_cleanup: block and return kwargs for OrgConfig.
+
+    THR-195 / TASK-6036: an enabled-by-default kill switch for the
+    daemon-managed workspace cleanup scheduler. ``workspace_cleanup.enabled``
+    defaults to True when the block or the key is absent; set it to false to
+    disable the capability for the org. Existing daemon/org config mechanism
+    only (no new public API/CLI/UI surface).
+    """
+    if not isinstance(block, dict):
+        raise OrgConfigError(f"{path}: workspace_cleanup must be a mapping")
+
+    kwargs: dict = {}
+
+    if "enabled" in block:
+        enabled = block["enabled"]
+        if not isinstance(enabled, bool):
+            raise OrgConfigError(
+                f"{path}: workspace_cleanup.enabled must be a boolean, got {enabled!r}"
+            )
+        kwargs["workspace_cleanup_enabled"] = enabled
+
+    return kwargs
+
+
 def _build_org_config(data: dict, path: str) -> OrgConfig:
     """Build OrgConfig from a parsed YAML dict."""
     timeout = data.get("session_timeout_seconds")
@@ -849,6 +880,15 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
     threads_kwargs: dict = {}
     if threads_block is not None:
         threads_kwargs = _parse_threads(threads_block, path)
+
+    # THR-195 / TASK-6036: daemon-managed workspace cleanup scheduler kill
+    # switch. Absent block/key -> enabled (default True).
+    workspace_cleanup_block = data.get("workspace_cleanup")
+    workspace_cleanup_kwargs: dict = {}
+    if workspace_cleanup_block is not None:
+        workspace_cleanup_kwargs = _parse_workspace_cleanup(
+            workspace_cleanup_block, path,
+        )
 
     # THR-032 Phase 2: memory_digest_budget — char budget for per-task
     # MEMORY-DIGEST push block. Default 1500; 0 disables the digest.
@@ -952,6 +992,7 @@ def _build_org_config(data: dict, path: str) -> OrgConfig:
         memory_search=search_cfg,
         memory_compaction=comp_cfg,
         **threads_kwargs,
+        **workspace_cleanup_kwargs,
     )
 
 
