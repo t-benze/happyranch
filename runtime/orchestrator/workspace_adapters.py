@@ -394,9 +394,12 @@ def materialize_workspace_skills_union(
             ["task", "thread", "wake", "dream", "schedule", "bootstrap"])
     """
     with _workspace_skills_transaction(workspace):
-        return _materialize_context_union(
+        # Executor switch must publish through the same canonical function as
+        # every ordinary launch.  That function already derives the complete
+        # ordinary-context union and owns the single final publication barrier.
+        return _materialize_unified_canonical(
             workspace, settings,
-            slug=slug, contexts=contexts, provider=provider,
+            slug=slug, context="bootstrap", provider=provider,
             agent_name=agent_name, team=team,
             skills_root=skills_root, org_root=org_root, db=db,
         )
@@ -572,12 +575,52 @@ def _materialize_context_union(
         )
         expected_specs.extend(custom_specs)
 
-    # ── Reconcile ONCE with the full union ─────────────────────────
-    for subdir in (".claude/skills", ".agents/skills"):
-        materializer.repair_workspace_skills(
-            expected_specs, workspace, subdir,
-        )
+    return _publish_canonical_specs(
+        materializer=materializer, expected_specs=expected_specs,
+        workspace=workspace, slug=slug, org_root=org_root, db=db,
+    )
 
+
+def _publish_canonical_specs(
+    *, materializer: SymlinkMaterializer, expected_specs: list[dict],
+    workspace: Path, slug: str, org_root: Path | None, db,
+) -> list[dict]:
+    """Authoritatively filter and publish one canonical spec set."""
+    # Lock order is workspace transaction -> org publication barrier -> DB
+    # reads. Purge takes the same org barrier before its SQLite transaction.
+    # Candidate building and session launch stay outside this narrow block;
+    # the final authoritative read and both repairs are one lexical unit.
+    if db is not None and org_root is not None:
+        from runtime.skills.custom import service
+
+        conn = getattr(db, "_conn", db)
+        with service.canonical_publication_barrier(slug):
+            current_custom = {
+                row["slug"]: row
+                for row in conn.execute(
+                    "SELECT slug, current_version_id, purged_at "
+                    "FROM custom_skills WHERE org_slug=?",
+                    (slug,),
+                ).fetchall()
+            }
+            expected_specs = [
+                spec for spec in expected_specs
+                if spec["slug"] not in current_custom
+                or (
+                    current_custom[spec["slug"]]["purged_at"] is None
+                    and str(current_custom[spec["slug"]]["current_version_id"])
+                    == str(spec["version"])
+                )
+            ]
+            for subdir in (".claude/skills", ".agents/skills"):
+                materializer.repair_workspace_skills(
+                    expected_specs, workspace, subdir,
+                )
+    else:
+        for subdir in (".claude/skills", ".agents/skills"):
+            materializer.repair_workspace_skills(
+                expected_specs, workspace, subdir,
+            )
     return expected_specs
 
 
@@ -747,44 +790,10 @@ def _materialize_unified_canonical(
         )
         expected_specs.extend(custom_specs)
 
-    # ── Reconcile ONCE with unified expected set ────────────────────
-    # Lock order is workspace transaction -> org publication barrier -> DB
-    # reads. Purge takes the same org barrier before its SQLite transaction.
-    # Candidate building and session launch stay outside this narrow block;
-    # the final authoritative read and both repairs are one lexical unit.
-    if db is not None and org_root is not None:
-        from runtime.skills.custom import service
-
-        conn = getattr(db, "_conn", db)
-        with service.canonical_publication_barrier(slug):
-            current_custom = {
-                row["slug"]: row
-                for row in conn.execute(
-                    "SELECT slug, current_version_id, purged_at "
-                    "FROM custom_skills WHERE org_slug=?",
-                    (slug,),
-                ).fetchall()
-            }
-            expected_specs = [
-                spec for spec in expected_specs
-                if spec["slug"] not in current_custom
-                or (
-                    current_custom[spec["slug"]]["purged_at"] is None
-                    and str(current_custom[spec["slug"]]["current_version_id"])
-                    == str(spec["version"])
-                )
-            ]
-            for subdir in (".claude/skills", ".agents/skills"):
-                materializer.repair_workspace_skills(
-                    expected_specs, workspace, subdir,
-                )
-    else:
-        for subdir in (".claude/skills", ".agents/skills"):
-            materializer.repair_workspace_skills(
-                expected_specs, workspace, subdir,
-            )
-
-    return expected_specs
+    return _publish_canonical_specs(
+        materializer=materializer, expected_specs=expected_specs,
+        workspace=workspace, slug=slug, org_root=org_root, db=db,
+    )
 
 
 def _build_custom_skill_canonical_specs(

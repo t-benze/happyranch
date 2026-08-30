@@ -431,14 +431,15 @@ def test_purge_rolls_back_policy_withdrawal_and_tombstone_on_failure(
     assert len(service.current_rules(conn, skill_id)) == 1
 
 
-def test_purge_after_selection_is_excluded_at_unified_both_root_publication(
+def test_set_executor_purge_after_selection_excludes_skill_from_both_roots(
     client_with_runtime, monkeypatch, tmp_path,
 ):
-    """A committed purge wins before the shipping seam's final re-read."""
+    """The real executor-switch route publishes only the authoritative set."""
     import threading
     from contextlib import contextmanager
 
-    from runtime.orchestrator.workspace_adapters import _materialize_unified_canonical
+    from runtime.daemon.routes import agents as agent_routes
+    from runtime.orchestrator import workspace_adapters as wa
     from runtime.skills.custom import service
 
     client, org = client_with_runtime
@@ -466,7 +467,7 @@ def test_purge_after_selection_is_excluded_at_unified_both_root_publication(
 
     @contextmanager
     def paused_barrier(org_slug):
-        if threading.current_thread().name == "canonical-publisher":
+        if threading.get_ident() == outcome.get("publisher_ident"):
             selected.set()
             assert release.wait(2)
         with original_barrier(org_slug):
@@ -474,15 +475,26 @@ def test_purge_after_selection_is_excluded_at_unified_both_root_publication(
 
     monkeypatch.setattr(service, "canonical_publication_barrier", paused_barrier)
     outcome = {}
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    workspace = org.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    original_materialize = wa._materialize_unified_canonical
+
+    def capture_specs(*args, **kwargs):
+        outcome["publisher_ident"] = threading.get_ident()
+        specs = original_materialize(*args, **kwargs)
+        outcome["specs"] = specs
+        return specs
+
+    monkeypatch.setattr(wa, "_materialize_unified_canonical", capture_specs)
+    monkeypatch.setattr(
+        agent_routes.ContextBuilder, "ensure_workspace_ready",
+        lambda self, *args, **kwargs: None,
+    )
 
     def publish():
-        outcome["specs"] = _materialize_unified_canonical(
-            workspace, org.settings, slug="alpha", context="task", provider="codex",
-            agent_name="dev_agent", team="engineering", task_id="TASK-RACE",
-            session_id="sess-race", org_root=org.root, db=org.db,
-            skills_root=org.settings.project_root / "runtime" / "skills",
+        outcome["response"] = client.put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": "codex"},
         )
 
     worker = threading.Thread(target=publish, name="canonical-publisher")
@@ -497,13 +509,14 @@ def test_purge_after_selection_is_excluded_at_unified_both_root_publication(
     release.set()
     worker.join(timeout=3)
     assert not worker.is_alive()
+    assert outcome["response"].status_code == 200, outcome["response"].text
 
     slugs = {spec["slug"] for spec in outcome["specs"]}
     assert "purged-during-build" not in slugs
     assert "unaffected-during-build" in slugs
     beta_workspace = tmp_path / "beta-workspace"
     beta_workspace.mkdir()
-    beta_specs = _materialize_unified_canonical(
+    beta_specs = original_materialize(
         beta_workspace, org.settings, slug="beta", context="task", provider="codex",
         agent_name="dev_agent", team="engineering", task_id="TASK-BETA",
         session_id="sess-beta", org_root=org.root, db=org.db,
