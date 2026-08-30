@@ -277,6 +277,17 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         # Fire the followup here instead.  Disjoint with the cancel route's
         # Phase 1b (which fires for PENDING/BLOCKED only — tasks that had no
         # live subprocess at cancel time), so no double-fire risk.
+        # THR-181 Track A (founder lifecycle envelope): cancellation during the
+        # continued turn spends the single-use envelope fail-closed so the
+        # continuation is never re-used.
+        try:
+            db.spend_authority_continue_envelope_if_active(
+                task_id,
+                audit_agent=agent,
+                error="cancelled during the continued turn",
+            )
+        except Exception:  # pragma: no cover - fail-closed defensive
+            pass
         if refetch is not None:
             _maybe_post_thread_followup(
                 orch, task_id,
@@ -296,15 +307,150 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         return
 
     orch._log_step_result(task_id, result, report)
-    _consume_completion_report(orch, task_id, report)
+    # THR-181 Track A: resolve the IMMUTABLE task-result row id whose
+    # CompletionReport produced this decision. The authority hook derives its
+    # candidate claim from it, so restart/recovery re-entry of the SAME row
+    # maps to the SAME candidate (never a second evaluation).
+    result_row_id = None
+    if report is not None and isinstance(
+        getattr(result, "session_id", None), str
+    ) and result.session_id:
+        _result_row = db.get_latest_task_result(task_id, agent, result.session_id)
+        if _result_row is not None:
+            result_row_id = _result_row["id"]
+    _consume_completion_report(orch, task_id, report, result_row_id=result_row_id)
 
 
-def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> None:
+def _is_continued_turn_decision(active_envelope, result_row_id: int | None) -> bool:
+    """THR-181 Track A (founder lifecycle envelope): is this consumed report the
+    continued turn's NEW decision (gate by the envelope), as opposed to a
+    replay of the original escalate's immutable result row (ordinary path)?
+
+    The envelope is bound to the original escalate's causal result row
+    (``causal_event_id == "result:<row_id>"``). A decision whose result row
+    is THAT row is a duplicate delivery of the already-granted escalation
+    and must ride the ordinary fail-closed path (hook eligibility/claim
+    CAS); a decision from ANY other row (or a row-less report arriving
+    inside the continuation window) is the continued turn.
+    """
+    if active_envelope is None:
+        return False
+    causal = active_envelope["causal_event_id"] or ""
+    if causal.startswith("result:"):
+        try:
+            causal_row = int(causal.split(":", 1)[1])
+        except (ValueError, IndexError):
+            causal_row = None
+        if causal_row is not None and result_row_id == causal_row:
+            return False
+    return True
+
+
+def _spend_envelope_as_violation(
+    orch: "Orchestrator", db, task_id: str, agent: str, envelope,
+    *, decision_family: str, error: str,
+) -> None:
+    """THR-181 Track A (founder lifecycle envelope): spend the single-use continuation
+    envelope as ``violated`` (exactly-once CAS + atomic audit row). The
+    attempted decision family is recorded bounded (never raw prose); the
+    attempt is never silently discarded."""
+    try:
+        db.consume_authority_continue_envelope(
+            envelope_id=envelope["id"],
+            root_task_id=task_id,
+            decision_family=decision_family,
+            expected_manager_agent=agent,
+            expected_session_id=envelope["manager_session_id"],
+            expected_causal_event_id=envelope["causal_event_id"],
+            expected_causal_event_digest=envelope["causal_event_digest"],
+            expected_policy_id=envelope["policy_id"],
+            expected_policy_version=envelope["policy_version"],
+            expected_policy_digest=envelope["policy_digest"],
+            expected_clause_id=envelope["clause_id"],
+            expected_action=envelope["action"],
+            audit_agent=agent,
+            error=error,
+            violation=True,
+        )
+    except Exception as exc:  # pragma: no cover - fail-closed defensive
+        # A consumption write defect can never permit continuation: the
+        # escalation path below still runs fail-closed.
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "envelope spend failed for %s: %s", task_id, exc,
+        )
+
+
+def _spend_envelope_as_consumed(
+    orch: "Orchestrator", db, task_id: str, agent: str, envelope,
+    *, decision_family: str,
+) -> None:
+    """THR-181 Track A (founder lifecycle envelope): consume the single-use
+    continuation envelope as ``consumed`` (a normally validated manager decision).
+    Exactly-once; a concurrent consumer that already spent it is a no-op."""
+    try:
+        db.consume_authority_continue_envelope(
+            envelope_id=envelope["id"],
+            root_task_id=task_id,
+            decision_family=decision_family,
+            expected_manager_agent=agent,
+            expected_session_id=envelope["manager_session_id"],
+            expected_causal_event_id=envelope["causal_event_id"],
+            expected_causal_event_digest=envelope["causal_event_digest"],
+            expected_policy_id=envelope["policy_id"],
+            expected_policy_version=envelope["policy_version"],
+            expected_policy_digest=envelope["policy_digest"],
+            expected_clause_id=envelope["clause_id"],
+            expected_action=envelope["action"],
+            audit_agent=agent,
+        )
+    except Exception as exc:  # pragma: no cover - fail-closed defensive
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "envelope consume failed for %s: %s", task_id, exc,
+        )
+
+
+def _escalate_continued_turn_violation(
+    orch: "Orchestrator", task_id: str, agent: str, *, attempted: str,
+    last_summary: str = "",
+) -> None:
+    """THR-181 Track A: fail closed when a continued turn attempts to replace
+    its same root, using the EXISTING ordinary
+    founder-escalation path (``try_escalate`` CAS -> escalation audit row ->
+    notification -> thread projection), with a server-derived reason. The
+    authority hook is deliberately not used to authorize replacement."""
+    db = orch._db
+    reason = (
+        f"authority-continuation envelope violation: continued turn "
+        f"produced {attempted!r} outside the single-use permitted action; "
+        f"escalated to founder"
+    )
+    if not db.try_escalate(task_id, reason=reason):
+        # Cancellation/terminal won the race — the founder's state wins.
+        return
+    orch._audit.log_escalation(task_id, agent, reason)
+    orch.notify_escalated(
+        task_id=task_id, agent=agent, reason=reason, last_summary=last_summary,
+    )
+    _maybe_post_thread_escalation(orch, task_id, reason=reason)
+
+
+def _consume_completion_report(
+    orch: "Orchestrator", task_id: str, report,
+    *, result_row_id: int | None = None,
+) -> None:
     """Consume a persisted CompletionReport and apply its transition.
 
     Used both inline in ``run_step_impl`` (after ``_log_step_result``) and
     from the boot sweep when an orphaned (unconsumed) ``task_result`` row is
     discovered for a task whose executor process died mid-turn.
+
+    ``result_row_id`` is the immutable ``task_results`` row id that produced
+    ``report`` — the authority hook binds its candidate identity to it so a
+    restart replay cannot mint a second candidate/evaluation. When omitted it
+    is resolved deterministically to the latest task_results row for the
+    task (the row every shipping call site built the report from).
 
     Re-fetches the task from the DB so it works from any call site (the
     inline ``run_step_impl`` call site already has the task in scope, but
@@ -316,12 +462,33 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
     if task is None:
         return
     agent = task.assigned_agent or "unknown"
+    # THR-181 Track A (founder lifecycle envelope): the single-use continuation
+    # envelope, when ACTIVE, marks this consumption as the continued turn's
+    # decision — PROVIDED the consumed report is NOT a replay of the original
+    # escalate's immutable result row (the envelope's causal event). A replay
+    # of the same row is a duplicate delivery of the already-granted
+    # escalate and must ride the ordinary fail-closed path (the hook's
+    # eligibility/claim CAS), never the envelope gate.
+    active_envelope = db.get_active_authority_continue_envelope(task_id)
+    if result_row_id is None and report is not None:
+        row = db.execute(
+            "SELECT id FROM task_results WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if row is not None:
+            result_row_id = row["id"]
     # ``orchestration_step_count`` was already incremented by
     # ``try_claim_for_step`` at the top of ``run_step_impl``; use its
     # current value (not +1) for audit-log keying.
     next_count = task.orchestration_step_count
 
     if report.status == "blocked":
+        if _is_continued_turn_decision(active_envelope, result_row_id):
+            _spend_envelope_as_consumed(
+                orch, db, task_id, agent, active_envelope,
+                decision_family="blocked",
+            )
         if report.waiting_on_job_ids:
             # Spec §5.3: block-on-jobs branch. In-place transition, NOT _fail.
             import json as _json
@@ -386,6 +553,28 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
         decision = NextStep(action="done", summary=report.output_summary)
         _step_audit_id = None
 
+    # The envelope is a single-use lifecycle/causality receipt. It does not
+    # whitelist an exact manager action: after normal parsing, the continued
+    # turn follows the ordinary manager-decision validation and dispatch path.
+    # Independent same-root identity, cancellation, CAS, budget, and protected-
+    # boundary fences remain daemon-owned and non-overridable.
+    if _is_continued_turn_decision(active_envelope, result_row_id):
+        if decision.action == "supersede":
+            _spend_envelope_as_violation(
+                orch, db, task_id, agent, active_envelope,
+                decision_family=decision.action,
+                error="continued turn attempted to replace the same root",
+            )
+            _escalate_continued_turn_violation(
+                orch, task_id, agent, attempted=decision.action,
+                last_summary=report.output_summary,
+            )
+            return
+        _spend_envelope_as_consumed(
+            orch, db, task_id, agent, active_envelope,
+            decision_family=decision.action,
+        )
+
     # ---- 7. Dispatch on action ----
     if decision.action == "done":
         _complete(
@@ -420,6 +609,27 @@ def _consume_completion_report(orch: "Orchestrator", task_id: str, report) -> No
             return
         # Root: park in escalated for the founder (try_escalate* now writes the
         # top-level ESCALATED status; behavior otherwise unchanged).
+        # THR-181 Track A: BEFORE the manager root's proposed escalation is
+        # committed, run exactly one audited LLM authority evaluation of the
+        # proposed reason against the release-controlled policy for this
+        # team (Engineering v1). The hook returns "continue_same_root" only
+        # when the policy's narrow continue clause matched and the named
+        # same-root permitted action was executed + audited atomically;
+        # EVERY other outcome — ambiguity, malformed/missing/unknown output,
+        # timeout/provider error, policy/team/digest mismatch, audit failure,
+        # cancellation, exhausted limits, stale/CAS conflict, restart-
+        # incomplete state, ineligibility, or any successor/supersede/
+        # revisit/fresh-root signal — fails closed to "escalate", which
+        # proceeds through the exact existing escalation path below.
+        from runtime.orchestrator.authority import run_authority_hook
+        hook_outcome = run_authority_hook(
+            orch, task, agent, reason, result_row_id,
+        )
+        if hook_outcome == "continue_same_root":
+            # Same-root continuation already executed (audited): the root
+            # returned to pending for its next manager decision step and was
+            # re-enqueued. The escalation is NOT committed.
+            return
         # Atomic CAS: transition to ESCALATED only if not cancelled
         # or terminal. Closes the post-_is_already_terminal race (Codex P2 on
         # PR #34) by serializing against /cancel via the Database RLock.
@@ -1502,11 +1712,13 @@ def _resolved_escalation_header_if_applicable(
     orch: "Orchestrator", task_id: str,
 ) -> str | None:
     """Return a 2-3 line header on the first manager step after a founder
-    `resolve-escalation --continue`, otherwise None.
+    `resolve-escalation --continue` OR an authority-policy same-root
+    continuation, otherwise None.
 
-    Trigger: the most recent `escalation_resolved` audit entry for this task
-    has a higher row id than the most recent `orchestration_step` entry —
-    i.e. the founder continued AND the manager hasn't run yet. Audit `id` is
+    Trigger: the most recent `escalation_resolved` OR
+    `authority_continued_same_root` audit entry for this task has a higher
+    row id than the most recent `orchestration_step` entry — i.e. the
+    continuation happened AND the manager hasn't run yet. Audit `id` is
     autoincrement, so id-ordering is equivalent to chronological ordering.
     Once the manager produces its first decision after re-enqueue,
     `log_orchestration_step` writes a row with a higher id and this helper
@@ -1514,13 +1726,44 @@ def _resolved_escalation_header_if_applicable(
     """
     logs = orch._db.get_audit_logs(task_id)
     last_resolved = None
+    last_authority_continue = None
     last_step = None
     for entry in logs:
         action = entry["action"]
         if action == "escalation_resolved":
             last_resolved = entry
+        elif action == "authority_continued_same_root":
+            last_authority_continue = entry
         elif action == "orchestration_step":
             last_step = entry
+    if last_authority_continue is not None and (
+        last_step is None or last_step["id"] < last_authority_continue["id"]
+    ):
+        # THR-181 Track A (founder lifecycle envelope): the continuation header is the
+        # continued turn's same-root lifecycle notice. Fail-closed: it is
+        # shown ONLY while the single-use continuation envelope is ACTIVE for
+        # the root — a stale/resolved/replayed continuation without a live
+        # envelope never presents as a continuation (ordinary turn instead).
+        if orch._db.get_active_authority_continue_envelope(task_id) is None:
+            return None
+        payload = last_authority_continue["payload"] or {}
+        policy_id = payload.get("policy_id", "(unknown policy)")
+        policy_version = payload.get("policy_version", "?")
+        clause_id = payload.get("clause_id", "(unknown clause)")
+        action = payload.get("action", "(unknown action)")
+        return (
+            f"AUTHORITY POLICY CONTINUED SAME ROOT: policy {policy_id} "
+            f"v{policy_version} matched clause {clause_id} "
+            f"(permitted action: {action}).\n"
+            "Your proposed escalation was not committed; continue the same "
+            "root within that permitted action.\n"
+            "THIS TURN USES YOUR ORDINARY CONFIGURED EXECUTOR PERMISSIONS "
+            "and normal manager-decision validation. The single-use lifecycle "
+            "envelope is not an exact-action whitelist. Same-root identity, "
+            "cancellation, replay, CAS, budgets, protected boundaries, and "
+            "terminal audit remain daemon-owned; supersession, successor, "
+            "revisit, and fresh-root replacement remain outside this grant.\n\n"
+        )
     if last_resolved is None:
         return None
     if last_step is not None and last_step["id"] > last_resolved["id"]:
@@ -1677,6 +1920,20 @@ def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
     # overwrite the cancel route's "cancelled by <actor>: ..." note.
     if _is_already_terminal(orch, task_id):
         return
+    # THR-181 Track A (founder lifecycle envelope): a failure closes the single-use
+    # continuation window fail-closed — the continuation was never exercised
+    # for its permitted action and must never be re-used.
+    try:
+        _t = orch._db.get_task(task_id)
+        orch._db.spend_authority_continue_envelope_if_active(
+            task_id,
+            audit_agent=(
+                _t.assigned_agent if _t is not None else "orchestrator"
+            ) or "orchestrator",
+            error="task failed without the permitted continued-turn decision",
+        )
+    except Exception:  # pragma: no cover - fail-closed defensive
+        pass
     # Clear any in-flight chain so the CLI/Web UI doesn't show a chain strip
     # on a FAILED task. The chain can't re-activate (the task is terminal),
     # but the dangling state is cosmetically misleading. Always-clear is

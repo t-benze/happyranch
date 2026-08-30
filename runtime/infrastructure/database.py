@@ -137,6 +137,17 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Terminal statuses that must never be continued by the authority hook
+# (mirrors ``authority._TERMINAL_STATUSES``; kept here so the DB-level
+# consumption recheck needs no orchestrator import).
+_AUTHORITY_TERMINAL_STATUSES = frozenset({
+    "completed", "failed", "superseded", "cancelled",
+})
+
+# Child task-result verdicts that do NOT block a same-root continuation.
+_AUTHORITY_APPROVED_VERDICTS = frozenset({"APPROVE", "PASS"})
+
+
 def _authority_claim_key(
     root_task_id: str,
     manager_session_id: str,
@@ -2049,6 +2060,78 @@ class Database:
             CREATE TRIGGER IF NOT EXISTS authority_audit_no_delete
                 BEFORE DELETE ON authority_audit
                 BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;
+
+            -- THR-181 Track A (founder lifecycle envelope): the single-use continuation
+            -- envelope. Minted ATOMICALLY with ``commit_authority_continue_
+            -- same_root`` (state='active'), bound 1:1 to the authority
+            -- candidate/evaluation and to the immutable causal task-result row,
+            -- and consumed EXACTLY ONCE by the continued turn's normally
+            -- validated manager decision (``active -> consumed``), or spent
+            -- fail-closed when the lifecycle window aborts (``violated``).
+            -- DB-level enforcement (not only Python): no delete, immutable
+            -- identity, and a narrow finite lifecycle transition. Additive
+            -- table (same class as the merged authority_candidates/evaluations/
+            -- audit foundation) — no existing column or overloaded-column
+            -- semantics is touched.
+            CREATE TABLE IF NOT EXISTS authority_continue_envelopes (
+                id                   TEXT PRIMARY KEY,
+                candidate_id         TEXT NOT NULL UNIQUE REFERENCES authority_candidates(id),
+                root_task_id         TEXT NOT NULL,
+                team                 TEXT NOT NULL,
+                manager_agent        TEXT NOT NULL,
+                manager_session_id   TEXT NOT NULL,
+                causal_event_id      TEXT NOT NULL,
+                causal_event_digest  TEXT NOT NULL,
+                policy_id            TEXT NOT NULL,
+                policy_version       TEXT NOT NULL,
+                policy_digest        TEXT NOT NULL,
+                clause_id            TEXT NOT NULL,
+                action               TEXT NOT NULL
+                    CHECK (action IN ('escalate_to_founder','continue_same_root')),
+                state                TEXT NOT NULL DEFAULT 'active'
+                    CHECK (state IN ('active','consumed','violated')),
+                consumed_at          TEXT,
+                created_at           TEXT NOT NULL,
+                updated_at           TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_envelopes_root_state
+                ON authority_continue_envelopes(root_task_id, state);
+
+            CREATE TRIGGER IF NOT EXISTS authority_continue_envelopes_no_delete
+                BEFORE DELETE ON authority_continue_envelopes
+                BEGIN SELECT RAISE(ABORT, 'authority continue envelopes cannot be deleted'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_continue_envelopes_identity_immutable
+                BEFORE UPDATE ON authority_continue_envelopes
+                WHEN OLD.candidate_id != NEW.candidate_id
+                  OR OLD.root_task_id != NEW.root_task_id
+                  OR OLD.team != NEW.team
+                  OR OLD.manager_agent != NEW.manager_agent
+                  OR OLD.manager_session_id != NEW.manager_session_id
+                  OR OLD.causal_event_id != NEW.causal_event_id
+                  OR OLD.causal_event_digest != NEW.causal_event_digest
+                  OR OLD.policy_id != NEW.policy_id
+                  OR OLD.policy_version != NEW.policy_version
+                  OR OLD.policy_digest != NEW.policy_digest
+                  OR OLD.clause_id != NEW.clause_id
+                  OR OLD.action != NEW.action
+                  OR OLD.created_at != NEW.created_at
+                BEGIN
+                    SELECT RAISE(ABORT, 'authority continue envelope identity is immutable');
+                END;
+            CREATE TRIGGER IF NOT EXISTS authority_continue_envelopes_lifecycle_guard
+                BEFORE UPDATE ON authority_continue_envelopes
+                WHEN NOT (
+                    -- active -> consumed|violated: exactly-once; consumed_at
+                    -- is stamped exactly once (NULL -> value).
+                    (OLD.state = 'active' AND NEW.state IN ('consumed','violated')
+                     AND OLD.consumed_at IS NULL AND NEW.consumed_at IS NOT NULL)
+                    -- no-op on the guarded columns (e.g. updated_at-only writes).
+                    OR (OLD.state = NEW.state
+                        AND NEW.consumed_at IS OLD.consumed_at)
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'authority continue envelope lifecycle is restricted');
+                END;
 
             -- DB-level lifecycle enforcement (not only Python): blocks fabrication
             -- through a raw ``Database.execute`` UPDATE. Only the intended finite
@@ -9907,13 +9990,16 @@ class Database:
         )
         return [dict(row) for row in cur.fetchall()]
 
-    # --- THR-181 Track A Slice 1: authority candidate/evaluation/audit API ---
+    # --- THR-181 Track A: authority candidate/evaluation/audit API ---
     #
     # Narrow, additive persistence for the pre-escalation authority-evaluation
-    # foundation. No evaluator is invoked here and no policy is enforced — these
-    # methods only persist/read controlled records. Prose-bearing content is
-    # stored as digests; raw bearer/provider credentials, task prose, and
-    # unredacted model exchanges are never accepted or persisted.
+    # foundation, consumed by the authority hook (runtime/orchestrator/
+    # authority.py). No evaluator is invoked HERE and no policy is enforced
+    # HERE — these methods only persist/read controlled records — but they are
+    # the durable surface the hook claims, records, and consumes through.
+    # Prose-bearing content is stored as digests; raw bearer/provider
+    # credentials, task prose, and unredacted model exchanges are never
+    # accepted or persisted.
 
     @_synchronized
     def claim_authority_candidate(
@@ -10208,6 +10294,454 @@ class Database:
         )
         self._conn.commit()
         return cur.rowcount == 1
+
+    @_synchronized
+    def commit_authority_continue_same_root(
+        self,
+        *,
+        task_id: str,
+        candidate_id: str,
+        expected_manager_agent: str,
+        expected_session: str,
+        expected_team: str,
+        expected_policy_id: str,
+        expected_policy_version: str,
+        expected_policy_digest: str,
+        expected_prompt_id: str,
+        expected_prompt_version: str,
+        expected_prompt_digest: str,
+        expected_model_id: str,
+        expected_model_version: str,
+        expected_model_digest: str,
+        expected_input_digest: str,
+        expected_causal_event_id: str,
+        expected_max_orchestration_steps: int,
+        expected_max_revise_rounds: int,
+        expected_status: TaskStatus,
+        expected_block_kind: BlockKind | None,
+        note: str,
+        audit_agent: str,
+        authority_continue_payload: dict,
+        hook_outcome_payload: dict,
+        envelope_clause_id: str,
+        envelope_action: str,
+        envelope_causal_event_digest: str,
+    ) -> bool:
+        """THR-181 Track A: atomic same-root continuation CAS + full audit.
+
+        Executes the authority hook's CONTINUE_SAME_ROOT permitted action in
+        ONE transaction. Before the still-claimed root is returned to PENDING,
+        the COMPLETE current fence set is atomically re-validated against
+        live state — every category the hook used before/during evaluation
+        (candidate/policy/input identity, manager ownership and session,
+        exact team, root status, cancellation, block/active-work, revisit/
+        thread/successor lineage, orchestration and revise budgets, zombie/
+        partial-work evidence, adverse child verdicts). Any drift that landed
+        while the evaluator ran — cancellation, session/manager/team change,
+        block, active work, a successor/revisit/thread signal, an exhausted
+        budget, partial-work evidence, an adverse child verdict, or a
+        candidate/policy/input mismatch — rolls the whole transaction back
+        and returns False (no continuation).
+
+        Only when every recheck passes are BOTH the
+        ``authority_continued_same_root`` and ``authority_hook`` audit rows
+        appended atomically with the continuation, so an audit failure can
+        never permit continuation. The single-use continuation ENVELOPE
+        (``authority_continue_envelopes``, state ``active``, bound 1:1 to the
+        candidate and to the immutable causal task-result row, and carrying
+        the matched policy clause + exact permitted action) is minted in the
+        SAME transaction — the continuation window that the daemon restricts
+        on the next turn exists only when this commit succeeds. Returns False
+        (nothing written) when any gate fails.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        block_sql = (
+            "block_kind IS NULL"
+            if expected_block_kind is None
+            else "block_kind = ?"
+        )
+        block_args = () if expected_block_kind is None else (expected_block_kind.value,)
+        self._conn.execute("BEGIN")
+        try:
+            # -- 1. Candidate identity recheck (immutable claim tuple) --
+            cand = self._conn.execute(
+                """SELECT id, root_task_id, manager_session_id, causal_event_id,
+                          policy_id, policy_version, policy_digest,
+                          prompt_id, prompt_version, prompt_digest,
+                          model_id, model_version, model_digest,
+                          snapshot_digest, lifecycle_state
+                   FROM authority_candidates WHERE id = ?""",
+                (candidate_id,),
+            ).fetchone()
+            if cand is None:
+                self._conn.rollback()
+                return False
+            if not (
+                cand["root_task_id"] == task_id
+                and cand["manager_session_id"] == expected_session
+                and cand["causal_event_id"] == expected_causal_event_id
+                and cand["policy_id"] == expected_policy_id
+                and cand["policy_version"] == expected_policy_version
+                and cand["policy_digest"] == expected_policy_digest
+                and cand["prompt_id"] == expected_prompt_id
+                and cand["prompt_version"] == expected_prompt_version
+                and cand["prompt_digest"] == expected_prompt_digest
+                and cand["model_id"] == expected_model_id
+                and cand["model_version"] == expected_model_version
+                and cand["model_digest"] == expected_model_digest
+                and cand["snapshot_digest"] == expected_input_digest
+                and cand["lifecycle_state"] == "consumed"
+            ):
+                self._conn.rollback()
+                return False
+
+            # -- 2. Complete task fence recheck against live state --
+            t = self._conn.execute(
+                """SELECT status, block_kind, cancelled_at, assigned_agent,
+                          current_session_id, team, revisit_of_task_id,
+                          dispatched_from_thread_id, active_chain, active_fanout,
+                          blocked_on_job_ids, orchestration_step_count,
+                          revision_count, zombie_flagged_at
+                   FROM tasks WHERE id = ?""",
+                (task_id,),
+            ).fetchone()
+            if t is None:
+                self._conn.rollback()
+                return False
+            terminal = t["status"] in _AUTHORITY_TERMINAL_STATUSES
+            budget_ok = (
+                t["orchestration_step_count"] < expected_max_orchestration_steps
+                and (
+                    expected_max_revise_rounds <= 0
+                    or t["revision_count"] < expected_max_revise_rounds
+                )
+            )
+            if not (
+                t["assigned_agent"] == expected_manager_agent
+                and t["current_session_id"] == expected_session
+                and t["team"] == expected_team
+                and t["status"] == expected_status.value
+                and (t["block_kind"] is None if expected_block_kind is None else t["block_kind"] == expected_block_kind.value)
+                and t["cancelled_at"] is None
+                and not terminal
+                and t["active_chain"] is None
+                and t["active_fanout"] is None
+                and t["blocked_on_job_ids"] is None
+                and t["revisit_of_task_id"] is None
+                and (t["dispatched_from_thread_id"] in (None, ""))
+                and budget_ok
+                and t["zombie_flagged_at"] is None
+            ):
+                self._conn.rollback()
+                return False
+
+            # -- 3. Successor lineage recheck --
+            succ = self._conn.execute(
+                "SELECT 1 FROM manager_supersessions WHERE successor_task_id = ? LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if succ is not None:
+                self._conn.rollback()
+                return False
+
+            # -- 4. Adverse child-verdict recheck (latest persisted verdict) --
+            children = self._conn.execute(
+                "SELECT id FROM tasks WHERE parent_task_id = ?", (task_id,),
+            ).fetchall()
+            for child in children:
+                latest = self._conn.execute(
+                    "SELECT verdict FROM task_results WHERE task_id = ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (child["id"],),
+                ).fetchone()
+                verdict = latest["verdict"] if latest is not None else None
+                if verdict is not None and verdict not in _AUTHORITY_APPROVED_VERDICTS:
+                    self._conn.rollback()
+                    return False
+
+            # -- 5. Atomic continuation + audit rows --
+            cur = self._conn.execute(
+                f"""UPDATE tasks
+                   SET status = ?, block_kind = NULL, note = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND {block_sql}
+                     AND cancelled_at IS NULL""",
+                (
+                    TaskStatus.PENDING.value,
+                    note,
+                    now,
+                    task_id,
+                    expected_status.value,
+                )
+                + block_args,
+            )
+            if cur.rowcount != 1:
+                self._conn.rollback()
+                return False
+            self._conn.execute(
+                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    task_id,
+                    audit_agent,
+                    "authority_continued_same_root",
+                    json.dumps(authority_continue_payload),
+                    now,
+                ),
+            )
+            self._conn.execute(
+                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    task_id,
+                    audit_agent,
+                    "authority_hook",
+                    json.dumps(hook_outcome_payload),
+                    now,
+                ),
+            )
+            # -- 6. Mint the single-use continuation envelope (atomic with the
+            # continuation + audit rows). The envelope id is deterministic
+            # from the candidate (1:1); its identity binds the immutable
+            # causal task-result row, the evaluation (candidate), the matched
+            # policy clause, and the exact permitted action. Any consumption
+            # must recheck this identity (see
+            # ``consume_authority_continue_envelope``).
+            self._conn.execute(
+                "INSERT INTO authority_continue_envelopes "
+                "(id, candidate_id, root_task_id, team, manager_agent, "
+                " manager_session_id, causal_event_id, causal_event_digest, "
+                " policy_id, policy_version, policy_digest, clause_id, action, "
+                " state, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+                (
+                    f"CONT-{candidate_id}",
+                    candidate_id,
+                    task_id,
+                    expected_team,
+                    expected_manager_agent,
+                    expected_session,
+                    expected_causal_event_id,
+                    envelope_causal_event_digest,
+                    expected_policy_id,
+                    expected_policy_version,
+                    expected_policy_digest,
+                    envelope_clause_id,
+                    envelope_action,
+                    now,
+                    now,
+                ),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    # ── THR-181 Track A (founder lifecycle envelope): single-use continuation envelope ──
+
+    def get_active_authority_continue_envelope(self, root_task_id: str):
+        """Return the single ACTIVE continuation envelope for ``root_task_id``
+        (the continuation window that restricts the continued turn), or None.
+
+        At most one envelope is active for a root at any time: an envelope is
+        minted atomically with the continuation and spent exactly once by the
+        continued turn's decision (or a failure/cancellation abort). A spent
+        envelope never re-activates.
+        """
+        return self._conn.execute(
+            "SELECT * FROM authority_continue_envelopes "
+            "WHERE root_task_id = ? AND state = 'active' "
+            "ORDER BY id DESC LIMIT 1",
+            (root_task_id,),
+        ).fetchone()
+
+    def get_authority_continue_envelope(self, envelope_id: str):
+        """Return the envelope row by id (any state), or None."""
+        return self._conn.execute(
+            "SELECT * FROM authority_continue_envelopes WHERE id = ?",
+            (envelope_id,),
+        ).fetchone()
+
+    @_synchronized
+    def consume_authority_continue_envelope(
+        self,
+        *,
+        envelope_id: str,
+        root_task_id: str,
+        decision_family: str,
+        expected_manager_agent: str,
+        expected_session_id: str,
+        expected_causal_event_id: str,
+        expected_causal_event_digest: str,
+        expected_policy_id: str,
+        expected_policy_version: str,
+        expected_policy_digest: str,
+        expected_clause_id: str,
+        expected_action: str,
+        audit_agent: str,
+        error: str | None = None,
+        violation: bool = False,
+    ) -> str:
+        """THR-181 Track A: consume the single-use continuation envelope
+        EXACTLY ONCE, atomically rechecking the immutable identity.
+
+        Returns ``"consumed"`` (state ``active -> consumed``; the continued
+        turn produced a daemon-accepted manager decision), or
+        ``"not_active"`` (the envelope was already spent or its identity
+        drifted — never a second continuation).
+
+        Inside ONE transaction the envelope's immutable identity (root,
+        manager/team/session, causal task-result row, policy id/version/
+        digest, matched clause, permitted action) is rechecked against the
+        live row, and the root is rechecked to be still claimed
+        (in_progress, not cancelled/terminal). The audit row for the
+        consumption is written atomically with the transition, so a
+        consumption can never be un-audited. Only bounded, non-secret-bearing
+        fields are persisted (decision family + error code, never raw prose).
+        """
+        now = _now().isoformat()
+        self._conn.execute("BEGIN")
+        try:
+            env = self._conn.execute(
+                "SELECT * FROM authority_continue_envelopes WHERE id = ?",
+                (envelope_id,),
+            ).fetchone()
+            if env is None or env["state"] != "active":
+                self._conn.rollback()
+                return "not_active"
+            if not (
+                env["root_task_id"] == root_task_id
+                and env["manager_agent"] == expected_manager_agent
+                and env["manager_session_id"] == expected_session_id
+                and env["causal_event_id"] == expected_causal_event_id
+                and env["causal_event_digest"] == expected_causal_event_digest
+                and env["policy_id"] == expected_policy_id
+                and env["policy_version"] == expected_policy_version
+                and env["policy_digest"] == expected_policy_digest
+                and env["clause_id"] == expected_clause_id
+                and env["action"] == expected_action
+            ):
+                # Immutable identity drift: cannot be the continuation we
+                # issued — fail closed (the envelope is never re-usable).
+                self._conn.rollback()
+                return "not_active"
+            t = self._conn.execute(
+                "SELECT status, cancelled_at "
+                "FROM tasks WHERE id = ?",
+                (root_task_id,),
+            ).fetchone()
+            if t is None:
+                self._conn.rollback()
+                return "not_active"
+            if (
+                t["status"] != "in_progress"
+                or t["cancelled_at"] is not None
+            ):
+                # The root is no longer the claimed current turn:
+                # cancellation/terminal/stale — spend fail-closed.
+                self._conn.rollback()
+                return "not_active"
+            # The envelope is a single-use lifecycle/causality receipt, not
+            # an action whitelist. Normal manager-decision validation and the
+            # daemon's independent mechanical fences remain authoritative.
+            new_state = "violated" if violation else "consumed"
+            cur = self._conn.execute(
+                "UPDATE authority_continue_envelopes "
+                "SET state = ?, consumed_at = ?, updated_at = ? "
+                "WHERE id = ? AND state = 'active'",
+                (new_state, now, now, envelope_id),
+            )
+            if cur.rowcount != 1:
+                self._conn.rollback()
+                return "not_active"
+            action_label = (
+                "authority_continue_envelope_consumed"
+                if new_state == "consumed"
+                else "authority_continue_envelope_violated"
+            )
+            payload: dict = {
+                "envelope_id": envelope_id,
+                "candidate_id": env["candidate_id"],
+                "root_task_id": root_task_id,
+                "decision_family": decision_family[:200],
+                "clause_id": env["clause_id"],
+                "action": env["action"],
+                "policy_id": env["policy_id"],
+                "policy_version": env["policy_version"],
+                "policy_digest": env["policy_digest"],
+                "causal_event_id": env["causal_event_id"],
+                "causal_event_digest": env["causal_event_digest"],
+                "state": new_state,
+            }
+            if error is not None:
+                payload["error"] = error[:500]
+            self._conn.execute(
+                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (root_task_id, audit_agent, action_label, json.dumps(payload), now),
+            )
+            self._conn.commit()
+            return new_state
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def spend_authority_continue_envelope_if_active(
+        self, root_task_id: str, *, audit_agent: str, error: str,
+    ) -> bool:
+        """Spend any ACTIVE envelope for ``root_task_id`` as ``violated``
+        (fail-closed abort — the continuation window closed without the
+        permitted decision: session failure, cancellation, terminal). Returns
+        True when an envelope was spent. Exactly-once: only the transition
+        from ``active`` wins.
+        """
+        env = self.get_active_authority_continue_envelope(root_task_id)
+        if env is None:
+            return False
+        now = _now().isoformat()
+        self._conn.execute("BEGIN")
+        try:
+            cur = self._conn.execute(
+                "UPDATE authority_continue_envelopes "
+                "SET state = 'violated', consumed_at = ?, updated_at = ? "
+                "WHERE id = ? AND state = 'active'",
+                (now, now, env["id"]),
+            )
+            if cur.rowcount != 1:
+                self._conn.rollback()
+                return False
+            payload: dict = {
+                "envelope_id": env["id"],
+                "candidate_id": env["candidate_id"],
+                "root_task_id": root_task_id,
+                "decision_family": "aborted",
+                "clause_id": env["clause_id"],
+                "action": env["action"],
+                "policy_id": env["policy_id"],
+                "policy_version": env["policy_version"],
+                "policy_digest": env["policy_digest"],
+                "causal_event_id": env["causal_event_id"],
+                "causal_event_digest": env["causal_event_digest"],
+                "state": "violated",
+                "error": error[:500],
+            }
+            self._conn.execute(
+                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    root_task_id,
+                    audit_agent,
+                    "authority_continue_envelope_violated",
+                    json.dumps(payload),
+                    now,
+                ),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def _authority_candidate_from_row(self, row) -> AuthorityCandidate:
         return AuthorityCandidate(

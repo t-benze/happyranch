@@ -31,6 +31,20 @@ from runtime.orchestrator.teams import TeamsRegistry
 logger = logging.getLogger(__name__)
 
 
+def _build_authority_evaluator():
+    """THR-181 Track A: the production authority evaluator.
+
+    Code-and-deploy controlled activation: wiring the bounded subprocess
+    evaluator here is the release-controlled switch (no mutable
+    database/config activation). It resolves the evaluator executor through
+    the machine-local binary registry under the accepted shared-identity
+    posture; any resolution/launch/parse failure fails closed to ESCALATE in
+    the hook, so the existing escalation path is always the fallback.
+    """
+    from runtime.orchestrator.authority import LLMSubprocessAuthorityEvaluator
+    return LLMSubprocessAuthorityEvaluator()
+
+
 @dataclass
 class OrgState:
     slug: str
@@ -198,6 +212,7 @@ class OrgState:
             paths=paths,
             slug=slug,
             teams=teams,
+            authority_evaluator=_build_authority_evaluator(),
         )
         return cls(
             slug=slug,

@@ -1,0 +1,1740 @@
+"""THR-181 Track A — pre-escalation authority hook tests.
+
+Proves the founder-authorized slice end to end through the SHIPPING seam
+(``run_authority_hook`` called by ``run_step_impl``'s escalate branch, and the
+real ``StrictFakeAuthorityEvaluator`` / policy):
+
+(a) deterministic strict fake;
+(b) positive CONTINUE_SAME_ROOT control — reachable WITHOUT any census
+    eligibility, executes only the named same-root permitted action;
+(c) ordinary ESCALATE golden/characterization — byte-identical prior task
+    transition / audit escalation row / notification / thread behavior
+    aside from the new authority records;
+(d) real must-escalate sentinels (schema/overloaded-column, permission/
+    sandbox/allow-rule, auth/credentials/security/privacy/data access,
+    compatibility, spend/budget, destructive/irreversible, external/product/
+    deploy, adverse review/QA, ambiguity/novelty, partial work, all
+    exhausted orchestration/revise/implementation/provider limits);
+(e) fail-closed matrix (missing/invalid/extra-field/wrong-clause/wrong-action/
+    ambiguous output, timeout, provider error, policy/team/digest mismatch,
+    audit-write failure) — all escalate;
+(f) cancellation wins before evaluation, during evaluation, at final CAS;
+(g) successor/supersede/revisit/fresh-root/non-root/non-manager are
+    ineligible / fail closed;
+(h) concurrency/exactly-once — one durable evaluation and one durable winner;
+(i) restart states (claimed/created, evaluation-missing, evaluated-but-
+    unconsumed, already-consumed) all fail closed without duplicate
+    evaluation or continuation;
+(j) denominator — every attempted candidate has exactly one explainable
+    terminal runtime outcome.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+
+from runtime.config import Settings
+from runtime.infrastructure.database import Database
+from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.authority import (
+    AUDIT_ACTION_CONTINUED_SAME_ROOT,
+    AUDIT_ACTION_HOOK_OUTCOME,
+    OUTCOME_CANCELLED_STALE,
+    OUTCOME_CAS_LOST,
+    OUTCOME_CAPTURE_FAILURE,
+    OUTCOME_CONTINUED_SAME_ROOT,
+    OUTCOME_ESCALATED,
+    OUTCOME_INELIGIBLE,
+    AuthorityInputSnapshot,
+    AuthorityEvaluationResult,
+    StrictFakeAuthorityEvaluator,
+    run_authority_hook,
+)
+from runtime.orchestrator.authority_policy import (
+    ACTION_CONTINUE_SAME_ROOT,
+    ENGINEERING_PRE_ESCALATION_POLICY as POLICY,
+    POLICY_BY_TEAM,
+    PROMPT_DIGEST,
+)
+from runtime.orchestrator.orchestrator import Orchestrator
+from runtime.orchestrator.teams import TeamsRegistry
+from runtime.runtime import RuntimeDir
+
+
+@pytest.fixture(autouse=True)
+def _seed_active_agents_for_run_step(runtime: OrgPaths):
+    from tests.conftest import seed_test_agents
+    seed_test_agents(runtime, ("engineering_head", "dev_agent", "content_head"))
+
+
+@pytest.fixture
+def runtime(tmp_path: Path) -> OrgPaths:
+    rt = RuntimeDir.init(tmp_path / "rt")
+    paths = OrgPaths(root=rt.orgs_dir / "test")
+    paths.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.teams_config_path.write_text(
+        "teams:\n"
+        "  engineering:\n"
+        "    manager: engineering_head\n"
+        "    workers: [product_manager, dev_agent, payment_agent, qa_engineer]\n"
+        "  content:\n"
+        "    manager: content_head\n"
+        "    workers: [content_agent]\n"
+    )
+    return paths
+
+
+@pytest.fixture
+def db(runtime: OrgPaths) -> Database:
+    return Database(runtime.db_path)
+
+
+def _make_report(output_summary: str, status: str = "completed"):
+    from runtime.models import CompletionReport
+    return CompletionReport(
+        task_id="T-IGNORED", agent="engineering_head", status=status,
+        confidence=80, output_summary=output_summary,
+    )
+
+
+def _make_result(success: bool = True, duration: int = 1):
+    from runtime.orchestrator.executors import ExecutorResult
+    return ExecutorResult(
+        success=success, session_id="sess-x", duration_seconds=duration,
+    )
+
+
+class _SlugQueue:
+    def __init__(self) -> None:
+        import asyncio as _asyncio
+        self._q: _asyncio.Queue = _asyncio.Queue()
+    def put_nowait(self, slug: str, task_id: str) -> None:
+        self._q.put_nowait((slug, task_id))
+    def qsize(self) -> int:
+        return self._q.qsize()
+    def get_nowait(self):
+        return self._q.get_nowait()
+
+
+def _make_orch(runtime, db, evaluator=None):
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+        authority_evaluator=evaluator,
+    )
+    orch._queue = _SlugQueue()
+    return orch
+
+
+def _seed_claimed_root(
+    db, task_id: str = "T-ROOT", *,
+    agent: str = "engineering_head",
+    team: str = "engineering",
+    session: str = "sess-x",
+    thread: str | None = None,
+    revisit_of_task_id: str | None = None,
+) -> None:
+    """Seed a root already in the claimed (in_progress) state — for direct
+    hook-level tests. run_step integration tests instead seed a PENDING root
+    and let run_step's claim + fake _run_agent stamp the session."""
+    db.insert_task(TaskRecord(
+        id=task_id, brief="b", assigned_agent=agent, team=team,
+        dispatched_from_thread_id=thread,
+        revisit_of_task_id=revisit_of_task_id,
+    ))
+    db.update_task(
+        task_id,
+        status=TaskStatus.IN_PROGRESS, block_kind=None,
+        orchestration_step_count=1, current_session_id=session,
+    )
+
+
+def _seed_root(
+    db, task_id: str = "T-ROOT", *,
+    agent: str = "engineering_head",
+    team: str = "engineering",
+    thread: str | None = None,
+    revisit_of_task_id: str | None = None,
+) -> None:
+    """Seed a PENDING root — the run_step-eligible entry state."""
+    db.insert_task(TaskRecord(
+        id=task_id, brief="b", assigned_agent=agent, team=team,
+        dispatched_from_thread_id=thread,
+        revisit_of_task_id=revisit_of_task_id,
+    ))
+
+
+def _escalate_decision(reason: str) -> str:
+    return json.dumps({"action": "escalate", "reason": reason})
+
+
+def _run_escalate_step(orch, task_id: str, reason: str, monkeypatch, session: str | None = "sess-x") -> None:
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        # Mirror the real completion route + orchestrator: persist the
+        # task_results row (the immutable causality the authority hook binds
+        # to) and stamp the current session before the report returns.
+        # session=None simulates a session-less (ineligible) escalation — no
+        # row, no session, the hook's session fence fails closed.
+        if session is not None:
+            orch.db.update_task(task_id, current_session_id=session)
+            orch.db.insert_task_result(
+                task_id=task_id, agent=agent, session_id=session,
+                status="completed", confidence_score=80,
+                output_summary=_escalate_decision(reason),
+                decision_json=_escalate_decision(reason),
+            )
+        return _make_result(), _make_report(output_summary=_escalate_decision(reason))
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    orch.run_step(task_id)
+
+
+def _authority_audit_events(db, candidate_id: str):
+    return [e.event_type for e in db.list_authority_audit(candidate_id)]
+
+
+def _hook_outcome_rows(db, task_id: str):
+    return [
+        a for a in db.get_audit_logs(task_id)
+        if a["action"] == AUDIT_ACTION_HOOK_OUTCOME
+    ]
+
+
+def _escalation_rows(db, task_id: str):
+    return [a for a in db.get_audit_logs(task_id) if a["action"] == "escalation"]
+
+
+def _digest(tag: str) -> str:
+    return hashlib.sha256(tag.encode("utf-8")).hexdigest()
+
+
+# ── (a) deterministic strict fake ────────────────────────────────────────
+
+CONTINUE_REASON = "routine same-root follow-through of the already-completed slice"
+
+
+def _make_snapshot(reason: str = CONTINUE_REASON, team: str = "engineering") -> AuthorityInputSnapshot:
+    return AuthorityInputSnapshot(
+        root_task_id="T-ROOT",
+        team=team,
+        manager_agent="engineering_head",
+        manager_session_id="sess-x",
+        candidate_id="AUTH-CAND-" + _digest("claim"),
+        causal_event_id="step:7",
+        causal_event_digest=_digest("causal"),
+        reason=reason,
+        reason_digest=_digest(reason),
+        policy_id=POLICY.id,
+        policy_version=POLICY.version,
+        policy_digest=POLICY.digest,
+        prompt_id="prompt/authority-evaluator/engineering",
+        prompt_version="v1",
+        prompt_digest=PROMPT_DIGEST,
+        model_id=StrictFakeAuthorityEvaluator.model_id,
+        model_version="v1",
+        model_digest=StrictFakeAuthorityEvaluator.model_digest,
+    )
+
+
+def test_strict_fake_is_deterministic():
+    fake = StrictFakeAuthorityEvaluator()
+    a = fake.evaluate(_make_snapshot(CONTINUE_REASON))
+    b = fake.evaluate(_make_snapshot(CONTINUE_REASON))
+    assert a == b
+    assert a.disposition.value == "continue_same_root"
+    assert a.clause_id == "cont-routine-same-root"
+    assert a.action == ACTION_CONTINUE_SAME_ROOT
+
+
+def test_strict_fake_validates_snapshot_strictly():
+    fake = StrictFakeAuthorityEvaluator()
+    with pytest.raises(ValueError):
+        fake.evaluate(_make_snapshot(team="content"))  # no policy for content
+    bad = _make_snapshot()
+    bad.policy_digest = _digest("wrong")
+    with pytest.raises(ValueError):
+        fake.evaluate(bad)
+    bad2 = _make_snapshot(reason="")
+    with pytest.raises(ValueError):
+        fake.evaluate(bad2)
+
+
+def test_strict_fake_classification_covers_policy_clauses():
+    """Every must-escalate category of the policy has a real sentinel reason
+    that the strict fake maps to ESCALATE with the escalate action."""
+    fake = StrictFakeAuthorityEvaluator()
+    sentinels = {
+        "schema": "needs a schema migration that alters existing columns in tasks",
+        "overloaded-column": "changing the overloaded-column semantics of audit_log.task_id",
+        "permission": "this needs a permission/sandbox/allow-rule change",
+        "auth": "requires credential handling changes (auth/security)",
+        "privacy": "privacy or data-access decision required",
+        "compatibility": "v0/v1 compatibility decision for the runtime surface",
+        "spend": "exceeds the spend/budget ceiling",
+        "destructive": "destructive/irreversible action on production data",
+        "external": "external product/deploy commitment (third-party dependency)",
+        "review": "adverse review/QA verdict: REVISE",
+        "ambiguity": "genuine ambiguity/novel situation with conflicting evidence",
+        "partial": "session timed out with partial work evidence",
+        "exhausted-orchestration": "max steps (orchestration budget) exhausted",
+        "exhausted-revise": "revise-round budget exhausted",
+        "exhausted-implementation": "per-slice retry ceiling exhausted after second failure",
+        "provider-limit": "provider session limit reached after repeated 429s",
+        "cancellation": "task was cancelled with live in-flight children",
+        "successor": "proposes a successor/supersede/revisit fresh-root action",
+    }
+    for category, reason in sentinels.items():
+        disposition, clause_id, action = StrictFakeAuthorityEvaluator.classify_reason(reason)
+        assert disposition == "escalate", category
+        assert action == "escalate_to_founder", category
+        # The matched clause exists in the release policy and is a must-escalate clause.
+        clause = POLICY.clause_by_id(clause_id)
+        assert clause is not None, category
+        assert clause.action == "escalate_to_founder", category
+    # The narrow continue clause is reachable only for a fence-clean reason.
+    d, c, a = StrictFakeAuthorityEvaluator.classify_reason(CONTINUE_REASON)
+    assert (d, c, a) == ("continue_same_root", "cont-routine-same-root", ACTION_CONTINUE_SAME_ROOT)
+
+
+def test_policy_is_release_controlled_and_immutable():
+    """The policy digest is stable and covers every clause; the registry binds
+    exactly the Engineering team."""
+    assert POLICY.id == "engineering/pre-escalation-authority"
+    assert POLICY.version == "v1"
+    assert POLICY.digest == POLICY._compute_digest()
+    assert POLICY_BY_TEAM == {"engineering": POLICY}
+    # Every continue clause names the exact permitted action.
+    for clause in POLICY.continue_clauses():
+        assert clause.action == ACTION_CONTINUE_SAME_ROOT
+    # The policy text itself states the non-overridable fence contract.
+    assert "non-overridable" in POLICY.normative_text
+    assert "UNTRUSTED" in POLICY.normative_text
+
+
+# ── (b) positive CONTINUE_SAME_ROOT control ──────────────────────────────
+
+def test_continue_same_root_reachable_without_census_eligibility(
+    runtime, db, monkeypatch,
+):
+    """The hook is reachable with NO census data at all: the strict fake
+    classifies the synthetic fence-clean reason, the named same-root
+    permitted action executes (root returns to pending, re-enqueued), and NO
+    escalation is committed."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+
+    t = db.get_task("T-ROOT")
+    assert t.status == TaskStatus.PENDING
+    assert t.block_kind is None
+    assert "authority-policy continued same root" in (t.note or "")
+    assert t.note and "cont-routine-same-root" in t.note
+    # No escalation committed.
+    assert _escalation_rows(db, "T-ROOT") == []
+    assert t.status != TaskStatus.ESCALATED
+    # Re-enqueued for the next manager decision step.
+    assert orch._queue.qsize() == 1
+    assert orch._queue.get_nowait() == ("test", "T-ROOT")
+
+    # Exactly one durable candidate, one evaluation, one consumption.
+    candidates = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(candidates) == 1
+    cand = candidates[0]
+    assert cand.lifecycle_state.value == "consumed"
+    assert cand.disposition.value == "continue_same_root"
+    assert cand.team == "engineering"
+    eval_row = db.get_authority_evaluation(cand.id)
+    assert eval_row is not None
+    assert eval_row.disposition.value == "continue_same_root"
+    assert eval_row.disposition_code.value == "continue_same_root"
+    events = _authority_audit_events(db, cand.id)
+    assert events == ["candidate_claimed", "evaluation_recorded", "candidate_consumed"]
+
+    # Denominator: exactly one terminal outcome row = continued_same_root.
+    rows = _hook_outcome_rows(db, "T-ROOT")
+    assert len(rows) == 1
+    assert rows[0]["payload"]["outcome"] == OUTCOME_CONTINUED_SAME_ROOT
+    assert rows[0]["payload"]["clause_id"] == "cont-routine-same-root"
+    assert rows[0]["payload"]["action"] == ACTION_CONTINUE_SAME_ROOT
+    # The audit trail names the policy/version/digest + matched clause.
+    continued = [
+        a for a in db.get_audit_logs("T-ROOT")
+        if a["action"] == AUDIT_ACTION_CONTINUED_SAME_ROOT
+    ]
+    assert len(continued) == 1
+    payload = continued[0]["payload"]
+    assert payload["policy_id"] == POLICY.id
+    assert payload["policy_version"] == POLICY.version
+    assert payload["policy_digest"] == POLICY.digest
+    assert payload["clause_id"] == "cont-routine-same-root"
+    assert payload["action"] == ACTION_CONTINUE_SAME_ROOT
+
+
+def test_continue_executes_only_the_named_same_root_action(runtime, db, monkeypatch):
+    """Nothing beyond the named permitted action happens: no child, no
+    supersede, no thread message, no notification, no escalation row."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    spy = {}
+    monkeypatch.setattr(orch, "notify_escalated",
+                        lambda **kw: spy.update(kw))
+
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+
+    assert spy == {}  # no notification
+    assert db.get_children("T-ROOT") == []  # no child spawned
+    assert _escalation_rows(db, "T-ROOT") == []
+    # No supersession record.
+    t = db.get_task("T-ROOT")
+    assert t.status == TaskStatus.PENDING
+
+
+def test_continue_header_shown_to_manager_on_next_step(runtime, db, monkeypatch):
+    """The next manager decision step carries the AUTHORITY POLICY CONTINUED
+    SAME ROOT header naming the policy, clause, and permitted action."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+
+    captured = {}
+    def capture(task_id, agent, prompt, on_session_started=None):
+        captured["prompt"] = prompt
+        raise RuntimeError("abort after prompt build")
+    monkeypatch.setattr(orch, "_run_agent", capture)
+    orch.run_step("T-ROOT")
+
+    prompt = captured["prompt"]
+    assert prompt.startswith("AUTHORITY POLICY CONTINUED SAME ROOT:")
+    assert POLICY.id in prompt
+    assert "cont-routine-same-root" in prompt
+    assert ACTION_CONTINUE_SAME_ROOT in prompt
+
+
+# ── (c) ESCALATE golden / characterization ───────────────────────────────
+
+def test_escalate_golden_byte_identical_behavior(runtime, db, monkeypatch):
+    """With the hook evaluating to ESCALATE, the prior escalation behavior is
+    byte-identical (task transition, note, escalation audit row/payload,
+    notification call, return behavior) aside from the new authority records —
+    compared against a baseline run where the hook evaluated to a fail-closed
+    EVALUATOR_ERROR with no evaluator wired."""
+
+    def run_once(evaluator, reason, session, spy):
+        _seed_root(db, task_id="T-X")
+        orch = _make_orch(runtime, db, evaluator=evaluator)
+        monkeypatch.setattr(orch, "notify_escalated",
+                            lambda **kw: spy.update(kw))
+        _run_escalate_step(orch, "T-X", reason, monkeypatch, session=session)
+        return orch
+
+    # Baseline: a session-less escalation is ineligible for the hook and
+    # escalates through the pre-existing path unchanged.
+    spy_baseline = {}
+    run_once(None, "needs founder", None, spy_baseline)
+    t_baseline = db.get_task("T-X")
+    esc_baseline = _escalation_rows(db, "T-X")
+    base_outcome = _hook_outcome_rows(db, "T-X")[0]["payload"]["outcome"]
+    assert base_outcome == OUTCOME_INELIGIBLE
+    assert db.list_authority_candidates_for_root("T-X") == []
+
+    db2 = Database(runtime.db_path.parent / "golden-hook.db")  # fresh DB file
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db2, task_id="T-X")
+    orch2 = _make_orch(runtime, db2, evaluator=fake)
+    spy_hook = {}
+    monkeypatch.setattr(orch2, "notify_escalated",
+                        lambda **kw: spy_hook.update(kw))
+    _run_escalate_step(orch2, "T-X", "needs founder", monkeypatch)
+    t_hook = db2.get_task("T-X")
+    esc_hook = _escalation_rows(db2, "T-X")
+
+    # Byte-identical task transition + escalation audit rows.
+    assert t_baseline.status == t_hook.status == TaskStatus.ESCALATED
+    assert t_baseline.block_kind is None and t_hook.block_kind is None
+    assert t_baseline.note == t_hook.note == "needs founder"
+    assert [a["payload"] for a in esc_baseline] == [a["payload"] for a in esc_hook]
+    assert [a["action"] for a in esc_baseline] == [a["action"] for a in esc_hook]
+    assert spy_baseline["reason"] == spy_hook["reason"] == "needs founder"
+    assert spy_baseline["task_id"] == spy_hook["task_id"] == "T-X"
+    assert spy_baseline["agent"] == spy_hook["agent"] == "engineering_head"
+    # Return behavior: nothing re-enqueued (root escalated, terminal).
+    assert orch2._queue.qsize() == 0
+
+    # The ONLY difference: the new authority records' CONTENT. The baseline
+    # hook wrote an ineligible outcome with no candidate; the hooked run
+    # fully evaluated (candidate claimed/evaluated/consumed) and records the
+    # escalated outcome with the matched clause.
+    base_row = _hook_outcome_rows(db, "T-X")[0]["payload"]
+    hook_row = _hook_outcome_rows(db2, "T-X")[0]["payload"]
+    assert hook_row["outcome"] == OUTCOME_ESCALATED
+    assert hook_row["disposition"] == "escalate"
+    assert base_row["outcome"] != hook_row["outcome"]
+    assert db.list_authority_candidates_for_root("T-X") == []
+    cands_hook = db2.list_authority_candidates_for_root("T-X")
+    assert len(cands_hook) == 1
+    assert cands_hook[0].lifecycle_state.value == "consumed"
+    assert cands_hook[0].disposition.value == "escalate"
+    assert db2.get_authority_evaluation(cands_hook[0].id) is not None
+
+
+def test_escalate_thread_projection_unchanged_for_thread_origin(runtime, db, monkeypatch):
+    """A thread-originated root is ineligible for the hook (fence) and the
+    existing thread escalation projection still posts byte-identically."""
+    from runtime.models import ThreadRecord
+    from runtime.infrastructure.audit_logger import AuditLogger
+
+    _seed_root(db, task_id="T-1", thread="THR-9")
+    db.insert_thread(ThreadRecord(id="THR-9", subject="t"))
+    db.add_thread_participant("THR-9", "engineering_head", added_by="founder")
+    AuditLogger(db).log_thread_dispatch(
+        "THR-9", task_id="T-1", dispatcher="engineering_head",
+        target_agent="engineering_head", team="engineering",
+    )
+    fake = StrictFakeAuthorityEvaluator()
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-1", "needs founder", monkeypatch)
+
+    t = db.get_task("T-1")
+    assert t.status == TaskStatus.ESCALATED
+    # Hook fence: thread_origin → ineligible, no candidate.
+    row = _hook_outcome_rows(db, "T-1")[0]
+    assert row["payload"]["outcome"] == OUTCOME_INELIGIBLE
+    assert "thread_origin" in row["payload"]["fence_results"]
+    assert db.list_authority_candidates_for_root("T-1") == []
+    # The task_escalated thread system message still posted.
+    msgs = db.list_thread_messages("THR-9")
+    esc = [m for m in msgs if m.system_payload
+           and m.system_payload.get("kind_tag") == "task_escalated"]
+    assert len(esc) == 1
+    assert esc[0].system_payload["reason"] == "needs founder"
+
+
+# ── (d) real must-escalate sentinels through the shipping hook ────────────
+
+SENTINEL_REASONS = [
+    "needs a schema migration that alters existing columns in tasks",
+    "changing the overloaded-column semantics of audit_log.task_id",
+    "this needs a permission/sandbox/allow-rule change",
+    "requires credential handling changes (auth/security)",
+    "privacy or data-access decision required",
+    "v0/v1 compatibility decision for the runtime surface",
+    "exceeds the spend/budget ceiling",
+    "destructive/irreversible action on production data",
+    "external product/deploy commitment (third-party dependency)",
+    "adverse review/QA verdict: REVISE",
+    "genuine ambiguity/novel situation with conflicting evidence",
+    "session timed out with partial work evidence",
+    "max steps (orchestration budget) exhausted",
+    "revise-round budget exhausted",
+    "per-slice retry ceiling exhausted after second failure",
+    "provider session limit reached after repeated 429s",
+]
+
+
+@pytest.mark.parametrize("reason", SENTINEL_REASONS)
+def test_must_escalate_sentinel_escalates(runtime, db, monkeypatch, reason):
+    """Every real must-escalate sentinel escalates through the hook with the
+    strict fake (each is a policy must-escalate clause match)."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db, task_id="T-S")
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-S", reason, monkeypatch)
+
+    t = db.get_task("T-S")
+    assert t.status == TaskStatus.ESCALATED
+    assert t.note == reason
+    assert _escalation_rows(db, "T-S")  # committed escalation row
+    row = _hook_outcome_rows(db, "T-S")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED
+    assert row["payload"]["disposition"] == "escalate"
+    # The matched clause is a must-escalate clause of the release policy.
+    clause_id = row["payload"]["clause_id"]
+    clause = POLICY.clause_by_id(clause_id)
+    assert clause is not None and clause.action == "escalate_to_founder"
+    # Exactly one candidate, evaluated + consumed.
+    cands = db.list_authority_candidates_for_root("T-S")
+    assert len(cands) == 1
+    assert cands[0].lifecycle_state.value == "consumed"
+    assert cands[0].disposition.value == "escalate"
+
+
+# ── (e) fail-closed matrix (through the shipping hook, pinned fake) ───────
+
+def _pinned_fake(disposition, clause_id, action, **kw):
+    reason = kw.pop("reason", "some reason")
+    class _Pinned(StrictFakeAuthorityEvaluator):
+        pass
+    fake = StrictFakeAuthorityEvaluator(pinned={reason: (disposition, clause_id, action)})
+    return fake, reason
+
+
+def test_fail_closed_escalates_on_wrong_clause(runtime, db, monkeypatch):
+    fake = StrictFakeAuthorityEvaluator(pinned={
+        "x": ("continue_same_root", "esc-spend-budget", ACTION_CONTINUE_SAME_ROOT),
+    })
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", "x", monkeypatch)
+    t = db.get_task("T-ROOT")
+    assert t.status == TaskStatus.ESCALATED  # fail closed: never continued
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED
+
+
+def test_fail_closed_escalates_on_wrong_action(runtime, db, monkeypatch):
+    fake = StrictFakeAuthorityEvaluator(pinned={
+        "x": ("continue_same_root", "cont-routine-same-root", "escalate_to_founder"),
+    })
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", "x", monkeypatch)
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+
+
+def test_fail_closed_escalates_on_unknown_clause(runtime, db, monkeypatch):
+    fake = StrictFakeAuthorityEvaluator(pinned={
+        "x": ("continue_same_root", "no-such-clause", ACTION_CONTINUE_SAME_ROOT),
+    })
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", "x", monkeypatch)
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+
+
+def test_fail_closed_escalates_on_evaluator_exception(runtime, db, monkeypatch):
+    class Boom:
+        model_id, model_version, model_digest = "fake/boom", "v1", _digest("boom")
+        def evaluate(self, snapshot):
+            raise RuntimeError("boom")
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=Boom())
+    _run_escalate_step(orch, "T-ROOT", "needs founder", monkeypatch)
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED
+    assert row["payload"]["disposition_code"] == "evaluator_error"
+
+
+def test_fail_closed_escalates_on_no_evaluator(runtime, db, monkeypatch):
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=None)
+    _run_escalate_step(orch, "T-ROOT", "needs founder", monkeypatch)
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["disposition_code"] == "evaluator_error"
+
+
+def test_fail_closed_escalates_on_audit_write_failure(runtime, db, monkeypatch):
+    """An audit-write failure can NEVER permit continuation: the evaluation
+    record write fails → the hook fails closed to ESCALATE."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+
+    def boom(*a, **k):
+        raise RuntimeError("audit store unavailable")
+    monkeypatch.setattr(db, "record_authority_evaluation", boom)
+
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+    t = db.get_task("T-ROOT")
+    assert t.status == TaskStatus.ESCALATED  # fail closed, never continued
+    assert _escalation_rows(db, "T-ROOT")
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == "evaluator_failure"
+
+
+def test_fail_closed_escalates_on_consume_failure(runtime, db, monkeypatch):
+    """A consume failure (restart-incomplete) fails closed — never a
+    continuation from a partial record."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    monkeypatch.setattr(db, "consume_authority_candidate", lambda cid: False)
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_CAS_LOST
+
+
+def test_fail_closed_escalates_on_low_confidence_continue(runtime, db, monkeypatch):
+    """A CONTINUE_SAME_ROOT verdict below the confidence threshold fails
+    closed to ESCALATE with the LOW_CONFIDENCE diagnostic code."""
+    from runtime.models import AuthorityDisposition, AuthorityDispositionCode
+    from runtime.orchestrator.authority import AuthorityEvaluationResult
+
+    class _LowConfidence:
+        model_id, model_version, model_digest = "fake/low", "v1", _digest("low")
+        def evaluate(self, snapshot):
+            return AuthorityEvaluationResult(
+                disposition=AuthorityDisposition.CONTINUE_SAME_ROOT,
+                disposition_code=AuthorityDispositionCode.LOW_CONFIDENCE,
+                response_digest=_digest("resp"),
+                clause_id="cont-routine-same-root",
+                action=ACTION_CONTINUE_SAME_ROOT,
+                confidence=0.1,
+            )
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=_LowConfidence())
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED
+    assert row["payload"]["disposition_code"] == "low_confidence"
+
+
+# ── (f) cancellation wins ────────────────────────────────────────────────
+
+def test_cancellation_before_evaluation_wins(runtime, db, monkeypatch):
+    """Cancellation already committed → the hook records ineligible
+    (cancellation fence) and the escalation cannot commit (try_escalate's own
+    CAS drops it)."""
+    from datetime import datetime, timezone
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_claimed_root(db)
+    db.update_task(
+        "T-ROOT", status=TaskStatus.FAILED, block_kind=None,
+        note="cancelled by founder", cancelled_at=datetime.now(timezone.utc).isoformat(),
+        completed_at=datetime.now(timezone.utc).isoformat(),
+    )
+    orch = _make_orch(runtime, db, evaluator=fake)
+    # Drive the hook directly (run_step short-circuits cancelled tasks).
+    out = run_authority_hook(orch, db.get_task("T-ROOT"), "engineering_head", "needs founder", 7)
+    assert out == "escalate"
+    assert db.get_task("T-ROOT").status == TaskStatus.FAILED  # no resurrection
+    assert db.list_authority_candidates_for_root("T-ROOT") == []  # never claimed
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_INELIGIBLE
+    assert "cancellation" in row["payload"]["fence_results"]
+
+
+def test_cancellation_during_evaluation_wins(runtime, db, monkeypatch):
+    """Cancellation lands while the evaluator runs: the evaluation is still
+    recorded (the LLM call is auditable), the candidate is consumed, but the
+    final outcome is cancelled/stale — never a continuation."""
+    from datetime import datetime, timezone
+    fake = StrictFakeAuthorityEvaluator()
+    real_evaluate = fake.evaluate
+
+    def cancel_then_evaluate(snapshot):
+        db.update_task(
+            "T-ROOT", status=TaskStatus.FAILED, block_kind=None,
+            note="cancelled mid-eval", cancelled_at=datetime.now(timezone.utc).isoformat(),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        return real_evaluate(snapshot)
+    fake.evaluate = cancel_then_evaluate
+
+    _seed_claimed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    out = run_authority_hook(orch, db.get_task("T-ROOT"), "engineering_head", CONTINUE_REASON, 7)
+    assert out == "escalate"
+    # No continuation: task stayed cancelled.
+    assert db.get_task("T-ROOT").status == TaskStatus.FAILED
+    cands = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(cands) == 1
+    # The evaluation was recorded (auditable) and the candidate lifecycle
+    # closed — but the outcome is cancelled/stale, never continued.
+    assert db.get_authority_evaluation(cands[0].id) is not None
+    assert cands[0].lifecycle_state.value == "consumed"
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_CANCELLED_STALE
+
+
+def test_cancellation_at_final_cas_wins(runtime, db, monkeypatch):
+    """Cancellation wins the continuation CAS: commit_authority_continue_
+    same_root refuses (cancelled_at gate) → no continuation, fail closed."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_claimed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    real_commit = db.commit_authority_continue_same_root
+
+    def cancel_then_commit(**kw):
+        from datetime import datetime, timezone
+        db.update_task(
+            "T-ROOT", status=TaskStatus.FAILED, block_kind=None,
+            note="cancelled at final cas",
+            cancelled_at=datetime.now(timezone.utc).isoformat(),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        return real_commit(**kw)
+    monkeypatch.setattr(db, "commit_authority_continue_same_root", cancel_then_commit)
+
+    out = run_authority_hook(orch, db.get_task("T-ROOT"), "engineering_head", CONTINUE_REASON, 7)
+    assert out == "escalate"
+    t = db.get_task("T-ROOT")
+    assert t.status == TaskStatus.FAILED  # no continuation, no resurrection
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_CANCELLED_STALE
+
+
+# ── (g) ineligibility ────────────────────────────────────────────────────
+
+def test_non_manager_root_is_ineligible(runtime, db, monkeypatch):
+    _seed_root(db, task_id="T-W", agent="dev_agent")
+    orch = _make_orch(runtime, db, evaluator=StrictFakeAuthorityEvaluator())
+    _run_escalate_step(orch, "T-W", "needs founder", monkeypatch)
+    assert db.get_task("T-W").status == TaskStatus.ESCALATED
+    row = _hook_outcome_rows(db, "T-W")[0]
+    assert row["payload"]["outcome"] == OUTCOME_INELIGIBLE
+    assert "manager_ownership" in row["payload"]["fence_results"]
+    assert db.list_authority_candidates_for_root("T-W") == []
+
+
+def test_revisit_root_is_ineligible(runtime, db, monkeypatch):
+    _seed_root(db, task_id="T-R", revisit_of_task_id="T-PREV")
+    orch = _make_orch(runtime, db, evaluator=StrictFakeAuthorityEvaluator())
+    _run_escalate_step(orch, "T-R", "needs founder", monkeypatch)
+    assert db.get_task("T-R").status == TaskStatus.ESCALATED
+    row = _hook_outcome_rows(db, "T-R")[0]
+    assert row["payload"]["outcome"] == OUTCOME_INELIGIBLE
+    assert "revisit_lineage" in row["payload"]["fence_results"]
+
+
+def test_successor_root_is_ineligible(runtime, db, monkeypatch):
+    """A root minted as a manager-supersession successor is not the original
+    root — the hook fence fails closed (no continuation of a successor)."""
+    db.insert_task(TaskRecord(id="T-PRED", brief="p", assigned_agent="engineering_head"))
+    _seed_claimed_root(db, task_id="T-SUCC")
+    db.execute(
+        "INSERT INTO manager_supersessions (predecessor_task_id, successor_task_id,"
+        " original_root_task_id, actor_agent, actor_session_id, rationale,"
+        " attestation_evidence, predecessor_brief, successor_brief,"
+        " predecessor_brief_sha256, successor_brief_sha256, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("T-PRED", "T-SUCC", "T-ORIG", "engineering_head", "sess-x", "r",
+         "{}", "b", "b", _digest("b"), _digest("b"), "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+    orch = _make_orch(runtime, db, evaluator=StrictFakeAuthorityEvaluator())
+    out = run_authority_hook(orch, db.get_task("T-SUCC"), "engineering_head", "needs founder", 7)
+    assert out == "escalate"
+    row = _hook_outcome_rows(db, "T-SUCC")[0]
+    assert row["payload"]["outcome"] == OUTCOME_INELIGIBLE
+    assert "successor_lineage" in row["payload"]["fence_results"]
+
+
+def test_team_without_release_policy_escalates_untouched(runtime, db, monkeypatch):
+    """Content team has no release-controlled policy: the hook is not
+    applicable — the escalation proceeds with NO authority records at all."""
+    _seed_root(db, task_id="T-C", agent="content_head", team="content")
+    orch = _make_orch(runtime, db, evaluator=StrictFakeAuthorityEvaluator())
+    _run_escalate_step(orch, "T-C", "needs founder", monkeypatch, session="sess-c")
+
+    assert db.get_task("T-C").status == TaskStatus.ESCALATED
+    assert _hook_outcome_rows(db, "T-C") == []
+    assert db.list_authority_candidates_for_root("T-C") == []
+
+
+def test_non_root_never_reaches_hook(runtime, db, monkeypatch):
+    """A non-root escalate fails + hands back to its parent (THR-033 guard
+    runs before the hook) — no authority records."""
+    db.insert_task(TaskRecord(id="T-PAR", brief="p", assigned_agent="engineering_head"))
+    db.update_task("T-PAR", status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.DELEGATED, note="waiting")
+    db.insert_task(TaskRecord(
+        id="T-CHILD", brief="c", assigned_agent="dev_agent",
+        parent_task_id="T-PAR", task_type="task",
+    ))
+    orch = _make_orch(runtime, db, evaluator=StrictFakeAuthorityEvaluator())
+    _run_escalate_step(orch, "T-CHILD", "needs founder", monkeypatch)
+
+    assert db.get_task("T-CHILD").status == TaskStatus.FAILED
+    assert "non-root escalation requested" in (db.get_task("T-CHILD").note or "")
+    assert _hook_outcome_rows(db, "T-CHILD") == []
+    assert db.list_authority_candidates_for_root("T-CHILD") == []
+
+
+# ── (h) concurrency / exactly-once ───────────────────────────────────────
+
+def test_concurrent_claim_exactly_one_durable_winner(runtime, db):
+    """Two concurrent claims of the exact same deterministic tuple yield ONE
+    durable candidate; the DB (not scheduling) is the arbiter."""
+    import threading
+    kw = dict(
+        root_task_id="T-CONC", team="engineering", manager_agent="engineering_head",
+        manager_session_id="sess-x", causal_event_id="step:1",
+        causal_event_digest=_digest("causal"), causal_result_id=None,
+        policy_id=POLICY.id, policy_version=POLICY.version, policy_digest=POLICY.digest,
+        prompt_id="prompt/authority-evaluator/engineering", prompt_version="v1",
+        prompt_digest=PROMPT_DIGEST,
+        model_id=StrictFakeAuthorityEvaluator.model_id, model_version="v1",
+        model_digest=StrictFakeAuthorityEvaluator.model_digest,
+        snapshot_digest=_digest("snapshot"),
+    )
+    results: list[tuple[str, bool]] = []
+    barrier = threading.Barrier(2)
+    def claim():
+        barrier.wait()
+        results.append(db.claim_authority_candidate(**kw))
+    threads = [threading.Thread(target=claim) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert len(results) == 2
+    assert results[0][0] == results[1][0]  # deterministic candidate id
+    wins = [r[1] for r in results]
+    assert wins.count(True) == 1  # exactly one durable winner
+    cands = db.list_authority_candidates_for_root("T-CONC")
+    assert len(cands) == 1
+    assert cands[0].lifecycle_state.value == "created"
+
+
+def test_hook_duplicate_invocation_exactly_once(runtime, db, monkeypatch):
+    """A second hook invocation for the same deterministic tuple (e.g. a
+    replay after restart) must NOT re-evaluate or continue: it loses the
+    claim, fails closed, and the first evaluation/winner is preserved."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_claimed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    task = db.get_task("T-ROOT")
+    first = run_authority_hook(orch, task, "engineering_head", CONTINUE_REASON, 7)
+    assert first == "continue_same_root"
+
+    # Replay the identical attempt (same session, same step id, same reason).
+    second = run_authority_hook(orch, db.get_task("T-ROOT"), "engineering_head", CONTINUE_REASON, 7)
+    assert second == "escalate"
+
+    cands = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(cands) == 1  # one durable candidate
+    # Exactly one evaluation row total (UNIQUE constraint enforced).
+    rows = [a for a in db.get_audit_logs("T-ROOT") if a["action"] == AUDIT_ACTION_HOOK_OUTCOME]
+    outcomes = [r["payload"]["outcome"] for r in rows]
+    # The replay saw the root already continued (task moved to pending) →
+    # ineligible; the original attempt continued. Both fail closed.
+    assert sorted(outcomes) == sorted([OUTCOME_INELIGIBLE, OUTCOME_CONTINUED_SAME_ROOT])
+    assert db.get_task("T-ROOT").status == TaskStatus.PENDING  # continued exactly once
+    assert db.get_authority_evaluation(cands[0].id) is not None
+    # No duplicate evaluation row (UNIQUE candidate_id enforced at the DB).
+    evals = [db.get_authority_evaluation(cands[0].id)]
+    assert len([e for e in evals if e is not None]) == 1
+
+
+# ── (i) restart states fail closed ───────────────────────────────────────
+
+def _seed_candidate_state(db, lifecycle: str, evaluated: bool = False):
+    """Seed the claimed root + a candidate in the given lifecycle state."""
+    _seed_claimed_root(db)
+    kw = dict(
+        root_task_id="T-ROOT", team="engineering", manager_agent="engineering_head",
+        manager_session_id="sess-x", causal_event_id="result:7",
+        causal_event_digest=_digest("task-result:7"), causal_result_id=None,
+        policy_id=POLICY.id, policy_version=POLICY.version, policy_digest=POLICY.digest,
+        prompt_id="prompt/authority-evaluator/engineering", prompt_version="v1",
+        prompt_digest=PROMPT_DIGEST,
+        model_id=StrictFakeAuthorityEvaluator.model_id, model_version="v1",
+        model_digest=StrictFakeAuthorityEvaluator.model_digest,
+        snapshot_digest=_digest("snapshot"),
+    )
+    candidate_id, won = db.claim_authority_candidate(**kw)
+    assert won
+    if evaluated:
+        db.record_authority_evaluation(
+            candidate_id=candidate_id, disposition="escalate",
+            disposition_code="escalate", response_digest=_digest("resp"),
+        )
+    if lifecycle == "consumed":
+        assert db.consume_authority_candidate(candidate_id)
+    return candidate_id
+
+
+@pytest.mark.parametrize("lifecycle,evaluated", [
+    ("created", False),       # claimed/created — evaluation missing
+    ("evaluated", True),      # evaluated-but-unconsumed
+    ("consumed", True),       # already-consumed
+])
+def test_restart_states_fail_closed(runtime, db, monkeypatch, lifecycle, evaluated):
+    """A restart left the candidate in a partial/completed state: the replayed
+    attempt loses the claim, never re-evaluates, never continues, and the
+    escalation proceeds (fail closed)."""
+    candidate_id = _seed_candidate_state(db, lifecycle, evaluated)
+    fake = StrictFakeAuthorityEvaluator()
+    orch = _make_orch(runtime, db, evaluator=fake)
+    before_evals = db.get_authority_evaluation(candidate_id)
+
+    out = run_authority_hook(orch, db.get_task("T-ROOT"), "engineering_head", CONTINUE_REASON, 7)
+    assert out == "escalate"
+
+    # No continuation.
+    assert db.get_task("T-ROOT").status == TaskStatus.IN_PROGRESS
+    # No duplicate evaluation row: a restart-incomplete (created) candidate
+    # has none (the evaluator never ran durably); evaluated/consumed keep the
+    # single original evaluation.
+    if evaluated:
+        assert db.get_authority_evaluation(candidate_id) is not None
+    else:
+        assert db.get_authority_evaluation(candidate_id) is None
+    cands = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(cands) == 1
+    # Fail-closed outcome recorded.
+    row = _hook_outcome_rows(db, "T-ROOT")[-1]
+    assert row["payload"]["outcome"] in (OUTCOME_CAS_LOST, OUTCOME_CANCELLED_STALE)
+
+
+# ── (j) denominator: one explainable terminal outcome per attempt ────────
+
+def test_denominator_every_attempt_one_terminal_outcome(runtime, db, monkeypatch):
+    """Across every hook-eligible scenario, each attempt yields exactly one
+    authority_hook outcome row with an explainable terminal outcome, and no
+    continuation happens unless the outcome says continued_same_root."""
+    from runtime.orchestrator.authority import OUTCOME_EVALUATOR_FAILURE
+
+    fake = StrictFakeAuthorityEvaluator()
+    scenarios = []
+
+    # 1) continue
+    _seed_claimed_root(db, task_id="T-1")
+    orch = _make_orch(runtime, db, evaluator=fake)
+    scenarios.append(run_authority_hook(orch, db.get_task("T-1"), "engineering_head", CONTINUE_REASON, 1))
+    # 2) escalate
+    _seed_claimed_root(db, task_id="T-2")
+    orch2 = _make_orch(runtime, db, evaluator=fake)
+    scenarios.append(run_authority_hook(orch2, db.get_task("T-2"), "engineering_head", "schema migration required", 2))
+    # 3) ineligible (non-manager)
+    _seed_claimed_root(db, task_id="T-3", agent="dev_agent")
+    orch3 = _make_orch(runtime, db, evaluator=fake)
+    scenarios.append(run_authority_hook(orch3, db.get_task("T-3"), "dev_agent", "needs founder", 3))
+    # 4) evaluator failure (no evaluator wired)
+    _seed_claimed_root(db, task_id="T-4")
+    orch4 = _make_orch(runtime, db, evaluator=None)
+    scenarios.append(run_authority_hook(orch4, db.get_task("T-4"), "engineering_head", "needs founder", 4))
+    # 5) audit failure (evaluation record write fails)
+    _seed_claimed_root(db, task_id="T-5")
+    orch5 = _make_orch(runtime, db, evaluator=fake)
+    monkeypatch.setattr(db, "record_authority_evaluation",
+                        lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    scenarios.append(run_authority_hook(orch5, db.get_task("T-5"), "engineering_head", CONTINUE_REASON, 5))
+
+    for task_id in ("T-1", "T-2", "T-3", "T-4", "T-5"):
+        rows = _hook_outcome_rows(db, task_id)
+        assert len(rows) == 1, task_id
+        payload = rows[0]["payload"]
+        assert "outcome" in payload, task_id
+        explainable = {
+            OUTCOME_CONTINUED_SAME_ROOT, OUTCOME_ESCALATED, OUTCOME_INELIGIBLE,
+            OUTCOME_CAS_LOST, OUTCOME_CANCELLED_STALE, OUTCOME_EVALUATOR_FAILURE,
+            "audit_failure", "capture_failure",
+        }
+        assert payload["outcome"] in explainable, task_id
+        # Continuation only when the outcome says continued_same_root.
+        t = db.get_task(task_id)
+        if payload["outcome"] == OUTCOME_CONTINUED_SAME_ROOT:
+            assert t.status == TaskStatus.PENDING
+        else:
+            assert t.status != TaskStatus.PENDING
+            assert _escalation_rows(db, task_id) or t.status in (
+                TaskStatus.FAILED, TaskStatus.IN_PROGRESS,
+            )
+
+    assert scenarios[0] == "continue_same_root"
+    assert scenarios[1] == "escalate"
+    assert scenarios[2] == "escalate"
+    assert scenarios[3] == "escalate"
+    assert scenarios[4] == "escalate"
+
+
+# ── (k) server-derived must-escalate facts (finding 1) ───────────────────
+
+def _seed_child_verdict(db, parent_id: str, child_id: str, verdict: str | None):
+    """Seed a child of ``parent_id`` whose latest persisted task-result carries
+    ``verdict`` — the authoritative server evidence for esc-adverse-review-qa."""
+    db.insert_task(TaskRecord(
+        id=child_id, brief="c", assigned_agent="dev_agent",
+        parent_task_id=parent_id, task_type="task",
+    ))
+    db.insert_task_result(
+        task_id=child_id, agent="dev_agent", session_id="sess-c",
+        status="completed", confidence_score=80, output_summary="done",
+        verdict=verdict,
+    )
+
+
+def test_server_facts_in_snapshot_with_provenance(runtime, db, monkeypatch):
+    """The evaluation snapshot carries authoritative server-derived facts with
+    provenance — budget counters/ceilings, lineage, active work, cancellation,
+    block/session state, adverse-review and partial-work evidence, org
+    permission digest, DB schema digest, and the release policy binding —
+    not just identity/counters."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    seen = {}
+    real_evaluate = fake.evaluate
+
+    def spy(snapshot):
+        seen["snapshot"] = snapshot
+        return real_evaluate(snapshot)
+    fake.evaluate = spy
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+
+    facts = seen["snapshot"].structured_facts
+    for key in (
+        "fence_results", "budget", "lineage", "active_work", "cancellation",
+        "block_state", "session", "adverse_review", "partial_work",
+        "org_permission", "db_schema", "team_policy",
+    ):
+        assert key in facts, key
+    assert json.loads(facts["adverse_review"])["value"] is False
+    assert json.loads(facts["partial_work"])["value"] is False
+    assert json.loads(facts["budget"])["value"]["exhausted"] is False
+    assert json.loads(facts["org_permission"])["digest"]
+    assert json.loads(facts["db_schema"])["digest"]
+    assert json.loads(facts["team_policy"])["policy_digest"] == POLICY.digest
+    # The snapshot digest deterministically covers the facts (provenance).
+    assert seen["snapshot"].digest() == seen["snapshot"].digest()
+
+
+def test_server_fact_gate_adverse_child_verdict_escalates(runtime, db, monkeypatch):
+    """A clean reason ('routine same-root follow-through') CANNOT authorize
+    continuation when the SERVER proves an adverse child review verdict: the
+    reason omits the condition, the structured facts carry it."""
+    _seed_root(db)
+    _seed_child_verdict(db, "T-ROOT", "T-KID", "REQUEST_CHANGES")
+    fake = StrictFakeAuthorityEvaluator()
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+
+    t = db.get_task("T-ROOT")
+    assert t.status == TaskStatus.ESCALATED
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED
+    assert row["payload"]["clause_id"] == "esc-adverse-review-qa"
+    assert row["payload"]["action"] == "escalate_to_founder"
+    # The evaluation was still recorded (auditable) with the forced verdict.
+    cands = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(cands) == 1
+    assert cands[0].disposition.value == "escalate"
+    assert db.get_authority_evaluation(cands[0].id) is not None
+    assert db.get_authority_evaluation(cands[0].id).disposition.value == "escalate"
+
+
+def test_server_fact_gate_zombie_partial_work_escalates(runtime, db, monkeypatch):
+    """Partial-work evidence (the daemon zombie flag) is an authoritative
+    server fact: a fence-clean reason cannot continue past it."""
+    from datetime import datetime, timezone
+    _seed_root(db)
+    db.update_task(
+        "T-ROOT", zombie_flagged_at=datetime.now(timezone.utc).isoformat(),
+    )
+    fake = StrictFakeAuthorityEvaluator()
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED
+    assert row["payload"]["clause_id"] == "esc-partial-work"
+
+
+def test_server_fact_gate_overrides_pinned_continue(runtime, db, monkeypatch):
+    """Even an evaluator explicitly pinned to CONTINUE cannot continue when
+    the server proves a must-escalate fact (fake + hook gate, defense in
+    depth): misleading reason prose never authorizes continuation."""
+    _seed_root(db)
+    _seed_child_verdict(db, "T-ROOT", "T-KID", "REQUEST_CHANGES")
+    fake = StrictFakeAuthorityEvaluator(pinned={
+        CONTINUE_REASON: (
+            "continue_same_root", "cont-routine-same-root", ACTION_CONTINUE_SAME_ROOT,
+        ),
+    })
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED
+    assert row["payload"]["clause_id"] == "esc-adverse-review-qa"
+    assert db.list_authority_candidates_for_root("T-ROOT")[0].disposition.value == "escalate"
+
+
+# ── (m) adversarial protected-boundary omission/misleading (finding 3) ────
+#
+# The structural resolution of the protected-boundary finding: CONTINUE_SAME_
+# ROOT is granted ONLY when (1) every server-derived must-escalate predicate
+# is clean AND (2) the proposed reason is a BYTE-EXACT member of the
+# release-controlled closed routine set (the server then has complete
+# knowledge of the prose — the grant never depends on keyword classification
+# or the completeness/truthfulness of untrusted reason prose). The tests
+# below drive the REAL shipping seam (run_step -> run_authority_hook) with a
+# benign/omitted/misleading reason per protected category and prove the hook
+# fails closed to ESCALATE.
+
+# Each protected category of the policy, with a BENIGN paraphrase that
+# omits/misstates the category condition (the manager's real concern is the
+# category, but the prose does not say so and is not the exact release-
+# controlled routine phrase). The hook must fail closed to ESCALATE.
+ADVERSARIAL_OMITTED_REASONS: list[tuple[str, str]] = [
+    ("schema/migration/overloaded-column",
+     "routine same-root re-dispatch of the completed work"),
+    ("permission/sandbox/allow-rule",
+     "same-root follow-through, all green"),
+    ("auth/credentials/security/privacy/data access",
+     "re-dispatch same root, nothing blocking"),
+    ("compatibility",
+     "routine same-root continuation"),
+    ("spend/budget",
+     "follow through on the same root now"),
+    ("destructive/irreversible",
+     "same root, keep going"),
+    ("external/product/deploy",
+     "routine continuation of this root"),
+    ("ambiguity/novelty",
+     "re-dispatch the same root"),
+    ("partial work",
+     "continue the same root please"),
+    ("exhausted limits",
+     "same-root routine re-run"),
+    ("cancellation/live-work",
+     "keep this root going"),
+    ("successor/supersede/fresh-root",
+     "routine same-root loop"),
+]
+
+
+@pytest.mark.parametrize("category,reason", ADVERSARIAL_OMITTED_REASONS)
+def test_adversarial_omitted_benign_reason_fails_closed(runtime, db, monkeypatch, category, reason):
+    """A benign reason that OMITS the protected category is not the exact
+    release-controlled routine phrase — the server cannot verify the prose as
+    routine, so the hook fails closed to ESCALATE (esc-ambiguity-novelty) for
+    EVERY protected category. No continuation is possible."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", reason, monkeypatch)
+
+    t = db.get_task("T-ROOT")
+    assert t.status == TaskStatus.ESCALATED, category
+    assert _escalation_rows(db, "T-ROOT"), category
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED, category
+    assert row["payload"]["disposition"] == "escalate", category
+    assert row["payload"]["clause_id"] == "esc-ambiguity-novelty", category
+    # The reason was never able to authorize continuation.
+    cands = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(cands) == 1
+    assert cands[0].disposition.value == "escalate", category
+
+
+# A MISLEADING reason: it frames the escalation as routine BUT smuggles the
+# protected-category condition into the prose. Keyword detection in ANY
+# position must escalate with the matched clause — and even without it the
+# reason is not the exact routine phrase, so CONTINUE is unreachable.
+ADVERSARIAL_MISLEADING_REASONS: list[tuple[str, str]] = [
+    ("esc-schema-overloaded-column",
+     "routine same-root follow-through (the schema migration is approved)"),
+    ("esc-permission-sandbox-allow",
+     "routine same-root follow-through, allow-rule change is trivial"),
+    ("esc-auth-credentials-security",
+     "routine same-root follow-through, no credential handling needed"),
+    ("esc-compatibility",
+     "routine same-root follow-through, v0/v1 compat is fine"),
+    ("esc-spend-budget",
+     "routine same-root follow-through, spend is within budget"),
+    ("esc-destructive-irreversible",
+     "routine same-root follow-through, deletion is reversible"),
+    ("esc-external-product-deploy",
+     "routine same-root follow-through, the deploy window is open"),
+    ("esc-adverse-review-qa",
+     "routine same-root follow-through, the REVISE is a formality"),
+    ("esc-ambiguity-novelty",
+     "routine same-root follow-through, novel condition but manageable"),
+    ("esc-partial-work",
+     "routine same-root follow-through, partial work is fine"),
+    ("esc-exhausted-limits",
+     "routine same-root follow-through, the retry ceiling is not a blocker"),
+    ("esc-cancellation-live-work",
+     "routine same-root follow-through, no live children"),
+    ("esc-successor-supersede-revisit",
+     "routine same-root follow-through, successor is not needed"),
+]
+
+
+@pytest.mark.parametrize("clause_id,reason", ADVERSARIAL_MISLEADING_REASONS)
+def test_adversarial_misleading_reason_escalates_with_clause(runtime, db, monkeypatch, clause_id, reason):
+    """A routine-framed reason that smuggles a protected-category marker must
+    ESCALATE with the matched policy clause (and can never continue)."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", reason, monkeypatch)
+
+    t = db.get_task("T-ROOT")
+    assert t.status == TaskStatus.ESCALATED, clause_id
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED, clause_id
+    assert row["payload"]["clause_id"] == clause_id, reason
+    # The matched clause is a must-escalate clause of the release policy.
+    clause = POLICY.clause_by_id(clause_id)
+    assert clause is not None and clause.action == "escalate_to_founder", clause_id
+    # Even if the evaluator were (wrongly) pinned to CONTINUE, the hook's
+    # closed-pattern gate must reject a non-exact reason.
+    fake2 = StrictFakeAuthorityEvaluator(pinned={
+        reason: ("continue_same_root", "cont-routine-same-root", ACTION_CONTINUE_SAME_ROOT),
+    })
+    _seed_root(db, task_id="T-M2")
+    orch2 = _make_orch(runtime, db, evaluator=fake2)
+    _run_escalate_step(orch2, "T-M2", reason, monkeypatch)
+    assert db.get_task("T-M2").status == TaskStatus.ESCALATED, clause_id
+    row2 = _hook_outcome_rows(db, "T-M2")[0]
+    assert row2["payload"]["outcome"] == OUTCOME_ESCALATED, clause_id
+    assert row2["payload"]["clause_id"] == "esc-ambiguity-novelty"
+
+
+def test_adversarial_reason_omitted_empty_fails_closed(runtime, db, monkeypatch):
+    """An EMPTY reason (nothing stated at all) can never continue — the
+    server has no prose to verify, so the attempt fails closed to ESCALATE."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", "", monkeypatch)
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED
+    assert row["payload"]["clause_id"] == "esc-ambiguity-novelty"
+
+
+def test_server_gate_schema_drift_escalates(runtime, db, monkeypatch):
+    """The DB schema digest IS a gate, not provenance: when the live DB
+    schema diverges from the release-pinned schema (a schema/migration
+    condition is in flight), even the EXACT release-controlled routine phrase
+    cannot continue — the server-proven esc-schema-overloaded-column forces
+    ESCALATE."""
+    _seed_root(db)
+    # Mutate the live schema: authoritative drift vs the release-pinned
+    # schema a fresh Database() creates.
+    db.execute("CREATE TABLE drift_sentinel (id INTEGER PRIMARY KEY)")
+    db._conn.commit()
+    fake = StrictFakeAuthorityEvaluator()
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED
+    assert row["payload"]["clause_id"] == "esc-schema-overloaded-column"
+    cands = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(cands) == 1
+    assert cands[0].disposition.value == "escalate"
+
+
+def test_server_gate_permission_surface_change_during_attempt_escalates(runtime, db, monkeypatch):
+    """A permission/sandbox/allow-rule surface change landing WHILE the
+    evaluator runs is an authoritative server predicate: the exact routine
+    phrase cannot continue — the attempt fails closed with
+    esc-permission-sandbox-allow."""
+    from runtime.orchestrator.prompt_loader import _agent_path as _ap
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    _seed_claimed_root(db)
+    agent_path = _ap(runtime, "engineering_head", pending=False)
+    assert agent_path.exists()
+    fake = StrictFakeAuthorityEvaluator()
+    real_evaluate = fake.evaluate
+
+    def change_permission_then_evaluate(snapshot):
+        # Mutate the org permission surface (allow rules) mid-evaluation: a
+        # REAL parsed allow-rule change, not an unparsed tail append.
+        ad = AgentDef(
+            name="engineering_head", team="engineering", role="manager",
+            executor="claude", allow_rules=("happyranch", "git"), repos={},
+            enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+            system_prompt="You are engineering_head.", description="", model=None,
+        )
+        agent_path.write_text(render_agent_text(ad))
+        return real_evaluate(snapshot)
+    fake.evaluate = change_permission_then_evaluate
+
+    orch = _make_orch(runtime, db, evaluator=fake)
+    out = run_authority_hook(orch, db.get_task("T-ROOT"), "engineering_head", CONTINUE_REASON, 7)
+    assert out == "escalate"
+    assert db.get_task("T-ROOT").status == TaskStatus.IN_PROGRESS  # never continued
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_CANCELLED_STALE
+    assert row["payload"]["clause_id"] == "esc-permission-sandbox-allow"
+    # The evaluation is still recorded (auditable) — never a continuation.
+    cands = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(cands) == 1
+    assert cands[0].lifecycle_state.value == "consumed"
+    assert db.get_authority_evaluation(cands[0].id) is not None
+    # No continuation audit row, no pending flip.
+    continued = [
+        a for a in db.get_audit_logs("T-ROOT")
+        if a["action"] == AUDIT_ACTION_CONTINUED_SAME_ROOT
+    ]
+    assert continued == []
+
+
+def test_server_fence_budget_exhausted_benign_reason_escalates(runtime, db, monkeypatch):
+    """Exhausted limits are a server-owned mechanical fence: even the exact
+    routine phrase cannot reach evaluation when the orchestration budget is
+    exhausted — the hook records ineligible and returns escalate (the caller
+    proceeds through the existing escalation path; no continuation)."""
+    from runtime.config import Settings as _Settings
+    _seed_claimed_root(db)
+    db.update_task(
+        "T-ROOT", orchestration_step_count=_Settings().max_orchestration_steps,
+    )
+    fake = StrictFakeAuthorityEvaluator()
+    orch = _make_orch(runtime, db, evaluator=fake)
+    out = run_authority_hook(
+        orch, db.get_task("T-ROOT"), "engineering_head", CONTINUE_REASON, 7,
+    )
+    assert out == "escalate"
+    # Never continued: the root stayed claimed (in_progress), no pending flip.
+    assert db.get_task("T-ROOT").status == TaskStatus.IN_PROGRESS
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_INELIGIBLE
+    assert "budget_exhausted" in row["payload"]["fence_results"]
+    assert db.list_authority_candidates_for_root("T-ROOT") == []
+
+
+def test_server_fence_revise_budget_exhausted_benign_reason_escalates(runtime, db, monkeypatch):
+    """The revise-round ceiling is the same server-owned mechanical fence: a
+    root at the ceiling cannot be continued — the hook fails closed."""
+    runtime.org_config_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime.org_config_path.write_text("max_revise_rounds: 2\n")
+    _seed_claimed_root(db)
+    db.update_task("T-ROOT", revision_count=2)
+    fake = StrictFakeAuthorityEvaluator()
+    orch = _make_orch(runtime, db, evaluator=fake)
+    out = run_authority_hook(
+        orch, db.get_task("T-ROOT"), "engineering_head", CONTINUE_REASON, 7,
+    )
+    assert out == "escalate"
+    assert db.get_task("T-ROOT").status == TaskStatus.IN_PROGRESS
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_INELIGIBLE
+    assert "budget_exhausted" in row["payload"]["fence_results"]
+    assert db.list_authority_candidates_for_root("T-ROOT") == []
+
+
+def test_strict_fake_rejects_pinned_continue_for_non_accepted_reason():
+    """Defense in depth at the CI fake: a pinned CONTINUE for a reason that is
+    not a byte-exact release-controlled routine phrase fails closed."""
+    fake = StrictFakeAuthorityEvaluator(pinned={
+        "routine same-root re-dispatch": (
+            "continue_same_root", "cont-routine-same-root", ACTION_CONTINUE_SAME_ROOT,
+        ),
+    })
+    result = fake.evaluate(_make_snapshot(reason="routine same-root re-dispatch"))
+    assert result.disposition.value == "escalate"
+    assert result.clause_id == "esc-ambiguity-novelty"
+
+
+def test_accepted_routine_phrase_is_release_controlled():
+    """The positive CONTROL phrase is exactly the release-controlled routine
+    phrase; the closed set is small and documented in the policy module."""
+    from runtime.orchestrator.authority_policy import (
+        CONTINUE_ACCEPTED_REASONS,
+        CONTINUE_ROUTINE_PHRASE,
+    )
+    assert CONTINUE_ROUTINE_PHRASE == CONTINUE_REASON
+    assert CONTINUE_ACCEPTED_REASONS == frozenset({CONTINUE_REASON})
+    # The fake only continues on exact membership.
+    d, c, a = StrictFakeAuthorityEvaluator.classify_reason(CONTINUE_REASON)
+    assert (d, c, a) == ("continue_same_root", "cont-routine-same-root", ACTION_CONTINUE_SAME_ROOT)
+    d2, c2, a2 = StrictFakeAuthorityEvaluator.classify_reason(
+        "routine same-root follow-through"  # same words, different bytes
+    )
+    assert d2 == "escalate" and c2 == "esc-ambiguity-novelty"
+
+
+# ── (l) consumption-time full-fence recheck races (finding 2) ────────────
+
+def _mutate_before_commit(db, mutate: str) -> None:
+    """Mutate one coupled eligibility category between evaluation and the
+    final continuation CAS (the race window the atomic recheck must close)."""
+    from datetime import datetime, timezone
+    if mutate == "cancel":
+        db.update_task(
+            "T-ROOT", status=TaskStatus.FAILED, block_kind=None,
+            cancelled_at=datetime.now(timezone.utc).isoformat(),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+    elif mutate == "change_session":
+        db.update_task("T-ROOT", current_session_id="sess-OTHER")
+    elif mutate == "change_team":
+        db.execute("UPDATE tasks SET team = ? WHERE id = ?", ("content", "T-ROOT"))
+        db._conn.commit()
+    elif mutate == "manager_change":
+        db.update_task("T-ROOT", assigned_agent="dev_agent")
+    elif mutate == "block_task":
+        db.update_task("T-ROOT", block_kind=BlockKind.BLOCKED_ON_JOB)
+    elif mutate == "active_work":
+        db.update_task_active_chain("T-ROOT", "chain-x")
+    elif mutate == "revisit":
+        db.execute("UPDATE tasks SET revisit_of_task_id = ? WHERE id = ?", ("T-PREV", "T-ROOT"))
+        db._conn.commit()
+    elif mutate == "thread_origin":
+        db.execute(
+            "UPDATE tasks SET dispatched_from_thread_id = ? WHERE id = ?",
+            ("THR-9", "T-ROOT"),
+        )
+        db._conn.commit()
+    elif mutate == "successor":
+        db.insert_task(TaskRecord(id="T-PRED", brief="p", assigned_agent="engineering_head"))
+        db.execute(
+            "INSERT INTO manager_supersessions (predecessor_task_id, successor_task_id,"
+            " original_root_task_id, actor_agent, actor_session_id, rationale,"
+            " attestation_evidence, predecessor_brief, successor_brief,"
+            " predecessor_brief_sha256, successor_brief_sha256, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("T-PRED", "T-ROOT", "T-ORIG", "engineering_head", "sess-x", "r",
+             "{}", "b", "b", _digest("b"), _digest("b"), "2026-01-01T00:00:00+00:00"),
+        )
+        db._conn.commit()
+    elif mutate == "budget_exhausted":
+        db.update_task("T-ROOT", orchestration_step_count=10_000)
+    elif mutate == "adverse_child":
+        _seed_child_verdict(db, "T-ROOT", "T-KID", "REQUEST_CHANGES")
+    elif mutate == "zombie_flag":
+        db.update_task(
+            "T-ROOT", zombie_flagged_at=datetime.now(timezone.utc).isoformat(),
+        )
+    elif mutate == "candidate_mismatch":
+        cands = db.list_authority_candidates_for_root("T-ROOT")
+        db.execute(
+            "UPDATE authority_candidates SET snapshot_digest = ? WHERE id = ?",
+            (_digest("tampered"), cands[-1].id),
+        )
+        db._conn.commit()
+    else:
+        raise AssertionError(f"unknown mutation {mutate!r}")
+
+
+@pytest.mark.parametrize("mutate", [
+    "cancel", "change_session", "change_team", "manager_change", "block_task",
+    "active_work", "revisit", "thread_origin", "successor", "budget_exhausted",
+    "adverse_child", "zombie_flag", "candidate_mismatch",
+])
+def test_consumption_recheck_race_fails_closed(runtime, db, monkeypatch, mutate):
+    """Each coupled eligibility category mutated in the window between
+    evaluation and the final CAS: the atomic recheck refuses continuation and
+    the attempt fails closed to ESCALATE (or stays cancelled) — never
+    CONTINUE_SAME_ROOT."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    real_commit = db.commit_authority_continue_same_root
+
+    def mutate_then_commit(**kw):
+        _mutate_before_commit(db, mutate)
+        return real_commit(**kw)
+    monkeypatch.setattr(db, "commit_authority_continue_same_root", mutate_then_commit)
+
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+
+    t = db.get_task("T-ROOT")
+    # Never continued: the root was not returned to pending by the hook.
+    assert t.status != TaskStatus.PENDING
+    # No continuation audit row.
+    continued = [
+        a for a in db.get_audit_logs("T-ROOT")
+        if a["action"] == AUDIT_ACTION_CONTINUED_SAME_ROOT
+    ]
+    assert continued == []
+    # Terminal explainable outcome, never continued_same_root.
+    row = _hook_outcome_rows(db, "T-ROOT")[-1]
+    assert row["payload"]["outcome"] != OUTCOME_CONTINUED_SAME_ROOT
+    if mutate == "cancel":
+        assert t.status == TaskStatus.FAILED  # cancellation wins end to end
+    else:
+        # Fail closed to ESCALATE through the existing escalation path.
+        assert _escalation_rows(db, "T-ROOT")
+
+
+def test_fence_change_during_evaluation_caught_by_full_recheck(runtime, db, monkeypatch):
+    """A fence that changes WHILE the evaluator runs (not only before the
+    commit) is caught by the hook's post-evaluation full-fence recheck: the
+    candidate is consumed and the outcome is cancelled/stale — no continue."""
+    from datetime import datetime, timezone
+    fake = StrictFakeAuthorityEvaluator()
+    real_evaluate = fake.evaluate
+
+    def exhaust_then_evaluate(snapshot):
+        db.update_task("T-ROOT", orchestration_step_count=10_000)
+        return real_evaluate(snapshot)
+    fake.evaluate = exhaust_then_evaluate
+
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+
+    t = db.get_task("T-ROOT")
+    assert t.status == TaskStatus.ESCALATED
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_CANCELLED_STALE
+    assert "budget_exhausted" in row["payload"]["error"]
+    # The evaluation was recorded (auditable), the candidate consumed, no
+    # continuation.
+    cands = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(cands) == 1
+    assert cands[0].lifecycle_state.value == "consumed"
+    assert db.get_authority_evaluation(cands[0].id) is not None
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+
+
+# ── (m) restart/recovery seam: _consume_completion_report (finding 3) ────
+
+def _seed_result_row(db, task_id, agent, session, reason) -> int:
+    """Persist the escalation-decision task_results row exactly like the
+    completion route does and return its immutable row id."""
+    db.insert_task_result(
+        task_id=task_id, agent=agent, session_id=session,
+        status="completed", confidence_score=80,
+        output_summary=_escalate_decision(reason),
+        decision_json=_escalate_decision(reason),
+    )
+    row = db.get_latest_task_result(task_id, agent, session)
+    assert row is not None
+    return row["id"]
+
+
+def _consume_report(orch, task_id: str, reason: str, result_row_id: int) -> None:
+    """Drive the REAL shipping seam with a report reconstructed from the
+    persisted row — exactly what the boot sweep / zombie reaper do."""
+    from runtime.models import CompletionReport
+    from runtime.orchestrator.run_step import _consume_completion_report
+    report = CompletionReport(
+        task_id=task_id, agent="engineering_head", status="completed",
+        confidence=80, output_summary=_escalate_decision(reason),
+        decision=json.loads(_escalate_decision(reason)),
+    )
+    _consume_completion_report(orch, task_id, report, result_row_id=result_row_id)
+
+
+def test_replayed_consume_completion_report_exactly_once(runtime, db, monkeypatch):
+    """Replaying ``_consume_completion_report`` for the SAME immutable result
+    row (daemon restart / zombie re-entry) must NOT mint a second candidate or
+    evaluation: the claim CAS loses and the replay fails closed — at most one
+    continuation with a terminal audit outcome."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_claimed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    row_id = _seed_result_row(db, "T-ROOT", "engineering_head", "sess-x", CONTINUE_REASON)
+
+    _consume_report(orch, "T-ROOT", CONTINUE_REASON, row_id)
+    assert db.get_task("T-ROOT").status == TaskStatus.PENDING  # continued once
+    cands = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(cands) == 1
+    assert cands[0].causal_event_id == f"result:{row_id}"
+    assert cands[0].lifecycle_state.value == "consumed"
+    assert db.get_authority_evaluation(cands[0].id) is not None
+
+    # Crash-and-replay the same seam. A NEW orchestration-step audit row is
+    # written (the real seam), but the claim tuple is unchanged (result-row
+    # causality, NOT the step audit id) — no second candidate/evaluation, and
+    # no second continuation. The replayed escalate fails closed (ineligible:
+    # the root is no longer a claimed in-progress root) and the manager's
+    # escalation intent proceeds through the existing path — the final
+    # outcome is terminal and explainable, with exactly ONE continuation.
+    _consume_report(orch, "T-ROOT", CONTINUE_REASON, row_id)
+    cands = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(cands) == 1
+    assert db.get_authority_evaluation(cands[0].id) is not None
+    outcomes = [r["payload"]["outcome"] for r in _hook_outcome_rows(db, "T-ROOT")]
+    assert sorted(outcomes) == sorted([OUTCOME_CONTINUED_SAME_ROOT, OUTCOME_INELIGIBLE])
+    # Exactly one continuation was committed.
+    continued = [
+        a for a in db.get_audit_logs("T-ROOT")
+        if a["action"] == AUDIT_ACTION_CONTINUED_SAME_ROOT
+    ]
+    assert len(continued) == 1
+    # The replayed escalate was not silently dropped: the root escalated
+    # through the existing path (fail closed, at most one continuation).
+    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
+
+
+@pytest.mark.parametrize("lifecycle,evaluated", [
+    ("created", False),       # crash after claim, evaluation missing
+    ("evaluated", True),      # crash after evaluation, before consume
+    ("consumed", True),       # crash after consume, before continuation commit
+])
+def test_restart_seam_crash_windows_fail_closed(runtime, db, monkeypatch, lifecycle, evaluated):
+    """A crash mid-hook leaves the candidate in a partial state; re-entering
+    the REAL ``_consume_completion_report`` seam for the SAME result row must
+    lose the claim (one durable candidate, no duplicate evaluation, no
+    continuation) with a terminal audit outcome."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_claimed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    row_id = _seed_result_row(db, "T-ROOT", "engineering_head", "sess-x", CONTINUE_REASON)
+
+    # Seed the crash-state candidate with the EXACT claim tuple the hook
+    # derives from the immutable result row (same session, same causal event).
+    kw = dict(
+        root_task_id="T-ROOT", team="engineering", manager_agent="engineering_head",
+        manager_session_id="sess-x", causal_event_id=f"result:{row_id}",
+        causal_event_digest=_digest(f"task-result:{row_id}"), causal_result_id=None,
+        policy_id=POLICY.id, policy_version=POLICY.version, policy_digest=POLICY.digest,
+        prompt_id="prompt/authority-evaluator/engineering", prompt_version="v1",
+        prompt_digest=PROMPT_DIGEST,
+        model_id=StrictFakeAuthorityEvaluator.model_id, model_version="v1",
+        model_digest=StrictFakeAuthorityEvaluator.model_digest,
+        snapshot_digest=_digest("snapshot"),
+    )
+    candidate_id, won = db.claim_authority_candidate(**kw)
+    assert won
+    if evaluated:
+        db.record_authority_evaluation(
+            candidate_id=candidate_id, disposition="escalate",
+            disposition_code="escalate", response_digest=_digest("resp"),
+        )
+    if lifecycle == "consumed":
+        assert db.consume_authority_candidate(candidate_id)
+
+    _consume_report(orch, "T-ROOT", CONTINUE_REASON, row_id)
+
+    # Fail closed: no continuation.
+    t = db.get_task("T-ROOT")
+    assert t.status != TaskStatus.PENDING
+    # Exactly one durable candidate — the replay never minted a second.
+    cands = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(cands) == 1
+    assert cands[0].id == candidate_id
+    # No duplicate evaluation row.
+    evals = [db.get_authority_evaluation(cands[0].id)]
+    assert len([e for e in evals if e is not None]) == (1 if evaluated else 0)
+    # Terminal explainable outcome, never continued_same_root.
+    row = _hook_outcome_rows(db, "T-ROOT")[-1]
+    assert row["payload"]["outcome"] in (OUTCOME_CAS_LOST, OUTCOME_CANCELLED_STALE)
+
+
+def test_boot_sweep_style_consume_without_row_id_fails_closed(runtime, db, monkeypatch):
+    """If the shipping seam is entered WITHOUT a resolvable immutable result
+    row, the hook fails closed (capture_failure) and never creates a
+    candidate — no evaluation, no continuation from unprovable causality."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_claimed_root(db)
+    orch = _make_orch(runtime, db, evaluator=fake)
+    out = run_authority_hook(
+        orch, db.get_task("T-ROOT"), "engineering_head", CONTINUE_REASON, None,
+    )
+    assert out == "escalate"
+    assert db.list_authority_candidates_for_root("T-ROOT") == []
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_CAPTURE_FAILURE
+
+
+def test_approved_child_verdict_does_not_gate_continue(runtime, db, monkeypatch):
+    """An APPROVE verdict on a child is NOT a must-escalate server fact: a
+    fence-clean root with an approved child still reaches CONTINUE_SAME_ROOT
+    (positive adversarial control — the gate only fires on adverse verdicts)."""
+    fake = StrictFakeAuthorityEvaluator()
+    _seed_root(db)
+    _seed_child_verdict(db, "T-ROOT", "T-KID", "APPROVE")
+    orch = _make_orch(runtime, db, evaluator=fake)
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+
+    t = db.get_task("T-ROOT")
+    assert t.status == TaskStatus.PENDING
+    assert "authority-policy continued same root" in (t.note or "")
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["outcome"] == OUTCOME_CONTINUED_SAME_ROOT

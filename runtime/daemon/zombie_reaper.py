@@ -266,7 +266,10 @@ def _consume_zombie_fingerprint(
         local_ci=_local_ci,
     )
     from runtime.orchestrator.run_step import _consume_completion_report
-    _consume_completion_report(orchestrator, task_id, orphaned_report)
+    _consume_completion_report(
+        orchestrator, task_id, orphaned_report,
+        result_row_id=fingerprint.get("id"),
+    )
 
 
 # ---------------------------------------------------------------------------
