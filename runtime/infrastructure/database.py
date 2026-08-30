@@ -10465,7 +10465,6 @@ class Database:
                 and t["active_fanout"] is None
                 and t["blocked_on_job_ids"] is None
                 and t["revisit_of_task_id"] is None
-                and (t["dispatched_from_thread_id"] in (None, ""))
                 and budget_ok
                 and t["zombie_flagged_at"] is None
             ):
