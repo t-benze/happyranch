@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 
 import pytest
 
@@ -285,6 +286,174 @@ def test_catalog_and_detail_project_missing_eligibility_as_hidden(client_with_ru
     listed = next(skill for skill in catalog.json()["skills"] if skill["id"] == skill_id)
     assert listed["hidden_reason"] is None
     assert client.get(f"{BASE}/{skill_id}").json()["hidden_reason"] is None
+
+
+def test_purge_requires_retirement_and_exact_slug_then_is_stably_idempotent(client_with_runtime):
+    client, org = client_with_runtime
+    created = _create(client, slug="logical-only")
+    skill_id = created["skill_id"]
+    assert client.post(f"{BASE}/{skill_id}/purge", json={"typed_slug": "logical-only"}).json()["detail"]["code"] == "skill_not_retired"
+    assert client.post(f"{BASE}/{skill_id}/retire", json={"reason": "done"}).status_code == 200
+    mismatch = client.post(f"{BASE}/{skill_id}/purge", json={"typed_slug": "wrong"})
+    assert mismatch.status_code == 422
+    assert mismatch.json()["detail"]["code"] == "typed_slug_mismatch"
+
+    conn = getattr(org.db, "_conn", org.db)
+    retained_before = {
+        table: conn.execute(f"SELECT count(*) FROM {table} WHERE skill_id=?", (skill_id,)).fetchone()[0]
+        for table in (
+            "custom_skill_versions", "custom_skill_events",
+            "custom_skill_eligibility_rules", "custom_skill_materializations",
+        )
+    }
+    first = client.post(f"{BASE}/{skill_id}/purge", json={"typed_slug": "logical-only"})
+    assert first.status_code == 200
+    assert first.json()["state"] == "permanently_removed"
+    assert first.json()["physical_erasure"] == 0
+    replay = client.post(f"{BASE}/{skill_id}/purge", json={"typed_slug": "logical-only"})
+    assert replay.status_code == 200
+    assert replay.json()["purge_id"] == first.json()["purge_id"]
+    assert replay.json()["already_purged"] is True
+    assert {
+        table: conn.execute(f"SELECT count(*) FROM {table} WHERE skill_id=?", (skill_id,)).fetchone()[0]
+        for table in retained_before
+    } == retained_before
+    detail = client.get(f"{BASE}/{skill_id}").json()
+    assert detail["state"] == "permanently_removed"
+    assert "skill_md_cache" not in detail
+    assert client.post(f"{BASE}/{skill_id}/restore").status_code == 410
+    assert client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": _FM_BODY + "two"}).status_code == 410
+
+
+def test_purge_policy_withdrawal_is_old_resolver_compatibility_latch(client_with_runtime):
+    """Downgrade plus explicit old restore still resolves fail-closed."""
+    from runtime.skills.custom import service
+    from runtime.skills.eligibility import (
+        EligibilityRecipient, SkillEligibilityState, resolve_custom_skill_eligibility,
+    )
+
+    client, org = client_with_runtime
+    created = _create(client, slug="old-restore-latch")
+    skill_id = created["skill_id"]
+    response = client.put(
+        f"{BASE}/{skill_id}/eligibility",
+        headers={"If-Match": str(created["version_id"])},
+        json=[{"scope_type": "org", "scope_target": None, "effect": "allow"}],
+    )
+    assert response.status_code == 200, response.text
+    conn = getattr(org.db, "_conn", org.db)
+    historical_count = conn.execute(
+        "SELECT count(*) FROM custom_skill_eligibility_rules WHERE skill_id=?", (skill_id,)
+    ).fetchone()[0]
+
+    client.post(f"{BASE}/{skill_id}/retire", json={})
+    assert client.post(
+        f"{BASE}/{skill_id}/purge", json={"typed_slug": "old-restore-latch"}
+    ).status_code == 200
+    purged = conn.execute("SELECT * FROM custom_skills WHERE id=?", (skill_id,)).fetchone()
+    assert purged["retired_at"] is not None
+    assert len(service.current_rules(conn, skill_id)) == 0
+    assert conn.execute(
+        "SELECT count(*) FROM custom_skill_eligibility_rules WHERE skill_id=?", (skill_id,)
+    ).fetchone()[0] == historical_count
+
+    # Exact preserved-old restore behavior: it clears retirement only and is
+    # unaware of purged_at. Its existing resolver then sees the withdrawn
+    # current policy while all historical rule rows remain retained.
+    conn.execute(
+        "UPDATE custom_skills SET retired_at=NULL,retired_by=NULL,retired_reason=NULL WHERE id=?",
+        (skill_id,),
+    )
+    result = resolve_custom_skill_eligibility(
+        SkillEligibilityState(False, "valid"),
+        service.current_rules(conn, skill_id),
+        EligibilityRecipient("dev_agent", ("engineering",)),
+    )
+    assert result.visible is False
+    assert result.reason == "no_eligibility_policy"
+
+
+def test_purge_refuses_when_foreign_keys_are_disabled(client_with_runtime):
+    client, org = client_with_runtime
+    created = _create(client, slug="fk-off")
+    client.post(f"{BASE}/{created['skill_id']}/retire", json={})
+    conn = getattr(org.db, "_conn", org.db)
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        response = client.post(f"{BASE}/{created['skill_id']}/purge", json={"typed_slug": "fk-off"})
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "schema_contract_unsupported"
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def test_purge_refuses_a_partially_migrated_schema(client_with_runtime):
+    client, org = client_with_runtime
+    created = _create(client, slug="partial-schema")
+    client.post(f"{BASE}/{created['skill_id']}/retire", json={})
+    conn = getattr(org.db, "_conn", org.db)
+    conn.execute("DROP TABLE custom_skill_purge_events")
+
+    response = client.post(
+        f"{BASE}/{created['skill_id']}/purge", json={"typed_slug": "partial-schema"}
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "schema_contract_unsupported"
+
+
+def test_purge_rolls_back_policy_withdrawal_and_tombstone_on_failure(
+    client_with_runtime, monkeypatch,
+):
+    from runtime.skills.custom import service
+
+    client, org = client_with_runtime
+    created = _create(client, slug="rollback-purge")
+    skill_id = created["skill_id"]
+    assert client.put(
+        f"{BASE}/{skill_id}/eligibility",
+        headers={"If-Match": str(created["version_id"])},
+        json=[{"scope_type": "org", "scope_target": None, "effect": "allow"}],
+    ).status_code == 200
+    client.post(f"{BASE}/{skill_id}/retire", json={})
+    conn = getattr(org.db, "_conn", org.db)
+    original = service.replace_rules
+
+    def fail_after_withdrawal(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("fault after policy withdrawal")
+
+    monkeypatch.setattr(service, "replace_rules", fail_after_withdrawal)
+    with pytest.raises(RuntimeError, match="fault after policy withdrawal"):
+        client.post(f"{BASE}/{skill_id}/purge", json={"typed_slug": "rollback-purge"})
+
+    row = conn.execute("SELECT purged_at,purge_id FROM custom_skills WHERE id=?", (skill_id,)).fetchone()
+    assert tuple(row) == (None, None)
+    assert service.purge_tombstone(conn, skill_id) is None
+    assert len(service.current_rules(conn, skill_id)) == 1
+
+
+def test_purge_waits_for_the_org_publication_fence(client_with_runtime):
+    from runtime.skills.custom.fence import custom_skill_publication_fence
+
+    client, _org = client_with_runtime
+    created = _create(client, slug="race-fenced")
+    client.post(f"{BASE}/{created['skill_id']}/retire", json={})
+    started = threading.Event()
+    finished = threading.Event()
+
+    def purge_request():
+        started.set()
+        response = client.post(f"{BASE}/{created['skill_id']}/purge", json={"typed_slug": "race-fenced"})
+        assert response.status_code == 200
+        finished.set()
+
+    with custom_skill_publication_fence("alpha"):
+        worker = threading.Thread(target=purge_request)
+        worker.start()
+        assert started.wait(1)
+        assert not finished.wait(0.05)
+    worker.join(timeout=2)
+    assert finished.is_set()
 
 
 def test_b2_recover_deletes_only_corrupt_version_with_audit(

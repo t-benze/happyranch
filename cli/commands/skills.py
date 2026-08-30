@@ -837,6 +837,34 @@ def cmd_skills_recover(args: argparse.Namespace) -> None:
     print(f"✓ {response.json()['message']}")
 
 
+def cmd_skills_purge(args: argparse.Namespace) -> None:
+    """Commit a synchronous logical purge through the authenticated daemon."""
+    from cli._shared import resolve_org_slug
+    from cli.client.client import OpcClient
+
+    org = resolve_org_slug(args_org=getattr(args, "org", None), available=[])
+    typed_slug = args.typed_slug
+    if typed_slug is None:
+        try:
+            typed_slug = input("Type the exact skill slug to permanently remove: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("Aborted.")
+            return
+    response = OpcClient.from_env().post(
+        f"/api/v1/orgs/{org}/custom-skills/{args.skill_id}/purge",
+        json={"typed_slug": typed_slug},
+    )
+    payload = response.json()
+    if response.status_code != 200:
+        print(f"error ({response.status_code}): {payload.get('detail', response.text)}", file=sys.stderr)
+        sys.exit(1)
+    if args.json:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        replay = " (already permanently removed)" if payload["already_purged"] else ""
+        print(f"Permanently removed {payload['slug']}; physical_erasure=false{replay}")
+
+
 def register(sub) -> None:
     """Register the 'skills' subcommand family."""
     p = sub.add_parser("skills", help="Runtime-managed skill policy inspection")
@@ -916,3 +944,12 @@ def register(sub) -> None:
     p_recover.add_argument("content_hash", help="B2 version SHA-256 hash")
     p_recover.add_argument("--org", help="Org slug (default: auto-detect)")
     p_recover.set_defaults(func=cmd_skills_recover)
+
+    p_purge = skills_sub.add_parser(
+        "purge", help="Permanently deny a retired custom skill (logical only)",
+    )
+    p_purge.add_argument("skill_id", help="Exact custom skill ID")
+    p_purge.add_argument("--org", help="Org slug (default: auto-detect)")
+    p_purge.add_argument("--typed-slug", help="Exact slug confirmation for noninteractive use")
+    p_purge.add_argument("--json", action="store_true", help="Output the tombstone as JSON")
+    p_purge.set_defaults(func=cmd_skills_purge)

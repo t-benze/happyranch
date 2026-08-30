@@ -501,11 +501,11 @@ def agent_skills_effective(
         for row in rows:
             rules = [EligibilityRule(**dict(rule)) for rule in custom_service.current_rules(org.db, row["id"])]
             result = resolve_custom_skill_eligibility(
-                SkillEligibilityState(bool(row["retired_at"]), row["validation_state"]), rules, recipient)
+                SkillEligibilityState(bool(row["retired_at"]), row["validation_state"], bool(row["purged_at"])), rules, recipient)
             materialized = row["materialized_at"] is not None
             skills.append({
                 "skill_id": row["id"], "name": row["name"], "type": "custom",
-                "source": "custom_skill", "status": "retired" if row["retired_at"] else "active",
+                "source": "custom_skill", "status": "purged" if row["purged_at"] else "retired" if row["retired_at"] else "active",
                 "version": str(row["version_id"]), "summary": row["description"],
                 "visible": result.visible, "hidden": not result.visible,
                 "hidden_reason": result.reason, "current_version": row["version_id"],

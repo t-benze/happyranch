@@ -16,8 +16,11 @@ const skill: {
   name: string;
   description: string;
   current_version_id: number;
-  retired_at: null;
+  retired_at: string | null;
   validation_state: string;
+  state?: string;
+  purge_id?: string;
+  purged_at?: string;
   content_hash?: string;
   hidden_reason?: string | null;
   skill_md_cache?: string | null;
@@ -141,6 +144,38 @@ describe('Custom Skills routes', () => {
     server.use(http.get(`${API}/${encodeURIComponent(SKILL_ID)}`, () => new HttpResponse('forbidden', { status: 403 })));
     mount(`/orgs/${SLUG}/skills/custom/${encodeURIComponent(SKILL_ID)}`);
     expect(await screen.findByText('Founder access required')).toBeInTheDocument();
+  });
+
+  test('permanent removal requires the exact slug, exposes pending/error, and renders the tombstone', async () => {
+    const user = userEvent.setup();
+    const retired = { ...skill, retired_at: '2026-08-30T00:00:00Z' };
+    let release: ((value: Response) => void) | undefined;
+    server.use(
+      http.get(`${API}/${encodeURIComponent(SKILL_ID)}`, () => HttpResponse.json(retired)),
+      http.post(`${API}/${encodeURIComponent(SKILL_ID)}/purge`, () => new Promise<Response>((resolve) => { release = resolve; })),
+    );
+    mount(`/orgs/${SLUG}/skills/custom/${encodeURIComponent(SKILL_ID)}`);
+    await user.click(await screen.findByRole('button', { name: 'Permanently remove' }));
+    const confirm = screen.getAllByRole('button', { name: 'Permanently remove' })[1];
+    expect(confirm).toBeDisabled();
+    await user.type(screen.getByRole('textbox', { name: /Type playbook to confirm/ }), 'playbook');
+    await user.click(confirm);
+    expect(await screen.findByRole('button', { name: 'Removing…' })).toBeDisabled();
+    release?.(new HttpResponse('failed', { status: 500 }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Permanent removal failed.');
+
+    cleanup();
+    server.resetHandlers();
+    installShellHandlers();
+    mountDetail({ skill: {
+      ...retired,
+      state: 'permanently_removed',
+      purge_id: 'purge:fixed',
+      purged_at: '2026-08-30T01:02:03Z',
+    } });
+    expect(await screen.findByRole('heading', { name: 'Permanently removed' })).toBeInTheDocument();
+    expect(screen.getByText('purge:fixed')).toBeInTheDocument();
+    expect(screen.getByText(/physical_erasure=false/)).toBeInTheDocument();
   });
 
   test('detail renders an agent-created current guidance source without populating Add version', async () => {

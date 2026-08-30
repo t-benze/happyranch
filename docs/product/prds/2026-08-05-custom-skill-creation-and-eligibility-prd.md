@@ -1,5 +1,7 @@
 # Custom skill creation and eligibility PRD
 
+> **Current-state addition (TASK-6143):** Current-v2 custom skills support a founder-only, exact-slug-confirmed logical purge after retirement. It is irreversible HappyRanch denial with permanent ID/slug reservation, not physical erasure. Historical/evidentiary rows, cached content, artifacts, canonical packages, and historical links remain retained. Current eligibility rules are superseded rather than deleted, so preserved-old resolution remains fail-closed with `no_eligibility_policy`. An org-scoped in-process fence serializes tombstone commit with resolver selection through final canonical and both-root link publication. No running-session revocation, legacy conversion, cleanup, or new authorization role is introduced. Retained `retired_at` means downgrade alone cannot resurrect a record; the deliberate limitation requires both operator downgrade and explicit restore of that exact skill, and purge-aware restore always refuses it.
+
 | Field | Value |
 | --- | --- |
 | Status | Authoritative — Founder-authorized implementation contract (THR-055 seq 187, 200, 205), dated 2026-08-05 |

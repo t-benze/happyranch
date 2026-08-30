@@ -69,6 +69,12 @@ def current(conn, skill_id: str):
         JOIN custom_skill_versions v ON v.id=s.current_version_id WHERE s.id=?""", (skill_id,)).fetchone()
 
 
+def purge_tombstone(conn, skill_id: str):
+    return conn.execute(
+        "SELECT * FROM custom_skill_purge_events WHERE skill_id=?", (skill_id,)
+    ).fetchone()
+
+
 def current_rules(conn, skill_id: str):
     return conn.execute("SELECT scope_type,scope_target,effect FROM custom_skill_eligibility_rules WHERE skill_id=? AND superseded_at IS NULL", (skill_id,)).fetchall()
 

@@ -124,6 +124,7 @@
     "POST /api/v1/orgs/{slug}/custom-skills/{skill_id}/versions",
     "POST /api/v1/orgs/{slug}/custom-skills/{skill_id}/retire",
     "POST /api/v1/orgs/{slug}/custom-skills/{skill_id}/restore",
+    "POST /api/v1/orgs/{slug}/custom-skills/{skill_id}/purge",
     "GET /api/v1/orgs/{slug}/custom-skills/{skill_id}/eligibility",
     "POST /api/v1/orgs/{slug}/custom-skills/{skill_id}/eligibility/preview",
     "PUT /api/v1/orgs/{slug}/custom-skills/{skill_id}/eligibility",

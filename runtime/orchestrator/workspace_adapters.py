@@ -344,7 +344,12 @@ def materialize_workspace_skills(
     except ValueError:
         return []
 
-    with _workspace_skills_transaction(workspace):
+    from runtime.skills.custom.fence import custom_skill_publication_fence
+
+    # Lock order: org publication fence, then workspace transaction, then DB.
+    # This spans resolver selection, canonical generation and both provider
+    # root link repairs, closing selection-to-publication races with purge.
+    with custom_skill_publication_fence(slug), _workspace_skills_transaction(workspace):
         # Derive ONE unified expected set per provider root, then
         # reconcile once. This prevents the system-contract withdrawal
         # bug (TASK-4001 Finding 2) where managed-only expected_specs
@@ -393,7 +398,9 @@ def materialize_workspace_skills_union(
         contexts: list of session context names to union (e.g.
             ["task", "thread", "wake", "dream", "schedule", "bootstrap"])
     """
-    with _workspace_skills_transaction(workspace):
+    from runtime.skills.custom.fence import custom_skill_publication_fence
+
+    with custom_skill_publication_fence(slug), _workspace_skills_transaction(workspace):
         return _materialize_context_union(
             workspace, settings,
             slug=slug, contexts=contexts, provider=provider,
@@ -791,7 +798,7 @@ def _build_custom_skill_canonical_specs(
 
     conn = getattr(db, "_conn", db)
     rows = conn.execute(
-        """SELECT s.id, s.slug, s.retired_at, v.id AS version_id,
+        """SELECT s.id, s.slug, s.retired_at, s.purged_at, v.id AS version_id,
                   v.content_hash, v.content_artifact_key, v.validation_state
            FROM custom_skills s
            JOIN custom_skill_versions v ON v.id = s.current_version_id
@@ -815,7 +822,9 @@ def _build_custom_skill_canonical_specs(
             (row["id"],),
         ).fetchall()
         decision = resolve_custom_skill_eligibility(
-            SkillEligibilityState(bool(row["retired_at"]), row["validation_state"]),
+            SkillEligibilityState(
+                bool(row["retired_at"]), row["validation_state"], bool(row["purged_at"])
+            ),
             [EligibilityRule(**dict(rule)) for rule in rules],
             recipient,
         )
