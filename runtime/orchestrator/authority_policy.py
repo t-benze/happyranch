@@ -199,27 +199,15 @@ BYTE-EXACT member of the release-controlled closed routine set
 (CONTINUE_ACCEPTED_REASONS); the server cannot verify any other prose, so any
 paraphrase, omission, or misleading wording fails closed to ESCALATE.
 
-A granted continuation is a SINGLE-USE mechanically restricted envelope
-(founder option B). Unit 1: the envelope is minted atomically with the
-continuation and the daemon-mediated completion/decision acceptance point
-accepts ONLY the exact permitted decision (`done` — routine completion of
-the SAME root) while it is active; every other decision/status family
-(escalate, supersede, fresh-root/revisit, child/delegate/fanout, blocked,
-cross-root/team action, external commitment, protected-boundary mutation) is
-audited and fails closed into the existing ordinary founder-escalation path
-and never silently discarded, and the authority hook is not re-run. Unit 2
-(implemented): the continued turn's executor launch is ALSO mechanically
-narrowed — the launch resolver derives a turn-scoped allow set from the
-ACTIVE envelope identity immediately before launch, claude's
-`--allowedTools` is reduced to the single `happyranch report-completion`
-channel (+ the read/write tools needed to author the report), opencode runs
-under a turn-scoped permission map narrowed the same way, and executors
-without a runtime-owned per-command allow surface (codex/pi/generic
-CLI/custom adapters) REFUSE the continued turn pre-launch into the ordinary
-founder-escalation lifecycle — an unrestricted continued turn is never
-launched. Baseline/global permission generation is never touched. No fixed
-phrase, closed pattern, or reason truthfulness is safety proof on its own:
-the mechanical envelope is the fence.
+A granted continuation mints a SINGLE-USE daemon-owned lifecycle envelope.
+It binds the evaluation and same-root identity, is consumed by the next
+daemon-accepted manager result, and records cancellation/session-failure
+terminally. It is not an exact-action whitelist and does not narrow executor
+permissions: the continued manager turn receives that agent's ordinary
+configured permissions and follows ordinary manager-decision validation.
+Independent same-root identity, cancellation, CAS, budget, and protected-
+boundary fences remain non-overridable. Supersession, revisit, and fresh-root
+replacement remain outside this same-root grant.
 
 Any ambiguity, malformed/missing/unknown output, timeout, provider error,
 policy/team/version/digest mismatch, audit persistence failure, protected

@@ -1985,13 +1985,13 @@ class Database:
                 BEFORE DELETE ON authority_audit
                 BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;
 
-            -- THR-181 Track A (founder option B): the single-use continuation
+            -- THR-181 Track A (founder lifecycle envelope): the single-use continuation
             -- envelope. Minted ATOMICALLY with ``commit_authority_continue_
             -- same_root`` (state='active'), bound 1:1 to the authority
             -- candidate/evaluation and to the immutable causal task-result row,
-            -- and consumed EXACTLY ONCE by the continued turn's decision
-            -- (``active -> consumed`` for the exact permitted decision, or
-            -- ``active -> violated`` for any out-of-envelope decision/abort).
+            -- and consumed EXACTLY ONCE by the continued turn's normally
+            -- validated manager decision (``active -> consumed``), or spent
+            -- fail-closed when the lifecycle window aborts (``violated``).
             -- DB-level enforcement (not only Python): no delete, immutable
             -- identity, and a narrow finite lifecycle transition. Additive
             -- table (same class as the merged authority_candidates/evaluations/
@@ -9250,7 +9250,7 @@ class Database:
             self._conn.rollback()
             raise
 
-    # ── THR-181 Track A (founder option B): single-use continuation envelope ──
+    # ── THR-181 Track A (founder lifecycle envelope): single-use continuation envelope ──
 
     def get_active_authority_continue_envelope(self, root_task_id: str):
         """Return the single ACTIVE continuation envelope for ``root_task_id``
@@ -9265,19 +9265,6 @@ class Database:
             "SELECT * FROM authority_continue_envelopes "
             "WHERE root_task_id = ? AND state = 'active' "
             "ORDER BY id DESC LIMIT 1",
-            (root_task_id,),
-        ).fetchone()
-
-    def get_latest_authority_continue_envelope(self, root_task_id: str):
-        """Return the newest durable continuation envelope in any state.
-
-        Absence from this historical view, rather than absence from the
-        ACTIVE-only view, is the only condition that identifies a genuinely
-        ordinary turn.
-        """
-        return self._conn.execute(
-            "SELECT * FROM authority_continue_envelopes "
-            "WHERE root_task_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
             (root_task_id,),
         ).fetchone()
 
@@ -9306,14 +9293,13 @@ class Database:
         expected_action: str,
         audit_agent: str,
         error: str | None = None,
+        violation: bool = False,
     ) -> str:
         """THR-181 Track A: consume the single-use continuation envelope
         EXACTLY ONCE, atomically rechecking the immutable identity.
 
         Returns ``"consumed"`` (state ``active -> consumed``; the continued
-        turn produced the exact permitted decision family ``done``),
-        ``"violated"`` (state ``active -> violated``; an out-of-envelope
-        decision family or abort spent the continuation fail-closed), or
+        turn produced a daemon-accepted manager decision), or
         ``"not_active"`` (the envelope was already spent or its identity
         drifted — never a second continuation).
 
@@ -9368,12 +9354,10 @@ class Database:
                 # cancellation/terminal/stale — spend fail-closed.
                 self._conn.rollback()
                 return "not_active"
-            # The exact permitted decision family is ``done`` (routine
-            # completion of the SAME root); every other family is an
-            # out-of-envelope attempt and spends the envelope as violated.
-            new_state = (
-                "consumed" if decision_family == "done" else "violated"
-            )
+            # The envelope is a single-use lifecycle/causality receipt, not
+            # an action whitelist. Normal manager-decision validation and the
+            # daemon's independent mechanical fences remain authoritative.
+            new_state = "violated" if violation else "consumed"
             cur = self._conn.execute(
                 "UPDATE authority_continue_envelopes "
                 "SET state = ?, consumed_at = ?, updated_at = ? "

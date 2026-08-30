@@ -1,17 +1,13 @@
-"""THR-181 Track A (founder option B) — Unit 1: single-use CONTINUE_SAME_ROOT
-continuation-envelope tests (daemon-owned issuance + consumption).
+"""THR-181 Track A single-use CONTINUE_SAME_ROOT lifecycle-envelope tests.
 
-Proves the mechanically restricted envelope through the SHIPPING seams, in
-the founder-approved intermediate state (executor turn-scoped allow-set
-narrowing is Unit 2, NOT implemented here):
+Proves the daemon-owned lifecycle envelope through the shipping seams under
+the founder ruling; ordinary executor permissions are preserved:
 
 (a) the envelope is minted ATOMICALLY with the continuation, bound to the
     evaluation (candidate), the immutable causal task-result row, the
-    matched policy clause, and the exact permitted action;
-(b) the continued turn's decision is daemon-gated: ONLY the exact permitted
-    decision (``done``) succeeds; escalate/supersede/delegate/fanout/blocked
-    each fail closed into the ordinary founder-escalation path, audited and
-    never silently discarded, and the authority hook is not re-run;
+    matched policy clause, and the same-root grant;
+(b) normal manager decisions use ordinary validation and permissions; the
+    envelope is a single-use lifecycle/audit receipt, not an action whitelist;
 (c) the continued-turn prompt header is gated on an ACTIVE envelope
     (fail-closed: no envelope -> no continuation header -> ordinary turn);
 (d) out-of-envelope attempts produce the ordinary escalation lifecycle and
@@ -174,9 +170,7 @@ def _run_continued_step(
     escalate row). Mirrors the real completion route + orchestrator."""
     decision_raw = _decision_json(decision)
 
-    def fake_run_agent(
-        task_id, agent, prompt, on_session_started=None, turn_allow_set=None,
-    ):
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
         orch.db.update_task(task_id, current_session_id=session)
         orch.db.insert_task_result(
             task_id=task_id, agent=agent, session_id=session,
@@ -194,6 +188,13 @@ def _escalation_rows(db, task_id: str):
 
 def _envelope_rows(db, task_id: str):
     return [a for a in db.get_audit_logs(task_id) if a["action"].startswith("authority_continue_envelope")]
+
+
+def _latest_envelope(db, task_id: str):
+    return db.execute(
+        "SELECT * FROM authority_continue_envelopes WHERE root_task_id = ? "
+        "ORDER BY created_at DESC LIMIT 1", (task_id,),
+    ).fetchone()
 
 
 def _hook_outcome_rows(db, task_id: str):
@@ -276,7 +277,7 @@ def test_envelope_identity_is_immutable_in_db(runtime, db, monkeypatch):
         )
 
 
-# ── (b) daemon-mediated action acceptance: only the permitted action ─────
+# ── (b) daemon-mediated lifecycle consumption with normal manager decisions ─────
 
 def test_continued_turn_done_consumes_envelope_and_completes(runtime, db, monkeypatch):
     fake = StrictFakeAuthorityEvaluator()
@@ -296,7 +297,7 @@ def test_continued_turn_done_consumes_envelope_and_completes(runtime, db, monkey
     assert db.get_active_authority_continue_envelope("T-ROOT") is None
     env = db.get_authority_continue_envelope("CONT-AUTH-CAND-" + db.list_authority_candidates_for_root("T-ROOT")[0].id.split("AUTH-CAND-")[1])
     # (id is CONT-<candidate_id>)
-    env = db.get_authority_continue_envelope("CONT-" + db.list_authority_candidates_for_root("T-ROOT")[0].id)
+    env = _latest_envelope(db, "T-ROOT")
     assert env["state"] == "consumed"
     # No escalation.
     assert _escalation_rows(db, "T-ROOT") == []
@@ -310,12 +311,38 @@ def test_continued_turn_done_consumes_envelope_and_completes(runtime, db, monkey
     assert consumed[0]["payload"]["action"] == ACTION_CONTINUE_SAME_ROOT
 
 
-def test_continued_turn_escalate_fails_closed_to_ordinary_escalation(runtime, db, monkeypatch):
-    """A continued turn that attempts to escalate again: the envelope is
-    violated (single-use, audited) and the root fails closed into the
-    ORDINARY founder-escalation path — the authority hook is NOT re-run (no
-    second candidate/evaluation) and the notification + escalation audit
-    land exactly like an ordinary escalation."""
+@pytest.mark.parametrize(
+    "provider", ["claude", "codex", "opencode", "pi", "generic-cli", "custom-profile"],
+)
+def test_continued_turn_launches_without_executor_capability_refusal(
+    runtime, provider, monkeypatch,
+):
+    db = Database(runtime.db_path.parent / f"continued-{provider}.db")
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=StrictFakeAuthorityEvaluator())
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+    launched = []
+    monkeypatch.setattr(orch, "_resolve_executor_name", lambda agent: provider)
+
+    def ordinary_run(task_id, agent, prompt, on_session_started=None):
+        launched.append((task_id, agent, prompt))
+        decision = _decision_json({"action": "done", "summary": "complete"})
+        orch.db.update_task(task_id, current_session_id="sess-y")
+        orch.db.insert_task_result(
+            task_id=task_id, agent=agent, session_id="sess-y",
+            status="completed", confidence_score=80,
+            output_summary=decision, decision_json=decision,
+        )
+        return _make_result(session="sess-y"), _make_report(decision)
+
+    monkeypatch.setattr(orch, "_run_agent", ordinary_run)
+    orch.run_step("T-ROOT")
+    assert len(launched) == 1
+    assert db.get_task("T-ROOT").status == TaskStatus.COMPLETED
+
+
+def test_continued_turn_escalate_uses_ordinary_escalation(runtime, db, monkeypatch):
+    """A continued turn may make the ordinary validated escalate decision."""
     fake = StrictFakeAuthorityEvaluator()
     _seed_root(db)
     orch = _make_orch(runtime, db, evaluator=fake)
@@ -336,22 +363,19 @@ def test_continued_turn_escalate_fails_closed_to_ordinary_escalation(runtime, db
     assert len(esc) == 1
     assert spy["task_id"] == "T-ROOT"
     assert spy["agent"] == "engineering_head"
-    assert "envelope violation" in spy["reason"]
-    # The envelope was spent as violated.
-    env = db.get_authority_continue_envelope("CONT-" + db.list_authority_candidates_for_root("T-ROOT")[0].id)
-    assert env["state"] == "violated"
-    viol = [
+    assert spy["reason"] == "still needs founder"
+    env = _latest_envelope(db, "T-ROOT")
+    assert env["state"] == "consumed"
+    consumed = [
         a for a in db.get_audit_logs("T-ROOT")
-        if a["action"] == AUDIT_ACTION_ENVELOPE_VIOLATED
+        if a["action"] == AUDIT_ACTION_ENVELOPE_CONSUMED
     ]
-    assert len(viol) == 1
-    assert viol[0]["payload"]["decision_family"] == "escalate"
-    # Exactly ONE evaluation happened (the original grant); the hook did not
-    # re-run for the continued turn's escalation.
-    assert len(db.list_authority_candidates_for_root("T-ROOT")) == 1
+    assert len(consumed) == 1
+    assert consumed[0]["payload"]["decision_family"] == "escalate"
+    assert len(db.list_authority_candidates_for_root("T-ROOT")) == 2
     outcomes = [r["payload"]["outcome"] for r in _hook_outcome_rows(db, "T-ROOT")]
     assert outcomes.count("continued_same_root") == 1
-    assert "escalated" not in outcomes  # no fresh hook outcome for the violation
+    assert "escalated" in outcomes
 
 
 def test_continued_turn_supersede_fails_closed_no_successor(runtime, db, monkeypatch):
@@ -395,7 +419,7 @@ def test_continued_turn_supersede_fails_closed_no_successor(runtime, db, monkeyp
     assert _escalation_rows(db, "T-ROOT")
 
 
-def test_continued_turn_delegate_fails_closed_no_child(runtime, db, monkeypatch):
+def test_continued_turn_delegate_uses_normal_manager_validation(runtime, db, monkeypatch):
     fake = StrictFakeAuthorityEvaluator()
     _seed_root(db)
     orch = _make_orch(runtime, db, evaluator=fake)
@@ -408,13 +432,13 @@ def test_continued_turn_delegate_fails_closed_no_child(runtime, db, monkeypatch)
     )
 
     t = db.get_task("T-ROOT")
-    assert t.status == TaskStatus.ESCALATED  # failed closed, no delegation
+    assert t.status == TaskStatus.FAILED
     assert db.get_children("T-ROOT") == []
-    viol = [
+    consumed = [
         a for a in db.get_audit_logs("T-ROOT")
-        if a["action"] == AUDIT_ACTION_ENVELOPE_VIOLATED
+        if a["action"] == AUDIT_ACTION_ENVELOPE_CONSUMED
     ]
-    assert viol[0]["payload"]["decision_family"] == "delegate"
+    assert consumed[0]["payload"]["decision_family"] == "delegate"
 
 
 def test_continued_turn_fanout_fails_closed(runtime, db, monkeypatch):
@@ -430,13 +454,13 @@ def test_continued_turn_fanout_fails_closed(runtime, db, monkeypatch):
     )
 
     t = db.get_task("T-ROOT")
-    assert t.status == TaskStatus.ESCALATED
+    assert t.status == TaskStatus.FAILED
     assert db.get_children("T-ROOT") == []
-    viol = [
+    consumed = [
         a for a in db.get_audit_logs("T-ROOT")
-        if a["action"] == AUDIT_ACTION_ENVELOPE_VIOLATED
+        if a["action"] == AUDIT_ACTION_ENVELOPE_CONSUMED
     ]
-    assert viol[0]["payload"]["decision_family"] == "fanout"
+    assert consumed[0]["payload"]["decision_family"] == "fanout"
 
 
 def test_continued_turn_blocked_fails_closed(runtime, db, monkeypatch):
@@ -446,8 +470,8 @@ def test_continued_turn_blocked_fails_closed(runtime, db, monkeypatch):
     _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
 
     # A blocked report from the continued turn (no jobs submitted — the
-    # route-level gate rejects those) is outside the envelope.
-    def fake_run_agent_blocked(task_id, agent, prompt, on_session_started=None, turn_allow_set=None):
+    # ordinary route-level validation rejects those) still consumes the envelope.
+    def fake_run_agent_blocked(task_id, agent, prompt, on_session_started=None):
         orch.db.update_task(task_id, current_session_id="sess-y")
         orch.db.insert_task_result(
             task_id=task_id, agent=agent, session_id="sess-y",
@@ -461,12 +485,12 @@ def test_continued_turn_blocked_fails_closed(runtime, db, monkeypatch):
     orch.run_step("T-ROOT")
 
     t = db.get_task("T-ROOT")
-    assert t.status == TaskStatus.ESCALATED
-    viol = [
+    assert t.status == TaskStatus.FAILED
+    consumed = [
         a for a in db.get_audit_logs("T-ROOT")
-        if a["action"] == AUDIT_ACTION_ENVELOPE_VIOLATED
+        if a["action"] == AUDIT_ACTION_ENVELOPE_CONSUMED
     ]
-    assert viol[0]["payload"]["decision_family"] == "blocked"
+    assert consumed[0]["payload"]["decision_family"] == "blocked"
 
 
 def test_continued_turn_must_escalate_sentinels_fail_closed(runtime, db, monkeypatch):
@@ -495,10 +519,8 @@ def test_continued_turn_must_escalate_sentinels_fail_closed(runtime, db, monkeyp
         )
         t = db2.get_task("T-ROOT")
         assert t.status == TaskStatus.ESCALATED, label
-        env = db2.get_authority_continue_envelope(
-            "CONT-" + db2.list_authority_candidates_for_root("T-ROOT")[0].id
-        )
-        assert env["state"] == "violated", label
+        env = _latest_envelope(db2, "T-ROOT")
+        assert env["state"] == "consumed", label
 
 
 def test_continued_turn_malformed_output_fails_closed(runtime, db, monkeypatch):
@@ -512,7 +534,7 @@ def test_continued_turn_malformed_output_fails_closed(runtime, db, monkeypatch):
     _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
     assert db.get_active_authority_continue_envelope("T-ROOT") is not None
 
-    def fake_run_agent_malformed(task_id, agent, prompt, on_session_started=None, turn_allow_set=None):
+    def fake_run_agent_malformed(task_id, agent, prompt, on_session_started=None):
         orch.db.update_task(task_id, current_session_id="sess-y")
         raw = "this is not json"
         orch.db.insert_task_result(
@@ -526,17 +548,13 @@ def test_continued_turn_malformed_output_fails_closed(runtime, db, monkeypatch):
 
     t = db.get_task("T-ROOT")
     assert t.status == TaskStatus.ESCALATED
-    env = db.get_authority_continue_envelope(
-        "CONT-" + db.list_authority_candidates_for_root("T-ROOT")[0].id
-    )
-    assert env["state"] == "violated"
-    viol = [
+    env = _latest_envelope(db, "T-ROOT")
+    assert env["state"] == "consumed"
+    consumed = [
         a for a in db.get_audit_logs("T-ROOT")
-        if a["action"] == AUDIT_ACTION_ENVELOPE_VIOLATED
+        if a["action"] == AUDIT_ACTION_ENVELOPE_CONSUMED
     ]
-    assert viol[0]["payload"]["decision_family"] == "escalate"
-    # Exactly ONE evaluation (the original grant); the hook did not re-run.
-    assert len(db.list_authority_candidates_for_root("T-ROOT")) == 1
+    assert consumed[0]["payload"]["decision_family"] == "escalate"
 
 
 def _seed_continued_root(
@@ -575,12 +593,7 @@ def _seed_continued_root(
 
 # ── (d) out-of-envelope attempts → ordinary escalation lifecycle ─────────
 
-def test_violation_produces_ordinary_escalation_audit_and_notification(runtime, db, monkeypatch):
-    """The fail-closed destination of an out-of-envelope continued-turn
-    decision is byte-identical to an ordinary escalation's lifecycle: task
-    ESCALATED, one escalation audit row with the server-derived reason, the
-    notification fired, and the thread projection attempted (no-op for a
-    non-thread root)."""
+def test_invalid_delegate_uses_ordinary_manager_validation(runtime, db, monkeypatch):
     fake = StrictFakeAuthorityEvaluator()
     _seed_root(db)
     orch = _make_orch(runtime, db, evaluator=fake)
@@ -594,13 +607,9 @@ def test_violation_produces_ordinary_escalation_audit_and_notification(runtime, 
     )
 
     t = db.get_task("T-ROOT")
-    assert t.status == TaskStatus.ESCALATED
-    assert t.note is not None and "envelope violation" in t.note
-    esc = _escalation_rows(db, "T-ROOT")
-    assert len(esc) == 1
-    assert "envelope violation" in esc[0]["payload"].get("reason", "")
-    assert spy["task_id"] == "T-ROOT"
-    assert "envelope violation" in spy["reason"]
+    assert t.status == TaskStatus.FAILED
+    assert _escalation_rows(db, "T-ROOT") == []
+    assert spy == {}
 
 
 # ── (e) exactly-once / CAS / cancellation / restart windows ──────────────
@@ -718,7 +727,7 @@ def test_session_failure_spends_envelope_fail_closed(runtime, db, monkeypatch):
 
     # Continued turn's session dies without a decision: run_step's failure
     # path spends the envelope and fails the root (no continuation leak).
-    def fake_run_agent_dead(task_id, agent, prompt, on_session_started=None, turn_allow_set=None):
+    def fake_run_agent_dead(task_id, agent, prompt, on_session_started=None):
         orch.db.update_task(task_id, current_session_id="sess-y")
         return _make_result(success=False, session="sess-y"), None
     monkeypatch.setattr(orch, "_run_agent", fake_run_agent_dead)
@@ -833,12 +842,12 @@ def test_envelope_audit_denominator_no_raw_secrets(runtime, db, monkeypatch):
         blob = json.dumps(a["payload"])
         assert "sk-12345" not in blob
         assert "secret payload" not in blob
-    viol = [a for a in rows if a["action"] == AUDIT_ACTION_ENVELOPE_VIOLATED]
-    assert len(viol) == 1
-    assert viol[0]["payload"]["decision_family"] == "delegate"
-    assert "policy_id" in viol[0]["payload"]
-    assert "policy_digest" in viol[0]["payload"]
-    assert "causal_event_id" in viol[0]["payload"]
+    consumed = [a for a in rows if a["action"] == AUDIT_ACTION_ENVELOPE_CONSUMED]
+    assert len(consumed) == 1
+    assert consumed[0]["payload"]["decision_family"] == "delegate"
+    assert "policy_id" in consumed[0]["payload"]
+    assert "policy_digest" in consumed[0]["payload"]
+    assert "causal_event_id" in consumed[0]["payload"]
 
 
 # ── (h) ordinary ESCALATE behavior untouched when machinery absent ───────
@@ -889,9 +898,9 @@ def test_content_team_without_policy_never_mints_envelope(runtime, db, monkeypat
     assert _envelope_rows(db, "T-CONTENT") == []
 
 
-# ── (f) continued-turn prompt carries the mechanical restriction ─────────
+# ── (f) continued-turn prompt carries the founder lifecycle ruling ─────────
 
-def test_continued_turn_prompt_carries_mechanical_restriction(runtime, db, monkeypatch):
+def test_continued_turn_prompt_carries_lifecycle_ruling(runtime, db, monkeypatch):
     fake = StrictFakeAuthorityEvaluator()
     _seed_root(db)
     orch = _make_orch(runtime, db, evaluator=fake)
@@ -899,7 +908,7 @@ def test_continued_turn_prompt_carries_mechanical_restriction(runtime, db, monke
 
     captured = {}
 
-    def capture(task_id, agent, prompt, on_session_started=None, turn_allow_set=None):
+    def capture(task_id, agent, prompt, on_session_started=None):
         captured["prompt"] = prompt
         raise RuntimeError("abort after prompt build")
     monkeypatch.setattr(orch, "_run_agent", capture)
@@ -907,14 +916,18 @@ def test_continued_turn_prompt_carries_mechanical_restriction(runtime, db, monke
 
     prompt = captured["prompt"]
     assert prompt.startswith("AUTHORITY POLICY CONTINUED SAME ROOT:")
-    assert "DAEMON-RESTRICTED" in prompt
-    assert "single-use continuation envelope" in prompt
-    assert "`done`" in prompt
+    assert "ORDINARY CONFIGURED EXECUTOR PERMISSIONS" in prompt
+    assert "normal manager-decision validation" in prompt
+    assert "not an exact-action whitelist" in prompt
+    assert "supersession, successor, revisit, and fresh-root replacement" in prompt
+    assert "the only accepted decision is `done`" not in prompt
     assert POLICY.id in prompt
 
 
 def test_continued_turn_prompt_absent_without_active_envelope(runtime, db, monkeypatch):
-    """Spent durable continuation history refuses; it is never ordinary."""
+    """Fail-closed header gating: a continuation audit row WITHOUT an active
+    envelope must NOT present the continued turn as a continuation — the
+    root runs as an ordinary turn (no continuation lifecycle header)."""
     fake = StrictFakeAuthorityEvaluator()
     _seed_root(db)
     orch = _make_orch(runtime, db, evaluator=fake)
@@ -927,14 +940,12 @@ def test_continued_turn_prompt_absent_without_active_envelope(runtime, db, monke
         error="test: continuation window closed",
     ) is True
 
-    captured = []
+    captured = {}
 
     def capture(task_id, agent, prompt, on_session_started=None):
-        captured.append(prompt)
-        raise AssertionError("spent continuation history must not launch")
+        captured["prompt"] = prompt
+        raise RuntimeError("abort after prompt build")
     monkeypatch.setattr(orch, "_run_agent", capture)
     orch.run_step("T-ROOT")
 
-    assert captured == []
-    assert db.get_task("T-ROOT").status == TaskStatus.ESCALATED
-    assert any(a["action"] == "escalation" for a in db.get_audit_logs("T-ROOT"))
+    assert "AUTHORITY POLICY CONTINUED SAME ROOT:" not in captured["prompt"]

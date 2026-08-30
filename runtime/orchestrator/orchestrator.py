@@ -43,64 +43,12 @@ from runtime.orchestrator.org_config import (
     resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
-    OpencodeWorkspaceAdapter,
     format_repo_refresh_note,
     materialize_workspace_skills,
     refresh_workspace_repos,
     validate_workspace_skills_integrity,
 )
 from runtime.orchestrator.teams import TeamsRegistry
-
-
-def _turn_scoped_opencode_permissions(
-    settings: "Settings", paths: "OrgPaths", workspace: Path,
-    agent_name: str, turn_allow_set,
-):
-    """THR-181 Track A (founder option B) Unit 2: a context manager that
-    swaps the per-workspace ``opencode.json`` permission map to the
-    mechanically narrowed turn-scoped allow set for ONE continued manager
-    turn, and restores the ordinary per-agent map afterwards.
-
-    The daemon owns this writer (``OpencodeWorkspaceAdapter``); the swap
-    therefore rides a runtime-owned per-command allow surface — it never
-    touches global/baseline permission generation. Fail-closed: the ordinary
-    map is restored on EVERY exit (including error paths). The narrowed map
-    allows ONLY ``happyranch report-completion *`` with ``*`` deny — no
-    git/gh, no jobs/threads, no other command.
-    """
-    import contextlib
-
-    adapter = OpencodeWorkspaceAdapter(settings, paths, slug="")  # writer only
-
-    @contextlib.contextmanager
-    def _cm():
-        narrowed = {
-            "$schema": "https://opencode.ai/config.json",
-            "permission": {
-                "bash": {
-                    "*": "deny",
-                    **{
-                        f"{prefix} *": "allow"
-                        for prefix in turn_allow_set.allowed_bash_prefixes
-                    },
-                },
-            },
-        }
-        (workspace / "opencode.json").write_text(
-            json.dumps(narrowed, indent=2) + "\n"
-        )
-        try:
-            yield
-        finally:
-            try:
-                adapter.write_opencode_json(workspace, agent_name=agent_name)
-            except Exception:
-                logging.getLogger(__name__).warning(
-                    "turn-scoped opencode.json restore failed for %s", workspace,
-                    exc_info=True,
-                )
-
-    return _cm()
 
 logger = logging.getLogger(__name__)
 
@@ -769,22 +717,12 @@ class Orchestrator:
         agent: str,
         prompt: str,
         on_session_started: Callable[[str, str, str], None] | None = None,
-        turn_allow_set: object | None = None,
     ) -> tuple[ExecutorResult, CompletionReport | None]:
         """Set up workspace and run an agent session.
 
         Returns a tuple ``(executor_result, completion_report_or_None)``.
         ``on_session_started`` is invoked with ``(task_id, agent_name, session_id)``
         before the subprocess starts so the daemon can register the active session.
-
-        THR-181 Track A (founder option B) Unit 2: ``turn_allow_set`` is the
-        mechanically narrowed, turn-scoped executor allow set for ONE
-        continued manager turn (``ContinuationTurnAllowSet``; None for an
-        ordinary turn). When present, the executor launch consumes it: claude
-        narrows ``--allowedTools``; opencode runs under a turn-scoped
-        ``opencode.json`` permission map (daemon-owned writer; the ordinary
-        per-agent map is restored after the session). Baseline/global
-        permission generation is never touched.
         """
         task = self._db.get_task(task_id)
         agent_name = agent
@@ -898,11 +836,6 @@ class Orchestrator:
                 agent_name=agent_name,
                 task_id=task_id,
             )
-            if turn_allow_set is not None:
-                from runtime.orchestrator.authority import revalidate_continuation_launch
-                revalidate_continuation_launch(
-                    self._db, task_id, agent_name, turn_allow_set,
-                )
 
         # The orchestrator relies on the start-task skill to bridge prompt →
         # agent work → completion callback. If the workspace was bootstrapped
@@ -1029,86 +962,39 @@ class Orchestrator:
             self._db.insert_audit_log(task_id, agent_name, action, payload)
 
         timeout_seconds = self._resolve_session_timeout(agent_name, task_id=task_id)
-        # THR-181 Track A (founder option B) Unit 2: a continued turn on the
-        # opencode executor runs under a turn-scoped ``opencode.json``
-        # permission map (the daemon owns this writer). The narrowed map is
-        # written BEFORE the launch (both contained and uncontained) and the
-        # ordinary per-agent map is restored AFTER the session — fail-closed:
-        # any error path still restores. Claude narrowing travels via the
-        # ``turn_allow_set`` argv override inside the executor itself.
-        turn_scope_cm = None
-        if turn_allow_set is not None and provider == "opencode":
-            turn_scope_cm = _turn_scoped_opencode_permissions(
-                self._settings, self._paths, workspace, agent_name, turn_allow_set,
-            )
         if self._host_supervisor is not None:
             # THR-207 task-producer wiring: the session runs through the
             # daemon-wide HostSessionSupervisor (admission lease, atomic
             # ownership at grant, real backend launch, opaque cancellation,
             # containment cleanup before lease release).
-            if turn_scope_cm is None:
-                result = self._run_agent_launch_contained(
-                    task_id=task_id,
-                    agent_name=agent_name,
-                    workspace=workspace,
-                    provider=provider,
-                    model_name=model_name,
-                    executor=executor,
-                    session_id=session_id,
-                    full_prompt=full_prompt,
-                    timeout_seconds=timeout_seconds,
-                    on_started=_on_started,
-                    on_throttle_event=_on_throttle_event,
-                    pre_launch_integrity_validator=_pre_launch_integrity_validator,
-                    turn_allow_set=turn_allow_set,
-                )
-            else:
-                with turn_scope_cm:
-                    result = self._run_agent_launch_contained(
-                        task_id=task_id,
-                        agent_name=agent_name,
-                        workspace=workspace,
-                        provider=provider,
-                        model_name=model_name,
-                        executor=executor,
-                        session_id=session_id,
-                        full_prompt=full_prompt,
-                        timeout_seconds=timeout_seconds,
-                        on_started=_on_started,
-                        on_throttle_event=_on_throttle_event,
-                        pre_launch_integrity_validator=_pre_launch_integrity_validator,
-                        turn_allow_set=turn_allow_set,
-                    )
+            result = self._run_agent_launch_contained(
+                task_id=task_id,
+                agent_name=agent_name,
+                workspace=workspace,
+                provider=provider,
+                model_name=model_name,
+                executor=executor,
+                session_id=session_id,
+                full_prompt=full_prompt,
+                timeout_seconds=timeout_seconds,
+                on_started=_on_started,
+                on_throttle_event=_on_throttle_event,
+                pre_launch_integrity_validator=_pre_launch_integrity_validator,
+            )
         else:
             # Legacy uncontained path (tests / idle state): executor
             # self-launches exactly as before.
-            if turn_scope_cm is None:
-                result = executor.run(
-                    workspace=workspace,
-                    prompt=full_prompt,
-                    session_id=session_id,
-                    timeout_seconds=timeout_seconds,
-                    on_started=_on_started,
-                    on_throttle_event=_on_throttle_event,
-                    model=model_name,
-                    pre_launch_validator=_pre_launch_integrity_validator,
-                    org_slug=self._slug,
-                    turn_allow_set=turn_allow_set,
-                )
-            else:
-                with turn_scope_cm:
-                    result = executor.run(
-                        workspace=workspace,
-                        prompt=full_prompt,
-                        session_id=session_id,
-                        timeout_seconds=timeout_seconds,
-                        on_started=_on_started,
-                        on_throttle_event=_on_throttle_event,
-                        model=model_name,
-                        pre_launch_validator=_pre_launch_integrity_validator,
-                        org_slug=self._slug,
-                        turn_allow_set=turn_allow_set,
-                    )
+            result = executor.run(
+                workspace=workspace,
+                prompt=full_prompt,
+                session_id=session_id,
+                timeout_seconds=timeout_seconds,
+                on_started=_on_started,
+                on_throttle_event=_on_throttle_event,
+                model=model_name,
+                pre_launch_validator=_pre_launch_integrity_validator,
+                org_slug=self._slug,
+            )
         self._audit.log_session_end(
             task_id=task_id,
             agent=agent_name,
@@ -1139,7 +1025,6 @@ class Orchestrator:
         on_started: Callable[[int], None],
         on_throttle_event: "Callable[[str, dict], None] | None",
         pre_launch_integrity_validator: Callable[[], None],
-        turn_allow_set: object | None = None,
     ) -> ExecutorResult:
         """THR-207 task-producer wiring: run one task session through the
         daemon-wide ``HostSessionSupervisor``.
@@ -1221,7 +1106,6 @@ class Orchestrator:
                 model=model_name,
                 org_slug=self._slug,
                 timeout_seconds=timeout_seconds,
-                turn_allow_set=turn_allow_set,
             )
         except Exception as exc:
             _clear_tracker()

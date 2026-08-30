@@ -1053,24 +1053,6 @@ _SESSION_LIFETIME_PREAMBLE = (
 )
 
 
-def _allowed_tools_for_launch(
-    paths: "OrgPaths", workspace: Path, turn_allow_set: object | None,
-) -> str:
-    """Build the Claude ``--allowedTools`` value for one launch.
-
-    Ordinary launches keep the per-agent allow rules (baseline generation,
-    unchanged). A continued manager turn (``turn_allow_set`` present) uses
-    the mechanically narrowed turn-scoped allow set instead — the continued
-    turn never inherits the ordinary manager executor permissions.
-    """
-    from runtime.orchestrator.workspace_adapters import allow_rules_for_agent
-    if turn_allow_set is not None:
-        return " ".join(turn_allow_set.allowed_tools_cli)
-    # Workspace layout is `<runtime>/workspaces/<agent_name>`, so the
-    # directory name is the canonical agent identifier.
-    return " ".join(allow_rules_for_agent(paths, workspace.name, cli=True))
-
-
 class ClaudeExecutor:
     def __init__(
         self,
@@ -1148,7 +1130,6 @@ class ClaudeExecutor:
         org_slug: str | None = None,
         running: "RunningHandle | None" = None,
         throttle_backoff_seconds: Sequence[float] | None = None,
-        turn_allow_set: object | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         # The workspace's .claude/settings.json `permissions.allow` list is not
@@ -1158,11 +1139,11 @@ class ClaudeExecutor:
         # agents can reliably call `happyranch ...` callbacks. Per-agent extras come
         # from the optional ``allow_rules:`` list in the agent's frontmatter
         # at ``<runtime>/org/agents/<name>.md``.
-        # THR-181 Track A (founder option B) Unit 2: a continued manager turn
-        # carries ``turn_allow_set`` — the mechanically narrowed allow set is
-        # substituted for the ordinary per-agent rules (baseline generation is
-        # untouched; the narrowing is turn-scoped only).
-        allowed = _allowed_tools_for_launch(self._paths, workspace, turn_allow_set)
+        from runtime.orchestrator.workspace_adapters import allow_rules_for_agent
+
+        # Workspace layout is `<runtime>/workspaces/<agent_name>`, so the
+        # directory name is the canonical agent identifier.
+        allowed = " ".join(allow_rules_for_agent(self._paths, workspace.name, cli=True))
         cmd = self._build_argv(
             prompt=prompt,
             allowed_tools=allowed,
@@ -1197,7 +1178,6 @@ class ClaudeExecutor:
         resume_session_id: str | None = None,
         org_slug: str | None = None,
         timeout_seconds: int = 1800,
-        turn_allow_set: object | None = None,
     ) -> "LaunchSpec":
         """The supervisor ``LaunchSpec`` for a contained Claude launch
         (THR-207 task-producer wiring): argv via the same ``_build_argv`` the
@@ -1207,7 +1187,9 @@ class ClaudeExecutor:
         generic-CLI argv template substitutes it into argv).
         """
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
-        allowed = _allowed_tools_for_launch(self._paths, workspace, turn_allow_set)
+        from runtime.orchestrator.workspace_adapters import allow_rules_for_agent
+
+        allowed = " ".join(allow_rules_for_agent(self._paths, workspace.name, cli=True))
         cmd = self._build_argv(
             prompt=prompt,
             allowed_tools=allowed,
@@ -1320,7 +1302,6 @@ class CodexExecutor:
         org_slug: str | None = None,
         running: "RunningHandle | None" = None,
         throttle_backoff_seconds: Sequence[float] | None = None,
-        turn_allow_set: object | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(model=model, resume_session_id=resume_session_id)
@@ -1351,7 +1332,6 @@ class CodexExecutor:
         resume_session_id: str | None = None,
         org_slug: str | None = None,
         timeout_seconds: int = 1800,
-        turn_allow_set: object | None = None,
     ) -> "LaunchSpec":
         """The supervisor ``LaunchSpec`` for a contained Codex launch
         (THR-207 task-producer wiring); stdin carries the prompt.
@@ -1443,7 +1423,6 @@ class OpencodeExecutor:
         org_slug: str | None = None,
         running: "RunningHandle | None" = None,
         throttle_backoff_seconds: Sequence[float] | None = None,
-        turn_allow_set: object | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         # opencode >= 1.14.0 rejects --prompt; use positional prompt (issue #216).
@@ -1477,7 +1456,6 @@ class OpencodeExecutor:
         resume_session_id: str | None = None,
         org_slug: str | None = None,
         timeout_seconds: int = 1800,
-        turn_allow_set: object | None = None,
     ) -> "LaunchSpec":
         """The supervisor ``LaunchSpec`` for a contained opencode launch
         (THR-207 task-producer wiring); the prompt travels via argv (opencode
@@ -1572,7 +1550,6 @@ class PiExecutor:
         org_slug: str | None = None,
         running: "RunningHandle | None" = None,
         throttle_backoff_seconds: Sequence[float] | None = None,
-        turn_allow_set: object | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(prompt=prompt, model=model,
@@ -1604,7 +1581,6 @@ class PiExecutor:
         resume_session_id: str | None = None,
         org_slug: str | None = None,
         timeout_seconds: int = 1800,
-        turn_allow_set: object | None = None,
     ) -> "LaunchSpec":
         """The supervisor ``LaunchSpec`` for a contained Pi launch
         (THR-207 task-producer wiring); stdin carries the prompt.
@@ -1678,7 +1654,6 @@ class GenericCliExecutor:
         org_slug: str | None = None,
         running: "RunningHandle | None" = None,
         throttle_backoff_seconds: Sequence[float] | None = None,
-        turn_allow_set: object | None = None,
     ) -> ExecutorResult:
         # model is accepted for signature parity but not used — custom
         # profile model_arg is out of scope per founder gate (THR-067).
@@ -1729,7 +1704,6 @@ class GenericCliExecutor:
         resume_session_id: str | None = None,
         org_slug: str | None = None,
         timeout_seconds: int = 1800,
-        turn_allow_set: object | None = None,
     ) -> "LaunchSpec":
         """The supervisor ``LaunchSpec`` for a contained generic-CLI launch
         (THR-207 task-producer wiring); the prompt travels via the argv
@@ -1919,7 +1893,6 @@ class CustomAdapterExecutor:
         resume_session_id: str | None = None,
         org_slug: str | None = None,
         timeout_seconds: int = 1800,
-        turn_allow_set: object | None = None,
     ) -> "LaunchSpec":
         """The supervisor ``LaunchSpec`` for a contained custom-adapter launch
         (THR-207 task-producer wiring): the absolute, hash-pinned adapter
@@ -1952,7 +1925,6 @@ class CustomAdapterExecutor:
         org_slug: str | None = None,
         running: "RunningHandle | None" = None,
         throttle_backoff_seconds: Sequence[float] | None = None,
-        turn_allow_set: object | None = None,
     ) -> ExecutorResult:
         """Launch the custom adapter subprocess with AdapterInput on stdin.
 
