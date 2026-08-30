@@ -868,34 +868,31 @@ def _run_command(
             # including throttle retries after rate-limited responses.
             # Any exception here prevents the executor subprocess from
             # launching — fail-closed.
-            release_publication_fence = None
-            if pre_launch_validator is not None:
-                release_publication_fence = pre_launch_validator()
-            # Popen (not subprocess.run) because the daemon needs the pid handed to
-            # SessionTracker BEFORE we block in communicate(), so /cancel can SIGTERM
-            # the process mid-session. stdin=PIPE unconditionally — Codex reads its
-            # prompt from stdin; Claude ignores it when nothing is written.
-            # Launch directly — the executor and daemon share the same OS
-            # identity. Raises PlatformIsolationError on unsupported platform
-            # — fail-closed before any subprocess.
-            isolation = detect_platform_isolation()
+            release_publication_fence = (
+                pre_launch_validator() if pre_launch_validator is not None else None
+            )
             try:
-                proc = isolation.launch_executor(
-                    cmd,
-                    cwd=workspace,
-                    env=_callee_env(org_slug=org_slug),
-                    stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-            except PlatformIsolationError as exc:
-                return ExecutorResult(
-                    success=False,
-                    duration_seconds=0,
-                    session_id=sid,
-                    error=f"Platform isolation failure: {exc}",
-                )
+                # Every launch-setup operation after validation is inside the
+                # token lifetime.  Purge therefore cannot commit between
+                # materialization and platform selection/env construction.
+                isolation = detect_platform_isolation()
+                try:
+                    proc = isolation.launch_executor(
+                        cmd,
+                        cwd=workspace,
+                        env=_callee_env(org_slug=org_slug),
+                        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                except PlatformIsolationError as exc:
+                    return ExecutorResult(
+                        success=False,
+                        duration_seconds=0,
+                        session_id=sid,
+                        error=f"Platform isolation failure: {exc}",
+                    )
             finally:
                 if callable(release_publication_fence):
                     release_publication_fence()
@@ -2070,26 +2067,6 @@ class CustomAdapterExecutor:
         def _launch() -> ExecutorResult:
             start_time = time.monotonic()
 
-            # ── Pre-launch integrity validation ────────────────────────
-            # Caller-provided validator runs BEFORE every launch attempt,
-            # including supervisor-level retries after rate-limited responses.
-            if pre_launch_validator is not None:
-                pre_launch_validator()
-
-            # ── D7B: Verify executable integrity at EVERY actual launch attempt ──
-            # This MUST be inside _launch, not pre-throttle: ProviderThrottle
-            # (and the supervisor retry loop) can re-launch, and each attempt
-            # MUST re-verify the exact approved artifact (path type,
-            # executable bit, SHA-256) immediately before its Popen.
-            verify_error = self.verify_launch_ready()
-            if verify_error is not None:
-                return ExecutorResult(
-                    success=False,
-                    duration_seconds=int(time.monotonic() - start_time),
-                    session_id=sid,
-                    error=verify_error,
-                )
-
             if running is not None:
                 # ── THR-207 contained launch ──
                 # The backend already launched the adapter into containment;
@@ -2109,6 +2086,14 @@ class CustomAdapterExecutor:
                         ),
                     )
                 proc = running.process
+                verify_error = self.verify_launch_ready()
+                if verify_error is not None:
+                    return ExecutorResult(
+                        success=False,
+                        duration_seconds=int(time.monotonic() - start_time),
+                        session_id=sid,
+                        error=verify_error,
+                    )
             else:
                 # ── THR-107 seq268 (seq315 correction): inherited normalized PATH ──
                 # The adapter-launched process receives the same inherited
@@ -2117,28 +2102,44 @@ class CustomAdapterExecutor:
                 # explicitly absolute and hash-pinned/revalidated — the runtime
                 # never selects an agentic CLI from ambient PATH.  Pre-Popen
                 # wrapper/dependency validation is retained exactly.
-                launch_env = _callee_env()
-
+                release_publication_fence = (
+                    pre_launch_validator()
+                    if pre_launch_validator is not None
+                    else None
+                )
                 try:
-                    proc = subprocess.Popen(
-                        [self._adapter_executable],
-                        cwd=str(workspace),
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        env=launch_env,
-                    )
-                except (FileNotFoundError, OSError, PermissionError) as exc:
-                    return ExecutorResult(
-                        success=False,
-                        duration_seconds=int(time.monotonic() - start_time),
-                        session_id=sid,
-                        error=(
-                            f"Failed to launch custom adapter "
-                            f"{self._adapter_executable!r}: {exc}"
-                        ),
-                    )
+                    verify_error = self.verify_launch_ready()
+                    if verify_error is not None:
+                        return ExecutorResult(
+                            success=False,
+                            duration_seconds=int(time.monotonic() - start_time),
+                            session_id=sid,
+                            error=verify_error,
+                        )
+                    launch_env = _callee_env()
+                    try:
+                        proc = subprocess.Popen(
+                            [self._adapter_executable],
+                            cwd=str(workspace),
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                            env=launch_env,
+                        )
+                    except (FileNotFoundError, OSError, PermissionError) as exc:
+                        return ExecutorResult(
+                            success=False,
+                            duration_seconds=int(time.monotonic() - start_time),
+                            session_id=sid,
+                            error=(
+                                f"Failed to launch custom adapter "
+                                f"{self._adapter_executable!r}: {exc}"
+                            ),
+                        )
+                finally:
+                    if callable(release_publication_fence):
+                        release_publication_fence()
 
                 if on_started is not None:
                     on_started(proc.pid)

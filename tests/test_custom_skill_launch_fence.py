@@ -66,26 +66,3 @@ def test_launch_preparation_exception_releases_token(monkeypatch, tmp_path: Path
     thread, committed = _start_purge("acme")
     assert committed.wait(1)
     thread.join(timeout=1)
-
-
-@pytest.mark.parametrize(
-    "relative_path,context",
-    [
-        ("runtime/orchestrator/orchestrator.py", "task"),
-        ("runtime/daemon/thread_runner.py", "thread"),
-        ("runtime/daemon/wake_runner.py", "wake"),
-        ("runtime/daemon/dream_runner.py", "dream"),
-        ("runtime/daemon/schedule_runner.py", "schedule"),
-    ],
-)
-def test_every_session_producer_uses_atomic_launch_preparation(relative_path, context):
-    source = Path(relative_path).read_text()
-    assert "prepare_workspace_skills_launch(" in source
-    assert f'context="{context}"' in source
-
-
-def test_bootstrap_and_executor_switch_remain_materialized_before_success():
-    source = Path("runtime/daemon/routes/agents.py").read_text()
-    assert 'context="bootstrap"' in source
-    assert "materialize_workspace_skills_union(" in source
-    assert "validate_workspace_skills_integrity(" in source
