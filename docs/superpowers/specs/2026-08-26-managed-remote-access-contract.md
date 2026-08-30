@@ -272,7 +272,7 @@ System-mode unit renders: dedicated unprivileged service user/group, empty `Capa
 
 1. `daemon_loopback` — TCP connect to literal `127.0.0.1:<daemon_port>` (the probe implementation refuses any non-loopback host).
 2. `credential_permissions` — the configured credential provider reads a non-empty bearer (missing/unreadable/loose-permission/symlinked fails closed).
-3. `current_policy` — the route-policy consumer is present and `require_current` passes (empty/malformed/stale/future/rollback/compiler/apply-failed all fail closed).
+3. `current_policy` — the route-policy consumer is present and `require_current` passes (empty/malformed/stale/future/rollback/compiler/apply-failed all fail closed). Missing or unreadable policy files, invalid JSON, schema-invalid envelopes, and consumer validation failures are expected local policy-load failures: `run`, `readiness`, and `diagnose` normalize them to the stable secret-free `policy_malformed` gate denial, expose no listener, and keep the supervised readiness loop alive for recovery. They never emit raw exception text, traceback, file/line references, paths, or policy values. Unexpected programming defects still propagate.
 4. `bind_identity` — configured connector identity present and exactly matching the loaded trust-state identity.
 5. `trust_state` — the store loads a non-corrupt state (present-but-corrupt/loose/unreadable fails closed).
 

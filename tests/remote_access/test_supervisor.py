@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 import socket
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -22,6 +22,7 @@ from runtime.remote_access.credentials import (
     SystemdCredentialProvider,
 )
 from runtime.remote_access.lab_provider import LAB_ONLY_BANNER, LabProviderConfig, LabProviderError
+from runtime.remote_access.policy import PolicyEnvelope
 from runtime.remote_access.readiness import (
     ConnectorReadiness,
     GateResult,
@@ -43,7 +44,7 @@ from runtime.remote_access.supervisor import (
     sd_notify,
 )
 
-from .conftest import NOW, build_consumer, default_identity
+from .conftest import NOW, build_consumer, default_identity, make_policy_envelope
 
 _UNSET = object()
 
@@ -614,6 +615,217 @@ class TestDiagnostics:
         assert report["readiness"]["gates"]["daemon_loopback"]["ok"] is False
         assert report["provider"]["type"] == "lab"
         assert LAB_ONLY_BANNER in report["provider"]["banner"]
+
+
+class TestPolicyLoadFailureReadiness:
+    """Expected local policy artifact failures stay inside readiness."""
+
+    @pytest.mark.parametrize(
+        "policy_contents",
+        [
+            "{not-json",
+            json.dumps(
+                {
+                    "schema_version": "HOSTILE-SCHEMA-VALUE",
+                    "artifact": {"secret": "HOSTILE-BODY-VALUE"},
+                    "artifact_version": 1,
+                    "issued_at": "not-a-date",
+                }
+            ),
+        ],
+        ids=["malformed-json", "schema-invalid"],
+    )
+    def test_malformed_policy_is_stable_secret_free_denial(
+        self, tmp_path, policy_contents
+    ) -> None:
+        policy_path = tmp_path / "HOSTILE-ABSOLUTE-POLICY-NAME.json"
+        policy_path.write_text(policy_contents)
+        config = _config(tmp_path, policy_path=str(policy_path))
+        provider = _FakeProvider()
+        supervisor = ConnectorSupervisor(
+            config=config,
+            manager=FakeManager(),
+            provider=provider,
+            now_fn=lambda: NOW(),
+            notify_fn=lambda state: notifications.append(state),
+        )
+
+        notifications.clear()
+        report = supervisor.readiness_report()
+        diagnostic = supervisor.diagnose()
+        assert report.ready is False
+        assert report.gates["current_policy"] == GateResult(
+            False, "policy_malformed", "route policy malformed or unreadable"
+        )
+        rendered = json.dumps(diagnostic)
+        assert diagnostic["readiness"]["gates"]["current_policy"] == {
+            "ok": False,
+            "category": "policy_malformed",
+        }
+        for hostile in (
+            str(policy_path),
+            "HOSTILE-ABSOLUTE-POLICY-NAME",
+            "HOSTILE-SCHEMA-VALUE",
+            "HOSTILE-BODY-VALUE",
+            "Traceback",
+        ):
+            assert hostile not in rendered
+
+        assert supervisor.run(max_iterations=2, poll_seconds=0) == 0
+        assert provider.starts == 0
+        assert provider.listening is False
+        assert not _notified("READY=1")
+
+    @pytest.mark.parametrize("kind", ["missing", "unreadable"])
+    def test_missing_or_unreadable_policy_is_stable_denial(
+        self, tmp_path, kind
+    ) -> None:
+        policy_path = tmp_path / "private-policy.json"
+        if kind == "unreadable":
+            policy_path.mkdir()
+        supervisor = ConnectorSupervisor(
+            config=_config(tmp_path, policy_path=str(policy_path)),
+            manager=FakeManager(),
+            provider=_FakeProvider(),
+            now_fn=lambda: NOW(),
+        )
+
+        report = supervisor.readiness_report()
+        assert report.ready is False
+        assert report.gates["current_policy"] == GateResult(
+            False, "policy_malformed", "route policy malformed or unreadable"
+        )
+
+    def test_valid_policy_behavior_is_unchanged(
+        self, tmp_path, route_policy_fixture
+    ) -> None:
+        policy_path = tmp_path / "policy.json"
+        policy_path.write_text(
+            make_policy_envelope(route_policy_fixture).model_dump_json()
+        )
+        supervisor = ConnectorSupervisor(
+            config=_config(tmp_path, policy_path=str(policy_path)),
+            policy=None,
+            now_fn=lambda: NOW(),
+        )
+
+        assert supervisor.load_policy().require_current(NOW()) is None
+
+    def test_real_lab_loop_stays_alive_and_recovers_after_policy_repair(
+        self, tmp_path, route_policy_fixture
+    ) -> None:
+        policy_path = tmp_path / "policy.json"
+        policy_path.write_text("{not-json")
+        token_path = tmp_path / "daemon.token"
+        token_path.write_text(BEARER)
+        token_path.chmod(0o600)
+        daemon = FakeDaemon(BEARER)
+        daemon.start()
+        now = datetime.now(timezone.utc)
+        config = _config(
+            tmp_path,
+            daemon_port=daemon.port,
+            lab=LabProviderConfig(bind_host="127.0.0.1", bind_port=0, lab_only=True),
+        )
+        supervisor = ConnectorSupervisor(
+            config=config,
+            manager=FakeManager(),
+            now_fn=lambda: now,
+            notify_fn=lambda state: notifications.append(state),
+        )
+
+        repaired = False
+
+        def repair_after_first_poll(_seconds: float) -> None:
+            nonlocal repaired
+            if not repaired:
+                assert supervisor._provider_running is False
+                assert supervisor._provider is None
+                policy_path.write_text(
+                    make_policy_envelope(
+                        route_policy_fixture, issued_at=now - timedelta(seconds=60)
+                    ).model_dump_json()
+                )
+                repaired = True
+
+        notifications.clear()
+        try:
+            assert supervisor.run(
+                max_iterations=2, poll_seconds=0, wait_fn=repair_after_first_poll
+            ) == 0
+            assert repaired is True
+            report = supervisor.readiness_report()
+            assert report.ready is True, report.gates
+            assert supervisor._provider_running is True
+            assert supervisor._provider is not None
+            assert supervisor._provider.listening is True
+            assert any("waiting for readiness" in note for note in notifications)
+            assert _notified("READY=1")
+        finally:
+            supervisor.shutdown()
+            daemon.stop()
+
+    @pytest.mark.parametrize("provider_mode", ["lab", "diy"])
+    def test_corrupt_policy_denies_real_provider_construction_secret_free(
+        self, tmp_path, provider_mode
+    ) -> None:
+        policy_path = tmp_path / "HOSTILE-ABSOLUTE-POLICY-NAME.json"
+        policy_path.write_text('{"secret":"HOSTILE-BODY-VALUE"}')
+        config = (
+            _config(tmp_path, policy_path=str(policy_path))
+            if provider_mode == "lab"
+            else _diy_config(tmp_path, policy_path=str(policy_path))
+        )
+        supervisor = ConnectorSupervisor(
+            config=config,
+            manager=FakeManager(),
+            now_fn=lambda: NOW(),
+        )
+
+        diagnostic = supervisor.diagnose()
+
+        assert diagnostic["readiness"]["gates"]["current_policy"] == {
+            "ok": False,
+            "category": "policy_malformed",
+        }
+        assert diagnostic["provider"]["type"] == provider_mode
+        assert diagnostic["provider"]["listening"] is False
+        assert diagnostic["provider"]["bound_port"] is None
+        rendered = json.dumps(diagnostic)
+        for hostile in (
+            str(policy_path),
+            "HOSTILE-ABSOLUTE-POLICY-NAME",
+            "HOSTILE-BODY-VALUE",
+            "Traceback",
+        ):
+            assert hostile not in rendered
+
+    @pytest.mark.parametrize("provider_mode", ["lab", "diy"])
+    def test_unexpected_policy_programming_defect_propagates(
+        self, tmp_path, monkeypatch, provider_mode
+    ) -> None:
+        policy_path = tmp_path / "policy.json"
+        policy_path.write_text("{}")
+        config = (
+            _config(tmp_path, policy_path=str(policy_path))
+            if provider_mode == "lab"
+            else _diy_config(tmp_path, policy_path=str(policy_path))
+        )
+        supervisor = ConnectorSupervisor(
+            config=config,
+            manager=FakeManager(),
+            now_fn=lambda: NOW(),
+        )
+
+        def programming_defect(_cls, _raw):
+            raise RuntimeError("unexpected programmer defect")
+
+        monkeypatch.setattr(
+            PolicyEnvelope, "model_validate", classmethod(programming_defect)
+        )
+
+        with pytest.raises(RuntimeError, match="unexpected programmer defect"):
+            supervisor.diagnose()
 
 
 class TestLabProvisioning:

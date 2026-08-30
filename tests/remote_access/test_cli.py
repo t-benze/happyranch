@@ -7,7 +7,7 @@ import pytest
 
 from runtime.remote_access import cli
 from runtime.remote_access.lab_provider import LAB_ONLY_BANNER, LabProviderConfig
-from runtime.remote_access.supervisor import ConnectorConfigError
+from runtime.remote_access.supervisor import ConnectorConfigError, ConnectorSupervisor
 
 from .test_supervisor import _config
 
@@ -205,6 +205,42 @@ def test_diagnose_redacted(config_file, stub_supervisor, capsys) -> None:
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["secrets"] == "redacted"
+
+
+@pytest.mark.parametrize("command", ["readiness", "diagnose"])
+def test_policy_load_failure_is_category_only_at_real_cli_seam(
+    tmp_path, monkeypatch, capsys, command
+) -> None:
+    policy_path = tmp_path / "HOSTILE-ABSOLUTE-POLICY-NAME.json"
+    policy_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "HOSTILE-SCHEMA-VALUE",
+                "artifact": {"secret": "HOSTILE-BODY-VALUE"},
+                "artifact_version": 1,
+                "issued_at": "not-a-date",
+            }
+        )
+    )
+    config = _config(tmp_path, policy_path=str(policy_path))
+    config_path = tmp_path / "config.json"
+    config.to_file(config_path)
+    monkeypatch.setattr(cli, "ConnectorSupervisor", ConnectorSupervisor)
+
+    code = cli.main([command, "--config", str(config_path)])
+
+    captured = capsys.readouterr()
+    rendered = captured.out + captured.err
+    assert code == (1 if command == "readiness" else 0)
+    assert "policy_malformed" in rendered
+    for hostile in (
+        str(policy_path),
+        "HOSTILE-ABSOLUTE-POLICY-NAME",
+        "HOSTILE-SCHEMA-VALUE",
+        "HOSTILE-BODY-VALUE",
+        "Traceback",
+    ):
+        assert hostile not in rendered
 
 
 def test_status_delegates(config_file, stub_supervisor, capsys) -> None:

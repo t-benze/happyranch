@@ -97,6 +97,7 @@ class ConnectorReadiness:
         daemon_port: int | None,
         credential_provider: DaemonCredentialProvider,
         policy: RoutePolicyConsumer | None,
+        policy_failure_category: str | None = None,
         configured_identity: ConnectorIdentity | None,
         state_store: TrustStateStore | None,
         connect_fn: ConnectFn | None = None,
@@ -104,6 +105,7 @@ class ConnectorReadiness:
         self._daemon_port = daemon_port
         self._credential_provider = credential_provider
         self._policy = policy
+        self._policy_failure_category = policy_failure_category
         self._configured_identity = configured_identity
         self._state_store = state_store
         self._connect_fn = connect_fn or (lambda port: connect_loopback(port))
@@ -146,6 +148,12 @@ class ConnectorReadiness:
     # ── gate 3: current policy (present + well-formed + current) ─────────
 
     def _gate_current_policy(self, now: datetime) -> GateResult:
+        if self._policy_failure_category is not None:
+            return GateResult(
+                False,
+                self._policy_failure_category,
+                "route policy malformed or unreadable",
+            )
         policy = self._policy
         if policy is None:
             return GateResult(False, "policy_missing", "no route policy configured")
