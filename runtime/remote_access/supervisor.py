@@ -30,6 +30,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
+from pydantic import ValidationError
+
 from runtime.remote_access.authorization import AuthorizationVerifier, DeviceAuthorization, TrustState
 from runtime.remote_access.credentials import (
     CredentialUnavailable,
@@ -60,7 +62,7 @@ from runtime.remote_access.lab_provider import (
 )
 from runtime.remote_access.network import NetworkAddressError, NetworkConfig
 from runtime.remote_access.pairing import PairingManager
-from runtime.remote_access.policy import PolicyEnvelope, RoutePolicyConsumer
+from runtime.remote_access.policy import PolicyEnvelope, PolicyError, RoutePolicyConsumer
 from runtime.remote_access.readiness import ConnectorReadiness, ReadinessReport
 from runtime.remote_access.service_manager import (
     ServiceManagerError,
@@ -89,6 +91,14 @@ _MANAGED_FILE_MODE = 0o600
 
 class ConnectorConfigError(Exception):
     """The connector config is invalid (fail closed before any side effect)."""
+
+
+class PolicyLoadError(Exception):
+    """Stable, secret-free expected failure to load a local policy artifact."""
+
+    def __init__(self, category: str = "policy_malformed") -> None:
+        super().__init__("route policy malformed or unreadable")
+        self.category = category
 
 
 @dataclass
@@ -319,19 +329,39 @@ class ConnectorSupervisor:
             return self._policy
         if not self.config.policy_path:
             raise ConnectorConfigError("policy_path is required")
-        envelope = PolicyEnvelope(
-            **json.loads(Path(self.config.policy_path).read_text(encoding="utf-8"))
-        )
-        self._policy = RoutePolicyConsumer.from_envelope(envelope, now=self._now_fn())
+        try:
+            raw = json.loads(
+                Path(self.config.policy_path).read_text(encoding="utf-8")
+            )
+            envelope = PolicyEnvelope.model_validate(raw)
+            self._policy = RoutePolicyConsumer.from_envelope(
+                envelope, now=self._now_fn()
+            )
+        except PolicyError as exc:
+            category = (
+                exc.outcome.audit_category
+                if exc.outcome is not None
+                else "policy_malformed"
+            )
+            raise PolicyLoadError(category) from None
+        except (OSError, UnicodeError, json.JSONDecodeError, ValidationError):
+            raise PolicyLoadError() from None
         return self._policy
 
     def build_readiness(self) -> ConnectorReadiness:
         if self._readiness is not None:
             return self._readiness
+        policy = None
+        policy_failure_category = None
+        try:
+            policy = self.load_policy()
+        except PolicyLoadError as exc:
+            policy_failure_category = exc.category
         return ConnectorReadiness(
             daemon_port=self.config.daemon_port,
             credential_provider=self.credential_provider(),
-            policy=self.load_policy(),
+            policy=policy,
+            policy_failure_category=policy_failure_category,
             configured_identity=self._configured_identity(),
             state_store=self.state_store,
         )
@@ -473,7 +503,10 @@ class ConnectorSupervisor:
             store_reason = "corrupt" if isinstance(exc, CorruptTrustStateError) else "unavailable"
         provider = None
         if self.config.lab is not None:
-            adapter = self.build_provider()
+            try:
+                adapter = self.build_provider()
+            except PolicyLoadError:
+                adapter = None
             provider = {
                 "type": "lab",
                 "listening": bool(adapter and adapter.listening),
@@ -481,7 +514,10 @@ class ConnectorSupervisor:
                 "banner": LAB_ONLY_BANNER,
             }
         elif self.config.diy is not None:
-            adapter = self.build_diy_provider()
+            try:
+                adapter = self.build_diy_provider()
+            except PolicyLoadError:
+                adapter = None
             pairing = self.pairing_manager()
             try:
                 pairing_status = pairing.pairing_status()

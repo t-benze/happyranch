@@ -43,7 +43,7 @@ from runtime.remote_access.supervisor import (
     sd_notify,
 )
 
-from .conftest import NOW, build_consumer, default_identity
+from .conftest import NOW, build_consumer, default_identity, make_policy_envelope
 
 _UNSET = object()
 
@@ -614,6 +614,101 @@ class TestDiagnostics:
         assert report["readiness"]["gates"]["daemon_loopback"]["ok"] is False
         assert report["provider"]["type"] == "lab"
         assert LAB_ONLY_BANNER in report["provider"]["banner"]
+
+
+class TestPolicyLoadFailureReadiness:
+    """Expected local policy artifact failures stay inside readiness."""
+
+    @pytest.mark.parametrize(
+        "policy_contents",
+        [
+            "{not-json",
+            json.dumps(
+                {
+                    "schema_version": "HOSTILE-SCHEMA-VALUE",
+                    "artifact": {"secret": "HOSTILE-BODY-VALUE"},
+                    "artifact_version": 1,
+                    "issued_at": "not-a-date",
+                }
+            ),
+        ],
+        ids=["malformed-json", "schema-invalid"],
+    )
+    def test_malformed_policy_is_stable_secret_free_denial(
+        self, tmp_path, policy_contents
+    ) -> None:
+        policy_path = tmp_path / "HOSTILE-ABSOLUTE-POLICY-NAME.json"
+        policy_path.write_text(policy_contents)
+        config = _config(tmp_path, policy_path=str(policy_path))
+        provider = _FakeProvider()
+        supervisor = ConnectorSupervisor(
+            config=config,
+            manager=FakeManager(),
+            provider=provider,
+            now_fn=lambda: NOW(),
+            notify_fn=lambda state: notifications.append(state),
+        )
+
+        notifications.clear()
+        report = supervisor.readiness_report()
+        diagnostic = supervisor.diagnose()
+        assert report.ready is False
+        assert report.gates["current_policy"] == GateResult(
+            False, "policy_malformed", "route policy malformed or unreadable"
+        )
+        rendered = json.dumps(diagnostic)
+        assert diagnostic["readiness"]["gates"]["current_policy"] == {
+            "ok": False,
+            "category": "policy_malformed",
+        }
+        for hostile in (
+            str(policy_path),
+            "HOSTILE-ABSOLUTE-POLICY-NAME",
+            "HOSTILE-SCHEMA-VALUE",
+            "HOSTILE-BODY-VALUE",
+            "Traceback",
+        ):
+            assert hostile not in rendered
+
+        assert supervisor.run(max_iterations=2, poll_seconds=0) == 0
+        assert provider.starts == 0
+        assert provider.listening is False
+        assert not _notified("READY=1")
+
+    @pytest.mark.parametrize("kind", ["missing", "unreadable"])
+    def test_missing_or_unreadable_policy_is_stable_denial(
+        self, tmp_path, kind
+    ) -> None:
+        policy_path = tmp_path / "private-policy.json"
+        if kind == "unreadable":
+            policy_path.mkdir()
+        supervisor = ConnectorSupervisor(
+            config=_config(tmp_path, policy_path=str(policy_path)),
+            manager=FakeManager(),
+            provider=_FakeProvider(),
+            now_fn=lambda: NOW(),
+        )
+
+        report = supervisor.readiness_report()
+        assert report.ready is False
+        assert report.gates["current_policy"] == GateResult(
+            False, "policy_malformed", "route policy malformed or unreadable"
+        )
+
+    def test_valid_policy_behavior_is_unchanged(
+        self, tmp_path, route_policy_fixture
+    ) -> None:
+        policy_path = tmp_path / "policy.json"
+        policy_path.write_text(
+            make_policy_envelope(route_policy_fixture).model_dump_json()
+        )
+        supervisor = ConnectorSupervisor(
+            config=_config(tmp_path, policy_path=str(policy_path)),
+            policy=None,
+            now_fn=lambda: NOW(),
+        )
+
+        assert supervisor.load_policy().require_current(NOW()) is None
 
 
 class TestLabProvisioning:
