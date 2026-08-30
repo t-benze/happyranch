@@ -202,7 +202,7 @@ def test_trigger_decision_at_most_once_per_window(tmp_path):
     )
     decision = wcs.decide_cleanup_trigger(
         db=db, agent="dev_agent",
-        now_utc=occurrence + timedelta(minutes=5), tz=timezone.utc,
+        now_utc=occurrence + timedelta(seconds=5), tz=timezone.utc,
     )
     assert decision.should_trigger is False
     assert decision.reason == "already_triggered_this_window"
@@ -226,12 +226,12 @@ def test_trigger_decision_ignores_unrelated_tasks(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     occurrence = _sunday_0330_utc()
     _insert_cleanup_task(
-        db, task_id="TASK-100", created_at=occurrence + timedelta(minutes=1),
+        db, task_id="TASK-100", created_at=occurrence + timedelta(seconds=1),
         brief="Ordinary dev_agent work, no cleanup marker.",
     )
     decision = wcs.decide_cleanup_trigger(
         db=db, agent="dev_agent",
-        now_utc=occurrence + timedelta(minutes=2), tz=timezone.utc,
+        now_utc=occurrence + timedelta(seconds=2), tz=timezone.utc,
     )
     assert decision.should_trigger is True
 
@@ -1290,6 +1290,87 @@ async def test_loop_ticks_and_skips_when_not_due(tmp_path, test_settings, monkey
     )
     await wcs._tick_org(org, state, now_utc=_sunday_0330_utc())
     assert triggered == []
+
+
+@pytest.mark.asyncio
+async def test_tick_org_below_threshold_audits_once_at_weekly_boundary(
+    tmp_path, test_settings, monkeypatch,
+):
+    """An unserviced below-threshold agent is observed once at the weekly
+    decision boundary, not once per minute for the rest of the week."""
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    cfg_path = org.root / "org" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("timezone: UTC\n")
+    state = _FakeDaemonState()
+
+    monkeypatch.setattr(
+        wcs, "measure_workspace_context",
+        lambda *a, **kw: wcs.WorkspaceContextSnapshot(
+            available=True, workspaces_bytes=0,
+        ),
+    )
+    occurrence = _sunday_0330_utc()
+    for minute in range(3):
+        await wcs._tick_org(
+            org, state, now_utc=occurrence + timedelta(minutes=minute),
+        )
+
+    audits = db.get_audit_logs("workspace-cleanup:skipped")
+    below_threshold = [
+        row for row in audits
+        if row["action"] == "workspace_cleanup_skipped"
+        and row["agent"] == "dev_agent"
+        and row["payload"].get("reason") == "workspace_below_threshold"
+    ]
+    assert len(below_threshold) == 1
+
+
+@pytest.mark.asyncio
+async def test_tick_org_retries_below_threshold_at_later_cooldown_boundary(
+    tmp_path, test_settings, monkeypatch,
+):
+    """A rolling cooldown can suppress the first cadence boundary; the next
+    weekly boundary observes below-threshold state once after it expires."""
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    cfg_path = org.root / "org" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("timezone: UTC\n")
+    state = _FakeDaemonState()
+
+    monkeypatch.setattr(
+        wcs, "measure_workspace_context",
+        lambda *a, **kw: wcs.WorkspaceContextSnapshot(
+            available=True, workspaces_bytes=0,
+        ),
+    )
+    occurrence = _sunday_0330_utc()
+    _insert_cleanup_task(
+        db,
+        task_id="TASK-100",
+        agent="dev_agent",
+        created_at=occurrence - timedelta(hours=15),
+        status=TaskStatus.COMPLETED,
+    )
+
+    await wcs._tick_org(org, state, now_utc=occurrence)
+    await wcs._tick_org(org, state, now_utc=occurrence + timedelta(minutes=1))
+    later_boundary = occurrence + timedelta(days=7)
+    await wcs._tick_org(org, state, now_utc=later_boundary)
+    await wcs._tick_org(
+        org, state, now_utc=later_boundary + timedelta(minutes=1),
+    )
+
+    audits = db.get_audit_logs("workspace-cleanup:skipped")
+    below_threshold = [
+        row for row in audits
+        if row["action"] == "workspace_cleanup_skipped"
+        and row["agent"] == "dev_agent"
+        and row["payload"].get("reason") == "workspace_below_threshold"
+    ]
+    assert len(below_threshold) == 1
 
 
 @pytest.mark.asyncio

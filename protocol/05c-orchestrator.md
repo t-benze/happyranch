@@ -1202,12 +1202,17 @@ registration in ``runtime/daemon/app.py``) that, per agent workspace:
    ``measurement unavailable`` advisory status and can never block daemon
    operation or task/session spawning.
 2. **Decides** on the weekly occurrence (Sunday 03:30 in the org's effective
-   timezone; TASK-5552 §6). At most one trigger per weekly window per agent
-   (a missed window is never replayed), one run at a time (a later
+   timezone; TASK-5552 §6), represented by one 60-second scheduler decision
+   boundary. At most one trigger or ordinary below-threshold observation is
+   made per boundary per agent (a missed boundary is never replayed), one run
+   at a time (a later
    occurrence fires only after the preceding cleanup task of that agent is
    terminal — TASK-5552 §3), a seven-day per-agent cooldown, and the
    founder threshold: trigger only when the agent's workspace totals
-   >= 1 GiB.
+   >= 1 GiB. Below-threshold state is audited once at that meaningful
+   weekly/cooldown boundary, not once per minute for the rest of the week;
+   measurement-unavailable and other exceptional/fail-closed trigger skips
+   remain explicitly audited when the boundary is attempted.
 3. **Triggers** an ordinary root task ASSIGNED TO THE OWNING AGENT
    (``insert_task`` + ``enqueue_task`` — the same pattern the Schedule spawn
    callback uses, minus the Schedule) with a **daemon-composed brief** that

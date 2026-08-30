@@ -1388,8 +1388,14 @@ error, or cardinality-cap hit yields an explicit ``measurement unavailable``
 advisory note and can never block daemon operation or task/session spawning.
 
 Cadence and trigger policy: weekly (Sunday 03:30 in the org's effective
-timezone), at most one trigger per weekly window per agent (a missed window
-is never replayed), one run at a time (a later occurrence fires only after
+timezone), represented by one 60-second scheduler decision boundary; at most
+one trigger or ordinary below-threshold observation is made per boundary per
+agent (a missed boundary is never replayed). Below-threshold state therefore
+emits one ``workspace_cleanup_skipped(workspace_below_threshold)`` audit at a
+meaningful weekly/cooldown boundary, never once per minute for the rest of an
+unserviced week. Measurement-unavailable and the other exceptional/fail-closed
+trigger skips remain explicitly audited when that boundary is attempted. The
+policy also preserves one run at a time (a later occurrence fires only after
 the preceding cleanup task of that agent is terminal), a seven-day per-agent
 cooldown, and a per-agent >= 1 GiB workspace-total threshold. The first TWO
 triggered runs per agent are **STRICTLY report-only** (TASK-5552 §6
