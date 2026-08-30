@@ -1374,6 +1374,126 @@ async def test_tick_org_retries_below_threshold_at_later_cooldown_boundary(
 
 
 @pytest.mark.asyncio
+async def test_shipping_loop_reaches_occurrence_once_across_phase_and_processing_drift(
+    tmp_path, test_settings, monkeypatch,
+):
+    """The shipping loop cannot skip 03:30 when scan work plus the full sleep
+    advances the next scan from just before the boundary to after 03:31."""
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    cfg_path = org.root / "org" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("timezone: UTC\n")
+    state = _FakeDaemonState()
+    state.orgs = {"test": org}
+    state.metrics_registry = _FakeMetricsRegistry()
+
+    monkeypatch.setattr(
+        wcs, "measure_workspace_context",
+        lambda *a, **kw: wcs.WorkspaceContextSnapshot(
+            available=True,
+            workspaces_bytes=0,
+            measured_at="2026-08-30T03:30:00+00:00",
+        ),
+    )
+    occurrence = _sunday_0330_utc()
+    scan_times = iter([
+        occurrence - timedelta(microseconds=500_000),  # cursor initialization
+        occurrence - timedelta(microseconds=500_000),  # first scan
+        occurrence + timedelta(minutes=1, microseconds=500_000),
+        occurrence + timedelta(minutes=2, seconds=2),
+    ])
+
+    class _DriftingDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(scan_times)
+
+    sleeps = 0
+
+    async def fake_sleep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps >= 3:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(wcs, "datetime", _DriftingDateTime)
+    monkeypatch.setattr(wcs.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await wcs.workspace_cleanup_scheduler_loop(
+            state, interval_seconds=60, warm_up_seconds=0,
+        )
+
+    below_threshold = [
+        row for row in db.get_audit_logs("workspace-cleanup:skipped")
+        if row["action"] == "workspace_cleanup_skipped"
+        and row["agent"] == "dev_agent"
+        and row["payload"].get("reason") == "workspace_below_threshold"
+    ]
+    assert len(below_threshold) == 1
+
+
+@pytest.mark.asyncio
+async def test_shipping_loop_catches_up_current_window_once_on_startup(
+    tmp_path, test_settings, monkeypatch,
+):
+    """A daemon starting after 03:30 evaluates the current weekly occurrence
+    once, without replaying it on later loop ticks."""
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    cfg_path = org.root / "org" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("timezone: UTC\n")
+    state = _FakeDaemonState()
+    state.orgs = {"test": org}
+    state.metrics_registry = _FakeMetricsRegistry()
+
+    monkeypatch.setattr(
+        wcs, "measure_workspace_context",
+        lambda *a, **kw: wcs.WorkspaceContextSnapshot(
+            available=True, workspaces_bytes=0,
+            measured_at="2026-08-30T07:30:00+00:00",
+        ),
+    )
+    occurrence = _sunday_0330_utc()
+    scan_times = iter([
+        occurrence + timedelta(hours=4),
+        occurrence + timedelta(hours=4, seconds=1),
+        occurrence + timedelta(hours=4, minutes=1),
+    ])
+
+    class _StartupDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(scan_times)
+
+    sleeps = 0
+
+    async def fake_sleep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps >= 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(wcs, "datetime", _StartupDateTime)
+    monkeypatch.setattr(wcs.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await wcs.workspace_cleanup_scheduler_loop(
+            state, interval_seconds=60, warm_up_seconds=0,
+        )
+
+    below_threshold = [
+        row for row in db.get_audit_logs("workspace-cleanup:skipped")
+        if row["action"] == "workspace_cleanup_skipped"
+        and row["agent"] == "dev_agent"
+        and row["payload"].get("reason") == "workspace_below_threshold"
+    ]
+    assert len(below_threshold) == 1
+
+
+@pytest.mark.asyncio
 async def test_loop_waits_out_boot_warm_up_before_any_tick(
     tmp_path, test_settings, monkeypatch,
 ):
@@ -1389,7 +1509,7 @@ async def test_loop_waits_out_boot_warm_up_before_any_tick(
 
     ticks: list[str] = []
 
-    async def fake_tick(org, state, now_utc):
+    async def fake_tick(org, state, now_utc, previous_scan_utc=None):
         ticks.append(org.slug)
 
     monkeypatch.setattr(wcs, "_tick_org", fake_tick)

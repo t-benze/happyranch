@@ -1388,9 +1388,11 @@ error, or cardinality-cap hit yields an explicit ``measurement unavailable``
 advisory note and can never block daemon operation or task/session spawning.
 
 Cadence and trigger policy: weekly (Sunday 03:30 in the org's effective
-timezone), represented by one 60-second scheduler decision boundary; at most
-one trigger or ordinary below-threshold observation is made per boundary per
-agent (a missed boundary is never replayed). Below-threshold state therefore
+timezone). The live scheduler evaluates an occurrence once when its scan
+cursor crosses that boundary, so polling phase and bounded processing drift
+cannot skip it. On startup it evaluates only the current weekly window once;
+there is no earlier historical backfill across daemon lifetimes.
+Below-threshold state therefore
 emits one ``workspace_cleanup_skipped(workspace_below_threshold)`` audit at a
 meaningful weekly/cooldown boundary, never once per minute for the rest of an
 unserviced week. Measurement-unavailable and the other exceptional/fail-closed

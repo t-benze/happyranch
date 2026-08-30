@@ -1202,10 +1202,11 @@ registration in ``runtime/daemon/app.py``) that, per agent workspace:
    ``measurement unavailable`` advisory status and can never block daemon
    operation or task/session spawning.
 2. **Decides** on the weekly occurrence (Sunday 03:30 in the org's effective
-   timezone; TASK-5552 §6), represented by one 60-second scheduler decision
-   boundary. At most one trigger or ordinary below-threshold observation is
-   made per boundary per agent (a missed boundary is never replayed), one run
-   at a time (a later
+   timezone; TASK-5552 §6). The live scheduler evaluates an occurrence once
+   when its scan cursor crosses that boundary, so polling phase and bounded
+   processing drift cannot skip it. On startup it evaluates only the current
+   weekly window once; there is no earlier historical backfill across daemon
+   lifetimes. It preserves one run at a time (a later
    occurrence fires only after the preceding cleanup task of that agent is
    terminal — TASK-5552 §3), a seven-day per-agent cooldown, and the
    founder threshold: trigger only when the agent's workspace totals
