@@ -953,8 +953,10 @@ and the platform-neutral backend contract is ``runtime/platform/session_backend.
    exactly once. Cleanup errors never replace the primary terminal reason.
 3. **Cancellation goes through the opaque containment handle**, never a bare
    PID-only signal, and is idempotent with the executor's own finish.
-4. **Policy snapshots are immutable per invocation** and are explicit canary
-   inputs (Linux `<=11` non-binding shadow; macOS 4 binding; low-single-digit
+4. **Policy snapshots are immutable per invocation** and are explicit startup
+   inputs (healthy enforcement-capable global cap 13 over the 13-slot producer
+   envelope: 6 task + 4 thread + dream + wake + schedule; Linux `<=11`
+   non-binding shadow retained; macOS/no-enforcement 4 binding; low-single-digit
    measured cleanup grace), never host-derived permanent defaults.
 5. **Ownership transfers atomically at admission grant.** The controller
    creates the ownership record under its lock and keeps it in its registry

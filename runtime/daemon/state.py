@@ -102,10 +102,15 @@ class DaemonState:
         # keep the legacy uncontained path).
         from runtime.orchestrator.host_supervisor import (
             build_default_host_supervisor,
+            canary_policy,
         )
         from runtime.platform.backend_factory import select_session_backend
         state.host_supervisor = build_default_host_supervisor(
             backend=select_session_backend(),
+            policy=canary_policy(
+                global_session_cap=settings.host_global_session_cap,
+                producer_envelope=settings.queue_workers + 7,
+            ),
             publisher=state.host_session_store.publish,
             max_retry_attempts=len(settings.executor_rate_limit_backoff_seconds),
             backoff_seconds=tuple(settings.executor_rate_limit_backoff_seconds),

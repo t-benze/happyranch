@@ -880,8 +880,9 @@ producers, providers, and profiles. Governing spec:
   admission with the original age and a fresh containment handle.
 - **Effective cap is capability-derived, never OS-name-derived**: the minimum
   of the configured cap and binding capability caps. With enforcement
-  guaranteed, the Linux `<=11` ceiling is a non-binding shadow input over the
-  11-slot producer envelope; without enforcement (macOS-style), the binding
+  guaranteed, the Linux `<=11` ceiling is a retained non-binding shadow input
+  under the configured 13-slot producer envelope; without enforcement
+  (macOS-style), the binding
   cap (4) applies — missing enforcement tightens admission.
 - **Cancellation routes through the opaque containment handle**, idempotent
   with the executor's own finish; the PID remains a diagnostic only.
@@ -976,8 +977,16 @@ supervised sessions apply the founder-approved **fixed initial Linux
 enforcement policy** (`runtime/platform/enforcement_policy.py`) — an
 immutable per-invocation envelope selected deterministically from the
 existing `AdmissionRequest.invocation_kind` and applied **only** by the
-healthy Linux systemd/cgroup-v2 capability backend: task sessions
-`MemoryHigh=14G` / `MemoryMax=24G` / `TasksMax=1024`; thread/dream/wake/
+healthy Linux systemd/cgroup-v2 capability backend.
+
+Daemon startup snapshots `queue_workers=6` and
+`host_global_session_cap=13`, exposing the complete healthy 13-slot producer
+envelope (6 task + 4 thread + dream + wake + schedule). Both values require a
+restart; reload does not resize live workers or admission. Capability-derived
+fallbacks remain conservative (macOS/no-enforcement effective cap 4).
+
+Task sessions use `MemoryHigh=14G` / `MemoryMax=24G` / `TasksMax=1024`;
+thread/dream/wake/
 schedule (and any unknown kind, conservatively) `MemoryHigh=2G` /
 `MemoryMax=4G` (exactly) / `TasksMax=1024`; **no `CPUQuota`** for real
 sessions (probe values stay probe-only). Exact byte properties are emitted

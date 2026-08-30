@@ -35,7 +35,7 @@ def test_settings_returns_200_with_system_and_org(tmp_home, app, org_state, auth
     for key in (
         "claude_cli_path", "codex_cli_path", "opencode_cli_path",
         "pi_cli_path", "session_timeout_seconds", "max_orchestration_steps",
-        "queue_workers", "protocol_dir",
+        "queue_workers", "host_global_session_cap", "protocol_dir",
     ):
         assert key in sys_, f"missing system field: {key}"
         entry = sys_[key]
@@ -71,7 +71,7 @@ def test_settings_system_entries_carry_correct_restart_flags(
     restart_true = {
         "claude_cli_path", "codex_cli_path", "opencode_cli_path",
         "pi_cli_path", "session_timeout_seconds", "max_orchestration_steps",
-        "queue_workers", "protocol_dir",
+        "queue_workers", "host_global_session_cap", "protocol_dir",
     }
     for key in restart_true:
         assert sys_[key]["restart_required"] is True, f"{key} restart_required must be True"
@@ -164,7 +164,7 @@ def test_settings_response_excludes_all_sensitive_fields(
 def test_settings_system_only_has_allow_listed_fields(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """SystemSettingsView must contain ONLY the 8 allow-listed fields."""
+    """SystemSettingsView must contain ONLY the 9 allow-listed fields."""
     client = TestClient(app)
     r = client.get(
         f"/api/v1/orgs/{org_state.slug}/settings",
@@ -176,7 +176,7 @@ def test_settings_system_only_has_allow_listed_fields(
     expected = {
         "claude_cli_path", "codex_cli_path", "opencode_cli_path",
         "pi_cli_path", "session_timeout_seconds", "max_orchestration_steps",
-        "queue_workers", "protocol_dir",
+        "queue_workers", "host_global_session_cap", "protocol_dir",
     }
     assert system_keys == expected, (
         f"System settings keys: {sorted(system_keys)}\n"
