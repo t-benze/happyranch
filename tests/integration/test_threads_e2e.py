@@ -221,3 +221,97 @@ def test_agent_dispatch_from_thread_creates_task(
         time.sleep(0.25)
     else:
         pytest.fail(f"dispatched task {task_id} did not complete")
+
+
+def _seed_thread_agent_opencode(runtime: Path, agent: str) -> None:
+    """Create the agent's workspace + frontmatter for an opencode executor."""
+    seed_workspace(runtime, agent)
+    agents_dir = runtime / "org" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / f"{agent}.md").write_text(
+        "---\n"
+        f"name: {agent}\n"
+        "team: engineering\n"
+        "role: worker\n"
+        "executor: opencode\n"
+        "description: integration test agent\n"
+        "---\n"
+        "# system prompt\n"
+    )
+
+
+def test_opencode_reply_then_resume_across_two_turns(
+    live_daemon,
+    runtime,
+    fake_opencode_thread_plan_env,
+):
+    """OpenCode 1.18.25 resume envelope end to end (TASK-6080): a real
+    daemon wakes an opencode-executor agent twice on one thread. Turn 1 is a
+    fresh full-transcript launch (no `-s`); the minted session id is
+    persisted. Turn 2 RESUMES via `-s <stored-id>` with the delta prompt,
+    and the agent's reply lands. The fake records whether each wake carried
+    `-s` in a state file."""
+    port = live_daemon
+    base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
+
+    _seed_thread_agent_opencode(runtime, "dev_agent")
+
+    state_file = f"{fake_opencode_thread_plan_env}.seen"
+    fake_opencode_thread_plan_env.write_text(
+        '#!/usr/bin/env bash\n'
+        'thread_id=$1; token=$2; agent=$3; org=$4; purpose=$5; sid=$6\n'
+        f'if [[ -n "$sid" ]]; then echo "resume" >> "{state_file}"; else echo "fresh" >> "{state_file}"; fi\n'
+        'payload=$(mktemp)\n'
+        'printf \'{"thread_id":"%s","invocation_token":"%s","speaker":"%s",'
+        '"body_markdown":"opencode reply %s","in_response_to_seq":1}\' '
+        '"$thread_id" "$token" "$agent" "$sid" > "$payload"\n'
+        'happyranch threads reply --org "$org" --thread-id "$thread_id" --from-file "$payload"\n'
+    )
+    fake_opencode_thread_plan_env.chmod(0o755)
+
+    # Compose → turn 1 (fresh).
+    r = httpx.post(
+        f"{base}/threads",
+        json={
+            "subject": "opencode smoke",
+            "recipients": ["dev_agent"],
+            "body_markdown": "hi opencode agent",
+        },
+        headers=_auth_headers(),
+        timeout=10.0,
+    )
+    assert r.status_code == 200, r.text
+    thread_id = r.json()["thread_id"]
+
+    reply1 = _wait_for_message(
+        base,
+        thread_id,
+        predicate=lambda m: m["speaker"] == "dev_agent" and m["kind"] == "message",
+    )
+    assert "opencode reply" in reply1["body_markdown"]
+
+    # Post a second message → turn 2 must resume the stored opencode session.
+    # Founder messages append via POST /threads/{id}/send (the /messages
+    # route is GET-only; the /reply route is the agent-callback surface).
+    r = httpx.post(
+        f"{base}/threads/{thread_id}/send",
+        json={"body_markdown": "second message"},
+        headers=_auth_headers(),
+        timeout=10.0,
+    )
+    assert r.status_code == 200, r.text
+
+    reply2 = _wait_for_message(
+        base,
+        thread_id,
+        predicate=lambda m: m["speaker"] == "dev_agent" and m["kind"] == "message"
+        and "opencode reply ses_" in m["body_markdown"],
+    )
+    assert reply2 is not None
+
+    import time as _time
+    deadline = _time.monotonic() + 15
+    while _time.monotonic() < deadline and not Path(state_file).exists():
+        _time.sleep(0.25)
+    lines = Path(state_file).read_text().splitlines() if Path(state_file).exists() else []
+    assert lines[:2] == ["fresh", "resume"], lines

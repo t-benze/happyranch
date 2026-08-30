@@ -163,7 +163,7 @@ def test_supervisor_branches_on_capabilities_not_os_names():
         policy=policy,
         publisher=lambda receipt: None,
     )
-    assert supervisor._admission.cap() == 11
+    assert supervisor._admission.cap() == 13
 
     # The same supervisor shape over a no-enforcement backend (macOS-style
     # capabilities): the binding cap (4) applies — missing enforcement

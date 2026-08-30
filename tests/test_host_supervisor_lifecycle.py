@@ -1805,7 +1805,7 @@ def test_effective_cap_derived_from_backend_capabilities_not_host():
     # Linux-style backend (enforcement guaranteed): cap = producer envelope.
     linux = FakeBackend(capabilities=GUARANTEED_CAPS)
     supervisor_linux, _ = make_supervisor(backend=linux, policy=canary_policy())
-    assert supervisor_linux._admission.cap() == 11
+    assert supervisor_linux._admission.cap() == 13
 
     # macOS-style backend (no enforcement): binding cap 4 applies.
     macos = FakeBackend(capabilities=BEST_EFFORT_CAPS)
