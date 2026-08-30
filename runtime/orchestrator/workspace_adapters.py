@@ -748,12 +748,41 @@ def _materialize_unified_canonical(
         expected_specs.extend(custom_specs)
 
     # ── Reconcile ONCE with unified expected set ────────────────────
-    # Both provider roots get the same full set so system contracts
-    # remain while managed/custom-skill links are created/withdrawn.
-    for subdir in (".claude/skills", ".agents/skills"):
-        materializer.repair_workspace_skills(
-            expected_specs, workspace, subdir,
-        )
+    # Lock order is workspace transaction -> org publication barrier -> DB
+    # reads. Purge takes the same org barrier before its SQLite transaction.
+    # Candidate building and session launch stay outside this narrow block;
+    # the final authoritative read and both repairs are one lexical unit.
+    if db is not None and org_root is not None:
+        from runtime.skills.custom import service
+
+        conn = getattr(db, "_conn", db)
+        with service.canonical_publication_barrier(slug):
+            current_custom = {
+                row["slug"]: row
+                for row in conn.execute(
+                    "SELECT slug, current_version_id, purged_at "
+                    "FROM custom_skills WHERE org_slug=?",
+                    (slug,),
+                ).fetchall()
+            }
+            expected_specs = [
+                spec for spec in expected_specs
+                if spec["slug"] not in current_custom
+                or (
+                    current_custom[spec["slug"]]["purged_at"] is None
+                    and str(current_custom[spec["slug"]]["current_version_id"])
+                    == str(spec["version"])
+                )
+            ]
+            for subdir in (".claude/skills", ".agents/skills"):
+                materializer.repair_workspace_skills(
+                    expected_specs, workspace, subdir,
+                )
+    else:
+        for subdir in (".claude/skills", ".agents/skills"):
+            materializer.repair_workspace_skills(
+                expected_specs, workspace, subdir,
+            )
 
     return expected_specs
 

@@ -7,7 +7,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
+
+
+_publication_barriers_guard = threading.Lock()
+_publication_barriers: dict[str, threading.RLock] = {}
+
+
+@contextmanager
+def canonical_publication_barrier(org_slug: str):
+    """Serialize an org's purge commit with final canonical publication."""
+    with _publication_barriers_guard:
+        barrier = _publication_barriers.setdefault(org_slug, threading.RLock())
+    with barrier:
+        yield
 
 
 def now() -> str:

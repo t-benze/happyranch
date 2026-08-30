@@ -431,20 +431,15 @@ def test_purge_rolls_back_policy_withdrawal_and_tombstone_on_failure(
     assert len(service.current_rules(conn, skill_id)) == 1
 
 
-def test_purge_during_canonical_build_is_excluded_before_both_root_publication(
+def test_purge_after_selection_is_excluded_at_unified_both_root_publication(
     client_with_runtime, monkeypatch, tmp_path,
 ):
-    """The shipping builder rechecks authoritative state after package build.
-
-    A real purge request committed in the selection-to-publication window must
-    remove only that skill from returned specs and prevent new links in both
-    provider roots; an unrelated eligible skill continues to publish.
-    """
+    """A committed purge wins before the shipping seam's final re-read."""
     import threading
+    from contextlib import contextmanager
 
-    from runtime.skills.canonical_store import CanonicalSkillStore
-    from runtime.skills.symlink_materializer import SymlinkMaterializer
-    from runtime.orchestrator.workspace_adapters import _build_custom_skill_canonical_specs
+    from runtime.orchestrator.workspace_adapters import _materialize_unified_canonical
+    from runtime.skills.custom import service
 
     client, org = client_with_runtime
     _add_agent(org)
@@ -465,29 +460,32 @@ def test_purge_during_canonical_build_is_excluded_before_both_root_publication(
     conn.commit()
 
     monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(tmp_path / "canonical"))
-    store = CanonicalSkillStore()
-    original_build = store.build_from_source
     selected = threading.Event()
     release = threading.Event()
+    original_barrier = service.canonical_publication_barrier
 
-    def paused_build(skill_id, *args, **kwargs):
-        result = original_build(skill_id, *args, **kwargs)
-        if skill_id == "purged-during-build":
+    @contextmanager
+    def paused_barrier(org_slug):
+        if threading.current_thread().name == "canonical-publisher":
             selected.set()
             assert release.wait(2)
-        return result
+        with original_barrier(org_slug):
+            yield
 
-    monkeypatch.setattr(store, "build_from_source", paused_build)
+    monkeypatch.setattr(service, "canonical_publication_barrier", paused_barrier)
     outcome = {}
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
 
     def publish():
-        outcome["specs"] = _build_custom_skill_canonical_specs(
-            store=store, org_root=org.root, db=org.db, slug="alpha",
+        outcome["specs"] = _materialize_unified_canonical(
+            workspace, org.settings, slug="alpha", context="task", provider="codex",
             agent_name="dev_agent", team="engineering", task_id="TASK-RACE",
-            session_id="sess-race", session_context="task",
+            session_id="sess-race", org_root=org.root, db=org.db,
+            skills_root=org.settings.project_root / "runtime" / "skills",
         )
 
-    worker = threading.Thread(target=publish)
+    worker = threading.Thread(target=publish, name="canonical-publisher")
     worker.start()
     assert selected.wait(2)
     assert client.post(f"{BASE}/{racing['skill_id']}/retire", json={}).status_code == 200
@@ -503,19 +501,60 @@ def test_purge_during_canonical_build_is_excluded_before_both_root_publication(
     slugs = {spec["slug"] for spec in outcome["specs"]}
     assert "purged-during-build" not in slugs
     assert "unaffected-during-build" in slugs
-    beta_specs = _build_custom_skill_canonical_specs(
-        store=store, org_root=org.root, db=org.db, slug="beta",
+    beta_workspace = tmp_path / "beta-workspace"
+    beta_workspace.mkdir()
+    beta_specs = _materialize_unified_canonical(
+        beta_workspace, org.settings, slug="beta", context="task", provider="codex",
         agent_name="dev_agent", team="engineering", task_id="TASK-BETA",
-        session_id="sess-beta", session_context="task",
+        session_id="sess-beta", org_root=org.root, db=org.db,
+        skills_root=org.settings.project_root / "runtime" / "skills",
     )
-    assert {spec["slug"] for spec in beta_specs} == {"other-org-during-build"}
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    materializer = SymlinkMaterializer(store)
+    assert "other-org-during-build" in {spec["slug"] for spec in beta_specs}
     for root in (".claude/skills", ".agents/skills"):
-        materializer.repair_workspace_skills(outcome["specs"], workspace, root)
         assert not (workspace / root / "purged-during-build").exists()
         assert (workspace / root / "unaffected-during-build").exists()
+        assert (beta_workspace / root / "other-org-during-build").exists()
+
+
+def test_canonical_publication_barrier_is_org_scoped_and_exception_safe():
+    import threading
+
+    from runtime.skills.custom import service
+
+    alpha_entered = threading.Event()
+    release_alpha = threading.Event()
+    same_org_entered = threading.Event()
+    other_org_entered = threading.Event()
+
+    def hold_alpha():
+        with service.canonical_publication_barrier("alpha"):
+            alpha_entered.set()
+            assert release_alpha.wait(2)
+
+    def enter(org_slug, entered):
+        with service.canonical_publication_barrier(org_slug):
+            entered.set()
+
+    holder = threading.Thread(target=hold_alpha)
+    same_org = threading.Thread(target=enter, args=("alpha", same_org_entered))
+    other_org = threading.Thread(target=enter, args=("beta", other_org_entered))
+    holder.start()
+    assert alpha_entered.wait(2)
+    same_org.start()
+    other_org.start()
+    assert other_org_entered.wait(2)
+    assert not same_org_entered.wait(0.05)
+    release_alpha.set()
+    for worker in (holder, same_org, other_org):
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+    assert same_org_entered.is_set()
+
+    with pytest.raises(RuntimeError, match="publication fault"):
+        with service.canonical_publication_barrier("alpha"):
+            raise RuntimeError("publication fault")
+    with service.canonical_publication_barrier("alpha"):
+        pass
 
 
 def test_b2_recover_deletes_only_corrupt_version_with_audit(

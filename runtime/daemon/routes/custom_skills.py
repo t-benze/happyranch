@@ -433,43 +433,44 @@ def purge(slug: str, skill_id: str, body: dict = Body(...), org: OrgDep = None, 
     """
     conn = getattr(org.db, "_conn", org.db)
     _purge_contract(conn)
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        row = service.current(conn, skill_id)
-        if row is None or row["org_slug"] != slug:
-            _error("skill_not_found", 404)
-        if body.get("typed_slug") != row["slug"]:
-            _error("typed_slug_mismatch", 422)
-        existing = service.purge_tombstone(conn, skill_id)
-        if existing is not None:
+    with service.canonical_publication_barrier(slug):
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = service.current(conn, skill_id)
+            if row is None or row["org_slug"] != slug:
+                _error("skill_not_found", 404)
+            if body.get("typed_slug") != row["slug"]:
+                _error("typed_slug_mismatch", 422)
+            existing = service.purge_tombstone(conn, skill_id)
+            if existing is not None:
+                conn.rollback()
+                return {**dict(existing), "state": "permanently_removed", "already_purged": True}
+            if row["retired_at"] is None:
+                _error("skill_not_retired", 409)
+            purge_id, purged_at = f"purge:{uuid.uuid4()}", service.now()
+            # Preserve policy history while withdrawing the current policy.
+            service.replace_rules(
+                conn, skill_id=skill_id, actor="founder",
+                revision=row["version_id"], rules=[],
+                newly_visible=[], newly_hidden=[],
+            )
+            conn.execute(
+                "INSERT INTO custom_skill_purge_events "
+                "(purge_id,skill_id,org_slug,slug,actor,purged_at,physical_erasure) "
+                "VALUES (?,?,?,?,?,?,0)",
+                (purge_id, skill_id, slug, row["slug"], "founder", purged_at),
+            )
+            conn.execute(
+                "UPDATE custom_skills SET purged_at=?,purge_id=? WHERE id=?",
+                (purged_at, purge_id, skill_id),
+            )
+            conn.commit()
+        except HTTPException:
             conn.rollback()
-            return {**dict(existing), "state": "permanently_removed", "already_purged": True}
-        if row["retired_at"] is None:
-            _error("skill_not_retired", 409)
-        purge_id, purged_at = f"purge:{uuid.uuid4()}", service.now()
-        # Preserve policy history while withdrawing the current policy.
-        service.replace_rules(
-            conn, skill_id=skill_id, actor="founder",
-            revision=row["version_id"], rules=[],
-            newly_visible=[], newly_hidden=[],
-        )
-        conn.execute(
-            "INSERT INTO custom_skill_purge_events "
-            "(purge_id,skill_id,org_slug,slug,actor,purged_at,physical_erasure) "
-            "VALUES (?,?,?,?,?,?,0)",
-            (purge_id, skill_id, slug, row["slug"], "founder", purged_at),
-        )
-        conn.execute(
-            "UPDATE custom_skills SET purged_at=?,purge_id=? WHERE id=?",
-            (purged_at, purge_id, skill_id),
-        )
-        conn.commit()
-    except HTTPException:
-        conn.rollback()
-        raise
-    except Exception:
-        conn.rollback()
-        raise
+            raise
+        except Exception:
+            conn.rollback()
+            raise
     return {
         "purge_id": purge_id, "skill_id": skill_id, "org_slug": slug,
         "slug": row["slug"], "actor": "founder", "purged_at": purged_at,
