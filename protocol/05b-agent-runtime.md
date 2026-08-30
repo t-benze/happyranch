@@ -45,6 +45,12 @@ in every built-in invocation class:
 
 When ``model`` is absent (``None`` or not set in frontmatter), the executor
 launches with its CLI-default behavior — the same as before Issue #568.
+Model overrides are executor-specific. When an existing agent's executor
+actually changes, the old configured model is cleared so it cannot carry into
+the new executor; an idempotent executor update preserves it. A
+``manage-agent`` update that supplies both a changed executor and an explicit
+``model`` treats that model (including explicit ``null``) as the caller's new
+executor choice. Omitting ``model`` clears the old override on a real switch.
 Custom executor profiles and custom-adapter profiles are unaffected: model
 is forwarded through the standard ``executor.run(model=...)`` API without
 modifying the executor factory, permission construction, or adapter semantics.

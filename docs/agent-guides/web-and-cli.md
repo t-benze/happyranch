@@ -200,6 +200,16 @@ profiles do — verified per CLI), the executor injects the substituted model fl
 CLI argv at launch time. When unset, each CLI uses its own default model (today's behavior
 for every existing agent).
 
+Executor changes and model overrides are coupled: changing an existing
+agent's executor clears its old configured model, while selecting the already
+configured executor preserves it. In the team-manager `manage-agent` update
+contract, an explicitly supplied `model` (including `null`) is the model choice
+for the new executor; if `model` is omitted during a real executor change, the
+old override is cleared. The Agents web editor saves a dirty executor before a
+separately dirty model and refetches the agent list after each mutation, so an
+explicitly edited model is applied as the new choice and an untouched old model
+is not restored from stale client state.
+
 ### Executor binary registration
 
 Register the absolute path to each executor CLI binary so the daemon can locate it at
