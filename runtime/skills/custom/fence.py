@@ -59,9 +59,34 @@ class _ReadWriteFence:
 _org_locks: dict[str, _ReadWriteFence] = {}
 
 
+class CustomSkillPublicationReadToken:
+    """Thread-owned read-fence token held through a launch linearization."""
+
+    def __init__(self, fence: _ReadWriteFence) -> None:
+        self._fence = fence
+        self._closed = False
+        self._owner = get_ident()
+        fence.acquire_read()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        if get_ident() != self._owner:
+            raise RuntimeError("publication read token closed by non-owner thread")
+        self._closed = True
+        self._fence.release_read()
+
+
 def _lock_for(org_slug: str) -> _ReadWriteFence:
     with _registry_lock:
         return _org_locks.setdefault(org_slug, _ReadWriteFence())
+
+
+def acquire_custom_skill_publication_read(
+    org_slug: str,
+) -> CustomSkillPublicationReadToken:
+    """Acquire a bounded token that the caller must close after spawn."""
+    return CustomSkillPublicationReadToken(_lock_for(org_slug))
 
 
 @contextmanager

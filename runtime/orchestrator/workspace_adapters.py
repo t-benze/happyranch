@@ -409,6 +409,59 @@ def materialize_workspace_skills_union(
         )
 
 
+def prepare_workspace_skills_launch(
+    workspace: Path,
+    settings: Settings,
+    *,
+    slug: str,
+    context: str,
+    provider: str,
+    agent_name: str,
+    team: str,
+    skills_root: Path,
+    org_root: Path | None = None,
+    db: "Database | None" = None,  # noqa: F821
+    task_id: str | None = None,
+    session_id: str | None = None,
+):
+    """Re-resolve and validate under a read token held through actual spawn.
+
+    The returned zero-argument close callback is exception-safe when invoked
+    in a launcher's ``finally`` block.  Acquiring the org fence before the
+    re-entrant materializer preserves fence -> workspace -> DB lock order.
+    """
+    from runtime.skills.custom.fence import acquire_custom_skill_publication_read
+
+    token = acquire_custom_skill_publication_read(slug)
+    try:
+        expected_specs = materialize_workspace_skills(
+            workspace,
+            settings,
+            slug=slug,
+            context=context,
+            provider=provider,
+            agent_name=agent_name,
+            team=team,
+            skills_root=skills_root,
+            org_root=org_root,
+            db=db,
+            task_id=task_id,
+            session_id=session_id,
+        )
+        validate_workspace_skills_integrity(
+            workspace,
+            expected_specs,
+            settings=settings,
+            db=db,
+            agent_name=agent_name,
+            task_id=task_id,
+        )
+    except BaseException:
+        token.close()
+        raise
+    return token.close
+
+
 def _preflight_system_contract_sources(
     contract_ids: set[str],
     src_root: Path,

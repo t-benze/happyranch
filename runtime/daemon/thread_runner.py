@@ -47,6 +47,7 @@ from runtime.orchestrator.org_config import (
 from runtime.orchestrator.workspace_adapters import (
     format_repo_refresh_note,
     materialize_workspace_skills,
+    prepare_workspace_skills_launch,
     refresh_workspace_repos,
     validate_workspace_skills_integrity,
     WorkspaceIntegrityError,
@@ -1206,12 +1207,12 @@ async def run_invocation(
 
         def _invoke(run_prompt: str, resume: str | None) -> _InvokeResult:
             def _pre_launch_validator():
-                validate_workspace_skills_integrity(
-                    workspace, expected_specs,
-                    settings=settings,
-                    db=org_state.db,
-                    agent_name=inv.agent_name,
-                    task_id=inv.thread_id,
+                return prepare_workspace_skills_launch(
+                    workspace, settings, slug=org_state.slug, context="thread",
+                    provider=executor_name, agent_name=inv.agent_name,
+                    team=agent_def.team, skills_root=skills_root,
+                    org_root=org_state.root, db=org_state.db,
+                    task_id=inv.thread_id, session_id=session_id,
                 )
             if host_supervisor is None:
                 # ── Legacy uncontained path (unchanged) ──

@@ -868,8 +868,9 @@ def _run_command(
             # including throttle retries after rate-limited responses.
             # Any exception here prevents the executor subprocess from
             # launching — fail-closed.
+            release_publication_fence = None
             if pre_launch_validator is not None:
-                pre_launch_validator()
+                release_publication_fence = pre_launch_validator()
             # Popen (not subprocess.run) because the daemon needs the pid handed to
             # SessionTracker BEFORE we block in communicate(), so /cancel can SIGTERM
             # the process mid-session. stdin=PIPE unconditionally — Codex reads its
@@ -895,6 +896,9 @@ def _run_command(
                     session_id=sid,
                     error=f"Platform isolation failure: {exc}",
                 )
+            finally:
+                if callable(release_publication_fence):
+                    release_publication_fence()
             if on_started is not None:
                 on_started(proc.pid)
         try:
