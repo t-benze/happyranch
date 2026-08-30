@@ -486,11 +486,12 @@ def test_escalate_golden_byte_identical_behavior(runtime, db, monkeypatch):
 
 def test_escalate_thread_projection_unchanged_for_thread_origin(runtime, db, monkeypatch):
     """A thread-originated current manager root is evaluated, and ESCALATE
-    still uses the existing thread projection path exactly once."""
+    still uses the existing thread projection path exactly once through the
+    real completion-consumer seam."""
     from runtime.models import ThreadRecord
     from runtime.infrastructure.audit_logger import AuditLogger
 
-    _seed_root(db, task_id="T-1", thread="THR-9")
+    _seed_claimed_root(db, task_id="T-1", thread="THR-9")
     db.insert_thread(ThreadRecord(id="THR-9", subject="t"))
     db.add_thread_participant("THR-9", "engineering_head", added_by="founder")
     AuditLogger(db).log_thread_dispatch(
@@ -499,7 +500,10 @@ def test_escalate_thread_projection_unchanged_for_thread_origin(runtime, db, mon
     )
     fake = StrictFakeAuthorityEvaluator()
     orch = _make_orch(runtime, db, evaluator=fake)
-    _run_escalate_step(orch, "T-1", "needs founder", monkeypatch)
+    row_id = _seed_result_row(
+        db, "T-1", "engineering_head", "sess-x", "needs founder",
+    )
+    _consume_report(orch, "T-1", "needs founder", row_id)
 
     t = db.get_task("T-1")
     assert t.status == TaskStatus.ESCALATED
