@@ -161,18 +161,16 @@ export default tseslint.config(
   // Tailwind class hygiene (scoped — see header comment for why primitives
   // get a pass on no-arbitrary-value).
   //
-  // The plugin emits "Cannot resolve default tailwindcss config path" on
-  // stderr when it can't find a v3-style `tailwind.config.{js,ts}`. We
-  // intentionally don't ship one (v4's CSS-first @theme is in tokens.css),
-  // and the plugin still applies its rules correctly without the config —
-  // proven by the no-arbitrary-value findings it surfaced before being
-  // scoped out of the primitive layer. The stderr noise is benign.
+  // eslint-plugin-tailwindcss v3's class-order resolver hangs against our
+  // Tailwind v4 CSS-first setup, which intentionally has no v3-style config.
+  // Keep the correctness rules below; disable only the incompatible ordering
+  // rule until the plugin supports this setup.
   {
     files: ["src/**/*.{ts,tsx}"],
     plugins: { tailwindcss: tailwind },
     rules: {
       "tailwindcss/no-contradicting-classname": "error",
-      "tailwindcss/classnames-order": "warn",
+      "tailwindcss/classnames-order": "off",
       // no-custom-classname is overly aggressive against our token-aliased
       // utilities (text-h1, text-overline, bg-surface-sunken etc.); the
       // hex-code grep in scripts/verify-design-system.sh is the real

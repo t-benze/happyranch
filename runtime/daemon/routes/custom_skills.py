@@ -21,6 +21,22 @@ _FORBIDDEN_IDENTITY = frozenset({"task_id","session_id","proposer_agent","agent"
 def _error(code: str, status_code: int, detail: str | None = None):
     raise HTTPException(status_code=status_code, detail={"code": code, "detail": detail or code})
 
+
+def _purge_contract(conn) -> None:
+    if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+        _error("schema_contract_unsupported", 422)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(custom_skills)")}
+    table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='custom_skill_purge_events'"
+    ).fetchone()
+    if not {"purged_at", "purge_id"}.issubset(columns) or table is None:
+        _error("schema_contract_unsupported", 422)
+
+
+def _mutable(row) -> None:
+    if row["purged_at"]:
+        _error("skill_purged", 410)
+
 def _remove_artifact_from_store(store, key: str) -> None:
     """Best-effort compensation: delete a newly-created artifact and any
     now-empty parent directories so a failed write leaves no residue."""
@@ -182,7 +198,7 @@ def _recipients(org):
 
 def _resolve(row, rules, recipient):
     return resolve_custom_skill_eligibility(
-        SkillEligibilityState(bool(row["retired_at"]), row["validation_state"]),
+        SkillEligibilityState(bool(row["retired_at"]), row["validation_state"], bool(row["purged_at"])),
         [EligibilityRule(**dict(r)) for r in rules], recipient)
 
 def _preview(org, row, rules):
@@ -219,6 +235,8 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
         # candidate is still hard-rejected above (policy gate, not evidence).
         conn = getattr(org.db, "_conn", org.db); existing = conn.execute("SELECT * FROM custom_skills WHERE org_slug=? AND slug=?", (slug, skill_slug)).fetchone()
         if existing and (existing["origin_kind"] != "agent" or existing["origin_agent"] != agent): _error("not_origin_owner", 403)
+        if existing:
+            _mutable(existing)
         task = org.db.get_task(task_id)
         if task is None: _error("task_not_found", 422)
         brief = task.brief
@@ -270,7 +288,8 @@ def catalog(slug: str, org: OrgDep, filter: str | None = None):
     skills = []
     for row in rows:
         skill = dict(row)
-        skill["hidden_reason"] = "no_eligibility_policy" if not service.current_rules(conn, row["id"]) else None
+        skill["state"] = "permanently_removed" if row["purged_at"] else "retired" if row["retired_at"] else "active"
+        skill["hidden_reason"] = "purged" if row["purged_at"] else "no_eligibility_policy" if not service.current_rules(conn, row["id"]) else None
         skills.append(skill)
     return {"skills": skills}
 
@@ -301,6 +320,15 @@ def create_human(slug: str, body: dict = Body(...), org: OrgDep = None, _: None 
 def detail(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
     row = service.current(org.db, skill_id)
     if row is None: _error("not_found", 404)
+    if row["purged_at"]:
+        tombstone = service.purge_tombstone(org.db, skill_id)
+        return {
+            "id": row["id"], "skill_id": row["id"], "slug": row["slug"],
+            "state": "permanently_removed", "retired_at": row["retired_at"],
+            "purged_at": row["purged_at"], "purge_id": row["purge_id"],
+            "physical_erasure": False, "already_purged": True,
+            "actor": tombstone["actor"] if tombstone else "founder",
+        }
     skill = dict(row)
     skill["hidden_reason"] = "no_eligibility_policy" if not service.current_rules(org.db, skill_id) else None
     return skill
@@ -311,6 +339,7 @@ def patch_metadata(skill_id: str, body: dict = Body(...), org: OrgDep = None, _:
     if not allowed: _error("invalid_request", 422)
     row = service.current(org.db, skill_id)
     if row is None: _error("not_found", 404)
+    _mutable(row)
     conn=getattr(org.db,"_conn",org.db); conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("UPDATE custom_skills SET " + ", ".join(f"{key}=?" for key in allowed) + " WHERE id=?", (*allowed.values(),skill_id)); service.append_event(conn,skill_id,"version_saved","founder",row["version_id"]); conn.commit()
@@ -321,6 +350,7 @@ def patch_metadata(skill_id: str, body: dict = Body(...), org: OrgDep = None, _:
 def add_version(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: None = Depends(_require_human)):
     row=service.current(org.db,skill_id)
     if row is None: _error("not_found",404)
+    _mutable(row)
     skill_md=body.get("skill_md", "")
     if not skill_md: _error("invalid_request",422)
     validation_result = service.validate_package(
@@ -341,11 +371,17 @@ def add_version(skill_id: str, body: dict = Body(...), org: OrgDep = None, _: No
 
 @router.get("/{skill_id}/versions")
 def versions(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
+    row = service.current(org.db, skill_id)
+    if row is None: _error("not_found", 404)
+    _mutable(row)
     return {"versions": [dict(r) for r in getattr(org.db, "_conn", org.db).execute("SELECT * FROM custom_skill_versions WHERE skill_id=? ORDER BY id DESC", (skill_id,)).fetchall()]}
 
 @router.get("/{skill_id}/versions/{a}/diff/{b}")
 def version_diff(skill_id: str, a: int, b: int, org: OrgDep, _: None = Depends(_require_human)):
     conn = getattr(org.db, "_conn", org.db)
+    row = service.current(conn, skill_id)
+    if row is None: _error("not_found", 404)
+    _mutable(row)
     versions_by_id = {
         row["id"]: row
         for row in conn.execute(
@@ -370,6 +406,7 @@ def version_diff(skill_id: str, a: int, b: int, org: OrgDep, _: None = Depends(_
 def retire(skill_id: str, body: dict = Body(default={}), org: OrgDep = None, _: None = Depends(_require_human)):
     row=service.current(org.db,skill_id)
     if row is None: _error("not_found",404)
+    _mutable(row)
     conn=getattr(org.db,"_conn",org.db); conn.execute("BEGIN IMMEDIATE")
     try: conn.execute("UPDATE custom_skills SET retired_at=?,retired_by=?,retired_reason=? WHERE id=?",(service.now(),"founder",body.get("reason",""),skill_id));service.append_event(conn,skill_id,"retired","founder",row["version_id"]);conn.commit()
     except Exception: conn.rollback();raise
@@ -379,21 +416,79 @@ def retire(skill_id: str, body: dict = Body(default={}), org: OrgDep = None, _: 
 def restore(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
     row=service.current(org.db,skill_id)
     if row is None: _error("not_found",404)
+    _mutable(row)
     conn=getattr(org.db,"_conn",org.db);conn.execute("BEGIN IMMEDIATE")
     try: conn.execute("UPDATE custom_skills SET retired_at=NULL,retired_by=NULL,retired_reason=NULL WHERE id=?",(skill_id,));service.append_event(conn,skill_id,"restored","founder",row["version_id"]);conn.commit()
     except Exception:conn.rollback();raise
     return dict(service.current(org.db,skill_id))
 
+
+@router.post("/{skill_id}/purge")
+def purge(slug: str, skill_id: str, body: dict = Body(...), org: OrgDep = None, _: None = Depends(_require_human)):
+    """Synchronously commit an irreversible logical tombstone.
+
+    The database commit is the synchronous logical-purge boundary; no
+    filesystem object or retained evidence is removed. An identical or later
+    retry returns the stable tombstone.
+    """
+    conn = getattr(org.db, "_conn", org.db)
+    _purge_contract(conn)
+    with service.canonical_publication_barrier(slug):
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = service.current(conn, skill_id)
+            if row is None or row["org_slug"] != slug:
+                _error("skill_not_found", 404)
+            if body.get("typed_slug") != row["slug"]:
+                _error("typed_slug_mismatch", 422)
+            existing = service.purge_tombstone(conn, skill_id)
+            if existing is not None:
+                conn.rollback()
+                return {**dict(existing), "state": "permanently_removed", "already_purged": True}
+            if row["retired_at"] is None:
+                _error("skill_not_retired", 409)
+            purge_id, purged_at = f"purge:{uuid.uuid4()}", service.now()
+            # Preserve policy history while withdrawing the current policy.
+            service.replace_rules(
+                conn, skill_id=skill_id, actor="founder",
+                revision=row["version_id"], rules=[],
+                newly_visible=[], newly_hidden=[],
+            )
+            conn.execute(
+                "INSERT INTO custom_skill_purge_events "
+                "(purge_id,skill_id,org_slug,slug,actor,purged_at,physical_erasure) "
+                "VALUES (?,?,?,?,?,?,0)",
+                (purge_id, skill_id, slug, row["slug"], "founder", purged_at),
+            )
+            conn.execute(
+                "UPDATE custom_skills SET purged_at=?,purge_id=? WHERE id=?",
+                (purged_at, purge_id, skill_id),
+            )
+            conn.commit()
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+    return {
+        "purge_id": purge_id, "skill_id": skill_id, "org_slug": slug,
+        "slug": row["slug"], "actor": "founder", "purged_at": purged_at,
+        "physical_erasure": 0, "state": "permanently_removed", "already_purged": False,
+    }
+
 @router.get("/{skill_id}/eligibility")
 def get_eligibility(skill_id: str, org: OrgDep, _: None = Depends(_require_human)):
     row = service.current(org.db, skill_id)
     if row is None: _error("not_found", 404)
+    _mutable(row)
     return {"rules": [dict(x) for x in service.current_rules(org.db, skill_id)], "revision": row["version_id"]}
 
 @router.post("/{skill_id}/eligibility/preview")
 def preview(skill_id: str, proposed: list[dict], org: OrgDep, _: None = Depends(_require_human)):
     row = service.current(org.db, skill_id)
     if row is None: _error("not_found", 404)
+    _mutable(row)
     return _preview(org, row, proposed)
 
 @router.put("/{skill_id}/eligibility")
@@ -402,6 +497,7 @@ def put_eligibility(skill_id: str, proposed: list[dict], org: OrgDep, if_match: 
     try:
         row = service.current(conn, skill_id)
         if row is None: _error("not_found", 404)
+        _mutable(row)
         if if_match != str(row["version_id"]): _error("stale_revision", 409)
         if row["retired_at"] or row["validation_state"] != "valid": _error("version_not_eligible", 422)
         recipients = _recipients(org)
@@ -418,6 +514,7 @@ def put_eligibility(skill_id: str, proposed: list[dict], org: OrgDep, if_match: 
 def explain(skill_id: str, agent: str, org: OrgDep, _: None = Depends(_require_human)):
     row = service.current(org.db, skill_id)
     if row is None: _error("not_found", 404)
+    _mutable(row)
     recipient = next((r for r in _recipients(org) if r.agent_name == agent), None)
     if recipient is None: _error("unknown_target", 422)
     result = _resolve(row, service.current_rules(org.db, skill_id), recipient)

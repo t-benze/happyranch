@@ -287,6 +287,289 @@ def test_catalog_and_detail_project_missing_eligibility_as_hidden(client_with_ru
     assert client.get(f"{BASE}/{skill_id}").json()["hidden_reason"] is None
 
 
+def test_purge_requires_retirement_and_exact_slug_then_is_stably_idempotent(client_with_runtime):
+    client, org = client_with_runtime
+    created = _create(client, slug="logical-only")
+    skill_id = created["skill_id"]
+    assert client.post(f"{BASE}/{skill_id}/purge", json={"typed_slug": "logical-only"}).json()["detail"]["code"] == "skill_not_retired"
+    assert client.post(f"{BASE}/{skill_id}/retire", json={"reason": "done"}).status_code == 200
+    mismatch = client.post(f"{BASE}/{skill_id}/purge", json={"typed_slug": "wrong"})
+    assert mismatch.status_code == 422
+    assert mismatch.json()["detail"]["code"] == "typed_slug_mismatch"
+
+    conn = getattr(org.db, "_conn", org.db)
+    retained_before = {
+        table: conn.execute(f"SELECT count(*) FROM {table} WHERE skill_id=?", (skill_id,)).fetchone()[0]
+        for table in (
+            "custom_skill_versions", "custom_skill_events",
+            "custom_skill_eligibility_rules", "custom_skill_materializations",
+        )
+    }
+    first = client.post(f"{BASE}/{skill_id}/purge", json={"typed_slug": "logical-only"})
+    assert first.status_code == 200
+    assert first.json()["state"] == "permanently_removed"
+    assert first.json()["physical_erasure"] == 0
+    replay = client.post(f"{BASE}/{skill_id}/purge", json={"typed_slug": "logical-only"})
+    assert replay.status_code == 200
+    assert replay.json()["purge_id"] == first.json()["purge_id"]
+    assert replay.json()["already_purged"] is True
+    assert {
+        table: conn.execute(f"SELECT count(*) FROM {table} WHERE skill_id=?", (skill_id,)).fetchone()[0]
+        for table in retained_before
+    } == retained_before
+    detail = client.get(f"{BASE}/{skill_id}").json()
+    assert detail["state"] == "permanently_removed"
+    assert "skill_md_cache" not in detail
+    assert client.post(f"{BASE}/{skill_id}/restore").status_code == 410
+    assert client.post(f"{BASE}/{skill_id}/versions", json={"skill_md": _FM_BODY + "two"}).status_code == 410
+
+
+def test_purge_policy_withdrawal_is_old_resolver_compatibility_latch(client_with_runtime):
+    """Downgrade plus explicit old restore still resolves fail-closed."""
+    from runtime.skills.custom import service
+    from runtime.skills.eligibility import (
+        EligibilityRecipient, SkillEligibilityState, resolve_custom_skill_eligibility,
+    )
+
+    client, org = client_with_runtime
+    created = _create(client, slug="old-restore-latch")
+    skill_id = created["skill_id"]
+    response = client.put(
+        f"{BASE}/{skill_id}/eligibility",
+        headers={"If-Match": str(created["version_id"])},
+        json=[{"scope_type": "org", "scope_target": None, "effect": "allow"}],
+    )
+    assert response.status_code == 200, response.text
+    conn = getattr(org.db, "_conn", org.db)
+    historical_count = conn.execute(
+        "SELECT count(*) FROM custom_skill_eligibility_rules WHERE skill_id=?", (skill_id,)
+    ).fetchone()[0]
+
+    client.post(f"{BASE}/{skill_id}/retire", json={})
+    assert client.post(
+        f"{BASE}/{skill_id}/purge", json={"typed_slug": "old-restore-latch"}
+    ).status_code == 200
+    purged = conn.execute("SELECT * FROM custom_skills WHERE id=?", (skill_id,)).fetchone()
+    assert purged["retired_at"] is not None
+    assert len(service.current_rules(conn, skill_id)) == 0
+    assert conn.execute(
+        "SELECT count(*) FROM custom_skill_eligibility_rules WHERE skill_id=?", (skill_id,)
+    ).fetchone()[0] == historical_count
+
+    # Exact preserved-old restore behavior: it clears retirement only and is
+    # unaware of purged_at. Its existing resolver then sees the withdrawn
+    # current policy while all historical rule rows remain retained.
+    conn.execute(
+        "UPDATE custom_skills SET retired_at=NULL,retired_by=NULL,retired_reason=NULL WHERE id=?",
+        (skill_id,),
+    )
+    result = resolve_custom_skill_eligibility(
+        SkillEligibilityState(False, "valid"),
+        service.current_rules(conn, skill_id),
+        EligibilityRecipient("dev_agent", ("engineering",)),
+    )
+    assert result.visible is False
+    assert result.reason == "no_eligibility_policy"
+
+
+def test_purge_refuses_when_foreign_keys_are_disabled(client_with_runtime):
+    client, org = client_with_runtime
+    created = _create(client, slug="fk-off")
+    client.post(f"{BASE}/{created['skill_id']}/retire", json={})
+    conn = getattr(org.db, "_conn", org.db)
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        response = client.post(f"{BASE}/{created['skill_id']}/purge", json={"typed_slug": "fk-off"})
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "schema_contract_unsupported"
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def test_purge_refuses_a_partially_migrated_schema(client_with_runtime):
+    client, org = client_with_runtime
+    created = _create(client, slug="partial-schema")
+    client.post(f"{BASE}/{created['skill_id']}/retire", json={})
+    conn = getattr(org.db, "_conn", org.db)
+    conn.execute("DROP TABLE custom_skill_purge_events")
+
+    response = client.post(
+        f"{BASE}/{created['skill_id']}/purge", json={"typed_slug": "partial-schema"}
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "schema_contract_unsupported"
+
+
+def test_purge_rolls_back_policy_withdrawal_and_tombstone_on_failure(
+    client_with_runtime, monkeypatch,
+):
+    from runtime.skills.custom import service
+
+    client, org = client_with_runtime
+    created = _create(client, slug="rollback-purge")
+    skill_id = created["skill_id"]
+    assert client.put(
+        f"{BASE}/{skill_id}/eligibility",
+        headers={"If-Match": str(created["version_id"])},
+        json=[{"scope_type": "org", "scope_target": None, "effect": "allow"}],
+    ).status_code == 200
+    client.post(f"{BASE}/{skill_id}/retire", json={})
+    conn = getattr(org.db, "_conn", org.db)
+    original = service.replace_rules
+
+    def fail_after_withdrawal(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("fault after policy withdrawal")
+
+    monkeypatch.setattr(service, "replace_rules", fail_after_withdrawal)
+    with pytest.raises(RuntimeError, match="fault after policy withdrawal"):
+        client.post(f"{BASE}/{skill_id}/purge", json={"typed_slug": "rollback-purge"})
+
+    row = conn.execute("SELECT purged_at,purge_id FROM custom_skills WHERE id=?", (skill_id,)).fetchone()
+    assert tuple(row) == (None, None)
+    assert service.purge_tombstone(conn, skill_id) is None
+    assert len(service.current_rules(conn, skill_id)) == 1
+
+
+def test_set_executor_purge_after_selection_excludes_skill_from_both_roots(
+    client_with_runtime, monkeypatch, tmp_path,
+):
+    """The real executor-switch route publishes only the authoritative set."""
+    import threading
+    from contextlib import contextmanager
+
+    from runtime.daemon.routes import agents as agent_routes
+    from runtime.orchestrator import workspace_adapters as wa
+    from runtime.skills.custom import service
+
+    client, org = client_with_runtime
+    _add_agent(org)
+    racing = _create(client, slug="purged-during-build")
+    unaffected = _create(client, slug="unaffected-during-build")
+    other_org = _create(client, slug="other-org-during-build")
+    allow = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
+    for created in (racing, unaffected, other_org):
+        assert client.put(
+            f"{BASE}/{created['skill_id']}/eligibility", json=allow,
+            headers={"If-Match": str(created["version_id"])},
+        ).status_code == 200
+    conn = getattr(org.db, "_conn", org.db)
+    conn.execute(
+        "UPDATE custom_skills SET org_slug='beta' WHERE id=?",
+        (other_org["skill_id"],),
+    )
+    conn.commit()
+
+    monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(tmp_path / "canonical"))
+    selected = threading.Event()
+    release = threading.Event()
+    original_barrier = service.canonical_publication_barrier
+
+    @contextmanager
+    def paused_barrier(org_slug):
+        if threading.get_ident() == outcome.get("publisher_ident"):
+            selected.set()
+            assert release.wait(2)
+        with original_barrier(org_slug):
+            yield
+
+    monkeypatch.setattr(service, "canonical_publication_barrier", paused_barrier)
+    outcome = {}
+    workspace = org.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    original_materialize = wa._materialize_unified_canonical
+
+    def capture_specs(*args, **kwargs):
+        outcome["publisher_ident"] = threading.get_ident()
+        specs = original_materialize(*args, **kwargs)
+        outcome["specs"] = specs
+        return specs
+
+    monkeypatch.setattr(wa, "_materialize_unified_canonical", capture_specs)
+    monkeypatch.setattr(
+        agent_routes.ContextBuilder, "ensure_workspace_ready",
+        lambda self, *args, **kwargs: None,
+    )
+
+    def publish():
+        outcome["response"] = client.put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": "codex"},
+        )
+
+    worker = threading.Thread(target=publish, name="canonical-publisher")
+    worker.start()
+    assert selected.wait(2)
+    assert client.post(f"{BASE}/{racing['skill_id']}/retire", json={}).status_code == 200
+    purged = client.post(
+        f"{BASE}/{racing['skill_id']}/purge",
+        json={"typed_slug": "purged-during-build"},
+    )
+    assert purged.status_code == 200
+    release.set()
+    worker.join(timeout=3)
+    assert not worker.is_alive()
+    assert outcome["response"].status_code == 200, outcome["response"].text
+
+    slugs = {spec["slug"] for spec in outcome["specs"]}
+    assert "purged-during-build" not in slugs
+    assert "unaffected-during-build" in slugs
+    beta_workspace = tmp_path / "beta-workspace"
+    beta_workspace.mkdir()
+    beta_specs = original_materialize(
+        beta_workspace, org.settings, slug="beta", context="task", provider="codex",
+        agent_name="dev_agent", team="engineering", task_id="TASK-BETA",
+        session_id="sess-beta", org_root=org.root, db=org.db,
+        skills_root=org.settings.project_root / "runtime" / "skills",
+    )
+    assert "other-org-during-build" in {spec["slug"] for spec in beta_specs}
+    for root in (".claude/skills", ".agents/skills"):
+        assert not (workspace / root / "purged-during-build").exists()
+        assert (workspace / root / "unaffected-during-build").exists()
+        assert (beta_workspace / root / "other-org-during-build").exists()
+
+
+def test_canonical_publication_barrier_is_org_scoped_and_exception_safe():
+    import threading
+
+    from runtime.skills.custom import service
+
+    alpha_entered = threading.Event()
+    release_alpha = threading.Event()
+    same_org_entered = threading.Event()
+    other_org_entered = threading.Event()
+
+    def hold_alpha():
+        with service.canonical_publication_barrier("alpha"):
+            alpha_entered.set()
+            assert release_alpha.wait(2)
+
+    def enter(org_slug, entered):
+        with service.canonical_publication_barrier(org_slug):
+            entered.set()
+
+    holder = threading.Thread(target=hold_alpha)
+    same_org = threading.Thread(target=enter, args=("alpha", same_org_entered))
+    other_org = threading.Thread(target=enter, args=("beta", other_org_entered))
+    holder.start()
+    assert alpha_entered.wait(2)
+    same_org.start()
+    other_org.start()
+    assert other_org_entered.wait(2)
+    assert not same_org_entered.wait(0.05)
+    release_alpha.set()
+    for worker in (holder, same_org, other_org):
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+    assert same_org_entered.is_set()
+
+    with pytest.raises(RuntimeError, match="publication fault"):
+        with service.canonical_publication_barrier("alpha"):
+            raise RuntimeError("publication fault")
+    with service.canonical_publication_barrier("alpha"):
+        pass
+
+
 def test_b2_recover_deletes_only_corrupt_version_with_audit(
     client_with_runtime, monkeypatch,
 ):

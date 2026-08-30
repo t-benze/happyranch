@@ -33,6 +33,43 @@ def _create_skill_with_version(conn: sqlite3.Connection, skill_id: str = "hr:exa
 
 
 class TestCustomSkillSchema:
+    def test_logical_purge_schema_is_additive_and_restart_idempotent(self, tmp_path):
+        path = tmp_path / "upgrade.db"
+        baseline = Database(path)
+        baseline.close()
+        conn = sqlite3.connect(path)
+        conn.execute("DROP TABLE custom_skill_purge_events")
+        conn.execute("ALTER TABLE custom_skills DROP COLUMN purge_id")
+        conn.execute("ALTER TABLE custom_skills DROP COLUMN purged_at")
+        conn.commit()
+        conn.close()
+
+        upgraded = Database(path)
+        try:
+            assert {"purged_at", "purge_id"}.issubset(
+                _table_columns(upgraded._conn, "custom_skills")
+            )
+            assert upgraded._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='custom_skill_purge_events'"
+            ).fetchone()
+            event_sql = upgraded._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' "
+                "AND name='custom_skill_events'"
+            ).fetchone()[0]
+            assert "'retired'" in event_sql and "'restored'" in event_sql
+            assert "purged" not in event_sql
+        finally:
+            upgraded.close()
+
+        restarted = Database(path)
+        try:
+            assert _table_columns(restarted._conn, "custom_skills").count("purged_at") == 1
+            assert _table_columns(restarted._conn, "custom_skills").count("purge_id") == 1
+            assert restarted._conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        finally:
+            restarted.close()
+
     def test_creation_rolls_back_skill_when_first_version_insert_fails(self, tmp_path, monkeypatch):
         db = Database(tmp_path / "custom-skills.db")
         try:

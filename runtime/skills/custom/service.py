@@ -7,7 +7,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
+
+
+_publication_barriers_guard = threading.Lock()
+_publication_barriers: dict[str, threading.RLock] = {}
+
+
+@contextmanager
+def canonical_publication_barrier(org_slug: str):
+    """Serialize an org's purge commit with final canonical publication."""
+    with _publication_barriers_guard:
+        barrier = _publication_barriers.setdefault(org_slug, threading.RLock())
+    with barrier:
+        yield
 
 
 def now() -> str:
@@ -67,6 +82,12 @@ def current(conn, skill_id: str):
     return conn.execute("""SELECT s.*,v.content_hash,v.content_artifact_key,v.skill_md_cache,
         v.validation_state,v.id AS version_id FROM custom_skills s
         JOIN custom_skill_versions v ON v.id=s.current_version_id WHERE s.id=?""", (skill_id,)).fetchone()
+
+
+def purge_tombstone(conn, skill_id: str):
+    return conn.execute(
+        "SELECT * FROM custom_skill_purge_events WHERE skill_id=?", (skill_id,)
+    ).fetchone()
 
 
 def current_rules(conn, skill_id: str):

@@ -1467,6 +1467,8 @@ class Database:
                 retired_at          TEXT,
                 retired_by          TEXT,
                 retired_reason      TEXT,
+                purged_at           TEXT,
+                purge_id            TEXT,
                 FOREIGN KEY (current_version_id) REFERENCES custom_skill_versions(id)
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_skills_org_slug
@@ -1553,7 +1555,28 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_cse_skill_id ON custom_skill_events(skill_id);
 
+            CREATE TABLE IF NOT EXISTS custom_skill_purge_events (
+                purge_id       TEXT PRIMARY KEY,
+                skill_id       TEXT NOT NULL UNIQUE REFERENCES custom_skills(id),
+                org_slug       TEXT NOT NULL,
+                slug           TEXT NOT NULL,
+                actor          TEXT NOT NULL,
+                purged_at      TEXT NOT NULL,
+                physical_erasure INTEGER NOT NULL DEFAULT 0 CHECK (physical_erasure = 0)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_cspe_org_slug
+                ON custom_skill_purge_events(org_slug, slug);
+
             """)
+        for ddl in (
+            "ALTER TABLE custom_skills ADD COLUMN purged_at TEXT",
+            "ALTER TABLE custom_skills ADD COLUMN purge_id TEXT",
+        ):
+            try:
+                self._conn.execute(ddl)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
         self._migrate_session_token_usage_scope_columns()
         # Best-effort migration for DBs created before `status` existed. SQLite
         # has no IF NOT EXISTS for ADD COLUMN; swallow the duplicate-column

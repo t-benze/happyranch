@@ -13,6 +13,10 @@ export interface CustomSkill {
   retired_at: string | null;
   retired_reason?: string | null;
   validation_state: string;
+  state?: 'permanently_removed';
+  purged_at?: string | null;
+  purge_id?: string | null;
+  physical_erasure?: boolean;
   content_hash?: string;
   skill_md_cache?: string | null;
   hidden_reason?: string | null;
@@ -61,6 +65,9 @@ export const retireCustomSkill = (slug: string, skillId: string, body?: { reason
 
 export const restoreCustomSkill = (slug: string, skillId: string): Promise<CustomSkill> =>
   request(`/orgs/${slug}/custom-skills/${encodeURIComponent(skillId)}/restore`, { method: 'POST' });
+
+export const purgeCustomSkill = (slug: string, skillId: string, typedSlug: string): Promise<CustomSkill> =>
+  request(`/orgs/${slug}/custom-skills/${encodeURIComponent(skillId)}/purge`, { method: 'POST', body: { typed_slug: typedSlug } });
 
 export const getCustomSkillEligibility = (slug: string, skillId: string): Promise<{ rules: EligibilityRule[]; revision: number }> =>
   request(`/orgs/${slug}/custom-skills/${encodeURIComponent(skillId)}/eligibility`);

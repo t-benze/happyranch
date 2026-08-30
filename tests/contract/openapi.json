@@ -1262,6 +1262,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/custom-skills/{skill_id}/purge": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "skill_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/custom-skills/{skill_id}/restore": {
       "POST": {
         "params": [

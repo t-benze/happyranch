@@ -25,6 +25,7 @@ class SkillEligibilityState:
 
     retired: bool
     current_version_validation_state: str | None
+    purged: bool = False
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,8 @@ def resolve_custom_skill_eligibility(
     A matching deny wins across every scope before any matching allow is
     considered.  Rules are assumed to be the caller's current rule set.
     """
+    if skill.purged:
+        return EligibilityResult(False, "purged", None)
     if skill.retired:
         return EligibilityResult(False, "retired", None)
     if skill.current_version_validation_state != "valid":
