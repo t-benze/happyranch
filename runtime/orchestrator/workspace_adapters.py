@@ -344,12 +344,7 @@ def materialize_workspace_skills(
     except ValueError:
         return []
 
-    from runtime.skills.custom.fence import custom_skill_publication_fence
-
-    # Lock order: org publication fence, then workspace transaction, then DB.
-    # This spans resolver selection, canonical generation and both provider
-    # root link repairs, closing selection-to-publication races with purge.
-    with custom_skill_publication_fence(slug), _workspace_skills_transaction(workspace):
+    with _workspace_skills_transaction(workspace):
         # Derive ONE unified expected set per provider root, then
         # reconcile once. This prevents the system-contract withdrawal
         # bug (TASK-4001 Finding 2) where managed-only expected_specs
@@ -398,68 +393,13 @@ def materialize_workspace_skills_union(
         contexts: list of session context names to union (e.g.
             ["task", "thread", "wake", "dream", "schedule", "bootstrap"])
     """
-    from runtime.skills.custom.fence import custom_skill_publication_fence
-
-    with custom_skill_publication_fence(slug), _workspace_skills_transaction(workspace):
+    with _workspace_skills_transaction(workspace):
         return _materialize_context_union(
             workspace, settings,
             slug=slug, contexts=contexts, provider=provider,
             agent_name=agent_name, team=team,
             skills_root=skills_root, org_root=org_root, db=db,
         )
-
-
-def prepare_workspace_skills_launch(
-    workspace: Path,
-    settings: Settings,
-    *,
-    slug: str,
-    context: str,
-    provider: str,
-    agent_name: str,
-    team: str,
-    skills_root: Path,
-    org_root: Path | None = None,
-    db: "Database | None" = None,  # noqa: F821
-    task_id: str | None = None,
-    session_id: str | None = None,
-):
-    """Re-resolve and validate under a read token held through actual spawn.
-
-    The returned zero-argument close callback is exception-safe when invoked
-    in a launcher's ``finally`` block.  Acquiring the org fence before the
-    re-entrant materializer preserves fence -> workspace -> DB lock order.
-    """
-    from runtime.skills.custom.fence import acquire_custom_skill_publication_read
-
-    token = acquire_custom_skill_publication_read(slug)
-    try:
-        expected_specs = materialize_workspace_skills(
-            workspace,
-            settings,
-            slug=slug,
-            context=context,
-            provider=provider,
-            agent_name=agent_name,
-            team=team,
-            skills_root=skills_root,
-            org_root=org_root,
-            db=db,
-            task_id=task_id,
-            session_id=session_id,
-        )
-        validate_workspace_skills_integrity(
-            workspace,
-            expected_specs,
-            settings=settings,
-            db=db,
-            agent_name=agent_name,
-            task_id=task_id,
-        )
-    except BaseException:
-        token.close()
-        raise
-    return token.close
 
 
 def _preflight_system_contract_sources(
@@ -903,6 +843,22 @@ def _build_custom_skill_canonical_specs(
                     row["slug"], str(row["version_id"]), row["content_hash"],
                     source_dir, verify_source_hash=tree_hash,
                 )
+            # Selection and package construction may be expensive. Re-read the
+            # authoritative row at the publication seam so a purge committed
+            # during that window cannot publish a stale canonical spec or a
+            # new link in either provider root. Existing canonical bytes are
+            # retained by the logical-purge contract.
+            current = conn.execute(
+                "SELECT current_version_id, purged_at FROM custom_skills "
+                "WHERE id=? AND org_slug=?",
+                (row["id"], slug),
+            ).fetchone()
+            if (
+                current is None
+                or current["purged_at"] is not None
+                or current["current_version_id"] != row["version_id"]
+            ):
+                continue
             specs.append({
                 "slug": row["slug"],
                 "version": str(row["version_id"]),

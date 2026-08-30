@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-import threading
 
 import pytest
 
@@ -432,28 +431,91 @@ def test_purge_rolls_back_policy_withdrawal_and_tombstone_on_failure(
     assert len(service.current_rules(conn, skill_id)) == 1
 
 
-def test_purge_waits_for_the_org_publication_fence(client_with_runtime):
-    from runtime.skills.custom.fence import custom_skill_publication_fence
+def test_purge_during_canonical_build_is_excluded_before_both_root_publication(
+    client_with_runtime, monkeypatch, tmp_path,
+):
+    """The shipping builder rechecks authoritative state after package build.
 
-    client, _org = client_with_runtime
-    created = _create(client, slug="race-fenced")
-    client.post(f"{BASE}/{created['skill_id']}/retire", json={})
-    started = threading.Event()
-    finished = threading.Event()
+    A real purge request committed in the selection-to-publication window must
+    remove only that skill from returned specs and prevent new links in both
+    provider roots; an unrelated eligible skill continues to publish.
+    """
+    import threading
 
-    def purge_request():
-        started.set()
-        response = client.post(f"{BASE}/{created['skill_id']}/purge", json={"typed_slug": "race-fenced"})
-        assert response.status_code == 200
-        finished.set()
+    from runtime.skills.canonical_store import CanonicalSkillStore
+    from runtime.skills.symlink_materializer import SymlinkMaterializer
+    from runtime.orchestrator.workspace_adapters import _build_custom_skill_canonical_specs
 
-    with custom_skill_publication_fence("alpha"):
-        worker = threading.Thread(target=purge_request)
-        worker.start()
-        assert started.wait(1)
-        assert not finished.wait(0.05)
-    worker.join(timeout=2)
-    assert finished.is_set()
+    client, org = client_with_runtime
+    _add_agent(org)
+    racing = _create(client, slug="purged-during-build")
+    unaffected = _create(client, slug="unaffected-during-build")
+    other_org = _create(client, slug="other-org-during-build")
+    allow = [{"scope_type": "org", "scope_target": None, "effect": "allow"}]
+    for created in (racing, unaffected, other_org):
+        assert client.put(
+            f"{BASE}/{created['skill_id']}/eligibility", json=allow,
+            headers={"If-Match": str(created["version_id"])},
+        ).status_code == 200
+    conn = getattr(org.db, "_conn", org.db)
+    conn.execute(
+        "UPDATE custom_skills SET org_slug='beta' WHERE id=?",
+        (other_org["skill_id"],),
+    )
+    conn.commit()
+
+    monkeypatch.setenv("HAPPYRANCH_CANONICAL_STORE_ROOT", str(tmp_path / "canonical"))
+    store = CanonicalSkillStore()
+    original_build = store.build_from_source
+    selected = threading.Event()
+    release = threading.Event()
+
+    def paused_build(skill_id, *args, **kwargs):
+        result = original_build(skill_id, *args, **kwargs)
+        if skill_id == "purged-during-build":
+            selected.set()
+            assert release.wait(2)
+        return result
+
+    monkeypatch.setattr(store, "build_from_source", paused_build)
+    outcome = {}
+
+    def publish():
+        outcome["specs"] = _build_custom_skill_canonical_specs(
+            store=store, org_root=org.root, db=org.db, slug="alpha",
+            agent_name="dev_agent", team="engineering", task_id="TASK-RACE",
+            session_id="sess-race", session_context="task",
+        )
+
+    worker = threading.Thread(target=publish)
+    worker.start()
+    assert selected.wait(2)
+    assert client.post(f"{BASE}/{racing['skill_id']}/retire", json={}).status_code == 200
+    purged = client.post(
+        f"{BASE}/{racing['skill_id']}/purge",
+        json={"typed_slug": "purged-during-build"},
+    )
+    assert purged.status_code == 200
+    release.set()
+    worker.join(timeout=3)
+    assert not worker.is_alive()
+
+    slugs = {spec["slug"] for spec in outcome["specs"]}
+    assert "purged-during-build" not in slugs
+    assert "unaffected-during-build" in slugs
+    beta_specs = _build_custom_skill_canonical_specs(
+        store=store, org_root=org.root, db=org.db, slug="beta",
+        agent_name="dev_agent", team="engineering", task_id="TASK-BETA",
+        session_id="sess-beta", session_context="task",
+    )
+    assert {spec["slug"] for spec in beta_specs} == {"other-org-during-build"}
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    materializer = SymlinkMaterializer(store)
+    for root in (".claude/skills", ".agents/skills"):
+        materializer.repair_workspace_skills(outcome["specs"], workspace, root)
+        assert not (workspace / root / "purged-during-build").exists()
+        assert (workspace / root / "unaffected-during-build").exists()
 
 
 def test_b2_recover_deletes_only_corrupt_version_with_audit(

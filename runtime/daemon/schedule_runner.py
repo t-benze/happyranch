@@ -41,7 +41,6 @@ from runtime.orchestrator.org_config import (
 from runtime.orchestrator.workspace_adapters import (
     format_repo_refresh_note,
     materialize_workspace_skills,
-    prepare_workspace_skills_launch,
     refresh_workspace_repos,
     validate_workspace_skills_integrity,
 )
@@ -261,10 +260,11 @@ async def run_schedule(
 
     # ── Per-retry launch validator ───────────────────────────────
     def _pre_launch_validator():
-        return prepare_workspace_skills_launch(
-            workspace, settings, slug=org_state.slug, context="schedule",
-            provider=_prov, agent_name=record.agent_name, team=agent_def.team,
-            skills_root=skills_root, org_root=org_state.root, db=org_state.db,
+        validate_workspace_skills_integrity(
+            workspace, expected_specs,
+            settings=settings,
+            db=org_state.db,
+            agent_name=record.agent_name,
             task_id=schedule_id,
         )
 

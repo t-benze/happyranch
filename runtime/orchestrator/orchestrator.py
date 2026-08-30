@@ -45,7 +45,6 @@ from runtime.orchestrator.org_config import (
 from runtime.orchestrator.workspace_adapters import (
     format_repo_refresh_note,
     materialize_workspace_skills,
-    prepare_workspace_skills_launch,
     refresh_workspace_repos,
     validate_workspace_skills_integrity,
 )
@@ -829,11 +828,13 @@ class Orchestrator:
         # Wrapped so throttle retries after rate-limited responses
         # re-validate integrity before the next Popen.
         def _pre_launch_integrity_validator() -> None:
-            return prepare_workspace_skills_launch(
-                workspace, self._settings, slug=self._slug, context="task",
-                provider=provider, agent_name=agent_name, team=team,
-                skills_root=skills_root, org_root=org_root, db=self.db,
-                task_id=task_id, session_id=session_id,
+            validate_workspace_skills_integrity(
+                workspace,
+                expected_specs,
+                settings=self._settings,
+                db=self.db,
+                agent_name=agent_name,
+                task_id=task_id,
             )
 
         # The orchestrator relies on the start-task skill to bridge prompt →

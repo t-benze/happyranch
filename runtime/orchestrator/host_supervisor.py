@@ -1440,42 +1440,7 @@ class HostSessionSupervisor:
         launch_body: Callable[[RunningHandle], LaunchResult],
         grace_seconds: float,
         attempt: int,
-        pre_launch_validator: Callable[[], object] | None = None,
-    ) -> SessionOutcome:
-        if ctx.terminal_reason() is not None:
-            return self._outcome(request, ctx, attempt)
-        release = None
-        if pre_launch_validator is not None:
-            try:
-                release = pre_launch_validator()
-            except Exception as exc:
-                ctx.freeze_terminal(TerminalReason.FAILURE)
-                ctx.set_error(f"pre-launch validation failed: {exc}")
-                return self._outcome(request, ctx, attempt)
-        try:
-            return self._execute_attempt_validated(
-                request,
-                ctx=ctx,
-                launch_spec=launch_spec,
-                launch_body=launch_body,
-                grace_seconds=grace_seconds,
-                attempt=attempt,
-                release_publication_fence=release,
-            )
-        finally:
-            if callable(release):
-                release()
-
-    def _execute_attempt_validated(
-        self,
-        request: AdmissionRequest,
-        *,
-        ctx: _AttemptContext,
-        launch_spec: LaunchSpec,
-        launch_body: Callable[[RunningHandle], LaunchResult],
-        grace_seconds: float,
-        attempt: int,
-        release_publication_fence: object = None,
+        pre_launch_validator: Callable[[], None] | None = None,
     ) -> SessionOutcome:
         """Run one granted attempt to a terminal outcome under its ownership
         record.
@@ -1493,6 +1458,18 @@ class HostSessionSupervisor:
         # froze on the ownership record: refuse before any handle exists.
         if ctx.terminal_reason() is not None:
             return self._outcome(request, ctx, attempt)
+        # ── pre-launch integrity validation (per attempt, incl. 429 retries) ──
+        # Runs BEFORE ``backend.prepare``/launch so a failing check never
+        # creates a containment handle (fail-closed; the supervisor re-runs it
+        # on every retry, mirroring the executors' pre-Popen validator
+        # contract). An exception freezes FAILURE with the actionable error.
+        if pre_launch_validator is not None:
+            try:
+                pre_launch_validator()
+            except Exception as exc:
+                ctx.freeze_terminal(TerminalReason.FAILURE)
+                ctx.set_error(f"pre-launch validation failed: {exc}")
+                return self._outcome(request, ctx, attempt)
         # ── prepare (never before admission) ──
         try:
             pending = self._backend.prepare(request, self._policy)
@@ -1525,9 +1502,6 @@ class HostSessionSupervisor:
             ctx.set_error(str(exc))
             # Partial containment must still be torn down/verified.
             return self._outcome(request, ctx, attempt)
-        finally:
-            if callable(release_publication_fence):
-                release_publication_fence()
         ctx.bind_running(running, grace_seconds)
         # ── bind-time observation ──
         # A terminal winner that froze between the launch commitment and the

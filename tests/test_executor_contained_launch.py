@@ -19,7 +19,6 @@ These are pure/unit tests (real short-lived subprocesses, no daemon).
 from __future__ import annotations
 
 import subprocess
-import threading
 import time
 
 import pytest
@@ -34,10 +33,6 @@ from runtime.orchestrator.executors import (
 )
 from runtime.orchestrator.throttle import ProviderThrottle, get_throttle, set_throttle
 from runtime.platform.session_backend import RunningHandle
-from runtime.skills.custom.fence import (
-    acquire_custom_skill_publication_read,
-    custom_skill_publication_fence,
-)
 
 _SID = "sess-contained-1"
 
@@ -150,76 +145,6 @@ def test_run_command_uncontained_honors_throttle_backoff_override():
     assert result.success is True
     _, _, _, kwargs = recording.calls[0]
     assert kwargs.get("backoff_seconds") == ()
-
-
-def test_run_command_releases_fence_when_platform_detection_raises(tmp_path, monkeypatch):
-    from runtime.orchestrator import executors as exec_mod
-
-    closes = []
-    monkeypatch.setattr(
-        exec_mod, "detect_platform_isolation",
-        lambda: (_ for _ in ()).throw(RuntimeError("detection failed")),
-    )
-    with pytest.raises(RuntimeError, match="detection failed"):
-        _run_command(
-            ["ignored"], tmp_path, _SID, 10,
-            pre_launch_validator=lambda: lambda: closes.append("closed"),
-        )
-    assert closes == ["closed"]
-
-
-def test_run_command_holds_fence_through_actual_launch_seam(tmp_path, monkeypatch):
-    from runtime.orchestrator import executors as exec_mod
-
-    purge_entered = threading.Event()
-    purge_committed = threading.Event()
-
-    def purge():
-        purge_entered.set()
-        with custom_skill_publication_fence("test", write=True):
-            purge_committed.set()
-
-    class Isolation:
-        def launch_executor(self, cmd, **kwargs):
-            thread = threading.Thread(target=purge)
-            thread.start()
-            assert purge_entered.wait(1)
-            assert not purge_committed.wait(0.05)
-            self.thread = thread
-            return subprocess.Popen(cmd, **kwargs)
-
-    isolation = Isolation()
-    monkeypatch.setattr(exec_mod, "detect_platform_isolation", lambda: isolation)
-    result = _run_command(
-        ["sh", "-c", "echo ok"], tmp_path, _SID, 10,
-        org_slug="test",
-        pre_launch_validator=lambda: acquire_custom_skill_publication_read("test").close,
-    )
-    assert result.success is True
-    assert purge_committed.wait(1)
-    isolation.thread.join(timeout=1)
-
-
-def test_post_commit_policy_denial_prevents_generic_launch(tmp_path, monkeypatch):
-    from runtime.orchestrator import executors as exec_mod
-
-    launched = []
-    monkeypatch.setattr(
-        exec_mod, "detect_platform_isolation",
-        lambda: launched.append(True),
-    )
-    with custom_skill_publication_fence("test", write=True):
-        pass
-
-    def denied():
-        raise RuntimeError("current policy denies purged skill")
-
-    with pytest.raises(RuntimeError, match="current policy denies"):
-        _run_command(
-            ["ignored"], tmp_path, _SID, 10,
-            pre_launch_validator=denied,
-        )
-    assert launched == []
 
 
 def test_run_command_contained_passthrough_handle_fails_closed():
@@ -364,108 +289,6 @@ def test_custom_adapter_contained_uses_backend_process(tmp_path):
     assert result.session_id == "sess-adapter-1"
     assert on_started_calls == []
     running.process.wait()
-
-
-def test_custom_adapter_contained_does_not_take_second_fence_owner(tmp_path):
-    adapter = _make_adapter_executor(tmp_path)
-    running = _adapter_running_handle(adapter._adapter_executable)
-    calls = []
-    result = adapter.run(
-        workspace=tmp_path, prompt="do it", session_id="sess-adapter-1",
-        timeout_seconds=10, running=running,
-        pre_launch_validator=lambda: calls.append("unexpected"),
-    )
-    assert result.success is True
-    assert calls == []
-    running.process.wait()
-
-
-def test_custom_adapter_uncontained_holds_fence_through_real_popen(
-    tmp_path, monkeypatch,
-):
-    from runtime.orchestrator import executors as exec_mod
-
-    adapter = _make_adapter_executor(tmp_path)
-    real_popen = subprocess.Popen
-    purge_entered = threading.Event()
-    purge_committed = threading.Event()
-
-    def purge():
-        purge_entered.set()
-        with custom_skill_publication_fence("test", write=True):
-            purge_committed.set()
-
-    def validator():
-        return acquire_custom_skill_publication_read("test").close
-
-    def observing_popen(*args, **kwargs):
-        thread = threading.Thread(target=purge)
-        thread.start()
-        assert purge_entered.wait(1)
-        assert not purge_committed.wait(0.05)
-        proc = real_popen(*args, **kwargs)
-        observing_popen.thread = thread
-        return proc
-
-    monkeypatch.setattr(exec_mod.subprocess, "Popen", observing_popen)
-    result = adapter.run(
-        workspace=tmp_path, prompt="do it", session_id="sess-adapter-1",
-        timeout_seconds=10, pre_launch_validator=validator, org_slug="test",
-    )
-    assert result.success is True
-    assert purge_committed.wait(1)
-    observing_popen.thread.join(timeout=1)
-
-
-def test_custom_adapter_releases_fence_on_readiness_and_popen_failures(
-    tmp_path, monkeypatch,
-):
-    from runtime.orchestrator import executors as exec_mod
-
-    adapter = _make_adapter_executor(tmp_path)
-    closes = []
-
-    def validator():
-        return lambda: closes.append("closed")
-
-    monkeypatch.setattr(adapter, "verify_launch_ready", lambda: "not ready")
-    result = adapter.run(tmp_path, "p", pre_launch_validator=validator)
-    assert result.success is False
-    assert closes == ["closed"]
-
-    monkeypatch.setattr(adapter, "verify_launch_ready", lambda: None)
-    monkeypatch.setattr(
-        exec_mod.subprocess, "Popen",
-        lambda *a, **k: (_ for _ in ()).throw(OSError("spawn failed")),
-    )
-    result = adapter.run(tmp_path, "p", pre_launch_validator=validator)
-    assert result.success is False
-    assert closes == ["closed", "closed"]
-
-
-def test_custom_adapter_uncontained_retry_has_one_owner_per_attempt(
-    tmp_path,
-):
-    adapter = _make_adapter_executor(tmp_path)
-    closes = []
-
-    class TwiceThrottle(_RecordingThrottle):
-        def run(self, provider, launch, on_event=None, **kwargs):
-            first = launch()
-            assert first.success is True
-            return launch()
-
-    old = get_throttle()
-    set_throttle(TwiceThrottle())
-    try:
-        result = adapter.run(
-            tmp_path, "p", session_id="sess-adapter-1",
-            pre_launch_validator=lambda: lambda: closes.append("closed"),
-        )
-    finally:
-        set_throttle(old)
-    assert result.success is True
-    assert closes == ["closed", "closed"]
 
 
 def test_custom_adapter_contained_verifies_launch_ready(tmp_path):
