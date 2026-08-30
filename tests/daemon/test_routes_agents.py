@@ -792,6 +792,7 @@ def _seed_active_agent(
     role: str = "worker",
     executor: str = "claude",
     system_prompt: str = "prompt\n",
+    model: str | None = None,
 ) -> None:
     """Write an active agent file for testing update/terminate endpoints."""
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
@@ -800,7 +801,7 @@ def _seed_active_agent(
         name=name, team=team, role=role, executor=executor,
         allow_rules=(), repos={}, enrolled_by="engineering_head",
         enrolled_at_task=_EH_TASK, enrolled_at=datetime.now(timezone.utc),
-        system_prompt=system_prompt,
+        system_prompt=system_prompt, model=model,
     )
     paths = _paths(org_state)
     paths.agents_dir.mkdir(parents=True, exist_ok=True)
@@ -2249,15 +2250,14 @@ def test_init_no_drift_event_when_aligned(
 
 
 # ---------------------------------------------------------------------------
-# THR-067: per-agent model selection — set-executor preserves model
+# Executor/model coupling: changed executor clears, unchanged preserves
 # ---------------------------------------------------------------------------
 
 
-def test_set_executor_preserves_model_on_both_surfaces(
+def test_set_executor_change_clears_model(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """After set-model, switching executor must preserve the model on the
-    org .md frontmatter.  THR-095: agent.yaml is no longer synced."""
+    """Switching executor clears the old executor-specific model override."""
     from runtime.orchestrator import prompt_loader
 
     _seed_active_agent(org_state, "dev_agent", executor="claude")
@@ -2285,14 +2285,34 @@ def test_set_executor_preserves_model_on_both_surfaces(
         )
     assert r.status_code == 200, r.text
 
-    # Verify model preserved on .md frontmatter
+    # The old executor-specific model is absent from authoritative frontmatter.
     reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert reloaded is not None
-    assert reloaded.model == "claude-sonnet-4-20250514"
+    assert reloaded.model is None
 
     # THR-095: agent.yaml is NOT touched by set-executor.
-    # model may still be there from the old set-model call, but set-executor
-    # no longer syncs agent.yaml at all.
+    # set-executor does not sync legacy agent.yaml.
+
+
+def test_set_executor_unchanged_preserves_model(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """An idempotent executor request preserves the configured model."""
+    from runtime.orchestrator import prompt_loader
+
+    _seed_active_agent(
+        org_state, "dev_agent", executor="claude", model="claude-model",
+    )
+
+    r = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "claude"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert reloaded is not None
+    assert reloaded.model == "claude-model"
 
 
 # ---------------------------------------------------------------------------
@@ -2370,11 +2390,10 @@ def test_manage_agent_update_clear_model_explicit_null(
     # THR-095: agent.yaml is NOT synced
 
 
-def test_manage_agent_update_omit_model_preserves(
+def test_manage_agent_update_changed_executor_omit_model_clears(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """Update without model field preserves existing model on .md frontmatter.
-    THR-095: agent.yaml is no longer synced."""
+    """A changed executor with no new model clears the old override."""
     from runtime.orchestrator import prompt_loader
 
     _activate_eh_session(org_state)
@@ -2406,12 +2425,65 @@ def test_manage_agent_update_omit_model_preserves(
         )
     assert r.status_code == 200, r.text
 
-    # .md frontmatter preserves model
+    # The omitted value belonged to the old executor and is cleared.
     reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert reloaded is not None
-    assert reloaded.model == "claude-sonnet-4-20250514"
+    assert reloaded.model is None
 
     # THR-095: agent.yaml is NOT synced by manage-agent update
+
+
+def test_manage_agent_update_unchanged_executor_omit_model_preserves(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """An explicitly unchanged executor preserves an omitted model."""
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(
+        org_state, "dev_agent", executor="claude", model="claude-model",
+    )
+    r = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "update", "name": "dev_agent",
+            "task_id": _EH_TASK, "session_id": _EH_SESSION,
+            "executor": "claude",
+        },
+        headers=auth_headers,
+    )
+    assert r.status_code == 200, r.text
+    reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert reloaded is not None
+    assert reloaded.model == "claude-model"
+
+
+def test_manage_agent_update_changed_executor_explicit_model_sets_new_choice(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """A coupled update preserves an explicitly supplied new-executor model."""
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(
+        org_state, "dev_agent", executor="claude", model="old-claude-model",
+    )
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        MockCB.return_value.ensure_workspace_ready.return_value = None
+        r = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={
+                "action": "update", "name": "dev_agent",
+                "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                "executor": "codex", "model": "new-codex-model",
+            },
+            headers=auth_headers,
+        )
+    assert r.status_code == 200, r.text
+    reloaded = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert reloaded is not None
+    assert reloaded.executor == "codex"
+    assert reloaded.model == "new-codex-model"
 
 
 def test_manage_agent_enroll_with_model_persists(
@@ -2559,7 +2631,9 @@ def test_set_executor_materialization_failure_fail_closed(
     - No bootstrap file from the new executor written (ensure_workspace_ready
       is never called because union failed)
     - No audit row produced (no audit_log entry for this switch)"""
-    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    _seed_active_agent(
+        org_state, "dev_agent", executor="claude", model="claude-model",
+    )
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
     (workspace / "agent.yaml").write_text("repos: {}\nexecutor: claude\n")
@@ -4334,7 +4408,9 @@ def test_manage_agent_update_switch_reset_failure_rolls_back_switch(
     from runtime.orchestrator import prompt_loader
 
     _activate_eh_session(org_state)
-    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    _seed_active_agent(
+        org_state, "dev_agent", executor="claude", model="claude-model",
+    )
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
 
@@ -4371,6 +4447,7 @@ def test_manage_agent_update_switch_reset_failure_rolls_back_switch(
     updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert updated is not None
     assert updated.executor == "claude"
+    assert updated.model == "claude-model"
     # Compensation re-reconciled the workspace back to the prior executor.
     calls = mock_ctx.ensure_workspace_ready.call_args_list
     assert len(calls) == 2

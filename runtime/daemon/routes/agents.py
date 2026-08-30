@@ -716,8 +716,15 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         # model: use Pydantic field-set detection to distinguish omitted
         # (preserve existing) vs explicit null (clear).
         model_is_set = "model" in body.model_fields_set
+        executor_changed = (
+            body.executor is not None and body.executor != existing.executor
+        )
         if model_is_set:
             resolved_model = body.model if body.model else None
+        elif executor_changed:
+            # A model override is executor-specific. Never carry an omitted
+            # value from the old executor into a newly selected executor.
+            resolved_model = None
         else:
             resolved_model = existing.model
         updated = AgentDef(
@@ -773,7 +780,7 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         # transaction: if either fails, the whole switch is rolled back
         # (prior frontmatter restored + workspace re-reconciled) so no new
         # executor is ever installed over stale provider sessions.
-        if body.executor is not None and body.executor != existing.executor:
+        if executor_changed:
             try:
                 org.db.reset_thread_sessions_for_agent(
                     body.name,
@@ -1715,7 +1722,10 @@ async def set_agent_executor(
         enrolled_at=existing.enrolled_at,
         system_prompt=existing.system_prompt,
         description=existing.description,
-        model=existing.model,
+        # Model overrides are executor-specific. A real executor change
+        # returns the new executor to its CLI default; an idempotent request
+        # preserves the existing override.
+        model=None if body.executor != existing.executor else existing.model,
     )
     from runtime.orchestrator.agent_def import render_agent_text
     active_path = paths.agents_dir / f"{agent_name}.md"
