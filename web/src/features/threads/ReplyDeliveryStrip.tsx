@@ -6,13 +6,16 @@ import { formatElapsed } from '@/lib/elapsed';
  *
  * Renders the STORE-PROJECTED pair state from the wire ``reply_delivery``
  * list — never inferred from per-message invocation rows, never fabricating
- * per-covered-message state. Three honest states:
+ * per-covered-message state. Four honest states:
  *
  *  - ``queued``         — one unstarted coalesced wake; NOT an active
  *                         subprocess (static dot, muted text).
  *  - ``running``        — one claimed in-flight reply with an immutable
  *                         inclusive range; ``started_at`` is the only
  *                         subprocess evidence.
+ *  - ``held``           — healthy neutral waiting under an authoritative
+ *                         open exchange + matching held participant row;
+ *                         never rendered as typing or a fault.
  *  - ``retry_required`` — unacknowledged range with no active wake; a
  *                         diagnostic (last terminal reason where the store
  *                         recorded one), never rendered as typing.
@@ -31,6 +34,7 @@ export function ReplyDeliveryStrip({
   const now = nowMs ?? Date.now();
   const running = entries.filter((entry) => entry.state === 'running');
   const queued = entries.filter((entry) => entry.state === 'queued');
+  const held = entries.filter((entry) => entry.state === 'held');
   const diagnostics = entries.filter((entry) => entry.state === 'retry_required');
   return (
     <div className="space-y-2">
@@ -46,12 +50,6 @@ export function ReplyDeliveryStrip({
         </ul>
       )}
 
-      {diagnostics.length > 0 && (
-        <ul aria-label="Reply delivery diagnostics" className="space-y-1.5">
-          {diagnostics.map((entry) => <DeliveryRow key={entry.agent_name} entry={entry} nowMs={now} />)}
-        </ul>
-      )}
-
       {queued.length > 0 && (
         <details
           aria-label={`${queued.length} queued ${queued.length === 1 ? 'delivery' : 'deliveries'}`}
@@ -64,6 +62,18 @@ export function ReplyDeliveryStrip({
             {queued.map((entry) => <DeliveryRow key={entry.agent_name} entry={entry} nowMs={now} />)}
           </ul>
         </details>
+      )}
+
+      {held.length > 0 && (
+        <ul aria-label="Held reply deliveries" className="space-y-1.5">
+          {held.map((entry) => <DeliveryRow key={entry.agent_name} entry={entry} nowMs={now} />)}
+        </ul>
+      )}
+
+      {diagnostics.length > 0 && (
+        <ul aria-label="Reply delivery diagnostics" className="space-y-1.5">
+          {diagnostics.map((entry) => <DeliveryRow key={entry.agent_name} entry={entry} nowMs={now} />)}
+        </ul>
       )}
     </div>
   );
@@ -101,6 +111,8 @@ export function replyDeliveryCaption(
       const elapsed = formatElapsed(e.started_at, nowMs ?? Date.now());
       return elapsed ? `replying ${elapsed} · ${range}` : `replying · ${range}`;
     }
+    case 'held':
+      return `waiting for current exchange · ${range}`;
     case 'retry_required': {
       const reason = e.last_terminal_reason
         ? ` · last: ${e.last_terminal_reason}`
@@ -116,6 +128,8 @@ function dotClass(state: ReplyDeliveryEntry['state']): string {
       return 'bg-border-default';
     case 'running':
       return 'bg-info';
+    case 'held':
+      return 'bg-feedback-success';
     case 'retry_required':
       return 'bg-attention';
   }
@@ -127,6 +141,8 @@ function stateClass(state: ReplyDeliveryEntry['state']): string {
       return 'text-text-muted';
     case 'running':
       return 'text-info';
+    case 'held':
+      return 'text-text-secondary';
     case 'retry_required':
       return 'text-attention-text';
   }

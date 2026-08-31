@@ -1491,7 +1491,7 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
   function mountThreadWithReplyDelivery(
     replyDelivery: Array<{
       agent_name: string;
-      state: 'queued' | 'running' | 'retry_required';
+      state: 'queued' | 'running' | 'held' | 'retry_required';
       from_seq: number;
       through_seq: number;
       coalesced_message_count: number;
@@ -1677,6 +1677,26 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
     // retry_required never renders as typing / a subprocess.
     expect(screen.queryByLabelText('support_lead is replying')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('support_lead is queued')).not.toBeInTheDocument();
+  });
+
+  test('THR-181 247-249 held is visible in the rail but never becomes a typing bubble', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    mountThreadWithReplyDelivery([
+      {
+        agent_name: 'consultant_head', state: 'held', from_seq: 247,
+        through_seq: 249, coalesced_message_count: 3,
+        last_terminal_reason: null,
+      },
+      {
+        agent_name: 'engineering_manager', state: 'retry_required', from_seq: 247,
+        through_seq: 249, coalesced_message_count: 3,
+        last_terminal_reason: 'timeout',
+      },
+    ]);
+    expect(await screen.findByText('waiting for current exchange · messages 247–249')).toBeInTheDocument();
+    expect(screen.getByText('retry required · messages 247–249 · last: timeout')).toBeInTheDocument();
+    expect(screen.queryByLabelText('consultant_head is replying')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('consultant_head is queued')).not.toBeInTheDocument();
   });
 
   test('EXACT regression: system seq 39 + founder msg seq 40 + running REPLY range 39-40 renders exactly ONE replying row', async () => {

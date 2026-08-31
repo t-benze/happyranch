@@ -38,7 +38,7 @@
 > terminal per-message history. Queued tail bubbles show a coalesced count +
 > inclusive range with static styling (never an active-subprocess claim), running pairs show
 > the claimed immutable range with `started_at` as the only subprocess
-> evidence, and `retry_required` pairs stay off the tail (they are a rail
+> evidence; healthy-neutral `held` and diagnostic `retry_required` pairs stay off the tail (they are rail
 > diagnostic). The SSE invalidation contract below still keeps the pair
 > projection fresh: seq-bearing lifecycle events invalidate both
 > `thread-messages` and the `thread` detail query (Slice C added the latter

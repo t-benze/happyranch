@@ -235,8 +235,12 @@ no-ops) and idempotent recovery can never fabricate events; pure slot-clears
 record only the existing ``last_terminal_reason`` diagnostic. Payloads carry
 agent, inclusive range, 8-char token prefix and outcome/reason/follow-on
 result — never full single-use tokens. The web UI projects the same
-``reply_delivery`` pair state honestly (queued/coalesced count, running with
-immutable range, retry_required diagnostic) without fabricating subprocesses.
+``reply_delivery`` pair state honestly (running, queued/coalesced count,
+healthy-neutral held waiting proved by both an OPEN exchange and matching HELD
+participant deferral, or retry_required diagnostic) without fabricating
+subprocesses. Precedence is running > queued > held > retry_required > settled
+omission. Terminal reasons are historical metadata, shown only for a genuine
+current retry and never used to classify or fault-style held waiting.
 Per-message ``responder_status`` entries additionally carry the authoritative
 invocation ``purpose`` (``reply`` | ``task_followup``; BOOTSTRAP stays
 excluded) so the web classifies/dedups in-flight responders by purpose —

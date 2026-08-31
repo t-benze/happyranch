@@ -298,3 +298,15 @@ def test_schedule_edit_contract_documents_recurring_selector_clears() -> None:
     assert "ordinal" in description
     assert "null" in description
     assert "after merge" in description
+
+
+def test_thread_reply_delivery_operations_document_four_state_precedence() -> None:
+    app = create_app(DaemonState.idle(Settings()))
+    paths = app.openapi()["paths"]
+    for suffix in ("", "/messages"):
+        operation = paths[
+            f"/api/v1/orgs/{{slug}}/threads/{{thread_id}}{suffix}"
+        ]["get"]
+        description = operation["description"]
+        assert "running > queued > held > retry_required > settled" in description
+        assert "held" in description.lower()

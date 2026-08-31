@@ -1247,6 +1247,12 @@ async def get_thread_endpoint(
     thread_id: str,
     org: OrgDep,
 ) -> dict:
+    """Return thread detail including authoritative ``reply_delivery``.
+
+    Pair precedence is running > queued > held > retry_required > settled
+    omission. Held requires an OPEN exchange plus matching HELD participant
+    deferral; it is neutral waiting, never subprocess or fault evidence.
+    """
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})
@@ -1280,6 +1286,12 @@ async def list_thread_messages_endpoint(
     since_seq: int = 0,
     limit: int = 200,
 ) -> dict:
+    """Page messages with the same authoritative ``reply_delivery`` contract.
+
+    Pair precedence is running > queued > held > retry_required > settled
+    omission. Terminal reason is historical metadata exposed only for a
+    genuine current retry, never classification proof for held.
+    """
     t = org.db.get_thread(thread_id)
     if t is None:
         raise HTTPException(status_code=404, detail={"code": "not_found"})

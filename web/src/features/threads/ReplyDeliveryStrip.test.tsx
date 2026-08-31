@@ -84,6 +84,27 @@ describe('ReplyDeliveryStrip (GH-688 Phase 1 Slice C)', () => {
     expect(screen.queryByText(/replying/)).not.toBeInTheDocument();
   });
 
+  it('held renders as healthy neutral waiting without stale fault or subprocess copy', () => {
+    render(
+      <ReplyDeliveryStrip
+        entries={[entry({
+          agent_name: 'consultant_head',
+          state: 'held',
+          from_seq: 247,
+          through_seq: 249,
+          coalesced_message_count: 3,
+          last_terminal_reason: 'stale timeout must not render',
+        })]}
+        nowMs={nowMs}
+      />,
+    );
+    const heldList = screen.getByRole('list', { name: 'Held reply deliveries' });
+    expect(heldList).toBeInTheDocument();
+    expect(heldList.querySelector('li > span[aria-hidden="true"]')).toHaveClass('bg-feedback-success');
+    expect(screen.getByText('waiting for current exchange · messages 247–249')).toBeInTheDocument();
+    expect(screen.queryByText(/timeout|retry|required|replying/i)).not.toBeInTheDocument();
+  });
+
   it('renders multiple pairs without key collisions', () => {
     render(
       <ReplyDeliveryStrip
@@ -98,6 +119,22 @@ describe('ReplyDeliveryStrip (GH-688 Phase 1 Slice C)', () => {
     fireEvent.click(screen.getByText('1 queued delivery'));
     expect(screen.getByText('alice')).toBeInTheDocument();
     expect(screen.getByText('bob')).toBeInTheDocument();
+  });
+
+  it('renders the authoritative precedence running, queued, held, retry', () => {
+    const { container } = render(
+      <ReplyDeliveryStrip entries={[
+        entry({ agent_name: 'retry', state: 'retry_required' }),
+        entry({ agent_name: 'held', state: 'held' }),
+        entry({ agent_name: 'queued', state: 'queued' }),
+        entry({ agent_name: 'running', state: 'running', started_at: '2026-05-13T17:45:00Z' }),
+      ]} nowMs={nowMs} />,
+    );
+    fireEvent.click(screen.getByText('1 queued delivery'));
+    const text = container.textContent ?? '';
+    expect(text.indexOf('running')).toBeLessThan(text.indexOf('queued'));
+    expect(text.indexOf('queued')).toBeLessThan(text.indexOf('held'));
+    expect(text.indexOf('held')).toBeLessThan(text.indexOf('retry'));
   });
 
   it('prioritizes concurrent running deliveries and keeps full identities distinguishable', () => {

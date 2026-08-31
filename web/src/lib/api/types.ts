@@ -270,6 +270,7 @@ export interface ThreadDetailResponse extends ThreadRecord {
 export type ReplyDeliveryState =
   | 'queued'
   | 'running'
+  | 'held'
   | 'retry_required';
 
 /** Pair-level reply-delivery projection (GH-688 Phase 1).
@@ -278,7 +279,9 @@ export type ReplyDeliveryState =
  *  durable ``thread_reply_delivery_state`` table — never fabricated from
  *  per-message invocation rows. ``state`` is truthful about the live
  *  obligation: queued = one unstarted coalesced wake (NO subprocess), running
- *  = one claimed in-flight reply (started_at set), retry_required = an
+ *  = one claimed in-flight reply (started_at set), held = an obligation
+ *  intentionally deferred by an open exchange plus matching held row,
+ *  retry_required = an
  *  unacknowledged range with no active wake (diagnostic; the next
  *  conversational arrival mints the single covering retry).
  *  ``coalesced_message_count`` is the number of transcript rows the wake's

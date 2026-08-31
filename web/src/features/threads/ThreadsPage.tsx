@@ -1205,7 +1205,7 @@ function DetailColumn({
 
           {/* Reply delivery — STORE-PROJECTED pair state (GH-688 Phase 1
               Slice C). Renders only while any pair has a live obligation
-              (queued/running/retry_required); a fully-settled thread omits
+              (running/queued/held/retry_required); a fully-settled thread omits
               the section entirely — no fabricated in-flight rows. The
               transcript tail mirrors this same list, and the per-message
               responder strips keep terminal history. */}
