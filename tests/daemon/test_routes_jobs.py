@@ -753,6 +753,82 @@ def test_submit_defaults_to_review_required_false_persistent_false(
             if d["status"] in ("completed", "failed"):
                 break
             time.sleep(0.1)
+        terminal = next(
+            entry for entry in org.db.get_audit_logs(task_id)
+            if entry["action"] == "job_run_completed"
+        )
+        assert terminal["agent"] == "engineering_head"
+
+
+@pytest.mark.parametrize("script", ["exit 7", "echo ok"])
+def test_auto_run_terminal_audit_uses_submitting_agent(
+    tmp_home, daemon_state, script,
+):
+    """Natural zero and nonzero exits retain the auto-run trigger actor."""
+    import time
+    from fastapi.testclient import TestClient
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
+
+    org = daemon_state.orgs["alpha"]
+    ws = org.root / "workspaces" / "engineering_head"
+    ws.mkdir(parents=True, exist_ok=True)
+    with TestClient(create_app(daemon_state)) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        task_id, sid = _make_active_session(org)
+        response = client.post(
+            "/api/v1/orgs/alpha/jobs/submit",
+            json={"task_id": task_id, "session_id": sid, "title": "actor",
+                  "rationale": "n/a", "script": script, "interpreter": "bash"},
+        )
+        assert response.status_code == 201, response.text
+        job_id = response.json()["id"]
+        for _ in range(50):
+            job = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}").json()
+            if job["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.1)
+        terminal = next(
+            entry for entry in org.db.get_audit_logs(task_id)
+            if entry["action"] == "job_run_completed"
+        )
+    assert terminal["agent"] == "engineering_head"
+
+
+def test_auto_run_spawn_failure_audit_uses_submitting_agent(
+    tmp_home, daemon_state, monkeypatch,
+):
+    """Pre-spawn failures retain the actor captured at run initiation."""
+    import time
+    from fastapi.testclient import TestClient
+    from runtime.daemon.app import create_app
+    from runtime.daemon import paths as paths_mod
+
+    async def _fail_spawn(**_kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr("runtime.daemon.routes.jobs._spawn_job", _fail_spawn)
+    org = daemon_state.orgs["alpha"]
+    ws = org.root / "workspaces" / "engineering_head"
+    ws.mkdir(parents=True, exist_ok=True)
+    with TestClient(create_app(daemon_state)) as client:
+        client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
+        task_id, sid = _make_active_session(org)
+        response = client.post(
+            "/api/v1/orgs/alpha/jobs/submit",
+            json={"task_id": task_id, "session_id": sid, "title": "actor",
+                  "rationale": "n/a", "script": "echo ok", "interpreter": "bash"},
+        )
+        job_id = response.json()["id"]
+        for _ in range(50):
+            if org.db.get_job(job_id).status.value == "failed":
+                break
+            time.sleep(0.1)
+        terminal = next(
+            entry for entry in org.db.get_audit_logs(task_id)
+            if entry["action"] == "job_run_failed"
+        )
+    assert terminal["agent"] == "engineering_head"
 
 
 def test_submit_with_review_required_true_requires_rationale(client_with_runtime):
@@ -1025,8 +1101,14 @@ def test_stop_unknown_job(client_with_runtime):
     assert r.status_code == 404
 
 
-def test_stop_kills_running_job(tmp_home, daemon_state):
-    """SIGTERM a running job; the row transitions to failed with reason=founder_stop."""
+@pytest.mark.parametrize(
+    ("review_required", "terminal_actor"),
+    [(True, "founder"), (False, "engineering_head")],
+)
+def test_stop_kills_running_job(
+    tmp_home, daemon_state, review_required, terminal_actor,
+):
+    """The stop actor and original run-trigger actor remain distinct."""
     from fastapi.testclient import TestClient
     from runtime.daemon.app import create_app
     from runtime.daemon import paths as paths_mod
@@ -1044,10 +1126,11 @@ def test_stop_kills_running_job(tmp_home, daemon_state):
             json={"task_id": task_id, "session_id": sid,
                   "title": "long-runner", "rationale": "y",
                   "script": "sleep 30", "interpreter": "bash",
-                  "review_required": True},
+                  "review_required": review_required},
         )
         job_id = r.json()["id"]
-        client.post(f"/api/v1/orgs/alpha/jobs/{job_id}/run", json={})
+        if review_required:
+            client.post(f"/api/v1/orgs/alpha/jobs/{job_id}/run", json={})
         # Wait until it's actually running.
         for _ in range(50):
             d = client.get(f"/api/v1/orgs/alpha/jobs/{job_id}").json()
@@ -1066,8 +1149,13 @@ def test_stop_kills_running_job(tmp_home, daemon_state):
             if d["status"] != "running":
                 break
             time.sleep(0.1)
+        entries = org.db.get_audit_logs(task_id)
     assert d["status"] == "failed", d
     assert d["reason"] == "founder_stop"
+    stopped = next(e for e in entries if e["action"] == "job_stopped")
+    terminal = next(e for e in entries if e["action"] == "job_run_failed")
+    assert stopped["agent"] == "founder"
+    assert terminal["agent"] == terminal_actor
 
 
 # --- Task 15: POST /{id}/wait ---

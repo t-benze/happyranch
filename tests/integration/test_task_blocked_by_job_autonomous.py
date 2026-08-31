@@ -217,6 +217,12 @@ def test_blocks_on_job_then_auto_resumes(
     assert "job_run_completed" in actions, (
         f"missing job_run_completed in audit; actions={actions}"
     )
+    submitted_entry = next(e for e in entries if e["action"] == "job_submitted")
+    auto_started_entry = next(e for e in entries if e["action"] == "job_auto_started")
+    terminal_entry = next(e for e in entries if e["action"] == "job_run_completed")
+    assert submitted_entry["agent"] == "dev_agent"
+    assert auto_started_entry["agent"] == "dev_agent"
+    assert terminal_entry["agent"] == "dev_agent"
 
     # 6d. Task was auto-resumed by the system (proves the CAS flip fired and
     #     BLOCKED-JOBS-RESULTS header was injected before stage 2).
@@ -225,7 +231,6 @@ def test_blocks_on_job_then_auto_resumes(
     )
 
     # 6e. The resume audit row should reference the same job that was submitted.
-    submitted_entry = next(e for e in entries if e["action"] == "job_submitted")
     payload_raw = submitted_entry.get("payload") or {}
     if isinstance(payload_raw, str):
         payload_raw = json.loads(payload_raw)
