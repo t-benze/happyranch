@@ -245,6 +245,88 @@ def test_daemon_capacity_post_replace_failure_requires_reload_before_retry(
     assert retry.json()["detail"]["latest"]["revision"] == latest["revision"]
 
 
+@pytest.mark.parametrize("fault", ["read", "parse"])
+def test_daemon_capacity_final_snapshot_failure_requires_reload_before_retry(
+    tmp_home, app, org_state, auth_headers, monkeypatch, fault,
+) -> None:
+    client = TestClient(app)
+    config_path = tmp_home / "config.yaml"
+    config_path.write_text("other: retained\nqueue_workers: 4\nhost_global_session_cap: 11\n")
+    current = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    published = False
+    real_replace = __import__("os").replace
+
+    def tracked_replace(source, target):
+        nonlocal published
+        real_replace(source, target)
+        published = True
+
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.replace", tracked_replace)
+    if fault == "read":
+        from pathlib import Path
+        real_read = Path.read_bytes
+        reads_after_publish = 0
+
+        def fail_final_read(self):
+            nonlocal reads_after_publish
+            if published and self == config_path:
+                reads_after_publish += 1
+                if reads_after_publish == 2:
+                    raise OSError("final snapshot read fault")
+            return real_read(self)
+
+        monkeypatch.setattr(Path, "read_bytes", fail_final_read)
+    else:
+        real_load = yaml.safe_load
+        parses_after_publish = 0
+
+        def fail_final_parse(value):
+            nonlocal parses_after_publish
+            if published:
+                parses_after_publish += 1
+                if parses_after_publish == 2:
+                    raise yaml.YAMLError("final snapshot parse fault")
+            return real_load(value)
+
+        monkeypatch.setattr(yaml, "safe_load", fail_final_parse)
+
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 6, "host_global_session_cap": 13,
+              "rationale": "final snapshot fault", "confirm_environment_shadow": False},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "config_publication_uncertain",
+        "message": "capacity configuration was published, but durability or verification did not complete; reload and inspect the authoritative configuration before retrying",
+    }
+    assert yaml.safe_load(config_path.read_text()) == {
+        "other": "retained", "queue_workers": 6, "host_global_session_cap": 13,
+    }
+    rows = org_state.db.get_audit_logs("config:daemon_capacity")
+    assert len(rows) == 1
+    assert rows[0]["action"] == "daemon_capacity_config_write_authorized"
+    assert rows[0]["payload"]["outcome"] == "validated_write_authorized"
+    assert not list(tmp_home.glob(".*.tmp"))
+    assert not list(tmp_home.glob("*.bak"))
+    latest = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    assert latest["persisted_yaml"] == {"queue_workers": 6, "host_global_session_cap": 13}
+    retry = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 7, "host_global_session_cap": 14,
+              "rationale": "blind retry", "confirm_environment_shadow": False},
+    )
+    assert retry.status_code == 409
+    assert retry.json()["detail"]["latest"]["revision"] == latest["revision"]
+    assert len(org_state.db.get_audit_logs("config:daemon_capacity")) == 1
+
+
 def test_settings_unknown_slug_returns_404(tmp_home, app, auth_headers) -> None:
     client = TestClient(app)
     r = client.get("/api/v1/orgs/nope/settings", headers=auth_headers)

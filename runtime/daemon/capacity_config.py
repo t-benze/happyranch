@@ -191,6 +191,15 @@ def save(
             ) from exc
         except Exception as exc:
             raise CapacityConfigError("config_write_failed", "capacity configuration replacement failed") from exc
-        result = snapshot(path, running, capability_reason=capability_reason)
+        try:
+            result = snapshot(path, running, capability_reason=capability_reason)
+        except Exception as exc:
+            # The replace and immediate verification succeeded, but the
+            # mutation transaction does not end until its response snapshot
+            # is constructed. Any failure here still requires reconciliation.
+            raise CapacityConfigError(
+                "config_publication_uncertain",
+                "capacity configuration was published, but durability or verification did not complete; reload and inspect the authoritative configuration before retrying",
+            ) from exc
         result["message"] = "Saved for next daemon restart; no running capacity was changed."
         return result
