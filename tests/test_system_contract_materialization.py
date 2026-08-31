@@ -1670,3 +1670,33 @@ class TestUnknownContextNoOp:
                     )
                     skill_md = link_dir / "SKILL.md"
                     assert skill_md.read_text() == f"# {expected}\ncontent for {expected}\n"
+
+
+def test_persistent_verification_contract_ships_in_all_session_contexts(
+    tmp_path, monkeypatch,
+):
+    """Every shipping context receives the real durable verification rule."""
+    import runtime.orchestrator.workspace_adapters as wa
+    from runtime.config import Settings
+    from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
+
+    project_root = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr(wa, "_SKILLS_SRC", project_root / "protocol" / "skills")
+    settings = Settings(project_root=tmp_path)
+
+    for context in ("task", "thread", "wake", "dream", "schedule", "bootstrap"):
+        workspace = tmp_path / f"workspace-{context}"
+        workspace.mkdir()
+        specs = materialize_workspace_skills(
+            workspace, settings, slug="test", context=context,
+            provider="codex", agent_name="dev_agent", team="engineering",
+            skills_root=tmp_path / "managed-skills",
+        )
+
+        assert "jobs" in {spec["slug"] for spec in specs}
+        shipped = (workspace / ".agents" / "skills" / "jobs" / "SKILL.md").read_text()
+        assert "scripts/local_ci.sh all" in shipped
+        assert '"review_required": false' in shipped
+        assert '"persistent": true' in shipped
+        assert "waiting_on_job_ids" in shipped
+        assert "short/focused" in shipped.lower()

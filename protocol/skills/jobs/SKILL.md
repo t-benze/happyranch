@@ -17,6 +17,28 @@ Three signals you should reach for jobs instead of running the command inline:
 
 Do NOT use jobs for one-shot, fast, in-sandbox commands. Run those inline — `bash` is still the right tool. Jobs add audit overhead and only pay off for the three signals above.
 
+### Mandatory durable verification boundary
+
+Any verification command expected to exceed one minute or the remaining safe
+interactive-session window MUST run as a durable job with exactly
+`"review_required": false` and `"persistent": true`. This includes:
+
+- `scripts/local_ci.sh all`;
+- canonical/full test suites (including equivalent full Python, web, or
+  integration verification); and
+- `git push` when its hooks invoke any such verification.
+
+After submission, report `status="blocked"` with the job id in
+`waiting_on_job_ids`; do not poll or continue publication in the same session.
+On the resumed task, inspect the terminal receipt with `happyranch jobs show`
+and `happyranch jobs output`, verify the exact command, effective runtime
+path/version, and exit code 0, then continue. A submission id or a terminal
+status without that receipt is not passing evidence.
+
+Short/focused tests that are expected to finish inside one minute remain
+appropriate to run directly in-session. If duration is uncertain, use the
+durable job boundary.
+
 ## The form
 
 You fill in a JSON payload with these fields:

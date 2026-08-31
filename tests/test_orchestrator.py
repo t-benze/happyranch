@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from runtime.daemon.agent_config import set_executor, write_default_agent_config
 from runtime.infrastructure.database import Database
 from runtime.models import (
+    TaskRecord,
     TaskStatus,
 )
 from runtime.orchestrator.executors import ExecutorResult
@@ -649,6 +651,52 @@ def test_run_agent_materializes_todos_skill_on_task_path(
         f"workspace skills dir contents: "
         f"{list((ws / '.agents' / 'skills').rglob('*')) if (ws / '.agents' / 'skills').is_dir() else 'missing'}"
     )
+
+
+@pytest.mark.parametrize("revisit_of", [None, "TASK-PREVIOUS"])
+def test_run_agent_materializes_persistent_verification_contract_for_descendants(
+    orchestrator, test_runtime, test_settings, monkeypatch, revisit_of,
+):
+    """Descendant and revisit brief reconstruction still launch as TASK context."""
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "protocol" / "skills" / "jobs" / "SKILL.md"
+    ).read_text()
+    (test_settings.get_protocol_dir() / "skills" / "jobs" / "SKILL.md").write_text(source)
+
+    orchestrator._db.insert_task(TaskRecord(
+        id="TASK-PARENT", brief="parent", team="engineering",
+        status=TaskStatus.IN_PROGRESS,
+    ))
+    if revisit_of:
+        orchestrator._db.insert_task(TaskRecord(
+            id=revisit_of, brief="failed predecessor", team="engineering",
+            parent_task_id="TASK-PARENT", status=TaskStatus.FAILED,
+        ))
+    child_id = "TASK-REVISIT" if revisit_of else "TASK-DESCENDANT"
+    orchestrator._db.insert_task(TaskRecord(
+        id=child_id, brief="reconstructed child brief", team="engineering",
+        assigned_agent="dev_agent", parent_task_id="TASK-PARENT",
+        revisit_of_task_id=revisit_of,
+    ))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-contract")
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="sess-contract",
+    )
+
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        result, _ = orchestrator._run_agent(child_id, "dev_agent", "")
+
+    assert result.success is True
+    shipped = (
+        test_runtime.workspaces_dir / "dev_agent" / ".agents" / "skills"
+        / "jobs" / "SKILL.md"
+    ).read_text()
+    assert "scripts/local_ci.sh all" in shipped
+    assert '"persistent": true' in shipped
+    assert "waiting_on_job_ids" in shipped
 
 
 def test_task_history_written_per_agent_only(orchestrator, test_runtime):
