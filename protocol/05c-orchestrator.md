@@ -1220,12 +1220,21 @@ operator to managed-temp receipts but never grants cleanup authority.
    ``measurement unavailable`` advisory status and can never block daemon
    operation or task/session spawning.
 2. **Decides** on the weekly occurrence (Sunday 03:30 in the org's effective
-   timezone; TASK-5552 §6). At most one trigger per weekly window per agent
-   (a missed window is never replayed), one run at a time (a later
+   timezone; TASK-5552 §6). The live scheduler evaluates an occurrence once
+   when its scan cursor crosses that boundary, so polling phase and bounded
+   processing drift cannot skip it. On startup it evaluates only the current
+   weekly window once; there is no earlier historical backfill across daemon
+   lifetimes. It preserves one run at a time (a later
    occurrence fires only after the preceding cleanup task of that agent is
    terminal — TASK-5552 §3), a seven-day per-agent cooldown, and the
    founder threshold: trigger only when the agent's workspace totals
-   >= 1 GiB.
+   >= 1 GiB. Below-threshold state is audited once at that meaningful
+   weekly/cooldown boundary, not once per minute for the rest of the week;
+   measurement-unavailable and other exceptional/fail-closed trigger skips
+   remain explicitly audited when the boundary is attempted. A decision-level
+   task-history lookup failure before trigger entry creates no cleanup task and
+   emits exactly one ``workspace_cleanup_skipped(history_indeterminate)`` row
+   for the crossed boundary; adjacent non-boundary scans remain silent.
 3. **Triggers** an ordinary root task ASSIGNED TO THE OWNING AGENT
    (``insert_task`` + ``enqueue_task`` — the same pattern the Schedule spawn
    callback uses, minus the Schedule) with a **daemon-composed brief** that

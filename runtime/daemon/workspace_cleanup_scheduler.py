@@ -51,8 +51,10 @@ enqueued, and a later retry succeeds exactly once (TASK-6046 finding 1).
 Contract-relevant bounds (all documented in protocol/05b + 05c):
 
 - Cadence: weekly, Sunday 03:30 in the org's effective timezone (TASK-5552
-  §6). At most one trigger per weekly window per agent; a missed window is
-  never replayed (no backfill), matching the recurring Schedule contract.
+  §6). A live scheduler evaluates the occurrence once when its scan cursor
+  crosses that boundary, so polling phase and bounded processing drift cannot
+  skip it. Startup evaluates only the current weekly window; there is no
+  earlier historical backfill across daemon lifetimes.
 - Trigger: the weekly occurrence is due AND this window is unserviced for the
   agent AND no prior cleanup task of that agent is non-terminal (TASK-5552 §3
   "one run at a time") AND the agent's last cleanup task is older than the
@@ -822,6 +824,7 @@ def decide_cleanup_trigger(
     db: "Database",
     agent: str,
     now_utc: datetime | None = None,
+    previous_scan_utc: datetime | None = None,
     tz: tzinfo | None = None,
 ) -> CleanupTriggerDecision:
     """Pure per-agent trigger decision: weekly occurrence due + window
@@ -835,8 +838,11 @@ def decide_cleanup_trigger(
         now_utc = datetime.now(timezone.utc)
     effective_tz = tz or timezone.utc
     now_local = now_utc.astimezone(effective_tz)
+    if previous_scan_utc is None:
+        previous_scan_utc = now_utc - timedelta(seconds=_LOOP_INTERVAL_SECONDS)
+    previous_scan_local = previous_scan_utc.astimezone(effective_tz)
     occurrence = _previous_occurrence(now_local)
-    if now_local < occurrence:
+    if not (previous_scan_local < occurrence <= now_local):
         return CleanupTriggerDecision(False, "not_due")
 
     history = _cleanup_task_history(db, agent)
@@ -1373,7 +1379,12 @@ async def trigger_cleanup(
 
 # ── per-org tick + async loop ─────────────────────────────────────────────
 
-async def _tick_org(org: "OrgState", state: "DaemonState", now_utc: datetime) -> None:
+async def _tick_org(
+    org: "OrgState",
+    state: "DaemonState",
+    now_utc: datetime,
+    previous_scan_utc: datetime | None = None,
+) -> None:
     """One org's per-agent decision+trigger pass. Never raises (loop-level
     isolation).
 
@@ -1408,13 +1419,27 @@ async def _tick_org(org: "OrgState", state: "DaemonState", now_utc: datetime) ->
                 # dirs like ``_terminated`` and unregistered workspaces).
                 continue
             decision = decide_cleanup_trigger(
-                db=org.db, agent=agent, now_utc=now_utc, tz=tz,
+                db=org.db,
+                agent=agent,
+                now_utc=now_utc,
+                previous_scan_utc=previous_scan_utc,
+                tz=tz,
             )
             if not decision.should_trigger:
+                if decision.reason == "history_indeterminate":
+                    org.db.insert_audit_log(
+                        task_id="workspace-cleanup:skipped",
+                        agent=agent,
+                        action="workspace_cleanup_skipped",
+                        payload={
+                            "reason": "history_indeterminate",
+                            "agent": agent,
+                        },
+                    )
                 # Skip reasons are derivable from the tasks table; only the
-                # trigger itself (and the fail-closed skips inside
-                # trigger_cleanup) carry audit rows, so the weekly loop never
-                # spams the ledger.
+                # boundary-level history failure above and the trigger itself
+                # (including fail-closed skips inside trigger_cleanup) carry
+                # audit rows, so the weekly loop never spams the ledger.
                 continue
             await trigger_cleanup(
                 org,
@@ -1445,6 +1470,11 @@ async def workspace_cleanup_scheduler_loop(
     cancelled in its finally block.
     """
     boot_time = time.monotonic()
+    # Give the first live scan exactly one current-window catch-up opportunity.
+    # Each org derives its own effective-timezone occurrence from ``now``, so
+    # a seven-day cursor reaches that one occurrence without replaying older
+    # daemon-lifetime history.
+    previous_scan_utc = datetime.now(timezone.utc) - timedelta(days=7)
     while True:
         t0 = time.monotonic()
         now_utc = datetime.now(timezone.utc)
@@ -1452,12 +1482,16 @@ async def workspace_cleanup_scheduler_loop(
         if uptime >= warm_up_seconds:
             for org in list(state.orgs.values()):
                 try:
-                    await _tick_org(org, state, now_utc)
+                    await _tick_org(
+                        org, state, now_utc,
+                        previous_scan_utc=previous_scan_utc,
+                    )
                 except Exception:
                     logger.exception(
                         "workspace cleanup scheduling skipped for org %s",
                         org.slug,
                     )
+            previous_scan_utc = now_utc
         duration = time.monotonic() - t0
         state.metrics_registry.record_loop_tick(
             "workspace_cleanup_scheduler", interval_seconds, duration,
