@@ -614,6 +614,42 @@ def test_note_wording_unavailable():
     assert "ADVISORY ONLY" in note
 
 
+def test_inode_observation_is_fail_open_and_actionable(monkeypatch):
+    class Stat:
+        f_files = 100
+        f_favail = 5
+
+    snap = wcs.WorkspaceContextSnapshot()
+    monkeypatch.setattr(wcs.os, "statvfs", lambda _path: Stat())
+    wcs._observe_inodes(snap)
+    assert (snap.inode_used, snap.inode_free, snap.inode_total) == (95, 5, 100)
+    assert snap.inode_percent == 95.0
+    assert snap.inode_threshold_state == "alert"
+    note = wcs.format_workspace_context_note(snap)
+    assert "temporary-file producers and filesystem usage" in note
+    assert "advisory and not cleanup authority" in note
+
+    monkeypatch.setattr(wcs.os, "statvfs", lambda _path: (_ for _ in ()).throw(OSError("down")))
+    failed = wcs.WorkspaceContextSnapshot()
+    wcs._observe_inodes(failed)
+    assert failed.available is True
+    assert failed.inode_available is False
+    assert "down" in wcs.format_workspace_context_note(failed)
+
+
+def test_scheduler_has_no_temporary_filesystem_mutation_surface():
+    source = inspect.getsource(wcs)
+    for forbidden in (
+        "runtime.daemon.managed_temp",
+        "os.rename(",
+        "os.replace(",
+        "os.unlink(",
+        "shutil.rmtree(",
+        ".unlink(",
+    ):
+        assert forbidden not in source
+
+
 # ── (e) measurement: per-agent aggregates, symlink safety, fail-open ──────
 
 def test_measure_aggregates_sizes_deps_and_worktree_status(tmp_path, monkeypatch):

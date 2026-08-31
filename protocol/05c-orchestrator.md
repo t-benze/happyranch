@@ -1202,6 +1202,12 @@ periodic loop (``runtime/daemon/workspace_cleanup_scheduler.py`` — the sixth
 daemon-owned loop alongside dream/schedule/zombie/direct-connect, one
 registration in ``runtime/daemon/app.py``) that, per agent workspace:
 
+The advisory's fail-open `statvfs` inode fields report used/free/total/percent
+and threshold state. They are explicitly non-authoritative: they never grant
+cleanup authority or cause this loop to inspect, move, quarantine, restore,
+unlink, or recursively delete `/tmp` content. Producer redirection and
+automatic temporary-file cleanup are not implemented.
+
 1. **Measures** the OWNING AGENT's workspace with an explicit bounded,
    fail-open budget: one true wall-clock deadline shared across all
    collection — each git subprocess receives ``min(per-call cap, remaining

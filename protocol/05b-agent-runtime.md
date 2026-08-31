@@ -1456,6 +1456,13 @@ in the org ``config.yaml``, default true) disables the capability per org.
 See 05c-orchestrator §Daemon-managed workspace cleanup scheduler for the
 full contract.
 
+**Temporary-filesystem inode advisory (THR-200).** Workspace measurement adds
+fail-open `statvfs` inode used/free/total/percent/threshold fields, and full CI
+performs a matching inode preflight. Both are advisory and non-authoritative:
+they never grant cleanup authority or cause the daemon scheduler to inspect,
+move, quarantine, restore, unlink, or recursively delete `/tmp` content.
+Producer redirection and automatic temporary-file cleanup are not implemented.
+
 ### Three layers of memory
 
 **1. Institutional memory (knowledge base)**
