@@ -129,7 +129,7 @@ function dotClass(state: ReplyDeliveryEntry['state']): string {
     case 'running':
       return 'bg-info';
     case 'held':
-      return 'bg-success';
+      return 'bg-feedback-success';
     case 'retry_required':
       return 'bg-attention';
   }

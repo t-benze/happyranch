@@ -98,7 +98,9 @@ describe('ReplyDeliveryStrip (GH-688 Phase 1 Slice C)', () => {
         nowMs={nowMs}
       />,
     );
-    expect(screen.getByRole('list', { name: 'Held reply deliveries' })).toBeInTheDocument();
+    const heldList = screen.getByRole('list', { name: 'Held reply deliveries' });
+    expect(heldList).toBeInTheDocument();
+    expect(heldList.querySelector('li > span[aria-hidden="true"]')).toHaveClass('bg-feedback-success');
     expect(screen.getByText('waiting for current exchange · messages 247–249')).toBeInTheDocument();
     expect(screen.queryByText(/timeout|retry|required|replying/i)).not.toBeInTheDocument();
   });

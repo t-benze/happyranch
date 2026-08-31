@@ -54,10 +54,13 @@ const diagnosticExpression = (probe='default') => `(() => {
       if(overflow.some((v)=>['hidden','scroll','auto','clip'].includes(v)))ancestors.push({tag:parent.tagName.toLowerCase(),ariaLabel:parent.getAttribute('aria-label'),overflow,rect:rect(parent),clips:r.left<pr.left||r.right>pr.right||r.top<pr.top||r.bottom>pr.bottom});parent=parent.parentElement}
     return{index,tag:el.tagName.toLowerCase(),role:el.getAttribute('role')||(el.tagName==='SUMMARY'?'button':el.tagName.toLowerCase()),accessibleName:el.getAttribute('aria-label')||el.textContent.trim(),expanded:el.parentElement?.tagName==='DETAILS'?el.parentElement.open:el.getAttribute('aria-expanded'),focused:document.activeElement===el,rect:rect(el),viewport:{width:innerWidth,height:innerHeight},inViewport:r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight,clippingAncestors:ancestors}});
   const identities=section?[...section.querySelectorAll('li')].map((li)=>li.innerText.trim().split('\\n')):[];
+  const markerColor=(label)=>{const marker=section?.querySelector('[aria-label="'+label+'"] li > span[aria-hidden="true"]');return marker?getComputedStyle(marker).backgroundColor:null};
+  const tokenProbe=document.createElement('span');tokenProbe.style.backgroundColor='var(--color-feedback-success)';document.body.append(tokenProbe);
+  const markerColors={held:markerColor('Held reply deliveries'),retry:markerColor('Reply delivery diagnostics'),feedbackSuccess:getComputedStyle(tokenProbe).backgroundColor};tokenProbe.remove();
   const sectionRect=section?rect(section):null;const asideRect=aside?rect(aside):null;
-  return JSON.stringify({probe:'${probe}',sectionPresent:!!section,asidePresent:!!aside,asideRect,expectedRailWidth:244,railWidthPass:!asideRect||Math.abs(asideRect.width-244)<1,sectionRect,
+  return JSON.stringify({probe:'${probe}',viewport:{width:innerWidth,height:innerHeight},sectionPresent:!!section,asidePresent:!!aside,asideRect,expectedRailWidth:244,railWidthPass:!asideRect||Math.abs(asideRect.width-244)<1,sectionRect,
     sectionInViewport:!sectionRect||(sectionRect.x>=0&&sectionRect.right<=innerWidth&&sectionRect.y>=0&&sectionRect.bottom<=innerHeight),
-    sectionClipped:!!(sectionRect&&asideRect&&(sectionRect.x<asideRect.x||sectionRect.right>asideRect.right||sectionRect.y<asideRect.y||sectionRect.bottom>asideRect.bottom)),controls:controlResults,identities,bodyText:document.body.innerText});
+    sectionClipped:!!(sectionRect&&asideRect&&(sectionRect.x<asideRect.x||sectionRect.right>asideRect.right||sectionRect.y<asideRect.y||sectionRect.bottom>asideRect.bottom)),controls:controlResults,identities,markerColors,bodyText:document.body.innerText});
 })()`;
 function assertState(result,testCase){if((testCase.expectAside??true)!==result.asidePresent)throw new Error(`${testCase.name}: production aside presence ${result.asidePresent}`);
   if(result.asidePresent&&!result.railWidthPass)throw new Error(`${testCase.name}: rail ${result.asideRect.width}px, expected 244px`);
@@ -65,7 +68,8 @@ function assertState(result,testCase){if((testCase.expectAside??true)!==result.a
   if(testCase.expectText&&!result.bodyText.includes(testCase.expectText))throw new Error(`${testCase.name}: missing ${testCase.expectText}`);
   if(result.sectionPresent&&(!result.sectionInViewport||result.sectionClipped))throw new Error(`${testCase.name}: section clipped/outside viewport`);
   for(const control of result.controls)if(!control.accessibleName||!control.inViewport||control.clippingAncestors.some((a)=>a.clips))throw new Error(`${testCase.name}: control failed ${JSON.stringify(control)}`);
-  for(const expected of testCase.identities??[])if(!result.identities.some((parts)=>parts.join(' ').includes(expected)))throw new Error(`${testCase.name}: missing ${expected}`);}
+  for(const expected of testCase.identities??[])if(!result.identities.some((parts)=>parts.join(' ').includes(expected)))throw new Error(`${testCase.name}: missing ${expected}`);
+  if(testCase.assertMarkerColors){const transparent=new Set([null,'transparent','rgba(0, 0, 0, 0)']);if(transparent.has(result.markerColors.held)||transparent.has(result.markerColors.retry))throw new Error(`${testCase.name}: transparent marker ${JSON.stringify(result.markerColors)}`);if(result.markerColors.held!==result.markerColors.feedbackSuccess)throw new Error(`${testCase.name}: held marker does not resolve to feedback success ${JSON.stringify(result.markerColors)}`);if(result.markerColors.held===result.markerColors.retry)throw new Error(`${testCase.name}: held marker is not distinct from amber retry ${JSON.stringify(result.markerColors)}`);}}
 
 const activeElementExpression = `(() => { const el=document.activeElement; const details=el?.closest?.('details');
   return JSON.stringify({tag:el?.tagName?.toLowerCase()??null,role:el?.getAttribute?.('role')||(el?.tagName==='SUMMARY'?'button':null),
@@ -94,7 +98,7 @@ const cases=[
   {name:'loading-production',viewport:[1440,720],detail:'loading',expectAside:false,expectSection:false,expectText:'Loading messages…'},
   {name:'empty-production',viewport:[1440,720],expectSection:false,expectText:'Reply delivery production seam'},
   {name:'error-production',viewport:[1440,720],detail:'error',expectAside:false,expectSection:false,expectText:'Failed to load thread.',errorControl:true},
-  {name:'populated-production-closed',viewport:[1440,720],replyDelivery:populated,expectSection:true,identities:['consultant_head waiting for current exchange','messages 247–249','support_lead retry required','messages 5–7']},
+  {name:'populated-production-closed',viewport:[1440,720],replyDelivery:populated,expectSection:true,assertMarkerColors:true,identities:['consultant_head waiting for current exchange','messages 247–249','support_lead retry required','messages 5–7']},
   {name:'multi-agent-narrow-closed',viewport:[1048,720],replyDelivery:concurrent,expectSection:true,identities:['frontend_engineer_primary replying','frontend_engineer_secondary replying','messages 8–10']},
   {name:'multi-agent-wide-open',viewport:[1910,720],replyDelivery:concurrent,open:true,expectSection:true,identities:['frontend_engineer_primary replying','frontend_engineer_secondary replying','messages 8–10','qa_engineer 3 messages coalesced','support_engineer 1 message coalesced']},
 ];
