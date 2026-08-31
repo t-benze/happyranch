@@ -61,10 +61,13 @@ Invariants (THR-181 / KB escalation-bounded-self-resume-ruling):
   untrusted reason truthfulness is NEVER safety proof on its own — the
   lifecycle envelope remains an identity, replay, and audit fence. Continued
   turns use the manager agent's ordinary configured executor permissions.
+* Thread id/origin remain structured lineage provenance and are neither an
+  initial eligibility fence nor a final continuation-CAS rejection. They do
+  not relax the same-root or no-revisit/no-successor rules.
 * The final continuation CAS atomically re-validates the COMPLETE current
   fence set at consumption time (candidate/policy/input identity, manager
   ownership and session, exact team, root status, cancellation, block/
-  active-work, revisit/thread/successor lineage, budgets, zombie/partial-
+  active-work, revisit/successor lineage, budgets, zombie/partial-
   work, adverse child verdicts) inside the same transaction as the
   continuation + audit rows.
 * Candidate identity is derived from the IMMUTABLE task-result/session
@@ -1335,9 +1338,6 @@ def _eligible_fences(
     )
     fences["successor_lineage"] = AuthorityFenceResult(
         passed=not _is_successor_root(orch._db, current.id)
-    )
-    fences["thread_origin"] = AuthorityFenceResult(
-        passed=current.dispatched_from_thread_id in (None, "")
     )
     fences["active_work"] = AuthorityFenceResult(
         passed=current.active_chain is None

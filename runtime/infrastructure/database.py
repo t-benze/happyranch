@@ -10372,13 +10372,16 @@ class Database:
         live state — every category the hook used before/during evaluation
         (candidate/policy/input identity, manager ownership and session,
         exact team, root status, cancellation, block/active-work, revisit/
-        thread/successor lineage, orchestration and revise budgets, zombie/
+        successor lineage, orchestration and revise budgets, zombie/
         partial-work evidence, adverse child verdicts). Any drift that landed
         while the evaluator ran — cancellation, session/manager/team change,
-        block, active work, a successor/revisit/thread signal, an exhausted
+        block, active work, a successor/revisit signal, an exhausted
         budget, partial-work evidence, an adverse child verdict, or a
         candidate/policy/input mismatch — rolls the whole transaction back
         and returns False (no continuation).
+
+        The dispatched thread id/origin remains provenance and is not a
+        rollback fence.
 
         Only when every recheck passes are BOTH the
         ``authority_continued_same_root`` and ``authority_hook`` audit rows
@@ -10465,7 +10468,6 @@ class Database:
                 and t["active_fanout"] is None
                 and t["blocked_on_job_ids"] is None
                 and t["revisit_of_task_id"] is None
-                and (t["dispatched_from_thread_id"] in (None, ""))
                 and budget_ok
                 and t["zombie_flagged_at"] is None
             ):

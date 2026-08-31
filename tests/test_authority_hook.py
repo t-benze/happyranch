@@ -485,12 +485,13 @@ def test_escalate_golden_byte_identical_behavior(runtime, db, monkeypatch):
 
 
 def test_escalate_thread_projection_unchanged_for_thread_origin(runtime, db, monkeypatch):
-    """A thread-originated root is ineligible for the hook (fence) and the
-    existing thread escalation projection still posts byte-identically."""
+    """A thread-originated current manager root is evaluated, and ESCALATE
+    still uses the existing thread projection path exactly once through the
+    real completion-consumer seam."""
     from runtime.models import ThreadRecord
     from runtime.infrastructure.audit_logger import AuditLogger
 
-    _seed_root(db, task_id="T-1", thread="THR-9")
+    _seed_claimed_root(db, task_id="T-1", thread="THR-9")
     db.insert_thread(ThreadRecord(id="THR-9", subject="t"))
     db.add_thread_participant("THR-9", "engineering_head", added_by="founder")
     AuditLogger(db).log_thread_dispatch(
@@ -499,21 +500,50 @@ def test_escalate_thread_projection_unchanged_for_thread_origin(runtime, db, mon
     )
     fake = StrictFakeAuthorityEvaluator()
     orch = _make_orch(runtime, db, evaluator=fake)
-    _run_escalate_step(orch, "T-1", "needs founder", monkeypatch)
+    row_id = _seed_result_row(
+        db, "T-1", "engineering_head", "sess-x", "needs founder",
+    )
+    _consume_report(orch, "T-1", "needs founder", row_id)
 
     t = db.get_task("T-1")
     assert t.status == TaskStatus.ESCALATED
-    # Hook fence: thread_origin → ineligible, no candidate.
+    # Thread origin is provenance, not an eligibility failure: the attempt
+    # has one evaluated/consumed authority candidate.
     row = _hook_outcome_rows(db, "T-1")[0]
-    assert row["payload"]["outcome"] == OUTCOME_INELIGIBLE
-    assert "thread_origin" in row["payload"]["fence_results"]
-    assert db.list_authority_candidates_for_root("T-1") == []
+    assert row["payload"]["outcome"] == OUTCOME_ESCALATED
+    candidates = db.list_authority_candidates_for_root("T-1")
+    assert len(candidates) == 1
+    assert candidates[0].lifecycle_state.value == "consumed"
+    assert candidates[0].disposition.value == "escalate"
+    assert db.get_authority_evaluation(candidates[0].id) is not None
     # The task_escalated thread system message still posted.
     msgs = db.list_thread_messages("THR-9")
     esc = [m for m in msgs if m.system_payload
            and m.system_payload.get("kind_tag") == "task_escalated"]
     assert len(esc) == 1
-    assert esc[0].system_payload["reason"] == "needs founder"
+    durable_result = db.get_latest_task_result("T-1", "engineering_head", "sess-x")
+    assert durable_result is not None
+    assert durable_result["id"] == row_id
+    escalation_rows = _escalation_rows(db, "T-1")
+    assert len(escalation_rows) == 1
+    assert esc[0].system_payload == {
+        "kind_tag": "task_escalated",
+        "task_id": "T-1",
+        "original_task_id": "T-1",
+        "root_task_id": "T-1",
+        "status": "escalated",
+        "reason": "needs founder",
+        "revisit_chain_length": 1,
+        "causal_terminal_result": {
+            "task_id": "T-1",
+            "result_id": durable_result["id"],
+            "terminal_status": durable_result["status"],
+            "verdict": durable_result["verdict"],
+            "output_summary": durable_result["output_summary"],
+            "created_at": durable_result["created_at"],
+        },
+        "causal_escalation_audit_id": escalation_rows[0]["id"],
+    }
 
 
 # ── (d) real must-escalate sentinels through the shipping hook ────────────
@@ -1472,12 +1502,6 @@ def _mutate_before_commit(db, mutate: str) -> None:
     elif mutate == "revisit":
         db.execute("UPDATE tasks SET revisit_of_task_id = ? WHERE id = ?", ("T-PREV", "T-ROOT"))
         db._conn.commit()
-    elif mutate == "thread_origin":
-        db.execute(
-            "UPDATE tasks SET dispatched_from_thread_id = ? WHERE id = ?",
-            ("THR-9", "T-ROOT"),
-        )
-        db._conn.commit()
     elif mutate == "successor":
         db.insert_task(TaskRecord(id="T-PRED", brief="p", assigned_agent="engineering_head"))
         db.execute(
@@ -1511,7 +1535,7 @@ def _mutate_before_commit(db, mutate: str) -> None:
 
 @pytest.mark.parametrize("mutate", [
     "cancel", "change_session", "change_team", "manager_change", "block_task",
-    "active_work", "revisit", "thread_origin", "successor", "budget_exhausted",
+    "active_work", "revisit", "successor", "budget_exhausted",
     "adverse_child", "zombie_flag", "candidate_mismatch",
 ])
 def test_consumption_recheck_race_fails_closed(runtime, db, monkeypatch, mutate):
@@ -1608,6 +1632,71 @@ def _consume_report(orch, task_id: str, reason: str, result_row_id: int) -> None
         decision=json.loads(_escalate_decision(reason)),
     )
     _consume_completion_report(orch, task_id, report, result_row_id=result_row_id)
+
+
+def test_thread_origin_continue_same_root_through_completion_consumer(
+    runtime, db, monkeypatch,
+):
+    """A fence-clean thread-originated canonical root can continue the SAME
+    root, preserving provenance without a false task_escalated projection."""
+    from runtime.models import ThreadRecord
+
+    _seed_claimed_root(db, thread="THR-9")
+    db.insert_thread(ThreadRecord(id="THR-9", subject="t"))
+    fake = StrictFakeAuthorityEvaluator()
+    orch = _make_orch(runtime, db, evaluator=fake)
+    row_id = _seed_result_row(
+        db, "T-ROOT", "engineering_head", "sess-x", CONTINUE_REASON,
+    )
+
+    _consume_report(orch, "T-ROOT", CONTINUE_REASON, row_id)
+
+    task = db.get_task("T-ROOT")
+    assert task.status == TaskStatus.PENDING
+    assert task.dispatched_from_thread_id == "THR-9"
+    assert orch._queue.get_nowait() == ("test", "T-ROOT")
+    candidates = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(candidates) == 1
+    assert candidates[0].disposition.value == "continue_same_root"
+    assert db.get_authority_evaluation(candidates[0].id) is not None
+    assert not [
+        message for message in db.list_thread_messages("THR-9")
+        if message.system_payload
+        and message.system_payload.get("kind_tag") == "task_escalated"
+    ]
+
+
+@pytest.mark.parametrize(
+    "negative",
+    ["active_work", "adverse_verdict", "budget_exhausted"],
+)
+def test_thread_origin_negative_controls_through_completion_consumer(
+    runtime, db, monkeypatch, negative,
+):
+    """Thread provenance does not weaken live work, protected-fact, or
+    budget fences on the real completion-consumer path."""
+    _seed_claimed_root(db, thread="THR-9")
+    if negative == "active_work":
+        db.update_task_active_chain("T-ROOT", "chain-live")
+    elif negative == "adverse_verdict":
+        _seed_child_verdict(db, "T-ROOT", "T-KID", "REQUEST_CHANGES")
+    else:
+        db.update_task("T-ROOT", orchestration_step_count=10_000)
+    fake = StrictFakeAuthorityEvaluator()
+    orch = _make_orch(runtime, db, evaluator=fake)
+    row_id = _seed_result_row(
+        db, "T-ROOT", "engineering_head", "sess-x", CONTINUE_REASON,
+    )
+
+    _consume_report(orch, "T-ROOT", CONTINUE_REASON, row_id)
+
+    assert db.get_task("T-ROOT").status != TaskStatus.PENDING
+    assert _escalation_rows(db, "T-ROOT")
+    outcomes = _hook_outcome_rows(db, "T-ROOT")
+    assert len(outcomes) == 1
+    assert outcomes[0]["payload"]["outcome"] in {
+        OUTCOME_INELIGIBLE, OUTCOME_ESCALATED,
+    }
 
 
 def test_replayed_consume_completion_report_exactly_once(runtime, db, monkeypatch):
