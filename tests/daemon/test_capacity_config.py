@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 import pytest
 import yaml
@@ -103,6 +104,90 @@ def test_replace_fault_after_durable_audit_leaves_original_authoritative(monkeyp
     assert raised.value.code == "config_write_failed"
     assert path.read_bytes() == original
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["directory_open", "directory_fsync", "directory_close", "read_back", "yaml_parse", "revision", "values"],
+)
+def test_post_replace_fault_reports_publication_uncertain_and_forces_reconciliation(
+    monkeypatch, tmp_path, fault,
+):
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    path.write_text("other: retained\nqueue_workers: 4\nhost_global_session_cap: 11\n")
+    running = Settings(queue_workers=4, host_global_session_cap=11)
+    before = snapshot(path, running, capability_reason="healthy")
+    events = []
+    published = False
+    real_replace = __import__("os").replace
+
+    def tracked_replace(source, target):
+        nonlocal published
+        real_replace(source, target)
+        published = True
+
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.replace", tracked_replace)
+    if fault == "directory_open":
+        real_open = __import__("os").open
+        monkeypatch.setattr("runtime.daemon.capacity_config.os.open", lambda *a, **k: (_ for _ in ()).throw(OSError("open fault")) if published else real_open(*a, **k))
+    elif fault == "directory_fsync":
+        real_fsync = __import__("os").fsync
+        monkeypatch.setattr("runtime.daemon.capacity_config.os.fsync", lambda fd: (_ for _ in ()).throw(OSError("fsync fault")) if published else real_fsync(fd))
+    elif fault == "directory_close":
+        monkeypatch.setattr("runtime.daemon.capacity_config.os.close", lambda _fd: (_ for _ in ()).throw(OSError("close fault")))
+    elif fault == "read_back":
+        real_read = Path.read_bytes
+        failed = False
+        def fail_one_read(self):
+            nonlocal failed
+            if published and self == path and not failed:
+                failed = True
+                raise OSError("read fault")
+            return real_read(self)
+        monkeypatch.setattr(Path, "read_bytes", fail_one_read)
+    elif fault == "yaml_parse":
+        real_load = yaml.safe_load
+        failed = False
+        def fail_one_parse(value):
+            nonlocal failed
+            if published and not failed:
+                failed = True
+                raise yaml.YAMLError("parse fault")
+            return real_load(value)
+        monkeypatch.setattr(yaml, "safe_load", fail_one_parse)
+    elif fault == "revision":
+        monkeypatch.setattr("runtime.daemon.capacity_config._verify_published_revision", lambda *_: (_ for _ in ()).throw(OSError("revision fault")))
+    else:
+        monkeypatch.setattr("runtime.daemon.capacity_config._verify_published_values", lambda *_: (_ for _ in ()).throw(OSError("value fault")))
+
+    with pytest.raises(CapacityConfigError) as raised:
+        save(path, running, expected_revision=before["revision"], queue_workers=6,
+             host_global_session_cap=13, rationale="fault", confirm_environment_shadow=False,
+             audit=events.append, capability_reason="healthy")
+
+    assert raised.value.code == "config_publication_uncertain"
+    assert "reload" in str(raised.value).lower()
+    assert yaml.safe_load(path.read_bytes()) == {
+        "other": "retained", "queue_workers": 6, "host_global_session_cap": 13,
+    }
+    assert events == [{
+        "prior": {"queue_workers": 4, "host_global_session_cap": 11},
+        "new": {"queue_workers": 6, "host_global_session_cap": 13},
+        "revision_before": before["revision"],
+        "revision_after": snapshot(path, running, capability_reason="healthy")["revision"],
+        "rationale": "fault", "outcome": "validated_write_authorized",
+        "provenance": "server-observed config.yaml and startup snapshot",
+        "environment_shadowed": [],
+    }]
+    assert not list(tmp_path.glob(".*.tmp"))
+    latest = snapshot(path, running, capability_reason="healthy")
+    assert latest["persisted_yaml"] == {"queue_workers": 6, "host_global_session_cap": 13}
+    with pytest.raises(CapacityConfigError) as stale:
+        save(path, running, expected_revision=before["revision"], queue_workers=7,
+             host_global_session_cap=14, rationale="blind retry", confirm_environment_shadow=False,
+             audit=events.append, capability_reason="healthy")
+    assert stale.value.code == "stale_revision"
 
 
 def test_stale_and_environment_shadow_reject_without_mutation(monkeypatch, tmp_path):

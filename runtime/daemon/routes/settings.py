@@ -116,7 +116,9 @@ def put_daemon_capacity(
             capability_reason=_capacity_reason(request),
         )
     except CapacityConfigError as exc:
-        status_code = 409 if exc.code == "stale_revision" else 500 if "failed" in exc.code else 422
+        status_code = 409 if exc.code == "stale_revision" else 503 if exc.code in {
+            "audit_failed", "config_write_failed", "config_publication_uncertain",
+        } else 500 if "failed" in exc.code else 422
         detail = {"code": exc.code, "message": str(exc)}
         if status_code == 409:
             detail["latest"] = get_daemon_capacity(slug, org, request)

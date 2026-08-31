@@ -26,6 +26,10 @@ class CapacityConfigError(RuntimeError):
         self.code = code
 
 
+class _PublicationUncertain(RuntimeError):
+    """The authoritative replace happened, but durability/verification failed."""
+
+
 def _revision(raw: bytes | None) -> str:
     marker = b"missing\0" if raw is None else b"present\0" + raw
     return "sha256:" + hashlib.sha256(marker).hexdigest()
@@ -86,7 +90,17 @@ def snapshot(path: Path, running: Settings, *, capability_reason: str) -> dict[s
     }
 
 
-def _atomic_write(path: Path, raw: bytes) -> None:
+def _verify_published_revision(actual: bytes, expected: bytes) -> None:
+    if _revision(actual) != _revision(expected):
+        raise OSError("published config revision mismatch")
+
+
+def _verify_published_values(mapping: Any, expected: dict[str, int]) -> None:
+    if not isinstance(mapping, dict) or any(mapping.get(key) != value for key, value in expected.items()):
+        raise OSError("published capacity values mismatch")
+
+
+def _atomic_write(path: Path, raw: bytes, *, expected: dict[str, int]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
@@ -95,13 +109,21 @@ def _atomic_write(path: Path, raw: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_name, path)
-        dir_fd = os.open(path.parent, os.O_RDONLY)
         try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-        if path.read_bytes() != raw:
-            raise OSError("config read-back mismatch")
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+            published_raw = path.read_bytes()
+            published_mapping = yaml.safe_load(published_raw)
+            _verify_published_revision(published_raw, raw)
+            _verify_published_values(published_mapping, expected)
+        except Exception as exc:
+            # os.replace already published authoritative bytes. Do not perform
+            # a second, unaudited replacement as compensation: crash timing
+            # could make that rollback less truthful than the first write.
+            raise _PublicationUncertain from exc
     finally:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
@@ -154,7 +176,19 @@ def save(
         except Exception as exc:
             raise CapacityConfigError("audit_failed", "audit persistence failed; capacity configuration was not changed")
         try:
-            _atomic_write(path, new_raw)
+            _atomic_write(
+                path,
+                new_raw,
+                expected={
+                    "queue_workers": queue_workers,
+                    "host_global_session_cap": host_global_session_cap,
+                },
+            )
+        except _PublicationUncertain as exc:
+            raise CapacityConfigError(
+                "config_publication_uncertain",
+                "capacity configuration was published, but durability or verification did not complete; reload and inspect the authoritative configuration before retrying",
+            ) from exc
         except Exception as exc:
             raise CapacityConfigError("config_write_failed", "capacity configuration replacement failed") from exc
         result = snapshot(path, running, capability_reason=capability_reason)

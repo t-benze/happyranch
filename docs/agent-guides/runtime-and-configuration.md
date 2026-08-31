@@ -26,6 +26,11 @@ audit scope. The durable row truthfully records a validated write authorization
 it does not claim completed application.
 Audit failure therefore leaves the original YAML untouched, and replace
 failure cannot produce an unaudited authoritative file.
+Once atomic replace succeeds, any directory-durability or read-back validation
+failure returns the distinct `config_publication_uncertain` outcome: the new
+bytes may already be authoritative, so operators must reload and inspect them
+before retrying. The writer never performs a second unaudited replacement as
+compensation.
 The shared daemon bearer is required; it proves possession only and cannot be
 attributed to a verified person. Save is next-restart-only and cannot resize
 the startup worker or HostSessionSupervisor snapshots.

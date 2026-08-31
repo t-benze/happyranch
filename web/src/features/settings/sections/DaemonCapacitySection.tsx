@@ -10,6 +10,7 @@ function safeSaveError(error: unknown): string {
   if (error.status === 422) return 'The server rejected these values. Review both positive integers and the rationale.';
   if (error.code === 'audit_failed') return 'Audit storage is unavailable, so the configuration was not changed.';
   if (error.code === 'config_write_failed') return 'Configuration storage failed safely. The previous authoritative file remains in use.';
+  if (error.code === 'config_publication_uncertain') return 'The new configuration was published, but durability or verification did not complete. Your draft is preserved. Reload and inspect the authoritative values before retrying.';
   return 'Save failed safely. The draft is unchanged; no live capacity was changed.';
 }
 

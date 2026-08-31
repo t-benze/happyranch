@@ -107,6 +107,7 @@ describe('DaemonCapacitySection readiness matrix', () => {
     [new ApiError(401, null, {}), /valid daemon bearer/i],
     [new ApiError(503, 'audit_failed', {}), /Audit storage is unavailable/i],
     [new ApiError(503, 'config_write_failed', {}), /previous authoritative file/i],
+    [new ApiError(503, 'config_publication_uncertain', {}), /reload and inspect.*before retrying/i],
   ])('maps safe typed save failure without leaking detail', async (error, message) => {
     mutateAsync.mockRejectedValue(error);
     render(<DaemonCapacitySection />);

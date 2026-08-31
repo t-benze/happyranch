@@ -13,6 +13,7 @@ Key invariants:
 from __future__ import annotations
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 
@@ -189,6 +190,59 @@ def test_daemon_capacity_success_audits_honest_pre_replace_authorization(
     assert row["payload"]["prior"] == {"queue_workers": None, "host_global_session_cap": None}
     assert row["payload"]["new"] == {"queue_workers": 6, "host_global_session_cap": 13}
     assert "token" not in str(row["payload"]).lower()
+
+
+def test_daemon_capacity_post_replace_failure_requires_reload_before_retry(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    client = TestClient(app)
+    current = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    published = False
+    real_replace = __import__("os").replace
+    real_open = __import__("os").open
+
+    def tracked_replace(source, target):
+        nonlocal published
+        real_replace(source, target)
+        published = True
+
+    def fail_directory_open(*args, **kwargs):
+        if published:
+            raise OSError("directory open fault")
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.replace", tracked_replace)
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.open", fail_directory_open)
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 6, "host_global_session_cap": 13,
+              "rationale": "fault probe", "confirm_environment_shadow": False},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "config_publication_uncertain",
+        "message": "capacity configuration was published, but durability or verification did not complete; reload and inspect the authoritative configuration before retrying",
+    }
+    assert yaml.safe_load((tmp_home / "config.yaml").read_text())["queue_workers"] == 6
+    assert not list(tmp_home.glob(".*.tmp"))
+    row = org_state.db.get_audit_logs("config:daemon_capacity")[-1]
+    assert row["payload"]["outcome"] == "validated_write_authorized"
+
+    latest = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    retry = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 7, "host_global_session_cap": 14,
+              "rationale": "blind retry", "confirm_environment_shadow": False},
+    )
+    assert latest["persisted_yaml"] == {"queue_workers": 6, "host_global_session_cap": 13}
+    assert retry.status_code == 409
+    assert retry.json()["detail"]["latest"]["revision"] == latest["revision"]
 
 
 def test_settings_unknown_slug_returns_404(tmp_home, app, auth_headers) -> None:

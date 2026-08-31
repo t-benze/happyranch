@@ -1746,5 +1746,8 @@ rejection through one quoted strong HTTP `If-Match` validator, unrelated-key
 preservation, and fail-closed durable audit-before-replace. The append-only row
 records the truthful `validated_write_authorized` outcome before filesystem
 publication and never claims the next-start file was applied or a person was
-verified. It is not
+verified. After a successful authoritative replace, any directory durability
+or read-back validation failure returns `config_publication_uncertain`: the
+new bytes may already be authoritative, no unaudited compensating replacement
+is attempted, and the operator must reload and inspect before retrying. It is not
 a generic YAML editor, does not apply live, and cannot restart the daemon.
