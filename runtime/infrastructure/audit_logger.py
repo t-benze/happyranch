@@ -1903,6 +1903,7 @@ class AuditLogger:
         *,
         task_id: str,
         job_id: str,
+        actor: str,
         exit_code: int,
         duration_ms: int,
         stdout_bytes: int,
@@ -1912,7 +1913,7 @@ class AuditLogger:
     ) -> None:
         self._db.insert_audit_log(
             task_id=task_id,
-            agent="founder",
+            agent=actor,
             action="job_run_completed",
             payload={
                 "script_request_id": job_id,
@@ -1930,13 +1931,14 @@ class AuditLogger:
         *,
         task_id: str,
         job_id: str,
+        actor: str,
         reason: str,
         exit_code: int | None = None,
         duration_ms: int | None = None,
     ) -> None:
         self._db.insert_audit_log(
             task_id=task_id,
-            agent="founder",
+            agent=actor,
             action="job_run_failed",
             payload={
                 "script_request_id": job_id,

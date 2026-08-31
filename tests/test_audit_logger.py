@@ -252,6 +252,7 @@ def test_log_job_run_completed(db):
     audit.log_job_run_completed(
         task_id="TASK-001",
         job_id="SR-001",
+        actor="engineering_head",
         exit_code=0,
         duration_ms=1500,
         stdout_bytes=12,
@@ -268,6 +269,21 @@ def test_log_job_run_completed(db):
     assert payload["exit_code"] == 0
     assert payload["duration_ms"] == 1500
     assert payload["script_request_id"] == "SR-001"
+    assert payload_entry["agent"] == "engineering_head"
+
+
+def test_log_job_run_failed_uses_explicit_actor(db):
+    from runtime.infrastructure.audit_logger import AuditLogger
+    audit = AuditLogger(db)
+    audit.log_job_run_failed(
+        task_id="TASK-001",
+        job_id="SR-001",
+        actor="engineering_head",
+        reason="spawn_failed",
+    )
+    logs = db.get_audit_logs("TASK-001")
+    entry = next(e for e in logs if e["action"] == "job_run_failed")
+    assert entry["agent"] == "engineering_head"
 
 
 def test_log_artifact_put_writes_event(db) -> None:

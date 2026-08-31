@@ -545,14 +545,13 @@ Audit-log entries from this path use `kind=job_killed` with payload `{job_id, re
 |--|--|--|
 | `job_submitted` | `POST /submit` succeeds | `{job_id, task_id, agent, review_required, persistent, max_runtime_seconds, max_output_bytes, title}` |
 | `job_auto_started` | `review_required=false` job transitions submit → running | `{job_id, task_id, agent}` |
-| `job_run` | Founder triggers `POST /{id}/run` (review_required=true path) | `{job_id, task_id, agent, max_runtime_seconds_override?}` |
+| `job_run_started` | Founder triggers `POST /{id}/run` (review_required=true path) | `{job_id, task_id, agent, max_runtime_seconds_override?}` |
 | `job_rejected` | Founder triggers `POST /{id}/reject` | `{job_id, task_id, agent, reject_reason}` |
-| `job_completed` | Subprocess exits 0 | `{job_id, task_id, exit_code: 0, duration_ms, stdout_bytes, stderr_bytes}` |
-| `job_failed` | Subprocess exits non-zero (natural) | `{job_id, task_id, exit_code, duration_ms, stdout_bytes, stderr_bytes}` |
-| `job_killed` | Subprocess killed (any reason) | `{job_id, task_id, reason: "timeout"|"output_cap"|"founder_stop"|"agent_stop"|"task_ended"|"daemon_shutdown"|"daemon_crash", duration_ms}` |
-| `job_stopped` | `POST /{id}/stop` triggers the kill (founder or agent) | `{job_id, task_id, stopped_by: "founder"|"agent"}` (precedes the eventual `job_killed`) |
+| `job_run_completed` | Runner exits naturally (including nonzero subprocess exit) | `{job_id, task_id, exit_code, duration_ms, stdout_bytes, stderr_bytes}` |
+| `job_run_failed` | Runner fails or is killed | `{job_id, task_id, reason, exit_code?, duration_ms?}` |
+| `job_stopped` | `POST /{id}/stop` triggers the kill (founder or agent) | `{job_id, task_id, stopped_by: "founder"|"agent"}` (precedes the eventual `job_run_failed`) |
 
-`job_killed` and `job_stopped` are distinct kinds because `stopped_by` is metadata about the actor, while `reason` is metadata about the kill mechanism — separating them keeps audit queries clean (`SELECT * FROM audit_log WHERE kind='job_killed' AND payload_json LIKE '%task_ended%'` works without parsing actor info).
+For `job_run_completed` and `job_run_failed`, `audit_log.agent` is the actor that initiated that run: the submitting agent for an autonomous run, or `founder` for a founder-triggered run. This initiating-trigger attribution is fixed for the run and is not inferred later from exit code, lifecycle status, review requirements, a stop actor, or session state. A `job_stopped` row remains attributed to the actor who requested the stop, while the later terminal row remains attributed to the original run-trigger actor.
 
 ## 13. Feishu integration
 

@@ -813,7 +813,8 @@ async def _run_job_core(
             except ValueError:
                 pass
             audit.log_job_run_failed(
-                task_id=record.task_id, job_id=job_id, reason="spawn_failed",
+                task_id=record.task_id, job_id=job_id, actor=reviewer,
+                reason="spawn_failed",
             )
             # Bridge: terminal status committed — resume any tasks blocked on this job.
             fire_resume_check_for_job(org, job_id)
@@ -830,7 +831,8 @@ async def _run_job_core(
             except ValueError:
                 pass
             audit.log_job_run_failed(
-                task_id=record.task_id, job_id=job_id, reason="internal_error",
+                task_id=record.task_id, job_id=job_id, actor=reviewer,
+                reason="internal_error",
             )
             # Bridge: terminal status committed — resume any tasks blocked on this job.
             fire_resume_check_for_job(org, job_id)
@@ -857,6 +859,7 @@ async def _run_job_core(
         if result.status == "completed":
             audit.log_job_run_completed(
                 task_id=record.task_id, job_id=job_id,
+                actor=reviewer,
                 exit_code=result.exit_code or 0,
                 duration_ms=result.duration_ms,
                 stdout_bytes=result.stdout_bytes,
@@ -867,6 +870,7 @@ async def _run_job_core(
         else:
             audit.log_job_run_failed(
                 task_id=record.task_id, job_id=job_id,
+                actor=reviewer,
                 exit_code=result.exit_code,
                 duration_ms=result.duration_ms,
                 reason=result.reason or "unknown",

@@ -255,6 +255,10 @@ def test_review_required_founder_approves_then_resumes(
     assert "job_run_completed" in actions, (
         f"missing job_run_completed in audit; actions={actions}"
     )
+    started_entry = next(e for e in entries if e["action"] == "job_run_started")
+    terminal_entry = next(e for e in entries if e["action"] == "job_run_completed")
+    assert started_entry["agent"] == "founder"
+    assert terminal_entry["agent"] == "founder"
 
     # 8d. Task was auto-resumed (proves CAS flip fired and BLOCKED-JOBS-RESULTS
     #     header was injected before stage 2).
