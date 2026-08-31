@@ -881,6 +881,15 @@ in `escalated` for founder review (root tasks only; a non-root over-budget task 
 
 The orchestrator does not gain new task states for external systems. External waits use jobs. A task that cannot continue until an external job finishes reports `status="blocked"` with non-empty `waiting_on_job_ids`; the row parks as `in_progress` with `block_kind='blocked_on_job'`; and the existing all-terminal job predicate resumes the task. The orchestrator never infers task completion from intermediate external signals such as submission, handoff, or an absent result.
 
+The exact persistent-verification policy is the universal runtime-materialized
+``protocol/skills/jobs/SKILL.md`` contract, not reconstructed task prose. Across
+TASK, THREAD, WAKE, DREAM, SCHEDULE, and BOOTSTRAP, verification expected to
+exceed one minute/session safety — including ``scripts/local_ci.sh all``,
+canonical/full suites, and pushes whose hooks run them — uses
+``review_required:false`` + ``persistent:true``, parks through
+``waiting_on_job_ids``, and verifies the exact-command/runtime/exit-0 receipt
+on resume. Short/focused tests may remain synchronous.
+
 Example: a PR CI / guarded merge helper is a bounded job that polls an external CI system and wakes the task through `blocked_on_job_ids`. The engineering-domain specifics live in the jobs skill and agent guides.
 
 ### Global host admission and backpressure (THR-207 / TASK-5584)

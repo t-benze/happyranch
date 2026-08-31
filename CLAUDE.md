@@ -79,6 +79,14 @@ scripts/local_ci.sh help         # List targets and caveats
 # Full guide: docs/local-ci.md
 ```
 
+`scripts/local_ci.sh all`, canonical/full suites, and pushes whose hooks run
+such verification are durable-job-only whenever expected to exceed one minute
+or the safe interactive-session window. The mandatory enforcement point is the
+runtime-materialized `protocol/skills/jobs/SKILL.md` contract: submit with
+`review_required:false`, `persistent:true`, block on `waiting_on_job_ids`, and
+verify the resumed job receipt (exact command, runtime path/version, exit 0).
+Short/focused tests expected to finish within one minute may run in-session.
+
 Integration tests spawn a real daemon and fake CLIs. Run them before changes touching daemon lifespan, `SessionTracker`, callback routes, queue recovery, or executor callback behavior.
 
 ## Engineering delivery gates

@@ -647,6 +647,18 @@ unioned across all ordinary session contexts so a later single-context launch
 never withdraws a valid link belonging to another context; release-managed and
 B2 custom-skill links remain policy-reconciled and withdrawable.
 
+The universal persistent-verification enforcement point is
+``protocol/skills/jobs/SKILL.md``. In all six contexts it requires
+``scripts/local_ci.sh all``, canonical/full suites, and pushes whose hooks run
+such verification to use a durable job whenever expected to exceed one minute
+or the safe interactive-session window: ``review_required:false``,
+``persistent:true``, then ``blocked`` + ``waiting_on_job_ids`` and resumed
+inspection of the exact-command/runtime/exit-0 receipt. Short/focused tests
+expected to complete inside one minute remain valid in-session. Descendants,
+inline-chain legs, fan-out children/carriers, revisits, and daemon-composed
+cleanup work all launch through TASK context, so brief reconstruction cannot
+withdraw this contract.
+
 #### Canonical skill store + workspace symlinks (macOS and Linux)
 
 As of TASK-4009/TASK-4012, skill materialization uses a **canonical skill store**
