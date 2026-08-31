@@ -1213,7 +1213,10 @@ registration in ``runtime/daemon/app.py``) that, per agent workspace:
    >= 1 GiB. Below-threshold state is audited once at that meaningful
    weekly/cooldown boundary, not once per minute for the rest of the week;
    measurement-unavailable and other exceptional/fail-closed trigger skips
-   remain explicitly audited when the boundary is attempted.
+   remain explicitly audited when the boundary is attempted. A decision-level
+   task-history lookup failure before trigger entry creates no cleanup task and
+   emits exactly one ``workspace_cleanup_skipped(history_indeterminate)`` row
+   for the crossed boundary; adjacent non-boundary scans remain silent.
 3. **Triggers** an ordinary root task ASSIGNED TO THE OWNING AGENT
    (``insert_task`` + ``enqueue_task`` — the same pattern the Schedule spawn
    callback uses, minus the Schedule) with a **daemon-composed brief** that

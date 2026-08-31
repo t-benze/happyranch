@@ -1331,10 +1331,20 @@ async def _tick_org(
                 tz=tz,
             )
             if not decision.should_trigger:
+                if decision.reason == "history_indeterminate":
+                    org.db.insert_audit_log(
+                        task_id="workspace-cleanup:skipped",
+                        agent=agent,
+                        action="workspace_cleanup_skipped",
+                        payload={
+                            "reason": "history_indeterminate",
+                            "agent": agent,
+                        },
+                    )
                 # Skip reasons are derivable from the tasks table; only the
-                # trigger itself (and the fail-closed skips inside
-                # trigger_cleanup) carry audit rows, so the weekly loop never
-                # spams the ledger.
+                # boundary-level history failure above and the trigger itself
+                # (including fail-closed skips inside trigger_cleanup) carry
+                # audit rows, so the weekly loop never spams the ledger.
                 continue
             await trigger_cleanup(
                 org,

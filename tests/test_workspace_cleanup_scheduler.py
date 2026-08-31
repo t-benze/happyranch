@@ -1558,6 +1558,51 @@ def test_trigger_decision_suppresses_on_history_lookup_error(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_tick_org_audits_boundary_history_failure_once_without_task(
+    tmp_path, test_settings, monkeypatch,
+):
+    """The shipping tick records one fail-closed boundary decision while
+    adjacent scans remain quiet and no cleanup task is produced."""
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    cfg_path = org.root / "org" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("timezone: UTC\n")
+    state = _FakeDaemonState()
+
+    def boom(*a, **kw):
+        raise RuntimeError("db read failure")
+
+    monkeypatch.setattr(db, "list_tasks_by_brief_prefix", boom)
+    occurrence = _sunday_0330_utc()
+    await wcs._tick_org(
+        org, state,
+        now_utc=occurrence - timedelta(seconds=1),
+        previous_scan_utc=occurrence - timedelta(minutes=1),
+    )
+    await wcs._tick_org(
+        org, state,
+        now_utc=occurrence,
+        previous_scan_utc=occurrence - timedelta(seconds=1),
+    )
+    await wcs._tick_org(
+        org, state,
+        now_utc=occurrence + timedelta(minutes=1),
+        previous_scan_utc=occurrence,
+    )
+
+    assert state.queue.items == []
+    assert db.list_tasks() == []
+    history_skips = [
+        row for row in db.get_audit_logs("workspace-cleanup:skipped")
+        if row["action"] == "workspace_cleanup_skipped"
+        and row["agent"] == "dev_agent"
+        and row["payload"].get("reason") == "history_indeterminate"
+    ]
+    assert len(history_skips) == 1
+
+
+@pytest.mark.asyncio
 async def test_trigger_audits_skip_on_history_indeterminate(
     tmp_path, test_settings, monkeypatch,
 ):
