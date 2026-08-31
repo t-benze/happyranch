@@ -142,27 +142,21 @@ def save(
             "revision_before": current_revision,
             "revision_after": after_revision,
             "rationale": rationale,
-            "outcome": "saved_for_next_restart",
+            # This row is durable before replacement, so it records only the
+            # truth available at that instant. It never fabricates completed
+            # application or verified-person attribution.
+            "outcome": "validated_write_authorized",
             "provenance": "server-observed config.yaml and startup snapshot",
             "environment_shadowed": shadowed,
         }
-        _atomic_write(path, new_raw)
         try:
             audit(event)
-        except Exception:
-            try:
-                if old_raw is None:
-                    path.unlink(missing_ok=True)
-                    dir_fd = os.open(path.parent, os.O_RDONLY)
-                    try:
-                        os.fsync(dir_fd)
-                    finally:
-                        os.close(dir_fd)
-                else:
-                    _atomic_write(path, old_raw)
-            except Exception as compensation:
-                raise CapacityConfigError("audit_compensation_failed", "audit failed and authoritative config restoration failed") from compensation
+        except Exception as exc:
             raise CapacityConfigError("audit_failed", "audit persistence failed; capacity configuration was not changed")
+        try:
+            _atomic_write(path, new_raw)
+        except Exception as exc:
+            raise CapacityConfigError("config_write_failed", "capacity configuration replacement failed") from exc
         result = snapshot(path, running, capability_reason=capability_reason)
         result["message"] = "Saved for next daemon restart; no running capacity was changed."
         return result

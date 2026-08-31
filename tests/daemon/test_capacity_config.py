@@ -63,6 +63,48 @@ def test_audit_failure_restores_authoritative_bytes(monkeypatch, tmp_path):
     assert not list(tmp_path.glob(".*.tmp"))
 
 
+def test_durable_audit_precedes_every_authoritative_replace(monkeypatch, tmp_path):
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    original = b"other: retained\nqueue_workers: 4\nhost_global_session_cap: 11\n"
+    path.write_bytes(original)
+    before = snapshot(path, Settings(), capability_reason="healthy")
+    events = []
+    real_replace = __import__("os").replace
+
+    def checked_replace(source, target):
+        assert events and events[0]["outcome"] == "validated_write_authorized"
+        real_replace(source, target)
+
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.replace", checked_replace)
+    save(path, Settings(), expected_revision=before["revision"], queue_workers=6,
+         host_global_session_cap=13, rationale="ordering", confirm_environment_shadow=False,
+         audit=events.append, capability_reason="healthy")
+    assert yaml.safe_load(path.read_text())["queue_workers"] == 6
+
+
+def test_replace_fault_after_durable_audit_leaves_original_authoritative(monkeypatch, tmp_path):
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    original = b"other: retained\nqueue_workers: 4\nhost_global_session_cap: 11\n"
+    path.write_bytes(original)
+    before = snapshot(path, Settings(), capability_reason="healthy")
+    events = []
+
+    def fail_replace(_source, _target):
+        assert events and events[0]["outcome"] == "validated_write_authorized"
+        raise OSError("replace fault")
+
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.replace", fail_replace)
+    with pytest.raises(CapacityConfigError) as raised:
+        save(path, Settings(), expected_revision=before["revision"], queue_workers=6,
+             host_global_session_cap=13, rationale="fault", confirm_environment_shadow=False,
+             audit=events.append, capability_reason="healthy")
+    assert raised.value.code == "config_write_failed"
+    assert path.read_bytes() == original
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
 def test_stale_and_environment_shadow_reject_without_mutation(monkeypatch, tmp_path):
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
     path = tmp_path / "config.yaml"

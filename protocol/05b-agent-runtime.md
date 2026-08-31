@@ -1742,5 +1742,9 @@ that authorizes the request but cannot identify or verify a person. The server
 therefore audits actor `daemon-bearer-holder`, never client identity. The only
 writable pair is `queue_workers` plus `host_global_session_cap`, staged
 atomically for next restart with environment precedence, stale-revision
-rejection, unrelated-key preservation, and fail-closed durable audit. It is not
+rejection through one quoted strong HTTP `If-Match` validator, unrelated-key
+preservation, and fail-closed durable audit-before-replace. The append-only row
+records the truthful `validated_write_authorized` outcome before filesystem
+publication and never claims the next-start file was applied or a person was
+verified. It is not
 a generic YAML editor, does not apply live, and cannot restart the daemon.

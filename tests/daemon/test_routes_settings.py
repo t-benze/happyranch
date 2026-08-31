@@ -99,9 +99,8 @@ def test_daemon_capacity_rejects_non_exact_integer(tmp_home, app, org_state, aut
     ).json()
     response = client.put(
         f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
-        headers=auth_headers,
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
         json={
-            "revision": current["revision"],
             "queue_workers": value,
             "host_global_session_cap": 13,
             "rationale": "route validation",
@@ -109,6 +108,87 @@ def test_daemon_capacity_rejects_non_exact_integer(tmp_home, app, org_state, aut
         },
     )
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("header", "status", "code"),
+    [
+        (None, 428, "if_match_required"),
+        ('W/"sha256:abc"', 400, "if_match_invalid"),
+        ("*", 400, "if_match_invalid"),
+        ('"sha256:abc", "sha256:def"', 400, "if_match_invalid"),
+        ("sha256:abc", 400, "if_match_invalid"),
+    ],
+)
+def test_daemon_capacity_requires_one_quoted_strong_if_match(
+    tmp_home, app, org_state, auth_headers, header, status, code,
+) -> None:
+    headers = dict(auth_headers)
+    if header is not None:
+        headers["If-Match"] = header
+    response = TestClient(app).put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers=headers,
+        json={"queue_workers": 6, "host_global_session_cap": 13,
+              "rationale": "conditional write", "confirm_environment_shadow": False},
+    )
+    assert response.status_code == status
+    assert response.json()["detail"]["code"] == code
+
+
+def test_daemon_capacity_stale_if_match_returns_latest_and_does_not_mutate(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    client = TestClient(app)
+    before = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"sha256:{"0" * 64}"'},
+        json={"queue_workers": 7, "host_global_session_cap": 14,
+              "rationale": "stale", "confirm_environment_shadow": False},
+    )
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "stale_revision"
+    assert detail["latest"]["revision"] == before["revision"]
+
+
+def test_daemon_capacity_body_revision_is_rejected_as_extra(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    response = TestClient(app).put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": '"sha256:value"'},
+        json={"revision": "sha256:other", "queue_workers": 6,
+              "host_global_session_cap": 13, "rationale": "extra",
+              "confirm_environment_shadow": False},
+    )
+    assert response.status_code == 422
+
+
+def test_daemon_capacity_success_audits_honest_pre_replace_authorization(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    client = TestClient(app)
+    current = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 6, "host_global_session_cap": 13,
+              "rationale": "measured receipts", "confirm_environment_shadow": False},
+    )
+    assert response.status_code == 200
+    row = org_state.db.get_audit_logs("config:daemon_capacity")[-1]
+    assert row["agent"] == "daemon-bearer-holder"
+    assert row["action"] == "daemon_capacity_config_write_authorized"
+    assert row["payload"]["outcome"] == "validated_write_authorized"
+    assert row["payload"]["prior"] == {"queue_workers": None, "host_global_session_cap": None}
+    assert row["payload"]["new"] == {"queue_workers": 6, "host_global_session_cap": 13}
+    assert "token" not in str(row["payload"]).lower()
 
 
 def test_settings_unknown_slug_returns_404(tmp_home, app, auth_headers) -> None:

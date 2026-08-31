@@ -2307,6 +2307,10 @@
       "PUT": {
         "params": [
           [
+            "If-Match",
+            "header"
+          ],
+          [
             "authorization",
             "header"
           ],

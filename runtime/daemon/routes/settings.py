@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from runtime.config import settings as global_settings
 from runtime.daemon.auth import require_token
@@ -33,7 +33,6 @@ router = APIRouter(dependencies=[require_token()])
 
 class DaemonCapacityWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    revision: str = Field(min_length=1)
     queue_workers: StrictInt = Field(gt=0)
     host_global_session_cap: StrictInt = Field(gt=0)
     rationale: str = Field(min_length=1, max_length=1000)
@@ -67,15 +66,40 @@ def get_daemon_capacity(slug: str, org: OrgDep, request: Request) -> dict:
         raise HTTPException(status_code=500, detail={"code": exc.code, "message": str(exc)}) from exc
 
 
+def _parse_capacity_if_match(value: str | None) -> str:
+    if value is None:
+        raise HTTPException(
+            status_code=428,
+            detail={"code": "if_match_required", "message": "a strong If-Match revision is required"},
+        )
+    if (
+        len(value) != 73
+        or not value.startswith('"sha256:')
+        or not value.endswith('"')
+        or any(char not in "0123456789abcdef" for char in value[8:-1])
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "if_match_invalid", "message": "If-Match must contain one quoted strong revision"},
+        )
+    return value[1:-1]
+
+
 @router.put("/settings/daemon-capacity")
-def put_daemon_capacity(slug: str, body: DaemonCapacityWrite, org: OrgDep, request: Request) -> dict:
+def put_daemon_capacity(
+    slug: str,
+    body: DaemonCapacityWrite,
+    org: OrgDep,
+    request: Request,
+    if_match: str | None = Header(default=None, alias="If-Match"),
+) -> dict:
     from runtime.daemon.capacity_config import CapacityConfigError, save
 
     def audit(payload: dict) -> None:
         org.db.insert_audit_log(
             task_id="config:daemon_capacity",
             agent="daemon-bearer-holder",
-            action="daemon_capacity_config_write",
+            action="daemon_capacity_config_write_authorized",
             payload=payload,
         )
 
@@ -83,7 +107,7 @@ def put_daemon_capacity(slug: str, body: DaemonCapacityWrite, org: OrgDep, reque
         return save(
             global_settings.daemon_home / "config.yaml",
             request.app.state.daemon.settings,
-            expected_revision=body.revision,
+            expected_revision=_parse_capacity_if_match(if_match),
             queue_workers=body.queue_workers,
             host_global_session_cap=body.host_global_session_cap,
             rationale=body.rationale.strip(),

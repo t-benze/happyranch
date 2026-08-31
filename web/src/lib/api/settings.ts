@@ -63,8 +63,14 @@ export const getDaemonCapacity = (slug: string): Promise<DaemonCapacitySnapshot>
 export const putDaemonCapacity = (
   slug: string,
   body: DaemonCapacityWrite,
-): Promise<DaemonCapacitySnapshot> =>
-  request(`/orgs/${slug}/settings/daemon-capacity`, { method: 'PUT', body });
+): Promise<DaemonCapacitySnapshot> => {
+  const { revision, ...payload } = body;
+  return request(`/orgs/${slug}/settings/daemon-capacity`, {
+    method: 'PUT',
+    body: payload,
+    headers: { 'If-Match': `"${revision}"` },
+  });
+};
 
 /** Preview the next N wake timestamps for an agent's resolved effective
  * schedule. Read-only; an incomplete/invalid schedule returns 200 with

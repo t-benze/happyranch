@@ -1,5 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useDaemonCapacity, useUpdateDaemonCapacity } from '@/hooks/settings';
+import { ApiError } from '@/lib/api';
+
+function safeSaveError(error: unknown): string {
+  if (!(error instanceof ApiError)) return 'Save failed safely. The draft is unchanged; retry or reload.';
+  if (error.status === 401 || error.status === 403) return 'Unauthorized. A valid daemon bearer is required; no values were changed.';
+  if (error.code === 'stale_revision') return 'This configuration changed elsewhere. Review the latest safe snapshot below; your draft is preserved.';
+  if (error.code === 'environment_confirmation_required') return 'Confirm the environment-shadow warning before saving.';
+  if (error.status === 422) return 'The server rejected these values. Review both positive integers and the rationale.';
+  if (error.code === 'audit_failed') return 'Audit storage is unavailable, so the configuration was not changed.';
+  if (error.code === 'config_write_failed') return 'Configuration storage failed safely. The previous authoritative file remains in use.';
+  return 'Save failed safely. The draft is unchanged; no live capacity was changed.';
+}
 
 export function DaemonCapacitySection(): JSX.Element {
   const query = useDaemonCapacity();
@@ -9,22 +21,54 @@ export function DaemonCapacitySection(): JSX.Element {
   const [rationale, setRationale] = useState('');
   const [confirmed, setConfirmed] = useState(false);
   const [status, setStatus] = useState('');
+  const [latestConflict, setLatestConflict] = useState<string | null>(null);
+  const statusRef = useRef<HTMLParagraphElement>(null);
   useEffect(() => {
     if (query.data) {
       setWorkers(String(query.data.persisted_yaml.queue_workers ?? query.data.next_start.queue_workers));
       setCap(String(query.data.persisted_yaml.host_global_session_cap ?? query.data.next_start.host_global_session_cap));
     }
   }, [query.data]);
+  const initialWorkers = query.data ? String(query.data.persisted_yaml.queue_workers ?? query.data.next_start.queue_workers) : '';
+  const initialCap = query.data ? String(query.data.persisted_yaml.host_global_session_cap ?? query.data.next_start.host_global_session_cap) : '';
+  const dirty = Boolean(query.data) && (workers !== initialWorkers || cap !== initialCap || rationale.length > 0);
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (!dirty) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
   if (query.isLoading) return <p role="status">Loading daemon capacity…</p>;
   if (query.isError || !query.data) return <p role="alert">Could not load daemon capacity. No values are displayed. {query.error?.message}</p>;
   const data = query.data;
   const shadowed = data.environment_shadowed.length > 0;
   async function submit(event: React.FormEvent) {
-    event.preventDefault(); setStatus('Saving for next restart…');
+    event.preventDefault();
+    setLatestConflict(null);
+    const workerValue = Number(workers);
+    const capValue = Number(cap);
+    if (!Number.isInteger(workerValue) || workerValue <= 0 || !Number.isInteger(capValue) || capValue <= 0 || !rationale.trim()) {
+      setStatus('Enter positive whole numbers for both fields and a non-blank rationale.');
+      queueMicrotask(() => statusRef.current?.focus());
+      return;
+    }
+    setStatus('Saving for next restart…');
     try {
-      const result = await save.mutateAsync({ revision: data.revision, queue_workers: Number(workers), host_global_session_cap: Number(cap), rationale, confirm_environment_shadow: confirmed });
+      const result = await save.mutateAsync({ revision: data.revision, queue_workers: workerValue, host_global_session_cap: capValue, rationale: rationale.trim(), confirm_environment_shadow: confirmed });
       setStatus(result.message ?? 'Saved for next daemon restart. Running capacity was not changed.');
-    } catch { setStatus('Save failed. Reload the latest snapshot and review the values.'); }
+      setRationale('');
+    } catch (error) {
+      setStatus(safeSaveError(error));
+      if (error instanceof ApiError && error.code === 'stale_revision') {
+        const detail = error.detail as { latest?: { revision?: string; persisted_yaml?: { queue_workers?: number | null; host_global_session_cap?: number | null } } };
+        const latest = detail?.latest;
+        if (latest) setLatestConflict(`Latest revision ${latest.revision ?? 'unknown'}: ${latest.persisted_yaml?.queue_workers ?? 'not set'} / ${latest.persisted_yaml?.host_global_session_cap ?? 'not set'}.`);
+      }
+      queueMicrotask(() => statusRef.current?.focus());
+    }
   }
   return <form onSubmit={submit} className="space-y-5">
     <div role="alert" className="rounded-md border p-3 text-sm"><strong>Daemon bearer required.</strong> This bearer-based authorization cannot be attributed to a verified person. This resource affects every org.</div>
@@ -42,7 +86,9 @@ export function DaemonCapacitySection(): JSX.Element {
     <label className="block">Host global session cap<input aria-label="Host global session cap" type="number" min="1" required value={cap} onChange={e => setCap(e.target.value)} className="block w-full border p-2" /></label>
     <p className="text-sm">{data.guidance.host_global_session_cap} There is no aggregate happyranch.slice policy.</p>
     <label className="block">Rationale<textarea required value={rationale} onChange={e => setRationale(e.target.value)} className="block w-full border p-2" /></label>
-    <button type="submit" disabled={save.isPending || (shadowed && !confirmed)} className="rounded bg-accent-solid px-4 py-2 text-white">Save for next restart</button>
-    <p role="status" aria-live="polite">{status}</p>
+    {dirty && <p role="status">Unsaved changes. Leaving or reloading will discard this draft.</p>}
+    <button type="submit" disabled={save.isPending || (shadowed && !confirmed)} className="rounded bg-accent-solid px-4 py-2 text-white">{save.isPending ? 'Saving…' : 'Save for next restart'}</button>
+    <p ref={statusRef} tabIndex={-1} role="status" aria-live="assertive">{status}</p>
+    {latestConflict && <p role="alert">{latestConflict}</p>}
   </form>;
 }

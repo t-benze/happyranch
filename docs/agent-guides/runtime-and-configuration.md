@@ -16,11 +16,16 @@ The authenticated `GET|PUT /api/v1/orgs/{slug}/settings/daemon-capacity`
 resource is daemon-wide despite its Settings navigation context. It exposes and
 atomically stages exactly the paired `queue_workers` and
 `host_global_session_cap` values using an opaque revision under a process lock.
-PUT requires both exact integers, a rationale, and environment-shadow
+PUT requires exactly one quoted strong `If-Match` revision header, both exact
+integers, a rationale, and environment-shadow
 confirmation when applicable. It preserves unrelated YAML, writes through a
 same-directory fsynced temporary file and atomic replace, and records the fixed
 honest actor `daemon-bearer-holder` in the existing `config:daemon_capacity`
-audit scope. Audit failure compensates the file mutation and fails the request.
+audit scope. The durable row truthfully records a validated write authorization
+(`daemon_capacity_config_write_authorized`) before any authoritative replace;
+it does not claim completed application.
+Audit failure therefore leaves the original YAML untouched, and replace
+failure cannot produce an unaudited authoritative file.
 The shared daemon bearer is required; it proves possession only and cannot be
 attributed to a verified person. Save is next-restart-only and cannot resize
 the startup worker or HostSessionSupervisor snapshots.
