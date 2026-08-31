@@ -1202,14 +1202,11 @@ periodic loop (``runtime/daemon/workspace_cleanup_scheduler.py`` — the sixth
 daemon-owned loop alongside dream/schedule/zombie/direct-connect, one
 registration in ``runtime/daemon/app.py``) that, per agent workspace:
 
-The loop also reconciles only prospectively receipt-owned daemon-job temp
-roots (THR-200 seq 97). It never derives candidates from path names, globs,
-uid, age, git appearance, or advisory inventory. Quarantine and expiry consume
-the final identity-bound eligibility ledger, revalidate lifecycle and
-filesystem identity immediately before mutation, and retain restore,
-interruption, and expiry receipts. The advisory's fail-open `statvfs` inode
-fields report used/free/total/percent and threshold state; an alert directs an
-operator to managed-temp receipts but never grants cleanup authority.
+The advisory's fail-open `statvfs` inode fields report used/free/total/percent
+and threshold state. They are explicitly non-authoritative: they never grant
+cleanup authority or cause this loop to inspect, move, quarantine, restore,
+unlink, or recursively delete `/tmp` content. Producer redirection and
+automatic temporary-file cleanup are not implemented.
 
 1. **Measures** the OWNING AGENT's workspace with an explicit bounded,
    fail-open budget: one true wall-clock deadline shared across all

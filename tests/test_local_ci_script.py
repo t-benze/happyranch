@@ -91,6 +91,12 @@ def _setup_fake_env(
     _fake_node(bin_dir)
     for name in ("npm", "npx", "uv"):
         _fake_recorder(bin_dir, name)
+    _write_executable(
+        bin_dir / "df",
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' 'Filesystem Inodes IUsed IFree IUse% Mounted on'\n"
+        "printf '%s\\n' \"${LOCAL_CI_FAKE_DF_ROW:-tmpfs 100 10 90 10% /tmp}\"\n",
+    )
     return bin_dir, version_file, log_file
 
 
@@ -211,6 +217,21 @@ def test_all_permits_valid_node_24_and_runs_python_then_web(tmp_path: Path) -> N
     assert "uv run pytest" in log
     assert "npm ci" in log
     assert "npx vitest run" in log
+    assert "Temporary-filesystem inode advisory" in result.stdout
+    assert "used=10 free=90 total=100 percent=10%" in result.stdout
+
+
+def test_all_inode_alert_is_advisory_and_fail_open(tmp_path: Path) -> None:
+    bin_dir, version_file, log_file = _setup_fake_env(tmp_path, "v24.0.0")
+    result = _run_local_ci(
+        "all", bin_dir, version_file, log_file,
+        {"LOCAL_CI_FAKE_DF_ROW": "tmpfs 100 95 5 95% /tmp"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "used=95 free=5 total=100 percent=95%" in result.stdout
+    assert "does not authorize cleanup" in result.stderr
+    assert "uv run pytest" in log_file.read_text()
 
 
 def test_selection_branch_via_nvm_selects_node_24(tmp_path: Path) -> None:

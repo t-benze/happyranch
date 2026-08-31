@@ -331,8 +331,8 @@ def format_workspace_context_note(snapshot: WorkspaceContextSnapshot) -> str:
         )
         if snapshot.inode_threshold_state == "alert":
             lines.append(
-                "  inode action: inspect managed-temp operation receipts; "
-                "this alert is not cleanup eligibility."
+                "  inode action: inspect temporary-file producers and filesystem usage; "
+                "this alert is advisory and not cleanup authority."
             )
     else:
         lines.append(
@@ -649,50 +649,6 @@ def _observe_inodes(snapshot: WorkspaceContextSnapshot) -> None:
     except Exception as exc:
         snapshot.inode_available = False
         snapshot.inode_reason = str(exc)
-
-
-def _reconcile_managed_temp(org: "OrgState", now_utc: datetime) -> None:
-    """Prospective-only cleanup under positive receipts; never raises."""
-    try:
-        from runtime.daemon.managed_temp import (
-            default_store_root, expire, lifecycle_is_inactive,
-            plan_expiry, plan_quarantine, quarantine,
-        )
-        store = default_store_root(org.root)
-        if not store.exists():
-            return
-        inactive = lambda receipt: lifecycle_is_inactive(
-            org.db, org.sessions, receipt,
-        )
-        protected = (
-            org.root / "workspaces", org.root / "jobs", org.root / "org",
-            org.root / "artifacts", org.root / "threads",
-            org.root / "task-attachments", org.root / "happyranch.db",
-        )
-        for entry in plan_quarantine(
-            store, org_slug=org.slug, inactive=inactive, now=now_utc,
-            protected_roots=protected,
-        ):
-            try:
-                quarantine(
-                    entry, store_root=store, inactive=inactive,
-                    protected_roots=protected, now=now_utc,
-                )
-            except (OSError, ValueError):
-                logger.warning("managed temp quarantine revalidation failed", exc_info=True)
-        for entry in plan_expiry(
-            store, org_slug=org.slug, inactive=inactive,
-            protected_roots=protected, now=now_utc,
-        ):
-            try:
-                expire(
-                    entry, store_root=store, inactive=inactive,
-                    protected_roots=protected, now=now_utc,
-                )
-            except (OSError, ValueError):
-                logger.warning("managed temp expiry revalidation failed", exc_info=True)
-    except Exception:
-        logger.warning("managed temp reconciliation unavailable", exc_info=True)
 
 
 def _measure(
@@ -1404,7 +1360,6 @@ async def _tick_org(
     if not cfg.workspace_cleanup_enabled:
         # Kill switch (enabled-by-default org config flag).
         return
-    _reconcile_managed_temp(org, now_utc)
     tz = _resolve_timezone(cfg.timezone)[0]
 
     offset = 0

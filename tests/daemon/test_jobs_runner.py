@@ -35,22 +35,6 @@ async def test_run_job_with_none_timeout_runs_to_completion(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_run_job_binds_all_temp_environment_to_owned_root(tmp_path: Path) -> None:
-    owned = tmp_path / "owned-temp"
-    owned.mkdir()
-    out = tmp_path / "out.log"
-    err = tmp_path / "err.log"
-    result = await run_job(
-        job_id="JOB-TMP", script_text="printf '%s|%s|%s' \"$TMPDIR\" \"$TMP\" \"$TEMP\"",
-        interpreter="bash", cwd=str(tmp_path), stdout_path=str(out),
-        stderr_path=str(err), max_runtime_seconds=5, publish=lambda _: None,
-        temp_dir=str(owned),
-    )
-    assert result.status == "completed"
-    assert out.read_text() == "|".join([str(owned)] * 3)
-
-
-@pytest.mark.asyncio
 async def test_run_job_with_explicit_timeout_kills_runaway(tmp_path: Path) -> None:
     """max_runtime_seconds=positive still kills the process."""
     out = tmp_path / "out.log"

@@ -28,6 +28,27 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# Advisory only: inode pressure can make mktemp, pytest, and Node tooling fail
+# even when byte capacity remains. This preflight never cleans up files and
+# never blocks CI when df is unavailable or its output cannot be parsed.
+observe_tmp_inodes() {
+  local inode_path="${TMPDIR:-/tmp}" output total used free percent
+  output="$(df -Pi "$inode_path" 2>/dev/null | awk 'NR==2 {print $2, $3, $4, $5}' || true)"
+  read -r total used free percent <<<"$output"
+  percent="${percent%%%}"
+  if [[ "$total" =~ ^[0-9]+$ ]] && [[ "$used" =~ ^[0-9]+$ ]] \
+      && [[ "$free" =~ ^[0-9]+$ ]] && [[ "$percent" =~ ^[0-9]+$ ]]; then
+    echo "=== Temporary-filesystem inode advisory ==="
+    echo "path=${inode_path} used=${used} free=${free} total=${total} percent=${percent}%"
+    if [ "$percent" -ge 90 ]; then
+      echo -e "${YELLOW}WARNING: temporary-filesystem inode use is at or above 90%; this advisory does not authorize cleanup.${NC}" >&2
+    fi
+  else
+    echo -e "${YELLOW}WARNING: temporary-filesystem inode measurement unavailable; continuing fail-open.${NC}" >&2
+  fi
+  return 0
+}
+
 # ── Node.js runtime contract (web/all targets) ───────────────────────────
 # The repository declares its exact Node line in .nvmrc (Node 24), matching
 # the GitHub "Web (Node 24)" job (.github/workflows/ci.yml). The web and all
@@ -208,6 +229,7 @@ run_integration() {
 }
 
 run_all() {
+  observe_tmp_inodes
   ensure_node_declared
   run_python
   echo ""

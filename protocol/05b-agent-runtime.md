@@ -1456,19 +1456,12 @@ in the org ``config.yaml``, default true) disables the capability per org.
 See 05c-orchestrator §Daemon-managed workspace cleanup scheduler for the
 full contract.
 
-**Prospective job temporary-root ownership (THR-200 seq 97).** Every newly
-started daemon job is assigned a private managed temp root under its already
-authoritative org root and receives it as
-`TMPDIR`, `TMP`, and `TEMP`. A filesystem-local creation receipt binds the
-canonical root and device/inode to org, task, job, agent, and uid. Existing
-unreceipted trees are never adopted. Only a final eligibility ledger backed by
-terminal job + terminal task + inactive session state can drive mutation, and
-the exact identity, ownership, same-device status, absence of symlinks/special
-files/nested mounts, and protected-root exclusion are revalidated immediately
-before each action. Same-device quarantine preserves inodes and is reversible;
-durable intent and operation receipts survive interruption. Exact-tree unlink
-is permitted only after the seven-day receipt expiry and another full
-revalidation. The implementation never enumerates `/tmp` as a candidate root.
+**Temporary-filesystem inode advisory (THR-200).** Workspace measurement adds
+fail-open `statvfs` inode used/free/total/percent/threshold fields, and full CI
+performs a matching inode preflight. Both are advisory and non-authoritative:
+they never grant cleanup authority or cause the daemon scheduler to inspect,
+move, quarantine, restore, unlink, or recursively delete `/tmp` content.
+Producer redirection and automatic temporary-file cleanup are not implemented.
 
 ### Three layers of memory
 
