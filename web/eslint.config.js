@@ -37,6 +37,10 @@ export default tseslint.config(
       "**/*.config.js",
       "**/*.config.ts",
     ],
+    // The v3 plugin cannot discover a config through Tailwind v4's package
+    // exports. Keep one shared empty compatibility config so each linted file
+    // reuses the plugin cache instead of rebuilding its v3 model from scratch.
+    settings: { tailwindcss: { config: {} } },
   },
 
   // Base TS + React (non-type-checked — the `tsc --noEmit` step covers full
