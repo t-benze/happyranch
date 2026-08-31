@@ -22,6 +22,9 @@ export const useUpdateOrgSettings: ReturnType<
 >['settings']['useUpdateOrgSettings'] = () =>
   useData().settings.useUpdateOrgSettings();
 
+export const useDaemonCapacity = () => useData().settings.useDaemonCapacity();
+export const useUpdateDaemonCapacity = () => useData().settings.useUpdateDaemonCapacity();
+
 export const useNextWakes: ReturnType<
   typeof useData
 >['settings']['useNextWakes'] = (agent, count) =>

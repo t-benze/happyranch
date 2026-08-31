@@ -84,6 +84,33 @@ def test_settings_requires_auth(tmp_home, app, org_state) -> None:
     assert r.status_code == 401
 
 
+def test_daemon_capacity_requires_bearer_without_leaking_values(tmp_home, app, org_state) -> None:
+    response = TestClient(app).get(f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity")
+    assert response.status_code == 401
+    assert "queue_workers" not in response.text
+    assert "host_global_session_cap" not in response.text
+
+
+@pytest.mark.parametrize("value", [True, "6", 6.0, None])
+def test_daemon_capacity_rejects_non_exact_integer(tmp_home, app, org_state, auth_headers, value) -> None:
+    client = TestClient(app)
+    current = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers=auth_headers,
+        json={
+            "revision": current["revision"],
+            "queue_workers": value,
+            "host_global_session_cap": 13,
+            "rationale": "route validation",
+            "confirm_environment_shadow": False,
+        },
+    )
+    assert response.status_code == 422
+
+
 def test_settings_unknown_slug_returns_404(tmp_home, app, auth_headers) -> None:
     client = TestClient(app)
     r = client.get("/api/v1/orgs/nope/settings", headers=auth_headers)

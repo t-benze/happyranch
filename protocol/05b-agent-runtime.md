@@ -1734,3 +1734,13 @@ With on-demand sessions, daily cost scales with actual work, not idle time:
 | Full org (all 4 Teams active) | 25-40 sessions | $15-35 |
 
 These are rough estimates assuming Claude Sonnet pricing. Actual costs depend on task complexity, revision rounds, and which executor is used. The dashboard's cost tracking page (Page 6) gives you real-time visibility.
+### Daemon capacity staged-write surface (TASK-6281)
+
+The Settings Daemon / Capacity surface is a daemon-wide resource navigated
+from an org. A local operator must possess the existing shared daemon bearer;
+that authorizes the request but cannot identify or verify a person. The server
+therefore audits actor `daemon-bearer-holder`, never client identity. The only
+writable pair is `queue_workers` plus `host_global_session_cap`, staged
+atomically for next restart with environment precedence, stale-revision
+rejection, unrelated-key preservation, and fail-closed durable audit. It is not
+a generic YAML editor, does not apply live, and cannot restart the daemon.

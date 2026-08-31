@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from runtime.config import settings as global_settings
 from runtime.daemon.auth import require_token
@@ -29,6 +29,74 @@ from runtime.orchestrator.org_validation import (
 )
 
 router = APIRouter(dependencies=[require_token()])
+
+
+class DaemonCapacityWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: str = Field(min_length=1)
+    queue_workers: StrictInt = Field(gt=0)
+    host_global_session_cap: StrictInt = Field(gt=0)
+    rationale: str = Field(min_length=1, max_length=1000)
+    confirm_environment_shadow: bool = False
+
+    @field_validator("rationale")
+    @classmethod
+    def _rationale_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("rationale must not be blank")
+        return value
+
+
+def _capacity_reason(request: Request) -> str:
+    supervisor = request.app.state.daemon.host_supervisor
+    if supervisor is None:
+        return "No active host supervisor capability snapshot is available."
+    return "Startup-loaded host supervisor admission policy; saving does not mutate it."
+
+
+@router.get("/settings/daemon-capacity")
+def get_daemon_capacity(slug: str, org: OrgDep, request: Request) -> dict:
+    from runtime.daemon.capacity_config import CapacityConfigError, snapshot
+    try:
+        return snapshot(
+            global_settings.daemon_home / "config.yaml",
+            request.app.state.daemon.settings,
+            capability_reason=_capacity_reason(request),
+        )
+    except CapacityConfigError as exc:
+        raise HTTPException(status_code=500, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.put("/settings/daemon-capacity")
+def put_daemon_capacity(slug: str, body: DaemonCapacityWrite, org: OrgDep, request: Request) -> dict:
+    from runtime.daemon.capacity_config import CapacityConfigError, save
+
+    def audit(payload: dict) -> None:
+        org.db.insert_audit_log(
+            task_id="config:daemon_capacity",
+            agent="daemon-bearer-holder",
+            action="daemon_capacity_config_write",
+            payload=payload,
+        )
+
+    try:
+        return save(
+            global_settings.daemon_home / "config.yaml",
+            request.app.state.daemon.settings,
+            expected_revision=body.revision,
+            queue_workers=body.queue_workers,
+            host_global_session_cap=body.host_global_session_cap,
+            rationale=body.rationale.strip(),
+            confirm_environment_shadow=body.confirm_environment_shadow,
+            audit=audit,
+            capability_reason=_capacity_reason(request),
+        )
+    except CapacityConfigError as exc:
+        status_code = 409 if exc.code == "stale_revision" else 500 if "failed" in exc.code else 422
+        detail = {"code": exc.code, "message": str(exc)}
+        if status_code == 409:
+            detail["latest"] = get_daemon_capacity(slug, org, request)
+        raise HTTPException(status_code=status_code, detail=detail) from exc
 
 # ----------------------------------------------------------------
 # SystemSettingsView — ALLOW-LIST from module-global Settings

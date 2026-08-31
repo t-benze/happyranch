@@ -24,12 +24,14 @@ import {
   Sparkles,
   Home as HomeIcon,
   Terminal,
+  Gauge,
   type LucideIcon,
 } from 'lucide-react';
 import { useSettings } from '@/hooks/settings';
 import { PageHeader } from '@/design-system/patterns/PageHeader';
 
 const SECTIONS = [
+  { key: 'daemon-capacity', label: 'Daemon / Capacity', icon: Gauge },
   { key: 'assistant', label: 'Assistant', icon: Sparkles },
   { key: 'organization', label: 'Organization', icon: HomeIcon },
   { key: 'executors', label: 'Executors', icon: Terminal },
@@ -81,6 +83,7 @@ export function SettingsPage(): JSX.Element {
             <Routes>
               <Route index element={<Navigate to={`/orgs/${slug}/settings/assistant`} replace />} />
               <Route path="assistant" element={<AssistantPanel />} />
+              <Route path="daemon-capacity" element={<DaemonCapacityPanel />} />
               <Route path="system" element={<Navigate to={`/orgs/${slug}/settings`} replace />} />
               <Route
                 path="organization"
@@ -142,6 +145,7 @@ function SettingsSubNav(): JSX.Element {
 import { AssistantSection } from './sections/AssistantSection';
 import { OrganizationSection } from './sections/OrganizationSection';
 import { ExecutorsSection } from './sections/ExecutorsSection';
+import { DaemonCapacitySection } from './sections/DaemonCapacitySection';
 import type { OrgSettings } from '@/lib/api/types';
 
 function AssistantPanel(): JSX.Element {
@@ -151,6 +155,10 @@ function AssistantPanel(): JSX.Element {
       <AssistantSection />
     </div>
   );
+}
+
+function DaemonCapacityPanel(): JSX.Element {
+  return <div className="max-w-2xl p-6"><h2 className="font-display mb-1 text-lg font-semibold">Daemon / Capacity</h2><p className="text-text-secondary mb-6 text-sm">Stage the paired daemon-wide capacity values for a future operator-controlled restart.</p><DaemonCapacitySection /></div>;
 }
 
 function OrganizationPanel({ org }: { org: OrgSettings }): JSX.Element {

@@ -534,6 +534,11 @@ export interface SettingsApi {
     import('@/lib/api/types').OrgSettingsPatch,
     import('@/lib/api/types').SettingsSnapshot
   >;
+  useDaemonCapacity: () => QueryLike<import('@/lib/api/types').DaemonCapacitySnapshot>;
+  useUpdateDaemonCapacity: () => MutationLike<
+    import('@/lib/api/types').DaemonCapacityWrite,
+    import('@/lib/api/types').DaemonCapacitySnapshot
+  >;
   /** Next-wakes preview for an agent's resolved effective schedule
    *  (work-hours config UI, THR-035). Self-gates when `agent` is undefined. */
   useNextWakes: (

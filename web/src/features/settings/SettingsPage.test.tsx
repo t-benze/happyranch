@@ -18,6 +18,7 @@ const SETTINGS_PAYLOAD = {
     session_timeout_seconds: { value: 1800, restart_required: true },
     max_orchestration_steps: { value: 50, restart_required: true },
     queue_workers: { value: 3, restart_required: true },
+    host_global_session_cap: { value: 13, restart_required: true },
     protocol_dir: { value: 'protocol', restart_required: true },
   },
   org: {
@@ -66,6 +67,17 @@ function stubBaseHandlers() {
     http.get(`/api/v1/orgs/${SLUG}/settings`, () =>
       HttpResponse.json(SETTINGS_PAYLOAD),
     ),
+    http.get(`/api/v1/orgs/${SLUG}/settings/daemon-capacity`, () => HttpResponse.json({
+      running_at_daemon_start: { queue_workers: 6, host_global_session_cap: 13 },
+      running_provenance: 'startup-resolved settings snapshot',
+      persisted_yaml: { queue_workers: null, host_global_session_cap: null },
+      next_start: { queue_workers: 6, host_global_session_cap: 13 },
+      environment_shadowed: [], environment_warning: null,
+      effective_admission_reason: 'Startup-loaded host supervisor policy',
+      revision: 'sha256:test', restart_required: false, restart_pending: false,
+      guidance: { queue_workers: 'Empirical worker guidance', host_global_session_cap: 'Empirical cap guidance', enforced: false },
+      authorization: 'Local operator; daemon bearer required.',
+    })),
     http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
       HttpResponse.json(AGENTS_PAYLOAD),
     ),
@@ -136,7 +148,7 @@ describe('SettingsPage — sub-nav and routing', () => {
     );
   });
 
-  test('sub-nav renders exactly three sections in canonical order', async () => {
+  test('sub-nav renders the dedicated capacity section in canonical order', async () => {
     mountAt(`/orgs/${SLUG}/settings/assistant`);
 
     await waitFor(() =>
@@ -146,6 +158,7 @@ describe('SettingsPage — sub-nav and routing', () => {
     const content = screen.getByTestId('settings-content');
     const subnav = within(content).getByRole('complementary');
     expect(within(subnav).getAllByRole('link').map((link) => link.textContent)).toEqual([
+      'Daemon / Capacity',
       'Assistant',
       'Organization',
       'Executors',
@@ -165,6 +178,7 @@ describe('SettingsPage — sub-nav and routing', () => {
     const subnav = within(content).getByRole('complementary');
 
     for (const label of [
+      'Daemon / Capacity',
       'Assistant',
       'Organization',
       'Executors',
@@ -173,6 +187,16 @@ describe('SettingsPage — sub-nav and routing', () => {
       // Each sub-nav link carries a leading (decorative) icon SVG.
       expect(link.querySelector('svg')).not.toBeNull();
     }
+  });
+
+  test('daemon capacity distinguishes running, not-set YAML, next start and no-live-apply copy', async () => {
+    mountAt(`/orgs/${SLUG}/settings/daemon-capacity`);
+    await screen.findByRole('heading', { name: 'Daemon / Capacity' });
+    await screen.findByText('6 workers / cap 13');
+    expect(screen.getByRole('alert')).toHaveTextContent(/bearer-based authorization cannot be attributed/);
+    expect(screen.getByText('Not set / Not set')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save for next restart' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /restart daemon/i })).not.toBeInTheDocument();
   });
 
   test('sub-nav switches panels via navigation', async () => {

@@ -1,5 +1,5 @@
 import { request } from './client';
-import type { SettingsSnapshot, OrgSettingsPatch, NextWakesResponse } from './types';
+import type { SettingsSnapshot, OrgSettingsPatch, NextWakesResponse, DaemonCapacitySnapshot, DaemonCapacityWrite } from './types';
 
 // ── Registration token mint (THR-052 PR-3) ──
 
@@ -56,6 +56,15 @@ export const putOrgSettings = (
   patch: OrgSettingsPatch,
 ): Promise<SettingsSnapshot> =>
   request(`/orgs/${slug}/settings/org`, { method: 'PUT', body: patch });
+
+export const getDaemonCapacity = (slug: string): Promise<DaemonCapacitySnapshot> =>
+  request(`/orgs/${slug}/settings/daemon-capacity`);
+
+export const putDaemonCapacity = (
+  slug: string,
+  body: DaemonCapacityWrite,
+): Promise<DaemonCapacitySnapshot> =>
+  request(`/orgs/${slug}/settings/daemon-capacity`, { method: 'PUT', body });
 
 /** Preview the next N wake timestamps for an agent's resolved effective
  * schedule. Read-only; an incomplete/invalid schedule returns 200 with

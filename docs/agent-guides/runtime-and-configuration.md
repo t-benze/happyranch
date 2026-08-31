@@ -12,6 +12,19 @@ Resolution order:
 
 There is no `.env` support. `settings_customise_sources` drops dotenv and adds `YamlConfigSettingsSource`. The daemon home resolver is inlined in `config.py` as `_daemon_home` to keep `config` free of a daemon dependency. Do not confuse daemon-level `config.yaml` with each org's `<runtime>/orgs/<slug>/org/config.yaml`.
 
+The authenticated `GET|PUT /api/v1/orgs/{slug}/settings/daemon-capacity`
+resource is daemon-wide despite its Settings navigation context. It exposes and
+atomically stages exactly the paired `queue_workers` and
+`host_global_session_cap` values using an opaque revision under a process lock.
+PUT requires both exact integers, a rationale, and environment-shadow
+confirmation when applicable. It preserves unrelated YAML, writes through a
+same-directory fsynced temporary file and atomic replace, and records the fixed
+honest actor `daemon-bearer-holder` in the existing `config:daemon_capacity`
+audit scope. Audit failure compensates the file mutation and fails the request.
+The shared daemon bearer is required; it proves possession only and cannot be
+attributed to a verified person. Save is next-restart-only and cannot resize
+the startup worker or HostSessionSupervisor snapshots.
+
 | Variable | Default | Description |
 | --- | --- | --- |
 | `HAPPYRANCH_CLAUDE_CLI_PATH` | `claude` | Default command metadata for claude (config/docs only — executor launch requires ``executors.json`` pin) |
