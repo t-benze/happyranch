@@ -202,7 +202,7 @@ def test_trigger_decision_at_most_once_per_window(tmp_path):
     )
     decision = wcs.decide_cleanup_trigger(
         db=db, agent="dev_agent",
-        now_utc=occurrence + timedelta(minutes=5), tz=timezone.utc,
+        now_utc=occurrence + timedelta(seconds=5), tz=timezone.utc,
     )
     assert decision.should_trigger is False
     assert decision.reason == "already_triggered_this_window"
@@ -226,12 +226,12 @@ def test_trigger_decision_ignores_unrelated_tasks(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     occurrence = _sunday_0330_utc()
     _insert_cleanup_task(
-        db, task_id="TASK-100", created_at=occurrence + timedelta(minutes=1),
+        db, task_id="TASK-100", created_at=occurrence + timedelta(seconds=1),
         brief="Ordinary dev_agent work, no cleanup marker.",
     )
     decision = wcs.decide_cleanup_trigger(
         db=db, agent="dev_agent",
-        now_utc=occurrence + timedelta(minutes=2), tz=timezone.utc,
+        now_utc=occurrence + timedelta(seconds=2), tz=timezone.utc,
     )
     assert decision.should_trigger is True
 
@@ -1293,6 +1293,207 @@ async def test_loop_ticks_and_skips_when_not_due(tmp_path, test_settings, monkey
 
 
 @pytest.mark.asyncio
+async def test_tick_org_below_threshold_audits_once_at_weekly_boundary(
+    tmp_path, test_settings, monkeypatch,
+):
+    """An unserviced below-threshold agent is observed once at the weekly
+    decision boundary, not once per minute for the rest of the week."""
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    cfg_path = org.root / "org" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("timezone: UTC\n")
+    state = _FakeDaemonState()
+
+    monkeypatch.setattr(
+        wcs, "measure_workspace_context",
+        lambda *a, **kw: wcs.WorkspaceContextSnapshot(
+            available=True, workspaces_bytes=0,
+        ),
+    )
+    occurrence = _sunday_0330_utc()
+    for minute in range(3):
+        await wcs._tick_org(
+            org, state, now_utc=occurrence + timedelta(minutes=minute),
+        )
+
+    audits = db.get_audit_logs("workspace-cleanup:skipped")
+    below_threshold = [
+        row for row in audits
+        if row["action"] == "workspace_cleanup_skipped"
+        and row["agent"] == "dev_agent"
+        and row["payload"].get("reason") == "workspace_below_threshold"
+    ]
+    assert len(below_threshold) == 1
+
+
+@pytest.mark.asyncio
+async def test_tick_org_retries_below_threshold_at_later_cooldown_boundary(
+    tmp_path, test_settings, monkeypatch,
+):
+    """A rolling cooldown can suppress the first cadence boundary; the next
+    weekly boundary observes below-threshold state once after it expires."""
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    cfg_path = org.root / "org" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("timezone: UTC\n")
+    state = _FakeDaemonState()
+
+    monkeypatch.setattr(
+        wcs, "measure_workspace_context",
+        lambda *a, **kw: wcs.WorkspaceContextSnapshot(
+            available=True, workspaces_bytes=0,
+        ),
+    )
+    occurrence = _sunday_0330_utc()
+    _insert_cleanup_task(
+        db,
+        task_id="TASK-100",
+        agent="dev_agent",
+        created_at=occurrence - timedelta(hours=15),
+        status=TaskStatus.COMPLETED,
+    )
+
+    await wcs._tick_org(org, state, now_utc=occurrence)
+    await wcs._tick_org(org, state, now_utc=occurrence + timedelta(minutes=1))
+    later_boundary = occurrence + timedelta(days=7)
+    await wcs._tick_org(org, state, now_utc=later_boundary)
+    await wcs._tick_org(
+        org, state, now_utc=later_boundary + timedelta(minutes=1),
+    )
+
+    audits = db.get_audit_logs("workspace-cleanup:skipped")
+    below_threshold = [
+        row for row in audits
+        if row["action"] == "workspace_cleanup_skipped"
+        and row["agent"] == "dev_agent"
+        and row["payload"].get("reason") == "workspace_below_threshold"
+    ]
+    assert len(below_threshold) == 1
+
+
+@pytest.mark.asyncio
+async def test_shipping_loop_reaches_occurrence_once_across_phase_and_processing_drift(
+    tmp_path, test_settings, monkeypatch,
+):
+    """The shipping loop cannot skip 03:30 when scan work plus the full sleep
+    advances the next scan from just before the boundary to after 03:31."""
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    cfg_path = org.root / "org" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("timezone: UTC\n")
+    state = _FakeDaemonState()
+    state.orgs = {"test": org}
+    state.metrics_registry = _FakeMetricsRegistry()
+
+    monkeypatch.setattr(
+        wcs, "measure_workspace_context",
+        lambda *a, **kw: wcs.WorkspaceContextSnapshot(
+            available=True,
+            workspaces_bytes=0,
+            measured_at="2026-08-30T03:30:00+00:00",
+        ),
+    )
+    occurrence = _sunday_0330_utc()
+    scan_times = iter([
+        occurrence - timedelta(microseconds=500_000),  # cursor initialization
+        occurrence - timedelta(microseconds=500_000),  # first scan
+        occurrence + timedelta(minutes=1, microseconds=500_000),
+        occurrence + timedelta(minutes=2, seconds=2),
+    ])
+
+    class _DriftingDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(scan_times)
+
+    sleeps = 0
+
+    async def fake_sleep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps >= 3:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(wcs, "datetime", _DriftingDateTime)
+    monkeypatch.setattr(wcs.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await wcs.workspace_cleanup_scheduler_loop(
+            state, interval_seconds=60, warm_up_seconds=0,
+        )
+
+    below_threshold = [
+        row for row in db.get_audit_logs("workspace-cleanup:skipped")
+        if row["action"] == "workspace_cleanup_skipped"
+        and row["agent"] == "dev_agent"
+        and row["payload"].get("reason") == "workspace_below_threshold"
+    ]
+    assert len(below_threshold) == 1
+
+
+@pytest.mark.asyncio
+async def test_shipping_loop_catches_up_current_window_once_on_startup(
+    tmp_path, test_settings, monkeypatch,
+):
+    """A daemon starting after 03:30 evaluates the current weekly occurrence
+    once, without replaying it on later loop ticks."""
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    cfg_path = org.root / "org" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("timezone: UTC\n")
+    state = _FakeDaemonState()
+    state.orgs = {"test": org}
+    state.metrics_registry = _FakeMetricsRegistry()
+
+    monkeypatch.setattr(
+        wcs, "measure_workspace_context",
+        lambda *a, **kw: wcs.WorkspaceContextSnapshot(
+            available=True, workspaces_bytes=0,
+            measured_at="2026-08-30T07:30:00+00:00",
+        ),
+    )
+    occurrence = _sunday_0330_utc()
+    scan_times = iter([
+        occurrence + timedelta(hours=4),
+        occurrence + timedelta(hours=4, seconds=1),
+        occurrence + timedelta(hours=4, minutes=1),
+    ])
+
+    class _StartupDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(scan_times)
+
+    sleeps = 0
+
+    async def fake_sleep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps >= 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(wcs, "datetime", _StartupDateTime)
+    monkeypatch.setattr(wcs.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await wcs.workspace_cleanup_scheduler_loop(
+            state, interval_seconds=60, warm_up_seconds=0,
+        )
+
+    below_threshold = [
+        row for row in db.get_audit_logs("workspace-cleanup:skipped")
+        if row["action"] == "workspace_cleanup_skipped"
+        and row["agent"] == "dev_agent"
+        and row["payload"].get("reason") == "workspace_below_threshold"
+    ]
+    assert len(below_threshold) == 1
+
+
+@pytest.mark.asyncio
 async def test_loop_waits_out_boot_warm_up_before_any_tick(
     tmp_path, test_settings, monkeypatch,
 ):
@@ -1308,7 +1509,7 @@ async def test_loop_waits_out_boot_warm_up_before_any_tick(
 
     ticks: list[str] = []
 
-    async def fake_tick(org, state, now_utc):
+    async def fake_tick(org, state, now_utc, previous_scan_utc=None):
         ticks.append(org.slug)
 
     monkeypatch.setattr(wcs, "_tick_org", fake_tick)
@@ -1354,6 +1555,51 @@ def test_trigger_decision_suppresses_on_history_lookup_error(tmp_path, monkeypat
     )
     assert decision.should_trigger is False
     assert decision.reason == "history_indeterminate"
+
+
+@pytest.mark.asyncio
+async def test_tick_org_audits_boundary_history_failure_once_without_task(
+    tmp_path, test_settings, monkeypatch,
+):
+    """The shipping tick records one fail-closed boundary decision while
+    adjacent scans remain quiet and no cleanup task is produced."""
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    cfg_path = org.root / "org" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("timezone: UTC\n")
+    state = _FakeDaemonState()
+
+    def boom(*a, **kw):
+        raise RuntimeError("db read failure")
+
+    monkeypatch.setattr(db, "list_tasks_by_brief_prefix", boom)
+    occurrence = _sunday_0330_utc()
+    await wcs._tick_org(
+        org, state,
+        now_utc=occurrence - timedelta(seconds=1),
+        previous_scan_utc=occurrence - timedelta(minutes=1),
+    )
+    await wcs._tick_org(
+        org, state,
+        now_utc=occurrence,
+        previous_scan_utc=occurrence - timedelta(seconds=1),
+    )
+    await wcs._tick_org(
+        org, state,
+        now_utc=occurrence + timedelta(minutes=1),
+        previous_scan_utc=occurrence,
+    )
+
+    assert state.queue.items == []
+    assert db.list_tasks() == []
+    history_skips = [
+        row for row in db.get_audit_logs("workspace-cleanup:skipped")
+        if row["action"] == "workspace_cleanup_skipped"
+        and row["agent"] == "dev_agent"
+        and row["payload"].get("reason") == "history_indeterminate"
+    ]
+    assert len(history_skips) == 1
 
 
 @pytest.mark.asyncio
