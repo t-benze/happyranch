@@ -170,6 +170,62 @@ def _tokens(arrivals) -> list[str]:
             if a.invocation_token is not None]
 
 
+def test_reply_delivery_projection_distinguishes_authoritative_hold_from_retry(
+    tmp_path,
+) -> None:
+    """THR-181 247-249: held needs both halves; stale reasons are not proof."""
+    db = Database(tmp_path / "held-projection.db")
+    tid = _make_thread(db, participants=(EM, CH, PL))
+    _arrival(
+        db, tid, mentions_body=f"@{EM} priority", recipients=[EM, CH, PL],
+    )
+    # Give one non-held residual pair a genuine failed retry side-by-side.
+    em = _pair_row(db, tid, EM)
+    _claim(db, em["queued_invocation_token"])
+    _settle(db, em["queued_invocation_token"], "failed")
+    db._conn.execute(
+        "UPDATE thread_reply_delivery_state SET last_terminal_reason = ? "
+        "WHERE thread_id = ? AND agent_name IN (?, ?)",
+        ("timeout", tid, CH, PL),
+    )
+    # PL's matching deferral is deliberately released: historical rows cannot
+    # mask a current retry. CH remains the exact OPEN+HELD conjunction.
+    db._conn.execute(
+        "UPDATE thread_exchange_deferrals SET state = 'released' "
+        "WHERE thread_id = ? AND agent_name = ?", (tid, PL),
+    )
+    db._conn.commit()
+
+    projections = {p.agent_name: p for p in db.list_reply_delivery_projections(tid)}
+    assert projections[CH].state == "held"
+    assert projections[CH].last_terminal_reason is None
+    assert projections[PL].state == "retry_required"
+    assert projections[PL].last_terminal_reason == "timeout"
+    assert projections[EM].state == "retry_required"
+
+
+@pytest.mark.parametrize("missing_half", ["exchange", "deferral"])
+def test_reply_delivery_projection_requires_both_open_exchange_and_held_row(
+    tmp_path, missing_half: str,
+) -> None:
+    db = Database(tmp_path / f"held-negative-{missing_half}.db")
+    tid = _make_thread(db)
+    _arrival(db, tid, mentions_body=f"@{EM} priority")
+    if missing_half == "exchange":
+        db._conn.execute(
+            "UPDATE thread_reply_exchange SET state = 'released' WHERE thread_id = ?",
+            (tid,),
+        )
+    else:
+        db._conn.execute(
+            "UPDATE thread_exchange_deferrals SET state = 'suppressed' "
+            "WHERE thread_id = ? AND agent_name = ?", (tid, CH),
+        )
+    db._conn.commit()
+    projection = {p.agent_name: p for p in db.list_reply_delivery_projections(tid)}
+    assert projection[CH].state == "retry_required"
+
+
 def _settle_cascade(db: Database, thread_id: str, agent: str, outcome: str) -> None:
     """Settle a pair's queued wake cascade until no residual remains (each
     reply/decline mints exactly one follow-on for the residual range — the

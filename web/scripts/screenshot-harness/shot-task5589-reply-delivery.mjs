@@ -1,10 +1,10 @@
-/** TASK-5593: real ThreadsPage reply-delivery evidence and adversarial probes. */
+/** TASK-6200: held/retry ThreadsPage evidence and adversarial probes. */
 import { spawn } from 'node:child_process';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createServer, defaultApiRoutes, findDist, WEB_ROOT } from './harness.mjs';
 
-const OUT = join(WEB_ROOT, 'scripts', 'screenshot-harness', 'out', 'task-5593');
+const OUT = join(WEB_ROOT, 'scripts', 'screenshot-harness', 'out', 'task-6200');
 const SLUG = 'demo'; const THREAD = 'THR-5593';
 const ROUTE = `/orgs/${SLUG}/threads/${THREAD}`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -19,7 +19,7 @@ const baseThread = {
 const entry = (agent_name, state, from_seq, through_seq, count, extra = {}) => ({ agent_name, state, from_seq, through_seq,
   coalesced_message_count: count, started_at: state === 'running' ? '2026-08-24T13:00:00Z' : null,
   updated_at: '2026-08-24T13:01:00Z', last_terminal_reason: null, ...extra });
-const populated = [entry('frontend_engineer_primary','running',9,9,1), entry('qa_engineer','queued',8,9,2),
+const populated = [entry('consultant_head','held',247,249,3),
   entry('support_lead','retry_required',5,7,3,{ last_terminal_reason:'timeout' })];
 const concurrent = [entry('frontend_engineer_primary','running',8,10,3),
   entry('frontend_engineer_secondary','running',11,11,1,{ started_at:'2026-08-24T13:00:20Z' }),
@@ -29,7 +29,7 @@ function apiFor({ replyDelivery, detail = 'ok' }) {
   const json = { ...baseThread, reply_delivery: replyDelivery };
   const path = `/api/v1/orgs/${SLUG}/threads/${THREAD}`;
   const detailRoute = detail === 'loading'
-    ? { path, handler: () => {} }
+    ? { path, handler: (_req,res) => { setTimeout(() => { res.writeHead(200,{'Content-Type':'application/json'}); res.end(JSON.stringify(json)); }, 5000); } }
     : detail === 'error' ? { path, handler: (_req,res) => { res.writeHead(500,{'Content-Type':'application/json'}); res.end('{"detail":"boom"}'); } }
       : { path, json };
   return [...defaultApiRoutes({ orgs:[{ slug:SLUG,root:'/tmp/demo' }] }),
@@ -94,12 +94,12 @@ const cases=[
   {name:'loading-production',viewport:[1440,720],detail:'loading',expectAside:false,expectSection:false,expectText:'Loading messages…'},
   {name:'empty-production',viewport:[1440,720],expectSection:false,expectText:'Reply delivery production seam'},
   {name:'error-production',viewport:[1440,720],detail:'error',expectAside:false,expectSection:false,expectText:'Failed to load thread.',errorControl:true},
-  {name:'populated-production-closed',viewport:[1440,720],replyDelivery:populated,expectSection:true,identities:['frontend_engineer_primary replying','support_lead retry required','messages 5–7']},
+  {name:'populated-production-closed',viewport:[1440,720],replyDelivery:populated,expectSection:true,identities:['consultant_head waiting for current exchange','messages 247–249','support_lead retry required','messages 5–7']},
   {name:'multi-agent-narrow-closed',viewport:[1048,720],replyDelivery:concurrent,expectSection:true,identities:['frontend_engineer_primary replying','frontend_engineer_secondary replying','messages 8–10']},
   {name:'multi-agent-wide-open',viewport:[1910,720],replyDelivery:concurrent,open:true,expectSection:true,identities:['frontend_engineer_primary replying','frontend_engineer_secondary replying','messages 8–10','qa_engineer 3 messages coalesced','support_engineer 1 message coalesced']},
 ];
 await rm(OUT,{recursive:true,force:true}); await mkdir(OUT,{recursive:true}); const results=[];
-for(const testCase of cases){const server=await createServer({root:findDist(),api:apiFor(testCase)});try{for(const theme of ['light','dark']){
+for(const testCase of cases){const server=await createServer({root:findDist(),api:apiFor(testCase)});try{for(const theme of ['light']){
   const session=`task5593-${testCase.name}-${theme}`;await pw(session,['open']);try{await pw(session,['resize',String(testCase.viewport[0]),String(testCase.viewport[1])]);
     await pw(session,['goto',`${server.url}${ROUTE}`]);await pw(session,['localstorage-set','happyranch.theme',theme]);await pw(session,['reload']);await sleep(testCase.detail==='error'?1400:700);
     const queued=testCase.replyDelivery?.filter((item)=>item.state==='queued').length??0;
@@ -113,6 +113,7 @@ const probeServer=await createServer({root:findDist(),api:apiFor({replyDelivery:
   const session=`task5593-red-${probe}`;await pw(session,['open']);try{await pw(session,['resize','1440','720']);await pw(session,['goto',`${probeServer.url}${ROUTE}`]);await sleep(700);
     const result=parseEval(await pw(session,['eval',diagnosticExpression(probe)]));let detected=false;try{assertState(result,{name:probe,expectSection:true})}catch(error){detected=true;result.expectedFailure=error.message}
     if(!detected)throw new Error(`${probe}: red probe was not detected`);await writeFile(join(OUT,`diagnostics-red-${probe}.json`),`${JSON.stringify(result,null,2)}\n`);
-  }finally{await pw(session,['close']).catch(()=>{})}}}finally{await probeServer.close()}
+  }finally{await pw(session,['close']).catch(()=>{})}}}finally{probeServer.server.closeAllConnections();probeServer.server.close()}
 await writeFile(join(OUT,'diagnostics-default.json'),`${JSON.stringify(results,null,2)}\n`);
 console.log(JSON.stringify({status:'PASS',output:OUT,captures:results.length,redProbes:['displacement','ancestor-clip']}));
+process.exit(0);

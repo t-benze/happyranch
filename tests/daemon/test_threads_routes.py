@@ -3564,6 +3564,53 @@ def test_thread_and_messages_reply_delivery_parity(tmp_home, app, org_state, aut
     assert msgs_body["reply_delivery"][0]["state"] == "queued"
 
 
+def test_thread_and_messages_project_authoritative_held_pair(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Both API consumers carry OPEN-exchange + matching-HELD truth."""
+    client = TestClient(app)
+    _seed_agent(org_state, "consultant_head")
+    result = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["consultant_head"],
+              "body_markdown": "m247"},
+        headers=auth_headers,
+    ).json()
+    tid = result["thread_id"]
+    db = org_state.db
+    db._conn.execute(
+        "UPDATE thread_reply_delivery_state SET queued_invocation_token = NULL, "
+        "required_through_seq = 249, acknowledged_through_seq = 246, "
+        "last_terminal_reason = 'stale_timeout' WHERE thread_id = ?",
+        (tid,),
+    )
+    db._conn.execute(
+        "INSERT INTO thread_reply_exchange "
+        "(thread_id, exchange_id, state, open_seq, close_seq, opened_at, "
+        "last_activity_at, deferred_count) VALUES (?, 1, 'open', 247, 249, ?, ?, 1)",
+        (tid, "2026-08-31T01:00:00+00:00", "2026-08-31T01:01:00+00:00"),
+    )
+    db._conn.execute(
+        "INSERT INTO thread_exchange_deferrals "
+        "(thread_id, exchange_id, agent_name, state, created_at) "
+        "VALUES (?, 1, 'consultant_head', 'held', ?)",
+        (tid, "2026-08-31T01:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    detail = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}", headers=auth_headers,
+    ).json()["reply_delivery"]
+    messages = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}/messages", headers=auth_headers,
+    ).json()["reply_delivery"]
+    assert detail == messages
+    assert detail[0]["state"] == "held"
+    assert detail[0]["from_seq"] == 247
+    assert detail[0]["through_seq"] == 249
+    assert detail[0]["last_terminal_reason"] is None
+
+
 def test_reply_route_settles_claimed_range_and_schedules_followon(
     tmp_home, app, org_state, auth_headers,
 ):

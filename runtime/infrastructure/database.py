@@ -9117,8 +9117,8 @@ class Database:
     ) -> list[ReplyDeliveryProjection]:
         """Pair-level reply_delivery projection for a thread (server contract).
 
-        Derived from ``thread_reply_delivery_state`` only — never fabricated
-        from per-message invocation rows. A fully-settled pair (nothing queued/
+        Derived from authoritative reply-delivery and exchange state — never
+        fabricated from per-message invocation rows. A fully-settled pair (nothing queued/
         running/required) is omitted; terminal history remains on the
         per-message responder strips. ``coalesced_message_count`` is the number
         of transcript rows the wake's range covers (COUNT, not subtraction).
@@ -9153,7 +9153,16 @@ class Database:
                 from_seq = acknowledged + 1
                 through_seq = required
             elif required > acknowledged:
-                state = "retry_required"
+                held = self._conn.execute(
+                    "SELECT 1 FROM thread_reply_exchange e "
+                    "JOIN thread_exchange_deferrals d "
+                    "ON d.thread_id = e.thread_id "
+                    "AND d.exchange_id = e.exchange_id "
+                    "WHERE e.thread_id = ? AND e.state = 'open' "
+                    "AND d.agent_name = ? AND d.state = 'held' LIMIT 1",
+                    (thread_id, row["agent_name"]),
+                ).fetchone()
+                state = "held" if held is not None else "retry_required"
                 from_seq = acknowledged + 1
                 through_seq = required
             else:
@@ -9171,7 +9180,12 @@ class Database:
                 coalesced_message_count=int(cnt["n"]),
                 started_at=started_at,
                 updated_at=row["updated_at"],
-                last_terminal_reason=row["last_terminal_reason"],
+                # Terminal reason is historical metadata, never state proof.
+                # Expose it only for a currently genuine retry diagnostic.
+                last_terminal_reason=(
+                    row["last_terminal_reason"]
+                    if state == "retry_required" else None
+                ),
             ))
         return out
 

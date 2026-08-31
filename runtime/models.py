@@ -722,10 +722,12 @@ class ReplyDeliveryProjection(BaseModel):
     """Pair-level reply-delivery wire projection (server contract, Slice B).
 
     Derived from ``thread_reply_delivery_state``, never fabricated from
-    per-message invocation rows. ``state`` truthfully distinguishes the three
+    per-message invocation rows. ``state`` truthfully distinguishes the four
     live obligations:
       * ``queued`` — one unstarted coalesced REPLY wake (token set, not started)
       * ``running`` — one claimed in-flight REPLY (immutable range)
+      * ``held`` — an unacknowledged range intentionally deferred by both an
+        OPEN reply exchange and this participant's matching HELD deferral row
       * ``retry_required`` — unacknowledged range with no active wake; the
         next conversational arrival mints the single covering retry
     A fully-settled pair (nothing queued/running/required) is omitted from the
@@ -734,7 +736,7 @@ class ReplyDeliveryProjection(BaseModel):
     range covers (computed in the store, not inferred by numeric subtraction).
     """
     agent_name: str
-    state: Literal["queued", "running", "retry_required"]
+    state: Literal["queued", "running", "held", "retry_required"]
     from_seq: int
     through_seq: int
     coalesced_message_count: int

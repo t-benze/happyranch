@@ -268,6 +268,16 @@ export const MOCK_REPLY_DELIVERY: Record<string, ReplyDeliveryEntry[]> = {
   ],
   'THR-003': [
     {
+      agent_name: 'consultant_head',
+      state: 'held',
+      from_seq: 247,
+      through_seq: 249,
+      coalesced_message_count: 3,
+      started_at: null,
+      updated_at: '2026-05-14T08:09:00Z',
+      last_terminal_reason: null,
+    },
+    {
       agent_name: 'support_lead',
       state: 'retry_required',
       from_seq: 2,
