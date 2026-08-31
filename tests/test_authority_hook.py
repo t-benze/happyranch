@@ -521,7 +521,29 @@ def test_escalate_thread_projection_unchanged_for_thread_origin(runtime, db, mon
     esc = [m for m in msgs if m.system_payload
            and m.system_payload.get("kind_tag") == "task_escalated"]
     assert len(esc) == 1
-    assert esc[0].system_payload["reason"] == "needs founder"
+    durable_result = db.get_latest_task_result("T-1", "engineering_head", "sess-x")
+    assert durable_result is not None
+    assert durable_result["id"] == row_id
+    escalation_rows = _escalation_rows(db, "T-1")
+    assert len(escalation_rows) == 1
+    assert esc[0].system_payload == {
+        "kind_tag": "task_escalated",
+        "task_id": "T-1",
+        "original_task_id": "T-1",
+        "root_task_id": "T-1",
+        "status": "escalated",
+        "reason": "needs founder",
+        "revisit_chain_length": 1,
+        "causal_terminal_result": {
+            "task_id": "T-1",
+            "result_id": durable_result["id"],
+            "terminal_status": durable_result["status"],
+            "verdict": durable_result["verdict"],
+            "output_summary": durable_result["output_summary"],
+            "created_at": durable_result["created_at"],
+        },
+        "causal_escalation_audit_id": escalation_rows[0]["id"],
+    }
 
 
 # ── (d) real must-escalate sentinels through the shipping hook ────────────
