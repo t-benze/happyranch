@@ -307,6 +307,7 @@ async def run_job(
     max_runtime_seconds: int | None,
     publish: Callable[[dict], None],
     max_output_bytes: int | None = None,
+    temp_dir: str | None = None,
 ) -> JobRunResult:
     """Spawn the script, pump streams, return JobRunResult.
 
@@ -330,6 +331,9 @@ async def run_job(
         raise FileNotFoundError(f"interpreter unavailable: {interpreter}")
 
     started = datetime.now(timezone.utc)
+    child_env = _sanitize_child_env(dict(os.environ))
+    if temp_dir is not None:
+        child_env.update({"TMPDIR": temp_dir, "TMP": temp_dir, "TEMP": temp_dir})
     proc = await asyncio.create_subprocess_exec(
         binary,
         "-",  # read script from stdin (bash/sh/zsh/python3 all honor this)
@@ -338,7 +342,7 @@ async def run_job(
         # before passing to the child so job scripts cannot accidentally steer
         # package installation into the canonical shared venv.
         # dict() is required: uvloop rejects os.environ (Mapping) with TypeError.
-        env=_sanitize_child_env(dict(os.environ)),
+        env=child_env,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

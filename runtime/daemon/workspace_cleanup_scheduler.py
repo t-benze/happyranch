@@ -92,6 +92,7 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone, tzinfo
@@ -186,6 +187,7 @@ _MAX_WORKTREES_PER_REPO = 256
 _MAX_ENTRIES_PER_WORKSPACE = 500_000
 _MAX_DEPTH = 20
 _TOP_WORKSPACES = 3
+_INODE_ALERT_PERCENT = 90.0
 
 _DEPENDENCY_DIR_NAMES = frozenset({"node_modules", ".venv"})
 _WORKTREE_NAME_RE = re.compile(r"^TASK-(\d+)")
@@ -232,6 +234,13 @@ class WorkspaceContextSnapshot:
     dep_bytes_in_worktrees: int = 0
     live_sessions_count: int = 0
     live_sessions_agents: list[str] = field(default_factory=list)
+    inode_available: bool = True
+    inode_reason: str | None = None
+    inode_used: int = 0
+    inode_free: int = 0
+    inode_total: int = 0
+    inode_percent: float = 0.0
+    inode_threshold_state: str = "ok"
 
     def unavailable(self, reason: str) -> "WorkspaceContextSnapshot":
         return WorkspaceContextSnapshot(
@@ -311,6 +320,23 @@ def format_workspace_context_note(snapshot: WorkspaceContextSnapshot) -> str:
     lines.append(
         f"  live sessions:      {snapshot.live_sessions_count} ({agents})"
     )
+    if snapshot.inode_available:
+        lines.append(
+            f"  temp filesystem inodes: used={snapshot.inode_used} "
+            f"free={snapshot.inode_free} total={snapshot.inode_total} "
+            f"percent={snapshot.inode_percent:.1f}% "
+            f"threshold={snapshot.inode_threshold_state}"
+        )
+        if snapshot.inode_threshold_state == "alert":
+            lines.append(
+                "  inode action: inspect managed-temp operation receipts; "
+                "this alert is not cleanup eligibility."
+            )
+    else:
+        lines.append(
+            f"  temp filesystem inodes: unavailable ({snapshot.inode_reason or 'unknown'}); "
+            "workspace measurement continues."
+        )
     if snapshot.workspaces_unmeasured:
         lines.append(
             f"  note: {snapshot.workspaces_unmeasured} workspace(s) could not be "
@@ -589,14 +615,82 @@ def measure_workspace_context(
     """
     deadline = time.monotonic() + max(0.001, deadline_seconds)
     try:
-        return _measure(
+        snapshot = _measure(
             workspace_dir=workspace_dir, deadline=deadline,
             db=db, sessions=sessions,
         )
+        _observe_inodes(snapshot)
+        return snapshot
     except Exception as exc:  # pragma: no cover — defensive, fail-open
         return WorkspaceContextSnapshot(
             available=False, reason=f"measurement error: {exc}",
         )
+
+
+def _observe_inodes(snapshot: WorkspaceContextSnapshot) -> None:
+    """Add fail-open statvfs inode telemetry for the temp filesystem."""
+    try:
+        values = os.statvfs(tempfile.gettempdir())
+        total = int(values.f_files)
+        free = int(values.f_favail)
+        if total <= 0 or free < 0 or free > total:
+            raise ValueError("invalid statvfs inode counters")
+        used = total - free
+        percent = used * 100.0 / total
+        snapshot.inode_used = used
+        snapshot.inode_free = free
+        snapshot.inode_total = total
+        snapshot.inode_percent = percent
+        snapshot.inode_threshold_state = (
+            "alert" if percent >= _INODE_ALERT_PERCENT else "ok"
+        )
+    except Exception as exc:
+        snapshot.inode_available = False
+        snapshot.inode_reason = str(exc)
+
+
+def _reconcile_managed_temp(org: "OrgState", now_utc: datetime) -> None:
+    """Prospective-only cleanup under positive receipts; never raises."""
+    try:
+        from runtime.daemon.managed_temp import (
+            default_store_root, expire, lifecycle_is_inactive,
+            plan_expiry, plan_quarantine, quarantine,
+        )
+        store = default_store_root(org.root)
+        if not store.exists():
+            return
+        inactive = lambda receipt: lifecycle_is_inactive(
+            org.db, org.sessions, receipt,
+        )
+        protected = (
+            org.root / "workspaces", org.root / "jobs", org.root / "org",
+            org.root / "artifacts", org.root / "threads",
+            org.root / "task-attachments", org.root / "happyranch.db",
+        )
+        for entry in plan_quarantine(
+            store, org_slug=org.slug, inactive=inactive, now=now_utc,
+            protected_roots=protected,
+        ):
+            try:
+                quarantine(
+                    entry, store_root=store, inactive=inactive,
+                    protected_roots=protected, now=now_utc,
+                )
+            except (OSError, ValueError):
+                logger.warning("managed temp quarantine revalidation failed", exc_info=True)
+        for entry in plan_expiry(
+            store, org_slug=org.slug, inactive=inactive,
+            protected_roots=protected, now=now_utc,
+        ):
+            try:
+                expire(
+                    entry, store_root=store, inactive=inactive,
+                    protected_roots=protected, now=now_utc,
+                )
+            except (OSError, ValueError):
+                logger.warning("managed temp expiry revalidation failed", exc_info=True)
+    except Exception:
+        logger.warning("managed temp reconciliation unavailable", exc_info=True)
 
 
 def _measure(
@@ -1299,6 +1393,7 @@ async def _tick_org(org: "OrgState", state: "DaemonState", now_utc: datetime) ->
     if not cfg.workspace_cleanup_enabled:
         # Kill switch (enabled-by-default org config flag).
         return
+    _reconcile_managed_temp(org, now_utc)
     tz = _resolve_timezone(cfg.timezone)[0]
 
     offset = 0

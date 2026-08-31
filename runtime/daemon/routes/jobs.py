@@ -790,6 +790,15 @@ async def _run_job_core(
             )
 
         try:
+            from runtime.daemon.managed_temp import (
+                create_job_temp_root,
+                default_store_root,
+            )
+            managed_temp = create_job_temp_root(
+                default_store_root(org.root), org_slug=org.slug,
+                task_id=record.task_id, job_id=job_id,
+                agent=record.agent_name,
+            )
             result = await _spawn_job(
                 job_id=job_id,
                 script_text=record.script_text,
@@ -800,6 +809,7 @@ async def _run_job_core(
                 max_runtime_seconds=timeout,
                 max_output_bytes=record.max_output_bytes,
                 publish=_sync_publish,
+                temp_dir=managed_temp.root,
             )
         except FileNotFoundError:
             finished = _now_iso()
