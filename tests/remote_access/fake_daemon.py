@@ -19,9 +19,9 @@ class FakeDaemon:
     """A deterministic loopback-only fake daemon for the harness.
 
     ``expected_bearer``: the Authorization value the connector must inject.
-    ``hold_open``: when True the response body is held open (headers flushed,
-    ``started`` set) until ``release`` is set — enabling revocation-mid-stream
-    tests for both HTTP and SSE.
+    ``hold_open``: when True the response body is held open until ``release``
+    is set. SSE emits one frame before ``started`` is set; HTTP only flushes
+    headers. This enables deterministic revocation-mid-stream tests.
     """
 
     def __init__(self, expected_bearer: str, hold_open: bool = False, port: int = 0) -> None:
@@ -95,18 +95,23 @@ class FakeDaemon:
                 if not self._record_and_check_auth():
                     return
                 if self.path.endswith("/tail"):
-                    # SSE stream: emit two events (body held open when hold_open).
+                    # A held SSE emits one frame before holding the body open.
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
                     self.send_header("Connection", "close")
                     self.end_headers()
                     self.wfile.flush()
-                    daemon.started.set()
                     if daemon.hold_open:
+                        self.wfile.write(b"data: hello\n\n")
+                        self.wfile.flush()
+                        daemon.started.set()
                         daemon.release.wait(timeout=10)
                         if self.wfile.closed:
                             return
-                    self.wfile.write(b"data: hello\n\ndata: world\n\n")
+                        self.wfile.write(b"data: world\n\n")
+                    else:
+                        daemon.started.set()
+                        self.wfile.write(b"data: hello\n\ndata: world\n\n")
                     self.wfile.flush()
                     return
                 payload = json.dumps({"ok": True, "path": self.path}).encode()

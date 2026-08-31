@@ -88,7 +88,12 @@ def test_reviewer_probes() -> None:
         assert decision.allowed and decision.stream is not None
         handle = decision.stream
         assert fake.started.wait(timeout=5)
-        assert handle.receive() is not None
+        assert handle.receive() == b"data: hello\n"
+        assert handle.receive() == b"\n"
+        assert fake.release.is_set() is False
+        assert handle.closed is False
+        assert registry.is_open(handle.stream_id)
+        assert registry._revoked is False
         # The old public bypass no longer exists.
         try:
             state.apply_revocation(2)
