@@ -842,6 +842,46 @@ describe('TodoDetailPage — edit dialog outbound body', () => {
     expect(capturedBody!.fire_at).toBeUndefined()
   })
 
+  it('submits native recurring intent through a DST gap without calculating fire_at', async () => {
+    // The native schedule's next Sunday falls in America/New_York's spring
+    // DST gap. Unlike the legacy weekly contract, this browser must submit
+    // the rule and let the daemon decide the authoritative occurrence.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-03-02T00:00:00Z'))
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    let capturedBody: Record<string, unknown> | null = null
+    const dstGapRecurring = {
+      ...ARMED_RECURRING_MONTHLY,
+      recurrence: {
+        freq: 'WEEKLY', interval: 1, byday: ['SU'], time: '02:30',
+        tz: 'America/New_York', until: null, count: null, anchor_date: '2026-03-01',
+      },
+      timezone: 'America/New_York',
+    }
+    mockDetailWithEdit(dstGapRecurring, (body) => {
+      capturedBody = body as Record<string, unknown>
+      return HttpResponse.json(dstGapRecurring)
+    })
+
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${ORG_SLUG}/todos/SCHEDULE-120` })
+    await waitForDetailHeading('Review the recurring portfolio allocation')
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByRole('heading', { name: 'Edit timing' })
+    expect(screen.queryByText('Expected next fire · America/New_York')).toBeNull()
+    await user.click(screen.getByText('Save changes'))
+
+    await waitFor(() => expect(capturedBody).not.toBeNull())
+    expect(capturedBody).toMatchObject({
+      timezone: 'America/New_York',
+      recurrence: {
+        freq: 'WEEKLY', interval: 1, byday: ['SU'], time: '02:30',
+        tz: 'America/New_York', until: null, count: null,
+      },
+    })
+    expect(capturedBody!.fire_at).toBeUndefined()
+    vi.useRealTimers()
+  })
+
   it('saves a native weekly multi-select recurrence with a positive interval and no end', async () => {
     let capturedBody: Record<string, unknown> | null = null
     mockDetailWithEdit(ARMED_RECURRING_MONTHLY, (body) => {

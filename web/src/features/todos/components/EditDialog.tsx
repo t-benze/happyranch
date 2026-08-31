@@ -1,7 +1,12 @@
 /**
  * EditDialog — edit a schedule's timing.
  *
- * For weekly edits the outbound body carries:
+ * Native recurring edits carry only scheduler intent:
+ *   recurrence: a rule expressed in its selected IANA timezone
+ *   timezone:   same as recurrence.tz
+ *   start_date: optional server-owned rephase date
+ *
+ * Legacy weekly edits retain their historical, strict contract:
  *   recurrence: { day, time, tz }
  *   timezone:  same as recurrence.tz
  *   fire_at:   the next weekly occurrence in the selected IANA tz
@@ -117,7 +122,10 @@ export function EditDialog({
     if (!open) return
     const tz = schedule.timezone || 'UTC'
 
-    if (!isWeekly && schedule.fire_at) {
+    // `fire_at` is an editable local instant only for one-shots. Native
+    // recurrences send their rule intent to the daemon; do not parse or
+    // recalculate the server-owned next occurrence in the browser.
+    if (schedule.kind === 'one_shot' && schedule.fire_at) {
       try {
         const d = new Date(schedule.fire_at)
         if (!Number.isNaN(d.getTime())) {
@@ -170,13 +178,16 @@ export function EditDialog({
   ])
 
   const nextFirePreview = useMemo((): { date: Date; tz: string } | null => {
+    // Native recurring schedules deliberately have no client-side next-fire
+    // preview: recurrence and DST resolution are daemon-owned.
+    if (isRecurring) return null
+
     const tz = timezone || 'UTC'
     if (isWeekly) {
       const iso = nextWeeklyOccurrence(weekday, weeklyTime, tz)
       if (!iso) return null
       return { date: new Date(iso), tz }
     }
-    if (isRecurring) return null
     if (fireAtDate && fireAtTime) {
       const iso = serializeOneShotInTz(fireAtDate, fireAtTime, tz)
       if (!iso) return null
