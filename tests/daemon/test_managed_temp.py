@@ -167,3 +167,46 @@ def test_store_rejects_symlink_and_wrong_org(tmp_path):
         mt.create_job_temp_root(link, org_slug="acme", task_id="TASK-1", job_id="JOB-1", agent="dev")
     store, _ = _create(tmp_path)
     assert mt.plan_quarantine(store, org_slug="other", inactive=lambda _: True) == []
+
+
+def test_quarantine_rejects_destination_parent_replaced_after_planning(tmp_path):
+    store = tmp_path / "store"
+    receipt = mt.create_job_temp_root(
+        store, org_slug="acme", task_id="TASK-1", job_id="JOB-1", agent="dev",
+    )
+    entry = mt.plan_quarantine(store, org_slug="acme", inactive=lambda _: True)[0]
+    original_parent = store / "quarantine.original"
+    (store / "quarantine").rename(original_parent)
+    escape = tmp_path / "escape"
+    escape.mkdir()
+    (store / "quarantine").symlink_to(escape, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="parent identity changed"):
+        mt.quarantine(entry, store_root=store, inactive=lambda _: True)
+
+    source = Path(receipt.root)
+    assert source.stat().st_ino == receipt.inode
+    assert not (escape / receipt.receipt_id).exists()
+    assert not (original_parent / receipt.receipt_id).exists()
+
+
+def test_restore_rejects_destination_parent_replaced_after_planning(tmp_path):
+    store = tmp_path / "store"
+    receipt = mt.create_job_temp_root(
+        store, org_slug="acme", task_id="TASK-1", job_id="JOB-1", agent="dev",
+    )
+    entry = mt.plan_quarantine(store, org_slug="acme", inactive=lambda _: True)[0]
+    expiry = mt.quarantine(entry, store_root=store, inactive=lambda _: True, now=NOW)
+    original_parent = store / "active.original"
+    (store / "active").rename(original_parent)
+    escape = tmp_path / "escape"
+    escape.mkdir()
+    (store / "active").symlink_to(escape, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="parent identity changed"):
+        mt.restore(expiry, store_root=store, now=NOW + timedelta(days=1))
+
+    source = Path(expiry.quarantine_path)
+    assert source.stat().st_ino == receipt.inode
+    assert not (escape / receipt.receipt_id).exists()
+    assert not (original_parent / receipt.receipt_id).exists()

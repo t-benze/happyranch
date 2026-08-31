@@ -10,10 +10,11 @@ import os
 import shutil
 import stat
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from runtime.models import JobStatus, TaskStatus
 
@@ -126,6 +127,56 @@ def _ensure_store(root: Path, org_slug: str) -> None:
         child.mkdir(mode=0o700, exist_ok=True)
         if child.is_symlink() or child.lstat().st_dev != dev:
             raise ValueError("temporary store crosses a device or symlink")
+
+
+@contextmanager
+def _pinned_rename_parents(
+    store_root: Path, *, org_slug: str, source_name: str, target_name: str,
+) -> Iterator[tuple[int, int]]:
+    """Retain validated store-child inodes through a relative rename."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    root_fd = source_fd = target_fd = -1
+    try:
+        root_fd = os.open(store_root, flags)
+        root_stat = os.fstat(root_fd)
+        path_stat = store_root.lstat()
+        marker_fd = os.open(_STORE_MARKER, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root_fd)
+        with os.fdopen(marker_fd, "r", encoding="utf-8") as stream:
+            marker = json.load(stream)
+        expected_marker = {
+            "version": _VERSION, "org_slug": org_slug, "uid": os.getuid(),
+            "device": root_stat.st_dev, "inode": root_stat.st_ino,
+        }
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or (root_stat.st_dev, root_stat.st_ino)
+            != (path_stat.st_dev, path_stat.st_ino)
+            or root_stat.st_uid != os.getuid()
+            or stat.S_IMODE(root_stat.st_mode) & 0o077
+            or marker != expected_marker
+        ):
+            raise ValueError("temporary store identity changed")
+        source_fd = os.open(source_name, flags, dir_fd=root_fd)
+        target_fd = os.open(target_name, flags, dir_fd=root_fd)
+        for name, directory_fd in ((source_name, source_fd), (target_name, target_fd)):
+            descriptor_stat = os.fstat(directory_fd)
+            pathname_stat = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(descriptor_stat.st_mode)
+                or (descriptor_stat.st_dev, descriptor_stat.st_ino)
+                != (pathname_stat.st_dev, pathname_stat.st_ino)
+                or descriptor_stat.st_dev != root_stat.st_dev
+                or descriptor_stat.st_uid != os.getuid()
+                or stat.S_IMODE(descriptor_stat.st_mode) & 0o077
+            ):
+                raise ValueError("temporary store parent identity changed")
+        yield source_fd, target_fd
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("temporary store parent identity changed") from exc
+    finally:
+        for directory_fd in (target_fd, source_fd, root_fd):
+            if directory_fd >= 0:
+                os.close(directory_fd)
 
 
 @dataclass(frozen=True)
@@ -335,7 +386,25 @@ def quarantine(
         / f"{receipt.receipt_id}.{operation_id}.quarantine-intent.json",
         payload,
     )
-    os.rename(source, target)
+    with _pinned_rename_parents(
+        store_root, org_slug=receipt.org_slug,
+        source_name=_ACTIVE, target_name=_QUARANTINE,
+    ) as (source_fd, target_fd):
+        try:
+            os.stat(receipt.receipt_id, dir_fd=target_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError("quarantine target already exists")
+        source_stat = os.stat(
+            receipt.receipt_id, dir_fd=source_fd, follow_symlinks=False,
+        )
+        if (source_stat.st_dev, source_stat.st_ino) != (receipt.device, receipt.inode):
+            raise ValueError("candidate identity changed before quarantine")
+        os.rename(
+            receipt.receipt_id, receipt.receipt_id,
+            src_dir_fd=source_fd, dst_dir_fd=target_fd,
+        )
     _write_json_new(
         store_root / _RECEIPTS
         / f"{receipt.receipt_id}.{operation_id}.quarantined.json",
@@ -404,7 +473,27 @@ def restore(
         or not _outside_protected(source, protected_roots)
     ):
         raise ValueError("restore identity check failed")
-    os.rename(source, target)
+    with _pinned_rename_parents(
+        store_root, org_slug=entry.receipt.org_slug,
+        source_name=_QUARANTINE, target_name=_ACTIVE,
+    ) as (source_fd, target_fd):
+        try:
+            os.stat(entry.receipt.receipt_id, dir_fd=target_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError("restore target already exists")
+        source_stat = os.stat(
+            entry.receipt.receipt_id, dir_fd=source_fd, follow_symlinks=False,
+        )
+        if (source_stat.st_dev, source_stat.st_ino) != (
+            entry.receipt.device, entry.receipt.inode,
+        ):
+            raise ValueError("candidate identity changed before restore")
+        os.rename(
+            entry.receipt.receipt_id, entry.receipt.receipt_id,
+            src_dir_fd=source_fd, dst_dir_fd=target_fd,
+        )
     _write_json_new(
         store_root / _RECEIPTS
         / f"{entry.receipt.receipt_id}.{uuid.uuid4().hex}.restored.json",
