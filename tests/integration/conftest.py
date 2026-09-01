@@ -95,7 +95,7 @@ def runtime(runtime_container: Path) -> Path:
     return org_root
 
 
-def seed_workspace(org_root: Path, agent: str) -> Path:
+def seed_workspace(org_root: Path, agent: str, *, executor: str = "claude") -> Path:
     """Create the minimum active-agent layout needed for `_run_agent`.
 
     THR-095 made ``org/agents/<name>.md`` the single authoritative launch
@@ -133,7 +133,7 @@ def seed_workspace(org_root: Path, agent: str) -> Path:
         name=agent,
         team=team,
         role=role,
-        executor="claude",
+        executor=executor,
         allow_rules=(),
         repos={},
         enrolled_by=None,
@@ -299,6 +299,15 @@ def live_daemon_idle(
     monkeypatch.setenv("HAPPYRANCH_OPENCODE_CLI_PATH", str(fake_opencode))
     # Disable executor launch spacing (issue #85) — see live_daemon.
     monkeypatch.setenv("HAPPYRANCH_EXECUTOR_LAUNCH_SPACING_SECONDS", "0")
+    # Executor launch is registration-only. The idle daemon still needs the
+    # isolated machine registry before a runtime is registered later.
+    from runtime.orchestrator.executor_binary_registry import save_registry
+
+    save_registry({
+        "claude": str(fake_claude),
+        "codex": str(fake_codex),
+        "opencode": str(fake_opencode),
+    })
     script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
     subprocess.run([str(script), "start"], check=True)
     deadline = time.time() + 5

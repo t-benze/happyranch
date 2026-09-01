@@ -101,10 +101,8 @@ def _seed_codex_workspace(org_root: Path, agent: str) -> None:
     when provider == "codex". Past that, fake_codex.sh parses task_id /
     session_id from the prompt directly and runs the plan — no real Codex
     bootstrap is needed."""
-    workspace = org_root / "workspaces" / agent
-    workspace.mkdir(parents=True, exist_ok=True)
+    workspace = seed_workspace(org_root, agent, executor="codex")
     (workspace / "AGENTS.md").write_text("# AGENTS (test stub)\n")
-    (workspace / "agent.yaml").write_text("repos: {}\nexecutor: codex\n")
 
 
 def test_claude_session_writes_token_usage_row(
