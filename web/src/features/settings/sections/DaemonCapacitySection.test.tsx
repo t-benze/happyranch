@@ -76,6 +76,29 @@ describe('DaemonCapacitySection readiness matrix', () => {
     else expect(document.body).not.toHaveTextContent(/unused admission|cannot run concurrently/i);
   });
 
+  test('derives draft consequences from a non-seven server topology', async () => {
+    loaded({
+      producer_envelope: 11,
+      producer_components: {
+        task_workers: 6, thread_workers: 2, dream_workers: 1, wake_workers: 1, schedule_workers: 1,
+      },
+    });
+    render(<DaemonCapacitySection />);
+    const workers = screen.getByLabelText('Concurrent task sessions');
+    const cap = screen.getByLabelText('Host global session cap');
+    await userEvent.clear(workers);
+    await userEvent.type(workers, '8');
+    await userEvent.clear(cap);
+    await userEvent.type(cap, '12');
+    expect(document.body).toHaveTextContent(/below producer envelope 13.*permitted/i);
+    await userEvent.clear(cap);
+    await userEvent.type(cap, '13');
+    expect(document.body).not.toHaveTextContent(/unused admission|cannot run concurrently/i);
+    await userEvent.clear(cap);
+    await userEvent.type(cap, '14');
+    expect(document.body).toHaveTextContent(/above producer envelope 13.*does not create additional producers/i);
+  });
+
   test('renders capability-derived fallback cap and reason accessibly', () => {
     loaded({ effective_admission_cap: 4, effective_admission_reason: 'Capability fallback binds because enforcement is unavailable.' });
     render(<DaemonCapacitySection />);

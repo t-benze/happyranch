@@ -255,6 +255,73 @@ def test_daemon_capacity_terminal_success_audit_failure_is_publication_uncertain
     assert [row["action"] for row in rows] == ["daemon_capacity_config_write_authorized"]
 
 
+@pytest.mark.parametrize("setup_fault", ["parent_mkdir", "mkstemp"])
+@pytest.mark.parametrize("terminal_audit_fails", [False, True])
+def test_daemon_capacity_setup_failure_has_truthful_terminal_audit_without_mutation(
+    tmp_home, app, org_state, auth_headers, monkeypatch, setup_fault, terminal_audit_fails,
+) -> None:
+    config_path = tmp_home / "config.yaml"
+    config_path.write_text("queue_workers: 5\nhost_global_session_cap: 12\nunrelated: preserved\n")
+    prior = config_path.read_bytes()
+    client = TestClient(app)
+    current = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+
+    if setup_fault == "parent_mkdir":
+        real_mkdir = Path.mkdir
+
+        def fail_config_parent(path, *args, **kwargs):
+            if path == config_path.parent:
+                raise OSError("parent mkdir fault")
+            return real_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", fail_config_parent)
+    else:
+        monkeypatch.setattr(
+            "runtime.daemon.capacity_config.tempfile.mkstemp",
+            lambda **_kwargs: (_ for _ in ()).throw(OSError("mkstemp fault")),
+        )
+
+    if terminal_audit_fails:
+        real_insert = org_state.db.insert_audit_log
+
+        def fail_terminal(*, action, **kwargs):
+            if action == "daemon_capacity_config_failed":
+                raise OSError("terminal audit unavailable")
+            return real_insert(action=action, **kwargs)
+
+        monkeypatch.setattr(org_state.db, "insert_audit_log", fail_terminal)
+
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 7, "host_global_session_cap": 11,
+              "rationale": f"{setup_fault} regression", "confirm_environment_shadow": False},
+    )
+
+    assert response.status_code == 503
+    expected_code = "audit_failed" if terminal_audit_fails else "config_write_failed"
+    assert response.json()["detail"]["code"] == expected_code
+    assert config_path.read_bytes() == prior
+    rows = org_state.db.get_audit_logs("config:daemon_capacity")
+    expected_actions = ["daemon_capacity_config_write_authorized"]
+    if not terminal_audit_fails:
+        expected_actions.append("daemon_capacity_config_failed")
+    assert [row["action"] for row in rows] == expected_actions
+    assert all(row["agent"] == "daemon-bearer-holder" for row in rows)
+    assert len({row["payload"]["correlation_id"] for row in rows}) == 1
+    for row in rows:
+        assert row["payload"]["prior"] == {
+            "queue_workers": 5, "host_global_session_cap": 12,
+        }
+        assert row["payload"]["new"] == {
+            "queue_workers": 7, "host_global_session_cap": 11,
+        }
+        assert row["payload"]["rationale"] == f"{setup_fault} regression"
+        assert "token" not in str(row["payload"]).lower()
+
+
 def test_daemon_capacity_post_replace_failure_requires_reload_before_retry(
     tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:

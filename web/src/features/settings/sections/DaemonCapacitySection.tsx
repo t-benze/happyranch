@@ -51,7 +51,13 @@ export function DaemonCapacitySection(): JSX.Element {
   const dirty = Boolean(query.data) && (workers !== initialWorkers || cap !== initialCap || rationale.length > 0);
   const draftWorkers = Number(workers);
   const draftCap = Number(cap);
-  const draftEnvelope = Number.isInteger(draftWorkers) && draftWorkers > 0 ? draftWorkers + 7 : null;
+  const nonTaskProducerContribution = query.data
+    ? query.data.producer_envelope - query.data.producer_components.task_workers
+    : null;
+  const draftEnvelope = nonTaskProducerContribution !== null
+    && Number.isInteger(draftWorkers) && draftWorkers > 0
+    ? draftWorkers + nonTaskProducerContribution
+    : null;
   const draftWarning = draftEnvelope !== null && Number.isInteger(draftCap) && draftCap > 0
     ? draftCap < draftEnvelope
       ? `Intentional backpressure: host cap ${draftCap} is below producer envelope ${draftEnvelope}; some producer slots cannot run concurrently. Saving remains permitted.`

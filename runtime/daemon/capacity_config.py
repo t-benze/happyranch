@@ -193,14 +193,16 @@ def _atomic_write(
     expected: dict[str, int],
     transaction: _PublicationTransaction,
 ) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    transaction.advance(_PublicationState.AUDIT_AUTHORIZED, _PublicationState.PARENT_READY)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    transaction.advance(_PublicationState.PARENT_READY, _PublicationState.TEMP_CREATED)
+    tmp_name: str | None = None
     failure: Exception | None = None
-    artifact_state = "unknown"
+    artifact_state = "absent"
     cleanup_failed = False
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        transaction.advance(_PublicationState.AUDIT_AUTHORIZED, _PublicationState.PARENT_READY)
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        artifact_state = "present"
+        transaction.advance(_PublicationState.PARENT_READY, _PublicationState.TEMP_CREATED)
         with os.fdopen(fd, "wb") as handle:
             handle.write(raw)
             handle.flush()
@@ -226,12 +228,16 @@ def _atomic_write(
         failure = exc
     finally:
         try:
-            if os.path.exists(tmp_name):
-                artifact_state = "present"
-                os.unlink(tmp_name)
+            if tmp_name is None:
                 artifact_state = "absent"
             else:
-                artifact_state = "absent"
+                artifact_state = "unknown"
+                if os.path.exists(tmp_name):
+                    artifact_state = "present"
+                    os.unlink(tmp_name)
+                    artifact_state = "absent"
+                else:
+                    artifact_state = "absent"
             if failure is None:
                 transaction.advance(_PublicationState.VERIFIED, _PublicationState.CLEANUP_COMPLETE)
         except Exception as exc:
