@@ -1112,12 +1112,12 @@
             "header"
           ],
           [
-            "filter",
-            "query"
-          ],
-          [
             "slug",
             "path"
+          ],
+          [
+            "view",
+            "query"
           ]
         ],
         "responses": [

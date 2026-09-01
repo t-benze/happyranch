@@ -287,6 +287,45 @@ def test_catalog_and_detail_project_missing_eligibility_as_hidden(client_with_ru
     assert client.get(f"{BASE}/{skill_id}").json()["hidden_reason"] is None
 
 
+def test_catalog_excludes_purged_tombstones_by_default_and_lists_only_removed(client_with_runtime):
+    client, _org = client_with_runtime
+    active = _create(client, slug="still-active")
+    removed = _create(client, slug="removed-reservation")
+    removed_id = removed["skill_id"]
+    assert client.post(f"{BASE}/{removed_id}/retire", json={"reason": "done"}).status_code == 200
+    purge = client.post(f"{BASE}/{removed_id}/purge", json={"typed_slug": "removed-reservation"})
+    assert purge.status_code == 200
+
+    default = client.get(f"{BASE}/catalog")
+    assert default.status_code == 200
+    assert [skill["id"] for skill in default.json()["skills"]] == [active["skill_id"]]
+
+    removed_only = client.get(f"{BASE}/catalog", params={"view": "removed"})
+    assert removed_only.status_code == 200
+    assert [skill["id"] for skill in removed_only.json()["skills"]] == [removed_id]
+    tombstone = removed_only.json()["skills"][0]
+    assert tombstone["state"] == "permanently_removed"
+    assert tombstone["hidden_reason"] == "purged"
+    assert tombstone["purge_id"] == purge.json()["purge_id"]
+    assert tombstone["purged_at"] == purge.json()["purged_at"]
+
+    recreate = client.post(BASE, json=_body("removed-reservation"))
+    assert recreate.status_code == 409
+    assert recreate.json()["detail"]["code"] == "slug_permanently_reserved"
+
+
+def test_catalog_rejects_unknown_view_and_removed_view_can_be_empty(client_with_runtime):
+    client, _org = client_with_runtime
+    _create(client, slug="ordinary-only")
+
+    empty = client.get(f"{BASE}/catalog", params={"view": "removed"})
+    assert empty.status_code == 200
+    assert empty.json() == {"skills": []}
+
+    unknown = client.get(f"{BASE}/catalog", params={"view": "everything"})
+    assert unknown.status_code == 422
+
+
 def test_purge_requires_retirement_and_exact_slug_then_is_stably_idempotent(client_with_runtime):
     client, org = client_with_runtime
     created = _create(client, slug="logical-only")

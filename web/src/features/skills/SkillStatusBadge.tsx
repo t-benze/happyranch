@@ -7,7 +7,7 @@
  * NOT permission language: "Needs attention" flags a failed *technical*
  * validation, never an approval/admission gate.
  */
-import { BadgeCheck, CircleDashed, TriangleAlert } from 'lucide-react';
+import { BadgeCheck, CircleDashed, Trash2, TriangleAlert } from 'lucide-react';
 import { validationLabel, type ValidationTone } from './skills-catalog';
 
 const TONE_STYLE: Record<ValidationTone, string> = {
@@ -27,6 +27,14 @@ export function SkillStatusBadge({
 }: {
   state: string;
 }): JSX.Element {
+  if (state === 'permanently_removed') {
+    return (
+      <span className={`text-mono-sm inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${TONE_STYLE.neutral}`}>
+        <Trash2 size={11} aria-hidden="true" className="shrink-0" />
+        Permanently removed
+      </span>
+    );
+  }
   if (state === 'no_eligibility_policy') {
     return (
       <span className={`text-mono-sm inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${TONE_STYLE.attention}`}>

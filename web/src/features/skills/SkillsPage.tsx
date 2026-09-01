@@ -37,9 +37,10 @@ const FACETS: { value: CatalogFilter; label: string; icon: typeof Package }[] = 
 export function SkillsPage(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   const [filter, setFilter] = useState<CatalogFilter>('all');
+  const [removed, setRemoved] = useState(false);
   const customSelected = filter === 'Custom';
   const catalogQuery = useSkillsCatalog();
-  const customQuery = useCustomSkillsCatalog(customSelected);
+  const customQuery = useCustomSkillsCatalog(customSelected, removed ? 'removed' : 'current');
   const items = catalogQuery.data?.items ?? [];
   const customSkills = customQuery.data?.skills ?? [];
   // No facet matches the unfiltered default → header reads "All skills".
@@ -146,6 +147,13 @@ export function SkillsPage(): JSX.Element {
           </span>
         </div>
 
+        {customSelected && (
+          <div className="mb-4 flex gap-2" role="group" aria-label="Custom skill view">
+            <button type="button" aria-pressed={!removed} onClick={() => setRemoved(false)} className="border-border-default rounded-md border px-3 py-1.5 text-sm">Current</button>
+            <button type="button" aria-pressed={removed} onClick={() => setRemoved(true)} className="border-border-default rounded-md border px-3 py-1.5 text-sm">Removed</button>
+          </div>
+        )}
+
         {customSelected && isCustomSkillForbidden(customQuery.error) ? (
           <EmptyState
             icon={<TriangleAlert size={28} />}
@@ -173,7 +181,7 @@ export function SkillsPage(): JSX.Element {
             title="No skills here yet"
             body={
               filter === 'Custom'
-                ? 'No custom skills yet. Custom skills you add will appear here.'
+                ? removed ? 'No permanently removed skills. Permanent tombstones will appear here with their retained reservation receipts.' : 'No custom skills yet. Custom skills you add will appear here.'
                 : 'No skills match this source.'
             }
           />

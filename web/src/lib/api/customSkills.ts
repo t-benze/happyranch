@@ -33,14 +33,15 @@ export interface CustomSkillVersion {
 }
 
 export type CustomSkillInput = { slug: string; name: string; description?: string; skill_md: string };
+export type CustomSkillsView = 'current' | 'removed';
 export type CustomSkillCreateResult = { skill_id: string; version_id: number; content_hash: string; validation_state: string; hidden_reason?: string };
 export type EligibilityImpact = { newly_visible: string[]; newly_hidden: string[]; unchanged: string[]; revision: number };
 
 export const customSkillId = (skill: Pick<CustomSkill, 'id' | 'skill_id'>): string =>
   skill.skill_id ?? skill.id ?? '';
 
-export const listCustomSkills = (slug: string): Promise<{ skills: CustomSkill[] }> =>
-  request(`/orgs/${slug}/custom-skills/catalog`);
+export const listCustomSkills = (slug: string, view: CustomSkillsView = 'current'): Promise<{ skills: CustomSkill[] }> =>
+  request(`/orgs/${slug}/custom-skills/catalog`, { params: view === 'removed' ? { view: 'removed' } : undefined });
 
 export const createCustomSkill = (slug: string, body: CustomSkillInput): Promise<CustomSkillCreateResult> =>
   request(`/orgs/${slug}/custom-skills`, { method: 'POST', body });

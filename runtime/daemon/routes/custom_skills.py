@@ -7,6 +7,7 @@ import sqlite3
 import uuid
 from difflib import unified_diff
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Header, Query, Request, status
 from runtime.daemon.auth import _require_human, require_token
@@ -282,9 +283,22 @@ def agent_create(slug: str, session_id: str, org: OrgDep, request: Request, body
     return create_agent_custom_skill(slug, session_id, org, request, body)
 
 @router.get("/catalog")
-def catalog(slug: str, org: OrgDep, filter: str | None = None):
+def catalog(
+    slug: str,
+    org: OrgDep,
+    view: Literal["removed"] | None = Query(
+        default=None,
+        description="Omit for current custom skills, or use 'removed' for permanent tombstones only.",
+    ),
+):
     conn = getattr(org.db, "_conn", org.db)
-    rows = conn.execute("SELECT s.*,v.content_hash,v.validation_state FROM custom_skills s JOIN custom_skill_versions v ON v.id=s.current_version_id WHERE s.org_slug=? ORDER BY s.name", (slug,)).fetchall()
+    removed_clause = "s.purged_at IS NOT NULL" if view == "removed" else "s.purged_at IS NULL"
+    rows = conn.execute(
+        "SELECT s.*,v.content_hash,v.validation_state "
+        "FROM custom_skills s JOIN custom_skill_versions v ON v.id=s.current_version_id "
+        f"WHERE s.org_slug=? AND {removed_clause} ORDER BY s.name",
+        (slug,),
+    ).fetchall()
     skills = []
     for row in rows:
         skill = dict(row)
@@ -303,7 +317,12 @@ def create_human(slug: str, body: dict = Body(...), org: OrgDep = None, _: None 
     if "slug_collision" in validation_result["reason_codes"]:
         _error("protected_slug", 409)
     conn = getattr(org.db, "_conn", org.db)
-    if conn.execute("SELECT 1 FROM custom_skills WHERE org_slug=? AND slug=?", (slug, skill_slug)).fetchone(): _error("slug_exists", 409)
+    existing = conn.execute(
+        "SELECT purged_at FROM custom_skills WHERE org_slug=? AND slug=?",
+        (slug, skill_slug),
+    ).fetchone()
+    if existing:
+        _error("slug_permanently_reserved" if existing["purged_at"] else "slug_exists", 409)
     skill_id = f"custom:{uuid.uuid4()}"; conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute("INSERT INTO custom_skills (id,org_slug,slug,name,description,origin_kind,created_at,created_by) VALUES (?,?,?,?,?,'human',?,?)", (skill_id,slug,skill_slug,body["name"],body.get("description", ""),service.now(),"founder"))

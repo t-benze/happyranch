@@ -4,7 +4,7 @@ import { useParams } from 'react-router-dom';
 import { ApiError } from '@/lib/api/client';
 import * as api from '@/lib/api/customSkills';
 
-export type { CustomSkill, EligibilityRule } from '@/lib/api/customSkills';
+export type { CustomSkill, CustomSkillsView, EligibilityRule } from '@/lib/api/customSkills';
 
 /** Keep API-shaped errors and identifiers behind the feature hook boundary. */
 export function isCustomSkillForbidden(error: unknown): boolean {
@@ -13,6 +13,10 @@ export function isCustomSkillForbidden(error: unknown): boolean {
 
 export function isCustomSkillStaleRevision(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409;
+}
+
+export function isCustomSkillSlugPermanentlyReserved(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && error.code === 'slug_permanently_reserved';
 }
 
 export function customSkillErrorText(error: unknown, fallback: string): string {
@@ -27,7 +31,7 @@ const key = (slug: string, skillId?: string) => ['custom-skills', slug, skillId]
 function useSlug(): string { return useParams<{ slug: string }>().slug ?? ''; }
 function invalidate(qc: ReturnType<typeof useQueryClient>, slug: string, skillId?: string) { return qc.invalidateQueries({ queryKey: key(slug, skillId) }); }
 
-export function useCustomSkillsCatalog(enabled = true) { const slug = useSlug(); return useQuery({ queryKey: [...key(slug), 'catalog'], queryFn: () => api.listCustomSkills(slug), enabled: enabled && !!slug }); }
+export function useCustomSkillsCatalog(enabled = true, view: api.CustomSkillsView = 'current') { const slug = useSlug(); return useQuery({ queryKey: [...key(slug), 'catalog', view], queryFn: () => api.listCustomSkills(slug, view), enabled: enabled && !!slug }); }
 export function useCustomSkill(skillId?: string) { const slug = useSlug(); return useQuery({ queryKey: [...key(slug, skillId), 'detail'], queryFn: () => api.getCustomSkill(slug, skillId as string), enabled: !!slug && !!skillId }); }
 export function useCustomSkillVersions(skillId?: string) { const slug = useSlug(); return useQuery({ queryKey: [...key(slug, skillId), 'versions'], queryFn: () => api.listCustomSkillVersions(slug, skillId as string), enabled: !!slug && !!skillId }); }
 export function useCustomSkillEligibility(skillId?: string) { const slug = useSlug(); return useQuery({ queryKey: [...key(slug, skillId), 'eligibility'], queryFn: () => api.getCustomSkillEligibility(slug, skillId as string), enabled: !!slug && !!skillId }); }
