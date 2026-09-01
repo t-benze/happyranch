@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import socket
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -876,10 +877,19 @@ class TestSdNotify:
     def test_sd_notify_without_socket_returns_false(self) -> None:
         assert sd_notify("READY=1\n", notify_socket=None) is False
 
-    def test_sd_notify_sends_datagram(self, tmp_path) -> None:
+    @pytest.mark.parametrize(
+        "socket_parent", [Path("neutral"), Path(".happyranch/orgs")]
+    )
+    def test_sd_notify_sends_datagram(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, socket_parent: Path
+    ) -> None:
         import socket
 
-        sock_path = tmp_path / "notify.sock"
+        parent = tmp_path / socket_parent
+        parent.mkdir(parents=True)
+        monkeypatch.chdir(parent)
+        sock_path = Path("notify.sock")
+        assert sock_path.parts == ("notify.sock",)
         server = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         server.bind(str(sock_path))
         server.settimeout(2)
@@ -970,20 +980,58 @@ class TestInstallStaging:
         assert str(managed_root / "config.json") in unit_text
         assert "--lab-only" in unit_text  # lab provider → unit passes --lab-only
 
-    def test_install_staged_unit_never_points_at_daemon_home(self, tmp_path) -> None:
+    @staticmethod
+    def _assert_unit_config_target(
+        unit_text: str, *, expected: Path, forbidden_daemon_home: Path
+    ) -> None:
+        exec_start = next(
+            line.removeprefix("ExecStart=")
+            for line in unit_text.splitlines()
+            if line.startswith("ExecStart=")
+        )
+        argv = shlex.split(exec_start)
+        config_path = Path(argv[argv.index("--config") + 1])
+        assert config_path == expected
+        assert not config_path.is_relative_to(forbidden_daemon_home)
+
+    @pytest.mark.parametrize(
+        "runtime_parent", [Path("neutral"), Path(".happyranch/orgs")]
+    )
+    def test_install_staged_unit_never_points_at_daemon_home(
+        self, tmp_path: Path, runtime_parent: Path
+    ) -> None:
         """The rendered unit's --config must be the managed path — never a
         ~/.happyranch/... path the hardened service user cannot read."""
-        token = tmp_path / "daemon.token"
+        runtime_root = tmp_path / runtime_parent
+        runtime_root.mkdir(parents=True)
+        token = runtime_root / "daemon.token"
         token.write_text("token-x")
         token.chmod(0o600)
-        self._policy(tmp_path)
+        self._policy(runtime_root)
         manager = FakeManager()
-        cfg = _config(tmp_path, managed_dir_root=str(tmp_path / "managed"))
-        supervisor = _supervisor(tmp_path, manager=manager, config=cfg)
+        managed_config = (
+            runtime_root / "managed" / "happyranch-connector" / "config.json"
+        )
+        daemon_home = runtime_root / ".happyranch"
+        cfg = _config(runtime_root, managed_dir_root=str(runtime_root / "managed"))
+        supervisor = _supervisor(runtime_root, manager=manager, config=cfg)
         supervisor.install()
         unit_text = manager.installed[0][1]
-        assert ".happyranch" not in unit_text
-        assert "--config" in unit_text
+        self._assert_unit_config_target(
+            unit_text,
+            expected=managed_config,
+            forbidden_daemon_home=daemon_home,
+        )
+
+        forbidden_unit = unit_text.replace(
+            str(managed_config), str(daemon_home / "config.json")
+        )
+        with pytest.raises(AssertionError):
+            self._assert_unit_config_target(
+                forbidden_unit,
+                expected=managed_config,
+                forbidden_daemon_home=daemon_home,
+            )
 
     def test_install_refuses_missing_policy(self, tmp_path) -> None:
         manager = FakeManager()
