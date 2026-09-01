@@ -4,7 +4,7 @@
 > **Date:** 2026-08-26
 > **Merge unit:** A — normative contracts and threat fixtures only (TASK-5771)
 > **Governing design:** `output/TASK-5724/managed-remote-access-architecture.md` (TASK-5724)
-> **Founder authority:** THR-097 seq59 (operate Headscale + DERP ourselves), seq82 approval of seq78 items 1–3 as clarified at seq80
+> **Founder authority:** THR-097 seq59 (operate Headscale + DERP ourselves), seq82 approval of seq78 items 1–3 as clarified at seq80, and seq360 (N0 no-external-Tailscale managed-topology contract only)
 > **Machine-readable contract:** `tests/contract/managed_remote_access/*.json`, validated by `tests/contract/test_managed_remote_access_contract.py`
 > **Scope fence:** this document and the fixtures specify *required behavior*. No production Python, Swift, Go, or web behavior is implemented or changed by this PR. Merge units B–D (connector skeleton, hostile runtime harness, lab capacity spike) and all provisioning/deployment/defaults remain explicitly outside this PR.
 
@@ -25,6 +25,19 @@ The contract is executable: the fixtures under `tests/contract/managed_remote_ac
 7. **Revocation denies new sessions and closes live ones before or atomically with network-node removal; never success early.**
 8. **Managed and DIY are explicit provider lanes.** Local and DIY functionality never depends on Services entitlement or availability.
 9. **No Headscale admin/API credential is stored on a client or home endpoint.**
+10. **The managed transport is `embedded`.** Neither endpoint requires system Tailscale, and managed operation has no wildcard, LAN/plaintext concrete-address, public-Tailscale, or public-DERP fallback. Direct LAN plaintext is forbidden even for same-Wi-Fi acceptance.
+
+### 2.1 Managed embedded-network topology (N0 contract; not implemented)
+
+The Mac uses the packaged embedded `tsnet`/userspace-WireGuard engine. The future HappyRanch-packaged Linux embedded-network sidecar owns only its encrypted tailnet listener and proxies **raw TCP only** to a Python connector bound to loopback. The connector remains the sole credential, identity, epoch, and route-policy authority. The sidecar receives no daemon bearer, parses no HappyRanch route, and targets no daemon: only the connector injects the bearer on the final connector→`127.0.0.1:8765` hop.
+
+The sidecar configuration boundary is a private HTTPS control URL, role-scoped identity, one-use credential-file input, expected peer and tailnet listener, one fixed loopback connector target, owner-only state directory, and pinned build identity. Enrollment input is an owner-only, short-lived, single-use file: never argv or logs, deleted after durable redemption. Durable transport state is owner-only. Diagnostics and failures expose categories only.
+
+Readiness is conjunctive: valid configuration, encrypted engine started, private control-plane join, expected peer/map visible, tailnet listener active, and loopback connector reachable must all hold. Readiness loss removes the tailnet listener first; early readiness and degraded listener retention are forbidden. Headscale/DERP may observe operational metadata and WireGuard ciphertext only—never HTTP, SSE, or WebSocket plaintext, nor HappyRanch secrets.
+
+The future acceptance matrix has five required rows: same-Wi-Fi direct; same-Wi-Fi forced private DERP; separate-network direct when possible; separate-network forced private DERP; and failure/recovery across both topologies. Every row requires no system Tailscale on either endpoint, loopback-only daemon and connector, ciphertext-only control/relay, and no public or LAN fallback. Same Wi-Fi is only an underlay; direct LAN plaintext binding is not an acceptance substitute.
+
+TASK-6298/TASK-6289 remains truthful **Supported-DIY** for users who voluntarily install Tailscale or use customer-owned Headscale. It is unchanged, non-executable for founder acceptance, and not the managed path. Unit 4B-2 is already delivered and independent, but it neither provisions this network nor supplies acceptance evidence. This N0 amendment changes no production behavior and makes no acceptance claim; N1–N6 remain founder-gated.
 
 ## 3. Trust boundaries
 
