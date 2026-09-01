@@ -220,9 +220,9 @@ def test_blocks_on_job_then_auto_resumes(
     submitted_entry = next(e for e in entries if e["action"] == "job_submitted")
     auto_started_entry = next(e for e in entries if e["action"] == "job_auto_started")
     terminal_entry = next(e for e in entries if e["action"] == "job_run_completed")
-    assert submitted_entry["agent"] == "dev_agent"
-    assert auto_started_entry["agent"] == "dev_agent"
-    assert terminal_entry["agent"] == "dev_agent"
+    assert submitted_entry["agent"] == "engineering_head"
+    assert auto_started_entry["agent"] == "engineering_head"
+    assert terminal_entry["agent"] == "engineering_head"
 
     # 6d. Task was auto-resumed by the system (proves the CAS flip fired and
     #     BLOCKED-JOBS-RESULTS header was injected before stage 2).
