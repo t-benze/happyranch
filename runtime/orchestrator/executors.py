@@ -1044,6 +1044,19 @@ def _run_command(
                 failure_category="provider_timeout",
                 provider_launched=True,
             )
+        except Exception as exc:
+            # Popen succeeded and on_started has already published launch
+            # provenance.  Preserve that fact as a closed structured outcome;
+            # callers must not collapse a post-launch pipe/decoder failure into
+            # a non-qualifying runner crash.
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                error=f"Provider communication failed after launch: {exc}",
+                failure_category="post_launch_contract",
+                provider_launched=True,
+            )
         full_stdout = stdout or ""
         full_stderr = stderr or ""
         stdout_tail = full_stdout[-_TAIL_BYTES:]
@@ -2296,6 +2309,15 @@ class CustomAdapterExecutor:
                     session_id=sid,
                     error=f"Custom adapter session timed out after {timeout_seconds}s",
                     failure_category="provider_timeout",
+                    provider_launched=True,
+                )
+            except Exception as exc:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    error=f"Custom adapter communication failed after launch: {exc}",
+                    failure_category="post_launch_contract",
                     provider_launched=True,
                 )
 

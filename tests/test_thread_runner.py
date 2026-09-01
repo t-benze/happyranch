@@ -1907,6 +1907,65 @@ def _seed_queued_wake(db, thread_id, agent_name, *, ack, req):
     return inv
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["first", "eviction_fallback", "nudge"])
+async def test_post_launch_exception_counts_once_at_shipping_runner_seam(
+    tmp_path, monkeypatch, path,
+):
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="breaker"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="one",
+    )
+    if path == "eviction_fallback":
+        db.append_thread_message(
+            thread_id="THR-001", speaker="founder",
+            kind=ThreadMessageKind.MESSAGE, body_markdown="two",
+        )
+        triggering_seq = 2
+        db.update_thread_session(
+            "THR-001", "alice", agent_session_id="stale-sid", last_resumed_seq=1,
+        )
+    else:
+        triggering_seq = 1
+    inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=triggering_seq)
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    import runtime.daemon.thread_runner as runner_mod
+    calls = 0
+
+    class _Executor:
+        def run(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            if path == "eviction_fallback" and calls == 1:
+                result = FakeExecutorResult(False, "evicted")
+                result.returncode = 1
+                result.stderr_tail = "No conversation found with session ID: stale-sid"
+                return result
+            if path == "nudge" and calls == 1:
+                return FakeExecutorResult(True)
+            kwargs["on_started"](9000 + calls)
+            raise OSError(f"post-launch-{path}")
+
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider", lambda *_args: _Executor(),
+    )
+    await run_invocation(
+        org_state=FakeOrgState(db, tmp_path), invocation_token=inv.invocation_token,
+        settings=Settings(thread_reply_breaker_failure_threshold=1),
+    )
+    breaker = db._conn.execute(
+        "SELECT state,consecutive_failures FROM thread_reply_breaker_episodes"
+    ).fetchone()
+    assert tuple(breaker) == ("open", 1)
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM thread_reply_breaker_receipts"
+    ).fetchone()[0] == 1
 class _RecordingExec:
     """Fake executor that records every prompt it is handed."""
 

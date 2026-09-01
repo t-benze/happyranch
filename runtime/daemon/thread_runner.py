@@ -1279,6 +1279,22 @@ async def run_invocation(
             org_state.db.insert_audit_log(inv.thread_id, inv.agent_name, action, payload)
 
         def _invoke(run_prompt: str, resume: str | None) -> _InvokeResult:
+            launched = False
+
+            def _on_started(_pid: int) -> None:
+                nonlocal launched
+                launched = True
+
+            def _post_launch_exception(exc: Exception) -> _InvokeResult:
+                return _InvokeResult(result=ExecutorResult(
+                    success=False,
+                    duration_seconds=0,
+                    session_id=session_id,
+                    error=f"Provider execution failed after launch: {exc}",
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
+                ))
+
             def _pre_launch_validator():
                 validate_workspace_skills_integrity(
                     workspace, expected_specs,
@@ -1294,12 +1310,18 @@ async def run_invocation(
                     session_id=session_id, timeout_seconds=timeout,
                     on_throttle_event=_on_throttle_event,
                     pre_launch_validator=_pre_launch_validator,
+                    on_started=_on_started,
                     org_slug=org_state.slug,
                     model=model_name,
                 )
                 if resume:
                     run_kwargs["resume_session_id"] = resume
-                return _InvokeResult(result=executor.run(**run_kwargs))
+                try:
+                    return _InvokeResult(result=executor.run(**run_kwargs))
+                except Exception as exc:
+                    if launched:
+                        return _post_launch_exception(exc)
+                    raise
             # ── THR-207 supervised wiring: the invocation phase runs through
             # the daemon-wide HostSessionSupervisor (admission lease, atomic
             # ownership at grant, real backend launch into containment, opaque
@@ -1344,6 +1366,7 @@ async def run_invocation(
                     session_id=session_id, timeout_seconds=timeout,
                     on_throttle_event=_on_throttle_event,
                     pre_launch_validator=_pre_launch_validator if not contained else None,
+                    on_started=_on_started if not contained else None,
                     org_slug=org_state.slug,
                     model=model_name,
                     running=running if contained else None,
@@ -1351,7 +1374,16 @@ async def run_invocation(
                 )
                 if resume:
                     run_kwargs["resume_session_id"] = resume
-                res = executor.run(**run_kwargs)
+                try:
+                    res = executor.run(**run_kwargs)
+                except Exception as exc:
+                    # A real contained process is launched before launch_body;
+                    # passthrough executors publish the same fact via on_started.
+                    if contained or launched:
+                        res = _post_launch_exception(exc).result
+                    else:
+                        raise
+                assert res is not None
                 return LaunchResult(
                     success=res.success,
                     duration_seconds=float(getattr(res, "duration_seconds", 0) or 0),

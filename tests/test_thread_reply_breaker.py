@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -299,13 +300,18 @@ def test_failure_settlement_and_breaker_audit_roll_back_atomically(tmp_path, mon
     assert db.get_thread_reply_breaker("THR-1", "dev_agent", "codex:gpt-5") is None
 
 
-def test_additive_upgrade_from_pre_breaker_store(tmp_path):
-    path = tmp_path / "legacy.db"
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _apply_historical_stage(path, fixture):
     db = Database(path)
-    db._conn.execute("DROP TABLE thread_reply_breaker_receipts")
-    db._conn.execute("DROP TABLE thread_reply_breaker_episodes")
-    db._conn.commit()
+    db._conn.executescript((FIXTURES / fixture).read_text())
     db.close()
+
+
+def test_additive_upgrade_from_genuine_v0_fixture(tmp_path):
+    path = tmp_path / "legacy.db"
+    _apply_historical_stage(path, "thread_breaker_v0.sql")
     upgraded = Database(path)
     tables = {
         row[0] for row in upgraded._conn.execute(
@@ -314,6 +320,43 @@ def test_additive_upgrade_from_pre_breaker_store(tmp_path):
     }
     assert {"thread_reply_breaker_episodes", "thread_reply_breaker_receipts"} <= tables
     assert upgraded.get_thread_reply_breaker("missing", "agent", "executor") is None
+
+
+@pytest.mark.parametrize("fixture", [
+    "thread_breaker_v1.sql",
+    "thread_breaker_interrupted_receipts.sql",
+])
+def test_additive_upgrade_repairs_interrupted_v1_fixtures(tmp_path, fixture):
+    path = tmp_path / "interrupted.db"
+    _apply_historical_stage(path, fixture)
+    upgraded = Database(path)
+    objects = {
+        row[0] for row in upgraded._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table','index')"
+        )
+    }
+    assert "thread_reply_breaker_receipts" in objects
+    assert "idx_thread_reply_breaker_due" in objects
+    assert "idx_thread_reply_breaker_probe_lease" in objects
+    assert "idx_thread_reply_breaker_receipts_episode" in objects
+
+
+def test_old_reader_ignores_additive_breaker_objects_after_safe_rollback(tmp_path):
+    db = _db(tmp_path)
+    db.append_thread_message(
+        thread_id="THR-1", speaker="founder", kind=ThreadMessageKind.MESSAGE,
+        body_markdown="legacy-visible",
+    )
+    # Rollback admission guard requires no OPEN/PROBE episodes. A below-threshold
+    # CLOSED row is additive and an old reader continues to read legacy tables.
+    _failure(db, "below-threshold")
+    assert db.get_thread_reply_breaker("THR-1", "dev_agent", "codex:gpt-5").state == "closed"
+    db.close()
+    old_reader = sqlite3.connect(tmp_path / "breaker.db")
+    assert old_reader.execute("SELECT subject FROM threads WHERE id='THR-1'").fetchone()[0] == "breaker"
+    assert old_reader.execute(
+        "SELECT body_markdown FROM thread_messages WHERE thread_id='THR-1'"
+    ).fetchone()[0] == "legacy-visible"
 
 
 def test_additive_upgrade_preserves_existing_v1_episode(tmp_path):

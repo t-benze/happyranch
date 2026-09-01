@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -57,6 +58,26 @@ from runtime.orchestrator.executors import (
 )
 
 _EXECUTOR_NAMES = frozenset({"claude", "codex", "opencode", "pi"})
+
+
+def test_run_command_communicate_exception_preserves_post_launch_provenance(
+    tmp_path, monkeypatch,
+):
+    proc = MagicMock(pid=42)
+    proc.communicate.side_effect = OSError("pipe broke")
+    monkeypatch.setattr(
+        "runtime.orchestrator.executors.detect_platform_isolation",
+        lambda: SimpleNamespace(launch_executor=lambda *args, **kwargs: proc),
+    )
+    started = []
+    result = _run_command(
+        ["provider"], tmp_path, "sess-test", 30, on_started=started.append,
+        throttle_backoff_seconds=(),
+    )
+    assert started == [42]
+    assert result.failure_category == "post_launch_contract"
+    assert result.provider_launched is True
+    assert result.success is False
 
 
 # ── Frozen pre-extraction reference for CJK Unicode raw-only branches ─────
