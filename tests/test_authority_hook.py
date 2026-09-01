@@ -56,6 +56,7 @@ from runtime.orchestrator.authority import (
 )
 from runtime.orchestrator.authority_policy import (
     ACTION_CONTINUE_SAME_ROOT,
+    ACTION_ESCALATE_TO_FOUNDER,
     ENGINEERING_PRE_ESCALATION_POLICY as POLICY,
     POLICY_BY_TEAM,
     PROMPT_DIGEST,
@@ -1827,3 +1828,39 @@ def test_approved_child_verdict_does_not_gate_continue(runtime, db, monkeypatch)
     assert "authority-policy continued same root" in (t.note or "")
     row = _hook_outcome_rows(db, "T-ROOT")[0]
     assert row["payload"]["outcome"] == OUTCOME_CONTINUED_SAME_ROOT
+
+
+def test_server_fact_preserves_evaluator_error_diagnostic(runtime, db, monkeypatch):
+    """The mandatory server clause wins without erasing evaluator evidence."""
+    from runtime.models import AuthorityDisposition, AuthorityDispositionCode
+    from runtime.orchestrator.authority import AuthorityEvaluationResult
+
+    class _BrokenEvaluator:
+        model_id, model_version, model_digest = "fake/broken", "v1", _digest("broken")
+
+        def evaluate(self, snapshot):
+            return AuthorityEvaluationResult(
+                disposition=AuthorityDisposition.EVALUATOR_ERROR,
+                disposition_code=AuthorityDispositionCode.INJECTION_GUARD,
+                response_digest=_digest("evaluator-error"),
+                uncertainty_codes=("missing_evidence",),
+                error="evaluator output carried a credential-like marker",
+            )
+
+    _seed_root(db)
+    _seed_child_verdict(db, "T-ROOT", "T-KID", "REQUEST_CHANGES")
+    orch = _make_orch(runtime, db, evaluator=_BrokenEvaluator())
+    _run_escalate_step(orch, "T-ROOT", "needs founder", monkeypatch)
+
+    candidate = db.list_authority_candidates_for_root("T-ROOT")[0]
+    evaluation = db.get_authority_evaluation(candidate.id)
+    assert evaluation.disposition == "escalate"
+    assert evaluation.disposition_code == "injection_guard"
+
+    row = _hook_outcome_rows(db, "T-ROOT")[0]
+    assert row["payload"]["clause_id"] == "esc-adverse-review-qa"
+    assert row["payload"]["action"] == ACTION_ESCALATE_TO_FOUNDER
+    assert row["payload"]["disposition_code"] == "injection_guard"
+    assert row["payload"]["uncertainty_codes"] == ["missing_evidence"]
+    assert "credential-like marker" in row["payload"]["error"]
+    assert "server-derived must-escalate fact" in row["payload"]["error"]
