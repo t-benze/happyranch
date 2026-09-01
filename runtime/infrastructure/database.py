@@ -136,6 +136,77 @@ _AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL = """
 """
 
 
+_AUTHORITY_POLICY_ACTIVATIONS_VALIDATE_INSERT_SQL = """
+CREATE TRIGGER authority_policy_activations_validate_insert
+BEFORE INSERT ON authority_policy_activations
+BEGIN
+    SELECT RAISE(ABORT, 'authority activation release/team mismatch')
+    WHERE NOT EXISTS (SELECT 1 FROM authority_policy_releases r
+                      WHERE r.id=NEW.release_id AND r.team=NEW.team);
+    SELECT RAISE(ABORT, 'authority activation predecessor mismatch')
+    WHERE (
+        (SELECT COUNT(*) FROM authority_policy_activations a
+         WHERE a.team=NEW.team)=0
+        AND (NEW.epoch!=1 OR NEW.previous_activation_id IS NOT NULL
+             OR NEW.expected_previous_epoch NOT IN (0))
+    ) OR (
+        (SELECT COUNT(*) FROM authority_policy_activations a
+         WHERE a.team=NEW.team)>0
+        AND NOT EXISTS (
+            SELECT 1 FROM authority_policy_activations a
+            WHERE a.id=NEW.previous_activation_id AND a.team=NEW.team
+              AND a.epoch=NEW.expected_previous_epoch
+              AND NEW.epoch=a.epoch+1
+              AND a.epoch=(SELECT MAX(last.epoch)
+                           FROM authority_policy_activations last
+                           WHERE last.team=NEW.team))
+    );
+    SELECT RAISE(ABORT, 'authority activation action/history mismatch')
+    WHERE (
+        (SELECT COUNT(*) FROM authority_policy_activations a
+         WHERE a.team=NEW.team)=0
+        AND NEW.action!='bootstrap'
+    ) OR (
+        (SELECT COUNT(*) FROM authority_policy_activations a
+         WHERE a.team=NEW.team)>0
+        AND (
+            NEW.action='bootstrap'
+            OR (NEW.action='activate' AND EXISTS (
+                SELECT 1 FROM authority_policy_activations a
+                WHERE a.team=NEW.team AND a.release_id=NEW.release_id
+            ))
+            OR (NEW.action='reactivate_rollback' AND (
+                NOT EXISTS (
+                    SELECT 1 FROM authority_policy_activations a
+                    WHERE a.team=NEW.team AND a.release_id=NEW.release_id
+                )
+                OR NEW.release_id=(
+                    SELECT a.release_id FROM authority_policy_activations a
+                    WHERE a.team=NEW.team ORDER BY a.epoch DESC LIMIT 1
+                )
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM authority_policy_releases target
+                    JOIN authority_policy_activations current_activation
+                      ON current_activation.team=NEW.team
+                     AND current_activation.epoch=(
+                         SELECT MAX(last.epoch)
+                         FROM authority_policy_activations last
+                         WHERE last.team=NEW.team
+                     )
+                    JOIN authority_policy_releases current
+                      ON current.id=current_activation.release_id
+                    WHERE target.id=NEW.release_id
+                      AND target.policy_id=current.policy_id
+                      AND target.version<current.version
+                )
+            ))
+        )
+    );
+END;
+"""
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -482,6 +553,7 @@ class Database:
         self._retire_skill_lifecycle_if_present()
         self._create_tables()
         self._create_authority_tables()
+        self._retrofit_authority_policy_activation_trigger_if_needed()
         self._retrofit_authority_audit_fk_if_needed()
         self._retrofit_authority_lifecycle_trigger_if_needed()
         self._ensure_task_attachments_storage_key_unique()
@@ -2018,57 +2090,6 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_authority_policy_activations_team_epoch
                 ON authority_policy_activations(team, epoch DESC);
-            CREATE TRIGGER IF NOT EXISTS authority_policy_activations_validate_insert
-                BEFORE INSERT ON authority_policy_activations
-                BEGIN
-                    SELECT RAISE(ABORT, 'authority activation release/team mismatch')
-                    WHERE NOT EXISTS (SELECT 1 FROM authority_policy_releases r
-                                      WHERE r.id=NEW.release_id AND r.team=NEW.team);
-                    SELECT RAISE(ABORT, 'authority activation predecessor mismatch')
-                    WHERE (
-                        (SELECT COUNT(*) FROM authority_policy_activations a
-                         WHERE a.team=NEW.team)=0
-                        AND (NEW.epoch!=1 OR NEW.previous_activation_id IS NOT NULL
-                             OR NEW.expected_previous_epoch NOT IN (0))
-                    ) OR (
-                        (SELECT COUNT(*) FROM authority_policy_activations a
-                         WHERE a.team=NEW.team)>0
-                        AND NOT EXISTS (
-                            SELECT 1 FROM authority_policy_activations a
-                            WHERE a.id=NEW.previous_activation_id AND a.team=NEW.team
-                              AND a.epoch=NEW.expected_previous_epoch
-                              AND NEW.epoch=a.epoch+1
-                              AND a.epoch=(SELECT MAX(last.epoch)
-                                           FROM authority_policy_activations last
-                                           WHERE last.team=NEW.team))
-                    );
-                    SELECT RAISE(ABORT, 'authority activation action/history mismatch')
-                    WHERE (
-                        (SELECT COUNT(*) FROM authority_policy_activations a
-                         WHERE a.team=NEW.team)=0
-                        AND NEW.action!='bootstrap'
-                    ) OR (
-                        (SELECT COUNT(*) FROM authority_policy_activations a
-                         WHERE a.team=NEW.team)>0
-                        AND (
-                            NEW.action='bootstrap'
-                            OR (NEW.action='activate' AND EXISTS (
-                                SELECT 1 FROM authority_policy_activations a
-                                WHERE a.team=NEW.team AND a.release_id=NEW.release_id
-                            ))
-                            OR (NEW.action='reactivate_rollback' AND (
-                                NOT EXISTS (
-                                    SELECT 1 FROM authority_policy_activations a
-                                    WHERE a.team=NEW.team AND a.release_id=NEW.release_id
-                                )
-                                OR NEW.release_id=(
-                                    SELECT a.release_id FROM authority_policy_activations a
-                                    WHERE a.team=NEW.team ORDER BY a.epoch DESC LIMIT 1
-                                )
-                            ))
-                        )
-                    );
-                END;
             CREATE TRIGGER IF NOT EXISTS authority_policy_activations_no_update
                 BEFORE UPDATE ON authority_policy_activations
                 BEGIN SELECT RAISE(ABORT, 'authority policy activations are immutable'); END;
@@ -2412,6 +2433,36 @@ class Database:
                 "BEFORE DELETE ON authority_audit "
                 "BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;"
             )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def _retrofit_authority_policy_activation_trigger_if_needed(self) -> None:
+        """Create or retrofit the activation validator without per-open DDL.
+
+        The full normalized stored definition is compared with the canonical
+        statement, rather than checking one repaired predicate, so any absent,
+        legacy, or otherwise stale trigger is rebuilt exactly once. A database
+        that already carries the canonical trigger returns before DROP/CREATE,
+        preserving ordinary-open WAL/SHM history.
+        """
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger'"
+            " AND name='authority_policy_activations_validate_insert'"
+        ).fetchone()
+
+        def normalized(sql: str) -> str:
+            return " ".join(sql.strip().removesuffix(";").split())
+
+        expected = normalized(_AUTHORITY_POLICY_ACTIVATIONS_VALIDATE_INSERT_SQL)
+        if row is not None and normalized(row["sql"]) == expected:
+            return
+        try:
+            self._conn.execute(
+                "DROP TRIGGER IF EXISTS authority_policy_activations_validate_insert"
+            )
+            self._conn.execute(_AUTHORITY_POLICY_ACTIVATIONS_VALIDATE_INSERT_SQL)
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -10276,7 +10327,13 @@ class Database:
     @_synchronized
     def create_authority_policy_release(self, release: AuthorityPolicyRelease) -> AuthorityPolicyRelease:
         """Append an immutable release, idempotent only for an exact record."""
-        release = AuthorityPolicyRelease.model_validate(release)
+        # Pydantic intentionally reuses an already-constructed model instance.
+        # Rebuild from a deep primitive snapshot so post-validation mutation,
+        # including a nested value smuggled into a typed field, cannot bypass
+        # canonical semantic identity validation at the durable boundary.
+        release = AuthorityPolicyRelease.model_validate(
+            release.model_dump(mode="python", round_trip=True, warnings=False)
+        )
         expected = hashlib.sha256(release.canonical_payload_json.encode("utf-8")).hexdigest()
         if expected != release.policy_digest:
             raise ValueError("policy_digest does not match canonical_payload_json")
@@ -10359,6 +10416,20 @@ class Database:
                     not previously_activated or activation.release_id == previous["release_id"]
                 ):
                     raise sqlite3.IntegrityError("reactivation target is not a non-current prior release")
+                if activation.action == "reactivate_rollback":
+                    older = self._conn.execute(
+                        """SELECT 1
+                           FROM authority_policy_releases target
+                           JOIN authority_policy_releases current ON current.id=?
+                           WHERE target.id=?
+                             AND target.policy_id=current.policy_id
+                             AND target.version<current.version""",
+                        (previous["release_id"], activation.release_id),
+                    ).fetchone()
+                    if older is None:
+                        raise sqlite3.IntegrityError(
+                            "reactivation rollback target is not an older policy version"
+                        )
             self._conn.execute(
                 """INSERT INTO authority_policy_activations
                    (id,team,epoch,release_id,previous_activation_id,

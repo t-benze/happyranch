@@ -386,10 +386,16 @@ canonical `clauses` array (`id`, `category`, `condition`, `action` only), and
 are immutable provenance receipts outside that semantic digest. Activation
 actions are truthful history labels: only a history-free team may bootstrap;
 `activate` selects a release never activated for that team; and
-`reactivate_rollback` selects a non-current release present at an earlier
-epoch. These rules hold at both the store transaction and direct-SQL trigger
+`reactivate_rollback` selects a non-current, previously activated release of
+the same `policy_id` whose positive integer `version` is strictly lower than
+the currently active release's version. This release-version relation—not
+lexicographic release-id ordering—defines "older". These rules hold at both
+the store transaction and direct-SQL trigger
 boundaries while preserving append-only monotonic epochs and request replay
-identity.
+identity. Existing databases receive the canonical activation-validation
+trigger through a guarded definition retrofit: an absent or stale trigger is
+rebuilt once, while an ordinary open with the canonical definition performs no
+trigger DDL.
 
 **Hook ordering.** (1) server eligibility + mechanical fences are evaluated and recorded (`manager_ownership`, `current_session`, `cancellation`, `claimed_root`, `revisit_lineage`, `successor_lineage`, `active_work`, `budget_exhausted`) — any failure is an `ineligible` outcome and the escalation proceeds unchanged; thread id/origin remain in structured lineage provenance but are not a fence; (2) the immutable input snapshot (with the structured server facts above) is built and one durable candidate is claimed via the deterministic CAS tuple (root/session/causal-event/policy/prompt/model); (3) exactly one bounded evaluation runs through the injectable evaluator seam (production: extract exactly one object, enforce the strict closed schema, validate the exact echo contract, validate/normalize policy-clause membership and action, and only then scan explicitly model-controlled free-text fields for credential-like content; CI: strict deterministic fake whose CONTINUE also requires the byte-exact release-controlled routine phrase). Invalid trusted, structural, or closed-vocabulary fields therefore use the malformed-output path even when free text also contains a credential marker; (4) the server-derived must-escalate gate AND the closed-pattern CONTINUE gate are applied to the normalized verdict — a server-PROVEN fact or a non-accepted reason forces ESCALATE; the server-selected clause/action remain authoritative while any independent evaluator error or uncertainty code remains attached as diagnostic evidence rather than being replaced; (5) the single immutable evaluation row is recorded (`created -> evaluated`); (6) a post-evaluation FULL fence re-check closes any category that changed while the evaluator ran (cancelled/stale, never continue), including a permission/schema surface digest change during the attempt; (7) the candidate is consumed exactly once (`evaluated -> consumed`); (8) all audit events and the single `authority_hook` outcome row are persisted; (9) the verdict executes. The only semantic results are `ESCALATE` — which proceeds through the exact existing escalation path (try_escalate CAS, `escalation` audit row, founder notification, thread `task_escalated` projection) — and `CONTINUE_SAME_ROOT` — which must name the matched immutable policy clause and exact permitted action, and executes ONLY that action: return the current root to `pending` (atomic CAS + audit) and re-enqueue it for another manager decision step. No successor, supersession, revisit, fresh root, or new task is ever created; no escalation is suppressed, retried, or resolved.
 

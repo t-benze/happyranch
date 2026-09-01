@@ -5,6 +5,7 @@ import threading
 
 import pytest
 
+import runtime.infrastructure.database as database_module
 from runtime.infrastructure.database import Database
 from runtime.models import AuthorityPolicyActivation, AuthorityPolicyRelease
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
@@ -98,6 +99,95 @@ def test_interrupted_additive_migration_stages_resume(tmp_path, dropped):
     db.close()
     reopened = Database(path)
     assert {"authority_policy_releases", "authority_policy_activations", "authority_candidate_policy_pins"} <= set(reopened.list_tables())
+    assert "target.version<current.version" in _activation_validation_trigger_sql(reopened)
+
+
+def _activation_validation_trigger_sql(db):
+    row = db._conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' "
+        "AND name='authority_policy_activations_validate_insert'"
+    ).fetchone()
+    return None if row is None else row["sql"]
+
+
+def test_fresh_database_creates_canonical_activation_validation_trigger(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    sql = _activation_validation_trigger_sql(db)
+    assert sql is not None
+    assert "target.policy_id=current.policy_id" in sql
+    assert "target.version<current.version" in sql
+
+
+@pytest.mark.parametrize("legacy_sql", [
+    None,
+    """CREATE TRIGGER authority_policy_activations_validate_insert
+       BEFORE INSERT ON authority_policy_activations
+       BEGIN SELECT RAISE(ABORT, 'legacy trigger') WHERE NEW.epoch < 1; END""",
+])
+def test_activation_validation_trigger_absent_or_stale_is_retrofitted(tmp_path, legacy_sql):
+    path = tmp_path / "db.sqlite"
+    db = Database(path)
+    db._conn.execute("DROP TRIGGER authority_policy_activations_validate_insert")
+    if legacy_sql is not None:
+        db._conn.execute(legacy_sql)
+    db._conn.commit()
+    db.close()
+
+    reopened = Database(path)
+    sql = _activation_validation_trigger_sql(reopened)
+    assert sql is not None
+    assert "target.policy_id=current.policy_id" in sql
+    assert "target.version<current.version" in sql
+
+
+def test_canonical_activation_trigger_reopens_without_trigger_ddl(tmp_path, monkeypatch):
+    path = tmp_path / "db.sqlite"
+    Database(path).close()
+    statements = []
+    real_connect = database_module.sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(database_module.sqlite3, "connect", traced_connect)
+    Database(path).close()
+    activation_ddl = [
+        sql for sql in statements
+        if "authority_policy_activations_validate_insert" in sql
+        and ("DROP TRIGGER" in sql or "CREATE TRIGGER" in sql)
+    ]
+    assert activation_ddl == []
+
+
+def test_activation_trigger_retrofit_is_idempotent_on_repeated_reopen(tmp_path, monkeypatch):
+    path = tmp_path / "db.sqlite"
+    db = Database(path)
+    db._conn.execute("DROP TRIGGER authority_policy_activations_validate_insert")
+    db._conn.execute(
+        "CREATE TRIGGER authority_policy_activations_validate_insert "
+        "BEFORE INSERT ON authority_policy_activations BEGIN SELECT 1; END"
+    )
+    db._conn.commit()
+    db.close()
+    Database(path).close()
+
+    statements = []
+    real_connect = database_module.sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(database_module.sqlite3, "connect", traced_connect)
+    Database(path).close()
+    assert not any(
+        "authority_policy_activations_validate_insert" in sql
+        and ("DROP TRIGGER" in sql or "CREATE TRIGGER" in sql)
+        for sql in statements
+    )
 
 
 def test_activation_cas_idempotency_and_reactivation(tmp_path):
@@ -190,6 +280,33 @@ def test_release_rejects_each_semantic_mutation_under_same_digest(field, replace
         AuthorityPolicyRelease.model_validate({**release.model_dump(), field: replacement})
 
 
+@pytest.mark.parametrize("field,replacement", [
+    ("policy_id", "other/policy"), ("version", 2), ("team", "content"),
+    ("title", "Other"), ("normative_text", "other text"),
+    ("clauses_json", '[{"action":"continue_same_root","category":"routine","condition":"ok","id":"continue"}]'),
+    ("continuation_phrase", "other phrase"),
+])
+def test_store_rejects_post_construction_semantic_mutation_without_residue(
+    tmp_path, field, replacement,
+):
+    db = Database(tmp_path / "db.sqlite")
+    release = _release()
+    setattr(release, field, replacement)
+    with pytest.raises(ValueError):
+        AuthorityPolicyStore(db).create_release(release)
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_policy_releases").fetchone()[0] == 0
+
+
+def test_store_rejects_post_construction_nested_clause_mutation_without_residue(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    release = _release()
+    release.clauses_json = json.loads(release.clauses_json)
+    release.clauses_json[0]["condition"] = "mutated after validation"
+    with pytest.raises(ValueError):
+        AuthorityPolicyStore(db).create_release(release)
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_policy_releases").fetchone()[0] == 0
+
+
 @pytest.mark.parametrize("updates", [
     {"id": "APR-arbitrary"},
     {"policy_digest": "0" * 64},
@@ -250,6 +367,24 @@ def test_activation_action_state_machine_store_sequences(tmp_path):
         first.id, second.id, first.id, third.id)
 
 
+def test_store_rejects_forward_reactivation_mislabeled_rollback_without_residue(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    store = AuthorityPolicyStore(db)
+    first = store.create_release(_release(version=1))
+    second = store.create_release(_release(version=2))
+    bootstrap = store.activate(_activation(first))
+    active = store.activate(_activation(second, activation_id="APA-2", epoch=2,
+        previous=bootstrap.id, expected=1, request_id="REQ-2", action="activate"))
+    rollback = store.activate(_activation(first, activation_id="APA-3", epoch=3,
+        previous=active.id, expected=2, request_id="REQ-3", action="reactivate_rollback"))
+    with pytest.raises(sqlite3.IntegrityError):
+        store.activate(_activation(second, activation_id="APA-4", epoch=4,
+            previous=rollback.id, expected=3, request_id="REQ-4", action="reactivate_rollback"))
+    assert [tuple(row) for row in db._conn.execute(
+        "SELECT id,release_id FROM authority_policy_activations ORDER BY epoch"
+    ).fetchall()] == [("APA-1", first.id), ("APA-2", second.id), ("APA-3", first.id)]
+
+
 @pytest.mark.parametrize("history,action,target", [
     (False, "activate", "first"), (False, "reactivate_rollback", "first"),
     (True, "bootstrap", "second"), (True, "reactivate_rollback", "second"),
@@ -289,6 +424,8 @@ def test_activation_action_state_machine_accepts_truthful_raw_sql_sequence(tmp_p
         ("APA-2", 2, releases[1].id, "APA-1", 1, "activate"),
         ("APA-3", 3, releases[0].id, "APA-2", 2, "reactivate_rollback"),
         ("APA-4", 4, releases[2].id, "APA-3", 3, "activate"),
+        ("APA-5", 5, releases[1].id, "APA-4", 4, "reactivate_rollback"),
+        ("APA-6", 6, releases[0].id, "APA-5", 5, "reactivate_rollback"),
     ]
     for activation_id, epoch, release_id, previous, expected, action in rows:
         db._conn.execute(
@@ -299,7 +436,55 @@ def test_activation_action_state_machine_accepts_truthful_raw_sql_sequence(tmp_p
     db._conn.commit()
     assert [row["action"] for row in db._conn.execute(
         "SELECT action FROM authority_policy_activations ORDER BY epoch"
-    ).fetchall()] == ["bootstrap", "activate", "reactivate_rollback", "activate"]
+    ).fetchall()] == [
+        "bootstrap", "activate", "reactivate_rollback", "activate",
+        "reactivate_rollback", "reactivate_rollback",
+    ]
+
+
+def test_raw_sql_rejects_forward_reactivation_and_preserves_history(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    store = AuthorityPolicyStore(db)
+    first, second = [store.create_release(_release(version=version)) for version in (1, 2)]
+    rows = [
+        ("APA-1", 1, first.id, None, 0, "bootstrap"),
+        ("APA-2", 2, second.id, "APA-1", 1, "activate"),
+        ("APA-3", 3, first.id, "APA-2", 2, "reactivate_rollback"),
+    ]
+    for activation_id, epoch, release_id, previous, expected, action in rows:
+        db._conn.execute(
+            "INSERT INTO authority_policy_activations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (activation_id, "engineering", epoch, release_id, previous, expected, action,
+             "shared_local_operator_credential", f"REQ-{epoch}", _digest(action), "now"),
+        )
+    db._conn.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        db._conn.execute(
+            "INSERT INTO authority_policy_activations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ("APA-4", "engineering", 4, second.id, "APA-3", 3, "reactivate_rollback",
+             "shared_local_operator_credential", "REQ-4", _digest("forward"), "now"),
+        )
+    db._conn.rollback()
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_policy_activations").fetchone()[0] == 3
+
+
+def test_later_historical_rollbacks_remain_truthful(tmp_path):
+    store = AuthorityPolicyStore(Database(tmp_path / "db.sqlite"))
+    first, second, third = [store.create_release(_release(version=version)) for version in (1, 2, 3)]
+    one = store.activate(_activation(first))
+    two = store.activate(_activation(second, activation_id="APA-2", epoch=2,
+        previous=one.id, expected=1, request_id="REQ-2", action="activate"))
+    three = store.activate(_activation(first, activation_id="APA-3", epoch=3,
+        previous=two.id, expected=2, request_id="REQ-3", action="reactivate_rollback"))
+    four = store.activate(_activation(third, activation_id="APA-4", epoch=4,
+        previous=three.id, expected=3, request_id="REQ-4", action="activate"))
+    five = store.activate(_activation(second, activation_id="APA-5", epoch=5,
+        previous=four.id, expected=4, request_id="REQ-5", action="reactivate_rollback"))
+    six = store.activate(_activation(first, activation_id="APA-6", epoch=6,
+        previous=five.id, expected=5, request_id="REQ-6", action="reactivate_rollback"))
+    assert [row.release_id for row in (one, two, three, four, five, six)] == [
+        first.id, second.id, first.id, third.id, second.id, first.id,
+    ]
 
 
 def test_concurrent_activation_writers_have_one_epoch_winner(tmp_path):
