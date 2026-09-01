@@ -7,7 +7,39 @@ import pytest
 import yaml
 
 from runtime.config import Settings
-from runtime.daemon.capacity_config import CapacityConfigError, save, snapshot
+from runtime.daemon.capacity_config import (
+    CapacityConfigError,
+    _PublicationState,
+    _PublicationTransaction,
+    save,
+    snapshot,
+)
+
+
+def test_publication_transaction_transition_table_is_complete_and_ordered():
+    transaction = _PublicationTransaction()
+    states = list(_PublicationState)
+    assert states == [
+        _PublicationState.INITIAL,
+        _PublicationState.AUTHORITATIVE_READ,
+        _PublicationState.SERIALIZED,
+        _PublicationState.AUDIT_AUTHORIZED,
+        _PublicationState.PARENT_READY,
+        _PublicationState.TEMP_CREATED,
+        _PublicationState.TEMP_CLOSED,
+        _PublicationState.PUBLISHED,
+        _PublicationState.DIRECTORY_DURABLE,
+        _PublicationState.VERIFIED,
+        _PublicationState.CLEANUP_COMPLETE,
+        _PublicationState.SNAPSHOT_COMPLETE,
+        _PublicationState.RETURNED,
+    ]
+    for prior, following in zip(states, states[1:]):
+        assert transaction.published is (prior.value >= _PublicationState.PUBLISHED.value)
+        transaction.advance(prior, following)
+    assert transaction.published is True
+    with pytest.raises(RuntimeError, match="invalid publication transition"):
+        transaction.advance(_PublicationState.INITIAL, _PublicationState.RETURNED)
 
 
 def test_no_file_and_empty_mapping_are_safe(monkeypatch, tmp_path):
@@ -64,6 +96,67 @@ def test_audit_failure_restores_authoritative_bytes(monkeypatch, tmp_path):
     assert not list(tmp_path.glob(".*.tmp"))
 
 
+@pytest.mark.parametrize("fault", ["write", "flush", "fsync", "close"])
+def test_prepublication_temp_io_fault_preserves_authoritative_bytes(
+    monkeypatch, tmp_path, fault,
+):
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    original = b"other: retained\nqueue_workers: 4\nhost_global_session_cap: 11\n"
+    path.write_bytes(original)
+    before = snapshot(path, Settings(), capability_reason="healthy")
+    events = []
+    real_fdopen = __import__("os").fdopen
+    real_fsync = __import__("os").fsync
+
+    class FaultingHandle:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.handle.close()
+            if fault == "close":
+                raise OSError("close fault")
+
+        def write(self, value):
+            if fault == "write":
+                raise OSError("write fault")
+            return self.handle.write(value)
+
+        def flush(self):
+            if fault == "flush":
+                raise OSError("flush fault")
+            return self.handle.flush()
+
+        def fileno(self):
+            return self.handle.fileno()
+
+    monkeypatch.setattr(
+        "runtime.daemon.capacity_config.os.fdopen",
+        lambda fd, mode: FaultingHandle(real_fdopen(fd, mode)),
+    )
+    if fault == "fsync":
+        monkeypatch.setattr(
+            "runtime.daemon.capacity_config.os.fsync",
+            lambda _fd: (_ for _ in ()).throw(OSError("fsync fault")),
+        )
+
+    with pytest.raises(CapacityConfigError) as raised:
+        save(path, Settings(), expected_revision=before["revision"], queue_workers=6,
+             host_global_session_cap=13, rationale="temp IO fault",
+             confirm_environment_shadow=False, audit=events.append,
+             capability_reason="healthy")
+    assert raised.value.code == "config_write_failed"
+    assert raised.value.artifact_state == "absent"
+    assert path.read_bytes() == original
+    assert len(events) == 1
+    assert not list(tmp_path.glob(".*.tmp"))
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.fsync", real_fsync)
+
+
 def test_durable_audit_precedes_every_authoritative_replace(monkeypatch, tmp_path):
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
     path = tmp_path / "config.yaml"
@@ -102,8 +195,60 @@ def test_replace_fault_after_durable_audit_leaves_original_authoritative(monkeyp
              host_global_session_cap=13, rationale="fault", confirm_environment_shadow=False,
              audit=events.append, capability_reason="healthy")
     assert raised.value.code == "config_write_failed"
+    assert raised.value.artifact_state == "absent"
     assert path.read_bytes() == original
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected_artifact_state"),
+    [("exists", "unknown"), ("unlink", "present")],
+)
+def test_prepublication_cleanup_fault_preserves_authoritative_bytes_and_reports_artifact(
+    monkeypatch, tmp_path, fault, expected_artifact_state,
+):
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    original = b"other: retained\nqueue_workers: 4\nhost_global_session_cap: 11\n"
+    path.write_bytes(original)
+    before = snapshot(path, Settings(), capability_reason="healthy")
+    events = []
+    replace_failed = False
+    real_exists = __import__("os").path.exists
+    real_unlink = __import__("os").unlink
+
+    def fail_replace(_source, _target):
+        nonlocal replace_failed
+        replace_failed = True
+        raise OSError("replace fault")
+
+    def cleanup_exists(candidate):
+        if replace_failed and fault == "exists":
+            raise OSError("cleanup inspection fault")
+        return real_exists(candidate)
+
+    def cleanup_unlink(candidate):
+        if replace_failed:
+            raise OSError("cleanup unlink fault")
+        return real_unlink(candidate)
+
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.replace", fail_replace)
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.path.exists", cleanup_exists)
+    if fault == "unlink":
+        monkeypatch.setattr("runtime.daemon.capacity_config.os.unlink", cleanup_unlink)
+
+    with pytest.raises(CapacityConfigError) as raised:
+        save(path, Settings(), expected_revision=before["revision"], queue_workers=6,
+             host_global_session_cap=13, rationale="cleanup fault",
+             confirm_environment_shadow=False, audit=events.append,
+             capability_reason="healthy")
+    assert raised.value.code == "config_write_failed"
+    assert raised.value.artifact_state == expected_artifact_state
+    assert path.read_bytes() == original
+    assert len(events) == 1
+    # The test harness can observe the residue independently; production must
+    # still report unknown when its own existence inspection failed.
+    assert list(tmp_path.glob(".*.tmp"))
 
 
 @pytest.mark.parametrize(
@@ -188,6 +333,74 @@ def test_post_replace_fault_reports_publication_uncertain_and_forces_reconciliat
              host_global_session_cap=14, rationale="blind retry", confirm_environment_shadow=False,
              audit=events.append, capability_reason="healthy")
     assert stale.value.code == "stale_revision"
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected_artifact_state", "artifact_present"),
+    [("exists", "unknown", False), ("unlink", "present", True)],
+)
+def test_post_replace_cleanup_fault_reports_publication_uncertain_and_artifact_state(
+    monkeypatch, tmp_path, fault, expected_artifact_state, artifact_present,
+):
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    path.write_text("other: retained\nqueue_workers: 4\nhost_global_session_cap: 11\n")
+    running = Settings(queue_workers=4, host_global_session_cap=11)
+    before = snapshot(path, running, capability_reason="healthy")
+    events = []
+    published = False
+    artifact = None
+    real_replace = __import__("os").replace
+    real_exists = __import__("os").path.exists
+    real_unlink = __import__("os").unlink
+
+    def tracked_replace(source, target):
+        nonlocal published, artifact
+        real_replace(source, target)
+        published = True
+        artifact = Path(source)
+        if fault == "unlink":
+            artifact.write_bytes(b"leftover temp artifact")
+
+    def cleanup_exists(candidate):
+        if published and Path(candidate) == artifact and fault == "exists":
+            raise OSError("cleanup inspection fault")
+        return real_exists(candidate)
+
+    def cleanup_unlink(candidate):
+        if published and Path(candidate) == artifact:
+            raise OSError("cleanup unlink fault")
+        return real_unlink(candidate)
+
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.replace", tracked_replace)
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.path.exists", cleanup_exists)
+    if fault == "unlink":
+        monkeypatch.setattr("runtime.daemon.capacity_config.os.unlink", cleanup_unlink)
+
+    with pytest.raises(CapacityConfigError) as raised:
+        save(path, running, expected_revision=before["revision"], queue_workers=6,
+             host_global_session_cap=13, rationale="cleanup fault",
+             confirm_environment_shadow=False, audit=events.append,
+             capability_reason="healthy")
+
+    assert raised.value.code == "config_publication_uncertain"
+    assert raised.value.artifact_state == expected_artifact_state
+    assert "reload and inspect" in str(raised.value).lower()
+    assert yaml.safe_load(path.read_bytes()) == {
+        "other": "retained", "queue_workers": 6, "host_global_session_cap": 13,
+    }
+    assert len(events) == 1
+    assert events[0]["outcome"] == "validated_write_authorized"
+    assert bool(artifact and real_exists(artifact)) is artifact_present
+    latest = snapshot(path, running, capability_reason="healthy")
+    assert latest["persisted_yaml"] == {"queue_workers": 6, "host_global_session_cap": 13}
+    with pytest.raises(CapacityConfigError) as stale:
+        save(path, running, expected_revision=before["revision"], queue_workers=7,
+             host_global_session_cap=14, rationale="blind retry",
+             confirm_environment_shadow=False, audit=events.append,
+             capability_reason="healthy")
+    assert stale.value.code == "stale_revision"
+    assert len(events) == 1
 
 
 @pytest.mark.parametrize("fault", ["read", "parse"])

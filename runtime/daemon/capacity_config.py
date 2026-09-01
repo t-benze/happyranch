@@ -9,6 +9,7 @@ import hashlib
 import os
 import tempfile
 import threading
+from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,13 +22,59 @@ _LOCK = threading.RLock()
 
 
 class CapacityConfigError(RuntimeError):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, *, artifact_state: str | None = None):
         super().__init__(message)
         self.code = code
+        self.artifact_state = artifact_state
 
 
 class _PublicationUncertain(RuntimeError):
     """The authoritative replace happened, but durability/verification failed."""
+
+    def __init__(self, *, artifact_state: str, cleanup_failed: bool = False):
+        super().__init__(artifact_state)
+        self.artifact_state = artifact_state
+        self.cleanup_failed = cleanup_failed
+
+
+class _WriteFailed(RuntimeError):
+    """A pre-publication failure with observed temporary-artifact state."""
+
+    def __init__(self, *, artifact_state: str):
+        super().__init__(artifact_state)
+        self.artifact_state = artifact_state
+
+
+class _PublicationState(Enum):
+    """Ordered states of the complete audited publication transaction."""
+
+    INITIAL = auto()
+    AUTHORITATIVE_READ = auto()
+    SERIALIZED = auto()
+    AUDIT_AUTHORIZED = auto()
+    PARENT_READY = auto()
+    TEMP_CREATED = auto()
+    TEMP_CLOSED = auto()
+    PUBLISHED = auto()
+    DIRECTORY_DURABLE = auto()
+    VERIFIED = auto()
+    CLEANUP_COMPLETE = auto()
+    SNAPSHOT_COMPLETE = auto()
+    RETURNED = auto()
+
+
+class _PublicationTransaction:
+    def __init__(self) -> None:
+        self.state = _PublicationState.INITIAL
+
+    def advance(self, expected: _PublicationState, target: _PublicationState) -> None:
+        if self.state is not expected:
+            raise RuntimeError(f"invalid publication transition: {self.state.name} -> {target.name}")
+        self.state = target
+
+    @property
+    def published(self) -> bool:
+        return self.state.value >= _PublicationState.PUBLISHED.value
 
 
 def _revision(raw: bytes | None) -> str:
@@ -100,33 +147,68 @@ def _verify_published_values(mapping: Any, expected: dict[str, int]) -> None:
         raise OSError("published capacity values mismatch")
 
 
-def _atomic_write(path: Path, raw: bytes, *, expected: dict[str, int]) -> None:
+def _atomic_write(
+    path: Path,
+    raw: bytes,
+    *,
+    expected: dict[str, int],
+    transaction: _PublicationTransaction,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    transaction.advance(_PublicationState.AUDIT_AUTHORIZED, _PublicationState.PARENT_READY)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    transaction.advance(_PublicationState.PARENT_READY, _PublicationState.TEMP_CREATED)
+    failure: Exception | None = None
+    artifact_state = "unknown"
+    cleanup_failed = False
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(raw)
             handle.flush()
             os.fsync(handle.fileno())
+        transaction.advance(_PublicationState.TEMP_CREATED, _PublicationState.TEMP_CLOSED)
         os.replace(tmp_name, path)
+        transaction.advance(_PublicationState.TEMP_CLOSED, _PublicationState.PUBLISHED)
         try:
             dir_fd = os.open(path.parent, os.O_RDONLY)
             try:
                 os.fsync(dir_fd)
             finally:
                 os.close(dir_fd)
+            transaction.advance(_PublicationState.PUBLISHED, _PublicationState.DIRECTORY_DURABLE)
             published_raw = path.read_bytes()
             published_mapping = yaml.safe_load(published_raw)
             _verify_published_revision(published_raw, raw)
             _verify_published_values(published_mapping, expected)
+            transaction.advance(_PublicationState.DIRECTORY_DURABLE, _PublicationState.VERIFIED)
         except Exception as exc:
-            # os.replace already published authoritative bytes. Do not perform
-            # a second, unaudited replacement as compensation: crash timing
-            # could make that rollback less truthful than the first write.
-            raise _PublicationUncertain from exc
+            failure = exc
+    except Exception as exc:
+        failure = exc
     finally:
-        if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
+        try:
+            if os.path.exists(tmp_name):
+                artifact_state = "present"
+                os.unlink(tmp_name)
+                artifact_state = "absent"
+            else:
+                artifact_state = "absent"
+            if failure is None:
+                transaction.advance(_PublicationState.VERIFIED, _PublicationState.CLEANUP_COMPLETE)
+        except Exception as exc:
+            cleanup_failed = True
+            failure = exc
+
+    if failure is not None:
+        if transaction.published:
+            # Publication is authoritative after os.replace. No cleanup or
+            # verification exception may relabel it as a safe pre-write
+            # failure, compensate it, or emit another authorization audit.
+            raise _PublicationUncertain(
+                artifact_state=artifact_state,
+                cleanup_failed=cleanup_failed,
+            ) from failure
+        raise _WriteFailed(artifact_state=artifact_state) from failure
 
 
 def save(
@@ -142,7 +224,9 @@ def save(
     capability_reason: str,
 ) -> dict[str, Any]:
     with _LOCK:
+        transaction = _PublicationTransaction()
         old_raw, mapping = _read(path)
+        transaction.advance(_PublicationState.INITIAL, _PublicationState.AUTHORITATIVE_READ)
         current_revision = _revision(old_raw)
         if current_revision != expected_revision:
             raise CapacityConfigError("stale_revision", "capacity configuration changed; reload the latest snapshot")
@@ -156,6 +240,7 @@ def save(
         except Exception as exc:
             raise CapacityConfigError("invalid_settings_candidate", "staged values do not form valid daemon settings") from exc
         new_raw = yaml.safe_dump(candidate, sort_keys=False).encode()
+        transaction.advance(_PublicationState.AUTHORITATIVE_READ, _PublicationState.SERIALIZED)
         after_revision = _revision(new_raw)
         prior = {key: mapping.get(key) for key in CAPACITY_KEYS}
         event = {
@@ -175,6 +260,7 @@ def save(
             audit(event)
         except Exception as exc:
             raise CapacityConfigError("audit_failed", "audit persistence failed; capacity configuration was not changed")
+        transaction.advance(_PublicationState.SERIALIZED, _PublicationState.AUDIT_AUTHORIZED)
         try:
             _atomic_write(
                 path,
@@ -183,11 +269,26 @@ def save(
                     "queue_workers": queue_workers,
                     "host_global_session_cap": host_global_session_cap,
                 },
+                transaction=transaction,
             )
         except _PublicationUncertain as exc:
+            message = (
+                "capacity configuration was published, but durability, verification, or cleanup did not complete; "
+                "reload and inspect the authoritative configuration and temporary artifact state before retrying"
+                if exc.cleanup_failed else
+                "capacity configuration was published, but durability or verification did not complete; "
+                "reload and inspect the authoritative configuration before retrying"
+            )
             raise CapacityConfigError(
                 "config_publication_uncertain",
-                "capacity configuration was published, but durability or verification did not complete; reload and inspect the authoritative configuration before retrying",
+                message,
+                artifact_state=exc.artifact_state,
+            ) from exc
+        except _WriteFailed as exc:
+            raise CapacityConfigError(
+                "config_write_failed",
+                "capacity configuration replacement failed; the prior authoritative bytes remain in use",
+                artifact_state=exc.artifact_state,
             ) from exc
         except Exception as exc:
             raise CapacityConfigError("config_write_failed", "capacity configuration replacement failed") from exc
@@ -200,6 +301,9 @@ def save(
             raise CapacityConfigError(
                 "config_publication_uncertain",
                 "capacity configuration was published, but durability or verification did not complete; reload and inspect the authoritative configuration before retrying",
+                artifact_state="absent",
             ) from exc
+        transaction.advance(_PublicationState.CLEANUP_COMPLETE, _PublicationState.SNAPSHOT_COMPLETE)
         result["message"] = "Saved for next daemon restart; no running capacity was changed."
+        transaction.advance(_PublicationState.SNAPSHOT_COMPLETE, _PublicationState.RETURNED)
         return result

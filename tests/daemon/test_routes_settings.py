@@ -12,6 +12,8 @@ Key invariants:
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import yaml
 from fastapi.testclient import TestClient
@@ -225,6 +227,7 @@ def test_daemon_capacity_post_replace_failure_requires_reload_before_retry(
     assert response.json()["detail"] == {
         "code": "config_publication_uncertain",
         "message": "capacity configuration was published, but durability or verification did not complete; reload and inspect the authoritative configuration before retrying",
+        "artifact_state": "absent",
     }
     assert yaml.safe_load((tmp_home / "config.yaml").read_text())["queue_workers"] == 6
     assert not list(tmp_home.glob(".*.tmp"))
@@ -243,6 +246,84 @@ def test_daemon_capacity_post_replace_failure_requires_reload_before_retry(
     assert latest["persisted_yaml"] == {"queue_workers": 6, "host_global_session_cap": 13}
     assert retry.status_code == 409
     assert retry.json()["detail"]["latest"]["revision"] == latest["revision"]
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected_artifact_state", "artifact_present"),
+    [("exists", "unknown", False), ("unlink", "present", True)],
+)
+def test_daemon_capacity_post_replace_cleanup_failure_requires_reload_before_retry(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+    fault, expected_artifact_state, artifact_present,
+) -> None:
+    client = TestClient(app)
+    config_path = tmp_home / "config.yaml"
+    config_path.write_text("other: retained\nqueue_workers: 4\nhost_global_session_cap: 11\n")
+    current = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    published = False
+    artifact = None
+    real_replace = __import__("os").replace
+    real_exists = __import__("os").path.exists
+    real_unlink = __import__("os").unlink
+
+    def tracked_replace(source, target):
+        nonlocal published, artifact
+        real_replace(source, target)
+        published = True
+        artifact = Path(source)
+        if fault == "unlink":
+            artifact.write_bytes(b"leftover temp artifact")
+
+    def cleanup_exists(candidate):
+        if published and Path(candidate) == artifact and fault == "exists":
+            raise OSError("cleanup inspection fault")
+        return real_exists(candidate)
+
+    def cleanup_unlink(candidate):
+        if published and Path(candidate) == artifact:
+            raise OSError("cleanup unlink fault")
+        return real_unlink(candidate)
+
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.replace", tracked_replace)
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.path.exists", cleanup_exists)
+    if fault == "unlink":
+        monkeypatch.setattr("runtime.daemon.capacity_config.os.unlink", cleanup_unlink)
+
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 6, "host_global_session_cap": 13,
+              "rationale": "cleanup fault", "confirm_environment_shadow": False},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "config_publication_uncertain",
+        "message": "capacity configuration was published, but durability, verification, or cleanup did not complete; reload and inspect the authoritative configuration and temporary artifact state before retrying",
+        "artifact_state": expected_artifact_state,
+    }
+    assert yaml.safe_load(config_path.read_text()) == {
+        "other": "retained", "queue_workers": 6, "host_global_session_cap": 13,
+    }
+    rows = org_state.db.get_audit_logs("config:daemon_capacity")
+    assert len(rows) == 1
+    assert rows[0]["action"] == "daemon_capacity_config_write_authorized"
+    assert rows[0]["payload"]["outcome"] == "validated_write_authorized"
+    assert bool(artifact and real_exists(artifact)) is artifact_present
+    latest = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    assert latest["persisted_yaml"] == {"queue_workers": 6, "host_global_session_cap": 13}
+    retry = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 7, "host_global_session_cap": 14,
+              "rationale": "blind retry", "confirm_environment_shadow": False},
+    )
+    assert retry.status_code == 409
+    assert retry.json()["detail"]["latest"]["revision"] == latest["revision"]
+    assert len(org_state.db.get_audit_logs("config:daemon_capacity")) == 1
 
 
 @pytest.mark.parametrize("fault", ["read", "parse"])
@@ -302,6 +383,7 @@ def test_daemon_capacity_final_snapshot_failure_requires_reload_before_retry(
     assert response.json()["detail"] == {
         "code": "config_publication_uncertain",
         "message": "capacity configuration was published, but durability or verification did not complete; reload and inspect the authoritative configuration before retrying",
+        "artifact_state": "absent",
     }
     assert yaml.safe_load(config_path.read_text()) == {
         "other": "retained", "queue_workers": 6, "host_global_session_cap": 13,

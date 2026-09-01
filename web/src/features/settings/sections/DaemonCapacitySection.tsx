@@ -9,8 +9,24 @@ function safeSaveError(error: unknown): string {
   if (error.code === 'environment_confirmation_required') return 'Confirm the environment-shadow warning before saving.';
   if (error.status === 422) return 'The server rejected these values. Review both positive integers and the rationale.';
   if (error.code === 'audit_failed') return 'Audit storage is unavailable, so the configuration was not changed.';
-  if (error.code === 'config_write_failed') return 'Configuration storage failed safely. The previous authoritative file remains in use.';
-  if (error.code === 'config_publication_uncertain') return 'The new configuration was published, but durability or verification did not complete. Your draft is preserved. Reload and inspect the authoritative values before retrying.';
+  if (error.code === 'config_write_failed') {
+    const detail = error.detail as { artifact_state?: 'absent' | 'present' | 'unknown' };
+    const artifact = detail?.artifact_state === 'present'
+      ? ' A temporary artifact remains; inspect it before cleanup.'
+      : detail?.artifact_state === 'unknown'
+        ? ' Temporary artifact state is unknown; inspect it before cleanup.'
+        : '';
+    return `Configuration storage failed safely. The previous authoritative file remains in use.${artifact}`;
+  }
+  if (error.code === 'config_publication_uncertain') {
+    const detail = error.detail as { artifact_state?: 'absent' | 'present' | 'unknown' };
+    const artifact = detail?.artifact_state === 'present'
+      ? ' A temporary artifact remains; inspect it before cleanup.'
+      : detail?.artifact_state === 'unknown'
+        ? ' Temporary artifact state is unknown; inspect it before cleanup.'
+        : '';
+    return `The new configuration was published, but durability, verification, or cleanup did not complete. Your draft is preserved. Reload and inspect the authoritative values before retrying.${artifact}`;
+  }
   return 'Save failed safely. The draft is unchanged; no live capacity was changed.';
 }
 

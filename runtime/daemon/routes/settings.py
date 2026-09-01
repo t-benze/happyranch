@@ -120,6 +120,8 @@ def put_daemon_capacity(
             "audit_failed", "config_write_failed", "config_publication_uncertain",
         } else 500 if "failed" in exc.code else 422
         detail = {"code": exc.code, "message": str(exc)}
+        if exc.artifact_state is not None:
+            detail["artifact_state"] = exc.artifact_state
         if status_code == 409:
             detail["latest"] = get_daemon_capacity(slug, org, request)
         raise HTTPException(status_code=status_code, detail=detail) from exc
