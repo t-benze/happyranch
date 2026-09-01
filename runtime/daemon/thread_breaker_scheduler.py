@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from runtime.config import THREAD_REPLY_BREAKER_COOLDOWN_SECONDS
 from runtime.daemon.thread_queue import ThreadJob
 from runtime.daemon.thread_runner import _breaker_executor_key
 from runtime.orchestrator._paths import OrgPaths
@@ -28,12 +29,10 @@ async def thread_breaker_scheduler_loop(state, *, interval_seconds: float = 5.0)
                     )
                 entries = org.db.mint_due_thread_reply_breaker_probes(
                     no_episode_executor_keys=keys,
-                    cooldown_seconds=(
-                        state.settings.thread_reply_breaker_cooldown_seconds
-                    ),
+                    cooldown_seconds=THREAD_REPLY_BREAKER_COOLDOWN_SECONDS,
                 )
                 for entry in entries:
-                    await org.thread_queue.put(ThreadJob(
+                    await org.thread_queue.put_once(ThreadJob(
                         org_slug=org.slug, invocation_token=entry.invocation_token,
                     ))
             except Exception:

@@ -29,9 +29,14 @@ Serial PR B consumes this substrate. A `(thread, agent)` with
 `required_through_seq > acknowledged_through_seq`, both ownership slots NULL,
 and no episode row becomes cooldown-probe eligible after 15 minutes, and
 must be excluded while it holds a `held` deferral in an `open` exchange. The
-approved threshold 3, structured final-provider-failure taxonomy, eviction
+approved non-configurable threshold 3 and cooldown 900 seconds, structured final-provider-failure taxonomy, eviction
 separation and count-once semantics are active. OPEN coalesces with no launch;
 one durable HALF_OPEN probe succeeds closed/reset or fails back to a rearmed
 15-minute cooldown. Breaker recovery never releases a held exchange. Receipts,
 leases, settlement and redacted audits are idempotent across restart,
-concurrency and stale callbacks. PR B adds no API/web projection or manual action.
+concurrency and stale callbacks. Every scheduler tick republishes a committed
+pending probe token through an atomically deduplicating process queue, so an
+exception or cancellation at the former post-commit publication boundary heals
+without restart and the durable claim still launches exactly once. Environment
+and config input cannot alter policy or continuity across restart. PR B adds no
+API/web projection or manual action.

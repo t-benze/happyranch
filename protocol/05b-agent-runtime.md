@@ -257,11 +257,17 @@ application `Database` reader and asserts its model return contract. Rollout is
 single-version with daemon admission stopped; mixed-version writes are not
 authorized. PR B activates exactly-three structured final post-launch provider
 failures, count-once settlement, OPEN coalescing with no launch, and one durable
-HALF_OPEN probe after 15 minutes. A recovered ownerless gap with no episode uses
+HALF_OPEN probe after exactly 900 seconds. Threshold 3 and cooldown 900 are
+non-configurable policy constants; environment/config input cannot change them
+or fork continuity across restart. A recovered ownerless gap with no episode uses
 that cooldown-probe path, never ordinary CLOSED launch. Held OPEN-exchange
 deferrals remain held and excluded; breaker recovery never releases them. Probe
 failure rearms 15 minutes and success closes/reset continuity. Durable receipts,
 lease CAS and redacted audits make restart, duplicates and stale callbacks safe.
+Every scheduler tick re-emits a committed-but-still-pending queued probe; the
+process queue atomically deduplicates its token, closing the post-commit
+publication exception/cancellation window without a restart while the durable
+invocation claim remains the exactly-once provider-launch authority.
 PR B adds no API/OpenAPI/TypeScript/web projection or manual action.
 
 **Custom CLI result-envelope (THR-107).** Custom CLIs may opt into token metering

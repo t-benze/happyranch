@@ -160,7 +160,11 @@ caller, and pinned historical stores plus the actual `e197b20` application
 reader establish the single-version compatibility boundary. The founder-approved
 runtime lifecycle in PR B counts only structured final post-launch outcomes,
 opens at exactly three, coalesces without launching, and uses a daemon-owned
-15-minute scheduler for one durable HALF_OPEN probe. Recovered ownerless gaps
+exactly-900-second scheduler for one durable HALF_OPEN probe. Threshold 3 and
+cooldown 900 are fixed policy constants, not settings or environment overrides.
+Each tick also republishes any durable pending probe token; atomic process-queue
+deduplication closes the commit-to-publication exception/cancellation gap, and
+the durable claim CAS permits exactly one provider launch. Recovered ownerless gaps
 without an episode enter only through cooldown probing. Held OPEN-exchange
 deferrals are excluded and never released by breaker recovery. Durable receipts
 and lease CAS preserve OPEN/PROBE across restart and reject duplicate/stale

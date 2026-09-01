@@ -1931,6 +1931,14 @@ async def test_post_launch_exception_counts_once_at_shipping_runner_seam(
     else:
         triggering_seq = 1
     inv = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=triggering_seq)
+    for index in range(2):
+        db.record_thread_reply_breaker_failure(
+            thread_id="THR-001", agent_name="alice",
+            executor_key="claude:default:3:900",
+            invocation_token=f"prior-failure-{index}",
+            failure_category="provider_nonzero", threshold=3,
+            cooldown_seconds=900,
+        )
     ws = tmp_path / "workspaces" / "alice"
     ws.mkdir(parents=True)
     (ws / "agent.yaml").write_text("executor: claude\n")
@@ -1957,15 +1965,15 @@ async def test_post_launch_exception_counts_once_at_shipping_runner_seam(
     )
     await run_invocation(
         org_state=FakeOrgState(db, tmp_path), invocation_token=inv.invocation_token,
-        settings=Settings(thread_reply_breaker_failure_threshold=1),
+        settings=Settings(),
     )
     breaker = db._conn.execute(
         "SELECT state,consecutive_failures FROM thread_reply_breaker_episodes"
     ).fetchone()
-    assert tuple(breaker) == ("open", 1)
+    assert tuple(breaker) == ("open", 3)
     assert db._conn.execute(
         "SELECT COUNT(*) FROM thread_reply_breaker_receipts"
-    ).fetchone()[0] == 1
+    ).fetchone()[0] == 3
 
 
 @pytest.mark.asyncio
@@ -2037,9 +2045,12 @@ async def test_shipping_runner_restart_open_probe_failure_rearms_once(
         now=datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc),
     )
     assert len(probes) == 1
-    assert restarted.mint_due_thread_reply_breaker_probes(
+    repeated = restarted.mint_due_thread_reply_breaker_probes(
         now=datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc),
-    ) == []
+    )
+    assert [entry.invocation_token for entry in repeated] == [
+        probes[0].invocation_token
+    ]
     await run_invocation(
         org_state=org, invocation_token=probes[0].invocation_token,
         settings=Settings(),

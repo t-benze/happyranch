@@ -15,7 +15,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from runtime.config import Settings
+from runtime.config import (
+    Settings,
+    THREAD_REPLY_BREAKER_COOLDOWN_SECONDS,
+    THREAD_REPLY_BREAKER_FAILURE_THRESHOLD,
+)
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import (
     ThreadInvocationPurpose,
@@ -891,12 +895,12 @@ def _settle_or_fail_reply(
 def _breaker_executor_key(
     executor_name: str, model_name: str | None, settings: Settings,
 ) -> str:
-    """Bind breaker continuity to executor, model, and validated policy."""
+    """Bind breaker continuity to executor, model, and fixed policy."""
     return ":".join((
         executor_name,
         model_name or "default",
-        str(settings.thread_reply_breaker_failure_threshold),
-        str(settings.thread_reply_breaker_cooldown_seconds),
+        str(THREAD_REPLY_BREAKER_FAILURE_THRESHOLD),
+        str(THREAD_REPLY_BREAKER_COOLDOWN_SECONDS),
     ))
 
 
@@ -1256,8 +1260,8 @@ async def run_invocation(
                 thread_id=inv.thread_id, agent_name=inv.agent_name,
                 executor_key=breaker_key,
                 failure_category=selected,
-                threshold=settings.thread_reply_breaker_failure_threshold,
-                cooldown_seconds=settings.thread_reply_breaker_cooldown_seconds,
+                threshold=THREAD_REPLY_BREAKER_FAILURE_THRESHOLD,
+                cooldown_seconds=THREAD_REPLY_BREAKER_COOLDOWN_SECONDS,
             )
 
         def _record_breaker_success() -> None:

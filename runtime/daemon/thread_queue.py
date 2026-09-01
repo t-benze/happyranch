@@ -23,9 +23,20 @@ class ThreadJob:
 class ThreadQueue:
     def __init__(self) -> None:
         self._q: asyncio.Queue[ThreadJob] = asyncio.Queue()
+        self._published_once_tokens: set[str] = set()
 
     async def put(self, job: ThreadJob) -> None:
         await self._q.put(job)
+
+    async def put_once(self, job: ThreadJob) -> None:
+        # The queue is unbounded, so put_nowait cannot suspend between enqueue
+        # and the idempotency mark. Retaining tokens for this queue's lifetime
+        # makes retry-after-uncertain-publication safe; the durable invocation
+        # claim remains the cross-restart exactly-once launch authority.
+        if job.invocation_token in self._published_once_tokens:
+            return
+        self._q.put_nowait(job)
+        self._published_once_tokens.add(job.invocation_token)
 
     async def get(self) -> ThreadJob:
         return await self._q.get()

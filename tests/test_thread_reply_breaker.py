@@ -7,8 +7,12 @@ import pytest
 from runtime.infrastructure.database import Database
 from runtime.models import ThreadRecord, ThreadMessageKind
 from runtime.orchestrator.executors import ExecutorResult
-from runtime.daemon.thread_runner import _qualifying_breaker_failure
-from runtime.config import Settings
+from runtime.daemon.thread_runner import _breaker_executor_key, _qualifying_breaker_failure
+from runtime.config import (
+    Settings,
+    THREAD_REPLY_BREAKER_COOLDOWN_SECONDS,
+    THREAD_REPLY_BREAKER_FAILURE_THRESHOLD,
+)
 
 
 NOW = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
@@ -38,14 +42,17 @@ def test_prelaunch_and_unstructured_results_are_nonqualifying():
     assert _qualifying_breaker_failure(legacy) is None
 
 
-def test_breaker_policy_is_validated_configuration():
+def test_breaker_policy_is_fixed_and_environment_cannot_override(monkeypatch):
+    monkeypatch.setenv("HAPPYRANCH_THREAD_REPLY_BREAKER_FAILURE_THRESHOLD", "1")
+    monkeypatch.setenv("HAPPYRANCH_THREAD_REPLY_BREAKER_COOLDOWN_SECONDS", "1")
     settings = Settings()
-    assert settings.thread_reply_breaker_failure_threshold == 3
-    assert settings.thread_reply_breaker_cooldown_seconds == 900
-    with pytest.raises(ValueError):
-        Settings(thread_reply_breaker_failure_threshold=0)
-    with pytest.raises(ValueError):
-        Settings(thread_reply_breaker_cooldown_seconds=0)
+    assert THREAD_REPLY_BREAKER_FAILURE_THRESHOLD == 3
+    assert THREAD_REPLY_BREAKER_COOLDOWN_SECONDS == 900
+    assert not hasattr(settings, "thread_reply_breaker_failure_threshold")
+    assert not hasattr(settings, "thread_reply_breaker_cooldown_seconds")
+    assert _breaker_executor_key("codex", "gpt-5", settings) == "codex:gpt-5:3:900"
+    restarted = Settings()
+    assert _breaker_executor_key("codex", "gpt-5", restarted) == "codex:gpt-5:3:900"
 
 
 def _db(tmp_path):
@@ -231,9 +238,12 @@ def test_due_probe_mints_one_timer_wake_with_durable_probe_lease(tmp_path):
         now=NOW + timedelta(minutes=15),
     )
     assert len(entries) == 1 and entries[0].kind == "breaker_probe"
-    assert db.mint_due_thread_reply_breaker_probes(
+    recovered = db.mint_due_thread_reply_breaker_probes(
         now=NOW + timedelta(minutes=16),
-    ) == []
+    )
+    assert [entry.invocation_token for entry in recovered] == [
+        entries[0].invocation_token
+    ]
     projection = db.list_reply_delivery_projections("THR-1")
     # PR B keeps the external reply-delivery projection unchanged; the probe
     # is represented internally by its unique durable lease and queued wake.
@@ -242,6 +252,36 @@ def test_due_probe_mints_one_timer_wake_with_durable_probe_lease(tmp_path):
     assert episode is not None
     assert episode.state == "probe"
     assert episode.probe_lease_id is not None
+
+
+def test_repeated_concurrent_recovery_returns_one_durable_probe_token(tmp_path):
+    path = tmp_path / "recovery-race.db"
+    seed = Database(path)
+    seed.insert_thread(ThreadRecord(id="THR-1", subject="breaker"))
+    seed.add_thread_participant("THR-1", "dev_agent", added_by="founder")
+    _seed_outstanding_delivery(seed)
+    _failure(seed, "tok-1")
+    _failure(seed, "tok-2")
+    _failure(seed, "tok-3")
+    seed.close()
+
+    def recover(_index):
+        db = Database(path)
+        try:
+            entries = db.mint_due_thread_reply_breaker_probes(
+                now=NOW + timedelta(minutes=15)
+            )
+            return tuple(entry.invocation_token for entry in entries)
+        finally:
+            db.close()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        recovered = list(pool.map(recover, range(8)))
+    assert len({token for result in recovered for token in result}) == 1
+    verify = Database(path)
+    assert verify._conn.execute(
+        "SELECT COUNT(*) FROM thread_invocations WHERE purpose='reply'"
+    ).fetchone()[0] == 1
 
 
 def test_due_probe_excludes_held_open_exchange(tmp_path):

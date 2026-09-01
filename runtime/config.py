@@ -12,6 +12,13 @@ from pydantic_settings import (
 )
 
 
+# Founder-approved THR-200 breaker policy. These values are deliberately not
+# Settings fields: environment/config input cannot fork continuity identity or
+# alter an already-open episode across daemon restart.
+THREAD_REPLY_BREAKER_FAILURE_THRESHOLD = 3
+THREAD_REPLY_BREAKER_COOLDOWN_SECONDS = 900
+
+
 def _daemon_home() -> Path:
     """Resolve the daemon home dir (``~/.happyranch``).
 
@@ -96,12 +103,6 @@ class Settings(BaseSettings):
     executor_rate_limit_backoff_seconds: list[int] = Field(
         default_factory=lambda: [5, 15, 45]
     )
-
-    # THR-200 PR E thread-provider breaker. These are validated operational
-    # policy values rather than schema constants: persistence stores episode
-    # state while the daemon owns the rollout-wide policy.
-    thread_reply_breaker_failure_threshold: int = Field(default=3, gt=0)
-    thread_reply_breaker_cooldown_seconds: int = Field(default=900, gt=0)
 
     @classmethod
     def settings_customise_sources(

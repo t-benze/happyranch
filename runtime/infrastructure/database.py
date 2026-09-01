@@ -7234,6 +7234,27 @@ class Database:
         results: list[ThreadReplyRecoveryEntry] = []
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            # A prior tick may have committed the durable probe lease/token but
+            # failed or been cancelled before publishing to the process queue.
+            # Re-emit every still-pending queued probe on every tick. The
+            # process queue deduplicates publication and the invocation claim
+            # CAS remains the exactly-once launch boundary.
+            for queued in self._conn.execute(
+                "SELECT b.thread_id,b.agent_name,d.queued_invocation_token "
+                "FROM thread_reply_breaker_episodes b JOIN "
+                "thread_reply_delivery_state d ON d.thread_id=b.thread_id AND "
+                "d.agent_name=b.agent_name JOIN thread_invocations i ON "
+                "i.invocation_token=d.queued_invocation_token "
+                "WHERE b.state='probe' AND b.probe_lease_id IS NOT NULL AND "
+                "d.queued_invocation_token IS NOT NULL AND i.status='pending' "
+                "ORDER BY b.thread_id,b.agent_name"
+            ).fetchall():
+                results.append(ThreadReplyRecoveryEntry(
+                    thread_id=queued["thread_id"],
+                    agent_name=queued["agent_name"],
+                    invocation_token=queued["queued_invocation_token"],
+                    kind="breaker_probe",
+                ))
             cutoff_s = (at - timedelta(seconds=cooldown_seconds)).isoformat()
             for candidate in self._conn.execute(
                 "SELECT d.thread_id,d.agent_name,d.updated_at FROM "
