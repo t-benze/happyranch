@@ -743,6 +743,9 @@ class ReplyDeliveryProjection(BaseModel):
     started_at: str | None
     updated_at: str | None
     last_terminal_reason: str | None
+    current_failure_category: Literal[
+        "no_callback", "no_callback_after_reprompt", "infra_fail"
+    ] | None = None
 
 
 class JobStatus(StrEnum):

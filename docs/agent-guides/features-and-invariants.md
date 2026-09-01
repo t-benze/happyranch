@@ -418,6 +418,17 @@ Traps:
 - Merge completion is allowed only through the guarded helper or founder-reviewed job, not broad worker `gh pr merge` allow-rules.
 - The poll job entrypoint is `python -m runtime.daemon.pr_ci_waiter --repo ... --pr N --head-sha <sha> --expected-check ...`; the merge entrypoint is `python -m runtime.daemon.pr_ci_merge --org ... --repo ... --pr N --head-sha <sha> --merge-method ... --ci-verdict ... --review-task-id ... --qa-task-id ...`. Both print structured JSON to stdout and exit with mapped codes.
 
+## Reply-delivery compact retry captions
+
+The live `reply_delivery` wire projection carries a bounded
+`current_failure_category` (`no_callback`, `no_callback_after_reprompt`, or
+`infra_fail`) only for a genuine current `retry_required` obligation. Both
+compact consumers render that short category and never raw
+`last_terminal_reason`; the raw reason remains available to existing detail
+and audit surfaces. Queued, running, held, replaced, and settled obligations
+have no current failure category, preventing terminal history from labeling a
+later obligation.
+
 ## Feishu Notifications (REMOVED)
 
 Feishu was removed in TASK-302 (THR-022). The web UI and threads are the sole control path for dispatch / revisit / resolve-escalation. Legacy `feishu_notifications` config blocks are tolerated on load but ignored. Database correlation tables (`escalation_notifications`, `processed_event_ids`) remain dormant in place.

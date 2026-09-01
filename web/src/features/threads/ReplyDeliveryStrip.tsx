@@ -114,10 +114,10 @@ export function replyDeliveryCaption(
     case 'held':
       return `waiting for current exchange · ${range}`;
     case 'retry_required': {
-      const reason = e.last_terminal_reason
-        ? ` · last: ${e.last_terminal_reason}`
+      const label = e.current_failure_category
+        ? ` · ${e.current_failure_category.replaceAll('_', ' ')}`
         : '';
-      return `retry required · ${range}${reason}`;
+      return `retry required · ${range}${label}`;
     }
   }
 }

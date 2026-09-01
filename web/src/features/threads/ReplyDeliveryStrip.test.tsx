@@ -61,7 +61,7 @@ describe('ReplyDeliveryStrip (GH-688 Phase 1 Slice C)', () => {
     expect(screen.getByText('ops_lead')).toHaveClass('break-all');
   });
 
-  it('retry_required renders as a diagnostic with the last terminal reason', () => {
+  it('retry_required renders only the authoritative short category', () => {
     render(
       <ReplyDeliveryStrip
         entries={[
@@ -72,13 +72,14 @@ describe('ReplyDeliveryStrip (GH-688 Phase 1 Slice C)', () => {
             through_seq: 5,
             coalesced_message_count: 4,
             last_terminal_reason: 'timeout',
+            current_failure_category: 'infra_fail',
           }),
         ]}
         nowMs={nowMs}
       />,
     );
     expect(
-      screen.getByText('retry required · messages 2–5 · last: timeout'),
+      screen.getByText('retry required · messages 2–5 · infra fail'),
     ).toBeInTheDocument();
     // retry_required is NEVER portrayed as an active subprocess.
     expect(screen.queryByText(/replying/)).not.toBeInTheDocument();
@@ -197,20 +198,23 @@ describe('replyDeliveryCaption (shared with the transcript tail)', () => {
     ).toBe('replying · messages 1–4');
   });
 
-  it('retry_required with and without a stored reason', () => {
+  it.each([
+    ['no_callback', 'no callback'],
+    ['no_callback_after_reprompt', 'no callback after reprompt'],
+    ['infra_fail', 'infra fail'],
+  ] as const)('retry_required category %s is bounded', (category, label) => {
+    expect(replyDeliveryCaption(entry({
+      agent_name: 'a_realistically_long_agent_name_for_the_244px_rail',
+      state: 'retry_required',
+      last_terminal_reason: 'RAW DETAIL MUST NEVER RENDER',
+      current_failure_category: category,
+    }), nowMs)).toBe(`retry required · messages 1–4 · ${label}`);
+  });
+
+  it('retry_required without a current category omits historical raw detail', () => {
     expect(
       replyDeliveryCaption(
-        entry({
-          agent_name: 'x',
-          state: 'retry_required',
-          last_terminal_reason: 'timeout',
-        }),
-        nowMs,
-      ),
-    ).toBe('retry required · messages 1–4 · last: timeout');
-    expect(
-      replyDeliveryCaption(
-        entry({ agent_name: 'x', state: 'retry_required', last_terminal_reason: null }),
+        entry({ agent_name: 'x', state: 'retry_required', last_terminal_reason: 'stale raw detail' }),
         nowMs,
       ),
     ).toBe('retry required · messages 1–4');
