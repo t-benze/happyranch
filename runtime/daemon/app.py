@@ -237,6 +237,10 @@ async def _lifespan(app: FastAPI):
         asyncio.create_task(thread_worker_loop(state, state.settings))
         for _ in range(4)
     ]
+    from runtime.daemon.thread_breaker_scheduler import thread_breaker_scheduler_loop
+    thread_breaker_scheduler_task = asyncio.create_task(
+        thread_breaker_scheduler_loop(state)
+    )
 
     from runtime.daemon.dream_scheduler import (
         dream_scheduler_loop,
@@ -365,6 +369,7 @@ async def _lifespan(app: FastAPI):
             await org.dashboard_projection.reap_scheduler()
         for t in thread_worker_tasks:
             t.cancel()
+        thread_breaker_scheduler_task.cancel()
         dream_scheduler_task.cancel()
         for t in dream_worker_tasks:
             t.cancel()

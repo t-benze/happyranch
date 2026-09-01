@@ -12,6 +12,13 @@ from pydantic_settings import (
 )
 
 
+# Founder-approved THR-200 breaker policy. These values are deliberately not
+# Settings fields: environment/config input cannot fork continuity identity or
+# alter an already-open episode across daemon restart.
+THREAD_REPLY_BREAKER_FAILURE_THRESHOLD = 3
+THREAD_REPLY_BREAKER_COOLDOWN_SECONDS = 900
+
+
 def _daemon_home() -> Path:
     """Resolve the daemon home dir (``~/.happyranch``).
 

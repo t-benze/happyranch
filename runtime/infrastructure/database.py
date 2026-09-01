@@ -7,7 +7,8 @@ import logging
 import sqlite3
 import threading
 import time as _time
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from runtime.models import (
@@ -37,8 +38,8 @@ from runtime.models import (
     ThreadRecord,
     ThreadReplyArrival,
     ThreadReplyClaim,
-    ThreadReplyBreakerEpisode,
     ThreadReplyDeliveryState,
+    ThreadReplyBreakerEpisode,
     ThreadReplyExchangeProjection,
     ThreadReplyRecoveryEntry,
     ThreadReplySettlement,
@@ -1334,9 +1335,9 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_thread_reply_delivery_state_thread
                 ON thread_reply_delivery_state(thread_id);
 
-            -- THR-200 PR E/A: additive persistence substrate only. Runtime
-            -- transition/admission policy is intentionally reserved for the
-            -- serial behavior PR.
+            -- THR-200 PR E: one additive breaker row per continuity identity.
+            -- Absence is the authoritative CLOSED representation. Outcome
+            -- receipts bind terminal accounting to immutable invocation tokens.
             CREATE TABLE IF NOT EXISTS thread_reply_breaker_episodes (
                 thread_id TEXT NOT NULL,
                 agent_name TEXT NOT NULL,
@@ -7071,14 +7072,10 @@ class Database:
 
     def _row_to_reply_breaker_episode(self, row) -> ThreadReplyBreakerEpisode:
         return ThreadReplyBreakerEpisode(
-            thread_id=row["thread_id"],
-            agent_name=row["agent_name"],
-            executor_key=row["executor_key"],
-            episode_id=row["episode_id"],
-            state=row["state"],
-            consecutive_failures=row["consecutive_failures"],
-            opened_at=row["opened_at"],
-            cooldown_until=row["cooldown_until"],
+            thread_id=row["thread_id"], agent_name=row["agent_name"],
+            executor_key=row["executor_key"], episode_id=row["episode_id"],
+            state=row["state"], consecutive_failures=row["consecutive_failures"],
+            opened_at=row["opened_at"], cooldown_until=row["cooldown_until"],
             probe_lease_id=row["probe_lease_id"],
             last_failure_category=row["last_failure_category"],
             updated_at=row["updated_at"],
@@ -7088,13 +7085,375 @@ class Database:
     def get_thread_reply_breaker(
         self, thread_id: str, agent_name: str, executor_key: str,
     ) -> ThreadReplyBreakerEpisode | None:
-        """Read persisted substrate state; absence is the CLOSED representation."""
+        """Return the durable episode; absence means CLOSED."""
         row = self._conn.execute(
             "SELECT * FROM thread_reply_breaker_episodes WHERE thread_id = ? "
             "AND agent_name = ? AND executor_key = ?",
             (thread_id, agent_name, executor_key),
         ).fetchone()
         return self._row_to_reply_breaker_episode(row) if row else None
+
+    @_synchronized
+    def record_thread_reply_breaker_failure(
+        self, *, thread_id: str, agent_name: str, executor_key: str,
+        invocation_token: str, failure_category: str, threshold: int,
+        cooldown_seconds: int, now: datetime | None = None,
+    ) -> ThreadReplyBreakerEpisode:
+        """Count one qualifying final launched-provider outcome exactly once."""
+        if threshold < 1 or cooldown_seconds < 1:
+            raise ValueError("breaker threshold and cooldown must be positive")
+        at = (now or _now()).astimezone(timezone.utc)
+        at_s = at.isoformat()
+        transition_action: str | None = None
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            existing_receipt = self._conn.execute(
+                "SELECT episode_id FROM thread_reply_breaker_receipts "
+                "WHERE invocation_token = ?", (invocation_token,),
+            ).fetchone()
+            row = self._conn.execute(
+                "SELECT * FROM thread_reply_breaker_episodes WHERE thread_id = ? "
+                "AND agent_name = ? AND executor_key = ?",
+                (thread_id, agent_name, executor_key),
+            ).fetchone()
+            if existing_receipt is not None:
+                if row is None or row["episode_id"] != existing_receipt["episode_id"]:
+                    raise RuntimeError("breaker receipt continuity mismatch")
+                self._conn.commit()
+                return self._row_to_reply_breaker_episode(row)
+            if row is None or (
+                row["state"] == "closed" and int(row["consecutive_failures"]) == 0
+            ):
+                episode_id = f"brep-{uuid.uuid4().hex}"
+                failures = 1
+                state = "open" if failures >= threshold else "closed"
+                if state == "open":
+                    transition_action = "thread_reply_breaker_opened"
+                opened_at = at_s if state == "open" else None
+                cooldown_until = (
+                    (at + timedelta(seconds=cooldown_seconds)).isoformat()
+                    if state == "open" else None
+                )
+                self._conn.execute(
+                    "INSERT INTO thread_reply_breaker_episodes "
+                    "(thread_id,agent_name,executor_key,episode_id,state,"
+                    "consecutive_failures,opened_at,cooldown_until,probe_lease_id,"
+                    "last_failure_category,updated_at) VALUES (?,?,?,?,?,?,?,?,NULL,?,?) "
+                    "ON CONFLICT(thread_id,agent_name,executor_key) DO UPDATE SET "
+                    "episode_id=excluded.episode_id,state=excluded.state,"
+                    "consecutive_failures=excluded.consecutive_failures,"
+                    "opened_at=excluded.opened_at,cooldown_until=excluded.cooldown_until,"
+                    "probe_lease_id=NULL,last_failure_category=excluded.last_failure_category,"
+                    "updated_at=excluded.updated_at",
+                    (thread_id, agent_name, executor_key, episode_id, state,
+                     failures, opened_at, cooldown_until, failure_category, at_s),
+                )
+            else:
+                episode_id = row["episode_id"]
+                failures = int(row["consecutive_failures"]) + 1
+                state = "open" if failures >= threshold else row["state"]
+                opened_at = row["opened_at"] or (at_s if state == "open" else None)
+                cooldown_until = row["cooldown_until"]
+                if state == "open" and row["state"] != "open":
+                    cooldown_until = (at + timedelta(seconds=cooldown_seconds)).isoformat()
+                    transition_action = "thread_reply_breaker_opened"
+                if row["state"] == "probe":
+                    state = "open"
+                    transition_action = "thread_reply_breaker_reopened"
+                    opened_at = at_s
+                    cooldown_until = (at + timedelta(seconds=cooldown_seconds)).isoformat()
+                self._conn.execute(
+                    "UPDATE thread_reply_breaker_episodes SET state=?,"
+                    "consecutive_failures=?,opened_at=?,cooldown_until=?,"
+                    "probe_lease_id=NULL,last_failure_category=?,updated_at=? "
+                    "WHERE episode_id=?",
+                    (state, failures, opened_at, cooldown_until,
+                     failure_category, at_s, episode_id),
+                )
+            self._conn.execute(
+                "INSERT INTO thread_reply_breaker_receipts "
+                "(invocation_token,episode_id,outcome,failure_category,recorded_at) "
+                "VALUES (?,?,'failure',?,?)",
+                (invocation_token, episode_id, failure_category, at_s),
+            )
+            if transition_action is not None:
+                self.insert_audit_log_uncommitted(
+                    task_id=thread_id, agent=agent_name,
+                    action=transition_action,
+                    payload={
+                        "episode_id": episode_id,
+                        "failure_category": failure_category,
+                        "consecutive_failures": failures,
+                    },
+                )
+            result = self._conn.execute(
+                "SELECT * FROM thread_reply_breaker_episodes WHERE episode_id=?",
+                (episode_id,),
+            ).fetchone()
+            self._conn.commit()
+            return self._row_to_reply_breaker_episode(result)
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def acquire_thread_reply_breaker_probe(
+        self, *, thread_id: str, agent_name: str, executor_key: str,
+        lease_id: str, now: datetime | None = None,
+    ) -> ThreadReplyBreakerEpisode | None:
+        """Acquire the single durable half-open lease when its cooldown is due."""
+        at_s = (now or _now()).astimezone(timezone.utc).isoformat()
+        cursor = self._conn.execute(
+            "UPDATE thread_reply_breaker_episodes SET state='probe',"
+            "probe_lease_id=?,updated_at=? WHERE thread_id=? AND agent_name=? "
+            "AND executor_key=? AND state='open' AND cooldown_until<=?",
+            (lease_id, at_s, thread_id, agent_name, executor_key, at_s),
+        )
+        self._conn.commit()
+        if cursor.rowcount != 1:
+            return None
+        return self.get_thread_reply_breaker(thread_id, agent_name, executor_key)
+
+    @_synchronized
+    def mint_due_thread_reply_breaker_probes(
+        self, *, now: datetime | None = None,
+        no_episode_executor_keys: dict[tuple[str, str], str] | None = None,
+        cooldown_seconds: int = 900,
+    ) -> list[ThreadReplyRecoveryEntry]:
+        """Atomically lease and mint timer-driven probes that are actually runnable.
+
+        Startup/gap recovery can leave a durable obligation with neither an
+        owner slot nor a breaker episode.  Such a pair is admitted only as a
+        cooldown-aged probe, using the scheduler-resolved current continuity
+        key; it is never silently converted into an ordinary CLOSED launch.
+        """
+        if cooldown_seconds < 1:
+            raise ValueError("breaker cooldown must be positive")
+        at = (now or _now()).astimezone(timezone.utc)
+        at_s = at.isoformat()
+        results: list[ThreadReplyRecoveryEntry] = []
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            # A prior tick may have committed the durable probe lease/token but
+            # failed or been cancelled before publishing to the process queue.
+            # Re-emit every still-pending queued probe on every tick. The
+            # process queue deduplicates publication and the invocation claim
+            # CAS remains the exactly-once launch boundary.
+            for queued in self._conn.execute(
+                "SELECT b.thread_id,b.agent_name,d.queued_invocation_token "
+                "FROM thread_reply_breaker_episodes b JOIN "
+                "thread_reply_delivery_state d ON d.thread_id=b.thread_id AND "
+                "d.agent_name=b.agent_name JOIN thread_invocations i ON "
+                "i.invocation_token=d.queued_invocation_token "
+                "WHERE b.state='probe' AND b.probe_lease_id IS NOT NULL AND "
+                "d.queued_invocation_token IS NOT NULL AND i.status='pending' "
+                "ORDER BY b.thread_id,b.agent_name"
+            ).fetchall():
+                results.append(ThreadReplyRecoveryEntry(
+                    thread_id=queued["thread_id"],
+                    agent_name=queued["agent_name"],
+                    invocation_token=queued["queued_invocation_token"],
+                    kind="breaker_probe",
+                ))
+            cutoff_s = (at - timedelta(seconds=cooldown_seconds)).isoformat()
+            for candidate in self._conn.execute(
+                "SELECT d.thread_id,d.agent_name,d.updated_at FROM "
+                "thread_reply_delivery_state d JOIN threads t ON t.id=d.thread_id "
+                "AND t.status='open' JOIN thread_participants p ON "
+                "p.thread_id=d.thread_id AND p.agent_name=d.agent_name WHERE "
+                "d.required_through_seq>d.acknowledged_through_seq AND "
+                "d.queued_invocation_token IS NULL AND "
+                "d.running_invocation_token IS NULL AND d.updated_at<=? AND "
+                "NOT EXISTS (SELECT 1 FROM thread_reply_breaker_episodes b "
+                "WHERE b.thread_id=d.thread_id AND b.agent_name=d.agent_name) "
+                "ORDER BY d.updated_at,d.thread_id,d.agent_name",
+                (cutoff_s,),
+            ).fetchall():
+                pair = (candidate["thread_id"], candidate["agent_name"])
+                executor_key = (no_episode_executor_keys or {}).get(pair)
+                if executor_key is None:
+                    continue
+                held = self._conn.execute(
+                    "SELECT 1 FROM thread_reply_exchange e JOIN "
+                    "thread_exchange_deferrals x ON x.thread_id=e.thread_id "
+                    "AND x.exchange_id=e.exchange_id WHERE e.thread_id=? AND "
+                    "e.state='open' AND x.agent_name=? AND x.state='held' LIMIT 1",
+                    pair,
+                ).fetchone()
+                if held is not None:
+                    continue
+                episode_id = f"brep-{uuid.uuid4().hex}"
+                self._conn.execute(
+                    "INSERT INTO thread_reply_breaker_episodes "
+                    "(thread_id,agent_name,executor_key,episode_id,state,"
+                    "consecutive_failures,opened_at,cooldown_until,probe_lease_id,"
+                    "last_failure_category,updated_at) VALUES "
+                    "(?,?,?,?,'open',0,?,?,NULL,NULL,?)",
+                    (candidate["thread_id"], candidate["agent_name"], executor_key,
+                     episode_id, candidate["updated_at"], candidate["updated_at"], at_s),
+                )
+            rows = self._conn.execute(
+                "SELECT b.*,d.acknowledged_through_seq,d.required_through_seq,"
+                "d.queued_invocation_token,d.running_invocation_token "
+                "FROM thread_reply_breaker_episodes b "
+                "JOIN thread_reply_delivery_state d ON d.thread_id=b.thread_id "
+                "AND d.agent_name=b.agent_name "
+                "JOIN threads t ON t.id=b.thread_id AND t.status='open' "
+                "JOIN thread_participants p ON p.thread_id=b.thread_id "
+                "AND p.agent_name=b.agent_name "
+                "WHERE b.state='open' AND b.cooldown_until<=? "
+                "ORDER BY b.cooldown_until,b.thread_id,b.agent_name,b.executor_key",
+                (at_s,),
+            ).fetchall()
+            for row in rows:
+                if (row["queued_invocation_token"] is not None
+                        or row["running_invocation_token"] is not None
+                        or int(row["required_through_seq"] or 0)
+                        <= int(row["acknowledged_through_seq"] or 0)):
+                    continue
+                held = self._conn.execute(
+                    "SELECT 1 FROM thread_reply_exchange e JOIN "
+                    "thread_exchange_deferrals d ON d.thread_id=e.thread_id "
+                    "AND d.exchange_id=e.exchange_id WHERE e.thread_id=? "
+                    "AND e.state='open' AND d.agent_name=? AND d.state='held' LIMIT 1",
+                    (row["thread_id"], row["agent_name"]),
+                ).fetchone()
+                if held is not None:
+                    continue
+                lease_id = f"brlease-{uuid.uuid4().hex}"
+                token = self._mint_reply_invocation_uncommitted(
+                    row["thread_id"], row["agent_name"],
+                    int(row["acknowledged_through_seq"] or 0) + 1,
+                )
+                changed = self._conn.execute(
+                    "UPDATE thread_reply_breaker_episodes SET state='probe',"
+                    "probe_lease_id=?,updated_at=? WHERE episode_id=? AND state='open'",
+                    (lease_id, at_s, row["episode_id"]),
+                )
+                if changed.rowcount != 1:
+                    raise RuntimeError("breaker probe lease CAS lost inside transaction")
+                self._conn.execute(
+                    "UPDATE thread_reply_delivery_state SET queued_invocation_token=?,"
+                    "updated_at=? WHERE thread_id=? AND agent_name=?",
+                    (token, at_s, row["thread_id"], row["agent_name"]),
+                )
+                self.insert_audit_log_uncommitted(
+                    task_id=row["thread_id"], agent=row["agent_name"],
+                    action="thread_reply_breaker_probe_started",
+                    payload={"episode_id": row["episode_id"], "category": row["last_failure_category"]},
+                )
+                results.append(ThreadReplyRecoveryEntry(
+                    thread_id=row["thread_id"], agent_name=row["agent_name"],
+                    invocation_token=token, kind="breaker_probe",
+                ))
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return results
+
+    @_synchronized
+    def close_thread_reply_breaker(
+        self, *, thread_id: str, agent_name: str, executor_key: str,
+        now: datetime | None = None,
+    ) -> bool:
+        """Close/rearm one continuity identity without deleting episode history."""
+        at_s = (now or _now()).astimezone(timezone.utc).isoformat()
+        cursor = self._conn.execute(
+            "UPDATE thread_reply_breaker_episodes SET state='closed',"
+            "consecutive_failures=0,opened_at=NULL,cooldown_until=NULL,"
+            "probe_lease_id=NULL,last_failure_category=NULL,updated_at=? "
+            "WHERE thread_id=? AND agent_name=? AND executor_key=?",
+            (at_s, thread_id, agent_name, executor_key),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def close_thread_reply_breakers_except(
+        self, *, thread_id: str, agent_name: str, executor_key: str,
+        now: datetime | None = None,
+    ) -> int:
+        """Close old executor/model/config continuity before a fresh launch."""
+        at_s = (now or _now()).astimezone(timezone.utc).isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            rows = self._conn.execute(
+                "SELECT episode_id FROM thread_reply_breaker_episodes WHERE "
+                "thread_id=? AND agent_name=? AND executor_key<>? "
+                "AND state IN ('open','probe')",
+                (thread_id, agent_name, executor_key),
+            ).fetchall()
+            for row in rows:
+                self.insert_audit_log_uncommitted(
+                    task_id=thread_id, agent=agent_name,
+                    action="thread_reply_breaker_closed",
+                    payload={"episode_id": row["episode_id"], "reason": "continuity_switch"},
+                )
+            cursor = self._conn.execute(
+                "UPDATE thread_reply_breaker_episodes SET state='closed',"
+                "consecutive_failures=0,opened_at=NULL,cooldown_until=NULL,"
+                "probe_lease_id=NULL,last_failure_category=NULL,updated_at=? "
+                "WHERE thread_id=? AND agent_name=? AND executor_key<>? "
+                "AND state IN ('open','probe')",
+                (at_s, thread_id, agent_name, executor_key),
+            )
+            self._conn.commit()
+            return cursor.rowcount
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def settle_thread_reply_breaker_success(
+        self, *, thread_id: str, agent_name: str, executor_key: str,
+        invocation_token: str, episode_id: str, probe_lease_id: str | None = None,
+        now: datetime | None = None,
+    ) -> bool:
+        """Idempotently settle success without allowing stale episode closure.
+
+        Probe completions additionally bind to the unique durable lease.  A
+        callback from an older episode or lease is a truthful no-op.
+        """
+        at_s = (now or _now()).astimezone(timezone.utc).isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            receipt = self._conn.execute(
+                "SELECT episode_id,outcome FROM thread_reply_breaker_receipts "
+                "WHERE invocation_token=?", (invocation_token,),
+            ).fetchone()
+            if receipt is not None:
+                self._conn.commit()
+                return receipt["episode_id"] == episode_id and receipt["outcome"] == "success"
+            row = self._conn.execute(
+                "SELECT state,probe_lease_id FROM thread_reply_breaker_episodes "
+                "WHERE thread_id=? AND agent_name=? AND executor_key=? AND episode_id=?",
+                (thread_id, agent_name, executor_key, episode_id),
+            ).fetchone()
+            if row is None or (
+                probe_lease_id is not None
+                and (row["state"] != "probe" or row["probe_lease_id"] != probe_lease_id)
+            ):
+                self._conn.commit()
+                return False
+            self._conn.execute(
+                "INSERT INTO thread_reply_breaker_receipts "
+                "(invocation_token,episode_id,outcome,failure_category,recorded_at) "
+                "VALUES (?,?,'success',NULL,?)",
+                (invocation_token, episode_id, at_s),
+            )
+            self._conn.execute(
+                "UPDATE thread_reply_breaker_episodes SET state='closed',"
+                "consecutive_failures=0,opened_at=NULL,cooldown_until=NULL,"
+                "probe_lease_id=NULL,last_failure_category=NULL,updated_at=? "
+                "WHERE episode_id=?",
+                (at_s, episode_id),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def list_reply_delivery_states(self) -> list[ThreadReplyDeliveryState]:
@@ -8739,6 +9098,35 @@ class Database:
             (new_ack, terminal_reason, now, now, thread_id, agent_name),
         )
 
+        # THR-200 PR E: a real terminal reply/decline is the breaker success
+        # boundary. Close the active continuity in this SAME transaction as
+        # acknowledgement so neither state can commit without the other.
+        if outcome in ("reply", "decline"):
+            active_breakers = self._conn.execute(
+                "SELECT episode_id FROM thread_reply_breaker_episodes "
+                "WHERE thread_id=? AND agent_name=? AND state IN ('open','probe')",
+                (thread_id, agent_name),
+            ).fetchall()
+            for active in active_breakers:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO thread_reply_breaker_receipts "
+                    "(invocation_token,episode_id,outcome,failure_category,recorded_at) "
+                    "VALUES (?,?,'success',NULL,?)",
+                    (token, active["episode_id"], now),
+                )
+                self.insert_audit_log_uncommitted(
+                    task_id=thread_id, agent=agent_name,
+                    action="thread_reply_breaker_closed",
+                    payload={"episode_id": active["episode_id"], "outcome": outcome},
+                )
+            self._conn.execute(
+                "UPDATE thread_reply_breaker_episodes SET state='closed',"
+                "consecutive_failures=0,opened_at=NULL,cooldown_until=NULL,"
+                "probe_lease_id=NULL,last_failure_category=NULL,updated_at=? "
+                "WHERE thread_id=? AND agent_name=? AND state IN ('open','probe')",
+                (now, thread_id, agent_name),
+            )
+
         follow_on: str | None = None
         exchange_held = False
         catchup_minted = False
@@ -8863,6 +9251,92 @@ class Database:
             self._conn.rollback()
             raise
         return settlement
+
+    @_synchronized
+    def settle_conversational_reply_with_breaker_failure(
+        self, *, token: str, outcome: str, decline_reason: str,
+        thread_id: str, agent_name: str, executor_key: str,
+        failure_category: str, threshold: int, cooldown_seconds: int,
+        now: datetime | None = None,
+    ) -> tuple[ThreadReplySettlement | None, ThreadReplyBreakerEpisode | None]:
+        """Atomically settle a qualifying failure and advance its breaker."""
+        if threshold < 1 or cooldown_seconds < 1:
+            raise ValueError("breaker threshold and cooldown must be positive")
+        at = (now or _now()).astimezone(timezone.utc)
+        at_s = at.isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            settlement = self._settle_reply_uncommitted(
+                token, outcome=outcome, decline_reason=decline_reason,
+            )
+            if settlement is None:
+                self._conn.commit()
+                return None, None
+            receipt = self._conn.execute(
+                "SELECT episode_id FROM thread_reply_breaker_receipts "
+                "WHERE invocation_token=?", (token,),
+            ).fetchone()
+            row = self._conn.execute(
+                "SELECT * FROM thread_reply_breaker_episodes WHERE thread_id=? "
+                "AND agent_name=? AND executor_key=?",
+                (thread_id, agent_name, executor_key),
+            ).fetchone()
+            if receipt is not None:
+                episode = self._conn.execute(
+                    "SELECT * FROM thread_reply_breaker_episodes WHERE episode_id=?",
+                    (receipt["episode_id"],),
+                ).fetchone()
+                self._conn.commit()
+                return settlement, self._row_to_reply_breaker_episode(episode)
+            new_episode = row is None or (
+                row["state"] == "closed" and int(row["consecutive_failures"]) == 0
+            )
+            episode_id = f"brep-{uuid.uuid4().hex}" if new_episode else row["episode_id"]
+            failures = 1 if new_episode else int(row["consecutive_failures"]) + 1
+            prior_state = "closed" if new_episode else row["state"]
+            state = "open" if failures >= threshold or prior_state == "probe" else prior_state
+            opened_at = at_s if state == "open" and prior_state != "open" else (
+                None if new_episode else row["opened_at"]
+            )
+            cooldown_until = (
+                (at + timedelta(seconds=cooldown_seconds)).isoformat()
+                if state == "open" and prior_state != "open"
+                else (None if new_episode else row["cooldown_until"])
+            )
+            self._conn.execute(
+                "INSERT INTO thread_reply_breaker_episodes "
+                "(thread_id,agent_name,executor_key,episode_id,state,consecutive_failures,"
+                "opened_at,cooldown_until,probe_lease_id,last_failure_category,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,NULL,?,?) ON CONFLICT(thread_id,agent_name,executor_key) "
+                "DO UPDATE SET episode_id=excluded.episode_id,state=excluded.state,"
+                "consecutive_failures=excluded.consecutive_failures,opened_at=excluded.opened_at,"
+                "cooldown_until=excluded.cooldown_until,probe_lease_id=NULL,"
+                "last_failure_category=excluded.last_failure_category,updated_at=excluded.updated_at",
+                (thread_id, agent_name, executor_key, episode_id, state, failures,
+                 opened_at, cooldown_until, failure_category, at_s),
+            )
+            self._conn.execute(
+                "INSERT INTO thread_reply_breaker_receipts VALUES (?,?,'failure',?,?)",
+                (token, episode_id, failure_category, at_s),
+            )
+            if state == "open" and prior_state != "open":
+                self.insert_audit_log_uncommitted(
+                    task_id=thread_id, agent=agent_name,
+                    action=("thread_reply_breaker_reopened" if prior_state == "probe"
+                            else "thread_reply_breaker_opened"),
+                    payload={"episode_id": episode_id,
+                             "failure_category": failure_category,
+                             "consecutive_failures": failures},
+                )
+            episode = self._conn.execute(
+                "SELECT * FROM thread_reply_breaker_episodes WHERE episode_id=?",
+                (episode_id,),
+            ).fetchone()
+            self._conn.commit()
+            return settlement, self._row_to_reply_breaker_episode(episode)
+        except Exception:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def settle_conversational_reply_with_exchange(
@@ -9184,6 +9658,22 @@ class Database:
                 )
             if agent_name is None:
                 self._conn.execute(
+                    "UPDATE thread_reply_breaker_episodes SET state='closed',"
+                    "consecutive_failures=0,opened_at=NULL,cooldown_until=NULL,"
+                    "probe_lease_id=NULL,last_failure_category=NULL,updated_at=? "
+                    "WHERE thread_id=?",
+                    (now, thread_id),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE thread_reply_breaker_episodes SET state='closed',"
+                    "consecutive_failures=0,opened_at=NULL,cooldown_until=NULL,"
+                    "probe_lease_id=NULL,last_failure_category=NULL,updated_at=? "
+                    "WHERE thread_id=? AND agent_name=?",
+                    (now, thread_id, agent_name),
+                )
+            if agent_name is None:
+                self._conn.execute(
                     "UPDATE thread_reply_delivery_state SET "
                     "acknowledged_through_seq = required_through_seq, "
                     "queued_invocation_token = NULL, "
@@ -9278,7 +9768,18 @@ class Database:
             running_from = row["running_from_seq"]
             running_through = row["running_through_seq"]
             started_at = None
-            if running is not None:
+            held = self._conn.execute(
+                "SELECT 1 FROM thread_reply_exchange e "
+                "JOIN thread_exchange_deferrals d ON d.thread_id=e.thread_id "
+                "AND d.exchange_id=e.exchange_id WHERE e.thread_id=? "
+                "AND e.state='open' AND d.agent_name=? AND d.state='held' LIMIT 1",
+                (thread_id, row["agent_name"]),
+            ).fetchone()
+            if held is not None and running is None and queued is None:
+                state = "held"
+                from_seq = acknowledged + 1
+                through_seq = required
+            elif running is not None:
                 state = "running"
                 from_seq = int(running_from or 0)
                 through_seq = int(running_through or 0)
@@ -9294,16 +9795,10 @@ class Database:
                 from_seq = acknowledged + 1
                 through_seq = required
             elif required > acknowledged:
-                held = self._conn.execute(
-                    "SELECT 1 FROM thread_reply_exchange e "
-                    "JOIN thread_exchange_deferrals d "
-                    "ON d.thread_id = e.thread_id "
-                    "AND d.exchange_id = e.exchange_id "
-                    "WHERE e.thread_id = ? AND e.state = 'open' "
-                    "AND d.agent_name = ? AND d.state = 'held' LIMIT 1",
-                    (thread_id, row["agent_name"]),
-                ).fetchone()
-                state = "held" if held is not None else "retry_required"
+                if held is not None:
+                    state = "held"
+                else:
+                    state = "retry_required"
                 from_seq = acknowledged + 1
                 through_seq = required
             else:

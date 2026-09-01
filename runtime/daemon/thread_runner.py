@@ -15,7 +15,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from runtime.config import Settings
+from runtime.config import (
+    Settings,
+    THREAD_REPLY_BREAKER_COOLDOWN_SECONDS,
+    THREAD_REPLY_BREAKER_FAILURE_THRESHOLD,
+)
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import (
     ThreadInvocationPurpose,
@@ -888,6 +892,30 @@ def _settle_or_fail_reply(
     )
 
 
+def _breaker_executor_key(
+    executor_name: str, model_name: str | None, settings: Settings,
+) -> str:
+    """Bind breaker continuity to executor, model, and fixed policy."""
+    return ":".join((
+        executor_name,
+        model_name or "default",
+        str(THREAD_REPLY_BREAKER_FAILURE_THRESHOLD),
+        str(THREAD_REPLY_BREAKER_COOLDOWN_SECONDS),
+    ))
+
+
+def _qualifying_breaker_failure(result: ExecutorResult | None) -> str | None:
+    """Select only closed categories produced after actual provider launch."""
+    if result is None or not getattr(result, "provider_launched", False):
+        return None
+    category = getattr(result, "failure_category", None)
+    if category in {
+        "provider_nonzero", "provider_timeout", "post_launch_contract",
+    }:
+        return category
+    return None
+
+
 async def run_invocation(
     *,
     org_state,
@@ -981,6 +1009,24 @@ async def run_invocation(
 
     # Issue #568: forward AgentDef.model to executor.run for thread invocations.
     model_name: str | None = agent_def.model
+
+    breaker_key = _breaker_executor_key(executor_name, model_name, settings)
+    org_state.db.close_thread_reply_breakers_except(
+        thread_id=inv.thread_id, agent_name=inv.agent_name,
+        executor_key=breaker_key,
+    )
+    breaker = org_state.db.get_thread_reply_breaker(
+        inv.thread_id, inv.agent_name, breaker_key,
+    )
+    if claim is not None and breaker is not None and breaker.state == "open":
+        # OPEN keeps the durable obligation unacknowledged and launches nothing.
+        # A timer/recovery producer is the only path allowed to acquire PROBE.
+        _settle_or_fail_reply(
+            org_state, invocation_token=invocation_token, claim=claim,
+            status=ThreadInvocationStatus.FAILED,
+            decline_reason="breaker_open",
+        )
+        return
 
     executor = _build_executor_for_provider(executor_name, settings, paths)
 
@@ -1196,6 +1242,38 @@ async def run_invocation(
         )
         audit = AuditLogger(org_state.db)
 
+        def _settle_failure(
+            result: ExecutorResult | None, *, status: ThreadInvocationStatus,
+            reason: str, category: str | None = None,
+        ) -> None:
+            selected = category or _qualifying_breaker_failure(result)
+            if claim is None or selected is None:
+                _settle_or_fail_reply(
+                    org_state, invocation_token=invocation_token, claim=claim,
+                    status=status, decline_reason=reason,
+                )
+                return
+            org_state.db.settle_conversational_reply_with_breaker_failure(
+                token=invocation_token,
+                outcome=("timeout" if status is ThreadInvocationStatus.TIMEOUT else "failed"),
+                decline_reason=reason,
+                thread_id=inv.thread_id, agent_name=inv.agent_name,
+                executor_key=breaker_key,
+                failure_category=selected,
+                threshold=THREAD_REPLY_BREAKER_FAILURE_THRESHOLD,
+                cooldown_seconds=THREAD_REPLY_BREAKER_COOLDOWN_SECONDS,
+            )
+
+        def _record_breaker_success() -> None:
+            if claim is None or breaker is None:
+                return
+            org_state.db.settle_thread_reply_breaker_success(
+                thread_id=inv.thread_id, agent_name=inv.agent_name,
+                executor_key=breaker_key, invocation_token=invocation_token,
+                episode_id=breaker.episode_id,
+                probe_lease_id=breaker.probe_lease_id,
+            )
+
         # Layer-1 throttle audit surfacing (issue #85): the per-provider throttle
         # in executors._run_command calls this on a slot wait or a 429 backoff.
         # Additive action+payload via the existing insert_audit_log — no new
@@ -1205,6 +1283,22 @@ async def run_invocation(
             org_state.db.insert_audit_log(inv.thread_id, inv.agent_name, action, payload)
 
         def _invoke(run_prompt: str, resume: str | None) -> _InvokeResult:
+            launched = False
+
+            def _on_started(_pid: int) -> None:
+                nonlocal launched
+                launched = True
+
+            def _post_launch_exception(exc: Exception) -> _InvokeResult:
+                return _InvokeResult(result=ExecutorResult(
+                    success=False,
+                    duration_seconds=0,
+                    session_id=session_id,
+                    error=f"Provider execution failed after launch: {exc}",
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
+                ))
+
             def _pre_launch_validator():
                 validate_workspace_skills_integrity(
                     workspace, expected_specs,
@@ -1220,12 +1314,18 @@ async def run_invocation(
                     session_id=session_id, timeout_seconds=timeout,
                     on_throttle_event=_on_throttle_event,
                     pre_launch_validator=_pre_launch_validator,
+                    on_started=_on_started,
                     org_slug=org_state.slug,
                     model=model_name,
                 )
                 if resume:
                     run_kwargs["resume_session_id"] = resume
-                return _InvokeResult(result=executor.run(**run_kwargs))
+                try:
+                    return _InvokeResult(result=executor.run(**run_kwargs))
+                except Exception as exc:
+                    if launched:
+                        return _post_launch_exception(exc)
+                    raise
             # ── THR-207 supervised wiring: the invocation phase runs through
             # the daemon-wide HostSessionSupervisor (admission lease, atomic
             # ownership at grant, real backend launch into containment, opaque
@@ -1270,6 +1370,7 @@ async def run_invocation(
                     session_id=session_id, timeout_seconds=timeout,
                     on_throttle_event=_on_throttle_event,
                     pre_launch_validator=_pre_launch_validator if not contained else None,
+                    on_started=_on_started if not contained else None,
                     org_slug=org_state.slug,
                     model=model_name,
                     running=running if contained else None,
@@ -1277,7 +1378,16 @@ async def run_invocation(
                 )
                 if resume:
                     run_kwargs["resume_session_id"] = resume
-                res = executor.run(**run_kwargs)
+                try:
+                    res = executor.run(**run_kwargs)
+                except Exception as exc:
+                    # A real contained process is launched before launch_body;
+                    # passthrough executors publish the same fact via on_started.
+                    if contained or launched:
+                        res = _post_launch_exception(exc).result
+                    else:
+                        raise
+                assert res is not None
                 return LaunchResult(
                     success=res.success,
                     duration_seconds=float(getattr(res, "duration_seconds", 0) or 0),
@@ -1474,6 +1584,7 @@ async def run_invocation(
         if after is None:
             return
         if after.status in {ThreadInvocationStatus.CONSUMED, ThreadInvocationStatus.DECLINED}:
+            _record_breaker_success()
             # A reply (CONSUMED) already publishes a seq-bearing message event via
             # the reply route, which clears the indicator. A silent decline only
             # publishes decline_status with seq=null (ignored by the tail consumer),
@@ -1621,6 +1732,7 @@ async def run_invocation(
                 return
 
             if after.status in {ThreadInvocationStatus.CONSUMED, ThreadInvocationStatus.DECLINED}:
+                _record_breaker_success()
                 # The nudge worked — terminal callback happened during the
                 # re-invoke. Persist the retry session for future resume.
                 if (resume_capable and retry_result is not None and retry_result.success
@@ -1686,10 +1798,14 @@ async def run_invocation(
                         reason = f"{reason} — {detail}"
                     status = ThreadInvocationStatus.FAILED
 
-            _settle_or_fail_reply(
-                org_state, invocation_token=invocation_token, claim=claim,
+            _settle_failure(
+                retry_result,
                 status=status,
-                decline_reason=reason,
+                reason=reason,
+                category=(
+                    "post_launch_contract"
+                    if retry_result is not None and retry_result.success else None
+                ),
             )
             AuditLogger(org_state.db).log_thread_invocation_failed(
                 inv.thread_id,
@@ -1718,10 +1834,7 @@ async def run_invocation(
                 reason = f"{reason} — {detail}"
             status = ThreadInvocationStatus.FAILED
 
-        _settle_or_fail_reply(
-            org_state, invocation_token=invocation_token, claim=claim,
-            status=status, decline_reason=reason,
-        )
+        _settle_failure(result, status=status, reason=reason)
         # Spec §6: silent decline — no thread_messages row, no turns_used increment.
         # The invocation row status (timeout/failed) and decline_reason are the record.
         AuditLogger(org_state.db).log_thread_invocation_failed(

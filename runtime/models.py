@@ -627,8 +627,7 @@ class ThreadReplyDeliveryState(BaseModel):
 
 
 class ThreadReplyBreakerEpisode(BaseModel):
-    """Persisted breaker episode; runtime transition policy is wired separately."""
-
+    """Durable provider-failure breaker for one thread/agent/executor identity."""
     thread_id: str
     agent_name: str
     executor_key: str
@@ -651,7 +650,10 @@ class ThreadReplyRecoveryEntry(BaseModel):
     thread_id: str
     agent_name: str
     invocation_token: str
-    kind: Literal["retained_queued", "replacement_queued", "deferred_catchup"]
+    kind: Literal[
+        "retained_queued", "replacement_queued", "deferred_catchup",
+        "breaker_probe",
+    ]
 
 
 class ThreadReplyArrival(BaseModel):

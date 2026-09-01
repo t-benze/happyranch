@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from runtime.config import Settings
 from runtime.models import TokenUsage
@@ -66,6 +66,16 @@ class ExecutorResult:
     # ``error`` (THR-116).  Examples: ``session_limit``,
     # ``transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR``.
     terminal_error: str | None = None
+    # Closed, structured THR-200 outcome seam. Breaker consumers use only
+    # these values and ``provider_launched``; error/stdout/stderr remain
+    # diagnostic evidence and are never parsed for breaker accounting.
+    failure_category: Literal[
+        "pre_launch",
+        "provider_nonzero",
+        "provider_timeout",
+        "post_launch_contract",
+    ] | None = None
+    provider_launched: bool = False
 
 
 _TAIL_BYTES = 2000
@@ -1013,6 +1023,7 @@ def _run_command(
                     duration_seconds=0,
                     session_id=sid,
                     error=f"Platform isolation failure: {exc}",
+                    failure_category="pre_launch",
                 )
             if on_started is not None:
                 on_started(proc.pid)
@@ -1030,6 +1041,21 @@ def _run_command(
                 duration_seconds=int(time.monotonic() - start_time),
                 session_id=sid,
                 error=f"Session timed out after {timeout_seconds} seconds",
+                failure_category="provider_timeout",
+                provider_launched=True,
+            )
+        except Exception as exc:
+            # Popen succeeded and on_started has already published launch
+            # provenance.  Preserve that fact as a closed structured outcome;
+            # callers must not collapse a post-launch pipe/decoder failure into
+            # a non-qualifying runner crash.
+            return ExecutorResult(
+                success=False,
+                duration_seconds=int(time.monotonic() - start_time),
+                session_id=sid,
+                error=f"Provider communication failed after launch: {exc}",
+                failure_category="post_launch_contract",
+                provider_launched=True,
             )
         full_stdout = stdout or ""
         full_stderr = stderr or ""
@@ -1065,6 +1091,8 @@ def _run_command(
                 error=f"Command exited with code {proc.returncode}{error_summary}",
                 rate_limited=rate_limited,
                 terminal_error=terminal_error,
+                failure_category="provider_nonzero",
+                provider_launched=True,
             )
         token_usage: TokenUsage | None = None
         if usage_parser is not None:
@@ -1110,6 +1138,8 @@ def _run_command(
                     stderr_tail=stderr_tail,
                     error=violation,
                     rate_limited=rate_limited,
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
                 )
         # ── end D7A strict enforcement ───────────────────────────────
 
@@ -1123,6 +1153,7 @@ def _run_command(
             token_usage=token_usage,
             agent_session_id=agent_session_id,
             rate_limited=rate_limited,
+            provider_launched=True,
         )
 
     from runtime.orchestrator.throttle import get_throttle
@@ -2144,6 +2175,7 @@ class CustomAdapterExecutor:
                     f"supply: {', '.join(missing)}. "
                     f"The caller must call set_invocation_context() before run()."
                 ),
+                failure_category="pre_launch",
             )
 
         # ── Build AdapterInput with truthful invocation context ────
@@ -2203,6 +2235,7 @@ class CustomAdapterExecutor:
                     duration_seconds=int(time.monotonic() - start_time),
                     session_id=sid,
                     error=verify_error,
+                    failure_category="pre_launch",
                 )
 
             if running is not None:
@@ -2222,6 +2255,7 @@ class CustomAdapterExecutor:
                             "containment (passthrough) — retry on the "
                             "uncontained path"
                         ),
+                        failure_category="pre_launch",
                     )
                 proc = running.process
             else:
@@ -2253,6 +2287,7 @@ class CustomAdapterExecutor:
                             f"Failed to launch custom adapter "
                             f"{self._adapter_executable!r}: {exc}"
                         ),
+                        failure_category="pre_launch",
                     )
 
                 if on_started is not None:
@@ -2273,6 +2308,17 @@ class CustomAdapterExecutor:
                     duration_seconds=int(time.monotonic() - start_time),
                     session_id=sid,
                     error=f"Custom adapter session timed out after {timeout_seconds}s",
+                    failure_category="provider_timeout",
+                    provider_launched=True,
+                )
+            except Exception as exc:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    error=f"Custom adapter communication failed after launch: {exc}",
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
                 )
 
             full_stdout = stdout or ""
@@ -2292,6 +2338,8 @@ class CustomAdapterExecutor:
                         f"Custom adapter exited with code {proc.returncode}"
                         + (": " + stderr_tail[:500] if stderr_tail else "")
                     ),
+                    failure_category="provider_nonzero",
+                    provider_launched=True,
                 )
 
             # ── Parse AdapterOutput ────────────────────────────────
@@ -2309,6 +2357,8 @@ class CustomAdapterExecutor:
                         f"Custom adapter stdout exceeds {MAX_OUTPUT_BYTES} byte limit "
                         f"({len(stdout_bytes)} bytes)"
                     ),
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
                 )
 
             # Parse JSON
@@ -2322,6 +2372,8 @@ class CustomAdapterExecutor:
                     stdout_tail=stdout_tail,
                     stderr_tail=stderr_tail,
                     error="Custom adapter stdout is not valid JSON",
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
                 )
 
             if not isinstance(output_dict, dict):
@@ -2335,6 +2387,8 @@ class CustomAdapterExecutor:
                         f"Custom adapter stdout is not a JSON object; "
                         f"got {type(output_dict).__name__}"
                     ),
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
                 )
 
             # Validate AdapterOutput schema
@@ -2348,6 +2402,8 @@ class CustomAdapterExecutor:
                     stdout_tail=stdout_tail,
                     stderr_tail=stderr_tail,
                     error=f"Custom adapter output does not match AdapterOutput contract: {exc}",
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
                 )
 
             # ── D7B: Verify adapter provenance (Fix 1) ─────────────
@@ -2367,6 +2423,8 @@ class CustomAdapterExecutor:
                         f"{output.adapter_metadata.contract_version} "
                         f"not supported; expected 1"
                     ),
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
                 )
 
             # Verify adapter identity
@@ -2382,6 +2440,8 @@ class CustomAdapterExecutor:
                         f"{self._adapter_entry_id!r}, got "
                         f"{output.adapter_metadata.adapter!r}"
                     ),
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
                 )
 
             # Verify adapter version matches approved binding
@@ -2397,6 +2457,8 @@ class CustomAdapterExecutor:
                         f"{self._adapter_version!r}, adapter returned "
                         f"{output.adapter_metadata.adapter_version!r}"
                     ),
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
                 )
 
             # Verify session_id echo (invocation integrity)
@@ -2412,6 +2474,8 @@ class CustomAdapterExecutor:
                         f"{sid!r}, adapter returned "
                         f"{output.session_id!r}"
                     ),
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
                 )
 
             # Verify success/returncode consistency
@@ -2427,6 +2491,8 @@ class CustomAdapterExecutor:
                         f"Adapter reported success=true but agent subprocess "
                         f"exit code was {output.returncode}"
                     ),
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
                 )
             if not output.success and (output.returncode is None or output.returncode == 0):
                 return ExecutorResult(
@@ -2440,6 +2506,8 @@ class CustomAdapterExecutor:
                         f"Adapter reported success=false but subprocess "
                         f"exit code was 0"
                     ),
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
                 )
 
             # ── Map to ExecutorResult ──────────────────────────────
@@ -2467,6 +2535,10 @@ class CustomAdapterExecutor:
                 token_usage=token_usage,
                 agent_session_id=output.agent_session_id,
                 rate_limited=output.rate_limited,
+                failure_category=(
+                    None if output.success else "provider_nonzero"
+                ),
+                provider_launched=True,
             )
 
         # Contained sessions defer the 429 retry to the supervisor (the throttle
