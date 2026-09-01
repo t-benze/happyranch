@@ -383,12 +383,23 @@ def test_managed_acceptance_matrix_has_no_external_or_plaintext_escape() -> None
 
 def test_n2_lifecycle_matrix_covers_shipping_boundaries() -> None:
     rows = _load("managed_topology")["n2_lifecycle_matrix"]
-    assert [row["phase"] for row in rows] == [
-        "startup", "admission", "active_flow", "readiness_loss", "revocation",
-        "shutdown", "partial_failure", "concurrency_reentry", "recovery",
-    ]
+    expected = {
+        "startup": ("invalid_or_unready_before_bind", "no_listener_no_residue"),
+        "admission": ("readiness_then_loopback_bind", "full_gateway_pipeline_only"),
+        "active_flow": ("authorize_then_final_local_hop", "bearer_final_hop_only"),
+        "readiness_loss": ("listener_stop_before_downstream_cleanup", "no_new_admission"),
+        "revocation": ("listener_stop_then_active_flow_close_then_downstream_cleanup", "no_stale_authorization_or_residue"),
+        "shutdown": ("listener_stop_before_process_exit", "idempotent_no_residue"),
+        "partial_failure": ("admission_removed_before_cleanup_retry", "category_only_fail_closed"),
+        "concurrency_reentry": ("admission_or_start_races_stop_or_revoke", "no_early_ready_deadlock_or_double_close"),
+        "recovery": ("fresh_gates_after_cleanup_before_fresh_listener", "current_identity_epoch_policy_only"),
+    }
+    assert [row["phase"] for row in rows] == list(expected)
     for row in rows:
-        _assert_exact_keys(row, ["phase", "ordering", "outcome"], "n2_lifecycle_matrix[]")
+        _assert_exact_keys(row, ["phase", "ordering", "outcome", "shipping_tests"], "n2_lifecycle_matrix[]")
+        assert (row["ordering"], row["outcome"]) == expected[row["phase"]]
+        assert row["shipping_tests"], f"{row['phase']}: shipping test mapping required"
+        assert all(test.startswith("tests/remote_access/") and "::test_" in test for test in row["shipping_tests"])
 
 
 def test_managed_delivery_status_preserves_diy_and_gates_future_units() -> None:

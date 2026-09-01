@@ -979,12 +979,24 @@ class ConnectorSupervisor:
             return
         registry = self.registry
         sealed = registry.sealed
-        if registry.open_count() > 0:
+        open_count = registry.open_count()
+        needs_rotation = sealed or open_count > 0
+        was_running = self._provider_running
+        # Persisted revocation removes external admission first.  Even when a
+        # provider stop reports failure, the subsequent registry seal denies
+        # stale authorization; retaining the provider lets the next pass retry
+        # listener cleanup instead of losing the only cleanup handle.
+        provider_stopped = (
+            not needs_rotation or not was_running or self._stop_provider()
+        )
+        if open_count > 0:
             try:
                 registry.close_all()
             except StreamCloseError:
                 pass  # registry sealed; no live stream survives (fail closed)
             sealed = True
+        if not provider_stopped:
+            return
         self._reconciled_revocation_epoch = state.revocation_epoch
         # The authoritative registry is (now or already) sealed — one-shot:
         # rotate the whole runtime so the process is never permanently
@@ -992,9 +1004,9 @@ class ConnectorSupervisor:
         # no earlier seal) there is no rotation and therefore no listener
         # gap — the common CLI-revoke-while-idle path stays seamless.
         if sealed:
-            self._rotate_runtime()
+            self._rotate_runtime(restart_provider=was_running)
 
-    def _rotate_runtime(self) -> None:
+    def _rotate_runtime(self, *, restart_provider: bool | None = None) -> None:
         """Rotate the authoritative live-stream runtime at a fail-closed
         lifecycle boundary after a persisted revocation: stop the provider
         listener (no request/stream is admitted during the handoff), drop
@@ -1004,7 +1016,7 @@ class ConnectorSupervisor:
         passes (else the run loop brings it up when ready). The old registry
         is sealed (denies) and the listener is down (refuses) until the new
         runtime is live — nothing is admitted against a half-rotated state."""
-        was_running = self._provider_running
+        was_running = self._provider_running if restart_provider is None else restart_provider
         if was_running:
             self._stop_provider()
         # The one-shot registry and the cached ceremony manager are captured
@@ -1051,12 +1063,15 @@ class ConnectorSupervisor:
         self._provider_running = True
         return True
 
-    def _stop_provider(self) -> None:
+    def _stop_provider(self) -> bool:
         provider = self._provider
+        if provider is None:
+            self._provider_running = False
+            return True
+        try:
+            provider.stop()
+        except Exception:  # noqa: BLE001 — retain the cleanup handle for retry
+            return False
         self._provider_running = False
         self._provider = None  # drop: a stopped adapter cannot be restarted
-        if provider is not None:
-            try:
-                provider.stop()
-            except Exception:  # noqa: BLE001 — stop must not mask the denial
-                pass
+        return True

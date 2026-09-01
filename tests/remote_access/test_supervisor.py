@@ -1640,6 +1640,88 @@ def _open_sse(host, port, credential, daemon):
     reason="host has no non-loopback IPv4 address for a customer-network socket test",
 )
 class TestReconciliationRotation:
+    def test_persisted_revocation_removes_listener_before_stream_cleanup(
+        self, tmp_path, route_policy_fixture,
+    ) -> None:
+        """The shipping supervisor removes admission before active cleanup."""
+        events: list[str] = []
+
+        class OrderedProvider(_FakeProvider):
+            def stop(self) -> None:
+                events.append("listener_stopped")
+                super().stop()
+
+        class OrderedRegistry:
+            sealed = False
+
+            def open_count(self) -> int:
+                return 1
+
+            def close_all(self) -> None:
+                assert events == ["listener_stopped"]
+                events.append("active_flows_closed")
+                self.sealed = True
+
+        provider = OrderedProvider()
+        supervisor = _supervisor(
+            tmp_path,
+            provider=provider,
+            readiness=_FakeReadiness(ready=False),
+        )
+        supervisor._registry = OrderedRegistry()
+        assert supervisor._start_provider() is True
+        state = supervisor.state_store.load()
+        state.revocation_epoch += 1
+        supervisor.state_store.save(state)
+
+        supervisor._reconcile_revocation()
+
+        assert events == ["listener_stopped", "active_flows_closed"]
+
+    def test_persisted_revocation_retries_failed_listener_stop_without_double_close(
+        self, tmp_path,
+    ) -> None:
+        events: list[str] = []
+
+        class RetryProvider(_FakeProvider):
+            def stop(self) -> None:
+                events.append("listener_stop")
+                if events.count("listener_stop") == 1:
+                    raise RuntimeError("hostile stop detail")
+                super().stop()
+
+        class OnceRegistry:
+            sealed = False
+            live = True
+
+            def open_count(self) -> int:
+                return int(self.live)
+
+            def close_all(self) -> None:
+                events.append("active_flows_closed")
+                self.live = False
+                self.sealed = True
+
+        provider = RetryProvider()
+        supervisor = _supervisor(
+            tmp_path, provider=provider, readiness=_FakeReadiness(ready=False)
+        )
+        supervisor._registry = OnceRegistry()
+        assert supervisor._start_provider() is True
+        state = supervisor.state_store.load()
+        state.revocation_epoch += 1
+        supervisor.state_store.save(state)
+
+        supervisor._reconcile_revocation()
+        assert supervisor._provider is provider
+        assert supervisor._provider_running is True
+        assert events == ["listener_stop", "active_flows_closed"]
+
+        supervisor._reconcile_revocation()
+        assert events == ["listener_stop", "active_flows_closed", "listener_stop"]
+        assert supervisor._provider is None
+        assert supervisor._provider_running is False
+
     def test_cross_process_revoke_closes_stream_then_rotation_reopens_repair(
         self, tmp_path, route_policy_fixture,
     ) -> None:
