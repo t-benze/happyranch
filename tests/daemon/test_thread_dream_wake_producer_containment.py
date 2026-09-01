@@ -384,6 +384,7 @@ def _seed_wake(org_state, work_hour_id: str = "WORKHOUR-001") -> None:
 def _seed_thread_invocation(
     org_state, *, thread_id: str = "THR-001", agent_name: str = _AGENT,
     purpose=ThreadInvocationPurpose.BOOTSTRAP, resume_sid: str | None = None,
+    last_resumed_seq: int = 0,
 ) -> str:
     org_state.db.insert_thread(ThreadRecord(id=thread_id, subject="x"))
     org_state.db.add_thread_participant(thread_id, agent_name, added_by="founder")
@@ -394,7 +395,7 @@ def _seed_thread_invocation(
     if resume_sid is not None:
         org_state.db.update_thread_session(
             thread_id, agent_name,
-            agent_session_id=resume_sid, last_resumed_seq=0,
+            agent_session_id=resume_sid, last_resumed_seq=last_resumed_seq,
         )
     inv = org_state.db.mint_thread_invocation(
         thread_id=thread_id, agent_name=agent_name,
@@ -814,13 +815,24 @@ async def test_thread_session_not_found_fallback_uses_full_prompt_phase(org_stat
     the final result drives the row classification."""
     _seed_agent(org_state)
     token = _seed_thread_invocation(
-        org_state, resume_sid="sess-stale",
+        org_state, resume_sid="sess-stale", last_resumed_seq=1,
+    )
+    org_state.db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="new since resume",
     )
     receipts: list[Receipt] = []
     backend = _FakeBackend()
     supervisor = _make_supervisor(backend, publisher=receipts.append)
+    session_not_found = _result(
+        success=False, error="No conversation found with session ID: sess-stale",
+    )
+    session_not_found.returncode = 1
+    session_not_found.stderr_tail = (
+        "No conversation found with session ID: sess-stale"
+    )
     executor = _RecordingExecutor(results=[
-        _result(success=False, error="no conversation found for session"),
+        session_not_found,
         _result(success=True),
     ])
 
@@ -841,6 +853,13 @@ async def test_thread_session_not_found_fallback_uses_full_prompt_phase(org_stat
     assert len(executor.calls) == 2
     assert executor.calls[0]["resume_session_id"] == "sess-stale"
     assert executor.calls[1]["resume_session_id"] is None
+    assert org_state.db.get_thread_session("THR-001", _AGENT) == (None, 1)
+    eviction_audits = [
+        row for row in org_state.db.get_audit_logs("THR-001")
+        if row["action"] == "agent_session_evicted_fallback"
+    ]
+    assert len(eviction_audits) == 1
+    assert eviction_audits[0]["payload"]["stale_session_id"] == "sess-stale"
     assert len(receipts) == 2
     assert supervisor.active_count() == 0
     assert supervisor._admission.released_total() == supervisor._admission.admitted_total()
