@@ -1095,6 +1095,65 @@ class AuthorityCandidate(BaseModel):
         return validate_authority_version(value, info.field_name)
 
 
+class AuthorityPolicyRelease(BaseModel):
+    """One immutable authored team-policy release."""
+    model_config = {"extra": "forbid"}
+
+    id: str
+    team: str
+    policy_id: str
+    version: int = Field(gt=0)
+    title: str
+    normative_text: str
+    clauses_json: str
+    continuation_phrase: str
+    canonical_payload_json: str
+    policy_digest: str
+    based_on_release_id: str | None = None
+    actor_kind: Literal["shared_local_operator_credential"]
+    created_at: datetime = Field(default_factory=_now)
+
+    @field_validator("policy_digest")
+    @classmethod
+    def _policy_digest_is_bounded_hex(cls, value, info):
+        return validate_authority_digest(value, info.field_name)
+
+
+class AuthorityPolicyActivation(BaseModel):
+    """One immutable activation epoch; rollback is another activation."""
+    model_config = {"extra": "forbid"}
+
+    id: str
+    team: str
+    epoch: int = Field(gt=0)
+    release_id: str
+    previous_activation_id: str | None = None
+    expected_previous_epoch: int | None = Field(default=None, ge=0)
+    action: Literal["activate", "reactivate_rollback", "bootstrap"]
+    actor_kind: Literal["shared_local_operator_credential"]
+    request_id: str
+    request_digest: str
+    created_at: datetime = Field(default_factory=_now)
+
+    @field_validator("request_digest")
+    @classmethod
+    def _request_digest_is_bounded_hex(cls, value, info):
+        return validate_authority_digest(value, info.field_name)
+
+
+class AuthorityCandidatePolicyPin(BaseModel):
+    """Immutable one-to-one release/activation identity for a DB-policy candidate."""
+    model_config = {"extra": "forbid"}
+
+    candidate_id: str
+    release_id: str
+    activation_id: str
+    activation_epoch: int = Field(gt=0)
+    provider_id: str
+    executor_kind: str
+    created_at: datetime = Field(default_factory=_now)
+
+
 class AuthorityEvaluation(BaseModel):
     """The single, immutable evaluation outcome for a candidate.
 
