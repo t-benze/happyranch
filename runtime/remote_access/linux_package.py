@@ -9,6 +9,8 @@ from pathlib import Path, PurePosixPath
 import shutil
 import tarfile
 import tempfile
+import zipfile
+import subprocess
 from typing import Callable, Mapping
 
 from runtime.remote_access.systemd_unit import ConnectorUnitSpec, render_connector_unit
@@ -24,11 +26,54 @@ UNITS = (
     "happyranch-tsnet-sidecar.service",
     "happyranch-managed.target",
 )
+PAYLOAD_MODES = {
+    "bin/happyranch-tsnet-sidecar": "0o700",
+    "bin/happyranch-connector": "0o700",
+    "share/happyranch.whl": "0o600",
+    "share/dependency-inventory.json": "0o600",
+    "share/sbom.cdx.json": "0o600",
+    "share/THIRD_PARTY_NOTICES.md": "0o600",
+    **{f"systemd/{name}": "0o600" for name in UNITS},
+}
+TRANSACTION_MARKER = ".happyranch-install-transaction.json"
+
+
+class CompositeServiceManager:
+    """Injectable executable seam for the shipping composite systemd target."""
+
+    def __init__(self, run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+                 systemctl: str = "systemctl") -> None:
+        self._run, self._systemctl = run, systemctl
+
+    def _call(self, *args: str) -> subprocess.CompletedProcess[str]:
+        try:
+            return self._run([self._systemctl, *args], check=True, text=True,
+                             capture_output=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise PackageError("service_manager_failed") from exc
+
+    def start_ready(self) -> None:
+        self._call("start", "happyranch-managed.target")
+        for unit in UNITS[:2]:
+            result = self._call("show", unit, "--property=ActiveState", "--value")
+            if result.stdout.strip() != "active":
+                raise PackageError("service_not_ready")
+
+    def stop(self) -> None:
+        self._call("stop", "happyranch-managed.target")
+
+    def restart_after_crash(self, unit: str) -> None:
+        if unit not in UNITS[:2]:
+            raise PackageError("service_unit_invalid")
+        self._call("restart", unit)
+        result = self._call("show", unit, "--property=ActiveState", "--value")
+        if result.stdout.strip() != "active":
+            raise PackageError("service_not_ready")
 
 
 def render_composite_units(prefix: str = "/opt/happyranch") -> dict[str, str]:
     connector = render_connector_unit(ConnectorUnitSpec(
-        exec_start=(f"{prefix}/venv/bin/python", "-m", "runtime.remote_access.cli", "run", "--managed", "--config", "/etc/happyranch/connector.json"),
+        exec_start=(f"{prefix}/bin/happyranch-connector", "run", "--managed", "--config", "/etc/happyranch/connector.json"),
         user="happyranch", group="happyranch",
         daemon_token_path="/etc/happyranch/daemon.token",
     )).replace("After=network-online.target", "After=network-online.target\nBefore=happyranch-tsnet-sidecar.service\nPartOf=happyranch-managed.target").replace("WantedBy=multi-user.target", "WantedBy=happyranch-managed.target")
@@ -43,7 +88,7 @@ PartOf=happyranch-managed.target
 
 [Service]
 Type=notify
-ExecStartPre={prefix}/venv/bin/python -m runtime.remote_access.cli diagnose --config /etc/happyranch/connector.json
+ExecStartPre={prefix}/bin/happyranch-connector diagnose --config /etc/happyranch/connector.json
 ExecStart={prefix}/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json
 User=happyranch
 Group=happyranch
@@ -115,8 +160,8 @@ def _sbom(inventory: Mapping[str, object], version: str) -> bytes:
     return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
 
 
-def build_linux_package(output: Path, sidecar: Path, wheel: Path, inventory_path: Path,
-                        notices_path: Path, *, version: str) -> Path:
+def build_linux_package(output: Path, sidecar: Path, connector: Path, wheel: Path,
+                        inventory_path: Path, notices_path: Path, *, version: str) -> Path:
     try:
         inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
         notices = notices_path.read_bytes()
@@ -124,12 +169,16 @@ def build_linux_package(output: Path, sidecar: Path, wheel: Path, inventory_path
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise PackageError("package_input_invalid") from exc
     _validate_evidence(inventory, notices)
+    if not sidecar.is_file() or not connector.is_file() or not zipfile.is_zipfile(wheel):
+        raise PackageError("package_input_invalid")
+    with zipfile.ZipFile(wheel) as built_wheel:
+        if not any(name.startswith("runtime/") and name.endswith(".py") for name in built_wheel.namelist()):
+            raise PackageError("wheel_invalid")
     units = render_composite_units()
-    connector = b"#!/bin/sh\nexec /opt/happyranch/venv/bin/python -m runtime.remote_access.cli run --managed --config /etc/happyranch/connector.json \"$@\"\n"
     files: dict[str, tuple[bytes, int]] = {
         "bin/happyranch-tsnet-sidecar": (sidecar.read_bytes(), 0o700),
-        "bin/happyranch-connector": (connector, 0o700),
-        f"lib/{wheel.name}": (wheel.read_bytes(), 0o600),
+        "bin/happyranch-connector": (connector.read_bytes(), 0o700),
+        "share/happyranch.whl": (wheel.read_bytes(), 0o600),
         "share/dependency-inventory.json": (inventory_path.read_bytes(), 0o600),
         "share/sbom.cdx.json": (_sbom(inventory, version), 0o600),
         "share/THIRD_PARTY_NOTICES.md": (notices, 0o600),
@@ -153,7 +202,17 @@ def build_linux_package(output: Path, sidecar: Path, wheel: Path, inventory_path
 def _validate_evidence(inventory: Mapping[str, object], notices: bytes) -> None:
     try:
         text = notices.decode("utf-8")
+        if set(inventory) != {"schema_version", "artifact", "generator", "modules"} or type(inventory.get("schema_version")) is not int or inventory["schema_version"] != 1:
+            raise PackageError("inventory_invalid")
+        artifact = inventory["artifact"]
+        if (not isinstance(artifact, dict) or set(artifact) != {"goos", "goarch", "cgo_enabled", "package"}
+                or artifact != {"goos": "linux", "goarch": "amd64", "cgo_enabled": False,
+                                "package": "happyranch/linux-tsnet-sidecar"}
+                or inventory["generator"] != "tools/generate_inventory.py"):
+            raise PackageError("inventory_invalid")
         modules = inventory["modules"]
+        if not isinstance(modules, list) or not modules:
+            raise PackageError("inventory_invalid")
     except (UnicodeDecodeError, KeyError, TypeError) as exc:
         raise PackageError("notice_invalid") from exc
     blocks = text.split("\n---\n")
@@ -161,13 +220,33 @@ def _validate_evidence(inventory: Mapping[str, object], notices: bytes) -> None:
     for block in blocks:
         spdx = next((line.removeprefix("SPDX: ") for line in block.splitlines() if line.startswith("SPDX: ")), None)
         digest = next((line.removeprefix("License-SHA256: ") for line in block.splitlines() if line.startswith("License-SHA256: ")), None)
-        for line in block.splitlines():
+        lines = block.splitlines()
+        try:
+            fence = lines.index("```text")
+            end = lines.index("```", fence + 1)
+            license_text = "\n".join(lines[fence + 1:end]).rstrip() + "\n"
+        except ValueError:
+            license_text = ""
+        if not digest or not license_text or _sha(license_text.encode()) != digest:
+            if any(line.startswith("- ") for line in lines):
+                raise PackageError("notice_invalid")
+        for line in lines:
             if line.startswith("- ") and "@" in line:
                 coordinate = line[2:].strip()
                 if coordinate in seen or not spdx or not digest:
                     raise PackageError("notice_invalid")
                 seen[coordinate] = (spdx, digest)
+    required = ("module", "version", "sum", "source", "spdx", "license_sha256", "relationship")
+    if any(not isinstance(item, dict) or set(item) != set(required)
+           or any(type(item.get(key)) is not str or not item[key] for key in required)
+           or item["source"] != f"https://{item['module']}"
+           or item["relationship"] != "statically-linked-linux-build-input"
+           or not item["sum"].startswith("h1:")
+           or len(item["license_sha256"]) != 64 for item in modules):
+        raise PackageError("inventory_invalid")
     expected = {f"{item['module']}@{item['version']}": (item["spdx"], item["license_sha256"]) for item in modules}
+    if len(expected) != len(modules):
+        raise PackageError("inventory_invalid")
     if seen != expected:
         raise PackageError("notice_inventory_mismatch")
 
@@ -185,20 +264,24 @@ def _read_verified(package: Path) -> tuple[dict[str, bytes], dict[str, object]]:
             files[relative] = archive.extractfile(member).read()
     try:
         manifest = json.loads(files["manifest.json"])
-        if manifest["schema_version"] != 1 or manifest["architecture"] != "linux-amd64" or not isinstance(manifest["version"], str):
+        if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1 or manifest["architecture"] != "linux-amd64" or type(manifest["version"]) is not str or not manifest["version"]:
             raise PackageError("manifest_invalid")
         entries = manifest["files"]
+        if not isinstance(entries, list) or type(manifest["sidecar_dependency_count"]) is not int:
+            raise PackageError("manifest_invalid")
         expected_paths = set(files) - {"manifest.json"}
         declared_paths = {item["path"] for item in entries}
         if len(entries) != len(declared_paths) or declared_paths != expected_paths:
             raise PackageError("manifest_membership_mismatch")
-        allowed = {"manifest.json", "share/dependency-inventory.json", "share/sbom.cdx.json", "share/THIRD_PARTY_NOTICES.md", *[f"systemd/{u}" for u in UNITS]}
+        if declared_paths != set(PAYLOAD_MODES):
+            raise PackageError("manifest_path_invalid")
         for item in entries:
+            if not isinstance(item, dict) or set(item) != {"path", "sha256", "mode"} or any(type(item[k]) is not str for k in item):
+                raise PackageError("manifest_invalid")
             path = PurePosixPath(item["path"])
-            if path.is_absolute() or ".." in path.parts or str(path) != item["path"] or not (item["path"] in allowed or item["path"].startswith("bin/") or item["path"].startswith("lib/")):
+            if path.is_absolute() or ".." in path.parts or str(path) != item["path"] or item["path"] not in PAYLOAD_MODES:
                 raise PackageError("manifest_path_invalid")
-            expected_mode = "0o700" if item["path"].startswith("bin/") else "0o600"
-            if item["mode"] != expected_mode:
+            if item["mode"] != PAYLOAD_MODES[item["path"]]:
                 raise PackageError("manifest_mode_invalid")
             if _sha(files[item["path"]]) != item["sha256"]:
                 raise PackageError("manifest_hash_mismatch")
@@ -206,9 +289,24 @@ def _read_verified(package: Path) -> tuple[dict[str, bytes], dict[str, object]]:
         if manifest["sidecar_dependency_count"] != len(inventory["modules"]):
             raise PackageError("manifest_count_invalid")
         sbom = json.loads(files["share/sbom.cdx.json"])
-        components = {(c["name"], c["version"]) for c in sbom["components"]}
-        inventory_coordinates = {(m["module"], m["version"]) for m in inventory["modules"]}
-        if components != inventory_coordinates:
+        if (type(sbom.get("version")) is not int or sbom.get("bomFormat") != "CycloneDX"
+                or sbom.get("specVersion") != "1.5" or not isinstance(sbom.get("components"), list)):
+            raise PackageError("sbom_invalid")
+        def component_tuple(c: object) -> tuple[object, ...]:
+            if not isinstance(c, dict): raise PackageError("sbom_invalid")
+            props = c.get("properties")
+            licenses = c.get("licenses")
+            if not isinstance(props, list) or not isinstance(licenses, list) or len(licenses) != 1:
+                raise PackageError("sbom_invalid")
+            prop_map = {p.get("name"): p.get("value") for p in props if isinstance(p, dict)}
+            try: spdx = licenses[0]["license"]["id"]
+            except (KeyError, TypeError): raise PackageError("sbom_invalid")
+            return (c.get("name"), c.get("version"), c.get("purl"), spdx,
+                    prop_map.get("happyranch:go.sum"), prop_map.get("happyranch:license-sha256"))
+        components = {component_tuple(c) for c in sbom["components"]}
+        inventory_coordinates = {(m["module"], m["version"], f"pkg:golang/{m['module']}@{m['version']}",
+                                  m["spdx"], m["sum"], m["license_sha256"]) for m in inventory["modules"]}
+        if len(components) != len(sbom["components"]) or components != inventory_coordinates:
             raise PackageError("sbom_inventory_mismatch")
         _validate_evidence(inventory, files["share/THIRD_PARTY_NOTICES.md"])
     except PackageError:
@@ -218,14 +316,51 @@ def _read_verified(package: Path) -> tuple[dict[str, bytes], dict[str, object]]:
     return files, manifest
 
 
+def _transaction_paths(root: Path) -> tuple[Path, Path, Path]:
+    return root / ".happyranch-backup", root / ".happyranch-units-backup", root / TRANSACTION_MARKER
+
+
+def _recover_interrupted(root: Path) -> None:
+    """Classify and roll an interrupted publication back to its last-known-good set."""
+    opt, units = root / "opt/happyranch", root / "etc/systemd/system"
+    backup, unit_backup, marker = _transaction_paths(root)
+    stages = list(root.glob(".happyranch-stage-*")) if root.exists() else []
+    if not marker.exists():
+        if backup.exists() or unit_backup.exists():
+            raise PackageError("transaction_state_invalid")
+        for stage in stages: shutil.rmtree(stage)
+        return
+    try:
+        state = json.loads(marker.read_text())
+        if set(state) != {"schema_version", "phase"} or type(state["schema_version"]) is not int or state["schema_version"] != 1 or state["phase"] not in {"prepared", "payload_retained", "payload_published", "units_publishing"}:
+            raise PackageError("transaction_state_invalid")
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise PackageError("transaction_state_invalid") from exc
+    if backup.exists():
+        if opt.exists(): shutil.rmtree(opt)
+        opt.parent.mkdir(parents=True, exist_ok=True)
+        backup.replace(opt)
+    elif state["phase"] != "prepared":
+        raise PackageError("transaction_state_invalid")
+    if unit_backup.exists():
+        units.mkdir(parents=True, exist_ok=True)
+        for unit in UNITS:
+            target, saved = units / unit, unit_backup / unit
+            if target.exists(): target.unlink()
+            if saved.exists(): saved.replace(target)
+        shutil.rmtree(unit_backup)
+    for stage in stages: shutil.rmtree(stage)
+    marker.unlink()
+
+
 def install_linux_package(package: Path, root: Path, *, fault: Callable[[str], None] | None = None) -> dict[str, object]:
     files, manifest = _read_verified(package)
+    _recover_interrupted(root)
     opt = root / "opt/happyranch"
     units = root / "etc/systemd/system"
     root.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".happyranch-stage-", dir=root))
-    backup = root / ".happyranch-backup"
-    unit_backup = root / ".happyranch-units-backup"
+    backup, unit_backup, marker = _transaction_paths(root)
     checkpoint = fault or (lambda _name: None)
     try:
         for name, raw in files.items():
@@ -239,17 +374,21 @@ def install_linux_package(package: Path, root: Path, *, fault: Callable[[str], N
         (staging / "manifest.json").write_bytes(files["manifest.json"])
         (staging / "manifest.json").chmod(0o600)
         units.mkdir(parents=True, exist_ok=True)
-        unit_backup.mkdir(mode=0o700, exist_ok=True)
+        unit_backup.mkdir(mode=0o700)
         for unit in UNITS:
             target = units / unit
             if target.exists(): shutil.copy2(target, unit_backup / unit)
         opt.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text('{"phase":"prepared","schema_version":1}\n')
+        marker.chmod(0o600)
         if opt.exists():
-            if backup.exists(): shutil.rmtree(backup)
             opt.replace(backup)
+        marker.write_text('{"phase":"payload_retained","schema_version":1}\n')
         checkpoint("payload_old_retained")
         staging.replace(opt)
+        marker.write_text('{"phase":"payload_published","schema_version":1}\n')
         checkpoint("payload_published")
+        marker.write_text('{"phase":"units_publishing","schema_version":1}\n')
         for unit in UNITS:
             target = units / unit
             target.write_bytes(files[f"systemd/{unit}"])
@@ -257,6 +396,7 @@ def install_linux_package(package: Path, root: Path, *, fault: Callable[[str], N
             checkpoint(f"unit_published:{unit}")
         shutil.rmtree(backup, ignore_errors=True)
         shutil.rmtree(unit_backup, ignore_errors=True)
+        marker.unlink()
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         if opt.exists(): shutil.rmtree(opt)
@@ -268,6 +408,7 @@ def install_linux_package(package: Path, root: Path, *, fault: Callable[[str], N
                 saved = unit_backup / unit
                 if saved.exists(): saved.replace(target)
         shutil.rmtree(unit_backup, ignore_errors=True)
+        if marker.exists(): marker.unlink()
         raise
     return {"version": manifest["version"], "manifest_sha256": _sha(files["manifest.json"])}
 
