@@ -1,0 +1,606 @@
+{
+  "artifact": {
+    "cgo_enabled": false,
+    "goarch": "amd64",
+    "goos": "linux",
+    "package": "happyranch/linux-tsnet-sidecar"
+  },
+  "generator": "tools/generate_inventory.py",
+  "modules": [
+    {
+      "license_sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+      "module": "filippo.io/edwards25519",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://filippo.io/edwards25519",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:FNf4tywRC1HmFuKW5xopWpigGjJKiJSV0Cqo0cJWDaA=",
+      "version": "v1.1.0"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/aws/aws-sdk-go-v2",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/aws/aws-sdk-go-v2",
+      "spdx": "Apache-2.0",
+      "sum": "h1:xAojnj+ktS95YZlDf0zxWBkbFtymPeDP+rvUQIH3uAU=",
+      "version": "v1.24.1"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/aws/aws-sdk-go-v2/config",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/aws/aws-sdk-go-v2/config",
+      "spdx": "Apache-2.0",
+      "sum": "h1:lodGSevz7d+kkFJodfauThRxK9mdJbyutUxGq1NNhvw=",
+      "version": "v1.26.5"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/aws/aws-sdk-go-v2/credentials",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/aws/aws-sdk-go-v2/credentials",
+      "spdx": "Apache-2.0",
+      "sum": "h1:8q6Rliyv0aUFAVtzaldUEcS+T5gbadPbWdV1WcAddK8=",
+      "version": "v1.16.16"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/aws/aws-sdk-go-v2/feature/ec2/imds",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/aws/aws-sdk-go-v2/feature/ec2/imds",
+      "spdx": "Apache-2.0",
+      "sum": "h1:c5I5iH+DZcH3xOIMlz3/tCKJDaHFwYEmxvlh2fAcFo8=",
+      "version": "v1.14.11"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/aws/aws-sdk-go-v2/internal/configsources",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/aws/aws-sdk-go-v2/internal/configsources",
+      "spdx": "Apache-2.0",
+      "sum": "h1:vF+Zgd9s+H4vOXd5BMaPWykta2a6Ih0AKLq/X6NYKn4=",
+      "version": "v1.2.10"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/aws/aws-sdk-go-v2/internal/endpoints/v2",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/aws/aws-sdk-go-v2/internal/endpoints/v2",
+      "spdx": "Apache-2.0",
+      "sum": "h1:nYPe006ktcqUji8S2mqXf9c/7NdiKriOwMvWQHgYztw=",
+      "version": "v2.5.10"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/aws/aws-sdk-go-v2/internal/ini",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/aws/aws-sdk-go-v2/internal/ini",
+      "spdx": "Apache-2.0",
+      "sum": "h1:GrSw8s0Gs/5zZ0SX+gX4zQjRnRsMJDJ2sLur1gRBhEM=",
+      "version": "v1.7.2"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding",
+      "spdx": "Apache-2.0",
+      "sum": "h1:/b31bi3YVNlkzkBrm9LfpaKoaYZUxIAj4sHfOTmLfqw=",
+      "version": "v1.10.4"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/aws/aws-sdk-go-v2/service/internal/presigned-url",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/aws/aws-sdk-go-v2/service/internal/presigned-url",
+      "spdx": "Apache-2.0",
+      "sum": "h1:DBYTXwIGQSGs9w4jKm60F5dmCQ3EEruxdc0MFh+3EY4=",
+      "version": "v1.10.10"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/aws/aws-sdk-go-v2/service/ssm",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/aws/aws-sdk-go-v2/service/ssm",
+      "spdx": "Apache-2.0",
+      "sum": "h1:a8HvP/+ew3tKwSXqL3BCSjiuicr+XTU2eFYeogV9GJE=",
+      "version": "v1.44.7"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/aws/aws-sdk-go-v2/service/sso",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/aws/aws-sdk-go-v2/service/sso",
+      "spdx": "Apache-2.0",
+      "sum": "h1:eajuO3nykDPdYicLlP3AGgOyVN3MOlFmZv7WGTuJPow=",
+      "version": "v1.18.7"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/aws/aws-sdk-go-v2/service/ssooidc",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/aws/aws-sdk-go-v2/service/ssooidc",
+      "spdx": "Apache-2.0",
+      "sum": "h1:QPMJf+Jw8E1l7zqhZmMlFw6w1NmfkfiSK8mS4zOx3BA=",
+      "version": "v1.21.7"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/aws/aws-sdk-go-v2/service/sts",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/aws/aws-sdk-go-v2/service/sts",
+      "spdx": "Apache-2.0",
+      "sum": "h1:NzO4Vrau795RkUdSHKEwiR01FaGzGOH1EETJ+5QHnm0=",
+      "version": "v1.26.7"
+    },
+    {
+      "license_sha256": "09e8a9bcec8067104652c168685ab0931e7868f9c8284b66f5ae6edae5f1130b",
+      "module": "github.com/aws/smithy-go",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/aws/smithy-go",
+      "spdx": "Apache-2.0",
+      "sum": "h1:KWFKQV80DpP3vJrrA9sVAHQ5gc2z8i4EzrLhLlWXcBM=",
+      "version": "v1.19.0"
+    },
+    {
+      "license_sha256": "3ef376b769105f14098dd45e9d08ed3568c77d38ad33c470634606048e62119f",
+      "module": "github.com/bits-and-blooms/bitset",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/bits-and-blooms/bitset",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:bAQ9OPNFYbGHV6Nez0tmNI0RiEu7/hxlYJRUA0wFAVE=",
+      "version": "v1.13.0"
+    },
+    {
+      "license_sha256": "73ba74dfaa520b49a401b5d21459a8523a146f3b7518a833eea5efa85130bf68",
+      "module": "github.com/coreos/go-iptables",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/coreos/go-iptables",
+      "spdx": "Apache-2.0",
+      "sum": "h1:8h5+bWd7R6AYUslN6c6iuZWTKsKxUFDlpnmilO6R2n0=",
+      "version": "v0.7.1-0.20240112124308-65c67c9f46e6"
+    },
+    {
+      "license_sha256": "2e1faa05bb91574fa388220185f57b3607701714053971f704a3b32bceb9851b",
+      "module": "github.com/digitalocean/go-smbios",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/digitalocean/go-smbios",
+      "spdx": "Apache-2.0",
+      "sum": "h1:vUmf0yezR0y7jJ5pceLHthLaYf4bA5T14B6q39S4q2Q=",
+      "version": "v0.0.0-20180907143718-390a4f403a8e"
+    },
+    {
+      "license_sha256": "eee8bc536db87750a66892ec4852ed6d560c580a9d9cabf3531928ef65590872",
+      "module": "github.com/fxamacker/cbor/v2",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/fxamacker/cbor/v2",
+      "spdx": "MIT",
+      "sum": "h1:sU6J2usfADwWlYDAFhZBQ6TnLFBHxgesMrQfQgk1tWA=",
+      "version": "v2.6.0"
+    },
+    {
+      "license_sha256": "12d27746d111da33969df0ecaa9b799e22c42db7d0b6a5164f383ec934233a41",
+      "module": "github.com/gaissmai/bart",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/gaissmai/bart",
+      "spdx": "MIT",
+      "sum": "h1:5Uv5XwsaFBRo4E5VBcb9TzY8B7zxFf+U7isDxqOrRfc=",
+      "version": "v0.11.1"
+    },
+    {
+      "license_sha256": "14a34c4db2d21bf9cf80d028b802cd22fed9bf597a6c2db7ce30ee6ffd04967a",
+      "module": "github.com/go-json-experiment/json",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/go-json-experiment/json",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:ymLjT4f35nQbASLnvxEde4XOBL+Sn7rFuV+FOJqkljg=",
+      "version": "v0.0.0-20231102232822-2e55bd4e08b0"
+    },
+    {
+      "license_sha256": "e4646a82a976369d7ae8f6ed5c11d35dc0af18433a8ccc24c85b459ad8b95128",
+      "module": "github.com/godbus/dbus/v5",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/godbus/dbus/v5",
+      "spdx": "BSD-2-Clause",
+      "sum": "h1:sQspH8M4niEijh3PFscJRLDnkL547IeP7kpPe3uUhEg=",
+      "version": "v5.1.1-0.20230522191255-76236955d466"
+    },
+    {
+      "license_sha256": "73ba74dfaa520b49a401b5d21459a8523a146f3b7518a833eea5efa85130bf68",
+      "module": "github.com/golang/groupcache",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/golang/groupcache",
+      "spdx": "Apache-2.0",
+      "sum": "h1:oI5xCqsCo564l8iNU+DwB5epxmsaqB+rhGL0m5jtYqE=",
+      "version": "v0.0.0-20210331224755-41bb18bfe9da"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/google/btree",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/google/btree",
+      "spdx": "Apache-2.0",
+      "sum": "h1:xf4v41cLI2Z6FxbKm+8Bu+m8ifhj15JuZ9sa0jZCMUU=",
+      "version": "v1.1.2"
+    },
+    {
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "module": "github.com/google/nftables",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/google/nftables",
+      "spdx": "Apache-2.0",
+      "sum": "h1:wG8RYIyctLhdFk6Vl1yPGtSRtwGpVkWyZww1OCil2MI=",
+      "version": "v0.2.1-0.20240414091927-5e242ec57806"
+    },
+    {
+      "license_sha256": "0b77fdea862f869ef4f201ac5649bdbd38ccb055c7f6454dffae9e2adb4941c1",
+      "module": "github.com/gorilla/csrf",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/gorilla/csrf",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:oTUjx0vyf2T+wkrx09Trsev1TE+/EbDAeHtSTbtC2eI=",
+      "version": "v1.7.2"
+    },
+    {
+      "license_sha256": "0b77fdea862f869ef4f201ac5649bdbd38ccb055c7f6454dffae9e2adb4941c1",
+      "module": "github.com/gorilla/securecookie",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/gorilla/securecookie",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:YCIWL56dvtr73r6715mJs5ZvhtnY73hBvEF8kXD8ePA=",
+      "version": "v1.1.2"
+    },
+    {
+      "license_sha256": "789be8b214a1871d8d1a5ab157f8f4ad74cd889087762bd5cced07ed589b6bc7",
+      "module": "github.com/hdevalence/ed25519consensus",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/hdevalence/ed25519consensus",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:37ICyZqdyj0lAZ8P4D1d1id3HqbbG1N3iBb1Tb4rdcU=",
+      "version": "v0.2.0"
+    },
+    {
+      "license_sha256": "4e5b500f52790381049563156b855daf36ca73a0169475211a6c4f9d38831cbb",
+      "module": "github.com/illarion/gonotify/v2",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/illarion/gonotify/v2",
+      "spdx": "MIT",
+      "sum": "h1:B6+SKPo/0Sw8cRJh1aLzNEeNVFfzE3c6N+o+vyxM+9A=",
+      "version": "v2.0.3"
+    },
+    {
+      "license_sha256": "d034f64d0e3a12eec92e6d98ee6a0b1ee36f2a751aa96e9485fdd3a1280a6af1",
+      "module": "github.com/insomniacslk/dhcp",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/insomniacslk/dhcp",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:9K06NfxkBh25x56yVhWWlKFE8YpicaSfHwoV8SFbueA=",
+      "version": "v0.0.0-20231206064809-8c70d406f6d2"
+    },
+    {
+      "license_sha256": "03cfaf331a260694d06227a589cdd2b5fcfab474697b72e250736696c313655a",
+      "module": "github.com/jmespath/go-jmespath",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/jmespath/go-jmespath",
+      "spdx": "Apache-2.0",
+      "sum": "h1:BEgLn5cpjn8UN1mAw4NjwDrS35OdebyEtFe+9YPoQUg=",
+      "version": "v0.4.0"
+    },
+    {
+      "license_sha256": "ad2395352be6234aaee97b4c99eb2b290c81022c08238cdee45ed0b47ed18651",
+      "module": "github.com/josharian/native",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/josharian/native",
+      "spdx": "MIT",
+      "sum": "h1:elKwZS1OcdQ0WwEDBeqxKwb7WB62QX8bvZ/FJnVXIfk=",
+      "version": "v1.1.1-0.20230202152459-5c7d0dd6ab86"
+    },
+    {
+      "license_sha256": "1f61baf667aacf74c2d17abcfc0ba6e9267265460a508629307c08020dcae39c",
+      "module": "github.com/jsimonetti/rtnetlink",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/jsimonetti/rtnetlink",
+      "spdx": "MIT",
+      "sum": "h1:Z1BF0fRgcETPEa0Kt0MRk3yV5+kF1FWTni6KUFKrq2I=",
+      "version": "v1.4.0"
+    },
+    {
+      "license_sha256": "0d9e582ee4bff57bf1189c9e514e6da7ce277f9cd3bc2d488b22fbb39a6d87cf",
+      "module": "github.com/klauspost/compress",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/klauspost/compress",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:In6xLpyWOi1+C7tXUUWv2ot1QvBjxevKAaI6IXrJmUc=",
+      "version": "v1.17.11"
+    },
+    {
+      "license_sha256": "b8a8ea5545450fdd015bd67035d9bbae2e9e2c31b0e0c14dc4ec4a8f205c59aa",
+      "module": "github.com/kortschak/wol",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/kortschak/wol",
+      "spdx": "BSD-2-Clause",
+      "sum": "h1:+RR6SqnTkDLWyICxS1xpjCi/3dhyV+TgZwA6Ww3KncQ=",
+      "version": "v0.0.0-20200729010619-da482cc4850a"
+    },
+    {
+      "license_sha256": "fc7c6fc520ba7d8bded1f601c13ed3918709b13e8b45c37820fdeddaecc9992a",
+      "module": "github.com/mdlayher/genetlink",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/mdlayher/genetlink",
+      "spdx": "MIT",
+      "sum": "h1:KdrNKe+CTu+IbZnm/GVUMXSqBBLqcGpRDa0xkQy56gw=",
+      "version": "v1.3.2"
+    },
+    {
+      "license_sha256": "fc7c6fc520ba7d8bded1f601c13ed3918709b13e8b45c37820fdeddaecc9992a",
+      "module": "github.com/mdlayher/netlink",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/mdlayher/netlink",
+      "spdx": "MIT",
+      "sum": "h1:/UtM3ofJap7Vl4QWCPDGXY8d3GIY2UGSDbK+QWmY8/g=",
+      "version": "v1.7.2"
+    },
+    {
+      "license_sha256": "caf08ffb984066dd089e070479d09e91706faff07ef5c7e5c32edf632c58680e",
+      "module": "github.com/mdlayher/sdnotify",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/mdlayher/sdnotify",
+      "spdx": "MIT",
+      "sum": "h1:Ma9XeLVN/l0qpyx1tNeMSeTjCPH6NtuD6/N9XdTlQ3c=",
+      "version": "v1.0.0"
+    },
+    {
+      "license_sha256": "7ac20f598f63dfd35c7c6c3844073af0bebfa436cfe58b91af9ac17cd727ea42",
+      "module": "github.com/mdlayher/socket",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/mdlayher/socket",
+      "spdx": "MIT",
+      "sum": "h1:ilICZmJcQz70vrWVes1MFera4jGiWNocSkykwwoy3XI=",
+      "version": "v0.5.0"
+    },
+    {
+      "license_sha256": "e1389de4d18f5f8c2c25f83061f8d808af0e9fac9f8d51886f45585670487c85",
+      "module": "github.com/miekg/dns",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/miekg/dns",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:ca2Hdkz+cDg/7eNF6V56jjzuZ4aCAE+DbVkILdQWG/4=",
+      "version": "v1.1.58"
+    },
+    {
+      "license_sha256": "3c377fad2e5ae1d7081c7c2f16da867a87cca1d1f5f1aa7ed0b8a16bb553142a",
+      "module": "github.com/mitchellh/go-ps",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/mitchellh/go-ps",
+      "spdx": "MIT",
+      "sum": "h1:i6ampVEEF4wQFF+bkYfwYgY+F/uYJDktmvLPf7qIgjc=",
+      "version": "v1.0.0"
+    },
+    {
+      "license_sha256": "fdb37e402bf5ba42e38d2e85f85517645f569962b8ae393eeb8649c73d46a780",
+      "module": "github.com/pierrec/lz4/v4",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/pierrec/lz4/v4",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:yOVMLb6qSIDP67pl/5F7RepeKYu/VmTyEXvuMI5d9mQ=",
+      "version": "v4.1.21"
+    },
+    {
+      "license_sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1",
+      "module": "github.com/safchain/ethtool",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/safchain/ethtool",
+      "spdx": "Apache-2.0",
+      "sum": "h1:gimQJpsI6sc1yIqP/y8GYgiXn/NjgvpM0RNoWLVVmP0=",
+      "version": "v0.3.0"
+    },
+    {
+      "license_sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+      "module": "github.com/tailscale/golang-x-crypto",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/tailscale/golang-x-crypto",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:rXZGgEa+k2vJM8xT0PoSKfVXwFGPQ3z3CJfmnHJkZZw=",
+      "version": "v0.0.0-20240604161659-3fde5e568aa4"
+    },
+    {
+      "license_sha256": "440688406aeb546bad566031c8a01531a01a683166f7010380fcc0f68d830311",
+      "module": "github.com/tailscale/goupnp",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/tailscale/goupnp",
+      "spdx": "BSD-2-Clause",
+      "sum": "h1:4chzWmimtJPxRs2O36yuGRW3f9SYV+bMTTvMBI0EKio=",
+      "version": "v1.0.1-0.20210804011211-c64d0f06ea05"
+    },
+    {
+      "license_sha256": "a125b6c2721809b6c2a8761771932611833008ed8697d752b3e35d36e4bbd83e",
+      "module": "github.com/tailscale/hujson",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/tailscale/hujson",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:SJy1Pu0eH1C29XwJucQo73FrleVK6t4kYz4NVhp34Yw=",
+      "version": "v0.0.0-20221223112325-20486734a56a"
+    },
+    {
+      "license_sha256": "04cf148229e562c643203d1ee8c43aae2022e5130e95ceb8ba8357a27c1a9abe",
+      "module": "github.com/tailscale/netlink",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/tailscale/netlink",
+      "spdx": "Apache-2.0",
+      "sum": "h1:uFsXVBE9Qr4ZoF094vE6iYTLDl0qCiKzYXlL6UeWObU=",
+      "version": "v1.1.1-0.20240822203006-4d49adab4de7"
+    },
+    {
+      "license_sha256": "8e0db394107481655ef6a46baace86aaead5fc9b4c5ce83b9fa16037e891d03c",
+      "module": "github.com/tailscale/peercred",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/tailscale/peercred",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:Gz0rz40FvFVLTBk/K8UNAenb36EbDSnh+q7Z9ldcC8w=",
+      "version": "v0.0.0-20240214030740-b535050b2aa4"
+    },
+    {
+      "license_sha256": "d1ee1c7947d4b2c1963ea214d5324f1d4c89f2f1d0f0224889b4dfb868dad725",
+      "module": "github.com/tailscale/web-client-prebuilt",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/tailscale/web-client-prebuilt",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:tdUdyPqJ0C97SJfjB9tW6EylTtreyee9C44de+UBG0g=",
+      "version": "v0.0.0-20240226180453-5db17b287bf1"
+    },
+    {
+      "license_sha256": "91276db973f25602d1aa43491f59cbc84cb88e6f151e1d0cc82a755563ce0195",
+      "module": "github.com/tailscale/wireguard-go",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/tailscale/wireguard-go",
+      "spdx": "MIT",
+      "sum": "h1:dmoPb3dG27tZgMtrvqfD/LW4w7gA6BSWl8prCPNmkCQ=",
+      "version": "v0.0.0-20241113014420-4e883d38c8d3"
+    },
+    {
+      "license_sha256": "4efd1bb910228a9da5827e196eeb623b206e103182312955e14b5dd073a8a150",
+      "module": "github.com/tcnksm/go-httpstat",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/tcnksm/go-httpstat",
+      "spdx": "MIT",
+      "sum": "h1:rP7T5e5U2HfmOBmZzGgGZjBQ5/GluWUylujl0tJ04I0=",
+      "version": "v0.2.0"
+    },
+    {
+      "license_sha256": "babfb29ac285c50579ef027c197805f288be53a2fdea58adbf8f69a5e296d3ef",
+      "module": "github.com/u-root/uio",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/u-root/uio",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:BA9O3BmlTmpjbvajAwzWx4Wo2TRVdpPXZEeemGQcajw=",
+      "version": "v0.0.0-20240118234441-a3c409a6018e"
+    },
+    {
+      "license_sha256": "04cf148229e562c643203d1ee8c43aae2022e5130e95ceb8ba8357a27c1a9abe",
+      "module": "github.com/vishvananda/netns",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/vishvananda/netns",
+      "spdx": "Apache-2.0",
+      "sum": "h1:Oeaw1EM2JMxD51g9uhtC0D7erkIjgmj8+JZc26m1YX8=",
+      "version": "v0.0.4"
+    },
+    {
+      "license_sha256": "6ddf66f67df2d84023a531709af2deeec7edda41a8f78ccbacf7c8dc9b896a7d",
+      "module": "github.com/x448/float16",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://github.com/x448/float16",
+      "spdx": "MIT",
+      "sum": "h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=",
+      "version": "v0.8.4"
+    },
+    {
+      "license_sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1",
+      "module": "go4.org/mem",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://go4.org/mem",
+      "spdx": "Apache-2.0",
+      "sum": "h1:CbZeCBZ0aZj8EfVgnqQcYZgf0lpZ3H9rmp5nkDTAst8=",
+      "version": "v0.0.0-20220726221520-4f986261bf13"
+    },
+    {
+      "license_sha256": "1bfc4f32f4ec8ca8fce54bd2d97784f003786753a69a78ca74ffae1574037fb9",
+      "module": "go4.org/netipx",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://go4.org/netipx",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:0b9z3AuHCjxk0x/opv64kcgZLBseWJUpBw5I82+2U4M=",
+      "version": "v0.0.0-20231129151722-fdeea329fbba"
+    },
+    {
+      "license_sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+      "module": "golang.org/x/crypto",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://golang.org/x/crypto",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:ypSNr+bnYL2YhwoMt2zPxHFmbAN1KZs/njMG3hxUp30=",
+      "version": "v0.25.0"
+    },
+    {
+      "license_sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+      "module": "golang.org/x/exp",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://golang.org/x/exp",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:Q8/wZp0KX97QFTc2ywcOE0YRjZPVIx+MXInMzdvQqcA=",
+      "version": "v0.0.0-20240119083558-1b970713d09a"
+    },
+    {
+      "license_sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+      "module": "golang.org/x/net",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://golang.org/x/net",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:5K3Njcw06/l2y9vpGCSdcxWOYHOUk3dVNGDXN+FvAys=",
+      "version": "v0.27.0"
+    },
+    {
+      "license_sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+      "module": "golang.org/x/sync",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://golang.org/x/sync",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:fEo0HyrW1GIgZdpbhCRO0PkJajUS5H9IFUztCgEo2jQ=",
+      "version": "v0.9.0"
+    },
+    {
+      "license_sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+      "module": "golang.org/x/sys",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://golang.org/x/sys",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:wBqf8DvsY9Y/2P8gAfPDEYNuS30J4lPHJxXSb/nJZ+s=",
+      "version": "v0.27.0"
+    },
+    {
+      "license_sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+      "module": "golang.org/x/term",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://golang.org/x/term",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:BbsgPEJULsl2fV/AT3v15Mjva5yXKQDyKf+TbDz7QJk=",
+      "version": "v0.22.0"
+    },
+    {
+      "license_sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+      "module": "golang.org/x/text",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://golang.org/x/text",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:a94ExnEXNtEwYLGJSIUxnWoxoRz/ZcCsV63ROupILh4=",
+      "version": "v0.16.0"
+    },
+    {
+      "license_sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+      "module": "golang.org/x/time",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://golang.org/x/time",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:o7cqy6amK/52YcAKIPlM3a+Fpj35zvRj2TP+e1xFSfk=",
+      "version": "v0.5.0"
+    },
+    {
+      "license_sha256": "cf88bf221adced578f6190ec9a2ee39d8f7022ab4b1e83208589caaa437efe26",
+      "module": "gvisor.dev/gvisor",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://gvisor.dev/gvisor",
+      "spdx": "MIT",
+      "sum": "h1:TU8z2Lh3Bbq77w0t1eG8yRlLcNHzZu3x6mhoH2Mk0c8=",
+      "version": "v0.0.0-20240722211153-64c016c92987"
+    },
+    {
+      "license_sha256": "d1ee1c7947d4b2c1963ea214d5324f1d4c89f2f1d0f0224889b4dfb868dad725",
+      "module": "tailscale.com",
+      "relationship": "statically-linked-linux-build-input",
+      "source": "https://tailscale.com",
+      "spdx": "BSD-3-Clause",
+      "sum": "h1:/UF5EituVa1QMhojqOObFumTarVTcZ14nW1KIVVwbLw=",
+      "version": "v1.78.0"
+    }
+  ],
+  "schema_version": 1
+}
