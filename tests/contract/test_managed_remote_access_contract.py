@@ -394,12 +394,52 @@ def test_n2_lifecycle_matrix_covers_shipping_boundaries() -> None:
         "concurrency_reentry": ("admission_or_start_races_stop_or_revoke", "no_early_ready_deadlock_or_double_close"),
         "recovery": ("fresh_gates_after_cleanup_before_fresh_listener", "current_identity_epoch_policy_only"),
     }
+    required_observable_mappings = {
+        "startup": {
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_not_ready_never_starts_provider",
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_start_failure_cleans_provider_registry_and_runtime_residue",
+        },
+        "admission": {
+            "tests/remote_access/test_managed_provider.py::test_readiness_failure_never_creates_listener_and_is_redacted",
+        },
+        "active_flow": {
+            "tests/remote_access/test_managed_provider.py::test_complete_gateway_pipeline_and_final_hop_bearer_placement",
+        },
+        "readiness_loss": {
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_readiness_loss_stops_listener_immediately",
+        },
+        "revocation": {
+            "tests/remote_access/test_supervisor.py::TestReconciliationRotation::test_persisted_revocation_removes_listener_before_stream_cleanup",
+            "tests/remote_access/test_supervisor.py::TestReconciliationRotation::test_cross_process_revoke_closes_stream_then_rotation_reopens_repair",
+        },
+        "shutdown": {
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_concurrent_provider_start_then_shutdown_is_linearized",
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_shutdown_first_forbids_late_start_and_repeated_shutdown_has_no_residue",
+        },
+        "partial_failure": {
+            "tests/remote_access/test_streams.py::test_close_all_partial_multi_handle_failure_seals_all",
+            "tests/remote_access/test_supervisor.py::TestReconciliationRotation::test_persisted_revocation_retries_failed_listener_stop_without_double_close",
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_start_failure_cleans_provider_registry_and_runtime_residue",
+        },
+        "concurrency_reentry": {
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_concurrent_provider_start_then_shutdown_is_linearized",
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_shutdown_first_forbids_late_start_and_repeated_shutdown_has_no_residue",
+            "tests/remote_access/test_supervisor.py::TestReconciliationRotation::test_provider_start_racing_persisted_revocation_is_linearized_in_both_orderings",
+        },
+        "recovery": {
+            "tests/remote_access/test_managed_provider.py::test_stop_is_idempotent_and_recovery_requires_fresh_readiness",
+            "tests/remote_access/test_supervisor.py::TestReconciliationRotation::test_targeted_revoke_rotation_unaffected_device_still_opens_and_ws_denied",
+        },
+    }
     assert [row["phase"] for row in rows] == list(expected)
     for row in rows:
         _assert_exact_keys(row, ["phase", "ordering", "outcome", "shipping_tests"], "n2_lifecycle_matrix[]")
         assert (row["ordering"], row["outcome"]) == expected[row["phase"]]
         assert row["shipping_tests"], f"{row['phase']}: shipping test mapping required"
         assert all(test.startswith("tests/remote_access/") and "::test_" in test for test in row["shipping_tests"])
+        assert set(row["shipping_tests"]) == required_observable_mappings[row["phase"]], (
+            f"{row['phase']}: exact observable production-seam mappings required"
+        )
 
 
 def test_managed_delivery_status_preserves_diy_and_gates_future_units() -> None:

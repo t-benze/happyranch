@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -255,6 +256,8 @@ class ConnectorSupervisor:
         self._notify_fn = notify_fn or (lambda state: sd_notify(state))
         self._provider: LabProviderAdapter | None = None
         self._provider_running = False
+        self._lifecycle_lock = threading.RLock()
+        self._shutdown = False
         # ONE authoritative live-stream registry and ONE pairing manager per
         # process, shared by the gateway ctx factories, the provider adapter,
         # and the ceremony surface — in-process revocation closes the REAL
@@ -926,20 +929,23 @@ class ConnectorSupervisor:
             iterations += 1
             if max_iterations is not None and iterations > max_iterations:
                 break
-            report = self.readiness_report()
-            if report.ready:
-                if not self._provider_running:
-                    if self._start_provider():
-                        self._notify_fn("READY=1\n")
-                    # else: no listener — STATUS already emitted; never READY
+            with self._lifecycle_lock:
+                if self._shutdown:
+                    break
+                report = self.readiness_report()
+                if report.ready:
+                    if not self._provider_running:
+                        if self._start_provider():
+                            self._notify_fn("READY=1\n")
+                        # else: no listener — STATUS already emitted; never READY
+                    else:
+                        self._notify_fn("WATCHDOG=1\n")
                 else:
-                    self._notify_fn("WATCHDOG=1\n")
-            else:
-                if self._provider_running:
-                    self._stop_provider()
-                    self._notify_fn("STOPPING=1\n")
-                else:
-                    self._notify_fn("STATUS=waiting for readiness\n")
+                    if self._provider_running:
+                        self._stop_provider()
+                        self._notify_fn("STOPPING=1\n")
+                    else:
+                        self._notify_fn("STATUS=waiting for readiness\n")
             self._reconcile_revocation()
             wait_fn(poll_seconds)
         return 0
@@ -963,6 +969,10 @@ class ConnectorSupervisor:
         clears the cached registry + pairing manager, rebuilds the provider
         and every captured ctx-factory reference, and restarts the listener
         at a readiness-gated fail-closed boundary."""
+        with self._lifecycle_lock:
+            self._reconcile_revocation_locked()
+
+    def _reconcile_revocation_locked(self) -> None:
         if (
             self.config.diy is None
             and self.config.lab is None
@@ -1031,14 +1041,24 @@ class ConnectorSupervisor:
 
     def shutdown(self) -> None:
         """Deterministic stop: drop the listener before exiting."""
-        if self._provider_running:
-            self._stop_provider()
-        self._notify_fn("STOPPING=1\n")
+        with self._lifecycle_lock:
+            self._shutdown = True
+            if self._provider_running:
+                self._stop_provider()
+            self._notify_fn("STOPPING=1\n")
 
     def _start_provider(self) -> bool:
         """Start the provider and return PROVEN success: True only when the
         listener is actually running (``_provider_running`` set). A bind/start
         failure returns False — the caller must never emit READY."""
+        with self._lifecycle_lock:
+            if self._shutdown:
+                return False
+            if self._provider_running:
+                return True
+            return self._start_provider_locked()
+
+    def _start_provider_locked(self) -> bool:
         if self._injected_provider is not None:
             provider = self._injected_provider
         elif self.config.diy is not None:
@@ -1055,6 +1075,14 @@ class ConnectorSupervisor:
         try:
             provider.start()
         except (LabProviderError, DiyProviderError):
+            try:
+                provider.stop()
+            except Exception:  # noqa: BLE001 — best-effort failed-start cleanup
+                pass
+            self._provider = None
+            self._provider_running = False
+            self._registry = None
+            self._pairing_manager = None
             # fail-closed: readiness passed but the provider refused to bind
             # (e.g. bind conflict) — keep the loop re-evaluating; no listener.
             self._notify_fn("STATUS=provider failed to start; no listener\n")
@@ -1064,6 +1092,10 @@ class ConnectorSupervisor:
         return True
 
     def _stop_provider(self) -> bool:
+        with self._lifecycle_lock:
+            return self._stop_provider_locked()
+
+    def _stop_provider_locked(self) -> bool:
         provider = self._provider
         if provider is None:
             self._provider_running = False
