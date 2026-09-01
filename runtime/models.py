@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from enum import StrEnum
 
@@ -1096,7 +1098,13 @@ class AuthorityCandidate(BaseModel):
 
 
 class AuthorityPolicyRelease(BaseModel):
-    """One immutable authored team-policy release."""
+    """One immutable authored team-policy release.
+
+    The digest covers exactly policy_id, version, team, title,
+    normative_text, clauses, and continuation_phrase. Release ancestry,
+    actor attribution, and creation time are receipts and are deliberately
+    outside that semantic identity.
+    """
     model_config = {"extra": "forbid"}
 
     id: str
@@ -1112,6 +1120,56 @@ class AuthorityPolicyRelease(BaseModel):
     based_on_release_id: str | None = None
     actor_kind: Literal["shared_local_operator_credential"]
     created_at: datetime = Field(default_factory=_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_and_validate_semantic_identity(cls, raw):
+        if not isinstance(raw, dict):
+            return raw
+        values = dict(raw)
+        try:
+            clauses = json.loads(values["clauses_json"])
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("clauses_json must be canonical JSON") from exc
+        if not isinstance(clauses, list):
+            raise ValueError("clauses_json must be a JSON array")
+        clause_keys = {"id", "category", "condition", "action"}
+        seen: set[str] = set()
+        for clause in clauses:
+            if not isinstance(clause, dict) or set(clause) != clause_keys:
+                raise ValueError("each policy clause must have the exact closed schema")
+            if any(not isinstance(clause[key], str) or not clause[key].strip() for key in clause_keys):
+                raise ValueError("policy clause fields must be nonblank strings")
+            if clause["action"] not in {"escalate_to_founder", "continue_same_root"}:
+                raise ValueError("policy clause action is outside the closed vocabulary")
+            if clause["id"] in seen:
+                raise ValueError("policy clause ids must be unique")
+            seen.add(clause["id"])
+        canonical_clauses = json.dumps(
+            clauses, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        if values["clauses_json"] != canonical_clauses:
+            raise ValueError("clauses_json is not canonical")
+        payload = {
+            "policy_id": values.get("policy_id"), "version": values.get("version"),
+            "team": values.get("team"), "title": values.get("title"),
+            "normative_text": values.get("normative_text"), "clauses": clauses,
+            "continuation_phrase": values.get("continuation_phrase"),
+        }
+        canonical_payload = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        digest = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+        expected_id = f"APR-{digest}"
+        for field, expected in (
+            ("canonical_payload_json", canonical_payload),
+            ("policy_digest", digest), ("id", expected_id),
+        ):
+            supplied = values.get(field)
+            if supplied is not None and supplied != expected:
+                raise ValueError(f"{field} does not match canonical policy semantics")
+            values[field] = expected
+        return values
 
     @field_validator("policy_digest")
     @classmethod

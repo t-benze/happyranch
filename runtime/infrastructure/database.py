@@ -2042,6 +2042,32 @@ class Database:
                                            FROM authority_policy_activations last
                                            WHERE last.team=NEW.team))
                     );
+                    SELECT RAISE(ABORT, 'authority activation action/history mismatch')
+                    WHERE (
+                        (SELECT COUNT(*) FROM authority_policy_activations a
+                         WHERE a.team=NEW.team)=0
+                        AND NEW.action!='bootstrap'
+                    ) OR (
+                        (SELECT COUNT(*) FROM authority_policy_activations a
+                         WHERE a.team=NEW.team)>0
+                        AND (
+                            NEW.action='bootstrap'
+                            OR (NEW.action='activate' AND EXISTS (
+                                SELECT 1 FROM authority_policy_activations a
+                                WHERE a.team=NEW.team AND a.release_id=NEW.release_id
+                            ))
+                            OR (NEW.action='reactivate_rollback' AND (
+                                NOT EXISTS (
+                                    SELECT 1 FROM authority_policy_activations a
+                                    WHERE a.team=NEW.team AND a.release_id=NEW.release_id
+                                )
+                                OR NEW.release_id=(
+                                    SELECT a.release_id FROM authority_policy_activations a
+                                    WHERE a.team=NEW.team ORDER BY a.epoch DESC LIMIT 1
+                                )
+                            ))
+                        )
+                    );
                 END;
             CREATE TRIGGER IF NOT EXISTS authority_policy_activations_no_update
                 BEFORE UPDATE ON authority_policy_activations
@@ -10233,7 +10259,10 @@ class Database:
     # accepted or persisted.
 
     def _authority_policy_release_from_row(self, row) -> AuthorityPolicyRelease:
-        release = AuthorityPolicyRelease.model_validate(dict(row))
+        try:
+            release = AuthorityPolicyRelease.model_validate(dict(row))
+        except ValueError as exc:
+            raise ValueError("authority policy release has corrupt digest or semantics") from exc
         canonical_digest = hashlib.sha256(
             release.canonical_payload_json.encode("utf-8")
         ).hexdigest()
@@ -10309,12 +10338,27 @@ class Database:
             if previous is None:
                 if expected_epoch not in (None, 0) or activation.epoch != 1 or activation.previous_activation_id is not None:
                     raise sqlite3.IntegrityError("authority activation bootstrap CAS conflict")
+                if activation.action != "bootstrap":
+                    raise sqlite3.IntegrityError("first authority activation must be bootstrap")
             elif (
                 expected_epoch != previous_epoch
                 or activation.epoch != previous_epoch + 1
                 or activation.previous_activation_id != previous["id"]
             ):
                 raise sqlite3.IntegrityError("authority activation CAS conflict")
+            elif activation.action == "bootstrap":
+                raise sqlite3.IntegrityError("authority bootstrap is forbidden after history exists")
+            else:
+                previously_activated = self._conn.execute(
+                    "SELECT 1 FROM authority_policy_activations WHERE team=? AND release_id=? LIMIT 1",
+                    (activation.team, activation.release_id),
+                ).fetchone() is not None
+                if activation.action == "activate" and previously_activated:
+                    raise sqlite3.IntegrityError("activate target was previously activated")
+                if activation.action == "reactivate_rollback" and (
+                    not previously_activated or activation.release_id == previous["release_id"]
+                ):
+                    raise sqlite3.IntegrityError("reactivation target is not a non-current prior release")
             self._conn.execute(
                 """INSERT INTO authority_policy_activations
                    (id,team,epoch,release_id,previous_activation_id,
