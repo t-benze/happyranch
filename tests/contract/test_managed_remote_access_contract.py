@@ -1387,6 +1387,21 @@ def test_n3_lifecycle_matrix_covers_shipping_package_boundaries() -> None:
         "shutdown", "partial_failure", "concurrency_reentry", "recovery",
     ]
     assert all(row["shipping_tests"] for row in matrix)
+    observing = {
+        "startup": "test_composite_service_manager_executes_start_ready_stop_crash_restart",
+        "admission": "TestStartSuccessConsumesCredentialThenProxiesRawBytes",
+        "active_flow": "TestStartSuccessConsumesCredentialThenProxiesRawBytes",
+        "readiness_loss": "TestUnexpectedAcceptFailureAutomaticallyTearsDownAndIsReported",
+        "revocation": "test_persisted_revocation_removes_listener_before_stream_cleanup",
+        "shutdown": "TestConcurrentStopIsIdempotent",
+        "partial_failure": "test_install_rejects_tampered_payload_without_partial_residue",
+        "concurrency_reentry": "test_upgrade_rolls_back_at_every_publication_boundary",
+        "recovery": "test_interrupted_payload_publication_restores_last_known_good",
+    }
+    for row in matrix:
+        assert any(observing[row["phase"]] in test_id for test_id in row["shipping_tests"]), row
+        assert all("test_composite_units_start_connector_before_admission_and_stop_reverse" not in test_id
+                   and "test_build_is_reproducible" not in test_id for test_id in row["shipping_tests"]), row
     assert topology["delivery_status"]["n3"].startswith("linux_package")
 
 

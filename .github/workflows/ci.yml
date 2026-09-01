@@ -81,7 +81,20 @@ jobs:
           python-version: "3.14"
 
       - name: Sync dependencies
-        run: uv sync --frozen
+        run: uv sync --frozen --group build
+
+      - name: Managed Linux package shipping seam
+        run: |
+          set -eux
+          package_tmp="$(mktemp -d)"
+          trap 'rm -rf "$package_tmp"' EXIT
+          (cd app/linux/tsnet-sidecar && go test ./... && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$package_tmp/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
+          uv build --wheel --out-dir "$package_tmp"
+          wheel="$(find "$package_tmp" -maxdepth 1 -name 'happyranch-*.whl' -print -quit)"
+          uv run python app/linux/package/build_connector.py --wheel "$wheel" --output "$package_tmp/happyranch-connector"
+          (cd "$package_tmp" && ./happyranch-connector --help)
+          uv run python app/linux/package/build_package.py --sidecar "$package_tmp/happyranch-tsnet-sidecar" --connector "$package_tmp/happyranch-connector" --wheel "$wheel" --version ci --output "$package_tmp/happyranch-linux-amd64.tar"
+          PACKAGE_TMP="$package_tmp" uv run python -c 'from pathlib import Path; from runtime.remote_access.linux_package import install_linux_package; import os; root=Path(os.environ["PACKAGE_TMP"])/"fixture-root"; install_linux_package(Path(os.environ["PACKAGE_TMP"])/"happyranch-linux-amd64.tar", root); print(root)'
 
       - name: Run canonical store + validation tests
         env:
