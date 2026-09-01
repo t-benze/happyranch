@@ -108,6 +108,26 @@ remains the authoritative clean-environment / matrix gate.
 
 Two sessions on the same agent role may try to create different worktrees simultaneously. If `git worktree add` fails because of a stale lock, retry once after 1 second.
 
+## Temporary review, QA, and scratch worktrees
+
+When a review, QA run, or diagnostic needs an additional disposable worktree,
+never create temporary review or QA worktrees under `/tmp`. Put them beneath
+the owning agent workspace so the existing registered-workspace cleanup
+authority covers their bytes and concurrent agents cannot share a path:
+
+```bash
+SCRATCH_WORKTREES="$WORKSPACE_ROOT/.happyranch/scratch/worktrees"
+mkdir -p "$SCRATCH_WORKTREES"
+git -C "$PRIMARY_ROOT" worktree add "$SCRATCH_WORKTREES/<task-id>-<exact-sha>" <exact-sha>
+```
+
+Use the immutable commit SHA in both the directory suffix and `git worktree
+add`. If the workspace-owned directory cannot be created, stop with the error;
+never fall back to `/tmp`. At the end of the review or QA run, remove only the
+exact registered worktree with `git worktree remove <exact-path>` after
+checking its status. Do not infer cleanup eligibility from a task-like name or
+Unix ownership.
+
 ## Cleanup
 
 At the end of every task — even on blocker/error paths — remove the worktree:

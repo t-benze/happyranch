@@ -280,6 +280,136 @@ def test_pi_executor_launches_print_mode_with_json_events(mock_subprocess, tmp_p
     assert "<session-lifetime>" in sent
 
 
+def test_callee_env_redirects_large_tool_caches_into_owning_workspace(
+    tmp_path, monkeypatch,
+):
+    from runtime.orchestrator.executors import _callee_env
+
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    monkeypatch.setenv("TMPDIR", "/tmp/preserved-small-payloads")
+
+    env = _callee_env(workspace=workspace)
+
+    cache_root = workspace / ".happyranch" / "cache"
+    assert env["TMPDIR"] == "/tmp/preserved-small-payloads"
+    assert env["XDG_CACHE_HOME"] == str(cache_root / "xdg")
+    assert env["UV_CACHE_DIR"] == str(cache_root / "uv")
+    assert env["PIP_CACHE_DIR"] == str(cache_root / "pip")
+    assert env["npm_config_cache"] == str(cache_root / "npm")
+    assert env["NODE_COMPILE_CACHE"] == str(cache_root / "node-compile")
+    assert env["GOCACHE"] == str(cache_root / "go-build")
+    assert all(Path(path).is_dir() for path in (
+        env["XDG_CACHE_HOME"], env["UV_CACHE_DIR"], env["PIP_CACHE_DIR"],
+        env["npm_config_cache"], env["NODE_COMPILE_CACHE"], env["GOCACHE"],
+    ))
+
+
+def test_callee_env_isolates_concurrent_agents(tmp_path):
+    from runtime.orchestrator.executors import _callee_env
+
+    first = tmp_path / "workspaces" / "dev_agent"
+    second = tmp_path / "workspaces" / "qa_engineer"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+
+    first_env = _callee_env(workspace=first)
+    second_env = _callee_env(workspace=second)
+
+    assert first_env["UV_CACHE_DIR"] != second_env["UV_CACHE_DIR"]
+    assert Path(first_env["UV_CACHE_DIR"]).is_relative_to(first)
+    assert Path(second_env["UV_CACHE_DIR"]).is_relative_to(second)
+
+
+def test_callee_env_cache_setup_error_does_not_fall_back_to_tmp(tmp_path):
+    from runtime.orchestrator.executors import WorkspaceStorageError, _callee_env
+
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / ".happyranch").write_text("blocks cache directory")
+
+    with pytest.raises(WorkspaceStorageError, match="workspace-owned cache"):
+        _callee_env(workspace=workspace)
+
+
+@pytest.mark.parametrize(
+    "symlink_component",
+    [
+        ".happyranch",
+        ".happyranch/cache",
+        ".happyranch/cache/uv",
+    ],
+)
+def test_callee_env_rejects_symlinked_cache_path_components(
+    tmp_path, symlink_component,
+):
+    from runtime.orchestrator.executors import WorkspaceStorageError, _callee_env
+
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    outside = tmp_path / "outside"
+    workspace.mkdir(parents=True)
+    outside.mkdir()
+    component = workspace / symlink_component
+    component.parent.mkdir(parents=True, exist_ok=True)
+    component.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(
+        WorkspaceStorageError,
+        match=r"unsafe workspace-owned cache path component: ",
+    ):
+        _callee_env(workspace=workspace)
+
+    assert list(outside.iterdir()) == []
+
+
+def test_callee_env_uses_canonical_workspace_root(tmp_path):
+    from runtime.orchestrator.executors import _callee_env
+
+    canonical_workspace = tmp_path / "workspaces" / "dev_agent"
+    canonical_workspace.mkdir(parents=True)
+    workspace_alias = tmp_path / "workspace-alias"
+    workspace_alias.symlink_to(canonical_workspace, target_is_directory=True)
+
+    env = _callee_env(workspace=workspace_alias)
+
+    expected = canonical_workspace / ".happyranch" / "cache" / "uv"
+    assert env["UV_CACHE_DIR"] == str(expected)
+    assert expected.is_dir()
+
+
+def test_callee_env_rejects_component_replaced_during_preparation(
+    tmp_path, monkeypatch,
+):
+    from runtime.orchestrator import executors
+
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    outside = tmp_path / "outside"
+    workspace.mkdir(parents=True)
+    outside.mkdir()
+    real_open = executors.os.open
+    cache_opens = 0
+
+    def racing_open(path, flags, *args, **kwargs):
+        nonlocal cache_opens
+        if path == "cache":
+            cache_opens += 1
+            if cache_opens == 2:
+                cache = workspace / ".happyranch" / "cache"
+                cache.rename(workspace / ".happyranch" / "cache-replaced")
+                cache.symlink_to(outside, target_is_directory=True)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(executors.os, "open", racing_open)
+
+    with pytest.raises(
+        executors.WorkspaceStorageError,
+        match=r"unsafe workspace-owned cache path component: ",
+    ):
+        executors._callee_env(workspace=workspace)
+
+    assert list(outside.iterdir()) == []
+
+
 @patch("runtime.orchestrator.executors.subprocess")
 def test_opencode_executor_returns_failure_on_nonzero_exit(mock_subprocess, tmp_path):
     workspace = tmp_path / "dev_agent"

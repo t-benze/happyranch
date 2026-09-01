@@ -1461,7 +1461,19 @@ fail-open `statvfs` inode used/free/total/percent/threshold fields, and full CI
 performs a matching inode preflight. Both are advisory and non-authoritative:
 they never grant cleanup authority or cause the daemon scheduler to inspect,
 move, quarantine, restore, unlink, or recursively delete `/tmp` content.
-Producer redirection and automatic temporary-file cleanup are not implemented.
+The first producer-redirection unit roots executor-owned language/package
+caches under
+``workspaces/<agent>/.happyranch/cache/{xdg,uv,pip,npm,node-compile,go-build}``
+and requires disposable review/QA/scratch Git worktrees under
+``workspaces/<agent>/.happyranch/scratch/worktrees``. These paths are
+workspace-owned and measurable, but ``.happyranch/cache`` is not cleanup-eligible
+and this unit grants no new cleanup authority. Cache-root
+setup refuses symlinked child components and fails closed without falling back
+to shared ``/tmp``; same-UID post-validation races remain because the
+workspace is not an OS isolation boundary. The daemon still never inspects or
+reclaims ``/tmp``.
+Small atomic callback payloads retain their explicit ``/tmp`` contracts, and
+``TMPDIR`` is not globally redirected.
 
 ### Three layers of memory
 
