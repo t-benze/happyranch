@@ -32,6 +32,7 @@ OPENAPI_SNAPSHOT_PATH = Path(__file__).parent / "openapi.json"
 ROUTE_CLASSIFICATION_PATH = Path(__file__).parent / "route-classification.json"
 
 FIXTURE_FILES = {
+    "managed_topology": CONTRACT_DIR / "managed-topology.json",
     "route_policy": CONTRACT_DIR / "route-policy.json",
     "credential_taxonomy": CONTRACT_DIR / "credential-taxonomy.json",
     "failure_categories": CONTRACT_DIR / "failure-categories.json",
@@ -42,6 +43,7 @@ FIXTURE_FILES = {
 # Extra required top-level keys beyond the common (version/name/status/description)
 # set, per fixture.
 _TOP_LEVEL_EXTRA = {
+    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "readiness", "secrets", "visibility", "fallbacks", "acceptance_matrix", "delivery_status"],
     "route_policy": [
         "decision_order",
         "default_behavior",
@@ -55,6 +57,12 @@ _TOP_LEVEL_EXTRA = {
     "failure_categories": ["deny_categories", "audit_categories", "existence_guard"],
     "threat_cases": ["cases"],
 }
+
+NORMATIVE_MANAGED_ACCEPTANCE_ROWS = [
+    "same_wifi_direct", "same_wifi_forced_private_derp",
+    "separate_network_direct_when_possible", "separate_network_forced_private_derp",
+    "failure_recovery",
+]
 
 # ---------------------------------------------------------------------------
 # Normative contract encoded in this test module.
@@ -348,7 +356,36 @@ def test_fixture_present_and_parses(name: str) -> None:
     assert doc["status"] == "normative-contract", f"{name}: status must be 'normative-contract'"
 
 
+def test_managed_embedded_topology_is_load_bearing() -> None:
+    doc = _load("managed_topology")
+    assert doc["transport"] == "embedded"
+    assert doc["endpoints"] == {"mac": "embedded_tsnet_userspace_wireguard", "linux_tailnet": "future_happyranch_packaged_embedded_network_sidecar", "linux_connector_bind": "127.0.0.1_only", "daemon_bind": "127.0.0.1:8765_only"}
+    assert doc["sidecar_boundary"] == {"tailnet_listener": True, "proxy_protocol": "raw_tcp_only", "fixed_target": "loopback_python_connector_only", "authorization_authority": False, "daemon_bearer_access": False, "happy_ranch_route_parsing": False}
+    assert doc["readiness"] == {"mode": "conjunctive_composite", "required_gates": ["configuration_valid", "encrypted_engine_started", "private_control_plane_joined", "expected_peer_map_visible", "tailnet_listener_active", "loopback_connector_reachable"], "failure_order": "remove_tailnet_listener_first", "early_ready_forbidden": True}
+
+
+def test_managed_embedded_topology_secrets_and_observability_are_bounded() -> None:
+    doc = _load("managed_topology")
+    assert doc["secrets"] == {"enrollment_input": "owner_only_one_use_credential_file", "command_line_forbidden": True, "logging_forbidden": True, "delete_after_durable_redemption": True, "durable_transport_state_owner_only": True, "errors": "category_only", "daemon_bearer_hop": "connector_to_127.0.0.1:8765_only"}
+    assert doc["visibility"] == {"headscale_derp_may_observe": ["operational_metadata", "wireguard_ciphertext"], "headscale_derp_must_never_observe": ["http_plaintext", "sse_plaintext", "websocket_plaintext", "happy_ranch_secrets"]}
+    assert doc["fallbacks"] == {"wildcard_listener": False, "lan_or_plaintext_concrete_address": False, "same_wifi_direct_lan_plaintext": False, "public_tailscale": False, "public_derp": False}
+
+
+def test_managed_acceptance_matrix_has_no_external_or_plaintext_escape() -> None:
+    rows = _load("managed_topology")["acceptance_matrix"]
+    assert [row["id"] for row in rows] == NORMATIVE_MANAGED_ACCEPTANCE_ROWS
+    required = {"no_system_tailscale_either_endpoint", "loopback_only_daemon_and_connector", "ciphertext_only_control_and_relay", "no_public_or_lan_fallback"}
+    for row in rows:
+        _assert_exact_keys(row, ["id", "path", "required_invariants"], "acceptance_matrix[]")
+        assert set(row["required_invariants"]) == required
+
+
+def test_managed_delivery_status_preserves_diy_and_gates_future_units() -> None:
+    assert _load("managed_topology")["delivery_status"] == {"n0": "contract_only_no_acceptance_claim", "n1_through_n6": "founder_gated_not_authorized", "unit_4b_2": "delivered_independent_not_network_provisioning_or_acceptance", "supported_diy": "unchanged_truthful_voluntary_external_tailscale_or_customer_headscale", "supported_diy_for_founder_acceptance": "non_executable_not_managed_path"}
+
+
 _TOP_LEVEL_EXTRA = {
+    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "readiness", "secrets", "visibility", "fallbacks", "acceptance_matrix", "delivery_status"],
     "route_policy": [
         "decision_order",
         "default_behavior",
