@@ -28,6 +28,7 @@ from runtime.remote_access.credentials import (
     SystemdCredentialProvider,
 )
 from runtime.remote_access.diy_provider import DiyProviderAdapter, DiyProviderConfig, DiyProviderError
+from runtime.remote_access.managed_provider import ManagedProviderAdapter, ManagedProviderConfig, ManagedProviderError
 from runtime.remote_access.gateway import ConnectorGateway, GatewayContext
 from runtime.remote_access.httpd import BaseConnectorHandler
 from runtime.remote_access.identity import (
@@ -75,6 +76,9 @@ __all__ = [
     "DiyProviderAdapter",
     "DiyProviderConfig",
     "DiyProviderError",
+    "ManagedProviderAdapter",
+    "ManagedProviderConfig",
+    "ManagedProviderError",
     "FileDaemonCredentialProvider",
     "ForwardedResponse",
     "GatewayContext",

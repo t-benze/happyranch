@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -59,6 +60,11 @@ from runtime.remote_access.lab_provider import (
     LabProviderAdapter,
     LabProviderConfig,
     LabProviderError,
+)
+from runtime.remote_access.managed_provider import (
+    ManagedProviderAdapter,
+    ManagedProviderConfig,
+    ManagedProviderError,
 )
 from runtime.remote_access.network import NetworkAddressError, NetworkConfig
 from runtime.remote_access.pairing import PairingManager
@@ -137,6 +143,7 @@ class ConnectorConfig:
     lab: LabProviderConfig | None = None
     # Supported-DIY customer-owned-network provider (THR-097 Unit 3A)
     diy: DiyProviderConfig | None = None
+    managed: ManagedProviderConfig | None = None
 
     def validate(self) -> None:
         if not (self.tenant_id and self.home_id and self.connector_id):
@@ -149,25 +156,36 @@ class ConnectorConfig:
             raise ConnectorConfigError("policy_path is required")
         if self.lab is not None and self.lab.lab_only is not True:
             raise ConnectorConfigError("lab provider requires lab_only: true")
-        if self.lab is not None and self.diy is not None:
-            raise ConnectorConfigError("lab and diy providers are mutually exclusive")
+        if (
+            sum(value is not None for value in (self.lab, self.diy, self.managed))
+            > 1
+        ):
+            raise ConnectorConfigError("lab, diy, and managed providers are mutually exclusive")
         if self.diy is not None:
             try:
                 self.diy.validate()
             except (DiyProviderError, NetworkAddressError) as exc:
                 raise ConnectorConfigError(f"invalid diy provider config: {exc}") from exc
+        if self.managed is not None:
+            try:
+                self.managed.validate()
+            except ManagedProviderError as exc:
+                raise ConnectorConfigError("invalid managed provider config") from exc
 
     @classmethod
     def from_file(cls, path: Path) -> "ConnectorConfig":
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
         lab_raw = raw.pop("lab", None)
         diy_raw = raw.pop("diy", None)
+        managed_raw = raw.pop("managed", None)
         config = cls(**raw)
         if lab_raw is not None:
             config.lab = LabProviderConfig(**lab_raw)
         if diy_raw is not None:
             network_raw = diy_raw.pop("network", None) or {}
             config.diy = DiyProviderConfig(network=NetworkConfig(**network_raw), **diy_raw)
+        if managed_raw is not None:
+            config.managed = ManagedProviderConfig(**managed_raw)
         config.validate()
         return config
 
@@ -238,6 +256,8 @@ class ConnectorSupervisor:
         self._notify_fn = notify_fn or (lambda state: sd_notify(state))
         self._provider: LabProviderAdapter | None = None
         self._provider_running = False
+        self._lifecycle_lock = threading.RLock()
+        self._shutdown = False
         # ONE authoritative live-stream registry and ONE pairing manager per
         # process, shared by the gateway ctx factories, the provider adapter,
         # and the ceremony surface — in-process revocation closes the REAL
@@ -472,6 +492,17 @@ class ConnectorSupervisor:
             ctx_factory=self.build_diy_ctx_factory(),
         )
 
+    def build_managed_provider(self) -> ManagedProviderAdapter | None:
+        if self.config.managed is None:
+            return None
+        return ManagedProviderAdapter(
+            config=self.config.managed,
+            readiness=self.build_readiness(),
+            pairing=self.pairing_manager(),
+            identity=self._configured_identity(),
+            ctx_factory=self.build_diy_ctx_factory(),
+        )
+
     # ── readiness / diagnostics ───────────────────────────────────────────
 
     def readiness_report(self) -> ReadinessReport:
@@ -531,6 +562,17 @@ class ConnectorSupervisor:
                 "network_mode": self.config.diy.network.mode,
                 "pairing": pairing_status,
             }
+        elif self.config.managed is not None:
+            try:
+                adapter = self.build_managed_provider()
+            except PolicyLoadError:
+                adapter = None
+            provider = {
+                "type": "managed",
+                "listening": bool(adapter and adapter.listening),
+                "bound_port": adapter.bound_port if adapter else None,
+                "bind_address": "loopback" if adapter else None,
+            }
         return {
             "role": "happyranch-connector",
             "unit_name": self.config.unit_name,
@@ -582,6 +624,8 @@ class ConnectorSupervisor:
                 args += ("--lab-only",)
             if cfg.diy is not None:
                 args += ("--diy",)
+            if cfg.managed is not None:
+                args += ("--managed",)
         return ConnectorUnitSpec(
             unit_name=cfg.unit_name,
             exec_start=args,
@@ -624,6 +668,7 @@ class ConnectorSupervisor:
             poll_seconds=cfg.poll_seconds,
             lab=cfg.lab,
             diy=cfg.diy,
+            managed=cfg.managed,
             managed_dir_root=cfg.managed_dir_root,
         )
 
@@ -869,9 +914,14 @@ class ConnectorSupervisor:
         # could never be backed by a proven bound listener. Reject provider-less
         # run configurations at startup — fail closed, never READY. Non-run
         # construction (status/readiness/diagnose/install) stays valid.
-        if self.config.lab is None and self.config.diy is None and self._injected_provider is None:
+        if (
+            self.config.lab is None
+            and self.config.diy is None
+            and self.config.managed is None
+            and self._injected_provider is None
+        ):
             raise ConnectorConfigError(
-                "refusing to run: no lab/diy provider configured — the connector "
+                "refusing to run: no lab/diy/managed provider configured — the connector "
                 "has no listener to bring up, so READY would be false"
             )
         iterations = 0
@@ -879,20 +929,23 @@ class ConnectorSupervisor:
             iterations += 1
             if max_iterations is not None and iterations > max_iterations:
                 break
-            report = self.readiness_report()
-            if report.ready:
-                if not self._provider_running:
-                    if self._start_provider():
-                        self._notify_fn("READY=1\n")
-                    # else: no listener — STATUS already emitted; never READY
+            with self._lifecycle_lock:
+                if self._shutdown:
+                    break
+                report = self.readiness_report()
+                if report.ready:
+                    if not self._provider_running:
+                        if self._start_provider():
+                            self._notify_fn("READY=1\n")
+                        # else: no listener — STATUS already emitted; never READY
+                    else:
+                        self._notify_fn("WATCHDOG=1\n")
                 else:
-                    self._notify_fn("WATCHDOG=1\n")
-            else:
-                if self._provider_running:
-                    self._stop_provider()
-                    self._notify_fn("STOPPING=1\n")
-                else:
-                    self._notify_fn("STATUS=waiting for readiness\n")
+                    if self._provider_running:
+                        self._stop_provider()
+                        self._notify_fn("STOPPING=1\n")
+                    else:
+                        self._notify_fn("STATUS=waiting for readiness\n")
             self._reconcile_revocation()
             wait_fn(poll_seconds)
         return 0
@@ -916,7 +969,15 @@ class ConnectorSupervisor:
         clears the cached registry + pairing manager, rebuilds the provider
         and every captured ctx-factory reference, and restarts the listener
         at a readiness-gated fail-closed boundary."""
-        if self.config.diy is None and self.config.lab is None:
+        with self._lifecycle_lock:
+            self._reconcile_revocation_locked()
+
+    def _reconcile_revocation_locked(self) -> None:
+        if (
+            self.config.diy is None
+            and self.config.lab is None
+            and self.config.managed is None
+        ):
             return
         try:
             state = self.state_store.load()
@@ -928,12 +989,24 @@ class ConnectorSupervisor:
             return
         registry = self.registry
         sealed = registry.sealed
-        if registry.open_count() > 0:
+        open_count = registry.open_count()
+        needs_rotation = sealed or open_count > 0
+        was_running = self._provider_running
+        # Persisted revocation removes external admission first.  Even when a
+        # provider stop reports failure, the subsequent registry seal denies
+        # stale authorization; retaining the provider lets the next pass retry
+        # listener cleanup instead of losing the only cleanup handle.
+        provider_stopped = (
+            not needs_rotation or not was_running or self._stop_provider()
+        )
+        if open_count > 0:
             try:
                 registry.close_all()
             except StreamCloseError:
                 pass  # registry sealed; no live stream survives (fail closed)
             sealed = True
+        if not provider_stopped:
+            return
         self._reconciled_revocation_epoch = state.revocation_epoch
         # The authoritative registry is (now or already) sealed — one-shot:
         # rotate the whole runtime so the process is never permanently
@@ -941,9 +1014,9 @@ class ConnectorSupervisor:
         # no earlier seal) there is no rotation and therefore no listener
         # gap — the common CLI-revoke-while-idle path stays seamless.
         if sealed:
-            self._rotate_runtime()
+            self._rotate_runtime(restart_provider=was_running)
 
-    def _rotate_runtime(self) -> None:
+    def _rotate_runtime(self, *, restart_provider: bool | None = None) -> None:
         """Rotate the authoritative live-stream runtime at a fail-closed
         lifecycle boundary after a persisted revocation: stop the provider
         listener (no request/stream is admitted during the handoff), drop
@@ -953,7 +1026,7 @@ class ConnectorSupervisor:
         passes (else the run loop brings it up when ready). The old registry
         is sealed (denies) and the listener is down (refuses) until the new
         runtime is live — nothing is admitted against a half-rotated state."""
-        was_running = self._provider_running
+        was_running = self._provider_running if restart_provider is None else restart_provider
         if was_running:
             self._stop_provider()
         # The one-shot registry and the cached ceremony manager are captured
@@ -967,19 +1040,39 @@ class ConnectorSupervisor:
             self._start_provider()
 
     def shutdown(self) -> None:
-        """Deterministic stop: drop the listener before exiting."""
-        if self._provider_running:
-            self._stop_provider()
-        self._notify_fn("STOPPING=1\n")
+        """Deterministic one-shot cleanup: listener, flows, then runtime."""
+        with self._lifecycle_lock:
+            first_shutdown = not self._shutdown
+            self._shutdown = True
+            if first_shutdown and self._provider_running:
+                self._stop_provider()
+            if first_shutdown and self._registry is not None:
+                try:
+                    self._registry.close_all()
+                except StreamCloseError:
+                    pass  # sealed fail closed; shutdown still drops runtime residue
+                self._registry = None
+                self._pairing_manager = None
+            self._notify_fn("STOPPING=1\n")
 
     def _start_provider(self) -> bool:
         """Start the provider and return PROVEN success: True only when the
         listener is actually running (``_provider_running`` set). A bind/start
         failure returns False — the caller must never emit READY."""
+        with self._lifecycle_lock:
+            if self._shutdown:
+                return False
+            if self._provider_running:
+                return True
+            return self._start_provider_locked()
+
+    def _start_provider_locked(self) -> bool:
         if self._injected_provider is not None:
             provider = self._injected_provider
         elif self.config.diy is not None:
             provider = self.build_diy_provider()
+        elif self.config.managed is not None:
+            provider = self.build_managed_provider()
         else:
             provider = self.build_provider()
         if provider is None:
@@ -990,6 +1083,14 @@ class ConnectorSupervisor:
         try:
             provider.start()
         except (LabProviderError, DiyProviderError):
+            try:
+                provider.stop()
+            except Exception:  # noqa: BLE001 — best-effort failed-start cleanup
+                pass
+            self._provider = None
+            self._provider_running = False
+            self._registry = None
+            self._pairing_manager = None
             # fail-closed: readiness passed but the provider refused to bind
             # (e.g. bind conflict) — keep the loop re-evaluating; no listener.
             self._notify_fn("STATUS=provider failed to start; no listener\n")
@@ -998,12 +1099,19 @@ class ConnectorSupervisor:
         self._provider_running = True
         return True
 
-    def _stop_provider(self) -> None:
+    def _stop_provider(self) -> bool:
+        with self._lifecycle_lock:
+            return self._stop_provider_locked()
+
+    def _stop_provider_locked(self) -> bool:
         provider = self._provider
+        if provider is None:
+            self._provider_running = False
+            return True
+        try:
+            provider.stop()
+        except Exception:  # noqa: BLE001 — retain the cleanup handle for retry
+            return False
         self._provider_running = False
         self._provider = None  # drop: a stopped adapter cannot be restarted
-        if provider is not None:
-            try:
-                provider.stop()
-            except Exception:  # noqa: BLE001 — stop must not mask the denial
-                pass
+        return True
