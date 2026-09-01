@@ -279,6 +279,101 @@ _WORKSPACE_CACHE_ENV_DIRS: dict[str, str] = {
 }
 
 
+def _prepare_workspace_cache_dirs(workspace: Path) -> dict[str, str]:
+    """Create cache directories without following workspace-child symlinks.
+
+    Directory-fd-relative creation plus ``O_NOFOLLOW`` keeps validation and
+    creation anchored to the opened canonical workspace during this call.  A
+    final inode walk detects a component replaced while the tree was being
+    prepared.  Same-UID mutation after this function returns remains outside
+    this operational boundary; executor workspaces are not an OS isolation
+    boundary.
+    """
+    try:
+        workspace_root = workspace.resolve(strict=True)
+    except OSError as exc:
+        raise WorkspaceStorageError(
+            "cannot prepare workspace-owned cache storage: workspace is unavailable"
+        ) from exc
+    if not workspace_root.is_dir():
+        raise WorkspaceStorageError(
+            "cannot prepare workspace-owned cache storage: workspace is not a directory"
+        )
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        directory_flags |= os.O_CLOEXEC
+    opened_fds: list[int] = []
+    expected: dict[tuple[str, ...], tuple[int, int]] = {}
+
+    def open_component(parent_fd: int, name: str, parts: tuple[str, ...]) -> int:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise WorkspaceStorageError(
+                f"unsafe workspace-owned cache path component: {'/'.join(parts)}"
+            ) from exc
+        try:
+            child_fd = os.open(name, directory_flags, dir_fd=parent_fd)
+        except OSError as exc:
+            raise WorkspaceStorageError(
+                f"unsafe workspace-owned cache path component: {'/'.join(parts)}"
+            ) from exc
+        opened_fds.append(child_fd)
+        stat_result = os.fstat(child_fd)
+        expected[parts] = (stat_result.st_dev, stat_result.st_ino)
+        return child_fd
+
+    try:
+        try:
+            root_fd = os.open(workspace_root, directory_flags)
+        except OSError as exc:
+            raise WorkspaceStorageError(
+                "cannot prepare workspace-owned cache storage: workspace is unavailable"
+            ) from exc
+        opened_fds.append(root_fd)
+        happyranch_fd = open_component(root_fd, ".happyranch", (".happyranch",))
+        cache_fd = open_component(
+            happyranch_fd, "cache", (".happyranch", "cache")
+        )
+        for dirname in _WORKSPACE_CACHE_ENV_DIRS.values():
+            open_component(
+                cache_fd, dirname, (".happyranch", "cache", dirname)
+            )
+
+        # Re-open every path from the canonical root.  If a same-UID process
+        # swapped any component during preparation, its inode no longer
+        # matches the fd used for creation and the launch fails closed.
+        for parts, expected_identity in expected.items():
+            verification_fds: list[int] = []
+            parent_fd = root_fd
+            try:
+                for part in parts:
+                    parent_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+                    verification_fds.append(parent_fd)
+                observed = os.fstat(parent_fd)
+                if (observed.st_dev, observed.st_ino) != expected_identity:
+                    raise OSError("component identity changed")
+            except OSError as exc:
+                raise WorkspaceStorageError(
+                    f"unsafe workspace-owned cache path component: {'/'.join(parts)}"
+                ) from exc
+            finally:
+                for fd in reversed(verification_fds):
+                    os.close(fd)
+    finally:
+        for fd in reversed(opened_fds):
+            os.close(fd)
+
+    cache_root = workspace_root / ".happyranch" / "cache"
+    return {
+        variable: str(cache_root / dirname)
+        for variable, dirname in _WORKSPACE_CACHE_ENV_DIRS.items()
+    }
+
+
 def _callee_env(
     *, org_slug: str | None = None, workspace: Path | None = None,
 ) -> dict[str, str]:
@@ -303,16 +398,7 @@ def _callee_env(
     """
     env = _sanitize_child_env(dict(os.environ))
     if workspace is not None:
-        cache_root = workspace / ".happyranch" / "cache"
-        try:
-            for variable, dirname in _WORKSPACE_CACHE_ENV_DIRS.items():
-                target = cache_root / dirname
-                target.mkdir(parents=True, exist_ok=True)
-                env[variable] = str(target)
-        except OSError as exc:
-            raise WorkspaceStorageError(
-                f"cannot prepare workspace-owned cache storage at {cache_root}: {exc}"
-            ) from exc
+        env.update(_prepare_workspace_cache_dirs(workspace))
     if org_slug is not None:
         env["HAPPYRANCH_ORG_SLUG"] = org_slug
     return env

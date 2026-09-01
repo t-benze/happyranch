@@ -1205,8 +1205,16 @@ registration in ``runtime/daemon/app.py``) that, per agent workspace:
 The advisory's fail-open `statvfs` inode fields report used/free/total/percent
 and threshold state. They are explicitly non-authoritative: they never grant
 cleanup authority or cause this loop to inspect, move, quarantine, restore,
-unlink, or recursively delete `/tmp` content. Producer redirection and
-automatic temporary-file cleanup are not implemented.
+unlink, or recursively delete `/tmp` content. The first producer-redirection
+unit puts executor language/package caches below each agent workspace's
+``.happyranch/cache`` and requires disposable review/QA/scratch worktrees below
+``.happyranch/scratch/worktrees``. Those paths are workspace-owned and measurable,
+but ``.happyranch/cache`` is not cleanup-eligible and this unit
+grants no new cleanup authority. Cache setup refuses symlinked child components
+and fails closed without falling back to ``/tmp``; same-UID post-validation
+races remain because the workspace is not an OS isolation boundary. ``TMPDIR``
+and small callback payload contracts are unchanged, and automatic
+temporary-file cleanup is not implemented.
 
 1. **Measures** the OWNING AGENT's workspace with an explicit bounded,
    fail-open budget: one true wall-clock deadline shared across all

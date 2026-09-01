@@ -1465,11 +1465,13 @@ The first producer-redirection unit roots executor-owned language/package
 caches under
 ``workspaces/<agent>/.happyranch/cache/{xdg,uv,pip,npm,node-compile,go-build}``
 and requires disposable review/QA/scratch Git worktrees under
-``workspaces/<agent>/.happyranch/scratch/worktrees``. These paths are isolated
-per registered agent and already fall within existing workspace-cleanup
-measurement and authority. Failure to prepare an owned cache/worktree path is
-an explicit error and never falls back to shared ``/tmp``. This changes no
-cleanup eligibility: the daemon still never inspects or reclaims ``/tmp``.
+``workspaces/<agent>/.happyranch/scratch/worktrees``. These paths are
+workspace-owned and measurable, but ``.happyranch/cache`` is not cleanup-eligible
+and this unit grants no new cleanup authority. Cache-root
+setup refuses symlinked child components and fails closed without falling back
+to shared ``/tmp``; same-UID post-validation races remain because the
+workspace is not an OS isolation boundary. The daemon still never inspects or
+reclaims ``/tmp``.
 Small atomic callback payloads retain their explicit ``/tmp`` contracts, and
 ``TMPDIR`` is not globally redirected.
 

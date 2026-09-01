@@ -332,6 +332,84 @@ def test_callee_env_cache_setup_error_does_not_fall_back_to_tmp(tmp_path):
         _callee_env(workspace=workspace)
 
 
+@pytest.mark.parametrize(
+    "symlink_component",
+    [
+        ".happyranch",
+        ".happyranch/cache",
+        ".happyranch/cache/uv",
+    ],
+)
+def test_callee_env_rejects_symlinked_cache_path_components(
+    tmp_path, symlink_component,
+):
+    from runtime.orchestrator.executors import WorkspaceStorageError, _callee_env
+
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    outside = tmp_path / "outside"
+    workspace.mkdir(parents=True)
+    outside.mkdir()
+    component = workspace / symlink_component
+    component.parent.mkdir(parents=True, exist_ok=True)
+    component.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(
+        WorkspaceStorageError,
+        match=r"unsafe workspace-owned cache path component: ",
+    ):
+        _callee_env(workspace=workspace)
+
+    assert list(outside.iterdir()) == []
+
+
+def test_callee_env_uses_canonical_workspace_root(tmp_path):
+    from runtime.orchestrator.executors import _callee_env
+
+    canonical_workspace = tmp_path / "workspaces" / "dev_agent"
+    canonical_workspace.mkdir(parents=True)
+    workspace_alias = tmp_path / "workspace-alias"
+    workspace_alias.symlink_to(canonical_workspace, target_is_directory=True)
+
+    env = _callee_env(workspace=workspace_alias)
+
+    expected = canonical_workspace / ".happyranch" / "cache" / "uv"
+    assert env["UV_CACHE_DIR"] == str(expected)
+    assert expected.is_dir()
+
+
+def test_callee_env_rejects_component_replaced_during_preparation(
+    tmp_path, monkeypatch,
+):
+    from runtime.orchestrator import executors
+
+    workspace = tmp_path / "workspaces" / "dev_agent"
+    outside = tmp_path / "outside"
+    workspace.mkdir(parents=True)
+    outside.mkdir()
+    real_open = executors.os.open
+    cache_opens = 0
+
+    def racing_open(path, flags, *args, **kwargs):
+        nonlocal cache_opens
+        if path == "cache":
+            cache_opens += 1
+            if cache_opens == 2:
+                cache = workspace / ".happyranch" / "cache"
+                cache.rename(workspace / ".happyranch" / "cache-replaced")
+                cache.symlink_to(outside, target_is_directory=True)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(executors.os, "open", racing_open)
+
+    with pytest.raises(
+        executors.WorkspaceStorageError,
+        match=r"unsafe workspace-owned cache path component: ",
+    ):
+        executors._callee_env(workspace=workspace)
+
+    assert list(outside.iterdir()) == []
+
+
 @patch("runtime.orchestrator.executors.subprocess")
 def test_opencode_executor_returns_failure_on_nonzero_exit(mock_subprocess, tmp_path):
     workspace = tmp_path / "dev_agent"
