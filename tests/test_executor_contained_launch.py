@@ -185,27 +185,28 @@ def test_run_command_contained_timeout_kills_and_marks_timeout():
     running.process.wait()
 
 
-def test_build_launch_spec_matches_uncontained_launch_environment():
+def test_build_launch_spec_matches_uncontained_launch_environment(tmp_path):
     """build_command_launch_spec mirrors the uncontained _launch environment:
     argv/cwd/env/stdio/text; stdin is PIPE when the prompt travels via stdin
     and DEVNULL when it travels via argv."""
-    from pathlib import Path
-
     from runtime.platform.session_backend import LaunchSpec
 
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
     spec = build_command_launch_spec(
-        cmd=["echo", "hello"], workspace=Path("/ws"), input_text="prompt",
+        cmd=["echo", "hello"], workspace=workspace, input_text="prompt",
         org_slug="test",
     )
     assert spec.argv == ("echo", "hello")
-    assert spec.cwd == "/ws"
+    assert spec.cwd == str(workspace)
     assert spec.stdin == subprocess.PIPE
     assert spec.stdout == subprocess.PIPE
     assert spec.text is True
     assert spec.env.get("HAPPYRANCH_ORG_SLUG") == "test"
 
     spec_no_stdin = build_command_launch_spec(
-        cmd=["echo", "hi"], workspace=Path("/ws"), input_text=None,
+        cmd=["echo", "hi"], workspace=workspace, input_text=None,
     )
     assert spec_no_stdin.stdin == subprocess.DEVNULL
 

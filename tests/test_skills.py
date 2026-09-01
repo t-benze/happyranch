@@ -39,6 +39,13 @@ def test_make_worktree_references_claude_worktrees_path() -> None:
     assert "git worktree add" in body
 
 
+def test_make_worktree_keeps_temporary_review_worktrees_in_workspace() -> None:
+    body = (SKILLS_ROOT / "make-worktree" / "SKILL.md").read_text()
+    assert '$WORKSPACE_ROOT/.happyranch/scratch/worktrees' in body
+    assert "never create temporary review or QA worktrees under `/tmp`" in body
+    assert "git worktree remove" in body
+
+
 def test_start_task_skill_documents_memory_consult() -> None:
     body = (SKILLS_ROOT / "start-task" / "SKILL.md").read_text()
     assert "task_history.md" in body

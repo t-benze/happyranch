@@ -265,7 +265,23 @@ def _sanitize_child_env(env: dict[str, str]) -> dict[str, str]:
     return env
 
 
-def _callee_env(*, org_slug: str | None = None) -> dict[str, str]:
+class WorkspaceStorageError(RuntimeError):
+    """Workspace-owned executor storage could not be prepared."""
+
+
+_WORKSPACE_CACHE_ENV_DIRS: dict[str, str] = {
+    "XDG_CACHE_HOME": "xdg",
+    "UV_CACHE_DIR": "uv",
+    "PIP_CACHE_DIR": "pip",
+    "npm_config_cache": "npm",
+    "NODE_COMPILE_CACHE": "node-compile",
+    "GOCACHE": "go-build",
+}
+
+
+def _callee_env(
+    *, org_slug: str | None = None, workspace: Path | None = None,
+) -> dict[str, str]:
     """Return a copy of ``os.environ`` suitable for passing as ``env=``
     to ``subprocess.Popen`` so the child inherits the daemon's normalized
     PATH instead of the stripped Finder/launchd PATH.
@@ -275,11 +291,28 @@ def _callee_env(*, org_slug: str | None = None) -> dict[str, str]:
     UV_PROJECT_ENVIRONMENT, UV_PYTHON, UV_SYSTEM_PYTHON).  PATH and
     required HAPPYRANCH_* runtime variables are preserved.
 
+    When *workspace* is provided, known high-volume language/package caches
+    are rooted below ``<workspace>/.happyranch/cache``.  ``TMPDIR`` is left
+    untouched: small atomic callback payloads may continue to use the host
+    temporary directory.  Cache preparation fails closed rather than silently
+    falling back to shared temporary storage.
+
     When *org_slug* is provided, ``HAPPYRANCH_ORG_SLUG`` is set so executor
     subprocesses can resolve org context without literal ``{ORG_SLUG}``
     substitution in canonical skill bodies.
     """
     env = _sanitize_child_env(dict(os.environ))
+    if workspace is not None:
+        cache_root = workspace / ".happyranch" / "cache"
+        try:
+            for variable, dirname in _WORKSPACE_CACHE_ENV_DIRS.items():
+                target = cache_root / dirname
+                target.mkdir(parents=True, exist_ok=True)
+                env[variable] = str(target)
+        except OSError as exc:
+            raise WorkspaceStorageError(
+                f"cannot prepare workspace-owned cache storage at {cache_root}: {exc}"
+            ) from exc
     if org_slug is not None:
         env["HAPPYRANCH_ORG_SLUG"] = org_slug
     return env
@@ -882,7 +915,7 @@ def _run_command(
                 proc = isolation.launch_executor(
                     cmd,
                     cwd=workspace,
-                    env=_callee_env(org_slug=org_slug),
+                    env=_callee_env(org_slug=org_slug, workspace=workspace),
                     stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -1042,7 +1075,7 @@ def build_command_launch_spec(
     return LaunchSpec(
         argv=tuple(cmd),
         cwd=str(workspace),
-        env=_callee_env(org_slug=org_slug),
+        env=_callee_env(org_slug=org_slug, workspace=workspace),
         stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1955,7 +1988,7 @@ class CustomAdapterExecutor:
         return LaunchSpec(
             argv=(self._adapter_executable,),
             cwd=str(workspace),
-            env=_callee_env(org_slug=org_slug),
+            env=_callee_env(org_slug=org_slug, workspace=workspace),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -2113,7 +2146,7 @@ class CustomAdapterExecutor:
                 # explicitly absolute and hash-pinned/revalidated — the runtime
                 # never selects an agentic CLI from ambient PATH.  Pre-Popen
                 # wrapper/dependency validation is retained exactly.
-                launch_env = _callee_env()
+                launch_env = _callee_env(workspace=workspace)
 
                 try:
                     proc = subprocess.Popen(
