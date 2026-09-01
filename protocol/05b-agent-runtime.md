@@ -247,6 +247,23 @@ excluded) so the web classifies/dedups in-flight responders by purpose —
 never by the triggering row's kind, which would mislabel a
 system-row-anchored coalesced REPLY range as a special wake.
 
+**Repeated provider-failure breaker (THR-200 PR E).** The additive
+``thread_reply_breaker_episodes`` and receipt tables preserve one durable
+episode per ``(thread, agent, executor/model/config continuity)``; absence is
+CLOSED. Only the executor's closed structured post-launch categories
+(``provider_nonzero``, ``provider_timeout``, ``post_launch_contract``) may
+count after existing eviction/no-callback handling is exhausted. Text is never
+parsed. The third consecutive qualifying outcome opens once. OPEN never
+launches and leaves the delivery range durable. At exactly 15 minutes the
+daemon timer may transactionally acquire one unique PROBE lease and mint one
+wake, excluding held open-exchange deferrals. Probe success closes in the same
+transaction as delivery acknowledgement; failure reopens with a new cooldown.
+Restart preserves rows/leases and the timer deterministically resumes from
+SQLite. Gap/full-transcript recovery remains independent of breaker-row
+existence. Archive/removal closes episodes; a continuity switch closes the old
+episode and starts absent/CLOSED. Audits contain episode/category/range facts,
+never stderr or session credentials. There is no manual rearm action.
+
 **Custom CLI result-envelope (THR-107).** Custom CLIs may opt into token metering
 by emitting a versioned JSON envelope on stdout, delimited by the sentinel markers
 ``__HR_ENVELOPE_BEGIN__`` and ``__HR_ENVELOPE_END__``. The daemon parses the

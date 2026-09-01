@@ -152,6 +152,17 @@ when a candidate declares the established ``token_metering`` capability and
 supplies trustworthy canonical ``token_usage``; direct candidates are not
 rejected merely for omitting optional usage fields.
 
+**Thread reply breaker routing (THR-200 PR E).** Breaker admission is a
+database-backed launch fence, separate from resume eligibility. A canonical
+transcript gap always selects a fresh full prompt regardless of episode-row
+existence. OPEN preserves/coalesces the required frontier but launches nothing;
+the daemon timer alone may mint the unique 15-minute half-open probe, excluding
+participants held by an open exchange. Outcomes use closed structured
+categories plus actual-launch evidence; reason/stderr text is diagnostic only.
+Restart retains OPEN/PROBE, archive/removal closes, and executor/model/config
+continuity changes start fresh. The projection adds ``breaker_open`` and
+``probe`` without a manual CLI/API action.
+
 **Thread provider-session state (THR-200).** The per-``(thread, agent)``
 resumable provider session id + delta watermark on ``thread_participants``
 is an optimization, never a correctness dependency, for the executors whose

@@ -35,7 +35,8 @@ export function ReplyDeliveryStrip({
   const running = entries.filter((entry) => entry.state === 'running');
   const queued = entries.filter((entry) => entry.state === 'queued');
   const held = entries.filter((entry) => entry.state === 'held');
-  const diagnostics = entries.filter((entry) => entry.state === 'retry_required');
+  const diagnostics = entries.filter((entry) =>
+    ['retry_required', 'breaker_open', 'probe'].includes(entry.state));
   return (
     <div className="space-y-2">
       {entries.length > 1 && (
@@ -119,6 +120,10 @@ export function replyDeliveryCaption(
         : '';
       return `retry required · ${range}${reason}`;
     }
+    case 'breaker_open':
+      return `Reply paused after repeated provider failures · ${range}. Recovery will be tested after ${e.recovery_after ?? 'the cooldown'}.`;
+    case 'probe':
+      return `Testing provider recovery · ${range}.`;
   }
 }
 
@@ -132,6 +137,10 @@ function dotClass(state: ReplyDeliveryEntry['state']): string {
       return 'bg-feedback-success';
     case 'retry_required':
       return 'bg-attention';
+    case 'breaker_open':
+      return 'bg-attention';
+    case 'probe':
+      return 'bg-info';
   }
 }
 
@@ -145,5 +154,9 @@ function stateClass(state: ReplyDeliveryEntry['state']): string {
       return 'text-text-secondary';
     case 'retry_required':
       return 'text-attention-text';
+    case 'breaker_open':
+      return 'text-attention-text';
+    case 'probe':
+      return 'text-info';
   }
 }

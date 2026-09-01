@@ -1509,15 +1509,16 @@ class TestExecutorResultShape:
     """Static shape guards on ExecutorResult dataclass."""
 
     def test_executorresult_top_level_fields_unchanged(self):
-        """ExecutorResult has exactly the 11 fields shipping today.
+        """ExecutorResult has exactly the 13 fields shipping today.
         This guards against accidental field additions/removals."""
         result = ExecutorResult(success=True, duration_seconds=1, session_id="s")
-        # Fields as of THR-116 (TASK-3435) — terminal_error added for
-        # dream-run failure observability.
+        # Fields as of THR-200 PR E (TASK-6388) — failure_category and
+        # provider_launched carry the closed structured breaker outcome seam.
         expected_fields = {
             "success", "duration_seconds", "session_id", "returncode",
             "stdout_tail", "stderr_tail", "error", "token_usage",
             "agent_session_id", "rate_limited", "terminal_error",
+            "failure_category", "provider_launched",
         }
         # Verify every field in ExecutorResult.__dataclass_fields__
         from dataclasses import fields as dc_fields

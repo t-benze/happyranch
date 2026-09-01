@@ -105,6 +105,21 @@ describe('ReplyDeliveryStrip (GH-688 Phase 1 Slice C)', () => {
     expect(screen.queryByText(/timeout|retry|required|replying/i)).not.toBeInTheDocument();
   });
 
+  it('renders exact breaker and timer-driven probe copy without typing claims', () => {
+    render(<ReplyDeliveryStrip entries={[
+      entry({
+        agent_name: 'dev_agent', state: 'breaker_open', from_seq: 3,
+        through_seq: 8, recovery_after: '2026-05-13T18:00:00Z',
+      }),
+      entry({ agent_name: 'qa_engineer', state: 'probe', from_seq: 9, through_seq: 12 }),
+    ]} nowMs={nowMs} />);
+    expect(screen.getByText(
+      'Reply paused after repeated provider failures · messages 3–8. Recovery will be tested after 2026-05-13T18:00:00Z.',
+    )).toBeInTheDocument();
+    expect(screen.getByText('Testing provider recovery · messages 9–12.')).toBeInTheDocument();
+    expect(screen.queryByText(/replying|typing|recovered/i)).not.toBeInTheDocument();
+  });
+
   it('renders multiple pairs without key collisions', () => {
     render(
       <ReplyDeliveryStrip

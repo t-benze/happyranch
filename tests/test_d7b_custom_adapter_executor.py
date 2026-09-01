@@ -388,6 +388,8 @@ class TestCustomAdapterExecutorLaunch:
         result = executor.run(workspace=tmp_path, prompt="test")
         assert not result.success
         assert "not valid JSON" in (result.error or "")
+        assert result.failure_category == "post_launch_contract"
+        assert result.provider_launched is True
 
     def test_adapter_output_not_object(self, tmp_path):
         """Adapter output that is JSON but not a dict → rejected."""
@@ -445,6 +447,8 @@ class TestCustomAdapterExecutorLaunch:
         assert not result.success
         assert "contract version" in (result.error or "").lower()
         assert "2" in (result.error or "")
+        assert result.failure_category == "post_launch_contract"
+        assert result.provider_launched is True
 
     def test_adapter_identity_mismatch_rejected(self, tmp_path):
         """Adapter output with wrong adapter identity → rejected."""

@@ -626,6 +626,21 @@ class ThreadReplyDeliveryState(BaseModel):
     updated_at: str = ""
 
 
+class ThreadReplyBreakerEpisode(BaseModel):
+    """Durable provider-failure breaker for one thread/agent/executor identity."""
+    thread_id: str
+    agent_name: str
+    executor_key: str
+    episode_id: str
+    state: Literal["closed", "open", "probe"]
+    consecutive_failures: int = Field(ge=0)
+    opened_at: str | None = None
+    cooldown_until: str | None = None
+    probe_lease_id: str | None = None
+    last_failure_category: str | None = None
+    updated_at: str
+
+
 class ThreadReplyRecoveryEntry(BaseModel):
     """One runnable token returned by the durable reply-delivery recovery pass.
 
@@ -635,7 +650,10 @@ class ThreadReplyRecoveryEntry(BaseModel):
     thread_id: str
     agent_name: str
     invocation_token: str
-    kind: Literal["retained_queued", "replacement_queued", "deferred_catchup"]
+    kind: Literal[
+        "retained_queued", "replacement_queued", "deferred_catchup",
+        "breaker_probe",
+    ]
 
 
 class ThreadReplyArrival(BaseModel):
@@ -736,13 +754,16 @@ class ReplyDeliveryProjection(BaseModel):
     range covers (computed in the store, not inferred by numeric subtraction).
     """
     agent_name: str
-    state: Literal["queued", "running", "held", "retry_required"]
+    state: Literal[
+        "queued", "running", "held", "retry_required", "breaker_open", "probe"
+    ]
     from_seq: int
     through_seq: int
     coalesced_message_count: int
     started_at: str | None
     updated_at: str | None
     last_terminal_reason: str | None
+    recovery_after: str | None = None
 
 
 class JobStatus(StrEnum):

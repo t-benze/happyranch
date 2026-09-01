@@ -271,7 +271,9 @@ export type ReplyDeliveryState =
   | 'queued'
   | 'running'
   | 'held'
-  | 'retry_required';
+  | 'retry_required'
+  | 'breaker_open'
+  | 'probe';
 
 /** Pair-level reply-delivery projection (GH-688 Phase 1).
  *
@@ -296,6 +298,7 @@ export interface ReplyDeliveryEntry {
   started_at: string | null;
   updated_at: string | null;
   last_terminal_reason: string | null;
+  recovery_after?: string | null;
 }
 
 export type ResponderStatus =

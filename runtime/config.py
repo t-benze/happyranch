@@ -97,6 +97,12 @@ class Settings(BaseSettings):
         default_factory=lambda: [5, 15, 45]
     )
 
+    # THR-200 PR E thread-provider breaker. These are validated operational
+    # policy values rather than schema constants: persistence stores episode
+    # state while the daemon owns the rollout-wide policy.
+    thread_reply_breaker_failure_threshold: int = Field(default=3, gt=0)
+    thread_reply_breaker_cooldown_seconds: int = Field(default=900, gt=0)
+
     @classmethod
     def settings_customise_sources(
         cls,
