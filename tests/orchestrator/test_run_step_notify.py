@@ -29,7 +29,16 @@ def test_max_steps_path_calls_notify_escalated():
     fake._db.get_task.return_value = task
     run_step_mod.run_step_impl(fake, "TASK-1")
 
-    fake._audit.log_escalation.assert_called_once()
+    fake._db.try_escalate_runtime.assert_called_once_with(
+        "TASK-1",
+        reason="max steps (1) exceeded",
+        agent="orchestrator",
+        reason_code="runtime_orchestration_step_budget_exhausted",
+        expected_status=TaskStatus.PENDING,
+        expected_block_kind=None,
+        match_expected_state=True,
+    )
+    fake._audit.log_escalation.assert_not_called()
     assert seen, "notify_escalated was not called"
     assert seen[0]["task_id"] == "TASK-1"
     assert seen[0]["agent"] == "orchestrator"

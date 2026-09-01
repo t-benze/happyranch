@@ -3302,6 +3302,84 @@ class Database:
         return cursor.rowcount == 1
 
     @_synchronized
+    def try_escalate_runtime(
+        self,
+        task_id: str,
+        *,
+        reason: str,
+        agent: str,
+        reason_code: str,
+        expected_status: TaskStatus | None = None,
+        expected_block_kind: BlockKind | None = None,
+        match_expected_state: bool = False,
+        clear_active_fanout: bool = False,
+    ) -> bool:
+        """Atomically commit a runtime-raised escalation and its audit pair.
+
+        Runtime mechanical fences are not authority decisions, so they never
+        invoke the evaluator or create candidate/evaluation rows. Track A
+        nevertheless requires one explicit ``authority_hook:not_applicable``
+        denominator row linked to the committed ``escalation`` row.
+
+        The task transition and both audit rows share one transaction. A lost
+        CAS changes nothing; any audit append failure rolls the transition and
+        both rows back. Re-entry after a committed escalation loses because an
+        already-escalated task is excluded from the update predicate.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        set_active_fanout = ", active_fanout = NULL" if clear_active_fanout else ""
+        if match_expected_state:
+            if expected_status is None:
+                raise ValueError("expected_status is required for an expected-state CAS")
+            if expected_block_kind is None:
+                state_predicate = "status = ? AND block_kind IS NULL"
+                state_args: tuple = (expected_status.value,)
+            else:
+                state_predicate = "status = ? AND block_kind = ?"
+                state_args = (expected_status.value, expected_block_kind.value)
+        else:
+            state_predicate = (
+                "cancelled_at IS NULL AND status NOT IN "
+                "('completed', 'failed', 'superseded', 'cancelled', 'escalated')"
+            )
+            state_args = ()
+
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            cursor = self._conn.execute(
+                f"""UPDATE tasks
+                    SET status = ?, block_kind = NULL, note = ?, updated_at = ?
+                        {set_active_fanout}
+                    WHERE id = ? AND {state_predicate}""",
+                (TaskStatus.ESCALATED.value, reason, now, task_id, *state_args),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                return False
+            escalation_audit_id = self.insert_audit_log_uncommitted(
+                task_id=task_id,
+                agent=agent,
+                action="escalation",
+                payload={"reason": reason},
+            )
+            self.insert_audit_log_uncommitted(
+                task_id=task_id,
+                agent=agent,
+                action="authority_hook",
+                payload={
+                    "outcome": "not_applicable",
+                    "reason_code": reason_code,
+                    "reason": "runtime-raised escalation is not an authority decision",
+                    "causal_escalation_audit_id": escalation_audit_id,
+                },
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
     def try_escalate_over_budget(
         self,
         task_id: str,
