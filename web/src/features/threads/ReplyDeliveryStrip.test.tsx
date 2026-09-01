@@ -15,6 +15,7 @@ function entry(over: Partial<ReplyDeliveryEntry>): ReplyDeliveryEntry {
     started_at: null,
     updated_at: '2026-05-13T17:45:00Z',
     last_terminal_reason: null,
+    current_failure_category: null,
     ...over,
   };
 }

@@ -16,9 +16,9 @@ import { formatElapsed } from '@/lib/elapsed';
  *  - ``held``           — healthy neutral waiting under an authoritative
  *                         open exchange + matching held participant row;
  *                         never rendered as typing or a fault.
- *  - ``retry_required`` — unacknowledged range with no active wake; a
- *                         diagnostic (last terminal reason where the store
- *                         recorded one), never rendered as typing.
+ *  - ``retry_required`` — unacknowledged range with no active wake; only its
+ *                         bounded current failure category may be captioned,
+ *                         never raw terminal detail or typing.
  *
  * A fully-settled pair is omitted from the projection, so an empty list
  * renders nothing (callers hide the whole section).

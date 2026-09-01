@@ -2137,8 +2137,12 @@ async def test_resume_forbidden_when_watermark_at_or_above_running_from(tmp_path
 @pytest.mark.asyncio
 async def test_runner_failure_settles_retry_required_no_hot_loop(tmp_path, monkeypatch):
     """Provider failure through the runner settles the claimed range via the
-    store: no acknowledgement advance, retry_required projection, no immediate
-    retry mint (next conversational arrival covers the retained range)."""
+    store and the real downstream projection exposes only its bounded category.
+
+    A later arrival and claim clear that category while the raw terminal detail
+    remains available only as historical detail. Successful settlement then
+    removes the live obligation entirely.
+    """
     db = Database(tmp_path / "happyranch.db")
     db.insert_thread(ThreadRecord(id="THR-001", subject="x"))
     db.add_thread_participant("THR-001", "alice", added_by="founder")
@@ -2154,12 +2158,22 @@ async def test_runner_failure_settles_retry_required_no_hot_loop(tmp_path, monke
 
     import runtime.daemon.thread_runner as runner_mod
 
+    raw = (
+        "Running as unit: happyranch-session-TASK-6331-496f9d86.scope; "
+        "invocation ID: 62fd4173e2434aabaf1d1caddcda070e; stderr tail: "
+        + "provider startup failed before callback; " * 12
+    )
+    assert len(raw) >= 448
+
     class _FailExec:
         def __init__(self, **kwargs):
             pass
 
         def run(self, **kwargs):
-            r = FakeExecutorResult(success=False, error="Command exited with code 1: boom")
+            r = FakeExecutorResult(
+                success=False,
+                error=f"Command exited with code 1: {raw}",
+            )
             r.returncode = 1
             return r
 
@@ -2187,6 +2201,11 @@ async def test_runner_failure_settles_retry_required_no_hot_loop(tmp_path, monke
     proj = db.list_reply_delivery_projections("THR-001")
     assert len(proj) == 1 and proj[0].state == "retry_required"
     assert proj[0].started_at is None
+    assert proj[0].current_failure_category == "infra_fail"
+    assert raw not in (proj[0].current_failure_category or "")
+    assert "happyranch-session-TASK-6331-496f9d86.scope" in (
+        proj[0].last_terminal_reason or ""
+    )
     # No pending REPLY was minted by the failure (no hot loop).
     from runtime.models import ThreadInvocation
     pending = [
@@ -2194,6 +2213,31 @@ async def test_runner_failure_settles_retry_required_no_hot_loop(tmp_path, monke
         if i.status is ThreadInvocationStatus.PENDING
     ]
     assert pending == []
+
+    _, arrivals = db.record_conversational_arrival(
+        thread_id="THR-001",
+        speaker="founder",
+        kind=ThreadMessageKind.MESSAGE,
+        body_markdown="m4",
+        recipients=["alice"],
+    )
+    replacement = next(a.invocation_token for a in arrivals if a.agent_name == "alice")
+    assert replacement is not None
+    queued = db.list_reply_delivery_projections("THR-001")[0]
+    assert queued.state == "queued"
+    assert queued.current_failure_category is None
+    assert queued.last_terminal_reason is None
+
+    claim = db.claim_conversational_reply(replacement)
+    assert claim is not None
+    running = db.list_reply_delivery_projections("THR-001")[0]
+    assert running.state == "running"
+    assert running.current_failure_category is None
+    assert running.last_terminal_reason is None
+
+    settled = db.settle_conversational_reply(token=replacement, outcome="reply")
+    assert settled is not None
+    assert db.list_reply_delivery_projections("THR-001") == []
 
 
 @pytest.mark.asyncio

@@ -3641,36 +3641,6 @@ def test_reply_delivery_projects_current_bounded_failure_category(
     assert projected["current_failure_category"] == category
 
 
-def test_production_rc1_reason_is_infra_fail_with_raw_detail_only_on_detail_wire(
-    tmp_home, app, org_state, auth_headers,
-):
-    raw = (
-        "no_callback: rc=1; Running as unit: happyranch-session-TASK-6331-496f9d86.scope; "
-        "invocation ID: 62fd4173e2434aabaf1d1caddcda070e; stderr tail: "
-        + "provider startup failed before callback; " * 12
-    )
-    assert len(raw) >= 448
-    client = TestClient(app)
-    agent = "a_realistically_long_agent_name_for_the_244px_rail"
-    _seed_agent(org_state, agent)
-    result = client.post(
-        "/api/v1/orgs/alpha/threads",
-        json={"subject": "s", "recipients": [agent], "body_markdown": "m1"},
-        headers=auth_headers,
-    ).json()
-    tid = result["thread_id"]
-    org_state.db._conn.execute(
-        "UPDATE thread_reply_delivery_state SET queued_invocation_token = NULL, "
-        "last_terminal_reason = ? WHERE thread_id = ?", (raw, tid),
-    )
-    org_state.db._conn.commit()
-    projection = client.get(
-        f"/api/v1/orgs/alpha/threads/{tid}", headers=auth_headers,
-    ).json()["reply_delivery"][0]
-    assert projection["current_failure_category"] == "infra_fail"
-    assert projection["last_terminal_reason"] == raw
-
-
 def test_reply_route_settles_claimed_range_and_schedules_followon(
     tmp_home, app, org_state, auth_headers,
 ):

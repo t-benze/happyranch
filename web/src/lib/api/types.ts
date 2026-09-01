@@ -296,7 +296,7 @@ export interface ReplyDeliveryEntry {
   started_at: string | null;
   updated_at: string | null;
   last_terminal_reason: string | null;
-  current_failure_category?: 'no_callback' | 'no_callback_after_reprompt' | 'infra_fail' | null;
+  current_failure_category: 'no_callback' | 'no_callback_after_reprompt' | 'infra_fail' | null;
 }
 
 export type ResponderStatus =
