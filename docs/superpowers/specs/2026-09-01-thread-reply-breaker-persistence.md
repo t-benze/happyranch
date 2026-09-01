@@ -2,7 +2,7 @@
 
 > Status: current
 > Current Source: `runtime/infrastructure/database.py`
-> Notes: THR-200 PR A only; runtime behavior is not activated by this unit.
+> Notes: PR A defines persistence/compatibility; serial PR B activates runtime behavior without API/web expansion.
 
 THR-200 PR A adds two SQLite tables and three indexes. One episode row is keyed
 by `(thread_id, agent_name, executor_key)` and has a unique immutable
@@ -25,12 +25,13 @@ This is a single-version rollout boundary: stop daemon admission before moving
 between application versions. PR A does not authorize mixed-version writes or
 claim that an older process understands new episode rows.
 
-Runtime behavior belongs wholly to serial PR B after PR A passes review, QA,
-authoritative CI, and guarded merge. In particular, PR B must implement, without
-partial PR-A behavior, the founder's requirement: a `(thread, agent)` with
+Serial PR B consumes this substrate. A `(thread, agent)` with
 `required_through_seq > acknowledged_through_seq`, both ownership slots NULL,
-and no episode row must become cooldown-probe eligible after its cooldown, and
+and no episode row becomes cooldown-probe eligible after 15 minutes, and
 must be excluded while it holds a `held` deferral in an `open` exchange. The
-approved threshold 3, 15-minute timer, failure taxonomy, eviction separation,
-and visible copy/default decisions remain PR-B constraints and are not activated
-by this substrate.
+approved threshold 3, structured final-provider-failure taxonomy, eviction
+separation and count-once semantics are active. OPEN coalesces with no launch;
+one durable HALF_OPEN probe succeeds closed/reset or fails back to a rearmed
+15-minute cooldown. Breaker recovery never releases a held exchange. Receipts,
+leases, settlement and redacted audits are idempotent across restart,
+concurrency and stale callbacks. PR B adds no API/web projection or manual action.

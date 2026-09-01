@@ -59,6 +59,8 @@ Detailed contracts: `protocol/05b-agent-runtime.md` § "Canonical skill store + 
 - Agents should perform side effects through the `happyranch` CLI. Baseline allow rule for every agent is `happyranch`.
 - Agent-side completion and callback payloads must be single-line `happyranch ... --from-file <path>` invocations; shell separators and multiline continuations break permission matching. **The --from-file path MUST be absolute** (e.g. `/tmp/completion.json`), never relative — a relative path resolves against the agent's cwd and can litter stray files under the runtime orgs root.
 
+**Thread reply provider breaker (THR-200 PR B).** One durable continuity per `(thread, agent, executor/model/policy)` opens after exactly three consecutive structured final provider-execution failures. Only a process proven launched and ending as provider nonzero, provider timeout, or post-launch contract failure qualifies; pre-launch/admission/host refusal, interruption/cancellation, canonical transcript gap fallback, exact eviction itself, successful eviction fallback, and a successful no-callback nudge do not. A failed eviction fallback counts exactly once. OPEN retains/coalesces the delivery range and launches nothing. After 15 minutes the daemon scheduler atomically mints one HALF_OPEN probe; a recovered ownerless gap with no episode follows the same cooldown-probe path, never ordinary CLOSED admission. Held deferrals in an OPEN exchange remain held and excluded even when the breaker is otherwise recoverable. Probe success settles and closes; probe failure rearms 15 minutes. Episode/receipt/audit writes are idempotent and redacted; stale callbacks cannot close newer continuity. No API/OpenAPI/web projection or manual action is added by PR B.
+
 ## Commands
 
 ```bash

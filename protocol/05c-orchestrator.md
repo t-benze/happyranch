@@ -152,15 +152,19 @@ when a candidate declares the established ``token_metering`` capability and
 supplies trustworthy canonical ``token_usage``; direct candidates are not
 rejected merely for omitting optional usage fields.
 
-**Thread reply breaker persistence boundary (THR-200 PR A).** The runtime store
+**Thread reply breaker lifecycle (THR-200 PR A + PR B).** The runtime store
 contains an additive episode/receipt/index substrate, but PR A adds no admission
 fence, scheduler, transition execution, config activation, API projection, or
-visible behavior. The `Database` initializer is the only shipping migration
+visible behavior in PR A. The `Database` initializer is the only shipping migration
 caller, and pinned historical stores plus the actual `e197b20` application
 reader establish the single-version compatibility boundary. The founder-approved
-runtime lifecycle—including no-episode cooldown eligibility and held open-
-exchange exclusion—must not be inferred from these dormant rows; it is reserved
-for serial PR B after PR A independently clears every gate.
+runtime lifecycle in PR B counts only structured final post-launch outcomes,
+opens at exactly three, coalesces without launching, and uses a daemon-owned
+15-minute scheduler for one durable HALF_OPEN probe. Recovered ownerless gaps
+without an episode enter only through cooldown probing. Held OPEN-exchange
+deferrals are excluded and never released by breaker recovery. Durable receipts
+and lease CAS preserve OPEN/PROBE across restart and reject duplicate/stale
+callbacks. No manual action or wire/web projection is added.
 
 **Thread provider-session state (THR-200).** The per-``(thread, agent)``
 resumable provider session id + delta watermark on ``thread_participants``
