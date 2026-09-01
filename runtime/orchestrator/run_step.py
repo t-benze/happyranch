@@ -156,17 +156,19 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         # the same stale at-cap row would both escalate and double-post the
         # thread `task_escalated` message + TASK_FOLLOWUP. If False: another
         # worker escalated first (or /cancel landed) — drop silently.
-        if not db.try_escalate_over_budget(
+        if not db.try_escalate_runtime(
             task_id,
+            reason=reason,
+            agent="orchestrator",
+            reason_code="runtime_orchestration_step_budget_exhausted",
             expected_status=task.status,
             expected_block_kind=task.block_kind,
-            reason=reason,
+            match_expected_state=True,
         ):
             logger.debug(
                 "run_step %s: lost over-budget escalate race, dropping", task_id,
             )
             return
-        orch._audit.log_escalation(task_id, "orchestrator", reason)
         orch.notify_escalated(
             task_id=task_id, agent="orchestrator", reason=reason,
         )
@@ -426,10 +428,14 @@ def _escalate_continued_turn_violation(
         f"produced {attempted!r} outside the single-use permitted action; "
         f"escalated to founder"
     )
-    if not db.try_escalate(task_id, reason=reason):
+    if not db.try_escalate_runtime(
+        task_id,
+        reason=reason,
+        agent=agent,
+        reason_code="runtime_authority_envelope_violation",
+    ):
         # Cancellation/terminal won the race — the founder's state wins.
         return
-    orch._audit.log_escalation(task_id, agent, reason)
     orch.notify_escalated(
         task_id=task_id, agent=agent, reason=reason, last_summary=last_summary,
     )
@@ -965,13 +971,17 @@ def _consume_completion_report(
                     # Root: park in escalated for the founder (CAS-free —
                     # we are past the atomic claim in section 3, so there is
                     # no duplicate-delivery race).
-                    if not db.try_escalate(task_id, reason=reason):
+                    if not db.try_escalate_runtime(
+                        task_id,
+                        reason=reason,
+                        agent="orchestrator",
+                        reason_code="runtime_revise_budget_exhausted",
+                    ):
                         logger.debug(
                             "run_step %s: cancelled between re-check and "
                             "revise-budget escalate, dropping", task_id,
                         )
                         return
-                    orch._audit.log_escalation(task_id, "orchestrator", reason)
                     orch.notify_escalated(
                         task_id=task_id, agent="orchestrator", reason=reason,
                     )
@@ -2698,11 +2708,14 @@ def _enqueue_parent_if_waiting(
             for leaf in unresolved_leaves:
                 if _is_slice_retry_exhausted(orch, leaf, parent):
                     reason = _format_slice_retry_exhausted_reason(orch, leaf)
-                    if parent.active_fanout is not None:
-                        orch._db.update_task_active_fanout(parent.id, None)
                     if is_root(parent):
-                        if orch._db.try_escalate(parent.id, reason=reason):
-                            orch._audit.log_escalation(parent.id, "orchestrator", reason)
+                        if orch._db.try_escalate_runtime(
+                            parent.id,
+                            reason=reason,
+                            agent="orchestrator",
+                            reason_code="runtime_retry_ceiling",
+                            clear_active_fanout=parent.active_fanout is not None,
+                        ):
                             _maybe_post_thread_escalation(
                                 orch, parent.id, reason=reason,
                             )

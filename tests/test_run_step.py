@@ -92,6 +92,15 @@ def test_run_step_over_budget_parks_escalated(runtime, db):
     ]
     assert len(escalations) == 1
     assert "max steps" in escalations[0]["payload"]["reason"]
+    outcomes = [
+        a for a in db.get_audit_logs("T-1") if a["action"] == "authority_hook"
+    ]
+    assert len(outcomes) == 1
+    assert outcomes[0]["payload"]["outcome"] == "not_applicable"
+    assert outcomes[0]["payload"]["reason_code"] == (
+        "runtime_orchestration_step_budget_exhausted"
+    )
+    assert outcomes[0]["payload"]["causal_escalation_audit_id"] == escalations[0]["id"]
 
 
 def test_run_step_transitions_pending_to_in_progress_and_increments_count(
@@ -2779,6 +2788,100 @@ def test_per_slice_retry_ceiling_escalates_on_second_failure(runtime, db, monkey
 
     # No queue entries — escalation is not waking the parent.
     assert orch._queue.qsize() == 0
+
+    # THR-181 Track A denominator: this runtime-raised escalation is not an
+    # authority decision, but it still needs one explicit auditable outcome.
+    rows = db.get_audit_logs("T-RETRY2")
+    escalations = [row for row in rows if row["action"] == "escalation"]
+    outcomes = [row for row in rows if row["action"] == "authority_hook"]
+    assert len(escalations) == 1
+    assert len(outcomes) == 1
+    assert outcomes[0]["payload"] == {
+        "outcome": "not_applicable",
+        "reason_code": "runtime_retry_ceiling",
+        "reason": "runtime-raised escalation is not an authority decision",
+        "causal_escalation_audit_id": escalations[0]["id"],
+    }
+
+    # Startup/recovery re-entry sees the already-escalated parent and loses
+    # the commit CAS: neither half of the durable pair is duplicated.
+    _enqueue_parent_if_waiting(orch, "T-RETRY2-C1-R")
+    replay_rows = db.get_audit_logs("T-RETRY2")
+    assert len([row for row in replay_rows if row["action"] == "escalation"]) == 1
+    assert len([row for row in replay_rows if row["action"] == "authority_hook"]) == 1
+
+
+def test_runtime_retry_ceiling_audit_failure_rolls_back_whole_commit(
+    runtime, db, monkeypatch,
+):
+    """The production retry seam cannot leave an escalation or orphan audit."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    db.insert_task(TaskRecord(
+        id="T-RETRY-ROLLBACK", brief="fan-out parent",
+        assigned_agent="engineering_head", task_type="task",
+    ))
+    db.update_task(
+        "T-RETRY-ROLLBACK", status=TaskStatus.IN_PROGRESS,
+        block_kind=BlockKind.DELEGATED,
+    )
+    db.update_task_active_fanout("T-RETRY-ROLLBACK", '{"children": []}')
+    db.insert_task(TaskRecord(
+        id="T-RETRY-ROLLBACK-A", brief="first failure", assigned_agent="dev_agent",
+        parent_task_id="T-RETRY-ROLLBACK", task_type="subtask",
+    ))
+    db.update_task("T-RETRY-ROLLBACK-A", status=TaskStatus.FAILED)
+    db.insert_task(TaskRecord(
+        id="T-RETRY-ROLLBACK-B", brief="retry failure", assigned_agent="dev_agent",
+        parent_task_id="T-RETRY-ROLLBACK", revisit_of_task_id="T-RETRY-ROLLBACK-A",
+        task_type="subtask",
+    ))
+    db.update_task("T-RETRY-ROLLBACK-B", status=TaskStatus.FAILED)
+
+    real_insert = db.insert_audit_log_uncommitted
+    def fail_denominator(*args, **kwargs):
+        if kwargs.get("action") == "authority_hook":
+            raise RuntimeError("injected denominator append failure")
+        return real_insert(*args, **kwargs)
+    monkeypatch.setattr(db, "insert_audit_log_uncommitted", fail_denominator)
+
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    orch._queue = _SlugQueue()
+    with pytest.raises(RuntimeError, match="denominator append failure"):
+        _enqueue_parent_if_waiting(orch, "T-RETRY-ROLLBACK-B")
+
+    parent = db.get_task("T-RETRY-ROLLBACK")
+    assert parent.status == TaskStatus.IN_PROGRESS
+    assert parent.block_kind == BlockKind.DELEGATED
+    assert parent.active_fanout == '{"children": []}'
+    assert not [
+        row for row in db.get_audit_logs("T-RETRY-ROLLBACK")
+        if row["action"] in {"escalation", "authority_hook"}
+    ]
+
+
+def test_runtime_escalation_write_failure_has_no_audit_residue(db):
+    """A task-state write failure occurs before either audit append commits."""
+    import sqlite3
+
+    db.insert_task(TaskRecord(id="T-RUNTIME-WRITE-FAIL", brief="root"))
+    db.execute("""
+        CREATE TRIGGER reject_runtime_escalation
+        BEFORE UPDATE OF status ON tasks
+        WHEN NEW.id = 'T-RUNTIME-WRITE-FAIL' AND NEW.status = 'escalated'
+        BEGIN SELECT RAISE(ABORT, 'injected escalation write failure'); END
+    """)
+    with pytest.raises(sqlite3.IntegrityError, match="escalation write failure"):
+        db.try_escalate_runtime(
+            "T-RUNTIME-WRITE-FAIL", reason="runtime failure",
+            agent="orchestrator", reason_code="runtime_retry_ceiling",
+        )
+    assert db.get_task("T-RUNTIME-WRITE-FAIL").status == TaskStatus.PENDING
+    assert not db.get_audit_logs("T-RUNTIME-WRITE-FAIL")
 
 
 def test_regression_all_completed_clean_fanout_still_happy_path(runtime, db, monkeypatch):
