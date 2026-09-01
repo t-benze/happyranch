@@ -35,8 +35,9 @@ one durable HALF_OPEN probe succeeds closed/reset or fails back to a rearmed
 15-minute cooldown. Breaker recovery never releases a held exchange. Receipts,
 leases, settlement and redacted audits are idempotent across restart,
 concurrency and stale callbacks. Every scheduler tick republishes a committed
-pending probe token through an atomically deduplicating process queue, so an
-exception or cancellation at the former post-commit publication boundary heals
-without restart and the durable claim still launches exactly once. Environment
+pending probe token through a process queue whose deduplication ownership spans
+queued and in-flight delivery. A normal worker return acknowledges ownership;
+a pre-claim exception or cancellation releases it for a later tick, while the
+durable claim still launches exactly once. Environment
 and config input cannot alter policy or continuity across restart. PR B adds no
 API/web projection or manual action.

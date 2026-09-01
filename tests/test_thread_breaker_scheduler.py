@@ -168,3 +168,96 @@ async def test_real_queue_publication_has_no_cancellation_window():
     with pytest.raises(asyncio.CancelledError):
         await asyncio.sleep(0)
     task.uncancel()
+
+
+@pytest.mark.asyncio
+async def test_shipping_worker_republishes_probe_after_preclaim_failure(monkeypatch):
+    """A dequeue is not an acknowledgement until run_invocation returns."""
+    import runtime.daemon.thread_runner as runner_mod
+    from runtime.daemon.thread_queue import thread_worker_loop
+
+    entry = SimpleNamespace(invocation_token="durable-probe")
+    claimed = False
+
+    class _Db:
+        calls = 0
+
+        def list_reply_delivery_states(self):
+            return []
+
+        def mint_due_thread_reply_breaker_probes(self, **kwargs):
+            self.calls += 1
+            return [] if claimed else [entry]
+
+    queue = ThreadQueue()
+    org = SimpleNamespace(
+        slug="happyranch", db=_Db(), thread_queue=queue, root=None,
+    )
+    state = SimpleNamespace(
+        orgs={"happyranch": org}, settings=SimpleNamespace(),
+        host_supervisor=None,
+    )
+    attempts = 0
+    launched = 0
+    recovered = asyncio.Event()
+
+    async def transient_then_claim(**kwargs):
+        nonlocal attempts, launched, claimed
+        attempts += 1
+        if attempts == 1:
+            # Models get_pending_invocation failing before the durable claim.
+            raise RuntimeError("transient pending-invocation read")
+        launched += 1
+        claimed = True
+        recovered.set()
+
+    monkeypatch.setattr(runner_mod, "run_invocation", transient_then_claim)
+    scheduler = asyncio.create_task(
+        thread_breaker_scheduler_loop(state, interval_seconds=0.001)
+    )
+    workers = [
+        asyncio.create_task(thread_worker_loop(state, state.settings))
+        for _ in range(2)
+    ]
+    try:
+        await asyncio.wait_for(recovered.wait(), timeout=1)
+        await asyncio.sleep(0.02)
+    finally:
+        scheduler.cancel()
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(scheduler, *workers, return_exceptions=True)
+
+    assert attempts == 2
+    assert launched == 1
+    assert org.db.calls >= 2
+    assert queue.size == 0
+
+
+@pytest.mark.asyncio
+async def test_shipping_worker_cancellation_releases_dequeued_probe(monkeypatch):
+    import runtime.daemon.thread_runner as runner_mod
+    from runtime.daemon.thread_queue import thread_worker_loop
+
+    queue = ThreadQueue()
+    job = ThreadJob("happyranch", "cancelled-probe")
+    await queue.put_once(job)
+    entered = asyncio.Event()
+
+    async def cancelled_before_claim(**kwargs):
+        entered.set()
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(runner_mod, "run_invocation", cancelled_before_claim)
+    org = SimpleNamespace(slug="happyranch", thread_queue=queue)
+    state = SimpleNamespace(
+        orgs={"happyranch": org}, settings=SimpleNamespace(),
+        host_supervisor=None,
+    )
+    worker = asyncio.create_task(thread_worker_loop(state, state.settings))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    with pytest.raises(asyncio.CancelledError):
+        await worker
+
+    await queue.put_once(job)
+    assert queue.size == 1

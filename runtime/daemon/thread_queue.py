@@ -30,9 +30,9 @@ class ThreadQueue:
 
     async def put_once(self, job: ThreadJob) -> None:
         # The queue is unbounded, so put_nowait cannot suspend between enqueue
-        # and the idempotency mark. Retaining tokens for this queue's lifetime
-        # makes retry-after-uncertain-publication safe; the durable invocation
-        # claim remains the cross-restart exactly-once launch authority.
+        # and the ownership mark. Ownership spans queued + in-flight delivery;
+        # the worker releases it after either acknowledgement or failure. The
+        # durable invocation claim remains the exactly-once launch authority.
         if job.invocation_token in self._published_once_tokens:
             return
         self._q.put_nowait(job)
@@ -40,6 +40,14 @@ class ThreadQueue:
 
     async def get(self) -> ThreadJob:
         return await self._q.get()
+
+    def acknowledge_once(self, job: ThreadJob) -> None:
+        """Finish queue-owned delivery after the consumer returns normally."""
+        self._published_once_tokens.discard(job.invocation_token)
+
+    def release_once(self, job: ThreadJob) -> None:
+        """Release failed in-flight delivery so a durable producer can retry."""
+        self._published_once_tokens.discard(job.invocation_token)
 
     @property
     def size(self) -> int:
@@ -73,9 +81,15 @@ async def thread_worker_loop(state, settings: Settings) -> None:
                     settings=settings,
                     host_supervisor=state.host_supervisor,
                 )
+            except asyncio.CancelledError:
+                org.thread_queue.release_once(job)
+                raise
             except Exception:
+                org.thread_queue.release_once(job)
                 logger.exception(
                     "thread_worker_loop: invocation %s crashed",
                     job.invocation_token[:8],
                 )
+            else:
+                org.thread_queue.acknowledge_once(job)
         await asyncio.sleep(0.05)

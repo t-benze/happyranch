@@ -264,10 +264,11 @@ that cooldown-probe path, never ordinary CLOSED launch. Held OPEN-exchange
 deferrals remain held and excluded; breaker recovery never releases them. Probe
 failure rearms 15 minutes and success closes/reset continuity. Durable receipts,
 lease CAS and redacted audits make restart, duplicates and stale callbacks safe.
-Every scheduler tick re-emits a committed-but-still-pending queued probe; the
-process queue atomically deduplicates its token, closing the post-commit
-publication exception/cancellation window without a restart while the durable
-invocation claim remains the exactly-once provider-launch authority.
+Every scheduler tick re-emits a committed-but-still-pending queued probe. The
+process queue's token ownership spans queued and in-flight delivery: normal
+worker return acknowledges it, while exception or cancellation before claim
+releases it for a later tick. The durable invocation claim remains the
+exactly-once provider-launch authority.
 PR B adds no API/OpenAPI/TypeScript/web projection or manual action.
 
 **Custom CLI result-envelope (THR-107).** Custom CLIs may opt into token metering
