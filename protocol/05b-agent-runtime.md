@@ -247,6 +247,19 @@ excluded) so the web classifies/dedups in-flight responders by purpose —
 never by the triggering row's kind, which would mislabel a
 system-row-anchored coalesced REPLY range as a special wake.
 
+**Thread reply breaker persistence substrate (THR-200 PR A).** The additive
+`thread_reply_breaker_episodes` and `thread_reply_breaker_receipts` tables, plus
+their due/lease/receipt indexes, are created idempotently by the shipping
+`Database` initializer. Existing columns and their meanings are unchanged; no
+runtime path writes or activates the substrate in PR A. Pinned v0, v1, and
+interrupted-stage SQLite stores prove forward creation/repair and legacy-row
+preservation, while an isolated harness executes the actual `e197b20`
+application `Database` reader and asserts its model return contract. Rollout is
+single-version with daemon admission stopped; mixed-version writes are not
+authorized. Threshold, cooldown, failure classification, eviction separation,
+launch suppression, probe eligibility, held-exchange handling, and projection
+remain wholly reserved for serial PR B.
+
 **Custom CLI result-envelope (THR-107).** Custom CLIs may opt into token metering
 by emitting a versioned JSON envelope on stdout, delimited by the sentinel markers
 ``__HR_ENVELOPE_BEGIN__`` and ``__HR_ENVELOPE_END__``. The daemon parses the
