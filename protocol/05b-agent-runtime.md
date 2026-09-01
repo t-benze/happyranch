@@ -1734,3 +1734,23 @@ With on-demand sessions, daily cost scales with actual work, not idle time:
 | Full org (all 4 Teams active) | 25-40 sessions | $15-35 |
 
 These are rough estimates assuming Claude Sonnet pricing. Actual costs depend on task complexity, revision rounds, and which executor is used. The dashboard's cost tracking page (Page 6) gives you real-time visibility.
+### Daemon capacity staged-write surface (TASK-6281)
+
+The Settings Daemon / Capacity surface is a daemon-wide resource navigated
+from an org. A local operator must possess the existing shared daemon bearer;
+that authorizes the request but cannot identify or verify a person. The server
+therefore audits actor `daemon-bearer-holder`, never client identity. The only
+writable pair is `queue_workers` plus `host_global_session_cap`, staged
+atomically for next restart with environment precedence, stale-revision
+rejection through one quoted strong HTTP `If-Match` validator, unrelated-key
+preservation, and fail-closed durable audit-before-replace. The append-only row
+records the truthful `validated_write_authorized` outcome before filesystem
+publication and never claims the next-start file was applied or a person was
+verified. After a successful authoritative replace, any directory durability,
+read-back validation, response-snapshot, or temporary-cleanup failure returns
+`config_publication_uncertain`: the new bytes are authoritative, no unaudited
+compensating replacement is attempted, and the operator must reload and inspect
+before retrying. The error reports temporary-artifact state as `absent`,
+`present`, or `unknown`; failed inspection or unlink never fabricates absence
+or overrides publication. It is not
+a generic YAML editor, does not apply live, and cannot restart the daemon.

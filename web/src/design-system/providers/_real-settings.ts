@@ -11,6 +11,7 @@ import type {
   NextWakesResponse,
   OrgSettingsPatch,
   SettingsSnapshot,
+  DaemonCapacityWrite,
 } from '@/lib/api/types';
 import type { SettingsApi, QueryLike } from './DataContext';
 
@@ -41,6 +42,24 @@ function useUpdateOrgSettings() {
   });
 }
 
+function useDaemonCapacity() {
+  const slug = useRealOrgSlug();
+  return useQuery({
+    queryKey: ['daemon-capacity'],
+    queryFn: () => settingsApi.getDaemonCapacity(slug),
+    enabled: !!slug,
+  });
+}
+
+function useUpdateDaemonCapacity() {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: DaemonCapacityWrite) => settingsApi.putDaemonCapacity(slug, body),
+    onSuccess: (data) => qc.setQueryData(['daemon-capacity'], data),
+  });
+}
+
 function useNextWakes(
   agent: string | undefined,
   count = 5,
@@ -57,5 +76,7 @@ function useNextWakes(
 export const realSettingsApi: SettingsApi = {
   useSettings,
   useUpdateOrgSettings,
+  useDaemonCapacity,
+  useUpdateDaemonCapacity,
   useNextWakes,
 };

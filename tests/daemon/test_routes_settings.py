@@ -12,7 +12,10 @@ Key invariants:
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 
@@ -82,6 +85,328 @@ def test_settings_requires_auth(tmp_home, app, org_state) -> None:
     client = TestClient(app)
     r = client.get(f"/api/v1/orgs/{org_state.slug}/settings")
     assert r.status_code == 401
+
+
+def test_daemon_capacity_requires_bearer_without_leaking_values(tmp_home, app, org_state) -> None:
+    response = TestClient(app).get(f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity")
+    assert response.status_code == 401
+    assert "queue_workers" not in response.text
+    assert "host_global_session_cap" not in response.text
+
+
+@pytest.mark.parametrize("value", [True, "6", 6.0, None])
+def test_daemon_capacity_rejects_non_exact_integer(tmp_home, app, org_state, auth_headers, value) -> None:
+    client = TestClient(app)
+    current = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={
+            "queue_workers": value,
+            "host_global_session_cap": 13,
+            "rationale": "route validation",
+            "confirm_environment_shadow": False,
+        },
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("header", "status", "code"),
+    [
+        (None, 428, "if_match_required"),
+        ('W/"sha256:abc"', 400, "if_match_invalid"),
+        ("*", 400, "if_match_invalid"),
+        ('"sha256:abc", "sha256:def"', 400, "if_match_invalid"),
+        ("sha256:abc", 400, "if_match_invalid"),
+    ],
+)
+def test_daemon_capacity_requires_one_quoted_strong_if_match(
+    tmp_home, app, org_state, auth_headers, header, status, code,
+) -> None:
+    headers = dict(auth_headers)
+    if header is not None:
+        headers["If-Match"] = header
+    response = TestClient(app).put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers=headers,
+        json={"queue_workers": 6, "host_global_session_cap": 13,
+              "rationale": "conditional write", "confirm_environment_shadow": False},
+    )
+    assert response.status_code == status
+    assert response.json()["detail"]["code"] == code
+
+
+def test_daemon_capacity_stale_if_match_returns_latest_and_does_not_mutate(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    client = TestClient(app)
+    before = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"sha256:{"0" * 64}"'},
+        json={"queue_workers": 7, "host_global_session_cap": 14,
+              "rationale": "stale", "confirm_environment_shadow": False},
+    )
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "stale_revision"
+    assert detail["latest"]["revision"] == before["revision"]
+
+
+def test_daemon_capacity_body_revision_is_rejected_as_extra(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    response = TestClient(app).put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": '"sha256:value"'},
+        json={"revision": "sha256:other", "queue_workers": 6,
+              "host_global_session_cap": 13, "rationale": "extra",
+              "confirm_environment_shadow": False},
+    )
+    assert response.status_code == 422
+
+
+def test_daemon_capacity_success_audits_honest_pre_replace_authorization(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    client = TestClient(app)
+    current = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 6, "host_global_session_cap": 13,
+              "rationale": "measured receipts", "confirm_environment_shadow": False},
+    )
+    assert response.status_code == 200
+    row = org_state.db.get_audit_logs("config:daemon_capacity")[-1]
+    assert row["agent"] == "daemon-bearer-holder"
+    assert row["action"] == "daemon_capacity_config_write_authorized"
+    assert row["payload"]["outcome"] == "validated_write_authorized"
+    assert row["payload"]["prior"] == {"queue_workers": None, "host_global_session_cap": None}
+    assert row["payload"]["new"] == {"queue_workers": 6, "host_global_session_cap": 13}
+    assert "token" not in str(row["payload"]).lower()
+
+
+def test_daemon_capacity_post_replace_failure_requires_reload_before_retry(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    client = TestClient(app)
+    current = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    published = False
+    real_replace = __import__("os").replace
+    real_open = __import__("os").open
+
+    def tracked_replace(source, target):
+        nonlocal published
+        real_replace(source, target)
+        published = True
+
+    def fail_directory_open(*args, **kwargs):
+        if published:
+            raise OSError("directory open fault")
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.replace", tracked_replace)
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.open", fail_directory_open)
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 6, "host_global_session_cap": 13,
+              "rationale": "fault probe", "confirm_environment_shadow": False},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "config_publication_uncertain",
+        "message": "capacity configuration was published, but durability or verification did not complete; reload and inspect the authoritative configuration before retrying",
+        "artifact_state": "absent",
+    }
+    assert yaml.safe_load((tmp_home / "config.yaml").read_text())["queue_workers"] == 6
+    assert not list(tmp_home.glob(".*.tmp"))
+    row = org_state.db.get_audit_logs("config:daemon_capacity")[-1]
+    assert row["payload"]["outcome"] == "validated_write_authorized"
+
+    latest = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    retry = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 7, "host_global_session_cap": 14,
+              "rationale": "blind retry", "confirm_environment_shadow": False},
+    )
+    assert latest["persisted_yaml"] == {"queue_workers": 6, "host_global_session_cap": 13}
+    assert retry.status_code == 409
+    assert retry.json()["detail"]["latest"]["revision"] == latest["revision"]
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected_artifact_state", "artifact_present"),
+    [("exists", "unknown", False), ("unlink", "present", True)],
+)
+def test_daemon_capacity_post_replace_cleanup_failure_requires_reload_before_retry(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+    fault, expected_artifact_state, artifact_present,
+) -> None:
+    client = TestClient(app)
+    config_path = tmp_home / "config.yaml"
+    config_path.write_text("other: retained\nqueue_workers: 4\nhost_global_session_cap: 11\n")
+    current = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    published = False
+    artifact = None
+    real_replace = __import__("os").replace
+    real_exists = __import__("os").path.exists
+    real_unlink = __import__("os").unlink
+
+    def tracked_replace(source, target):
+        nonlocal published, artifact
+        real_replace(source, target)
+        published = True
+        artifact = Path(source)
+        if fault == "unlink":
+            artifact.write_bytes(b"leftover temp artifact")
+
+    def cleanup_exists(candidate):
+        if published and Path(candidate) == artifact and fault == "exists":
+            raise OSError("cleanup inspection fault")
+        return real_exists(candidate)
+
+    def cleanup_unlink(candidate):
+        if published and Path(candidate) == artifact:
+            raise OSError("cleanup unlink fault")
+        return real_unlink(candidate)
+
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.replace", tracked_replace)
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.path.exists", cleanup_exists)
+    if fault == "unlink":
+        monkeypatch.setattr("runtime.daemon.capacity_config.os.unlink", cleanup_unlink)
+
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 6, "host_global_session_cap": 13,
+              "rationale": "cleanup fault", "confirm_environment_shadow": False},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "config_publication_uncertain",
+        "message": "capacity configuration was published, but durability, verification, or cleanup did not complete; reload and inspect the authoritative configuration and temporary artifact state before retrying",
+        "artifact_state": expected_artifact_state,
+    }
+    assert yaml.safe_load(config_path.read_text()) == {
+        "other": "retained", "queue_workers": 6, "host_global_session_cap": 13,
+    }
+    rows = org_state.db.get_audit_logs("config:daemon_capacity")
+    assert len(rows) == 1
+    assert rows[0]["action"] == "daemon_capacity_config_write_authorized"
+    assert rows[0]["payload"]["outcome"] == "validated_write_authorized"
+    assert bool(artifact and real_exists(artifact)) is artifact_present
+    latest = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    assert latest["persisted_yaml"] == {"queue_workers": 6, "host_global_session_cap": 13}
+    retry = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 7, "host_global_session_cap": 14,
+              "rationale": "blind retry", "confirm_environment_shadow": False},
+    )
+    assert retry.status_code == 409
+    assert retry.json()["detail"]["latest"]["revision"] == latest["revision"]
+    assert len(org_state.db.get_audit_logs("config:daemon_capacity")) == 1
+
+
+@pytest.mark.parametrize("fault", ["read", "parse"])
+def test_daemon_capacity_final_snapshot_failure_requires_reload_before_retry(
+    tmp_home, app, org_state, auth_headers, monkeypatch, fault,
+) -> None:
+    client = TestClient(app)
+    config_path = tmp_home / "config.yaml"
+    config_path.write_text("other: retained\nqueue_workers: 4\nhost_global_session_cap: 11\n")
+    current = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    published = False
+    real_replace = __import__("os").replace
+
+    def tracked_replace(source, target):
+        nonlocal published
+        real_replace(source, target)
+        published = True
+
+    monkeypatch.setattr("runtime.daemon.capacity_config.os.replace", tracked_replace)
+    if fault == "read":
+        from pathlib import Path
+        real_read = Path.read_bytes
+        reads_after_publish = 0
+
+        def fail_final_read(self):
+            nonlocal reads_after_publish
+            if published and self == config_path:
+                reads_after_publish += 1
+                if reads_after_publish == 2:
+                    raise OSError("final snapshot read fault")
+            return real_read(self)
+
+        monkeypatch.setattr(Path, "read_bytes", fail_final_read)
+    else:
+        real_load = yaml.safe_load
+        parses_after_publish = 0
+
+        def fail_final_parse(value):
+            nonlocal parses_after_publish
+            if published:
+                parses_after_publish += 1
+                if parses_after_publish == 2:
+                    raise yaml.YAMLError("final snapshot parse fault")
+            return real_load(value)
+
+        monkeypatch.setattr(yaml, "safe_load", fail_final_parse)
+
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 6, "host_global_session_cap": 13,
+              "rationale": "final snapshot fault", "confirm_environment_shadow": False},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "config_publication_uncertain",
+        "message": "capacity configuration was published, but durability or verification did not complete; reload and inspect the authoritative configuration before retrying",
+        "artifact_state": "absent",
+    }
+    assert yaml.safe_load(config_path.read_text()) == {
+        "other": "retained", "queue_workers": 6, "host_global_session_cap": 13,
+    }
+    rows = org_state.db.get_audit_logs("config:daemon_capacity")
+    assert len(rows) == 1
+    assert rows[0]["action"] == "daemon_capacity_config_write_authorized"
+    assert rows[0]["payload"]["outcome"] == "validated_write_authorized"
+    assert not list(tmp_home.glob(".*.tmp"))
+    assert not list(tmp_home.glob("*.bak"))
+    latest = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    assert latest["persisted_yaml"] == {"queue_workers": 6, "host_global_session_cap": 13}
+    retry = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 7, "host_global_session_cap": 14,
+              "rationale": "blind retry", "confirm_environment_shadow": False},
+    )
+    assert retry.status_code == 409
+    assert retry.json()["detail"]["latest"]["revision"] == latest["revision"]
+    assert len(org_state.db.get_audit_logs("config:daemon_capacity")) == 1
 
 
 def test_settings_unknown_slug_returns_404(tmp_home, app, auth_headers) -> None:

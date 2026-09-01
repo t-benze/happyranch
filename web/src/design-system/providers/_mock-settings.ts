@@ -26,6 +26,7 @@ const FIXTURE: SettingsSnapshot = {
     session_timeout_seconds: { value: 1800, restart_required: false },
     max_orchestration_steps: { value: 50, restart_required: true },
     queue_workers: { value: 3, restart_required: true },
+    host_global_session_cap: { value: 13, restart_required: true },
     protocol_dir: { value: 'protocol', restart_required: true },
   },
   org: {
@@ -79,5 +80,17 @@ export const mockSettingsApi: SettingsApi = {
     error: null,
     data: undefined,
   }),
+  useDaemonCapacity: () => ok({
+    running_at_daemon_start: { queue_workers: 6, host_global_session_cap: 13 },
+    running_provenance: 'startup-resolved settings snapshot',
+    persisted_yaml: { queue_workers: null, host_global_session_cap: null },
+    next_start: { queue_workers: 6, host_global_session_cap: 13 },
+    environment_shadowed: [], environment_warning: null,
+    effective_admission_reason: 'Prototype capability snapshot',
+    revision: 'sha256:prototype', restart_required: false, restart_pending: false,
+    guidance: { queue_workers: 'Empirical guidance', host_global_session_cap: 'Empirical guidance', enforced: false },
+    authorization: 'Local operator; daemon bearer required. Bearer authorization cannot be attributed to a verified person.',
+  }),
+  useUpdateDaemonCapacity: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useNextWakes: () => ok(NEXT_WAKES_FIXTURE),
 };

@@ -2287,6 +2287,44 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/settings/daemon-capacity": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      },
+      "PUT": {
+        "params": [
+          [
+            "If-Match",
+            "header"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/settings/org": {
       "PUT": {
         "params": [

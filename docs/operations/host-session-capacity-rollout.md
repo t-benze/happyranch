@@ -4,6 +4,16 @@ This rollout is manual and restart-required. It does not change the provider
 ceiling (8), thread workers (4), per-session enforcement envelopes, CPU quota,
 or the aggregate `happyranch.slice`.
 
+For ordinary staging, a local operator may use Settings → Daemon / Capacity.
+The page requires the shared daemon bearer; this bearer-based authorization
+cannot be attributed to a verified person. It stages the two values together,
+never applies them live, and never offers a browser restart. When an environment
+override shadows either YAML key, explicit acknowledgement is required and a
+restart alone will not make YAML win. The ranges shown there are empirical
+receipt guidance only, not enforced aggregate-host bounds; HappyRanch defines
+no aggregate `happyranch.slice` policy. The shell procedure below remains the
+offline recovery/rollout procedure.
+
 ## Mutate configuration without dropping unrelated keys
 
 Run from the repository root. Set `HAPPYRANCH_DAEMON_HOME` first when the

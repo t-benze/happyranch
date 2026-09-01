@@ -738,7 +738,32 @@ export interface SystemSettings {
   session_timeout_seconds: SystemSettingEntry;
   max_orchestration_steps: SystemSettingEntry;
   queue_workers: SystemSettingEntry;
+  host_global_session_cap: SystemSettingEntry;
   protocol_dir: SystemSettingEntry;
+}
+
+export interface DaemonCapacitySnapshot {
+  running_at_daemon_start: { queue_workers: number; host_global_session_cap: number };
+  running_provenance: string;
+  persisted_yaml: { queue_workers: number | null; host_global_session_cap: number | null };
+  next_start: { queue_workers: number; host_global_session_cap: number };
+  environment_shadowed: string[];
+  environment_warning: string | null;
+  effective_admission_reason: string;
+  revision: string;
+  restart_required: boolean;
+  restart_pending: boolean;
+  guidance: { queue_workers: string; host_global_session_cap: string; enforced: boolean };
+  authorization: string;
+  message?: string;
+}
+
+export interface DaemonCapacityWrite {
+  revision: string;
+  queue_workers: number;
+  host_global_session_cap: number;
+  rationale: string;
+  confirm_environment_shadow: boolean;
 }
 
 export interface DreamingSchedule {
