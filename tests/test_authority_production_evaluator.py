@@ -267,6 +267,26 @@ def test_production_evaluator_rejects_credential_markers_in_free_text(evidence_r
     assert result.disposition_code == AuthorityDispositionCode.INJECTION_GUARD
 
 
+@pytest.mark.parametrize("mutate", [
+    pytest.param(lambda d: d.update(policy_id="engineering/other"), id="wrong-echo"),
+    pytest.param(lambda d: d.update(clause_id="esc-invented"), id="unknown-clause"),
+    pytest.param(lambda d: d.update(action="escalate_to_founder"), id="wrong-clause-action"),
+    pytest.param(lambda d: d.update(extra="smuggled"), id="extra-trusted-field"),
+    pytest.param(lambda d: d.update(confidence="not-a-number"), id="malformed-trusted-field"),
+])
+def test_production_evaluator_trusted_validation_precedes_free_text_guard(mutate):
+    """A marker cannot mask a malformed trusted/closed-vocabulary field."""
+    snap = _snapshot()
+    payload = _valid_output_dict(snap)
+    payload["evidence_refs"] = ["authorization: Bearer sk-live-abc123"]
+    mutate(payload)
+    result = _make_evaluator(
+        invoke=lambda argv, prompt, timeout: _Proc(stdout=_pi_jsonl(json.dumps(payload)))
+    ).evaluate(snap)
+    assert result.disposition == AuthorityDisposition.EVALUATOR_ERROR
+    assert result.disposition_code == AuthorityDispositionCode.MALFORMED_OUTPUT
+
+
 def test_production_evaluator_low_confidence_fails_closed():
     snap = _snapshot()
     payload = _valid_output_dict(snap)

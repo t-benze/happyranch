@@ -874,16 +874,6 @@ class LLMSubprocessAuthorityEvaluator:
             return self._error_result(
                 _Code.MALFORMED_OUTPUT, f"evaluator output failed closed-schema validation: {exc}"
             )
-        # Scan only model-controlled free text after the closed schema has
-        # separated it from release-controlled identifiers.  In particular,
-        # clause ids such as ``esc-auth-credentials-security`` are policy
-        # vocabulary, not credential-bearing prose.  Rationale is digest-only
-        # in this schema; evidence refs are its sole free-text output field.
-        free_text = "\n".join(parsed.evidence_refs).lower()
-        if any(marker in free_text for marker in _CREDENTIAL_MARKERS):
-            return self._error_result(
-                _Code.INJECTION_GUARD, "evaluator output carried a credential-like marker"
-            )
         # Echo-contract: the output must name the exact attempt inputs.
         if (
             parsed.policy_id != snapshot.policy_id
@@ -897,6 +887,38 @@ class LLMSubprocessAuthorityEvaluator:
                 _Code.MALFORMED_OUTPUT, "evaluator output policy/team/candidate/input mismatch"
             )
         disposition = AuthorityDisposition(parsed.disposition)
+        policy = POLICY_BY_TEAM.get(parsed.team)
+        clause = policy.clause_by_id(parsed.clause_id) if policy and parsed.clause_id else None
+        expected_action = (
+            ACTION_CONTINUE_SAME_ROOT
+            if disposition == AuthorityDisposition.CONTINUE_SAME_ROOT
+            else ACTION_ESCALATE_TO_FOUNDER
+        )
+        if parsed.clause_id is None:
+            valid_clause_action = (
+                disposition == AuthorityDisposition.ESCALATE and parsed.action is None
+            )
+        else:
+            valid_clause_action = (
+                clause is not None
+                and clause.action == expected_action
+                and parsed.action == clause.action
+            )
+        if not valid_clause_action:
+            return self._error_result(
+                _Code.MALFORMED_OUTPUT,
+                "evaluator output names an unknown or mismatched policy clause/action",
+            )
+        # Scan only model-controlled free text after all trusted echo and
+        # closed-vocabulary validation succeeds.  In particular, clause ids
+        # such as ``esc-auth-credentials-security`` are policy vocabulary,
+        # not credential-bearing prose. Rationale is digest-only in this
+        # schema; evidence refs are its sole free-text output field.
+        free_text = "\n".join(parsed.evidence_refs).lower()
+        if any(marker in free_text for marker in _CREDENTIAL_MARKERS):
+            return self._error_result(
+                _Code.INJECTION_GUARD, "evaluator output carried a credential-like marker"
+            )
         code = (
             AuthorityDispositionCode.CONTINUE_SAME_ROOT
             if disposition == AuthorityDisposition.CONTINUE_SAME_ROOT
