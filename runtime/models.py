@@ -626,6 +626,22 @@ class ThreadReplyDeliveryState(BaseModel):
     updated_at: str = ""
 
 
+class ThreadReplyBreakerEpisode(BaseModel):
+    """Persisted breaker episode; runtime transition policy is wired separately."""
+
+    thread_id: str
+    agent_name: str
+    executor_key: str
+    episode_id: str
+    state: Literal["closed", "open", "probe"]
+    consecutive_failures: int = Field(ge=0)
+    opened_at: str | None = None
+    cooldown_until: str | None = None
+    probe_lease_id: str | None = None
+    last_failure_category: str | None = None
+    updated_at: str
+
+
 class ThreadReplyRecoveryEntry(BaseModel):
     """One runnable token returned by the durable reply-delivery recovery pass.
 

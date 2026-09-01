@@ -37,7 +37,6 @@ from runtime.models import (
     ThreadRecord,
     ThreadReplyArrival,
     ThreadReplyClaim,
-    ThreadReplyBreakerEpisode,
     ThreadReplyDeliveryState,
     ThreadReplyExchangeProjection,
     ThreadReplyRecoveryEntry,
@@ -1333,41 +1332,6 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_thread_reply_delivery_state_thread
                 ON thread_reply_delivery_state(thread_id);
-
-            -- THR-200 PR E/A: additive persistence substrate only. Runtime
-            -- transition/admission policy is intentionally reserved for the
-            -- serial behavior PR.
-            CREATE TABLE IF NOT EXISTS thread_reply_breaker_episodes (
-                thread_id TEXT NOT NULL,
-                agent_name TEXT NOT NULL,
-                executor_key TEXT NOT NULL,
-                episode_id TEXT NOT NULL,
-                state TEXT NOT NULL CHECK (state IN ('closed','open','probe')),
-                consecutive_failures INTEGER NOT NULL DEFAULT 0
-                    CHECK (consecutive_failures >= 0),
-                opened_at TEXT,
-                cooldown_until TEXT,
-                probe_lease_id TEXT,
-                last_failure_category TEXT,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (thread_id, agent_name, executor_key),
-                UNIQUE (episode_id),
-                FOREIGN KEY (thread_id) REFERENCES threads(id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_thread_reply_breaker_due
-                ON thread_reply_breaker_episodes(state, cooldown_until);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_reply_breaker_probe_lease
-                ON thread_reply_breaker_episodes(probe_lease_id)
-                WHERE probe_lease_id IS NOT NULL;
-            CREATE TABLE IF NOT EXISTS thread_reply_breaker_receipts (
-                invocation_token TEXT PRIMARY KEY,
-                episode_id TEXT NOT NULL,
-                outcome TEXT NOT NULL CHECK (outcome IN ('failure','success')),
-                failure_category TEXT,
-                recorded_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_thread_reply_breaker_receipts_episode
-                ON thread_reply_breaker_receipts(episode_id);
 
             -- TASK-5966 (strict mention-led exchange): additive exchange-epoch
             -- gate. One row per mention-led exchange; rows are append-only and
@@ -7068,33 +7032,6 @@ class Database:
         )
         row = cursor.fetchone()
         return self._row_to_reply_delivery_state(row) if row else None
-
-    def _row_to_reply_breaker_episode(self, row) -> ThreadReplyBreakerEpisode:
-        return ThreadReplyBreakerEpisode(
-            thread_id=row["thread_id"],
-            agent_name=row["agent_name"],
-            executor_key=row["executor_key"],
-            episode_id=row["episode_id"],
-            state=row["state"],
-            consecutive_failures=row["consecutive_failures"],
-            opened_at=row["opened_at"],
-            cooldown_until=row["cooldown_until"],
-            probe_lease_id=row["probe_lease_id"],
-            last_failure_category=row["last_failure_category"],
-            updated_at=row["updated_at"],
-        )
-
-    @_synchronized
-    def get_thread_reply_breaker(
-        self, thread_id: str, agent_name: str, executor_key: str,
-    ) -> ThreadReplyBreakerEpisode | None:
-        """Read persisted substrate state; absence is the CLOSED representation."""
-        row = self._conn.execute(
-            "SELECT * FROM thread_reply_breaker_episodes WHERE thread_id = ? "
-            "AND agent_name = ? AND executor_key = ?",
-            (thread_id, agent_name, executor_key),
-        ).fetchone()
-        return self._row_to_reply_breaker_episode(row) if row else None
 
     @_synchronized
     def list_reply_delivery_states(self) -> list[ThreadReplyDeliveryState]:

@@ -34,6 +34,7 @@ New specs should include a short status block near the top:
 
 | Spec | Status | Current source / notes |
 | --- | --- | --- |
+| `2026-09-01-thread-reply-breaker-persistence.md` | current | THR-200 PR A additive SQLite contract and pinned compatibility proof; runtime lifecycle is reserved for serial PR B. |
 | `2026-04-12-product-engineering-crew-design.md` | historical | Sample-org background; org content now lives under `examples/orgs/` and runtime org trees. |
 | `2026-04-14-orchestrator-daemon-design.md` | implemented | Current contracts: `docs/agent-guides/orchestrator-contracts.md`, `runtime/daemon/`, `runtime/orchestrator/`. |
 | `2026-04-17-manage-agent-design.md` | implemented | Current contracts: `protocol/skills/manage-agent/SKILL.md`, agent guide, routes in `runtime/daemon/routes/agents.py`. |
