@@ -92,6 +92,88 @@ describe('Custom Skills routes', () => {
     expect(await screen.findByText('Founder access required')).toBeInTheDocument();
   });
 
+  test('switches to an isolated removed catalog with count, badge, deep link, and empty state', async () => {
+    const user = userEvent.setup();
+    const requests: string[] = [];
+    server.use(http.get(`${API}/catalog`, ({ request }) => {
+      const view = new URL(request.url).searchParams.get('view');
+      requests.push(view ?? 'current');
+      return HttpResponse.json({ skills: view === 'removed' ? [{
+        ...skill,
+        state: 'permanently_removed',
+        retired_at: '2026-08-30T00:00:00Z',
+        purged_at: '2026-08-30T01:02:03Z',
+        purge_id: 'purge:fixed',
+        physical_erasure: false,
+      }] : [skill] });
+    }));
+    mount(`/orgs/${SLUG}/skills/custom`);
+    expect(await screen.findByText('Partner playbook')).toBeInTheDocument();
+    expect(screen.getByText('Founder workspace · 1')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Add custom skill' })).toHaveAttribute(
+      'href', `/orgs/${SLUG}/skills/custom/new`,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Removed' }));
+    expect(await screen.findByText('Permanently removed')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Add custom skill' })).not.toBeInTheDocument();
+    expect(screen.getByText('Removed · 1')).toBeInTheDocument();
+    expect(screen.getByText('Reservation retained')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'View permanently removed playbook' })).toHaveAttribute(
+      'href', `/orgs/${SLUG}/skills/custom/${encodeURIComponent(SKILL_ID)}`,
+    );
+    expect(screen.queryByText('Retired')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /retire/i })).not.toBeInTheDocument();
+    expect(requests).toEqual(['current', 'removed']);
+
+    await user.click(screen.getByRole('button', { name: 'Current' }));
+    expect(await screen.findByText('Founder workspace · 1')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Add custom skill' })).toBeInTheDocument();
+    expect(requests).toEqual(['current', 'removed']);
+
+    cleanup();
+    server.resetHandlers();
+    installShellHandlers();
+    server.use(http.get(`${API}/catalog`, ({ request }) => HttpResponse.json({
+      skills: new URL(request.url).searchParams.get('view') === 'removed' ? [] : [skill],
+    })));
+    mount(`/orgs/${SLUG}/skills/custom`);
+    await user.click(await screen.findByRole('button', { name: 'Removed' }));
+    expect(await screen.findByText('No permanently removed skills')).toBeInTheDocument();
+  });
+
+  test('keeps the removed control selected through loading, error, and forbidden responses', async () => {
+    const user = userEvent.setup();
+    let removedResponse: 'loading' | 'error' | 'forbidden' = 'loading';
+    server.use(http.get(`${API}/catalog`, ({ request }) => {
+      if (new URL(request.url).searchParams.get('view') !== 'removed') return HttpResponse.json({ skills: [skill] });
+      if (removedResponse === 'loading') return new Promise(() => {});
+      return new HttpResponse(removedResponse, { status: removedResponse === 'forbidden' ? 403 : 500 });
+    }));
+    mount(`/orgs/${SLUG}/skills/custom`);
+    await user.click(await screen.findByRole('button', { name: 'Removed' }));
+    expect(screen.getByRole('button', { name: 'Removed' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByLabelText('Loading removed custom skills')).toBeInTheDocument();
+
+    cleanup();
+    server.resetHandlers();
+    installShellHandlers();
+    removedResponse = 'error';
+    server.use(http.get(`${API}/catalog`, ({ request }) => new URL(request.url).searchParams.get('view') === 'removed' ? new HttpResponse('error', { status: 500 }) : HttpResponse.json({ skills: [skill] })));
+    mount(`/orgs/${SLUG}/skills/custom`);
+    await user.click(await screen.findByRole('button', { name: 'Removed' }));
+    expect(await screen.findByText('Could not load removed skills')).toBeInTheDocument();
+
+    cleanup();
+    server.resetHandlers();
+    installShellHandlers();
+    removedResponse = 'forbidden';
+    server.use(http.get(`${API}/catalog`, ({ request }) => new URL(request.url).searchParams.get('view') === 'removed' ? new HttpResponse('forbidden', { status: 403 }) : HttpResponse.json({ skills: [skill] })));
+    mount(`/orgs/${SLUG}/skills/custom`);
+    await user.click(await screen.findByRole('button', { name: 'Removed' }));
+    expect(await screen.findByText('Founder access required')).toBeInTheDocument();
+  });
+
   test('create route exposes mutation pending, error, and forbidden states', async () => {
     const user = userEvent.setup();
     server.use(http.post(API, () => new Promise(() => {})));
@@ -123,6 +205,22 @@ describe('Custom Skills routes', () => {
     await user.type(screen.getByLabelText('SKILL.md'), '# Forbidden');
     await user.click(screen.getByRole('button', { name: 'Create custom skill' }));
     expect(await screen.findByText('Founder access required')).toBeInTheDocument();
+  });
+
+  test('create explains a permanently reserved removed slug', async () => {
+    const user = userEvent.setup();
+    server.use(http.post(API, () => HttpResponse.json(
+      { detail: { code: 'slug_permanently_reserved', detail: 'slug_permanently_reserved' } },
+      { status: 409 },
+    )));
+    mount(`/orgs/${SLUG}/skills/custom/new`);
+    await user.type(screen.getByLabelText('Name'), 'Removed guidance');
+    await user.type(screen.getByLabelText('Slug'), 'playbook');
+    await user.type(screen.getByLabelText('SKILL.md'), '# Removed guidance');
+    await user.click(screen.getByRole('button', { name: 'Create custom skill' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This slug is permanently reserved by a removed custom skill. Open the Removed view to inspect its receipt.',
+    );
   });
 
   test('detail route has loading, 5xx, and founder-forbidden states', async () => {

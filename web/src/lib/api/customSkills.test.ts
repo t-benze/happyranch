@@ -18,6 +18,21 @@ describe('custom skills API client', () => {
     expect(new URL(requestUrl).search).toBe('');
   });
 
+  test('uses the explicit removed catalog view without repurposing the general filter', async () => {
+    __resetTokenCacheForTests();
+    sessionStorage.setItem('happyranch.token', 'founder-token');
+    let requestUrl = '';
+    server.use(http.get('/api/v1/orgs/ranch/custom-skills/catalog', ({ request }) => {
+      requestUrl = request.url;
+      return HttpResponse.json({ skills: [] });
+    }));
+
+    await expect(listCustomSkills('ranch', 'removed')).resolves.toEqual({ skills: [] });
+    const search = new URL(requestUrl).searchParams;
+    expect(search.get('view')).toBe('removed');
+    expect(search.has('filter')).toBe(false);
+  });
+
   test('commits eligibility with the server revision in If-Match', async () => {
     __resetTokenCacheForTests();
     sessionStorage.setItem('happyranch.token', 'founder-token');

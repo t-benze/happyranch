@@ -609,7 +609,7 @@ Each agent runs in its own persistent workspace inside the org directory. After 
 
 ## Custom-skill logical removal
 
-To permanently deny an already-retired current-v2 custom skill without deleting its history or files, use `happyranch skills purge <skill-id> --org <org>`. The CLI asks you to type the exact slug; automation may pass `--typed-slug`. This is an irreversible logical purge (`physical_erasure=false`), and repeated calls return the existing tombstone. Current policy is withdrawn by supersession while all rule history is retained. Downgrade alone leaves the record retired and invisible; the documented pre-purge-binary limitation requires both an operator downgrade and explicit restore of that exact record, while purge-aware restore refuses permanently.
+To permanently deny an already-retired current-v2 custom skill without deleting its history or files, use `happyranch skills purge <skill-id> --org <org>`. The CLI asks you to type the exact slug; automation may pass `--typed-slug`. This is an irreversible logical purge (`physical_erasure=false`), and repeated calls return the existing tombstone. Removed tombstones are hidden from the ordinary Custom catalog and available in its explicit Removed view and by saved detail URL; their permanently reserved slugs cannot be recreated. Current policy is withdrawn by supersession while all rule history is retained. Downgrade alone leaves the record retired and invisible; the documented pre-purge-binary limitation requires both an operator downgrade and explicit restore of that exact record, while purge-aware restore refuses permanently.
 
 ## Roadmap
 

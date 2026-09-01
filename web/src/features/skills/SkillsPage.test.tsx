@@ -90,7 +90,7 @@ const B2_CUSTOM = {
 function mount(
   rows: Row[] = ALL,
   customSkills = [B2_CUSTOM],
-  customCatalogResponse?: () => Response | Promise<Response>,
+  customCatalogResponse?: (request: Request) => Response | Promise<Response>,
 ) {
   const requests = { legacyFilters: [] as Array<string | null>, b2Catalog: 0 };
   sessionStorage.setItem('happyranch.token', 'tok');
@@ -106,9 +106,9 @@ function mount(
       const items = filter ? rows.filter((r) => bucket(r) === filter) : rows;
       return HttpResponse.json({ items });
     }),
-    http.get(B2_API, () => {
+    http.get(B2_API, ({ request }) => {
       requests.b2Catalog += 1;
-      return customCatalogResponse?.() ?? HttpResponse.json({ skills: customSkills });
+      return customCatalogResponse?.(request) ?? HttpResponse.json({ skills: customSkills });
     }),
   );
   return { requests, ...renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/skills` }) };
@@ -299,6 +299,25 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     await screen.findByText('kb-curation');
     await userEvent.click(screen.getAllByRole('button', { name: 'Custom' })[0]);
     expect(await screen.findByText('Founder access required')).toBeInTheDocument();
+  });
+
+  test('Custom facet switches to removed tombstones without changing the Bundled catalog', async () => {
+    const removed = { ...B2_CUSTOM, state: 'permanently_removed', hidden_reason: 'purged', purged_at: '2026-08-30T01:02:03Z' };
+    const { requests } = mount(ALL, [B2_CUSTOM], (request) => HttpResponse.json({
+      skills: new URL(request.url).searchParams.get('view') === 'removed' ? [removed] : [B2_CUSTOM],
+    }));
+    await screen.findByText('kb-curation');
+    await userEvent.click(screen.getAllByRole('button', { name: 'Custom' })[0]);
+    expect(await screen.findByText('agent-first-guidance')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Add custom skill' })).toHaveAttribute(
+      'href', `/orgs/${SLUG}/skills/custom/new`,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Removed' }));
+    expect(await screen.findByText('Permanently removed')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Add custom skill' })).not.toBeInTheDocument();
+    expect(screen.getByText('Reservation retained')).toBeInTheDocument();
+    expect(requests.legacyFilters).not.toContain('Custom');
+    expect(requests.legacyFilters).toEqual([null]);
   });
 
   test('root flex container carries bounded-height classes so scroll is inner-region only (THR-092)', async () => {
