@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import sqlite3
+import shutil
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from runtime.models import ThreadRecord, ThreadMessageKind
 from runtime.orchestrator.executors import ExecutorResult
 from runtime.daemon.thread_runner import _qualifying_breaker_failure
 from runtime.config import Settings
+from tests.fixtures.thread_breaker_old_reader_e197b20 import HistoricalApplicationReader
 
 
 NOW = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
@@ -303,15 +305,13 @@ def test_failure_settlement_and_breaker_audit_roll_back_atomically(tmp_path, mon
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def _apply_historical_stage(path, fixture):
-    db = Database(path)
-    db._conn.executescript((FIXTURES / fixture).read_text())
-    db.close()
+def _copy_historical_artifact(path, fixture):
+    shutil.copyfile(FIXTURES / fixture, path)
 
 
 def test_additive_upgrade_from_genuine_v0_fixture(tmp_path):
     path = tmp_path / "legacy.db"
-    _apply_historical_stage(path, "thread_breaker_v0.sql")
+    _copy_historical_artifact(path, "thread_breaker_v0_e197b20.db")
     upgraded = Database(path)
     tables = {
         row[0] for row in upgraded._conn.execute(
@@ -320,15 +320,21 @@ def test_additive_upgrade_from_genuine_v0_fixture(tmp_path):
     }
     assert {"thread_reply_breaker_episodes", "thread_reply_breaker_receipts"} <= tables
     assert upgraded.get_thread_reply_breaker("missing", "agent", "executor") is None
+    assert upgraded.get_thread("THR-HIST").subject == "historical-v0"
+    assert upgraded.list_thread_messages("THR-HIST")[0].body_markdown == "legacy-v0-row"
+    upgraded.close()
+    reopened = Database(path)
+    assert reopened.get_thread("THR-HIST").subject == "historical-v0"
+    reopened.close()
 
 
 @pytest.mark.parametrize("fixture", [
-    "thread_breaker_v1.sql",
-    "thread_breaker_interrupted_receipts.sql",
+    "thread_breaker_v1_2c068bb.db",
+    "thread_breaker_interrupted_2c068bb.db",
 ])
 def test_additive_upgrade_repairs_interrupted_v1_fixtures(tmp_path, fixture):
     path = tmp_path / "interrupted.db"
-    _apply_historical_stage(path, fixture)
+    _copy_historical_artifact(path, fixture)
     upgraded = Database(path)
     objects = {
         row[0] for row in upgraded._conn.execute(
@@ -339,6 +345,15 @@ def test_additive_upgrade_repairs_interrupted_v1_fixtures(tmp_path, fixture):
     assert "idx_thread_reply_breaker_due" in objects
     assert "idx_thread_reply_breaker_probe_lease" in objects
     assert "idx_thread_reply_breaker_receipts_episode" in objects
+    preserved = upgraded.get_thread_reply_breaker(
+        "THR-HIST", "legacy_agent", "codex:gpt-5"
+    )
+    assert preserved is not None
+    assert preserved.consecutive_failures in {1, 2}
+    upgraded.close()
+    reopened = Database(path)
+    assert reopened.get_thread("THR-HIST") is not None
+    reopened.close()
 
 
 def test_old_reader_ignores_additive_breaker_objects_after_safe_rollback(tmp_path):
@@ -352,11 +367,10 @@ def test_old_reader_ignores_additive_breaker_objects_after_safe_rollback(tmp_pat
     _failure(db, "below-threshold")
     assert db.get_thread_reply_breaker("THR-1", "dev_agent", "codex:gpt-5").state == "closed"
     db.close()
-    old_reader = sqlite3.connect(tmp_path / "breaker.db")
-    assert old_reader.execute("SELECT subject FROM threads WHERE id='THR-1'").fetchone()[0] == "breaker"
-    assert old_reader.execute(
-        "SELECT body_markdown FROM thread_messages WHERE thread_id='THR-1'"
-    ).fetchone()[0] == "legacy-visible"
+    old_reader = HistoricalApplicationReader(tmp_path / "breaker.db")
+    assert old_reader.get_thread("THR-1")["subject"] == "breaker"
+    assert old_reader.list_thread_messages("THR-1")[0]["body_markdown"] == "legacy-visible"
+    old_reader.close()
 
 
 def test_additive_upgrade_preserves_existing_v1_episode(tmp_path):

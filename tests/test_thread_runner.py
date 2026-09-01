@@ -1966,6 +1966,96 @@ async def test_post_launch_exception_counts_once_at_shipping_runner_seam(
     assert db._conn.execute(
         "SELECT COUNT(*) FROM thread_reply_breaker_receipts"
     ).fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_shipping_runner_restart_open_probe_failure_rearms_once(
+    tmp_path, monkeypatch,
+):
+    """Exercise the persisted OPEN -> daemon recovery -> one PROBE -> OPEN loop.
+
+    Reopening the Database models a daemon restart.  The retained delivery gap
+    remains authoritative independently of the breaker row; the timer mints
+    exactly one lease, and shipping run_invocation settles its terminal failure
+    once and rearms the cooldown.
+    """
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-001", subject="breaker"))
+    db.add_thread_participant("THR-001", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-001", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="retained gap",
+    )
+    queued = _seed_queued_reply(db, "THR-001", "alice", triggering_seq=1)
+    breaker_key = "claude:default:3:900"
+    for index in range(3):
+        db.record_thread_reply_breaker_failure(
+            thread_id="THR-001", agent_name="alice",
+            executor_key=breaker_key, invocation_token=f"prior-{index}",
+            failure_category="provider_nonzero", threshold=3,
+            cooldown_seconds=900,
+            now=datetime(2026, 9, 1, 8, index, tzinfo=timezone.utc),
+        )
+    opened = db.get_thread_reply_breaker("THR-001", "alice", breaker_key)
+    db.close()
+
+    restarted = Database(tmp_path / "happyranch.db")
+    ws = tmp_path / "workspaces" / "alice"
+    ws.mkdir(parents=True)
+    (ws / "agent.yaml").write_text("executor: claude\n")
+
+    launches = 0
+
+    class _FailingProbe:
+        def run(self, **kwargs):
+            nonlocal launches
+            launches += 1
+            kwargs["on_started"](9100)
+            result = FakeExecutorResult(False, "probe failed")
+            result.returncode = 1
+            result.failure_category = "provider_nonzero"
+            result.provider_launched = True
+            return result
+
+    import runtime.daemon.thread_runner as runner_mod
+    monkeypatch.setattr(
+        runner_mod, "_build_executor_for_provider", lambda *_args: _FailingProbe(),
+    )
+    org = FakeOrgState(restarted, tmp_path)
+
+    # A stale queued notification after restart cannot bypass OPEN.
+    await run_invocation(
+        org_state=org, invocation_token=queued.invocation_token,
+        settings=Settings(),
+    )
+    assert launches == 0
+    delivery = restarted.get_reply_delivery_state("THR-001", "alice")
+    assert delivery.required_through_seq == 1
+    assert delivery.acknowledged_through_seq == 0
+
+    probes = restarted.mint_due_thread_reply_breaker_probes(
+        now=datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc),
+    )
+    assert len(probes) == 1
+    assert restarted.mint_due_thread_reply_breaker_probes(
+        now=datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc),
+    ) == []
+    await run_invocation(
+        org_state=org, invocation_token=probes[0].invocation_token,
+        settings=Settings(),
+    )
+    assert launches == 1
+    rearmed = restarted.get_thread_reply_breaker(
+        "THR-001", "alice", breaker_key
+    )
+    assert rearmed.state == "open"
+    assert rearmed.probe_lease_id is None
+    assert rearmed.cooldown_until > opened.cooldown_until
+    assert restarted._conn.execute(
+        "SELECT COUNT(*) FROM thread_reply_breaker_receipts "
+        "WHERE invocation_token=?", (probes[0].invocation_token,),
+    ).fetchone()[0] == 1
+
 class _RecordingExec:
     """Fake executor that records every prompt it is handed."""
 
