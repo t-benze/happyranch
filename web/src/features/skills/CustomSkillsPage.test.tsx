@@ -110,9 +110,13 @@ describe('Custom Skills routes', () => {
     mount(`/orgs/${SLUG}/skills/custom`);
     expect(await screen.findByText('Partner playbook')).toBeInTheDocument();
     expect(screen.getByText('Founder workspace · 1')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Add custom skill' })).toHaveAttribute(
+      'href', `/orgs/${SLUG}/skills/custom/new`,
+    );
 
     await user.click(screen.getByRole('button', { name: 'Removed' }));
     expect(await screen.findByText('Permanently removed')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Add custom skill' })).not.toBeInTheDocument();
     expect(screen.getByText('Removed · 1')).toBeInTheDocument();
     expect(screen.getByText('Reservation retained')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View permanently removed playbook' })).toHaveAttribute(
@@ -124,6 +128,7 @@ describe('Custom Skills routes', () => {
 
     await user.click(screen.getByRole('button', { name: 'Current' }));
     expect(await screen.findByText('Founder workspace · 1')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Add custom skill' })).toBeInTheDocument();
     expect(requests).toEqual(['current', 'removed']);
 
     cleanup();

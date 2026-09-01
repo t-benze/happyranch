@@ -127,13 +127,15 @@ export function SkillsPage(): JSX.Element {
               <Activity size={15} aria-hidden="true" />
               Runtime Validation
             </Link>
-            <Link
-              to={`/orgs/${slug ?? ''}/skills/custom/new`}
-              className="bg-accent-soft text-accent-text hover:bg-accent-soft/80 text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold"
-            >
-              <Plus size={15} aria-hidden="true" />
-              Add custom skill
-            </Link>
+            {(!customSelected || !removed) && (
+              <Link
+                to={`/orgs/${slug ?? ''}/skills/custom/new`}
+                className="bg-accent-soft text-accent-text hover:bg-accent-soft/80 text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold"
+              >
+                <Plus size={15} aria-hidden="true" />
+                Add custom skill
+              </Link>
+            )}
           </div>
         </div>
 

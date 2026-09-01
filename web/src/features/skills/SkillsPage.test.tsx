@@ -309,8 +309,12 @@ describe('SkillsPage — Catalog (THR-092 Slice 1)', () => {
     await screen.findByText('kb-curation');
     await userEvent.click(screen.getAllByRole('button', { name: 'Custom' })[0]);
     expect(await screen.findByText('agent-first-guidance')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Add custom skill' })).toHaveAttribute(
+      'href', `/orgs/${SLUG}/skills/custom/new`,
+    );
     await userEvent.click(screen.getByRole('button', { name: 'Removed' }));
     expect(await screen.findByText('Permanently removed')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Add custom skill' })).not.toBeInTheDocument();
     expect(screen.getByText('Reservation retained')).toBeInTheDocument();
     expect(requests.legacyFilters).not.toContain('Custom');
     expect(requests.legacyFilters).toEqual([null]);
