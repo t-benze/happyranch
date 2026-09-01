@@ -1040,11 +1040,19 @@ class ConnectorSupervisor:
             self._start_provider()
 
     def shutdown(self) -> None:
-        """Deterministic stop: drop the listener before exiting."""
+        """Deterministic one-shot cleanup: listener, flows, then runtime."""
         with self._lifecycle_lock:
+            first_shutdown = not self._shutdown
             self._shutdown = True
-            if self._provider_running:
+            if first_shutdown and self._provider_running:
                 self._stop_provider()
+            if first_shutdown and self._registry is not None:
+                try:
+                    self._registry.close_all()
+                except StreamCloseError:
+                    pass  # sealed fail closed; shutdown still drops runtime residue
+                self._registry = None
+                self._pairing_manager = None
             self._notify_fn("STOPPING=1\n")
 
     def _start_provider(self) -> bool:

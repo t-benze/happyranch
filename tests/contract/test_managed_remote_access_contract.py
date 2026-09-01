@@ -389,9 +389,9 @@ def test_n2_lifecycle_matrix_covers_shipping_boundaries() -> None:
         "active_flow": ("authorize_then_final_local_hop", "bearer_final_hop_only"),
         "readiness_loss": ("listener_stop_before_downstream_cleanup", "no_new_admission"),
         "revocation": ("listener_stop_then_active_flow_close_then_downstream_cleanup", "no_stale_authorization_or_residue"),
-        "shutdown": ("listener_stop_before_process_exit", "idempotent_no_residue"),
+        "shutdown": ("listener_stop_then_active_flow_close_then_runtime_cleanup", "repeated_shutdown_exactly_once_no_residue"),
         "partial_failure": ("admission_removed_before_cleanup_retry", "category_only_fail_closed"),
-        "concurrency_reentry": ("admission_or_start_races_stop_or_revoke", "no_early_ready_deadlock_or_double_close"),
+        "concurrency_reentry": ("provider_start_races_shutdown_or_persisted_revocation", "linearized_both_orderings_no_deadlock_or_double_close"),
         "recovery": ("fresh_gates_after_cleanup_before_fresh_listener", "current_identity_epoch_policy_only"),
     }
     required_observable_mappings = {
@@ -413,8 +413,7 @@ def test_n2_lifecycle_matrix_covers_shipping_boundaries() -> None:
             "tests/remote_access/test_supervisor.py::TestReconciliationRotation::test_cross_process_revoke_closes_stream_then_rotation_reopens_repair",
         },
         "shutdown": {
-            "tests/remote_access/test_supervisor.py::TestRunLoop::test_concurrent_provider_start_then_shutdown_is_linearized",
-            "tests/remote_access/test_supervisor.py::TestRunLoop::test_shutdown_first_forbids_late_start_and_repeated_shutdown_has_no_residue",
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_repeated_shutdown_closes_active_shipping_runtime_exactly_once",
         },
         "partial_failure": {
             "tests/remote_access/test_streams.py::test_close_all_partial_multi_handle_failure_seals_all",
@@ -423,7 +422,6 @@ def test_n2_lifecycle_matrix_covers_shipping_boundaries() -> None:
         },
         "concurrency_reentry": {
             "tests/remote_access/test_supervisor.py::TestRunLoop::test_concurrent_provider_start_then_shutdown_is_linearized",
-            "tests/remote_access/test_supervisor.py::TestRunLoop::test_shutdown_first_forbids_late_start_and_repeated_shutdown_has_no_residue",
             "tests/remote_access/test_supervisor.py::TestReconciliationRotation::test_provider_start_racing_persisted_revocation_is_linearized_in_both_orderings",
         },
         "recovery": {

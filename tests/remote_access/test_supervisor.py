@@ -600,6 +600,63 @@ class TestRunLoop:
         assert supervisor._registry is None
         assert supervisor._pairing_manager is None
 
+    def test_repeated_shutdown_closes_active_shipping_runtime_exactly_once(
+        self, tmp_path
+    ) -> None:
+        events: list[str] = []
+
+        class ObservableProvider(_FakeProvider):
+            def stop(self) -> None:
+                events.append("listener_stopped")
+                super().stop()
+
+        class ActiveFlow:
+            stream_id = "active-flow"
+
+            def __init__(self) -> None:
+                self.close_count = 0
+
+            @property
+            def closed(self) -> bool:
+                return self.close_count > 0
+
+            def receive(self) -> bytes | None:
+                return b"active"
+
+            def close(self) -> None:
+                events.append("active_flow_closed")
+                self.close_count += 1
+
+        provider = ObservableProvider()
+        supervisor = ConnectorSupervisor(
+            config=_config(tmp_path),
+            manager=FakeManager(),
+            readiness=_FakeReadiness(ready=True),
+            provider=provider,
+            now_fn=lambda: NOW(),
+            notify_fn=lambda state: events.append(state.strip()),
+        )
+        assert supervisor._start_provider() is True
+        registry = supervisor.registry
+        pairing = supervisor.pairing_manager()
+        flow = ActiveFlow()
+        tracked = registry.open(flow.stream_id, flow)
+
+        shutdown = threading.Thread(target=lambda: (supervisor.shutdown(), supervisor.shutdown()))
+        shutdown.start()
+        shutdown.join(timeout=5)
+
+        assert not shutdown.is_alive(), "repeated shutdown must complete without deadlock"
+        assert events.index("listener_stopped") < events.index("active_flow_closed")
+        assert provider.starts == provider.stops == 1
+        assert not provider.listening and not supervisor._provider_running
+        assert flow.close_count == 1 and tracked.closed
+        assert registry.sealed and registry.open_count() == 0
+        assert supervisor._provider is None
+        assert supervisor._registry is None
+        assert supervisor._pairing_manager is None
+        assert pairing is not None
+
     def test_start_failure_cleans_provider_registry_and_runtime_residue(
         self, tmp_path
     ) -> None:
