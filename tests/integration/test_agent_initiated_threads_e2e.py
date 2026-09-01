@@ -2,8 +2,8 @@
 
 Drives a real daemon with `fake_claude.sh`. The composer's task plan runs
 `happyranch threads compose --task-id ... --session-id ...`, spawning a
-thread that invokes payment_agt via the thread queue. The thread-plan
-path then accepts payment_agt's reply.
+thread that invokes payment_agent via the thread queue. The thread-plan
+path then accepts payment_agent's reply.
 """
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ def test_agent_compose_from_task_spawns_thread_and_recipient_replies(
     base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
 
     _seed_thread_agent(runtime, "engineering_head")
-    _seed_thread_agent(runtime, "payment_agt")
+    _seed_thread_agent(runtime, "payment_agent")
 
     # Task plan: composer writes compose payload, calls happyranch threads compose
     # (with the binding flags wired from fake_claude.sh's positional args), then
@@ -70,8 +70,8 @@ def test_agent_compose_from_task_spawns_thread_and_recipient_replies(
         'cat > /tmp/thread-compose-int.json << \'ENDJSON\'\n'
         '{"composer": "engineering_head",\n'
         ' "subject": "int test loop in",\n'
-        ' "recipients": ["payment_agt"],\n'
-        ' "body_markdown": "looping payment_agt in"}\n'
+        ' "recipients": ["payment_agent"],\n'
+        ' "body_markdown": "looping payment_agent in"}\n'
         'ENDJSON\n'
         '\n'
         'happyranch threads compose --org "$ORG_SLUG" --task-id "$TASK_ID" '
@@ -87,7 +87,7 @@ def test_agent_compose_from_task_spawns_thread_and_recipient_replies(
     )
     fake_claude_plan_env.chmod(0o755)
 
-    # Thread plan: payment_agt replies "got it" when invoked.
+    # Thread plan: payment_agent replies "got it" when invoked.
     # Use printf to avoid heredoc variable expansion pitfalls (same pattern as
     # test_threads_e2e.py's existing tests).
     fake_claude_thread_plan_env.write_text(
@@ -134,7 +134,7 @@ def test_agent_compose_from_task_spawns_thread_and_recipient_replies(
         time.sleep(0.5)
     assert thread_id is not None, "agent-composed thread never appeared"
 
-    # Wait for payment_agt's reply.
+    # Wait for payment_agent's reply.
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         r = httpx.get(
@@ -143,9 +143,9 @@ def test_agent_compose_from_task_spawns_thread_and_recipient_replies(
         if r.status_code == 200:
             msgs = r.json().get("messages", [])
             if any(
-                m["speaker"] == "payment_agt" and "got it" in (m["body_markdown"] or "")
+                m["speaker"] == "payment_agent" and "got it" in (m["body_markdown"] or "")
                 for m in msgs
             ):
                 return  # success
         time.sleep(0.5)
-    pytest.fail(f"payment_agt never replied on thread {thread_id}")
+    pytest.fail(f"payment_agent never replied on thread {thread_id}")

@@ -45,14 +45,31 @@ def resolve_executor_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(system_assistant_module.shutil, "which", fake_which)
 
 
-def test_system_assistant_paths_are_runtime_global(tmp_path: Path) -> None:
-    paths = system_assistant_paths(tmp_path)
+def _assert_runtime_global_root(runtime_root: Path, assistant_root: Path) -> None:
+    owned_parts = assistant_root.relative_to(runtime_root).parts
+    assert owned_parts == ("system", "assistant")
+    assert "orgs" not in owned_parts
 
-    assert paths.root == tmp_path / "system" / "assistant"
-    assert paths.config_path == tmp_path / "system" / "assistant" / "config.json"
-    assert paths.workspace == tmp_path / "system" / "assistant" / "workspace"
-    assert paths.knowledge_dir == tmp_path / "system" / "assistant" / "workspace" / "happyranch"
-    assert "orgs" not in paths.root.parts
+
+@pytest.mark.parametrize(
+    "runtime_parent", [Path("neutral"), Path(".happyranch/orgs")]
+)
+def test_system_assistant_paths_are_runtime_global(
+    tmp_path: Path, runtime_parent: Path
+) -> None:
+    runtime_root = tmp_path / runtime_parent
+    paths = system_assistant_paths(runtime_root)
+
+    assert paths.root == runtime_root / "system" / "assistant"
+    assert paths.config_path == runtime_root / "system" / "assistant" / "config.json"
+    assert paths.workspace == runtime_root / "system" / "assistant" / "workspace"
+    assert paths.knowledge_dir == (
+        runtime_root / "system" / "assistant" / "workspace" / "happyranch"
+    )
+    _assert_runtime_global_root(runtime_root, paths.root)
+
+    with pytest.raises(AssertionError):
+        _assert_runtime_global_root(runtime_root, runtime_root / "orgs" / "assistant")
 
 
 def _write_knowledge_sources(root: Path, *, marker: str = "packaged") -> None:

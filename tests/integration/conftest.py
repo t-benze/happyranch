@@ -7,6 +7,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 
 from runtime.daemon import paths as paths_mod
 from runtime.daemon import runtimes as runtimes_mod
@@ -94,8 +95,12 @@ def runtime(runtime_container: Path) -> Path:
     return org_root
 
 
-def seed_workspace(org_root: Path, agent: str) -> Path:
-    """Create the minimum workspace layout needed for `_run_agent`.
+def seed_workspace(org_root: Path, agent: str, *, executor: str = "claude") -> Path:
+    """Create the minimum active-agent layout needed for `_run_agent`.
+
+    THR-095 made ``org/agents/<name>.md`` the single authoritative launch
+    configuration.  A workspace directory alone is deliberately not an
+    active agent, so the integration fixture must materialize both surfaces.
 
     Only the workspace ROOT is seeded here. Every entry under
     ``.claude/skills/`` is owned by the daemon's canonical-skill
@@ -113,6 +118,35 @@ def seed_workspace(org_root: Path, agent: str) -> Path:
     We don't need a real CLAUDE.md, settings.json, or task_history.md for
     the fake Claude binary to succeed, because `fake_claude.sh` parses
     task_id/session_id out of the prompt instead of running the skill."""
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+
+    teams = yaml.safe_load((org_root / "org" / "teams.yaml").read_text())["teams"]
+    membership = [
+        (team, "manager" if config["manager"] == agent else "worker")
+        for team, config in teams.items()
+        if agent == config["manager"] or agent in config["workers"]
+    ]
+    assert len(membership) == 1, f"test agent {agent!r} must have exactly one team membership"
+    team, role = membership[0]
+
+    agent_def = AgentDef(
+        name=agent,
+        team=team,
+        role=role,
+        executor=executor,
+        allow_rules=(),
+        repos={},
+        enrolled_by=None,
+        enrolled_at_task=None,
+        enrolled_at=None,
+        system_prompt=f"You are {agent}.",
+        description="Integration test agent.",
+        model=None,
+    )
+    agents_dir = org_root / "org" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / f"{agent}.md").write_text(render_agent_text(agent_def))
+
     ws = org_root / "workspaces" / agent
     ws.mkdir(parents=True, exist_ok=True)
     return ws
@@ -265,6 +299,15 @@ def live_daemon_idle(
     monkeypatch.setenv("HAPPYRANCH_OPENCODE_CLI_PATH", str(fake_opencode))
     # Disable executor launch spacing (issue #85) — see live_daemon.
     monkeypatch.setenv("HAPPYRANCH_EXECUTOR_LAUNCH_SPACING_SECONDS", "0")
+    # Executor launch is registration-only. The idle daemon still needs the
+    # isolated machine registry before a runtime is registered later.
+    from runtime.orchestrator.executor_binary_registry import save_registry
+
+    save_registry({
+        "claude": str(fake_claude),
+        "codex": str(fake_codex),
+        "opencode": str(fake_opencode),
+    })
     script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
     subprocess.run([str(script), "start"], check=True)
     deadline = time.time() + 5
