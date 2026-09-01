@@ -52,6 +52,24 @@ def _activation(release, *, activation_id="APA-1", epoch=1, previous=None,
     )
 
 
+def _raw_activation_values(
+    activation_id, epoch, release_id, previous, expected, action, *, team="engineering"
+):
+    activation = AuthorityPolicyActivation(
+        id=activation_id, team=team, epoch=epoch, release_id=release_id,
+        previous_activation_id=previous, expected_previous_epoch=expected,
+        action=action, actor_kind="shared_local_operator_credential",
+        request_id=f"REQ-{activation_id}", request_digest=_digest(action),
+        created_at="2026-09-01T00:00:00+00:00",
+    )
+    values = activation.model_dump(mode="json")
+    return tuple(values[field] for field in (
+        "id", "team", "epoch", "release_id", "previous_activation_id",
+        "expected_previous_epoch", "action", "actor_kind", "request_id",
+        "request_digest", "created_at", "activation_digest",
+    ))
+
+
 def _candidate(release, *, root="T-1"):
     return dict(
         root_task_id=root, team=release.team, manager_agent="engineering_manager",
@@ -62,6 +80,65 @@ def _candidate(release, *, root="T-1"):
         prompt_digest=_digest("prompt"), model_id="model", model_version="1",
         model_digest=_digest("model"), snapshot_digest=_digest("snapshot"),
     )
+
+
+def test_canonical_activation_payload_golden_vector_and_field_sensitivity():
+    activation = AuthorityPolicyActivation(
+        **{
+            **_activation(_release()).model_dump(exclude={"activation_digest"}),
+            "created_at": "2026-09-01T00:00:00+00:00",
+        }
+    )
+    assert activation.activation_digest == (
+        "72432bbb88c8693660119145b23e354992b8ce84e381e6a2e824667a62053642"
+    )
+    for field, replacement in {
+        "id": "APA-2", "team": "content", "epoch": 2,
+        "release_id": "APR-" + "0" * 64,
+        "previous_activation_id": "APA-0", "expected_previous_epoch": 0,
+        "action": "activate", "actor_kind": "other",
+        "request_id": "REQ-2", "request_digest": "0" * 64,
+        "created_at": "2026-09-02T00:00:00+00:00",
+    }.items():
+        values = activation.model_dump()
+        values[field] = replacement
+        values["activation_digest"] = None
+        if field == "actor_kind":
+            with pytest.raises(ValidationError):
+                AuthorityPolicyActivation.model_validate(values)
+        else:
+            changed = AuthorityPolicyActivation.model_validate(values)
+            assert changed.activation_digest != activation.activation_digest
+
+
+@pytest.mark.parametrize("field,replacement", [
+    ("id", "APA-other"), ("team", "content"), ("epoch", 2),
+    ("release_id", "APR-" + "0" * 64),
+    ("previous_activation_id", "APA-prior"), ("expected_previous_epoch", 0),
+    ("action", "activate"), ("request_id", "REQ-other"),
+    ("request_digest", "0" * 64),
+    ("created_at", "2026-09-02T00:00:00+00:00"),
+])
+def test_valid_post_construction_activation_substitution_has_zero_residue(
+    tmp_path, field, replacement,
+):
+    db = Database(tmp_path / "db.sqlite")
+    release = AuthorityPolicyStore(db).create_release(_release())
+    activation = _activation(release)
+    object.__setattr__(activation, field, replacement)
+    with pytest.raises(ValueError, match="activation_digest"):
+        AuthorityPolicyStore(db).activate(activation)
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_activations"
+    ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("digest", ["not-a-digest", "0" * 64])
+def test_direct_malformed_or_mismatched_activation_digest_is_rejected(digest):
+    values = _activation(_release()).model_dump()
+    values["activation_digest"] = digest
+    with pytest.raises(ValueError):
+        AuthorityPolicyActivation.model_validate(values)
 
 
 def test_dark_api_pins_while_legacy_claim_remains_unpinned(tmp_path):
@@ -105,6 +182,46 @@ def test_interrupted_additive_migration_stages_resume(tmp_path, dropped):
     reopened = Database(path)
     assert {"authority_policy_releases", "authority_policy_activations", "authority_candidate_policy_pins"} <= set(reopened.list_tables())
     assert "target.version<current.version" in _activation_validation_trigger_sql(reopened)
+
+
+def _replace_with_preseal_activation_table(db):
+    db._conn.execute("DROP TABLE authority_policy_activations")
+    db._conn.execute("""CREATE TABLE authority_policy_activations (
+        id TEXT PRIMARY KEY, team TEXT NOT NULL, epoch INTEGER NOT NULL,
+        release_id TEXT NOT NULL, previous_activation_id TEXT,
+        expected_previous_epoch INTEGER, action TEXT NOT NULL,
+        actor_kind TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE,
+        request_digest TEXT NOT NULL, created_at TEXT NOT NULL,
+        UNIQUE(team, epoch))""")
+    db._conn.commit()
+
+
+def test_empty_interrupted_preseal_activation_table_is_truthfully_upgraded(tmp_path):
+    path = tmp_path / "db.sqlite"
+    db = Database(path)
+    _replace_with_preseal_activation_table(db)
+    db.close()
+    reopened = Database(path)
+    columns = {row["name"] for row in reopened._conn.execute(
+        "PRAGMA table_info(authority_policy_activations)"
+    )}
+    assert "activation_digest" in columns
+
+
+def test_populated_interrupted_preseal_activation_table_fails_closed(tmp_path):
+    path = tmp_path / "db.sqlite"
+    db = Database(path)
+    _replace_with_preseal_activation_table(db)
+    db._conn.execute(
+        "INSERT INTO authority_policy_activations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        ("APA-old", "engineering", 1, "APR-old", None, 0, "bootstrap",
+         "shared_local_operator_credential", "REQ-old", _digest("old"),
+         "2026-09-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+    db.close()
+    with pytest.raises(ValueError, match="lack truthful activation_digest"):
+        Database(path)
 
 
 def _activation_validation_trigger_sql(db):
@@ -203,7 +320,7 @@ def test_activation_cas_idempotency_and_reactivation(tmp_path):
     current = store.activate(_activation(second, activation_id="APA-2", epoch=2,
         previous=older.id, expected=1, request_id="REQ-2", action="activate"))
     assert store.activate(current) == current
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises((ValueError, sqlite3.IntegrityError)):
         store.activate(current.model_copy(update={"release_id": first.id}))
     rollback = store.activate(_activation(first, activation_id="APA-3", epoch=3,
         previous=current.id, expected=2, request_id="REQ-3", action="reactivate_rollback"))
@@ -236,10 +353,8 @@ def test_raw_sql_linkage_mutation_delete_and_duplicate_attacks_fail(tmp_path):
     db._conn.rollback()
     with pytest.raises(sqlite3.IntegrityError):
         db._conn.execute(
-            """INSERT INTO authority_policy_activations VALUES
-               ('APA-gap','engineering',9,?,NULL,NULL,'activate',
-                'shared_local_operator_credential','REQ-gap',?,'now')""",
-            (release.id, _digest("gap")),
+            "INSERT INTO authority_policy_activations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            _raw_activation_values("APA-gap", 9, release.id, None, None, "activate"),
         )
 
 
@@ -271,6 +386,100 @@ def test_corrupt_release_digest_fails_closed(tmp_path):
     db._conn.commit()
     with pytest.raises(ValueError, match="corrupt digest"):
         db.get_authority_policy_release(release.id)
+
+
+@pytest.mark.parametrize("field,replacement", [
+    ("id", "APA-corrupt"), ("team", "content"), ("epoch", 9),
+    ("release_id", "APR-missing"),
+    ("previous_activation_id", "APA-missing"), ("expected_previous_epoch", 9),
+    ("action", "activate"), ("request_id", "REQ-corrupt"),
+    ("request_digest", "0" * 64),
+    ("created_at", "2026-09-02T00:00:00+00:00"),
+    ("activation_digest", "0" * 64),
+])
+def test_trigger_bypass_each_sealed_activation_field_fails_closed(
+    tmp_path, field, replacement,
+):
+    db = Database(tmp_path / "db.sqlite")
+    store = AuthorityPolicyStore(db)
+    release = store.create_release(_release())
+    activation = store.activate(_activation(release))
+    db._conn.execute("DROP TRIGGER authority_policy_activations_no_update")
+    db._conn.commit()
+    db._conn.execute("PRAGMA foreign_keys=OFF")
+    db._conn.execute(
+        f"UPDATE authority_policy_activations SET {field}=? WHERE id=?",
+        (replacement, activation.id),
+    )
+    db._conn.commit()
+    lookup_id = replacement if field == "id" else activation.id
+    with pytest.raises(ValueError):
+        db.get_authority_policy_activation(lookup_id)
+
+
+def test_candidate_pin_read_rejects_indirectly_corrupt_activation(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    store = AuthorityPolicyStore(db)
+    release = store.create_release(_release())
+    activation = store.activate(_activation(release))
+    candidate, _ = store.claim_candidate_with_pin(
+        **_candidate(release), release_id=release.id, activation_id=activation.id,
+        activation_epoch=1, provider_id="openai", executor_kind="codex",
+    )
+    db._conn.execute("DROP TRIGGER authority_policy_activations_no_update")
+    db._conn.execute(
+        "UPDATE authority_policy_activations SET request_digest=? WHERE id=?",
+        ("0" * 64, activation.id),
+    )
+    db._conn.commit()
+    with pytest.raises(ValueError):
+        db.get_authority_candidate_policy_pin(candidate.id)
+
+
+def test_recomputed_seal_cannot_hide_corrupt_predecessor_history(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    store = AuthorityPolicyStore(db)
+    first = store.create_release(_release())
+    second = store.create_release(_release(version=2))
+    one = store.activate(_activation(first))
+    two = store.activate(_activation(
+        second, activation_id="APA-2", epoch=2, previous=one.id, expected=1,
+        request_id="REQ-2", action="activate",
+    ))
+    corrupt = AuthorityPolicyActivation.model_validate({
+        **two.model_dump(exclude={"activation_digest"}),
+        "previous_activation_id": None,
+        "expected_previous_epoch": 0,
+    })
+    db._conn.execute("DROP TRIGGER authority_policy_activations_no_update")
+    db._conn.execute(
+        "UPDATE authority_policy_activations SET previous_activation_id=NULL, "
+        "expected_previous_epoch=0, activation_digest=? WHERE id=?",
+        (corrupt.activation_digest, two.id),
+    )
+    db._conn.commit()
+    with pytest.raises(ValueError, match="history semantics"):
+        db.get_authority_policy_activation(two.id)
+
+
+def test_recomputed_seal_cannot_hide_release_team_linkage_corruption(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    store = AuthorityPolicyStore(db)
+    engineering = store.create_release(_release())
+    content = store.create_release(_release(team="content"))
+    activation = store.activate(_activation(engineering))
+    corrupt = AuthorityPolicyActivation.model_validate({
+        **activation.model_dump(exclude={"activation_digest"}),
+        "release_id": content.id,
+    })
+    db._conn.execute("DROP TRIGGER authority_policy_activations_no_update")
+    db._conn.execute(
+        "UPDATE authority_policy_activations SET release_id=?, activation_digest=? WHERE id=?",
+        (content.id, corrupt.activation_digest, activation.id),
+    )
+    db._conn.commit()
+    with pytest.raises(ValueError, match="corrupt linkage"):
+        db.get_authority_policy_activation(activation.id)
 
 
 @pytest.mark.parametrize("field,replacement", [
@@ -491,10 +700,10 @@ def test_activation_action_state_machine_rejects_false_raw_sql(tmp_path, history
         target_release, epoch, previous, expected = first, 1, None, 0
     with pytest.raises(sqlite3.IntegrityError):
         db._conn.execute(
-            "INSERT INTO authority_policy_activations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (f"APA-raw-{action}", "engineering", epoch, target_release.id, previous,
-             expected, action, "shared_local_operator_credential", f"REQ-raw-{action}",
-             _digest(action), "now"),
+            "INSERT INTO authority_policy_activations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            _raw_activation_values(
+                f"APA-raw-{action}", epoch, target_release.id, previous, expected, action
+            ),
         )
 
 
@@ -512,9 +721,8 @@ def test_activation_action_state_machine_accepts_truthful_raw_sql_sequence(tmp_p
     ]
     for activation_id, epoch, release_id, previous, expected, action in rows:
         db._conn.execute(
-            "INSERT INTO authority_policy_activations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (activation_id, "engineering", epoch, release_id, previous, expected, action,
-             "shared_local_operator_credential", f"REQ-{epoch}", _digest(action), "now"),
+            "INSERT INTO authority_policy_activations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            _raw_activation_values(activation_id, epoch, release_id, previous, expected, action),
         )
     db._conn.commit()
     assert [row["action"] for row in db._conn.execute(
@@ -536,16 +744,16 @@ def test_raw_sql_rejects_forward_reactivation_and_preserves_history(tmp_path):
     ]
     for activation_id, epoch, release_id, previous, expected, action in rows:
         db._conn.execute(
-            "INSERT INTO authority_policy_activations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (activation_id, "engineering", epoch, release_id, previous, expected, action,
-             "shared_local_operator_credential", f"REQ-{epoch}", _digest(action), "now"),
+            "INSERT INTO authority_policy_activations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            _raw_activation_values(activation_id, epoch, release_id, previous, expected, action),
         )
     db._conn.commit()
     with pytest.raises(sqlite3.IntegrityError):
         db._conn.execute(
-            "INSERT INTO authority_policy_activations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            ("APA-4", "engineering", 4, second.id, "APA-3", 3, "reactivate_rollback",
-             "shared_local_operator_credential", "REQ-4", _digest("forward"), "now"),
+            "INSERT INTO authority_policy_activations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            _raw_activation_values(
+                "APA-4", 4, second.id, "APA-3", 3, "reactivate_rollback"
+            ),
         )
     db._conn.rollback()
     assert db._conn.execute("SELECT COUNT(*) FROM authority_policy_activations").fetchone()[0] == 3

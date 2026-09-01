@@ -1194,7 +1194,7 @@ class AuthorityPolicyRelease(BaseModel):
 
 
 class AuthorityPolicyActivation(BaseModel):
-    """One immutable activation epoch; rollback is another activation."""
+    """One immutable, canonically sealed activation epoch."""
     model_config = {"extra": "forbid", "frozen": True}
 
     id: str
@@ -1208,10 +1208,42 @@ class AuthorityPolicyActivation(BaseModel):
     request_id: str
     request_digest: str
     created_at: datetime = Field(default_factory=_now)
+    activation_digest: str | None = None
+
+    @model_validator(mode="after")
+    def _derive_and_validate_activation_digest(self):
+        payload = {
+            "id": self.id,
+            "team": self.team,
+            "epoch": self.epoch,
+            "release_id": self.release_id,
+            "previous_activation_id": self.previous_activation_id,
+            "expected_previous_epoch": self.expected_previous_epoch,
+            "action": self.action,
+            "actor_kind": self.actor_kind,
+            "request_id": self.request_id,
+            "request_digest": self.request_digest,
+            "created_at": self.created_at.isoformat(),
+        }
+        canonical = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        expected = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if self.activation_digest is not None and self.activation_digest != expected:
+            raise ValueError("activation_digest does not match canonical activation semantics")
+        object.__setattr__(self, "activation_digest", expected)
+        return self
 
     @field_validator("request_digest")
     @classmethod
     def _request_digest_is_bounded_hex(cls, value, info):
+        return validate_authority_digest(value, info.field_name)
+
+    @field_validator("activation_digest")
+    @classmethod
+    def _activation_digest_is_bounded_hex(cls, value, info):
+        if value is None:
+            return value
         return validate_authority_digest(value, info.field_name)
 
 

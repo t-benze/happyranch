@@ -553,6 +553,7 @@ class Database:
         self._migrate_drop_talk_surface_if_needed()
         self._retire_skill_lifecycle_if_present()
         self._create_tables()
+        self._migrate_dark_authority_activation_seal_if_needed()
         self._create_authority_tables()
         self._retrofit_authority_policy_activation_trigger_if_needed()
         self._retrofit_authority_audit_fk_if_needed()
@@ -2122,6 +2123,7 @@ class Database:
                 request_id TEXT NOT NULL UNIQUE,
                 request_digest TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                activation_digest TEXT NOT NULL,
                 UNIQUE(team, epoch)
             );
             CREATE INDEX IF NOT EXISTS idx_authority_policy_activations_team_epoch
@@ -2366,7 +2368,40 @@ class Database:
             -- earlier reviewed heads that already carry the weaker trigger body are
             -- upgraded by ``_retrofit_authority_lifecycle_trigger_if_needed``.
             {_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL}
-            """)
+        """)
+        self._conn.commit()
+
+    def _migrate_dark_authority_activation_seal_if_needed(self) -> None:
+        """Upgrade only an empty interrupted-development activation table.
+
+        S1 is unmerged and dark.  A pre-seal table containing rows has no
+        truthful stored activation seal to preserve, so reopening fails closed
+        instead of inventing provenance.  Empty interrupted tables can safely
+        receive the final required column before normal creation resumes.
+        """
+        exists = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='authority_policy_activations'"
+        ).fetchone()
+        if exists is None:
+            return
+        columns = {
+            row["name"] for row in self._conn.execute(
+                "PRAGMA table_info(authority_policy_activations)"
+            )
+        }
+        if "activation_digest" in columns:
+            return
+        if self._conn.execute(
+            "SELECT 1 FROM authority_policy_activations LIMIT 1"
+        ).fetchone() is not None:
+            raise ValueError(
+                "populated dark authority activations lack truthful activation_digest"
+            )
+        self._conn.execute(
+            "ALTER TABLE authority_policy_activations "
+            "ADD COLUMN activation_digest TEXT NOT NULL"
+        )
         self._conn.commit()
 
     def _retrofit_authority_audit_fk_if_needed(self) -> None:
@@ -10385,7 +10420,66 @@ class Database:
         return release
 
     def _authority_policy_activation_from_row(self, row) -> AuthorityPolicyActivation:
-        return AuthorityPolicyActivation.model_validate(dict(row))
+        try:
+            activation = AuthorityPolicyActivation.model_validate(dict(row))
+        except ValueError as exc:
+            raise ValueError("authority policy activation has corrupt digest or semantics") from exc
+        release = self.get_authority_policy_release(activation.release_id)
+        if release is None or release.team != activation.team:
+            raise ValueError(f"authority policy activation {activation.id!r} has corrupt linkage")
+        self._validate_authority_activation_history(activation)
+        return activation
+
+    def _validate_authority_activation_history(
+        self, receipt: AuthorityPolicyActivation
+    ) -> None:
+        """Replay the sealed team history through the requested receipt."""
+        rows = self._conn.execute(
+            "SELECT * FROM authority_policy_activations "
+            "WHERE team=? AND epoch<=? ORDER BY epoch",
+            (receipt.team, receipt.epoch),
+        ).fetchall()
+        if len(rows) != receipt.epoch or not rows:
+            raise ValueError(f"authority policy activation {receipt.id!r} has corrupt history")
+        prior = None
+        activated_release_ids: set[str] = set()
+        for expected_epoch, row in enumerate(rows, 1):
+            try:
+                item = AuthorityPolicyActivation.model_validate(dict(row))
+            except ValueError as exc:
+                raise ValueError("authority policy activation history is corrupt") from exc
+            release = self.get_authority_policy_release(item.release_id)
+            if release is None or release.team != item.team or item.epoch != expected_epoch:
+                raise ValueError("authority policy activation history linkage is corrupt")
+            if prior is None:
+                valid = (
+                    item.action == "bootstrap"
+                    and item.previous_activation_id is None
+                    and item.expected_previous_epoch in (None, 0)
+                )
+            else:
+                valid = (
+                    item.previous_activation_id == prior.id
+                    and item.expected_previous_epoch == prior.epoch
+                    and item.action != "bootstrap"
+                )
+                if valid and item.action == "activate":
+                    valid = item.release_id not in activated_release_ids
+                elif valid and item.action == "reactivate_rollback":
+                    current = self.get_authority_policy_release(prior.release_id)
+                    valid = (
+                        item.release_id in activated_release_ids
+                        and item.release_id != prior.release_id
+                        and current is not None
+                        and release.policy_id == current.policy_id
+                        and release.version < current.version
+                    )
+            if not valid:
+                raise ValueError("authority policy activation history semantics are corrupt")
+            activated_release_ids.add(item.release_id)
+            prior = item
+        if prior is None or prior.id != receipt.id:
+            raise ValueError(f"authority policy activation {receipt.id!r} has corrupt history")
 
     @_synchronized
     def create_authority_policy_release(self, release: AuthorityPolicyRelease) -> AuthorityPolicyRelease:
@@ -10502,10 +10596,10 @@ class Database:
                 """INSERT INTO authority_policy_activations
                    (id,team,epoch,release_id,previous_activation_id,
                     expected_previous_epoch,action,actor_kind,request_id,
-                    request_digest,created_at)
+                    request_digest,created_at,activation_digest)
                    VALUES (:id,:team,:epoch,:release_id,:previous_activation_id,
                            :expected_previous_epoch,:action,:actor_kind,:request_id,
-                           :request_digest,:created_at)""",
+                           :request_digest,:created_at,:activation_digest)""",
                 activation.model_dump(mode="json"),
             )
             self._conn.commit()
@@ -10548,6 +10642,9 @@ class Database:
         if linked is None:
             raise ValueError(f"authority candidate policy pin {candidate_id!r} is corrupt")
         self.get_authority_policy_release(pin.release_id)
+        activation = self.get_authority_policy_activation(pin.activation_id)
+        if activation is None:
+            raise ValueError(f"authority candidate policy pin {candidate_id!r} is corrupt")
         return pin
 
     @_synchronized

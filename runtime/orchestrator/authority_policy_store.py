@@ -27,7 +27,10 @@ class AuthorityPolicyStore:
         return self._db.create_authority_policy_release(release)
 
     def activate(self, activation: AuthorityPolicyActivation) -> AuthorityPolicyActivation:
-        return self._db.activate_authority_policy(activation)
+        sealed = AuthorityPolicyActivation.model_validate(
+            activation.model_dump(mode="python", round_trip=True, warnings=False)
+        )
+        return self._db.activate_authority_policy(sealed)
 
     def get_release(self, release_id: str) -> AuthorityPolicyRelease | None:
         return self._db.get_authority_policy_release(release_id)
