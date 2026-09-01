@@ -43,7 +43,7 @@ FIXTURE_FILES = {
 # Extra required top-level keys beyond the common (version/name/status/description)
 # set, per fixture.
 _TOP_LEVEL_EXTRA = {
-    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "readiness", "secrets", "visibility", "fallbacks", "acceptance_matrix", "delivery_status"],
+    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "connector_ingress", "readiness", "secrets", "visibility", "fallbacks", "n2_lifecycle_matrix", "acceptance_matrix", "delivery_status"],
     "route_policy": [
         "decision_order",
         "default_behavior",
@@ -361,6 +361,7 @@ def test_managed_embedded_topology_is_load_bearing() -> None:
     assert doc["transport"] == "embedded"
     assert doc["endpoints"] == {"mac": "embedded_tsnet_userspace_wireguard", "linux_tailnet": "happyranch_packaged_embedded_network_sidecar_core_build_test", "linux_connector_bind": "127.0.0.1_only", "daemon_bind": "127.0.0.1:8765_only"}
     assert doc["sidecar_boundary"] == {"tailnet_listener": True, "proxy_protocol": "raw_tcp_only", "fixed_target": "loopback_python_connector_only", "authorization_authority": False, "daemon_bearer_access": False, "happy_ranch_route_parsing": False}
+    assert doc["connector_ingress"] == {"mode": "managed", "bind_host": "127.0.0.1_literal_only", "reuses_gateway_pipeline": True, "application_authority": "connector_only", "sidecar_bypass": False}
     assert doc["readiness"] == {"mode": "conjunctive_composite", "required_gates": ["configuration_valid", "encrypted_engine_started", "private_control_plane_joined", "expected_peer_map_visible", "tailnet_listener_active", "loopback_connector_reachable"], "failure_order": "remove_tailnet_listener_first", "early_ready_forbidden": True}
 
 
@@ -380,12 +381,71 @@ def test_managed_acceptance_matrix_has_no_external_or_plaintext_escape() -> None
         assert set(row["required_invariants"]) == required
 
 
+def test_n2_lifecycle_matrix_covers_shipping_boundaries() -> None:
+    rows = _load("managed_topology")["n2_lifecycle_matrix"]
+    expected = {
+        "startup": ("invalid_or_unready_before_bind", "no_listener_no_residue"),
+        "admission": ("readiness_then_loopback_bind", "full_gateway_pipeline_only"),
+        "active_flow": ("authorize_then_final_local_hop", "bearer_final_hop_only"),
+        "readiness_loss": ("listener_stop_before_downstream_cleanup", "no_new_admission"),
+        "revocation": ("listener_stop_then_active_flow_close_then_downstream_cleanup", "no_stale_authorization_or_residue"),
+        "shutdown": ("listener_stop_then_active_flow_close_then_runtime_cleanup", "repeated_shutdown_exactly_once_no_residue"),
+        "partial_failure": ("admission_removed_before_cleanup_retry", "category_only_fail_closed"),
+        "concurrency_reentry": ("provider_start_races_shutdown_or_persisted_revocation", "linearized_both_orderings_no_deadlock_or_double_close"),
+        "recovery": ("fresh_gates_after_cleanup_before_fresh_listener", "current_identity_epoch_policy_only"),
+    }
+    required_observable_mappings = {
+        "startup": {
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_not_ready_never_starts_provider",
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_start_failure_cleans_provider_registry_and_runtime_residue",
+        },
+        "admission": {
+            "tests/remote_access/test_managed_provider.py::test_readiness_failure_never_creates_listener_and_is_redacted",
+        },
+        "active_flow": {
+            "tests/remote_access/test_managed_provider.py::test_complete_gateway_pipeline_and_final_hop_bearer_placement",
+        },
+        "readiness_loss": {
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_readiness_loss_stops_listener_immediately",
+        },
+        "revocation": {
+            "tests/remote_access/test_supervisor.py::TestReconciliationRotation::test_persisted_revocation_removes_listener_before_stream_cleanup",
+            "tests/remote_access/test_supervisor.py::TestReconciliationRotation::test_cross_process_revoke_closes_stream_then_rotation_reopens_repair",
+        },
+        "shutdown": {
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_repeated_shutdown_closes_active_shipping_runtime_exactly_once",
+        },
+        "partial_failure": {
+            "tests/remote_access/test_streams.py::test_close_all_partial_multi_handle_failure_seals_all",
+            "tests/remote_access/test_supervisor.py::TestReconciliationRotation::test_persisted_revocation_retries_failed_listener_stop_without_double_close",
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_start_failure_cleans_provider_registry_and_runtime_residue",
+        },
+        "concurrency_reentry": {
+            "tests/remote_access/test_supervisor.py::TestRunLoop::test_concurrent_provider_start_then_shutdown_is_linearized",
+            "tests/remote_access/test_supervisor.py::TestReconciliationRotation::test_provider_start_racing_persisted_revocation_is_linearized_in_both_orderings",
+        },
+        "recovery": {
+            "tests/remote_access/test_managed_provider.py::test_stop_is_idempotent_and_recovery_requires_fresh_readiness",
+            "tests/remote_access/test_supervisor.py::TestReconciliationRotation::test_targeted_revoke_rotation_unaffected_device_still_opens_and_ws_denied",
+        },
+    }
+    assert [row["phase"] for row in rows] == list(expected)
+    for row in rows:
+        _assert_exact_keys(row, ["phase", "ordering", "outcome", "shipping_tests"], "n2_lifecycle_matrix[]")
+        assert (row["ordering"], row["outcome"]) == expected[row["phase"]]
+        assert row["shipping_tests"], f"{row['phase']}: shipping test mapping required"
+        assert all(test.startswith("tests/remote_access/") and "::test_" in test for test in row["shipping_tests"])
+        assert set(row["shipping_tests"]) == required_observable_mappings[row["phase"]], (
+            f"{row['phase']}: exact observable production-seam mappings required"
+        )
+
+
 def test_managed_delivery_status_preserves_diy_and_gates_future_units() -> None:
-    assert _load("managed_topology")["delivery_status"] == {"n0": "contract_implemented", "n1": "sidecar_core_build_test_only_no_distribution_or_acceptance", "n2_through_n6": "founder_gated_not_authorized", "unit_4b_2": "delivered_independent_not_network_provisioning_or_acceptance", "supported_diy": "unchanged_truthful_voluntary_external_tailscale_or_customer_headscale", "supported_diy_for_founder_acceptance": "non_executable_not_managed_path"}
+    assert _load("managed_topology")["delivery_status"] == {"n0": "contract_implemented", "n1": "sidecar_core_build_test_only_no_distribution_or_acceptance", "n2": "managed_loopback_connector_ingress_implemented", "n3_through_n6": "founder_gated_not_authorized", "unit_4b_2": "delivered_independent_not_network_provisioning_or_acceptance", "supported_diy": "unchanged_truthful_voluntary_external_tailscale_or_customer_headscale", "supported_diy_for_founder_acceptance": "non_executable_not_managed_path"}
 
 
 _TOP_LEVEL_EXTRA = {
-    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "readiness", "secrets", "visibility", "fallbacks", "acceptance_matrix", "delivery_status"],
+    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "connector_ingress", "readiness", "secrets", "visibility", "fallbacks", "n2_lifecycle_matrix", "acceptance_matrix", "delivery_status"],
     "route_policy": [
         "decision_order",
         "default_behavior",

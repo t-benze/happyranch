@@ -12,6 +12,7 @@ import json
 import os
 import shlex
 import socket
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -22,7 +23,12 @@ from runtime.remote_access.credentials import (
     CredentialUnavailable,
     SystemdCredentialProvider,
 )
+from runtime.remote_access.diy_provider import DiyProviderError
 from runtime.remote_access.lab_provider import LAB_ONLY_BANNER, LabProviderConfig, LabProviderError
+from runtime.remote_access.managed_provider import (
+    ManagedProviderAdapter,
+    ManagedProviderConfig,
+)
 from runtime.remote_access.policy import PolicyEnvelope
 from runtime.remote_access.readiness import (
     ConnectorReadiness,
@@ -285,6 +291,44 @@ class TestConfig:
         assert loaded.lab.lab_only is True
         assert loaded.daemon_port == 8999
 
+    def test_managed_roundtrip_is_exclusive_and_literal_loopback(
+        self, tmp_path
+    ) -> None:
+        config = _config(
+            tmp_path, lab=False, managed=ManagedProviderConfig(bind_port=9443)
+        )
+        path = tmp_path / "managed.json"
+        config.to_file(path)
+        loaded = ConnectorConfig.from_file(path)
+        assert loaded.managed == ManagedProviderConfig(bind_port=9443)
+        with pytest.raises(ConnectorConfigError, match="mutually exclusive"):
+            _config(tmp_path, managed=ManagedProviderConfig()).validate()
+        with pytest.raises(ConnectorConfigError, match="invalid managed"):
+            _config(
+                tmp_path,
+                lab=False,
+                managed=ManagedProviderConfig(bind_host="0.0.0.0"),
+            ).validate()
+
+    def test_managed_factory_and_unit_use_explicit_closed_mode(
+        self, tmp_path, route_policy_fixture
+    ) -> None:
+        config = _config(tmp_path, lab=False, managed=ManagedProviderConfig(bind_port=0))
+        supervisor = _supervisor(
+            tmp_path,
+            config=config,
+            provider=None,
+            lab=False,
+            readiness=_FakeReadiness(ready=True),
+            policy=build_consumer(route_policy_fixture),
+        )
+        provider = supervisor.build_managed_provider()
+        assert isinstance(provider, ManagedProviderAdapter)
+        assert provider.bind_address == "127.0.0.1"
+        spec = supervisor.unit_spec()
+        assert "--managed" in spec.exec_start
+        assert "--diy" not in spec.exec_start and "--lab-only" not in spec.exec_start
+
 
 class TestRunLoop:
     def test_ready_starts_provider_and_notifies_readiness(
@@ -348,7 +392,7 @@ class TestRunLoop:
         # fail-closed status/shutdown: still not running, still no READY
         supervisor.shutdown()
         assert supervisor._provider_running is False
-        assert provider.stops == 0
+        assert provider.stops == 2  # every partial start gets cleanup
         assert not _notified("READY=1")
 
     def test_real_occupied_port_keeps_supervised_retry_never_ready(self, tmp_path) -> None:
@@ -482,6 +526,159 @@ class TestRunLoop:
         supervisor.shutdown()
         assert provider.stops == 1
         assert _notified("STOPPING=1")
+
+    def test_concurrent_provider_start_then_shutdown_is_linearized(self, tmp_path) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        events: list[str] = []
+
+        class BlockingProvider(_FakeProvider):
+            def start(self) -> None:
+                events.append("start_entered")
+                entered.set()
+                assert release.wait(timeout=5)
+                super().start()
+                events.append("listener_started")
+
+            def stop(self) -> None:
+                events.append("listener_stopped")
+                super().stop()
+
+        provider = BlockingProvider()
+        supervisor = ConnectorSupervisor(
+            config=_config(tmp_path),
+            manager=FakeManager(),
+            readiness=_FakeReadiness(ready=True),
+            provider=provider,
+            now_fn=lambda: NOW(),
+            notify_fn=lambda state: events.append(state.strip()),
+        )
+        runner = threading.Thread(
+            target=lambda: supervisor.run(max_iterations=1, poll_seconds=0)
+        )
+        stopper = threading.Thread(target=supervisor.shutdown)
+        runner.start()
+        assert entered.wait(timeout=5)
+        stopper.start()
+        assert stopper.is_alive(), "shutdown must wait for the in-flight start boundary"
+        release.set()
+        runner.join(timeout=5)
+        stopper.join(timeout=5)
+
+        assert not runner.is_alive() and not stopper.is_alive()
+        assert events == [
+            "start_entered",
+            "listener_started",
+            "READY=1",
+            "listener_stopped",
+            "STOPPING=1",
+        ]
+        assert provider.starts == provider.stops == 1
+        assert not provider.listening and not supervisor._provider_running
+
+    def test_shutdown_first_forbids_late_start_and_repeated_shutdown_has_no_residue(
+        self, tmp_path
+    ) -> None:
+        events: list[str] = []
+        provider = _FakeProvider()
+        supervisor = ConnectorSupervisor(
+            config=_config(tmp_path),
+            manager=FakeManager(),
+            readiness=_FakeReadiness(ready=True),
+            provider=provider,
+            now_fn=lambda: NOW(),
+            notify_fn=lambda state: events.append(state.strip()),
+        )
+        supervisor.shutdown()
+        supervisor.shutdown()
+        assert supervisor._start_provider() is False
+        assert supervisor.run(max_iterations=1, poll_seconds=0) == 0
+
+        assert provider.starts == provider.stops == 0
+        assert events == ["STOPPING=1", "STOPPING=1"]
+        assert supervisor._provider is None
+        assert supervisor._registry is None
+        assert supervisor._pairing_manager is None
+
+    def test_repeated_shutdown_closes_active_shipping_runtime_exactly_once(
+        self, tmp_path
+    ) -> None:
+        events: list[str] = []
+
+        class ObservableProvider(_FakeProvider):
+            def stop(self) -> None:
+                events.append("listener_stopped")
+                super().stop()
+
+        class ActiveFlow:
+            stream_id = "active-flow"
+
+            def __init__(self) -> None:
+                self.close_count = 0
+
+            @property
+            def closed(self) -> bool:
+                return self.close_count > 0
+
+            def receive(self) -> bytes | None:
+                return b"active"
+
+            def close(self) -> None:
+                events.append("active_flow_closed")
+                self.close_count += 1
+
+        provider = ObservableProvider()
+        supervisor = ConnectorSupervisor(
+            config=_config(tmp_path),
+            manager=FakeManager(),
+            readiness=_FakeReadiness(ready=True),
+            provider=provider,
+            now_fn=lambda: NOW(),
+            notify_fn=lambda state: events.append(state.strip()),
+        )
+        assert supervisor._start_provider() is True
+        registry = supervisor.registry
+        pairing = supervisor.pairing_manager()
+        flow = ActiveFlow()
+        tracked = registry.open(flow.stream_id, flow)
+
+        shutdown = threading.Thread(target=lambda: (supervisor.shutdown(), supervisor.shutdown()))
+        shutdown.start()
+        shutdown.join(timeout=5)
+
+        assert not shutdown.is_alive(), "repeated shutdown must complete without deadlock"
+        assert events.index("listener_stopped") < events.index("active_flow_closed")
+        assert provider.starts == provider.stops == 1
+        assert not provider.listening and not supervisor._provider_running
+        assert flow.close_count == 1 and tracked.closed
+        assert registry.sealed and registry.open_count() == 0
+        assert supervisor._provider is None
+        assert supervisor._registry is None
+        assert supervisor._pairing_manager is None
+        assert pairing is not None
+
+    def test_start_failure_cleans_provider_registry_and_runtime_residue(
+        self, tmp_path
+    ) -> None:
+        class PartialStartProvider(_FakeProvider):
+            def start(self) -> None:
+                self.starts += 1
+                self.listening = True
+                raise DiyProviderError("managed ingress unavailable")
+
+        provider = PartialStartProvider()
+        supervisor = _supervisor(tmp_path, provider=provider)
+        stale_registry = supervisor.registry
+        stale_pairing = supervisor.pairing_manager()
+
+        assert supervisor._start_provider() is False
+
+        assert provider.starts == provider.stops == 1
+        assert not provider.listening
+        assert supervisor._provider is None
+        assert supervisor._provider_running is False
+        assert supervisor._registry is None and stale_registry.sealed is False
+        assert supervisor._pairing_manager is None and stale_pairing is not None
 
     def test_run_without_provider_fails_closed(self, tmp_path) -> None:
         """The reviewer's [HIGH] provider-less READY finding: a RUNNABLE
@@ -1646,6 +1843,162 @@ def _open_sse(host, port, credential, daemon):
     reason="host has no non-loopback IPv4 address for a customer-network socket test",
 )
 class TestReconciliationRotation:
+    @pytest.mark.parametrize("revocation_first", [False, True])
+    def test_provider_start_racing_persisted_revocation_is_linearized_in_both_orderings(
+        self, tmp_path, revocation_first: bool
+    ) -> None:
+        start_entered = threading.Event()
+        release_start = threading.Event()
+        close_entered = threading.Event()
+        release_close = threading.Event()
+        events: list[str] = []
+
+        class BarrierProvider(_FakeProvider):
+            def start(self) -> None:
+                events.append("start")
+                if not revocation_first and self.starts == 0:
+                    start_entered.set()
+                    assert release_start.wait(timeout=5)
+                super().start()
+
+            def stop(self) -> None:
+                events.append("stop")
+                super().stop()
+
+        class BarrierRegistry:
+            sealed = False
+
+            def open_count(self) -> int:
+                return 1
+
+            def close_all(self) -> None:
+                events.append("close")
+                if revocation_first:
+                    close_entered.set()
+                    assert release_close.wait(timeout=5)
+                self.sealed = True
+
+        provider = BarrierProvider()
+        supervisor = _supervisor(
+            tmp_path, provider=provider, readiness=_FakeReadiness(ready=True)
+        )
+        old_registry = BarrierRegistry()
+        supervisor._registry = old_registry
+        state = supervisor.state_store.load()
+        state.revocation_epoch += 1
+        supervisor.state_store.save(state)
+
+        if revocation_first:
+            assert supervisor._start_provider() is True
+            revoker = threading.Thread(target=supervisor._reconcile_revocation)
+            starter = threading.Thread(target=supervisor._start_provider)
+            revoker.start()
+            assert close_entered.wait(timeout=5)
+            starter.start()
+            assert starter.is_alive(), "admission must wait behind revocation cleanup"
+            release_close.set()
+        else:
+            starter = threading.Thread(target=supervisor._start_provider)
+            revoker = threading.Thread(target=supervisor._reconcile_revocation)
+            starter.start()
+            assert start_entered.wait(timeout=5)
+            revoker.start()
+            assert revoker.is_alive(), "revocation must serialize after in-flight start"
+            release_start.set()
+
+        starter.join(timeout=5)
+        revoker.join(timeout=5)
+        assert not starter.is_alive() and not revoker.is_alive()
+        assert events[-3:] == ["stop", "close", "start"]
+        assert provider.stops == 1
+        assert provider.starts == 2
+        assert provider.listening and supervisor._provider_running
+        assert old_registry.sealed is True
+        assert supervisor._registry is None  # injected provider has no runtime capture
+        assert supervisor._pairing_manager is None
+
+    def test_persisted_revocation_removes_listener_before_stream_cleanup(
+        self, tmp_path, route_policy_fixture,
+    ) -> None:
+        """The shipping supervisor removes admission before active cleanup."""
+        events: list[str] = []
+
+        class OrderedProvider(_FakeProvider):
+            def stop(self) -> None:
+                events.append("listener_stopped")
+                super().stop()
+
+        class OrderedRegistry:
+            sealed = False
+
+            def open_count(self) -> int:
+                return 1
+
+            def close_all(self) -> None:
+                assert events == ["listener_stopped"]
+                events.append("active_flows_closed")
+                self.sealed = True
+
+        provider = OrderedProvider()
+        supervisor = _supervisor(
+            tmp_path,
+            provider=provider,
+            readiness=_FakeReadiness(ready=False),
+        )
+        supervisor._registry = OrderedRegistry()
+        assert supervisor._start_provider() is True
+        state = supervisor.state_store.load()
+        state.revocation_epoch += 1
+        supervisor.state_store.save(state)
+
+        supervisor._reconcile_revocation()
+
+        assert events == ["listener_stopped", "active_flows_closed"]
+
+    def test_persisted_revocation_retries_failed_listener_stop_without_double_close(
+        self, tmp_path,
+    ) -> None:
+        events: list[str] = []
+
+        class RetryProvider(_FakeProvider):
+            def stop(self) -> None:
+                events.append("listener_stop")
+                if events.count("listener_stop") == 1:
+                    raise RuntimeError("hostile stop detail")
+                super().stop()
+
+        class OnceRegistry:
+            sealed = False
+            live = True
+
+            def open_count(self) -> int:
+                return int(self.live)
+
+            def close_all(self) -> None:
+                events.append("active_flows_closed")
+                self.live = False
+                self.sealed = True
+
+        provider = RetryProvider()
+        supervisor = _supervisor(
+            tmp_path, provider=provider, readiness=_FakeReadiness(ready=False)
+        )
+        supervisor._registry = OnceRegistry()
+        assert supervisor._start_provider() is True
+        state = supervisor.state_store.load()
+        state.revocation_epoch += 1
+        supervisor.state_store.save(state)
+
+        supervisor._reconcile_revocation()
+        assert supervisor._provider is provider
+        assert supervisor._provider_running is True
+        assert events == ["listener_stop", "active_flows_closed"]
+
+        supervisor._reconcile_revocation()
+        assert events == ["listener_stop", "active_flows_closed", "listener_stop"]
+        assert supervisor._provider is None
+        assert supervisor._provider_running is False
+
     def test_cross_process_revoke_closes_stream_then_rotation_reopens_repair(
         self, tmp_path, route_policy_fixture,
     ) -> None:

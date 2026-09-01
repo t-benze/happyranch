@@ -346,6 +346,16 @@ def test_run_requires_diy_flag(tmp_path, capsys) -> None:
     assert "pass --diy" in capsys.readouterr().err
 
 
+def test_run_requires_managed_flag(tmp_path, capsys) -> None:
+    from runtime.remote_access.managed_provider import ManagedProviderConfig
+
+    config = _config(tmp_path, lab=False, managed=ManagedProviderConfig())
+    path = tmp_path / "managed-config.json"
+    config.to_file(path)
+    assert cli.main(["run", "--config", str(path)]) == 1
+    assert "pass --managed" in capsys.readouterr().err
+
+
 def test_pair_prints_code_once(tmp_path, capsys) -> None:
     path = _diy_config_file(tmp_path)
     code = cli.main(["pair", "--config", path, "--device", "macbook-pro"])

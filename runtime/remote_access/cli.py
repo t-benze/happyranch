@@ -61,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     run = add_lifecycle("run", "foreground readiness loop (systemd Type=notify)")
     run.add_argument("--lab-only", action="store_true", help="required when the config carries a lab provider")
     run.add_argument("--diy", action="store_true", help="required when the config carries the Supported-DIY provider")
+    run.add_argument("--managed", action="store_true", help="required when the config carries managed sidecar ingress")
     install = add_lifecycle("install", "render + install the systemd unit")
     install.add_argument("--no-enable", action="store_true", help="do not enable on boot")
     add_lifecycle("uninstall", "stop, disable, and remove the systemd unit")
@@ -133,6 +134,9 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 1
+        if config.managed is not None and not args.managed:
+            print("error: config carries managed sidecar ingress; pass --managed", file=sys.stderr)
+            return 1
 
     supervisor = ConnectorSupervisor(config=config)
     try:
