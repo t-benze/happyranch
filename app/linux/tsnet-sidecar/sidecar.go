@@ -69,16 +69,21 @@ type Dialer interface {
 }
 
 type Sidecar struct {
-	cfg      Config
-	engine   Engine
-	dialer   Dialer
-	mu       sync.Mutex
-	listener net.Listener
-	active   map[net.Conn]struct{}
-	stopping bool
-	stopOnce sync.Once
-	wg       sync.WaitGroup
-	stopErr  error
+	cfg             Config
+	engine          Engine
+	dialer          Dialer
+	mu              sync.Mutex
+	listener        net.Listener
+	active          map[net.Conn]struct{}
+	starting        bool
+	startDone       chan struct{}
+	stopping        bool
+	stopOnce        sync.Once
+	engineCloseOnce sync.Once
+	acceptWG        sync.WaitGroup
+	proxyWG         sync.WaitGroup
+	stopErr         error
+	engineErr       error
 }
 
 func New(cfg Config, engine Engine, dialer Dialer) *Sidecar {
@@ -89,6 +94,21 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	if err := s.cfg.Validate(); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	if s.starting || s.listener != nil || s.stopping {
+		s.mu.Unlock()
+		return ErrListener
+	}
+	s.starting = true
+	s.startDone = make(chan struct{})
+	done := s.startDone
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.starting = false
+		close(done)
+		s.mu.Unlock()
+	}()
 	credential, err := consumeInput(s.cfg)
 	if err != nil {
 		return ErrCredential
@@ -98,27 +118,33 @@ func (s *Sidecar) Start(ctx context.Context) error {
 		credential[i] = 0
 	}
 	if err != nil || !receipt.Redeemed || !receipt.Durable || !receipt.ExpectedPeerVisible {
-		_ = s.engine.Close()
+		s.closeEngine()
 		return ErrCredential
 	}
 	if err := commitConsumption(s.cfg); err != nil {
-		_ = s.engine.Close()
+		s.closeEngine()
 		return ErrCredential
 	}
 	probe, err := s.dialer.DialContext(ctx, "tcp", s.cfg.ConnectorAddr)
-	if err != nil || probe.Close() != nil {
-		_ = s.engine.Close()
+	if err != nil || probe == nil || probe.Close() != nil {
+		s.closeEngine()
 		return ErrConnector
 	}
 	l, err := s.engine.Listen(s.cfg.ListenAddr)
-	if err != nil {
-		_ = s.engine.Close()
+	if err != nil || l == nil {
+		s.closeEngine()
 		return ErrListener
 	}
 	s.mu.Lock()
+	if s.stopping {
+		s.mu.Unlock()
+		_ = l.Close()
+		s.closeEngine()
+		return ErrListener
+	}
 	s.listener = l
+	s.acceptWG.Add(1)
 	s.mu.Unlock()
-	s.wg.Add(1)
 	go s.acceptLoop(ctx, l)
 	return nil
 }
@@ -218,18 +244,31 @@ func syncDir(path string) error {
 }
 
 func (s *Sidecar) acceptLoop(ctx context.Context, l net.Listener) {
-	defer s.wg.Done()
+	defer s.acceptWG.Done()
 	for {
 		c, err := l.Accept()
 		if err != nil {
+			s.mu.Lock()
+			deliberate := s.stopping
+			s.mu.Unlock()
+			if !deliberate {
+				s.shutdown(ErrListener, true)
+			}
 			return
 		}
-		s.wg.Add(1)
+		s.mu.Lock()
+		if s.stopping {
+			s.mu.Unlock()
+			_ = c.Close()
+			return
+		}
+		s.proxyWG.Add(1)
+		s.mu.Unlock()
 		go s.proxy(ctx, c)
 	}
 }
 func (s *Sidecar) proxy(ctx context.Context, inbound net.Conn) {
-	defer s.wg.Done()
+	defer s.proxyWG.Done()
 	outbound, err := s.dialer.DialContext(ctx, "tcp", s.cfg.ConnectorAddr)
 	if err != nil {
 		_ = inbound.Close()
@@ -272,27 +311,54 @@ func (s *Sidecar) proxy(ctx context.Context, inbound net.Conn) {
 }
 
 func (s *Sidecar) Stop() error {
+	s.shutdown(nil, false)
+	s.mu.Lock()
+	err := s.stopErr
+	s.mu.Unlock()
+	return err
+}
+
+func (s *Sidecar) closeEngine() {
+	s.engineCloseOnce.Do(func() { s.engineErr = s.engine.Close() })
+}
+
+// shutdown is the single listener-first teardown path. acceptCaller avoids
+// waiting on the accept goroutine that is currently executing this method.
+func (s *Sidecar) shutdown(cause error, acceptCaller bool) {
 	s.stopOnce.Do(func() {
 		s.mu.Lock()
 		s.stopping = true
+		startDone := s.startDone
+		starting := s.starting
+		s.mu.Unlock()
+		if starting {
+			<-startDone
+		}
+		s.mu.Lock()
 		l := s.listener
 		s.listener = nil
 		s.mu.Unlock()
+		var teardownFailed bool
 		if l != nil {
-			s.stopErr = l.Close()
+			teardownFailed = l.Close() != nil
 		}
 		s.mu.Lock()
 		for c := range s.active {
 			_ = c.Close()
 		}
 		s.mu.Unlock()
-		s.wg.Wait()
-		if err := s.engine.Close(); s.stopErr == nil {
-			s.stopErr = err
+		s.proxyWG.Wait()
+		if !acceptCaller {
+			s.acceptWG.Wait()
 		}
+		s.closeEngine()
+		teardownFailed = teardownFailed || s.engineErr != nil
+		s.mu.Lock()
+		if cause != nil {
+			s.stopErr = cause
+		} else if teardownFailed {
+			s.stopErr = ErrEngine
+		}
+		s.mu.Unlock()
 	})
-	if s.stopErr != nil {
-		return ErrEngine
-	}
-	return nil
 }
