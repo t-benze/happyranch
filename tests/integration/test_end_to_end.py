@@ -425,15 +425,21 @@ def test_cancel_sigterms_running_subprocess_and_marks_task_failed(
 
     task_id = _submit_task(base, brief="cancel me")
 
-    # Wait for the subprocess to actually start (status flips to in_progress).
+    # Wait for the subprocess to actually start. ``current_session_id`` is
+    # persisted by ``on_started`` only after the contained launch registered
+    # its opaque SessionTracker cancel control, so this observable seam makes
+    # the cancellation assertion below deterministic and non-vacuous.
     deadline = _time.monotonic() + 5.0
     while _time.monotonic() < deadline:
         r = httpx.get(f"{base}/tasks/{task_id}", headers=_auth_headers(), timeout=2.0)
-        if r.json()["task"]["status"] == "in_progress":
+        task = r.json()["task"]
+        if task["status"] == "in_progress" and task.get("current_session_id"):
             break
         _time.sleep(0.1)
     else:
-        raise AssertionError("task never reached in_progress before cancel")
+        raise AssertionError(
+            "task never registered its running cancellation control before cancel"
+        )
 
     # Cancel it.
     r = httpx.post(
@@ -446,11 +452,11 @@ def test_cancel_sigterms_running_subprocess_and_marks_task_failed(
     body = r.json()
     assert body["ok"] is True
     assert task_id in body["cancelled"]
-    # Contained sessions cancel through the SessionTracker's opaque control,
-    # not the legacy PID-signalling path represented by ``killed``.  The
-    # terminal task assertions below prove that the sleeping fake executor
-    # actually stopped and that cancellation won the terminal-state race.
-    assert body["killed"] == [], body
+    # Contained sessions cancel through the SessionTracker's opaque control.
+    # Its response entry deliberately carries identity only, never the legacy
+    # PID-signalling path's diagnostic pid.
+    assert body["killed"] == [{"task_id": task_id, "agent": "engineering_head"}], body
+    assert "pid" not in body["killed"][0]
 
     # Final task row: founder's note + cancelled_at, status cancelled.
     # Path B: a founder cancel writes the dedicated terminal CANCELLED status.
