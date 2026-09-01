@@ -60,6 +60,11 @@ from runtime.remote_access.lab_provider import (
     LabProviderConfig,
     LabProviderError,
 )
+from runtime.remote_access.managed_provider import (
+    ManagedProviderAdapter,
+    ManagedProviderConfig,
+    ManagedProviderError,
+)
 from runtime.remote_access.network import NetworkAddressError, NetworkConfig
 from runtime.remote_access.pairing import PairingManager
 from runtime.remote_access.policy import PolicyEnvelope, PolicyError, RoutePolicyConsumer
@@ -137,6 +142,7 @@ class ConnectorConfig:
     lab: LabProviderConfig | None = None
     # Supported-DIY customer-owned-network provider (THR-097 Unit 3A)
     diy: DiyProviderConfig | None = None
+    managed: ManagedProviderConfig | None = None
 
     def validate(self) -> None:
         if not (self.tenant_id and self.home_id and self.connector_id):
@@ -149,25 +155,36 @@ class ConnectorConfig:
             raise ConnectorConfigError("policy_path is required")
         if self.lab is not None and self.lab.lab_only is not True:
             raise ConnectorConfigError("lab provider requires lab_only: true")
-        if self.lab is not None and self.diy is not None:
-            raise ConnectorConfigError("lab and diy providers are mutually exclusive")
+        if (
+            sum(value is not None for value in (self.lab, self.diy, self.managed))
+            > 1
+        ):
+            raise ConnectorConfigError("lab, diy, and managed providers are mutually exclusive")
         if self.diy is not None:
             try:
                 self.diy.validate()
             except (DiyProviderError, NetworkAddressError) as exc:
                 raise ConnectorConfigError(f"invalid diy provider config: {exc}") from exc
+        if self.managed is not None:
+            try:
+                self.managed.validate()
+            except ManagedProviderError as exc:
+                raise ConnectorConfigError("invalid managed provider config") from exc
 
     @classmethod
     def from_file(cls, path: Path) -> "ConnectorConfig":
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
         lab_raw = raw.pop("lab", None)
         diy_raw = raw.pop("diy", None)
+        managed_raw = raw.pop("managed", None)
         config = cls(**raw)
         if lab_raw is not None:
             config.lab = LabProviderConfig(**lab_raw)
         if diy_raw is not None:
             network_raw = diy_raw.pop("network", None) or {}
             config.diy = DiyProviderConfig(network=NetworkConfig(**network_raw), **diy_raw)
+        if managed_raw is not None:
+            config.managed = ManagedProviderConfig(**managed_raw)
         config.validate()
         return config
 
@@ -472,6 +489,17 @@ class ConnectorSupervisor:
             ctx_factory=self.build_diy_ctx_factory(),
         )
 
+    def build_managed_provider(self) -> ManagedProviderAdapter | None:
+        if self.config.managed is None:
+            return None
+        return ManagedProviderAdapter(
+            config=self.config.managed,
+            readiness=self.build_readiness(),
+            pairing=self.pairing_manager(),
+            identity=self._configured_identity(),
+            ctx_factory=self.build_diy_ctx_factory(),
+        )
+
     # ── readiness / diagnostics ───────────────────────────────────────────
 
     def readiness_report(self) -> ReadinessReport:
@@ -531,6 +559,17 @@ class ConnectorSupervisor:
                 "network_mode": self.config.diy.network.mode,
                 "pairing": pairing_status,
             }
+        elif self.config.managed is not None:
+            try:
+                adapter = self.build_managed_provider()
+            except PolicyLoadError:
+                adapter = None
+            provider = {
+                "type": "managed",
+                "listening": bool(adapter and adapter.listening),
+                "bound_port": adapter.bound_port if adapter else None,
+                "bind_address": "loopback" if adapter else None,
+            }
         return {
             "role": "happyranch-connector",
             "unit_name": self.config.unit_name,
@@ -582,6 +621,8 @@ class ConnectorSupervisor:
                 args += ("--lab-only",)
             if cfg.diy is not None:
                 args += ("--diy",)
+            if cfg.managed is not None:
+                args += ("--managed",)
         return ConnectorUnitSpec(
             unit_name=cfg.unit_name,
             exec_start=args,
@@ -624,6 +665,7 @@ class ConnectorSupervisor:
             poll_seconds=cfg.poll_seconds,
             lab=cfg.lab,
             diy=cfg.diy,
+            managed=cfg.managed,
             managed_dir_root=cfg.managed_dir_root,
         )
 
@@ -869,9 +911,14 @@ class ConnectorSupervisor:
         # could never be backed by a proven bound listener. Reject provider-less
         # run configurations at startup — fail closed, never READY. Non-run
         # construction (status/readiness/diagnose/install) stays valid.
-        if self.config.lab is None and self.config.diy is None and self._injected_provider is None:
+        if (
+            self.config.lab is None
+            and self.config.diy is None
+            and self.config.managed is None
+            and self._injected_provider is None
+        ):
             raise ConnectorConfigError(
-                "refusing to run: no lab/diy provider configured — the connector "
+                "refusing to run: no lab/diy/managed provider configured — the connector "
                 "has no listener to bring up, so READY would be false"
             )
         iterations = 0
@@ -916,7 +963,11 @@ class ConnectorSupervisor:
         clears the cached registry + pairing manager, rebuilds the provider
         and every captured ctx-factory reference, and restarts the listener
         at a readiness-gated fail-closed boundary."""
-        if self.config.diy is None and self.config.lab is None:
+        if (
+            self.config.diy is None
+            and self.config.lab is None
+            and self.config.managed is None
+        ):
             return
         try:
             state = self.state_store.load()
@@ -980,6 +1031,8 @@ class ConnectorSupervisor:
             provider = self._injected_provider
         elif self.config.diy is not None:
             provider = self.build_diy_provider()
+        elif self.config.managed is not None:
+            provider = self.build_managed_provider()
         else:
             provider = self.build_provider()
         if provider is None:

@@ -43,7 +43,7 @@ FIXTURE_FILES = {
 # Extra required top-level keys beyond the common (version/name/status/description)
 # set, per fixture.
 _TOP_LEVEL_EXTRA = {
-    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "readiness", "secrets", "visibility", "fallbacks", "acceptance_matrix", "delivery_status"],
+    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "connector_ingress", "readiness", "secrets", "visibility", "fallbacks", "n2_lifecycle_matrix", "acceptance_matrix", "delivery_status"],
     "route_policy": [
         "decision_order",
         "default_behavior",
@@ -361,6 +361,7 @@ def test_managed_embedded_topology_is_load_bearing() -> None:
     assert doc["transport"] == "embedded"
     assert doc["endpoints"] == {"mac": "embedded_tsnet_userspace_wireguard", "linux_tailnet": "happyranch_packaged_embedded_network_sidecar_core_build_test", "linux_connector_bind": "127.0.0.1_only", "daemon_bind": "127.0.0.1:8765_only"}
     assert doc["sidecar_boundary"] == {"tailnet_listener": True, "proxy_protocol": "raw_tcp_only", "fixed_target": "loopback_python_connector_only", "authorization_authority": False, "daemon_bearer_access": False, "happy_ranch_route_parsing": False}
+    assert doc["connector_ingress"] == {"mode": "managed", "bind_host": "127.0.0.1_literal_only", "reuses_gateway_pipeline": True, "application_authority": "connector_only", "sidecar_bypass": False}
     assert doc["readiness"] == {"mode": "conjunctive_composite", "required_gates": ["configuration_valid", "encrypted_engine_started", "private_control_plane_joined", "expected_peer_map_visible", "tailnet_listener_active", "loopback_connector_reachable"], "failure_order": "remove_tailnet_listener_first", "early_ready_forbidden": True}
 
 
@@ -380,12 +381,22 @@ def test_managed_acceptance_matrix_has_no_external_or_plaintext_escape() -> None
         assert set(row["required_invariants"]) == required
 
 
+def test_n2_lifecycle_matrix_covers_shipping_boundaries() -> None:
+    rows = _load("managed_topology")["n2_lifecycle_matrix"]
+    assert [row["phase"] for row in rows] == [
+        "startup", "admission", "active_flow", "readiness_loss", "revocation",
+        "shutdown", "partial_failure", "concurrency_reentry", "recovery",
+    ]
+    for row in rows:
+        _assert_exact_keys(row, ["phase", "ordering", "outcome"], "n2_lifecycle_matrix[]")
+
+
 def test_managed_delivery_status_preserves_diy_and_gates_future_units() -> None:
-    assert _load("managed_topology")["delivery_status"] == {"n0": "contract_implemented", "n1": "sidecar_core_build_test_only_no_distribution_or_acceptance", "n2_through_n6": "founder_gated_not_authorized", "unit_4b_2": "delivered_independent_not_network_provisioning_or_acceptance", "supported_diy": "unchanged_truthful_voluntary_external_tailscale_or_customer_headscale", "supported_diy_for_founder_acceptance": "non_executable_not_managed_path"}
+    assert _load("managed_topology")["delivery_status"] == {"n0": "contract_implemented", "n1": "sidecar_core_build_test_only_no_distribution_or_acceptance", "n2": "managed_loopback_connector_ingress_implemented", "n3_through_n6": "founder_gated_not_authorized", "unit_4b_2": "delivered_independent_not_network_provisioning_or_acceptance", "supported_diy": "unchanged_truthful_voluntary_external_tailscale_or_customer_headscale", "supported_diy_for_founder_acceptance": "non_executable_not_managed_path"}
 
 
 _TOP_LEVEL_EXTRA = {
-    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "readiness", "secrets", "visibility", "fallbacks", "acceptance_matrix", "delivery_status"],
+    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "connector_ingress", "readiness", "secrets", "visibility", "fallbacks", "n2_lifecycle_matrix", "acceptance_matrix", "delivery_status"],
     "route_policy": [
         "decision_order",
         "default_behavior",

@@ -22,6 +22,10 @@ from runtime.remote_access.credentials import (
     SystemdCredentialProvider,
 )
 from runtime.remote_access.lab_provider import LAB_ONLY_BANNER, LabProviderConfig, LabProviderError
+from runtime.remote_access.managed_provider import (
+    ManagedProviderAdapter,
+    ManagedProviderConfig,
+)
 from runtime.remote_access.policy import PolicyEnvelope
 from runtime.remote_access.readiness import (
     ConnectorReadiness,
@@ -283,6 +287,44 @@ class TestConfig:
         assert loaded.lab is not None
         assert loaded.lab.lab_only is True
         assert loaded.daemon_port == 8999
+
+    def test_managed_roundtrip_is_exclusive_and_literal_loopback(
+        self, tmp_path
+    ) -> None:
+        config = _config(
+            tmp_path, lab=False, managed=ManagedProviderConfig(bind_port=9443)
+        )
+        path = tmp_path / "managed.json"
+        config.to_file(path)
+        loaded = ConnectorConfig.from_file(path)
+        assert loaded.managed == ManagedProviderConfig(bind_port=9443)
+        with pytest.raises(ConnectorConfigError, match="mutually exclusive"):
+            _config(tmp_path, managed=ManagedProviderConfig()).validate()
+        with pytest.raises(ConnectorConfigError, match="invalid managed"):
+            _config(
+                tmp_path,
+                lab=False,
+                managed=ManagedProviderConfig(bind_host="0.0.0.0"),
+            ).validate()
+
+    def test_managed_factory_and_unit_use_explicit_closed_mode(
+        self, tmp_path, route_policy_fixture
+    ) -> None:
+        config = _config(tmp_path, lab=False, managed=ManagedProviderConfig(bind_port=0))
+        supervisor = _supervisor(
+            tmp_path,
+            config=config,
+            provider=None,
+            lab=False,
+            readiness=_FakeReadiness(ready=True),
+            policy=build_consumer(route_policy_fixture),
+        )
+        provider = supervisor.build_managed_provider()
+        assert isinstance(provider, ManagedProviderAdapter)
+        assert provider.bind_address == "127.0.0.1"
+        spec = supervisor.unit_spec()
+        assert "--managed" in spec.exec_start
+        assert "--diy" not in spec.exec_start and "--lab-only" not in spec.exec_start
 
 
 class TestRunLoop:
