@@ -185,13 +185,141 @@ def test_daemon_capacity_success_audits_honest_pre_replace_authorization(
               "rationale": "measured receipts", "confirm_environment_shadow": False},
     )
     assert response.status_code == 200
-    row = org_state.db.get_audit_logs("config:daemon_capacity")[-1]
-    assert row["agent"] == "daemon-bearer-holder"
-    assert row["action"] == "daemon_capacity_config_write_authorized"
-    assert row["payload"]["outcome"] == "validated_write_authorized"
-    assert row["payload"]["prior"] == {"queue_workers": None, "host_global_session_cap": None}
-    assert row["payload"]["new"] == {"queue_workers": 6, "host_global_session_cap": 13}
-    assert "token" not in str(row["payload"]).lower()
+    rows = org_state.db.get_audit_logs("config:daemon_capacity")
+    assert [row["action"] for row in rows] == [
+        "daemon_capacity_config_write_authorized",
+        "daemon_capacity_config_succeeded",
+    ]
+    assert all(row["agent"] == "daemon-bearer-holder" for row in rows)
+    assert [row["payload"]["outcome"] for row in rows] == [
+        "validated_write_authorized", "succeeded",
+    ]
+    assert len({row["payload"]["correlation_id"] for row in rows}) == 1
+    for row in rows:
+        assert row["payload"]["prior"] == {"queue_workers": None, "host_global_session_cap": None}
+        assert row["payload"]["new"] == {"queue_workers": 6, "host_global_session_cap": 13}
+        assert row["payload"]["revision_before"] == current["revision"]
+        assert row["payload"]["revision_after"] == response.json()["revision"]
+        assert row["payload"]["rationale"] == "measured receipts"
+        assert "token" not in str(row["payload"]).lower()
+    assert sum(row["action"] == "daemon_capacity_config_succeeded" for row in rows) == 1
+
+
+def test_daemon_capacity_rejection_has_one_honest_terminal_audit(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    client = TestClient(app)
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"sha256:{"0" * 64}"'},
+        json={"queue_workers": 6, "host_global_session_cap": 2,
+              "rationale": "stale request", "confirm_environment_shadow": False},
+    )
+    assert response.status_code == 409
+    rows = org_state.db.get_audit_logs("config:daemon_capacity")
+    assert len(rows) == 1
+    assert rows[0]["action"] == "daemon_capacity_config_rejected"
+    assert rows[0]["agent"] == "daemon-bearer-holder"
+    assert rows[0]["payload"]["outcome"] == "rejected"
+    assert rows[0]["payload"]["error_class"] == "stale_revision"
+    assert rows[0]["payload"]["new"] == {
+        "queue_workers": 6, "host_global_session_cap": 2,
+    }
+
+
+def test_daemon_capacity_terminal_success_audit_failure_is_publication_uncertain(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    client = TestClient(app)
+    current = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+    real_insert = org_state.db.insert_audit_log
+
+    def fail_terminal(*, action, **kwargs):
+        if action == "daemon_capacity_config_succeeded":
+            raise OSError("terminal audit unavailable")
+        return real_insert(action=action, **kwargs)
+
+    monkeypatch.setattr(org_state.db, "insert_audit_log", fail_terminal)
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 6, "host_global_session_cap": 13,
+              "rationale": "terminal receipt fault", "confirm_environment_shadow": False},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "config_publication_uncertain"
+    assert yaml.safe_load((tmp_home / "config.yaml").read_text())["queue_workers"] == 6
+    rows = org_state.db.get_audit_logs("config:daemon_capacity")
+    assert [row["action"] for row in rows] == ["daemon_capacity_config_write_authorized"]
+
+
+@pytest.mark.parametrize("setup_fault", ["parent_mkdir", "mkstemp"])
+@pytest.mark.parametrize("terminal_audit_fails", [False, True])
+def test_daemon_capacity_setup_failure_has_truthful_terminal_audit_without_mutation(
+    tmp_home, app, org_state, auth_headers, monkeypatch, setup_fault, terminal_audit_fails,
+) -> None:
+    config_path = tmp_home / "config.yaml"
+    config_path.write_text("queue_workers: 5\nhost_global_session_cap: 12\nunrelated: preserved\n")
+    prior = config_path.read_bytes()
+    client = TestClient(app)
+    current = client.get(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
+    ).json()
+
+    if setup_fault == "parent_mkdir":
+        real_mkdir = Path.mkdir
+
+        def fail_config_parent(path, *args, **kwargs):
+            if path == config_path.parent:
+                raise OSError("parent mkdir fault")
+            return real_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", fail_config_parent)
+    else:
+        monkeypatch.setattr(
+            "runtime.daemon.capacity_config.tempfile.mkstemp",
+            lambda **_kwargs: (_ for _ in ()).throw(OSError("mkstemp fault")),
+        )
+
+    if terminal_audit_fails:
+        real_insert = org_state.db.insert_audit_log
+
+        def fail_terminal(*, action, **kwargs):
+            if action == "daemon_capacity_config_failed":
+                raise OSError("terminal audit unavailable")
+            return real_insert(action=action, **kwargs)
+
+        monkeypatch.setattr(org_state.db, "insert_audit_log", fail_terminal)
+
+    response = client.put(
+        f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity",
+        headers={**auth_headers, "If-Match": f'"{current["revision"]}"'},
+        json={"queue_workers": 7, "host_global_session_cap": 11,
+              "rationale": f"{setup_fault} regression", "confirm_environment_shadow": False},
+    )
+
+    assert response.status_code == 503
+    expected_code = "audit_failed" if terminal_audit_fails else "config_write_failed"
+    assert response.json()["detail"]["code"] == expected_code
+    assert config_path.read_bytes() == prior
+    rows = org_state.db.get_audit_logs("config:daemon_capacity")
+    expected_actions = ["daemon_capacity_config_write_authorized"]
+    if not terminal_audit_fails:
+        expected_actions.append("daemon_capacity_config_failed")
+    assert [row["action"] for row in rows] == expected_actions
+    assert all(row["agent"] == "daemon-bearer-holder" for row in rows)
+    assert len({row["payload"]["correlation_id"] for row in rows}) == 1
+    for row in rows:
+        assert row["payload"]["prior"] == {
+            "queue_workers": 5, "host_global_session_cap": 12,
+        }
+        assert row["payload"]["new"] == {
+            "queue_workers": 7, "host_global_session_cap": 11,
+        }
+        assert row["payload"]["rationale"] == f"{setup_fault} regression"
+        assert "token" not in str(row["payload"]).lower()
 
 
 def test_daemon_capacity_post_replace_failure_requires_reload_before_retry(
@@ -231,8 +359,11 @@ def test_daemon_capacity_post_replace_failure_requires_reload_before_retry(
     }
     assert yaml.safe_load((tmp_home / "config.yaml").read_text())["queue_workers"] == 6
     assert not list(tmp_home.glob(".*.tmp"))
-    row = org_state.db.get_audit_logs("config:daemon_capacity")[-1]
-    assert row["payload"]["outcome"] == "validated_write_authorized"
+    rows = org_state.db.get_audit_logs("config:daemon_capacity")
+    assert [row["payload"]["outcome"] for row in rows] == [
+        "validated_write_authorized", "config_publication_uncertain",
+    ]
+    assert len({row["payload"]["correlation_id"] for row in rows}) == 1
 
     latest = client.get(
         f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
@@ -307,9 +438,10 @@ def test_daemon_capacity_post_replace_cleanup_failure_requires_reload_before_ret
         "other": "retained", "queue_workers": 6, "host_global_session_cap": 13,
     }
     rows = org_state.db.get_audit_logs("config:daemon_capacity")
-    assert len(rows) == 1
-    assert rows[0]["action"] == "daemon_capacity_config_write_authorized"
-    assert rows[0]["payload"]["outcome"] == "validated_write_authorized"
+    assert [row["payload"]["outcome"] for row in rows] == [
+        "validated_write_authorized", "config_publication_uncertain",
+    ]
+    assert len({row["payload"]["correlation_id"] for row in rows}) == 1
     assert bool(artifact and real_exists(artifact)) is artifact_present
     latest = client.get(
         f"/api/v1/orgs/{org_state.slug}/settings/daemon-capacity", headers=auth_headers
@@ -323,7 +455,7 @@ def test_daemon_capacity_post_replace_cleanup_failure_requires_reload_before_ret
     )
     assert retry.status_code == 409
     assert retry.json()["detail"]["latest"]["revision"] == latest["revision"]
-    assert len(org_state.db.get_audit_logs("config:daemon_capacity")) == 1
+    assert len(org_state.db.get_audit_logs("config:daemon_capacity")) == 3
 
 
 @pytest.mark.parametrize("fault", ["read", "parse"])
@@ -389,9 +521,10 @@ def test_daemon_capacity_final_snapshot_failure_requires_reload_before_retry(
         "other": "retained", "queue_workers": 6, "host_global_session_cap": 13,
     }
     rows = org_state.db.get_audit_logs("config:daemon_capacity")
-    assert len(rows) == 1
-    assert rows[0]["action"] == "daemon_capacity_config_write_authorized"
-    assert rows[0]["payload"]["outcome"] == "validated_write_authorized"
+    assert [row["payload"]["outcome"] for row in rows] == [
+        "validated_write_authorized", "config_publication_uncertain",
+    ]
+    assert len({row["payload"]["correlation_id"] for row in rows}) == 1
     assert not list(tmp_home.glob(".*.tmp"))
     assert not list(tmp_home.glob("*.bak"))
     latest = client.get(
@@ -406,7 +539,7 @@ def test_daemon_capacity_final_snapshot_failure_requires_reload_before_retry(
     )
     assert retry.status_code == 409
     assert retry.json()["detail"]["latest"]["revision"] == latest["revision"]
-    assert len(org_state.db.get_audit_logs("config:daemon_capacity")) == 1
+    assert len(org_state.db.get_audit_logs("config:daemon_capacity")) == 3
 
 
 def test_settings_unknown_slug_returns_404(tmp_home, app, auth_headers) -> None:

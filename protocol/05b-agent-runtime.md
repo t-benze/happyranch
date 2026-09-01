@@ -1755,10 +1755,13 @@ therefore audits actor `daemon-bearer-holder`, never client identity. The only
 writable pair is `queue_workers` plus `host_global_session_cap`, staged
 atomically for next restart with environment precedence, stale-revision
 rejection through one quoted strong HTTP `If-Match` validator, unrelated-key
-preservation, and fail-closed durable audit-before-replace. The append-only row
-records the truthful `validated_write_authorized` outcome before filesystem
-publication and never claims the next-start file was applied or a person was
-verified. After a successful authoritative replace, any directory durability,
+preservation, and fail-closed durable audit-before-replace. One correlation ID
+links that truthful `validated_write_authorized` authorization to an honest
+terminal rejected, failed, succeeded, or publication-uncertain row. The rows
+carry only the server-observed allow-listed pair, truthfully known revisions,
+rationale, and safe provenance; exactly one success row exists per successful
+save and none claims the next-start file was applied or a person was verified.
+After a successful authoritative replace, any directory durability,
 read-back validation, response-snapshot, or temporary-cleanup failure returns
 `config_publication_uncertain`: the new bytes are authoritative, no unaudited
 compensating replacement is attempted, and the operator must reload and inspect
@@ -1766,3 +1769,8 @@ before retrying. The error reports temporary-artifact state as `absent`,
 `present`, or `unknown`; failed inspection or unlink never fabricates absence
 or overrides publication. It is not
 a generic YAML editor, does not apply live, and cannot restart the daemon.
+The response derives the producer envelope/components from the running
+topology and the effective admission cap/reason from the active supervisor
+capability. Below-envelope values remain valid with an intentional-backpressure
+warning; above-envelope values warn that admission capacity cannot create
+producers.
