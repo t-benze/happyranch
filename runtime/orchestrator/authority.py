@@ -864,11 +864,6 @@ class LLMSubprocessAuthorityEvaluator:
         text = self._extract_final_text(proc.stdout or "")
         if not text.strip():
             return self._error_result(_Code.MALFORMED_OUTPUT, "evaluator produced no text output")
-        lowered = text.lower()
-        if any(marker in lowered for marker in _CREDENTIAL_MARKERS):
-            return self._error_result(
-                _Code.INJECTION_GUARD, "evaluator output carried a credential-like marker"
-            )
         data = self._extract_json_object(text)
         if data is None:
             return self._error_result(_Code.MALFORMED_OUTPUT, "evaluator output is not a single JSON object")
@@ -878,6 +873,16 @@ class LLMSubprocessAuthorityEvaluator:
         except Exception as exc:
             return self._error_result(
                 _Code.MALFORMED_OUTPUT, f"evaluator output failed closed-schema validation: {exc}"
+            )
+        # Scan only model-controlled free text after the closed schema has
+        # separated it from release-controlled identifiers.  In particular,
+        # clause ids such as ``esc-auth-credentials-security`` are policy
+        # vocabulary, not credential-bearing prose.  Rationale is digest-only
+        # in this schema; evidence refs are its sole free-text output field.
+        free_text = "\n".join(parsed.evidence_refs).lower()
+        if any(marker in free_text for marker in _CREDENTIAL_MARKERS):
+            return self._error_result(
+                _Code.INJECTION_GUARD, "evaluator output carried a credential-like marker"
             )
         # Echo-contract: the output must name the exact attempt inputs.
         if (
@@ -1577,9 +1582,16 @@ def run_authority_hook(
     # mechanical fence that restricts the continued turn.
     server_clause = _server_fact_clause(snapshot.structured_facts)
     if server_clause is not None:
+        diagnostic_code = (
+            verdict.disposition_code
+            if verdict.disposition_code in _DIAGNOSTIC_FAILURE_CODES
+            else AuthorityDispositionCode.ESCALATE
+        )
+        diagnostic_error = verdict.error
+        server_error = f"server-derived must-escalate fact: {server_clause}"
         verdict = _NormalizedVerdict(
             AuthorityDisposition.ESCALATE,
-            AuthorityDispositionCode.ESCALATE,
+            diagnostic_code,
             server_clause,
             ACTION_ESCALATE_TO_FOUNDER,
             verdict.confidence,
@@ -1587,7 +1599,10 @@ def run_authority_hook(
             verdict.evidence_refs,
             verdict.rationale_digest,
             verdict.response_digest,
-            error=f"server-derived must-escalate fact: {server_clause}",
+            error=(
+                f"{diagnostic_error}; {server_error}"
+                if diagnostic_error else server_error
+            ),
         )
         if server_clause not in server_clauses:
             server_clauses.append(server_clause)
