@@ -1121,7 +1121,7 @@ class AuthorityPolicyRelease(BaseModel):
     actor attribution, and creation time are receipts and are deliberately
     outside that semantic identity.
     """
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "forbid", "frozen": True}
 
     id: str
     team: str
@@ -1195,7 +1195,7 @@ class AuthorityPolicyRelease(BaseModel):
 
 class AuthorityPolicyActivation(BaseModel):
     """One immutable activation epoch; rollback is another activation."""
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "forbid", "frozen": True}
 
     id: str
     team: str
@@ -1217,7 +1217,7 @@ class AuthorityPolicyActivation(BaseModel):
 
 class AuthorityCandidatePolicyPin(BaseModel):
     """Immutable one-to-one release/activation identity for a DB-policy candidate."""
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "forbid", "frozen": True}
 
     candidate_id: str
     release_id: str

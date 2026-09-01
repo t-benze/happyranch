@@ -4,10 +4,15 @@ import sqlite3
 import threading
 
 import pytest
+from pydantic import ValidationError
 
 import runtime.infrastructure.database as database_module
 from runtime.infrastructure.database import Database
-from runtime.models import AuthorityPolicyActivation, AuthorityPolicyRelease
+from runtime.models import (
+    AuthorityCandidatePolicyPin,
+    AuthorityPolicyActivation,
+    AuthorityPolicyRelease,
+)
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 
 
@@ -291,7 +296,7 @@ def test_store_rejects_post_construction_semantic_mutation_without_residue(
 ):
     db = Database(tmp_path / "db.sqlite")
     release = _release()
-    setattr(release, field, replacement)
+    object.__setattr__(release, field, replacement)
     with pytest.raises(ValueError):
         AuthorityPolicyStore(db).create_release(release)
     assert db._conn.execute("SELECT COUNT(*) FROM authority_policy_releases").fetchone()[0] == 0
@@ -300,11 +305,89 @@ def test_store_rejects_post_construction_semantic_mutation_without_residue(
 def test_store_rejects_post_construction_nested_clause_mutation_without_residue(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     release = _release()
-    release.clauses_json = json.loads(release.clauses_json)
+    object.__setattr__(release, "clauses_json", json.loads(release.clauses_json))
     release.clauses_json[0]["condition"] = "mutated after validation"
     with pytest.raises(ValueError):
         AuthorityPolicyStore(db).create_release(release)
     assert db._conn.execute("SELECT COUNT(*) FROM authority_policy_releases").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("model,field,replacement", [
+    (_release(), "title", "mutated"),
+    (_activation(_release()), "request_digest", "0" * 64),
+    (AuthorityCandidatePolicyPin(
+        candidate_id="candidate", release_id=_release().id,
+        activation_id="APA-1", activation_epoch=1, provider_id="openai",
+        executor_kind="codex",
+    ), "provider_id", "mutated"),
+])
+def test_policy_value_objects_reject_post_construction_assignment(model, field, replacement):
+    with pytest.raises(ValidationError, match="frozen"):
+        setattr(model, field, replacement)
+
+
+def test_frozen_release_retains_no_mutable_nested_clause_alias():
+    clauses = json.loads(_release().clauses_json)
+    release = _release(clauses_json=json.dumps(
+        clauses, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ))
+    clauses[0]["condition"] = "mutated through caller alias"
+    assert json.loads(release.clauses_json)[0]["condition"] == "stop"
+
+
+@pytest.mark.parametrize("field,replacement", [
+    ("epoch", 0),
+    ("release_id", "APR-mutated"),
+    ("action", "not-an-action"),
+    ("request_digest", "not-a-digest"),
+])
+def test_store_rejects_bypassed_frozen_activation_mutation_without_residue(
+    tmp_path, field, replacement,
+):
+    db = Database(tmp_path / "db.sqlite")
+    release = AuthorityPolicyStore(db).create_release(_release())
+    activation = _activation(release)
+    object.__setattr__(activation, field, replacement)
+    with pytest.raises((ValueError, sqlite3.IntegrityError)):
+        AuthorityPolicyStore(db).activate(activation)
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_activations"
+    ).fetchone()[0] == 0
+
+
+def test_candidate_pin_return_value_has_no_mutable_persistence_alias(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    store = AuthorityPolicyStore(db)
+    release = store.create_release(_release())
+    activation = store.activate(_activation(release))
+    candidate, pin = store.claim_candidate_with_pin(
+        **_candidate(release), release_id=release.id, activation_id=activation.id,
+        activation_epoch=activation.epoch, provider_id="openai", executor_kind="codex",
+    )
+    object.__setattr__(pin, "provider_id", "mutated after read")
+    persisted = db.get_authority_candidate_policy_pin(candidate.id)
+    assert persisted is not None
+    assert persisted.provider_id == "openai"
+
+
+@pytest.mark.parametrize("field", ["provider_id", "executor_kind"])
+def test_malformed_candidate_pin_primitive_ingress_leaves_zero_residue(tmp_path, field):
+    db = Database(tmp_path / "db.sqlite")
+    store = AuthorityPolicyStore(db)
+    release = store.create_release(_release())
+    activation = store.activate(_activation(release))
+    values = {"provider_id": "openai", "executor_kind": "codex"}
+    values[field] = ""
+    with pytest.raises(ValueError):
+        store.claim_candidate_with_pin(
+            **_candidate(release), release_id=release.id,
+            activation_id=activation.id, activation_epoch=activation.epoch,
+            **values,
+        )
+    assert db.list_authority_candidates_for_root("T-1") == []
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_candidate_policy_pins"
+    ).fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("updates", [

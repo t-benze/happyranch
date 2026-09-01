@@ -10436,7 +10436,12 @@ class Database:
         self, activation: AuthorityPolicyActivation
     ) -> AuthorityPolicyActivation:
         """Append the next team epoch under BEGIN IMMEDIATE CAS semantics."""
-        activation = AuthorityPolicyActivation.model_validate(activation)
+        # Rebuild from a deep primitive snapshot even though the value object is
+        # frozen.  This is the durable-boundary defense against callers that
+        # bypass Pydantic's assignment guard (for example object.__setattr__).
+        activation = AuthorityPolicyActivation.model_validate(
+            activation.model_dump(mode="python", round_trip=True, warnings=False)
+        )
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             duplicate = self._conn.execute(
