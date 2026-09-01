@@ -749,7 +749,11 @@ export interface DaemonCapacitySnapshot {
   next_start: { queue_workers: number; host_global_session_cap: number };
   environment_shadowed: string[];
   environment_warning: string | null;
+  producer_envelope: number;
+  producer_components: { task_workers: number; thread_workers: number; dream_workers: number; wake_workers: number; schedule_workers: number };
+  effective_admission_cap: number | null;
   effective_admission_reason: string;
+  warnings: string[];
   revision: string;
   restart_required: boolean;
   restart_pending: boolean;

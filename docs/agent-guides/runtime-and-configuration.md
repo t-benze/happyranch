@@ -21,11 +21,14 @@ integers, a rationale, and environment-shadow
 confirmation when applicable. It preserves unrelated YAML, writes through a
 same-directory fsynced temporary file and atomic replace, and records the fixed
 honest actor `daemon-bearer-holder` in the existing `config:daemon_capacity`
-audit scope. The durable row truthfully records a validated write authorization
-(`daemon_capacity_config_write_authorized`) before any authoritative replace;
-it does not claim completed application.
-Audit failure therefore leaves the original YAML untouched, and replace
-failure cannot produce an unaudited authoritative file.
+audit scope. One correlation identity links the durable pre-replace
+`daemon_capacity_config_write_authorized` row to exactly one honest terminal
+row: `daemon_capacity_config_succeeded`, `daemon_capacity_config_rejected`,
+`daemon_capacity_config_failed`, or
+`daemon_capacity_config_publication_uncertain`. Each row contains only the
+server-observed allow-listed prior/requested pair, known revisions, rationale,
+and safe provenance. Audit failure before replace leaves the original YAML
+untouched, and replace failure cannot produce an unaudited authoritative file.
 Once atomic replace succeeds, any directory-durability, read-back validation,
 response-snapshot, or temporary-cleanup failure returns the distinct
 `config_publication_uncertain` outcome: the new bytes are authoritative, so
@@ -36,6 +39,11 @@ second unaudited replacement as compensation.
 The shared daemon bearer is required; it proves possession only and cannot be
 attributed to a verified person. Save is next-restart-only and cannot resize
 the startup worker or HostSessionSupervisor snapshots.
+The read model reports the startup supervisor's runtime-derived producer
+envelope/components and capability-derived effective admission cap/reason.
+A host cap below the envelope remains valid and warns about intentional
+backpressure; a cap above it warns that unused admission capacity creates no
+additional producers.
 
 | Variable | Default | Description |
 | --- | --- | --- |

@@ -9,6 +9,7 @@ Spec: artifacts/TASK-349/settings-gui-design-spec-v2.md
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
@@ -46,11 +47,37 @@ class DaemonCapacityWrite(BaseModel):
         return value
 
 
-def _capacity_reason(request: Request) -> str:
+def _capacity_context(request: Request) -> dict[str, Any]:
     supervisor = request.app.state.daemon.host_supervisor
+    running = request.app.state.daemon.settings
+    components = {
+        "task_workers": running.queue_workers,
+        "thread_workers": 4,
+        "dream_workers": 1,
+        "wake_workers": 1,
+        "schedule_workers": 1,
+    }
     if supervisor is None:
-        return "No active host supervisor capability snapshot is available."
-    return "Startup-loaded host supervisor admission policy; saving does not mutate it."
+        return {
+            "producer_envelope": sum(components.values()),
+            "producer_components": components,
+            "effective_admission_cap": None,
+            "effective_admission_reason": "No active host supervisor capability snapshot is available.",
+        }
+    live = supervisor.health_snapshot()
+    cap = live["admission"]["cap"]
+    configured = running.host_global_session_cap
+    reason = (
+        "Capability fallback binds below the configured cap because the active backend does not guarantee the complete memory/PID/CPU enforcement family."
+        if cap < configured else
+        "The startup-configured host global session cap is binding; the active backend capability does not lower it."
+    )
+    return {
+        "producer_envelope": supervisor._policy.producer_envelope,
+        "producer_components": components,
+        "effective_admission_cap": cap,
+        "effective_admission_reason": reason,
+    }
 
 
 @router.get("/settings/daemon-capacity")
@@ -60,7 +87,7 @@ def get_daemon_capacity(slug: str, org: OrgDep, request: Request) -> dict:
         return snapshot(
             global_settings.daemon_home / "config.yaml",
             request.app.state.daemon.settings,
-            capability_reason=_capacity_reason(request),
+            capacity_context=_capacity_context(request),
         )
     except CapacityConfigError as exc:
         raise HTTPException(status_code=500, detail={"code": exc.code, "message": str(exc)}) from exc
@@ -95,11 +122,13 @@ def put_daemon_capacity(
 ) -> dict:
     from runtime.daemon.capacity_config import CapacityConfigError, save
 
-    def audit(payload: dict) -> None:
+    correlation_id = str(uuid4())
+
+    def audit(action: str, payload: dict) -> None:
         org.db.insert_audit_log(
             task_id="config:daemon_capacity",
             agent="daemon-bearer-holder",
-            action="daemon_capacity_config_write_authorized",
+            action=action,
             payload=payload,
         )
 
@@ -113,7 +142,8 @@ def put_daemon_capacity(
             rationale=body.rationale.strip(),
             confirm_environment_shadow=body.confirm_environment_shadow,
             audit=audit,
-            capability_reason=_capacity_reason(request),
+            capacity_context=_capacity_context(request),
+            correlation_id=correlation_id,
         )
     except CapacityConfigError as exc:
         status_code = 409 if exc.code == "stale_revision" else 503 if exc.code in {

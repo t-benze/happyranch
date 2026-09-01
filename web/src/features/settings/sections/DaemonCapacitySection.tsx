@@ -49,6 +49,16 @@ export function DaemonCapacitySection(): JSX.Element {
   const initialWorkers = query.data ? String(query.data.persisted_yaml.queue_workers ?? query.data.next_start.queue_workers) : '';
   const initialCap = query.data ? String(query.data.persisted_yaml.host_global_session_cap ?? query.data.next_start.host_global_session_cap) : '';
   const dirty = Boolean(query.data) && (workers !== initialWorkers || cap !== initialCap || rationale.length > 0);
+  const draftWorkers = Number(workers);
+  const draftCap = Number(cap);
+  const draftEnvelope = Number.isInteger(draftWorkers) && draftWorkers > 0 ? draftWorkers + 7 : null;
+  const draftWarning = draftEnvelope !== null && Number.isInteger(draftCap) && draftCap > 0
+    ? draftCap < draftEnvelope
+      ? `Intentional backpressure: host cap ${draftCap} is below producer envelope ${draftEnvelope}; some producer slots cannot run concurrently. Saving remains permitted.`
+      : draftCap > draftEnvelope
+        ? `Host cap ${draftCap} is above producer envelope ${draftEnvelope}; unused admission capacity does not create additional producers.`
+        : null
+    : null;
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
       if (!dirty) return;
@@ -93,9 +103,12 @@ export function DaemonCapacitySection(): JSX.Element {
       <dt>Running at daemon start</dt><dd>{data.running_at_daemon_start.queue_workers} workers / cap {data.running_at_daemon_start.host_global_session_cap}</dd>
       <dt>Persisted YAML</dt><dd>{data.persisted_yaml.queue_workers ?? 'Not set'} / {data.persisted_yaml.host_global_session_cap ?? 'Not set'}</dd>
       <dt>Next-start resolution</dt><dd>{data.next_start.queue_workers} / {data.next_start.host_global_session_cap}</dd>
-      <dt>Admission/capability</dt><dd>{data.effective_admission_reason}</dd>
+      <dt>Producer envelope</dt><dd>{data.producer_envelope} slots ({data.producer_components.task_workers} task + {data.producer_components.thread_workers} thread + dream + wake + schedule)</dd>
+      <dt>Effective admission</dt><dd>{data.effective_admission_cap ?? 'Unavailable'} — {data.effective_admission_reason}</dd>
       <dt>Revision</dt><dd className="break-all">{data.revision}</dd>
     </dl>
+    {data.warnings.map(warning => <p key={warning} role="alert" className="rounded-md border p-3 text-sm">{warning}</p>)}
+    {draftWarning && !data.warnings.includes(draftWarning) && <p role="alert" className="rounded-md border p-3 text-sm">{draftWarning}</p>}
     {data.restart_pending && <p role="status">Restart required: a persisted next-start value differs from the running startup snapshot. Saving never applies live and this page cannot restart the daemon.</p>}
     {shadowed && <div role="alert"><p>{data.environment_warning}</p><label><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} /> I understand restart alone will not make YAML win.</label></div>}
     <label className="block">Concurrent task sessions<input aria-label="Concurrent task sessions" type="number" min="1" required value={workers} onChange={e => setWorkers(e.target.value)} className="block w-full border p-2" /></label>

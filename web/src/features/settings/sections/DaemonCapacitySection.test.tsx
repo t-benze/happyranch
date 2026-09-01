@@ -16,7 +16,11 @@ const snapshot = {
   persisted_yaml: { queue_workers: null, host_global_session_cap: null },
   next_start: { queue_workers: 6, host_global_session_cap: 13 },
   environment_shadowed: [] as string[], environment_warning: null as string | null,
+  producer_envelope: 13,
+  producer_components: { task_workers: 6, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: 1 },
+  effective_admission_cap: 13,
   effective_admission_reason: 'startup policy', revision: `sha256:${'a'.repeat(64)}`,
+  warnings: [] as string[],
   restart_required: false, restart_pending: false,
   guidance: { queue_workers: 'Empirical workers', host_global_session_cap: 'Empirical cap', enforced: false },
   authorization: 'daemon bearer required',
@@ -57,6 +61,25 @@ describe('DaemonCapacitySection readiness matrix', () => {
     loaded({ persisted_yaml: { queue_workers: 4, host_global_session_cap: 11 } });
     rerender(<DaemonCapacitySection />);
     expect(screen.getByText('4 / 11')).toBeInTheDocument();
+  });
+
+  test.each([
+    ['1', /below producer envelope 13.*cannot run concurrently.*permitted/i],
+    ['13', null],
+    ['20', /above producer envelope 13.*does not create additional producers/i],
+  ])('renders truthful draft consequence for cap %s', async (value, warning) => {
+    render(<DaemonCapacitySection />);
+    const input = screen.getByLabelText('Host global session cap');
+    await userEvent.clear(input);
+    await userEvent.type(input, value);
+    if (warning) expect(document.body).toHaveTextContent(warning);
+    else expect(document.body).not.toHaveTextContent(/unused admission|cannot run concurrently/i);
+  });
+
+  test('renders capability-derived fallback cap and reason accessibly', () => {
+    loaded({ effective_admission_cap: 4, effective_admission_reason: 'Capability fallback binds because enforcement is unavailable.' });
+    render(<DaemonCapacitySection />);
+    expect(screen.getByText(/4 — Capability fallback binds/)).toBeInTheDocument();
   });
 
   test('local validation retains draft and focuses announced error', async () => {
