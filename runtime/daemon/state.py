@@ -116,27 +116,9 @@ class DaemonState:
             backoff_seconds=tuple(settings.executor_rate_limit_backoff_seconds),
         )
 
-        # THR-107: one-shot lift of any legacy per-org executor_profiles
-        # config blocks into the machine-global runtime store BEFORE the
-        # store is loaded below, so profiles lifted on this very boot are
-        # registered in the same boot (agents declaring them still pass
-        # validation during org load). Collisions/malformed blocks are
-        # logged and skipped — migration never blocks startup.
         from runtime.orchestrator.runtime_executor_store import (
             load_runtime_profiles,
-            migrate_legacy_org_profiles,
         )
-        from runtime.orchestrator._paths import OrgPaths
-        for slug, root in runtime.iter_org_roots():
-            try:
-                migrate_legacy_org_profiles(
-                    OrgPaths(root=root).org_config_path, slug
-                )
-            except Exception as exc:
-                logger.warning(
-                    "org %r: legacy executor_profiles migration failed: %s",
-                    slug, exc,
-                )
 
         # Load runtime-level executor profiles into the process-wide registry
         # so every org can resolve them (machine-global, visible to all orgs).

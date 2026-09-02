@@ -1255,8 +1255,6 @@ def _perform_adapter_profile_binding(
 
     # 4. Build + validate profile config
     profile_cfg = {
-        "command": None,
-        "argv_template": None,
         "workspace_adapter_id": workspace_adapter,
         "command_adapter_id": f"custom-adapter:{adapter_id}",
     }

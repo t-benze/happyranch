@@ -101,71 +101,6 @@ def _huge_prompt_for_stdin() -> str:
 
 
 @patch("runtime.orchestrator.executors.subprocess.Popen")
-def test_argv_guard_rejects_oversized_prompt_before_spawn(mock_popen, tmp_path, runtime):
-    """An argv transport (generic-CLI template) with a prompt over the
-    platform-safe limit fails deterministically with the normalized category
-    and Popen is never reached. (opencode is stdin-capable since TASK-6080
-    and is no longer covered by the argv guard.)"""
-    from runtime.orchestrator.executors import GenericCliExecutor
-
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    over = _big_prompt(_max_argv_element_bytes() + 1)
-
-    ex = GenericCliExecutor(
-        profile_name="test-cli",
-        argv_template=["test-cli", "--prompt", "{prompt}"],
-        provider="test-cli",
-    )
-    with patch(
-        "runtime.orchestrator.executors._resolve_binary",
-        return_value=str(tmp_path / "bin" / "test-cli"),
-    ):
-        result = ex.run(workspace=workspace, prompt=over, session_id="sess-x")
-
-    assert result.success is False
-    assert is_prompt_transport_too_large(result)
-    assert "prompt_transport_too_large" in (result.error or "")
-    # Never truncated — the diagnostic says so explicitly and the payload is
-    # never re-shipped.
-    assert "NOT truncated" in (result.error or "")
-    mock_popen.assert_not_called()
-
-
-@patch("runtime.orchestrator.executors.subprocess.Popen")
-def test_argv_guard_boundary_at_limit_is_preserved(mock_popen, tmp_path, runtime):
-    """A prompt exactly AT the platform-safe limit still launches (guard is
-    strictly `>`): known smaller/equal argv executions are preserved. Uses
-    generic-CLI — the remaining argv transport (opencode is stdin-capable
-    since TASK-6080)."""
-    from runtime.orchestrator.executors import GenericCliExecutor
-
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    # The executor prepends the session-lifetime preamble to the prompt, so
-    # the FULL argv element (preamble + prompt) must sit exactly at the limit.
-    element_limit = _max_argv_element_bytes()
-    preamble_bytes = len(_SESSION_LIFETIME_PREAMBLE.encode("utf-8"))
-    at_limit = _exact_prompt_bytes(element_limit - preamble_bytes)
-    assert len((_SESSION_LIFETIME_PREAMBLE + at_limit).encode("utf-8")) == element_limit
-    mock_popen.return_value = _popen_mock(stdout="ok")
-
-    ex = GenericCliExecutor(
-        profile_name="test-cli",
-        argv_template=["test-cli", "--prompt", "{prompt}"],
-        provider="test-cli",
-    )
-    with patch(
-        "runtime.orchestrator.executors._resolve_binary",
-        return_value=str(tmp_path / "bin" / "test-cli"),
-    ):
-        result = ex.run(workspace=workspace, prompt=at_limit, session_id="sess-x")
-
-    assert result.success is True
-    mock_popen.assert_called_once()
-
-
-@patch("runtime.orchestrator.executors.subprocess.Popen")
 def test_argv_guard_small_prompt_unaffected(mock_popen, tmp_path, runtime):
     """Small prompts behave exactly as before (opencode delivers via stdin
     since TASK-6080; small prompts travel through the pipe, not argv)."""
@@ -182,32 +117,6 @@ def test_argv_guard_small_prompt_unaffected(mock_popen, tmp_path, runtime):
     assert not any("hello opencode" in el for el in cmd)
     sent = mock_popen.return_value.communicate.call_args.kwargs["input"]
     assert sent.endswith("hello opencode")
-
-
-@patch("runtime.orchestrator.executors.subprocess.Popen")
-def test_argv_guard_generic_cli_argv_template_covered(mock_popen, tmp_path, runtime):
-    """Generic-CLI profiles that substitute {prompt} into argv are covered by
-    the same pre-spawn guard (their transport is profile-defined)."""
-    from runtime.orchestrator.executors import GenericCliExecutor
-
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    ex = GenericCliExecutor(
-        profile_name="test-cli",
-        argv_template=["test-cli", "--prompt", "{prompt}"],
-        provider="test-cli",
-    )
-    over = _big_prompt(_max_argv_element_bytes() + 1)
-
-    with patch(
-        "runtime.orchestrator.executors._resolve_binary",
-        return_value=str(tmp_path / "bin" / "test-cli"),
-    ):
-        result = ex.run(workspace=workspace, prompt=over, session_id="sess-x")
-
-    assert result.success is False
-    assert is_prompt_transport_too_large(result)
-    mock_popen.assert_not_called()
 
 
 def test_prompt_transport_too_large_is_transport_only():

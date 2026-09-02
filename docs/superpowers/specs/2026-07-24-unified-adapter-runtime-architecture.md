@@ -1083,3 +1083,6 @@ No production code, protocol doc, schema, auth, permission, profile migration,
 plugin loader, or test file is modified. The spec explicitly labels itself
 "DESIGN ONLY — no implementation authorization" in the header and every
 section that proposes a code change qualifies it as "proposed" or "future."
+> **Historical supersession (TASK-6514):** Generic template profiles described
+> here are no longer executable or writable. Built-ins and the approved,
+> hash-verified `custom-adapter:<id>` v1 contract remain current.

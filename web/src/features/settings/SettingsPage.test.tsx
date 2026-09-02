@@ -1085,7 +1085,6 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
       workspace_adapter_id: 'codex',
       adapter: null,
       adapter_id: null,
-      command_adapter: null,
       present: true,
       path: executable,
       envelope_policy: 'strict',
@@ -1168,9 +1167,8 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
 
     // The mode toggle (built-in convergence) switches to the custom name form.
     await user.click(screen.getByText(/connect a custom cli instead/i));
-    // Default custom path is now adapter-backed; click through to legacy
-    await user.click(screen.getByText(/use legacy simple integration instead/i));
     expect(await screen.findByLabelText(/name this cli/i)).toBeInTheDocument();
+    expect(screen.queryByText(/legacy simple integration/i)).not.toBeInTheDocument();
   });
 
   test('built-in connect mints via the RUNTIME token route and shows the register-binary prompt', async () => {
@@ -1214,66 +1212,11 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(acIdx).toBeLessThan(regIdx);
   });
 
-  test('custom connect mints via the RUNTIME token route and shows the profile-register prompt (no legacy CLI / config.yaml)', async () => {
-    const mintPaths: string[] = [];
-    server.use(
-      http.post('/api/v1/auth/registration-token', () => {
-        mintPaths.push('legacy');
-        return HttpResponse.json({ token: 'x', expires_at: 0 });
-      }),
-      http.post('/api/v1/auth/registration-token/runtime', () => {
-        mintPaths.push('runtime');
-        return HttpResponse.json({
-          token: 'hrreg_runtime_abc',
-          expires_at: Math.floor(Date.now() / 1000) + 1800,
-        });
-      }),
-    );
-
-    const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/settings/executors`);
-
-    await openConnect(user);
-    await user.click(screen.getByText(/connect a custom cli instead/i));
-    // Default custom path is now adapter-backed; click through to legacy
-    await user.click(screen.getByText(/use legacy simple integration instead/i));
-    await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
-    await user.click(
-      screen.getByRole('button', { name: /generate connect prompt/i }),
-    );
-
-    // The profile copy-paste prompt appears, carrying the runtime token and
-    // targeting the profile register route — NOT the legacy CLI or config.yaml.
-    const pre = await screen.findByText(/being connected to HappyRanch/i);
-    expect(pre).toHaveTextContent('hrreg_runtime_abc');
-    expect(pre).toHaveTextContent('/executors/runtime/register');
-    expect(pre).not.toHaveTextContent('executors register');
-    expect(pre).not.toHaveTextContent('config.yaml');
-    expect(pre).not.toHaveTextContent('executor_profiles');
-
-    // Only the runtime route was hit; the legacy org-scoped route was not.
-    expect(mintPaths).toEqual(['runtime']);
-
-    // The generated prompt contains the command/argv_template[0] parity JSON.
-    // The register step line is:
-    // #    body {"command":"<your-cli>","argv_template":["<your-cli>","--flag","{prompt}"],"adapter":"pi"}
-    const promptText = pre.textContent ?? '';
-    // Extract the register request JSON, parse it, and directly assert
-    // command === argv_template[0] (same executable, the parity invariant).
-    const bodyMatch = promptText.match(/#\s+body\s+(\{.*"argv_template".*\})/);
-    expect(bodyMatch).not.toBeNull();
-    const body = JSON.parse(bodyMatch![1]);
-    expect(body.command).toBe(body.argv_template[0]);
-    // argv_template is the complete invocation (retains placeholder + full args).
-    expect(body.argv_template.join(' ')).toContain('{prompt}');
-    expect(body).toHaveProperty('adapter');
-  });
-
   test('poll flips to the connected card, then Done collapses back to the refreshed list', async () => {
     server.use(
       http.get('/api/v1/health/prereqs', () =>
         HttpResponse.json({
-          prereqs: [{ tool: 'my-cli', present: true, path: '/opt/bin/my-cli', hint: '' }],
+          prereqs: [{ tool: 'claude', present: true, path: '/opt/bin/claude', hint: '' }],
         }),
       ),
     );
@@ -1282,20 +1225,17 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
     await openConnect(user);
-    await user.click(screen.getByText(/connect a custom cli instead/i));
-    // Default custom path is now adapter-backed; click through to legacy
-    await user.click(screen.getByText(/use legacy simple integration instead/i));
-    await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
+    await user.selectOptions(await screen.findByLabelText(/pick your agentic cli/i), 'claude');
     await user.click(
       screen.getByRole('button', { name: /generate connect prompt/i }),
     );
 
     expect(
-      await screen.findByRole('heading', { name: /my-cli connected/i }),
+      await screen.findByRole('heading', { name: /claude connected/i }),
     ).toBeInTheDocument();
     // Register-real path from prereqs is shown (not fabricated);
     // connected card consumes the present + path from server truth.
-    expect(screen.getByText('/opt/bin/my-cli')).toBeInTheDocument();
+    expect(screen.getByText('/opt/bin/claude')).toBeInTheDocument();
     // Settings-appropriate subtitle — no circular "manage from Settings" clause.
     expect(screen.queryByText(/manage your CLIs anytime from Settings/i)).not.toBeInTheDocument();
 
@@ -1307,78 +1247,12 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(screen.queryByTestId('executors-connect')).not.toBeInTheDocument();
   });
 
-  test('Done after a custom connect refetches the profiles list so the just-connected CLI appears (invalidation, not stale cache)', async () => {
-    // A custom connect creates a profile the panel must show on return. The
-    // profiles list starts EMPTY (cached at first mount), then — as the connect
-    // completes — the machine-global store gains the new profile. That query
-    // carries a 10s staleTime, so CustomProfilesSection remounts on Done INSIDE
-    // the stale window: only the explicit invalidation forces the refetch that
-    // surfaces the just-connected CLI. Without it the row stays invisible.
-    let profileGets = 0;
-    let store: {
-      name: string;
-      command: string | null;
-      adapter: string | null;
-      present: boolean;
-      path: string | null;
-    }[] = [];
-    server.use(
-      http.get('/api/v1/health/prereqs', () =>
-        HttpResponse.json({
-          prereqs: [{ tool: 'my-cli', present: true, path: '/opt/bin/my-cli', hint: '' }],
-        }),
-      ),
-      http.get('/api/v1/executors/runtime/profiles', () => {
-        profileGets += 1;
-        return HttpResponse.json({ profiles: store });
-      }),
-    );
-
-    const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/settings/executors`);
-
-    // Initial mount: the list loads EMPTY and is cached under the
-    // runtime-profiles key (staleTime 10s).
-    expect(await screen.findByTestId('custom-profiles-empty')).toBeInTheDocument();
-    const getsBeforeConnect = profileGets;
-
-    // Drive a custom connect to the connected card.
-    await openConnect(user);
-    await user.click(screen.getByText(/connect a custom cli instead/i));
-    // Default custom path is now adapter-backed; click through to legacy
-    await user.click(screen.getByText(/use legacy simple integration instead/i));
-    await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
-    await user.click(
-      screen.getByRole('button', { name: /generate connect prompt/i }),
-    );
-    expect(
-      await screen.findByRole('heading', { name: /my-cli connected/i }),
-    ).toBeInTheDocument();
-
-    // The CLI registered during the connect → the store now holds the profile.
-    store = [
-      { name: 'my-cli', command: 'my-cli', adapter: 'pi', present: true, path: '/opt/bin/my-cli' },
-    ];
-
-    // Done collapses back to the list → invalidates the profiles query → refetch.
-    await user.click(screen.getByRole('button', { name: /^done$/i }));
-
-    // The just-connected custom CLI now renders (the forced refetch surfaced it)…
-    expect(await screen.findByTestId('profile-row-my-cli')).toBeInTheDocument();
-    // …and it took a fresh GET to do so — the stale cache did not silently
-    // satisfy the remount (this is the assertion that fails on the old
-    // executor-binaries-only invalidation).
-    expect(profileGets).toBeGreaterThan(getsBeforeConnect);
-  });
-
   test('preserves the name-collision guard against built-ins', async () => {
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/settings/executors`);
 
     await openConnect(user);
     await user.click(screen.getByText(/connect a custom cli instead/i));
-    // Default custom path is now adapter-backed; click through to legacy
-    await user.click(screen.getByText(/use legacy simple integration instead/i));
     await user.type(await screen.findByLabelText(/name this cli/i), 'claude');
 
     expect(screen.getByText(/isn.t a built-in/i)).toBeInTheDocument();
@@ -1408,7 +1282,6 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
               workspace_adapter_id: null,
               command_adapter_id: null,
               adapter_id: null,
-              command_adapter: null,
               present: true,
               path: '/usr/local/bin/my-custom-cli',
               envelope_policy: null,
@@ -1429,63 +1302,6 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     expect(bodyText).not.toMatch(/approval/i);
     // No ordinary founder-visible /adapter/i wording remains.
     expect(bodyText).not.toMatch(/adapter/i);
-  });
-
-  test('THR-107 slice 3: direct-connect prompt has no approval wording and includes the daemon-issued wrapper path', async () => {
-    server.use(
-      http.post('/api/v1/auth/registration-token/runtime', () =>
-        HttpResponse.json({
-          token: 'hrreg_settings_prompt',
-          expires_at: Math.floor(Date.now() / 1000) + 1800,
-        }),
-      ),
-      http.get('/api/v1/runtime/custom-cli/status', () =>
-        HttpResponse.json({
-          wrapper_destination: '/tmp/happyranch-daemon/adapters/prompt-test-adapter',
-          operation_id: null,
-          profile_state: null,
-          reason: null,
-          state: null,
-          retry_eligible: false,
-        }),
-      ),
-    );
-    const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/settings/executors`);
-    await openConnect(user);
-    await user.click(await screen.findByRole('button', { name: /connect a custom cli instead/i }));
-    expect(await screen.findByText(/create a custom adapter wrapper/i)).toBeInTheDocument();
-
-    await user.type(await screen.findByLabelText(/name this cli/i), 'prompt-test');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    await screen.findByLabelText(/waiting for adapter submission/i);
-    const promptText = document.querySelector('pre')?.textContent || '';
-
-    // The literal daemon-issued wrapper path appears, not a placeholder.
-    expect(promptText).toContain('/tmp/happyranch-daemon/adapters/prompt-test-adapter');
-    // Exact I/O contract carried over from the legacy prompt.
-    expect(promptText).toContain('exactly one v1 AdapterInput JSON object from stdin');
-    expect(promptText).toContain('exactly one v1 AdapterOutput JSON object to stdout');
-    expect(promptText).toContain('Forward the ENTIRE AdapterInput.prompt');
-    expect(promptText).toContain('fresh opaque canary');
-    expect(promptText).toContain('never emit success without a real provider');
-    expect(promptText).toContain('receipt-only call');
-    expect(promptText).toContain('starts no subprocess');
-    expect(promptText).not.toContain('CodeBuddy');
-    // Dependency declaration + never-PATH wording carried over.
-    expect(promptText).toContain('never selects an agentic CLI via');
-    // Explicitly says there is no approval wait, and never mentions PENDING.
-    expect(promptText).not.toContain('PENDING');
-    expect(promptText).toContain('no approval step');
-    // Single POST connects — no separate submit/bind step.
-    expect(promptText).toContain('/runtime/custom-cli/connect');
-  });
-});
-
-describe('SettingsPage — keyboard shortcuts', () => {
-  beforeEach(() => {
-    stubBaseHandlers();
   });
 
   test('⌘S shortcut keybinding hint visible when dirty', async () => {

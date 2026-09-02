@@ -63,12 +63,9 @@ export const registerBinaryScoped = (
 export interface RuntimeProfileEntry {
   /** Profile name (runtime store key). */
   name: string;
-  /** Executable name from the stored profile definition, or null. */
-  command: string | null;
   /** D6 canonical: workspace adapter id (claude/codex/opencode/pi), or null. */
   workspace_adapter_id: string | null;
-  /** D6 canonical: command adapter id. May be 'generic-cli' (template-based generic CLI)
-   *  or 'custom-adapter:<id>' (bound to a separately registered, founder-approved,
+  /** D6 canonical command adapter id: 'custom-adapter:<id>', bound to a registered, founder-approved,
    *  hash-verified custom adapter executable — D7B, subprocess-only, mandatory v1
    *  AdapterInput/AdapterOutput, D5 baseline-only posture). */
   command_adapter_id: string | null;
@@ -76,18 +73,12 @@ export interface RuntimeProfileEntry {
   adapter: string | null;
   /** @deprecated Alias for workspace_adapter_id. Same meaning as adapter. */
   adapter_id: string | null;
-  /** @deprecated Use command_adapter_id instead. Preserved for backward compat. */
-  command_adapter: string | null;
   /** True when the profile has a valid entry in the machine-local
    *  binary registry (executors.json) keyed by the profile name — the
    *  same gating as built-ins (THR-107 seq155). No PATH-based fallback. */
   present: boolean;
   /** The resolved absolute path when present, else null. */
   path: string | null;
-  /** D7A: result-envelope enforcement posture.
-   *  'strict' = mandatory v1 envelope enforcement;
-   *  null = legacy compatibility (optional envelope). */
-  envelope_policy: string | null;
 }
 
 /** All custom profiles in the machine-global runtime store. */
