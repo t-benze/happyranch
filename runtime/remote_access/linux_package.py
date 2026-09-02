@@ -381,6 +381,7 @@ def install_linux_package(
     units = root / "etc/systemd/system"
     root.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".happyranch-stage-", dir=root))
+    staging.chmod(0o755 if system_service else 0o700)
     backup, unit_backup, marker = _transaction_paths(root)
     checkpoint = fault or (lambda _name: None)
     try:
@@ -389,6 +390,9 @@ def install_linux_package(
                 continue
             target = staging / name
             target.parent.mkdir(parents=True, exist_ok=True)
+            target.parent.chmod(
+                0o755 if system_service and name.startswith("bin/") else 0o700
+            )
             target.write_bytes(raw)
             mode = int(PAYLOAD_MODES[name], 8) if system_service else (0o700 if name.startswith("bin/") else 0o600)
             target.chmod(mode)

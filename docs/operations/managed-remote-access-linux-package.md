@@ -1,6 +1,6 @@
 # Managed remote access: Linux package operations (N3)
 
-N3 composes the portable Python connector and embedded Linux tsnet sidecar into one reproducible root-owned artifact. Its binaries are mode `0755`, so dedicated non-root system-service users can execute them while ownership remains root. The installer selects that contract only with explicit `system_service=True`; optional no-root installation remains owner-only (`0700`). It does not provision a control plane, deploy a service, enable managed access by default, or begin macOS work.
+N3 composes the portable Python connector and embedded Linux tsnet sidecar into one reproducible root-owned artifact. In system-service mode its payload root, binary directory, and binaries are mode `0755`, so dedicated non-root system-service users can traverse to and execute the binaries while ownership remains root. The installer selects that contract only with explicit `system_service=True`; optional no-root installation keeps those directories and binaries owner-only (`0700`). It does not provision a control plane, deploy a service, enable managed access by default, or begin macOS work.
 
 ```sh
 cd app/linux/tsnet-sidecar

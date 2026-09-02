@@ -121,6 +121,8 @@ def test_real_systemd_harness_probes_headscale_health_over_configured_https() ->
 
 def test_real_systemd_harness_proves_root_owned_binary_is_service_executable() -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    assert 'stat -c %U:%G:%a /opt/happyranch)' in harness
+    assert 'stat -c %U:%G:%a /opt/happyranch/bin)' in harness
     assert '== "root:root:755"' in harness
     assert 'sudo -u happyranch test -x "$binary"' in harness
 
@@ -204,6 +206,8 @@ def test_system_service_install_keeps_root_payload_executable_by_service_user(tm
     package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
     root = tmp_path / "root"
     install_linux_package(package, root, system_service=True)
+    assert (root / "opt/happyranch").stat().st_mode & 0o777 == 0o755
+    assert (root / "opt/happyranch/bin").stat().st_mode & 0o777 == 0o755
     for name in ("happyranch-connector", "happyranch-tsnet-sidecar"):
         binary = root / "opt/happyranch/bin" / name
         assert binary.stat().st_mode & 0o777 == 0o755
@@ -213,6 +217,8 @@ def test_no_root_install_retains_owner_only_payload_mode(tmp_path: Path) -> None
     package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
     root = tmp_path / "root"
     install_linux_package(package, root, system_service=False)
+    assert (root / "opt/happyranch").stat().st_mode & 0o777 == 0o700
+    assert (root / "opt/happyranch/bin").stat().st_mode & 0o777 == 0o700
     for name in ("happyranch-connector", "happyranch-tsnet-sidecar"):
         assert (root / "opt/happyranch/bin" / name).stat().st_mode & 0o777 == 0o700
 
@@ -238,6 +244,8 @@ def test_system_service_mode_survives_rollback_and_reentry(tmp_path: Path) -> No
             if name == "payload_published" else None,
         )
     install_linux_package(package, root, system_service=True)
+    assert (root / "opt/happyranch").stat().st_mode & 0o777 == 0o755
+    assert (root / "opt/happyranch/bin").stat().st_mode & 0o777 == 0o755
     for name in ("happyranch-connector", "happyranch-tsnet-sidecar"):
         assert (root / "opt/happyranch/bin" / name).stat().st_mode & 0o777 == 0o755
 

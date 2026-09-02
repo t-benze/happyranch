@@ -187,6 +187,8 @@ from pathlib import Path
 from runtime.remote_access.linux_package import install_linux_package
 install_linux_package(Path(sys.argv[1]), Path('/'), system_service=True)
 PY
+[[ "$(stat -c %U:%G:%a /opt/happyranch)" == "root:root:755" ]] || fail "system-service payload root custody mismatch"
+[[ "$(stat -c %U:%G:%a /opt/happyranch/bin)" == "root:root:755" ]] || fail "system-service binary directory custody mismatch"
 for binary in /opt/happyranch/bin/happyranch-connector /opt/happyranch/bin/happyranch-tsnet-sidecar; do
   [[ "$(stat -c %U:%G:%a "$binary")" == "root:root:755" ]] || fail "system-service binary custody mismatch"
   sudo -u happyranch test -x "$binary" || fail "system-service user cannot execute packaged binary"
