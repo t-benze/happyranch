@@ -254,7 +254,7 @@ def test_production_evaluator_accepts_release_controlled_credential_clause_id():
 
 @pytest.mark.parametrize("evidence_ref", [
     "authorization: Bearer sk-live-abc123",
-    "operator credential was pasted here",
+    "operator credential=secret-value",
 ])
 def test_production_evaluator_rejects_credential_markers_in_free_text(evidence_ref):
     snap = _snapshot()
@@ -265,6 +265,18 @@ def test_production_evaluator_rejects_credential_markers_in_free_text(evidence_r
     ).evaluate(snap)
     assert result.disposition == AuthorityDisposition.EVALUATOR_ERROR
     assert result.disposition_code == AuthorityDispositionCode.INJECTION_GUARD
+
+
+def test_production_evaluator_accepts_server_authored_credential_attribution_text():
+    """A semantic label is not secret material; assignment markers remain guarded."""
+    snap = _snapshot()
+    payload = _valid_output_dict(snap)
+    payload["evidence_refs"] = ["shared local operator credential"]
+    result = _make_evaluator(
+        invoke=lambda argv, prompt, timeout: _Proc(stdout=_pi_jsonl(json.dumps(payload)))
+    ).evaluate(snap)
+    assert result.disposition == AuthorityDisposition.CONTINUE_SAME_ROOT
+    assert result.disposition_code == AuthorityDispositionCode.CONTINUE_SAME_ROOT
 
 
 @pytest.mark.parametrize("mutate", [
