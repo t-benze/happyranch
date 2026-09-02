@@ -89,6 +89,22 @@ def test_composite_units_start_connector_before_admission_and_stop_reverse() -> 
     assert "0.0.0.0" not in connector + sidecar
 
 
+def test_real_systemd_harness_is_zero_skip_and_uses_only_pinned_peer_artifacts() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    assert "HEADSCALE_VERSION=0.25.1" in harness
+    assert "d2cda0a5d748587f77c920a76cd1bf1ab429e5299ba5bc6b3dda90712721b45b" in harness
+    assert "TAILSCALE_VERSION=1.102.3" in harness
+    assert "36ddd9b51be57ffc2990cf76323cfa13643bfbb1b8a969f6183fa164741cdef5" in harness
+    assert "ExpectedPeers\\\":[\\\"synthetic-peer-ci" in harness
+    assert "stat -c %a /run/credentials/happyranch-tsnet-sidecar.service/enrollment.key" in harness
+    assert "PID 1 is not systemd" in harness and "transient units unavailable" in harness
+    assert "proof: startup_failure_cleanup" in harness and "sidecar process survived failed startup" in harness
+    assert "teardown residue" in harness
+    assert "automatic Restart=" in harness and "concurrent stop lost" in harness
+    assert "N3_REAL_SYSTEMD_PASS" in harness
+    assert not any(word in harness for word in ("pytest.skip", "xfail", "docker run", "notify probe"))
+
+
 def test_composite_service_manager_executes_start_ready_stop_crash_restart() -> None:
     events: list[tuple[str, ...]] = []
     active = {"happyranch-connector.service": False, "happyranch-tsnet-sidecar.service": False}

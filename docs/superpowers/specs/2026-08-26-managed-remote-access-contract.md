@@ -264,6 +264,8 @@ Validators are semantic, not tautological snapshots: the normative invariants ar
 
 ## 19. Linux supervised connector packaging contract (phase unit 3 — implemented)
 
+**N3 production-seam proof boundary (THR-097 seq466/seq471).** N3 is bounded to actual packaged composition, genuine ephemeral Headscale join plus `ExpectedPeers` visibility, real systemd lifecycle/recovery, credential custody, and residue. The dedicated zero-skip Ubuntu 24.04 job uses native checksum-pinned Headscale v0.25.1 and the already-pinned CI-only Tailscale 1.102.3 synthetic peer; the production `TSNetEngine`, not a fake or notify/socket-only probe, gates READY on that peer. Admitted HappyRanch request flow and authorization-negative evidence are not N3 claims and remain precisely deferred to N6.
+
 ### Scope and status
 
 Phase unit 3 (TASK-5972) ships the supervised Linux packaging for the connector core: systemd-managed lifecycle with a least-privilege service user/filesystem posture, the five-gate readiness contract, secure local credential-provider and trust-state-store implementations through the already-approved protocols, local diagnostics, upgrade/rollback, and a clearly LAB-ONLY provider adapter sufficient for Mac-client → Linux-home conformance. No tailnet/Headscale/DERP/Services integration, no managed enrollment, no tsnet flip, no telemetry, no new top-level dependency, no permission-model change, and no production provisioning are included. **The lab provider adapter is not a product or Supported-DIY lane and does not close THR-034** (its static lab device proof, explicit lab bind address, and `lab_only` gating are conformance vehicles only).

@@ -196,7 +196,15 @@ func TestStartSuccessConsumesCredentialThenProxiesRawBytes(t *testing.T) {
 
 func TestSystemdStagedCredentialIsReadOnceAndNeverUnlinked(t *testing.T) {
 	cfg := validConfig(t)
-	credentialDir := filepath.Dir(cfg.CredentialFile)
+	credentialDir := filepath.Join(filepath.Dir(cfg.StateDir), "systemd-credentials")
+	if err := os.Mkdir(credentialDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	exactCredential := filepath.Join(credentialDir, "enrollment.key")
+	if err := os.Rename(cfg.CredentialFile, exactCredential); err != nil {
+		t.Fatal(err)
+	}
+	cfg.CredentialFile = exactCredential
 	t.Setenv("CREDENTIALS_DIRECTORY", credentialDir)
 	if err := os.Chmod(cfg.CredentialFile, 0o400); err != nil {
 		t.Fatal(err)

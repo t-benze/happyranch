@@ -14,11 +14,10 @@ type recordingNotifier struct {
 	err   error
 }
 
-func (n *recordingNotifier) Notify(state string, statuses ...string) error {
+func (n *recordingNotifier) Notify(states ...string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.calls = append(n.calls, state)
-	n.calls = append(n.calls, statuses...)
+	n.calls = append(n.calls, states...)
 	return n.err
 }
 

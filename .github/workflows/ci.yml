@@ -121,6 +121,35 @@ jobs:
           tests/integration/test_end_to_end.py::test_register_and_run_completes_via_codex_callback
           -v --tb=short
 
+  managed-n3-real-systemd:
+    name: Managed N3 Real systemd (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+      - name: Sync build dependencies
+        run: uv sync --frozen --group build
+      - name: Build actual package
+        run: |
+          set -euo pipefail
+          package_tmp="$(mktemp -d)"
+          echo "PACKAGE_TMP=$package_tmp" >> "$GITHUB_ENV"
+          (cd app/linux/tsnet-sidecar && go test ./... && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$package_tmp/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
+          uv build --wheel --out-dir "$package_tmp"
+          wheel="$(find "$package_tmp" -maxdepth 1 -name 'happyranch-*.whl' -print -quit)"
+          uv run python app/linux/package/build_connector.py --wheel "$wheel" --output "$package_tmp/happyranch-connector"
+          uv run python app/linux/package/build_package.py --sidecar "$package_tmp/happyranch-tsnet-sidecar" --connector "$package_tmp/happyranch-connector" --wheel "$wheel" --version ci --output "$package_tmp/happyranch-linux-amd64.tar"
+      - name: Exercise actual packaged composite against pinned Headscale and peer
+        env:
+          PACKAGE_TAR: ${{ env.PACKAGE_TMP }}/happyranch-linux-amd64.tar
+        run: app/linux/package/real_systemd_n3.sh
+
   # ── macOS canonical skill store validation (same-owner, unconditional) ──
   # Executor and daemon share the same OS identity — same-owner is the only
   # supported delivery mode. No distinct-account provisioning or sudo.

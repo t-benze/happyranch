@@ -73,8 +73,10 @@ func main() {
 }
 
 type systemdNotifier interface {
-	Notify(string, ...string) error
+	Notify(...string) error
 }
+
+var _ systemdNotifier = (*sdnotify.Notifier)(nil)
 
 func watchdogLoop(ctx context.Context, cancel context.CancelFunc, notifier systemdNotifier, interval time.Duration, failed chan<- error) {
 	ticker := time.NewTicker(interval)
