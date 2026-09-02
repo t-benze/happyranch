@@ -1,5 +1,6 @@
 """Founder-approved direct retirement contract for legacy generic profiles."""
 
+import re
 from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch
@@ -120,3 +121,89 @@ def test_all_canonical_current_docs_reject_retired_generic_profile_promises():
     for name, body in surfaces.items():
         assert "custom-adapter:<id>" in body, name
         assert not any(fragment in body for fragment in forbidden), name
+
+
+def test_repository_has_only_classified_retired_generic_profile_references():
+    root = Path(__file__).parents[1]
+    source_suffixes = {".md", ".py", ".ts", ".tsx", ".yaml", ".yml"}
+    retired = re.compile(
+        r"generic[-_]cli|GenericCli|argv_template|"
+        r"default\s*=\s*[`'\"]?generic-cli",
+        re.IGNORECASE,
+    )
+    allowed = {
+        # Actionable rejection and this deterministic negative contract.
+        "runtime/orchestrator/executor_registry.py",
+        "tests/test_generic_cli_retirement.py",
+        # Unrelated negative/legacy-shaped fixtures; none are executable paths.
+        "tests/test_authority_continue_envelope.py",
+        "tests/test_org_config.py",
+        "tests/daemon/test_adapter_remove.py",
+        "tests/daemon/test_direct_connect_authority.py",
+        "tests/daemon/test_direct_connect_commit.py",
+        "tests/daemon/test_org_state.py",
+        # Explicitly superseded historical specs and dated provenance.
+        "docs/superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md",
+        "docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md",
+        "docs/superpowers/specs/2026-07-25-phase-0-executor-inventory.md",
+        "docs/superpowers/plans/2026-06-02-thread-claude-session-resume.md",
+    }
+
+    residual_files = set()
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix not in source_suffixes:
+            continue
+        relative = path.relative_to(root).as_posix()
+        if any(part in {".git", ".claude", "node_modules"} for part in path.parts):
+            continue
+        if retired.search(path.read_text(encoding="utf-8")):
+            residual_files.add(relative)
+
+    assert residual_files <= allowed, sorted(residual_files - allowed)
+    assert "runtime/orchestrator/executors.py" not in residual_files
+    assert "web/src" not in {path.rsplit("/", 1)[0] for path in residual_files}
+
+
+def test_repository_rejects_stale_custom_profile_registration_workflow():
+    root = Path(__file__).parents[1]
+    current_surfaces = (
+        root / "README.md",
+        root / "docs" / "agent-guides" / "agent-executors-and-permissions.md",
+        root / "protocol" / "05b-agent-runtime.md",
+        root / "runtime" / "orchestrator" / "runtime_executor_store.py",
+        root / "web" / "src",
+    )
+    forbidden = (
+        "consumes a fully-conformant token and writes the profile",
+        "all four steps recorded",
+        "migrate_legacy_org_profiles",
+        "candidate-driven Mint/Conform/Register profile creation",
+    )
+
+    repository_residuals = set()
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix not in {".md", ".py", ".ts", ".tsx"}:
+            continue
+        if any(part in {".git", ".claude", "node_modules"} for part in path.parts):
+            continue
+        body = path.read_text(encoding="utf-8")
+        if any(fragment in body for fragment in forbidden[:3]):
+            repository_residuals.add(path.relative_to(root).as_posix())
+    assert repository_residuals <= {"tests/test_generic_cli_retirement.py"}
+
+    for surface in current_surfaces:
+        paths = surface.rglob("*") if surface.is_dir() else (surface,)
+        body = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in paths
+            if path.is_file() and path.suffix in {".md", ".py", ".ts", ".tsx"}
+        )
+        if surface.name == "agent-executors-and-permissions.md":
+            # The active guide keeps one explicit retirement notice, not a workflow.
+            allowed_notice = "candidate-driven Mint/Conform/Register profile creation"
+            body = body.replace(allowed_notice, "")
+        assert not any(fragment in body for fragment in forbidden), str(surface)
+
+    route = (root / "runtime" / "daemon" / "routes" / "executors.py").read_text()
+    assert "POST /api/v1/orgs/{slug}/executors/register" in route
+    assert "Legacy executor profile registration is retired" in route

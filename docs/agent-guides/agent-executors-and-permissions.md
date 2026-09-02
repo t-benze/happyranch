@@ -44,8 +44,8 @@ platforms have no fallback. See the current Linux design in
 authoritative store. The workspace ``agent.yaml`` is no longer read or
 written for executor resolution. The executor is resolved against the
 **executor registry** — capability-registered, not name-listed (THR-052).
-Four **built-in** profiles ship with the runtime; custom CLI profiles are
-registered in the machine-global runtime store (THR-107 — see below).
+Four **built-in** profiles ship with the runtime; approved custom-adapter
+profiles are bound in the machine-global runtime store (THR-107 — see below).
 
 **Built-in profiles:**
 
@@ -399,35 +399,6 @@ validating the daemon-owned canonical wrapper and a strict v2 child manifest,
 then returns a nonsecret `received_nonlaunchable` receipt. It never launches a
 process, writes a profile or registry entry, or exposes the registration token.
 Projection, COMMITTED eligibility, and Connected UI are explicitly deferred.
-
-### Registration gate
-
-`POST /api/v1/orgs/{slug}/executors/register` (same `require_registration_token()`
-gate) consumes a fully-conformant token and writes the profile.
-
-Registration succeeds **only** when ALL of the following are true:
-
-These checks are enforced against the daemon's own token-store state —
-the register request cannot succeed by asserting conformance in its
-payload; the token must already have been driven through the token-gated
-loopback conformance check-in sequence (all four steps recorded, token
-valid, unconsumed, loopback-scoped, and org-matching) before the register
-call is accepted. The store is populated by conformance check-ins that the
-candidate CLI submits over the token-gated loopback channel.
-
-The register route uses a per-profile-name lock so two concurrent registrations
-for the same profile name cannot both pass the preflight collision check before
-either publishes. The write order is:
-
-1. **Reserve** the token atomically (reserve → durable store write → in-memory
-   registry → audit → commit; release on any failure).
-2. **Write** to the machine-global runtime store
-   (`<daemon-home>/executor_profiles.yaml`) — durable. THR-107: no
-   org-config write; the audit row stays in the org's audit log
-   (`org_config_write` shape, section `executor_profiles`) with
-   before/after snapshots of the runtime store.
-3. **Register** in the process-wide in-memory registry (only after the durable
-   write succeeds).
 
 ### Settings → Executors generator
 

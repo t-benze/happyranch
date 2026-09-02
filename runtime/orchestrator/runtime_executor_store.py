@@ -1,13 +1,9 @@
-"""Runtime-level (machine-local) executor profile store — THR-088.
+"""Machine-local store for approved custom-adapter profile bindings.
 
-Stores full ExecutorProfiles at the RUNTIME level (registered once per
-machine, visible to EVERY org) at ``<daemon-home>/executor_profiles.yaml``.
-
-THR-107: this store is the SOLE durable definition surface for custom
-executor profiles. The legacy per-org ``org/config.yaml``
-``executor_profiles`` block is no longer parsed or registered; a one-shot
-startup migration (``migrate_legacy_org_profiles``) lifts any lingering
-legacy block into this store with a loud deprecation warning.
+Bindings are registered once per machine, visible to every org, and persisted
+at ``<daemon-home>/executor_profiles.yaml``. Creation is owned by the approved
+custom-adapter bind flows; the retired generic-profile registration routes do
+not write this store.
 
 The store is additive to the existing:
 - ``runtime/orchestrator/executor_registry.py`` (process-wide singleton)
