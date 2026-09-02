@@ -930,6 +930,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/team-escalation-policy": {
+      "GET": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/artifacts": {
       "GET": {
         "params": [

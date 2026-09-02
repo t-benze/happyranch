@@ -82,6 +82,51 @@ def _candidate(release, *, root="T-1"):
     )
 
 
+@pytest.mark.parametrize("boundary", ["database", "store"])
+def test_current_activation_read_empty_and_current(tmp_path, boundary):
+    db = Database(tmp_path / "db.sqlite")
+    store = AuthorityPolicyStore(db)
+    read = (
+        db.get_current_authority_policy_activation
+        if boundary == "database"
+        else store.get_current_activation
+    )
+    assert read("engineering") is None
+    release = store.create_release(_release())
+    activation = store.activate(_activation(release))
+    assert read("engineering") == activation
+    assert read("content") is None
+
+
+@pytest.mark.parametrize("boundary", ["database", "store"])
+@pytest.mark.parametrize("damage", ["seal", "history"])
+def test_current_activation_read_fails_closed_for_corruption(
+    tmp_path, boundary, damage,
+):
+    db = Database(tmp_path / "db.sqlite")
+    store = AuthorityPolicyStore(db)
+    release = store.create_release(_release())
+    activation = store.activate(_activation(release))
+    db._conn.execute("DROP TRIGGER authority_policy_activations_no_update")
+    if damage == "seal":
+        db._conn.execute(
+            "UPDATE authority_policy_activations SET activation_digest=? WHERE id=?",
+            ("0" * 64, activation.id),
+        )
+    else:
+        db._conn.execute(
+            "UPDATE authority_policy_activations SET epoch=2 WHERE id=?",
+            (activation.id,),
+        )
+    read = (
+        db.get_current_authority_policy_activation
+        if boundary == "database"
+        else store.get_current_activation
+    )
+    with pytest.raises(ValueError, match="activation|history"):
+        read("engineering")
+
+
 def test_canonical_activation_payload_golden_vector_and_field_sensitivity():
     activation = AuthorityPolicyActivation.create(
         **{

@@ -401,6 +401,23 @@ the legacy candidate claim and therefore S1 is not evidence that production
 candidates are populated or that DB policy is activated. Production source
 integration and activation are separately reviewed later slices.
 
+**Read-only team policy projection (S2).** The dedicated authenticated route
+`GET /api/v1/orgs/{slug}/agents/{agent_name}/team-escalation-policy` is
+available only when the per-request roster resolves the exact Engineering
+manager tuple (`engineering_manager`, `engineering`, `manager`). Every other
+target returns the same `policy_surface_not_available` 404 and the shared
+Agent roster/serializer remains unchanged. An eligible empty store returns
+200 with `bootstrap_required=true` and omits `active`; an eligible active
+store exposes only immutable release/activation data and honest
+`shared local operator credential` attribution. The database/store current
+read selects the maximum team epoch and reuses the S1 release, activation
+seal, and full-history validators; missing/corrupt/incoherent state is the
+sanitized `policy_store_unavailable` failure. This read surface neither
+creates nor activates policy and reports `can_mutate=false` in both empty and
+active responses. Its activation guard remains not ready with
+`TASK-6335 production verification required`; runtime injection and candidate
+pin production integration remain later slices.
+
 Release identity is derived at the typed store boundary, never supplied as a
 second caller-controlled authority. Its canonical JSON and SHA-256 cover
 exactly `policy_id`, `version`, `team`, `title`, `normative_text`, the closed

@@ -17,6 +17,7 @@ import { StaticOrgProvider } from '@/lib/orgSlug';
 import { MOCK_ORG_SLUG } from '@/mocks';
 import { DataContext } from './DataContext';
 import { mockAgentsApi } from './_mock-agents';
+import { mockAuthorityPolicyApi } from './_mock-authority-policy';
 import { mockAssistantApi } from './_mock-assistant';
 import { mockAuditApi } from './_mock-audit';
 import { mockDashboardApi } from './_mock-dashboard';
@@ -54,6 +55,7 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
         value={{
           orgs: mockOrgsApi,
           agents: mockAgentsApi,
+          authorityPolicy: mockAuthorityPolicyApi,
           audit: mockAuditApi,
           threads: mockThreadsApi,
           tasks: mockTasksApi,
