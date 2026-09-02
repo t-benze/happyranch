@@ -1193,8 +1193,8 @@ class AuthorityPolicyRelease(BaseModel):
         return validate_authority_digest(value, info.field_name)
 
 
-class AuthorityPolicyActivation(BaseModel):
-    """One immutable, canonically sealed activation epoch."""
+class _AuthorityPolicyActivationDraft(BaseModel):
+    """Trusted construction input; never accepted as a persisted receipt."""
     model_config = {"extra": "forbid", "frozen": True}
 
     id: str
@@ -1208,42 +1208,59 @@ class AuthorityPolicyActivation(BaseModel):
     request_id: str
     request_digest: str
     created_at: datetime = Field(default_factory=_now)
-    activation_digest: str | None = None
-
-    @model_validator(mode="after")
-    def _derive_and_validate_activation_digest(self):
-        payload = {
-            "id": self.id,
-            "team": self.team,
-            "epoch": self.epoch,
-            "release_id": self.release_id,
-            "previous_activation_id": self.previous_activation_id,
-            "expected_previous_epoch": self.expected_previous_epoch,
-            "action": self.action,
-            "actor_kind": self.actor_kind,
-            "request_id": self.request_id,
-            "request_digest": self.request_digest,
-            "created_at": self.created_at.isoformat(),
-        }
-        canonical = json.dumps(
-            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        )
-        expected = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        if self.activation_digest is not None and self.activation_digest != expected:
-            raise ValueError("activation_digest does not match canonical activation semantics")
-        object.__setattr__(self, "activation_digest", expected)
-        return self
 
     @field_validator("request_digest")
     @classmethod
     def _request_digest_is_bounded_hex(cls, value, info):
         return validate_authority_digest(value, info.field_name)
 
+
+def _authority_activation_digest(values: dict[str, object]) -> str:
+    """Derive a seal from an already validated closed canonical payload."""
+    payload = {
+        field: values[field]
+        for field in (
+            "id", "team", "epoch", "release_id", "previous_activation_id",
+            "expected_previous_epoch", "action", "actor_kind", "request_id",
+            "request_digest", "created_at",
+        )
+    }
+    if isinstance(payload["created_at"], datetime):
+        payload["created_at"] = payload["created_at"].isoformat()
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class AuthorityPolicyActivation(_AuthorityPolicyActivationDraft):
+    """Immutable receipt whose mandatory seal is never derived at ingress."""
+
+    activation_digest: str
+
+    @classmethod
+    def create(cls, **values: object) -> AuthorityPolicyActivation:
+        """Trusted fresh-activation factory; the sole seal-derivation boundary."""
+        draft = _AuthorityPolicyActivationDraft.model_validate(values)
+        snapshot = draft.model_dump(mode="python", round_trip=True, warnings=False)
+        return cls.model_validate({
+            **snapshot,
+            "activation_digest": _authority_activation_digest(snapshot),
+        })
+
+    @model_validator(mode="after")
+    def _validate_activation_digest(self) -> AuthorityPolicyActivation:
+        snapshot = self.model_dump(
+            mode="python", exclude={"activation_digest"}, round_trip=True,
+            warnings=False,
+        )
+        if self.activation_digest != _authority_activation_digest(snapshot):
+            raise ValueError("activation_digest does not match canonical activation semantics")
+        return self
+
     @field_validator("activation_digest")
     @classmethod
     def _activation_digest_is_bounded_hex(cls, value, info):
-        if value is None:
-            return value
         return validate_authority_digest(value, info.field_name)
 
 

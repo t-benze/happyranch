@@ -44,7 +44,7 @@ def _release(*, team="engineering", version=1, **updates):
 
 def _activation(release, *, activation_id="APA-1", epoch=1, previous=None,
                 expected=None, request_id="REQ-1", action="bootstrap"):
-    return AuthorityPolicyActivation(
+    return AuthorityPolicyActivation.create(
         id=activation_id, team=release.team, epoch=epoch, release_id=release.id,
         previous_activation_id=previous, expected_previous_epoch=expected,
         action=action, actor_kind="shared_local_operator_credential",
@@ -55,7 +55,7 @@ def _activation(release, *, activation_id="APA-1", epoch=1, previous=None,
 def _raw_activation_values(
     activation_id, epoch, release_id, previous, expected, action, *, team="engineering"
 ):
-    activation = AuthorityPolicyActivation(
+    activation = AuthorityPolicyActivation.create(
         id=activation_id, team=team, epoch=epoch, release_id=release_id,
         previous_activation_id=previous, expected_previous_epoch=expected,
         action=action, actor_kind="shared_local_operator_credential",
@@ -83,7 +83,7 @@ def _candidate(release, *, root="T-1"):
 
 
 def test_canonical_activation_payload_golden_vector_and_field_sensitivity():
-    activation = AuthorityPolicyActivation(
+    activation = AuthorityPolicyActivation.create(
         **{
             **_activation(_release()).model_dump(exclude={"activation_digest"}),
             "created_at": "2026-09-01T00:00:00+00:00",
@@ -100,14 +100,13 @@ def test_canonical_activation_payload_golden_vector_and_field_sensitivity():
         "request_id": "REQ-2", "request_digest": "0" * 64,
         "created_at": "2026-09-02T00:00:00+00:00",
     }.items():
-        values = activation.model_dump()
+        values = activation.model_dump(exclude={"activation_digest"})
         values[field] = replacement
-        values["activation_digest"] = None
         if field == "actor_kind":
             with pytest.raises(ValidationError):
-                AuthorityPolicyActivation.model_validate(values)
+                AuthorityPolicyActivation.create(**values)
         else:
-            changed = AuthorityPolicyActivation.model_validate(values)
+            changed = AuthorityPolicyActivation.create(**values)
             assert changed.activation_digest != activation.activation_digest
 
 
@@ -131,6 +130,71 @@ def test_valid_post_construction_activation_substitution_has_zero_residue(
     assert db._conn.execute(
         "SELECT COUNT(*) FROM authority_policy_activations"
     ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("ingress", ["store", "database"])
+@pytest.mark.parametrize("field,replacement", [
+    ("id", "APA-other"), ("team", "content"), ("epoch", 2),
+    ("release_id", "APR-" + "0" * 64),
+    ("previous_activation_id", "APA-prior"), ("expected_previous_epoch", 0),
+    ("action", "activate"), ("request_id", "REQ-other"),
+    ("request_digest", "0" * 64),
+    ("created_at", "2026-09-02T00:00:00+00:00"),
+])
+def test_valid_substitution_with_cleared_seal_fails_before_transaction(
+    tmp_path, ingress, field, replacement,
+):
+    db = Database(tmp_path / "db.sqlite")
+    release = AuthorityPolicyStore(db).create_release(_release())
+    activation = _activation(release)
+    object.__setattr__(activation, field, replacement)
+    object.__setattr__(activation, "activation_digest", None)
+    statements = []
+    db._conn.set_trace_callback(statements.append)
+
+    with pytest.raises((ValueError, ValidationError), match="activation_digest"):
+        if ingress == "store":
+            AuthorityPolicyStore(db).activate(activation)
+        else:
+            db.activate_authority_policy(activation)
+
+    assert not any(statement.startswith("BEGIN") for statement in statements)
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_activations"
+    ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("ingress", ["store", "database"])
+@pytest.mark.parametrize("digest", [None, "not-a-digest", "0" * 64])
+def test_activation_ingress_rejects_missing_malformed_and_mismatched_seals_before_begin(
+    tmp_path, ingress, digest,
+):
+    db = Database(tmp_path / "db.sqlite")
+    release = AuthorityPolicyStore(db).create_release(_release())
+    activation = _activation(release)
+    object.__setattr__(activation, "activation_digest", digest)
+    statements = []
+    db._conn.set_trace_callback(statements.append)
+
+    with pytest.raises((ValueError, ValidationError)):
+        if ingress == "store":
+            AuthorityPolicyStore(db).activate(activation)
+        else:
+            db.activate_authority_policy(activation)
+
+    assert not any(statement.startswith("BEGIN") for statement in statements)
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_activations"
+    ).fetchone()[0] == 0
+
+
+def test_sealed_receipt_requires_digest_and_only_factory_derives_it():
+    values = _activation(_release()).model_dump(exclude={"activation_digest"})
+    with pytest.raises(ValidationError, match="activation_digest"):
+        AuthorityPolicyActivation.model_validate(values)
+    first = AuthorityPolicyActivation.create(**values)
+    second = AuthorityPolicyActivation.create(**values)
+    assert first.activation_digest == second.activation_digest
 
 
 @pytest.mark.parametrize("digest", ["not-a-digest", "0" * 64])
@@ -446,7 +510,7 @@ def test_recomputed_seal_cannot_hide_corrupt_predecessor_history(tmp_path):
         second, activation_id="APA-2", epoch=2, previous=one.id, expected=1,
         request_id="REQ-2", action="activate",
     ))
-    corrupt = AuthorityPolicyActivation.model_validate({
+    corrupt = AuthorityPolicyActivation.create(**{
         **two.model_dump(exclude={"activation_digest"}),
         "previous_activation_id": None,
         "expected_previous_epoch": 0,
@@ -468,7 +532,7 @@ def test_recomputed_seal_cannot_hide_release_team_linkage_corruption(tmp_path):
     engineering = store.create_release(_release())
     content = store.create_release(_release(team="content"))
     activation = store.activate(_activation(engineering))
-    corrupt = AuthorityPolicyActivation.model_validate({
+    corrupt = AuthorityPolicyActivation.create(**{
         **activation.model_dump(exclude={"activation_digest"}),
         "release_id": content.id,
     })

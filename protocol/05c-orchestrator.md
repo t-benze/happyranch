@@ -412,9 +412,14 @@ Each activation also carries a distinct immutable `activation_digest`; the
 activation seal. Deterministic canonical JSON (UTF-8, sorted keys, compact
 separators) covers the exact closed field set `id`, `team`, `epoch`,
 `release_id`, `previous_activation_id`, `expected_previous_epoch`, `action`,
-`actor_kind`, `request_id`, `request_digest`, and `created_at`. Both the typed
-store ingress and durable database ingress rebuild a deep primitive snapshot
-and independently derive/compare that digest before beginning a transaction.
+`actor_kind`, `request_id`, `request_digest`, and `created_at`. The trusted
+fresh-activation factory derives the seal from an already validated
+closed construction payload. The persisted/transport receipt requires a
+non-empty canonical SHA-256 seal. The typed store ingress and durable database
+ingress each rebuild a deep primitive snapshot without deriving, defaulting,
+backfilling, or resealing it, then independently recompute and compare the
+expected digest before beginning a transaction. Missing, malformed, and
+mismatched seals therefore fail before any durable side effect.
 Every activation lookup, including lookup through a candidate pin, recomputes
 the seal, resolves the release and same-team linkage, and replays sealed
 predecessor, epoch, action, and rollback-version history through the receipt;
