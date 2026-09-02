@@ -408,7 +408,8 @@ store exposes only immutable release/activation data and honest
 read selects the maximum team epoch and reuses the S1 release, activation
 seal, and full-history validators; missing/corrupt/incoherent state is the
 sanitized `policy_store_unavailable` failure. This read surface neither
-creates nor activates policy. Its activation guard remains not ready with
+creates nor activates policy and reports `can_mutate=false` in both empty and
+active responses. Its activation guard remains not ready with
 `TASK-6335 production verification required`; runtime injection and candidate
 pin production integration remain later slices.
 

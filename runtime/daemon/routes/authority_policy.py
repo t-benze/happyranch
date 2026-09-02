@@ -45,7 +45,7 @@ def get_team_escalation_policy(slug: str, agent_name: str, org: OrgDep) -> dict:
         result = {
             "team": _ELIGIBLE_TEAM,
             "target_manager": _ELIGIBLE_AGENT,
-            "can_mutate": True,
+            "can_mutate": False,
             "activation_guard": {
                 "ready": False,
                 "reason": "TASK-6335 production verification required",

@@ -10,7 +10,7 @@ export interface AuthorityPolicyClause {
 export interface TeamEscalationPolicyResponse {
   team: 'engineering';
   target_manager: 'engineering_manager';
-  can_mutate: boolean;
+  can_mutate: false;
   bootstrap_required?: true;
   activation_guard: { ready: false; reason: string };
   active?: {
@@ -34,11 +34,25 @@ export interface TeamEscalationPolicyResponse {
   };
 }
 
+export function decodeTeamEscalationPolicyResponse(
+  value: unknown,
+): TeamEscalationPolicyResponse {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    (value as { can_mutate?: unknown }).can_mutate !== false
+  ) {
+    throw new Error('Invalid team escalation policy response');
+  }
+  return value as TeamEscalationPolicyResponse;
+}
+
 export const getTeamEscalationPolicy = (
   slug: string,
   agentName: string,
 ): Promise<TeamEscalationPolicyResponse> =>
-  request(`/orgs/${slug}/agents/${agentName}/team-escalation-policy`);
+  request<unknown>(`/orgs/${slug}/agents/${agentName}/team-escalation-policy`)
+    .then(decodeTeamEscalationPolicyResponse);
 
 export const isEligiblePolicyManager = (agent: {
   name: string;

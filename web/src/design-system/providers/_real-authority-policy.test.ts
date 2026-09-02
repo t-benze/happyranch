@@ -15,11 +15,28 @@ import * as api from '@/lib/api/authorityPolicy';
 import { realAuthorityPolicyApi } from './_real-authority-policy';
 
 const manager = { name: 'engineering_manager', team: 'engineering', role: 'manager' };
-const populated = {
+const empty = {
   team: 'engineering' as const,
   target_manager: 'engineering_manager' as const,
-  can_mutate: true,
+  can_mutate: false as const,
+  bootstrap_required: true as const,
   activation_guard: { ready: false as const, reason: 'TASK-6335 production verification required' },
+};
+const active = {
+  ...empty,
+  bootstrap_required: undefined,
+  active: {
+    activation_id: 'APA-1', epoch: 1, action: 'bootstrap' as const,
+    created_at: '2026-09-02T00:00:00Z',
+    actor_attribution: 'shared local operator credential' as const,
+    release: {
+      id: 'APR-1', policy_id: 'engineering/pre-escalation-authority', version: 1,
+      title: 'Policy', normative_text: 'text', clauses: [],
+      continuation_phrase: 'routine same-root follow-through of the already-completed slice',
+      digest: 'digest', created_at: '2026-09-02T00:00:00Z',
+      actor_attribution: 'shared local operator credential' as const,
+    },
+  },
 };
 
 function setup(agent = manager) {
@@ -43,15 +60,23 @@ describe('team escalation policy query gate', () => {
     expect(client.getQueryCache().getAll()).toHaveLength(0);
   });
 
-  it('exposes loading then populated state for the eligible tuple', async () => {
-    let resolve!: (value: typeof populated) => void;
+  it('exposes loading then active read-only state for the eligible tuple', async () => {
+    let resolve!: (value: typeof active) => void;
     vi.mocked(api.getTeamEscalationPolicy).mockReturnValue(
       new Promise((done) => { resolve = done; }),
     );
     const { hook } = setup();
     expect(hook.result.current.isLoading).toBe(true);
-    resolve(populated);
-    await waitFor(() => expect(hook.result.current.data).toEqual(populated));
+    resolve(active);
+    await waitFor(() => expect(hook.result.current.data).toEqual(active));
+    expect(hook.result.current.data?.can_mutate).toBe(false);
+  });
+
+  it('exposes the empty read-only state for the eligible tuple', async () => {
+    vi.mocked(api.getTeamEscalationPolicy).mockResolvedValue(empty);
+    const { hook } = setup();
+    await waitFor(() => expect(hook.result.current.data).toEqual(empty));
+    expect(hook.result.current.data?.can_mutate).toBe(false);
   });
 
   it('exposes sanitized query errors', async () => {

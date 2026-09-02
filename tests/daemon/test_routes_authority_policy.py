@@ -46,8 +46,10 @@ def test_eligible_empty_omits_active_and_agent_payload_stays_clean(client_with_r
         "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy"
     )
     assert response.status_code == 200
-    assert response.json()["bootstrap_required"] is True
-    assert "active" not in response.json()
+    body = response.json()
+    assert body["bootstrap_required"] is True
+    assert body["can_mutate"] is False
+    assert "active" not in body
     roster = client.get("/api/v1/orgs/alpha/agents")
     assert roster.status_code == 200
     assert b"policy" not in roster.content
@@ -63,6 +65,7 @@ def test_eligible_active_projection(client_with_runtime):
     )
     assert response.status_code == 200
     body = response.json()
+    assert body["can_mutate"] is False
     assert body["active"]["activation_id"] == activation.id
     assert body["active"]["release"]["id"] == release.id
     assert body["active"]["release"]["clauses"][0]["id"] == "esc-protected"
