@@ -270,8 +270,6 @@ self-registration) — then auto-configures with no separate approval.
 `happyranch assistant` tells the user to run `happyranch assistant init` when
 no assistant config exists.
 
-**Executor binary resolution** (built-in and generic-CLI executor profiles)
-is registration-only: every built-in and generic-CLI custom executor must have a valid ``executors.json``
 entry keyed by the profile name before launch (THR-107 seq155). Custom-adapter
 profiles (``command_adapter_id: custom-adapter:<id>``) are an exception — they
 use the exact founder-APPROVED, hash-verified absolute adapter executable as

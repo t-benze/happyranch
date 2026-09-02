@@ -8,7 +8,6 @@ import { CustomProfilesSection } from './CustomProfilesSection';
 
 interface Profile {
   name: string;
-  command: string | null;
   adapter: string | null;
   workspace_adapter_id: string | null;
   command_adapter_id: string | null;
@@ -34,29 +33,26 @@ interface AdapterEntry {
   eligibility: string | null;
 }
 
-const PROFILE_GENERIC: Profile = {
+const PROFILE_CUSTOM: Profile = {
   name: 'my-runner',
-  command: 'my-runner-cli',
   adapter: 'claude',
   workspace_adapter_id: 'claude',
-  command_adapter_id: 'generic-cli',
+  command_adapter_id: 'custom-adapter:openclaw',
   present: true,
   path: '/usr/local/bin/my-runner-cli',
 };
 
 const PROFILE_GHOST: Profile = {
   name: 'ghost-cli',
-  command: 'ghost',
   adapter: 'codex',
   workspace_adapter_id: 'codex',
-  command_adapter_id: 'generic-cli',
+  command_adapter_id: 'custom-adapter:openclaw',
   present: false,
   path: null,
 };
 
 const PROFILE_ADAPTER_BACKED: Profile = {
   name: 'adapter-cli',
-  command: null,
   adapter: 'pi',
   workspace_adapter_id: 'pi',
   command_adapter_id: 'custom-adapter:approved-adapter',
@@ -80,6 +76,14 @@ const APPROVED_ADAPTER: AdapterEntry = {
   approved_by: 'founder',
   intended_profile_name: 'adapter-cli',
   eligibility: 'already_bound',
+};
+
+const OPENCLAW_ADAPTER: AdapterEntry = {
+  ...APPROVED_ADAPTER,
+  id: 'openclaw',
+  name: 'openclaw',
+  executable: '/usr/local/bin/my-runner-cli',
+  intended_profile_name: 'my-runner',
 };
 
 /** Static profiles list stub. */
@@ -114,19 +118,18 @@ describe('CustomProfilesSection (Settings → Executors → custom CLIs)', () =>
   });
 
   test('populated: one row per profile with name, executable, and present/path health', async () => {
-    stubProfiles([PROFILE_GENERIC, PROFILE_GHOST]);
-    stubAdapters([]);
+    stubProfiles([PROFILE_CUSTOM, PROFILE_GHOST]);
+    stubAdapters([OPENCLAW_ADAPTER]);
     render();
 
     const rowA = await screen.findByTestId('profile-row-my-runner');
     expect(within(rowA).getByText('my-runner')).toBeInTheDocument();
-    expect(within(rowA).getByText('my-runner-cli')).toBeInTheDocument();
+    expect(within(rowA).getAllByText('/usr/local/bin/my-runner-cli')).toHaveLength(2);
     // present === true → the /health/prereqs-style "on this machine" pill + path.
     expect(within(rowA).getByTestId('profile-health')).toHaveAttribute(
       'data-present',
       'true',
     );
-    expect(within(rowA).getByText('/usr/local/bin/my-runner-cli')).toBeInTheDocument();
 
     const rowB = screen.getByTestId('profile-row-ghost-cli');
     // present === false → NOT on this machine (PATH alone is not present).
@@ -140,7 +143,7 @@ describe('CustomProfilesSection (Settings → Executors → custom CLIs)', () =>
   test('remove: guarded confirm calls removeRuntimeProfile then refetches the list', async () => {
     const user = userEvent.setup();
     // Stateful store so the invalidation-driven refetch reflects the removal.
-    let store: Profile[] = [PROFILE_GENERIC, PROFILE_GHOST];
+    let store: Profile[] = [PROFILE_CUSTOM, PROFILE_GHOST];
     const deleted: string[] = [];
     server.use(
       http.get('/api/v1/executors/runtime/profiles', () =>
@@ -173,7 +176,7 @@ describe('CustomProfilesSection (Settings → Executors → custom CLIs)', () =>
     const user = userEvent.setup();
     // The profile was concurrently removed: DELETE 404s AND the refetch now
     // returns an empty list.
-    let store: Profile[] = [PROFILE_GENERIC];
+    let store: Profile[] = [PROFILE_CUSTOM];
     server.use(
       http.get('/api/v1/executors/runtime/profiles', () =>
         HttpResponse.json({ profiles: store }),
@@ -222,7 +225,7 @@ describe('CustomProfilesSection (Settings → Executors → custom CLIs)', () =>
     const row = await screen.findByTestId('profile-row-adapter-cli');
     // The executable comes from the approved adapter entry, not profile.command.
     expect(within(row).getByText('/opt/bin/approved-adapter')).toBeInTheDocument();
-    // Generic "No executable recorded" message must NOT appear.
+    // Missing approved-adapter executable message must NOT appear.
     expect(within(row).queryByText(/No executable recorded/)).not.toBeInTheDocument();
     // Adapter implementation terms must not surface in ordinary Settings.
     expect(within(row).queryByText(/Command adapter:/i)).not.toBeInTheDocument();
@@ -230,15 +233,15 @@ describe('CustomProfilesSection (Settings → Executors → custom CLIs)', () =>
     expect(within(row).queryByText('approved-adapter')).not.toBeInTheDocument();
   });
 
-  test('adapter-backed CLI row still shows workspace adapter text for generic rows', async () => {
-    stubProfiles([PROFILE_GENERIC]);
-    stubAdapters([]);
+  test('custom-adapter row hides implementation adapter terminology', async () => {
+    stubProfiles([PROFILE_CUSTOM]);
+    stubAdapters([OPENCLAW_ADAPTER]);
     render();
 
     const row = await screen.findByTestId('profile-row-my-runner');
-    // Generic custom CLI presentation is unchanged.
-    expect(within(row).getByText(/Workspace adapter:/i)).toBeInTheDocument();
-    expect(within(row).getByText(/claude/i)).toBeInTheDocument();
+    expect(within(row).getAllByText('/usr/local/bin/my-runner-cli')).toHaveLength(2);
+    expect(within(row).queryByText(/Workspace adapter:/i)).not.toBeInTheDocument();
+    expect(within(row).queryByText(/Command adapter:/i)).not.toBeInTheDocument();
   });
 
   /* ---- seq334: approved-unbound recovery lives in the Custom CLIs area ---- */

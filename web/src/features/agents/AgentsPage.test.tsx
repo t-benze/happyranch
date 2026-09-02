@@ -749,7 +749,7 @@ describe('AgentDetailPane — save flow (repo management)', () => {
       http.get('/api/v1/executors/runtime/profiles', () =>
         HttpResponse.json({
           profiles: [
-            { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
+            { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'custom-adapter:openclaw', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
           ],
         }),
       ),
@@ -821,7 +821,7 @@ describe('AgentDetailPane — save flow (repo management)', () => {
       http.get('/api/v1/executors/runtime/profiles', () =>
         HttpResponse.json({
           profiles: [
-            { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
+            { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'custom-adapter:openclaw', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
           ],
         }),
       ),
@@ -897,7 +897,7 @@ describe('AgentDetailPane — save flow (repo management)', () => {
       http.get('/api/v1/executors/runtime/profiles', () =>
         HttpResponse.json({
           profiles: [
-            { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: false, path: null, envelope_policy: null },
+            { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'custom-adapter:openclaw', present: false, path: null, envelope_policy: null },
           ],
         }),
       ),
@@ -999,7 +999,7 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     const phaseAProfiles = () =>
       HttpResponse.json({
         profiles: [
-          { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
+          { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'custom-adapter:openclaw', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
         ],
       });
 
@@ -1106,7 +1106,7 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     const phaseAProfiles = () =>
       HttpResponse.json({
         profiles: [
-          { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
+          { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'custom-adapter:openclaw', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
         ],
       });
 
@@ -1191,7 +1191,7 @@ describe('AgentDetailPane — save flow (repo management)', () => {
       http.get('/api/v1/executors/runtime/profiles', () =>
         HttpResponse.json({
           profiles: [
-            { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: false, path: null, envelope_policy: null },
+            { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'custom-adapter:openclaw', present: false, path: null, envelope_policy: null },
           ],
         }),
       ),

@@ -4,14 +4,8 @@
  * onboarding ConnectRuntimeStep (THR-088) so BOTH onboarding and Settings ▸
  * Executors consume ONE implementation with no logic/contract fork (THR-107).
  *
- * The binary-vs-profile split is a runtime PARAMETER of this engine, not two
- * code paths: built-in mints a purpose='binary' token and targets
- * register-binary (poll requires `present`); custom mints a profile-purpose
- * token first, then the consumer handles a separate binary-purpose stage
- * (see ConnectFlow's two-stage custom flow: ProfileStage → BinaryStage).
- * ProfileStage passes `requirePresent: false` — appearance-only is deliberate
- * to permit advancing to the binary stage; only BinaryStage
- * (`requirePresent: true`) may report the externally connected state.
+ * The remaining flow explicitly mints a purpose='binary' token and targets
+ * register-binary. Registered custom adapters use useDirectConnect below.
  *
  * This module is CHROME-FREE: no step eyebrow, no wizard headings, no
  * Continue/Skip navigation. Consumers inject that chrome via ConnectFlow slots.
@@ -30,10 +24,7 @@ import type { DirectConnectStatus, ForgetWrapperStatus } from '@/lib/api/directC
 export const KINDS = executorBinaries.EXECUTOR_BINARY_KINDS;
 export type Kind = (typeof KINDS)[number];
 
-/** The four built-in adapters — a CUSTOM runtime name may not collide with
- *  them: built-ins are minted from the dropdown (purpose='binary') and a custom
- *  name is minted from the form (purpose='profile'); the registry rejects a
- *  custom profile that would shadow a built-in. */
+/** The four built-in adapters. */
 export const BUILTINS = new Set<string>(KINDS);
 /** Mirrors a sane executor-profile identifier: lowercase, starts alpha. */
 export const NAME_RE = /^[a-z][a-z0-9-]{1,39}$/;
@@ -65,9 +56,8 @@ export const FIELD_CLASS =
 /** Build the copy-paste prompt (no `/connect` link). `target` picks the
  *  register route + body while the conformance challenge stays identical:
  *  'binary' → register-binary (built-in path, kind carried by the token),
- *  'profile' → register (legacy custom profile via generic-cli),
  *  'adapter' → adapter-submission (v1 wrapper → PENDING → founder approves & connects atomically, seq237). */
-export type ConnectTarget = 'binary' | 'profile' | 'adapter';
+export type ConnectTarget = 'binary' | 'adapter';
 
 /** Escape a string for safe single-quoted shell use (single quotes -> '\''). */
 function shQuote(s: string): string {
@@ -160,40 +150,13 @@ export function buildConnectPrompt(
     ].join('\n');
   }
 
-  // Profile and adapter targets — unchanged semantic behavior (THR-107 seq352).
-  const intro =
-    target === 'profile'
-      ? [
-          `# You're being connected to HappyRanch as an executor named "${name}".`,
-          `# Do all of this in one run, then stop. Send this header on every request:`,
-          `#   Authorization: Bearer ${token}`,
-          ``,
-          `# 1. Introduce yourself: work out the exact command that runs you`,
-          `#    headless / single-shot, using these placeholders:`,
-          `#      {prompt}  {timeout_seconds}  {workspace}`,
-        ]
-      : [];
-  const registerStep =
-    target === 'profile'
-      ? [
-          `# 3. Register — POST to`,
-          `#    ${base}/executors/runtime/register`,
-          `#    body {"command":"<your-cli>","argv_template":["<your-cli>","--flag","{prompt}"],"adapter":"pi"}`,
-          `#    Note: 'command' is the declared executable; argv_template[0]`,
-          `#    must be the SAME executable (the one GenericCliExecutor launches).`,
-        ]
-      : [];
   return [
-    ...intro,
-    ``,
     `# 2. Complete the conformance challenge — POST each step id to`,
     `#    ${base}/executors/runtime/conformance-checkin`,
     `#    body {"step_id":"<id>"} for each of:`,
     `#      workspace_access   loopback_reachable   cli_callback`,
     `#    then post emit_envelope with a sample envelope:`,
     `#    body {"step_id":"emit_envelope","envelope":{"envelope_version":1,"token_usage":{"input_tokens":1,"output_tokens":1,"model":"custom-cli"}}}`,
-    ``,
-    ...registerStep,
     ``,
     `# This token is valid for about 30 minutes. This screen updates live.`,
   ].join('\n');
@@ -206,12 +169,10 @@ export function buildConnectPrompt(
  *  `present`/`path` from the machine-local binary registry (executors.json)
  *  keyed by the profile name (THR-107 seq155). */
 export function useRuntimeConnect({
-  purpose,
   requirePresent,
   via,
   onConnected,
 }: {
-  purpose?: 'binary';
   requirePresent: boolean;
   via: ConnectMode;
   onConnected: (c: Connected) => void;
@@ -224,9 +185,7 @@ export function useRuntimeConnect({
 
   const mint = useMutation({
     mutationFn: (n: string) =>
-      settingsApi.mintRuntimeRegistrationToken(
-        purpose ? { name: n, purpose } : { name: n },
-      ),
+      settingsApi.mintRuntimeRegistrationToken({ name: n, purpose: 'binary' }),
     onSuccess: (resp, n) => {
       setName(n);
       setToken(resp.token);

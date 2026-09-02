@@ -10,7 +10,7 @@ A profile resolves to:
   - an executor instance (factory) for subprocess launch
   - a workspace adapter id (which writes bootstrap files)
   - a readiness marker path (relative to workspace root)
-  - for custom profiles: an argv_template with supported placeholders
+  - for custom profiles: a registered ``custom-adapter:<id>`` binding
 """
 
 from __future__ import annotations
@@ -30,39 +30,11 @@ if TYPE_CHECKING:
         AgentExecutor,
     )
 
-# ---------------------------------------------------------------------------
-# Placeholders supported in custom-profile argv templates.
-# Every placeholder must resolve to a single argv list element — no shell
-# string templating, no concatenation with literal text.
-# ---------------------------------------------------------------------------
-VALID_PLACEHOLDERS: frozenset[str] = frozenset(
-    {"{prompt}", "{timeout_seconds}", "{workspace}"}
+_CUSTOM_ADAPTER_GUIDANCE = (
+    "Register and approve an adapter executable, then bind this profile with "
+    "command_adapter_id='custom-adapter:<id>'. Legacy generic-cli, command, "
+    "argv_template, and omitted command_adapter_id profiles are retired."
 )
-
-
-def validate_argv_template(argv: list[str]) -> list[str]:
-    """Reject unsafe argv templates for custom executor profiles.
-
-    Returns a list of error strings (empty list = valid).
-    """
-    errors: list[str] = []
-    if not isinstance(argv, list) or not argv:
-        errors.append("argv_template must be a non-empty list of strings")
-        return errors
-    for i, elem in enumerate(argv):
-        if not isinstance(elem, str) or not elem:
-            errors.append(f"argv_template[{i}] must be a non-empty string")
-            continue
-        # Find all {placeholders} in the element
-        import re
-        placeholders = re.findall(r"\{[a-z_]+\}", elem)
-        for ph in placeholders:
-            if ph not in VALID_PLACEHOLDERS:
-                errors.append(
-                    f"argv_template[{i}]: unsupported placeholder {ph!r}; "
-                    f"valid: {', '.join(sorted(VALID_PLACEHOLDERS))}"
-                )
-    return errors
 
 
 # ---------------------------------------------------------------------------
@@ -91,49 +63,23 @@ class ExecutorProfile:
     adapter — which executor builds argv and parses output. For built-in
     profiles this is the same as ``workspace_adapter_id`` (each built-in
     carries its own first-party command adapter). For custom profiles
-    this may be ``"generic-cli"`` (template-based generic CLI) or
-    ``"custom-adapter:<id>"`` (bound to a separately registered,
+    this is ``"custom-adapter:<id>"`` (bound to a separately registered,
     founder-approved, hash-verified custom-adapter executable — D7B,
     subprocess-only, mandatory v1 AdapterInput/AdapterOutput, D5
     baseline-only posture, no permission expansion).
-    ``command_adapter`` is a deprecated read-compatible alias.
 
     ``readiness_marker_fragment`` is a relative path within the workspace
     that, when present, signals the workspace is ready. The orchestrator
     checks for it before launching.
-
-    ``argv_template`` (custom profiles only) is the argv list the
-    GenericCliExecutor expands from placeholders at launch time. Built-in
-    profiles leave this ``None`` — their factories supply their own argv.
-
-    ``command`` (custom profiles only) is the declared executable name
-    recorded in the profile definition. The machine-local binary registry
-    (``executors.json``) keyed by the profile name is the sole source of
-    truth for binary resolution at launch time (THR-107 seq155). Built-in
-    profiles resolve through the same profile-name registry key (no
-    Settings-path bypass).
 
     ``model_arg`` (optional) is an argv-TEMPLATE list containing a single
     ``{model}`` placeholder that each executor splices into its CLI argv
     when the agent has a model set. Unset (None) → CLI default model.
     Pre-seeded on the four built-in profiles with each CLI's verified flag.
 
-    ``envelope_policy`` (D7A, custom profiles only) is the result-envelope
-    enforcement posture. ``None`` (the default) is LEGACY COMPATIBILITY:
-    the v1 envelope is optional and absence preserves pre-D7A behavior.
-    ``"strict"`` is D7A mandatory enforcement: GenericCliExecutor fails
-    closed on any missing, malformed, or invalid-version envelope with a
-    deterministic error message guiding re-registration/verification.
-    New registrations through either shipping route automatically receive
-    ``"strict"``; existing stored profiles without this field are never
-    auto-mutated. Built-in profiles always have ``None``.
-
-    **D6 migration:** ``workspace_adapter_id`` and ``command_adapter_id`` are
-    the canonical identity fields. ``adapter_id`` and ``command_adapter`` are
-    deprecated read-compatible aliases that MUST match their canonical
-    counterparts — conflicting values raise ``ValueError`` at construction
-    time BEFORE any durable-store mutation, registry mutation, audit write,
-    or token consumption.
+    ``workspace_adapter_id`` and ``command_adapter_id`` are the canonical
+    identity fields. Workspace aliases remain read-compatible; the retired
+    generic command-adapter alias is not accepted.
     """
 
     name: str
@@ -141,17 +87,13 @@ class ExecutorProfile:
     workspace_adapter_id: str = "claude"
     command_adapter_id: str | None = None
     readiness_marker_fragment: str = ".claude/skills/start-task/SKILL.md"
-    argv_template: list[str] | None = None
-    command: str | None = None
     model_arg: list[str] | None = None
     # ── Deprecated read-compatible aliases (D6) ────────────────────────
     # MUST match canonical fields; conflict → ValueError.
     adapter_id: str = "claude"
-    command_adapter: str | None = None
 
     # ── D7A envelope enforcement (custom profiles only) ────────────────
     # None = legacy compatibility, "strict" = mandatory v1 enforcement
-    envelope_policy: str | None = None
 
     def __post_init__(self):
         """Enforce D6 canonical-alias consistency.
@@ -184,21 +126,6 @@ class ExecutorProfile:
                 f"workspace_adapter_id; adapter_id is a deprecated alias."
             )
 
-        # Command adapter resolution (both default to None)
-        cmd = self.command_adapter_id
-        cmd_legacy = self.command_adapter
-
-        if cmd_legacy is not None and cmd is None:
-            object.__setattr__(self, "command_adapter_id", cmd_legacy)
-        elif cmd is not None and cmd_legacy is None:
-            object.__setattr__(self, "command_adapter", cmd)
-        elif cmd != cmd_legacy:
-            raise ValueError(
-                f"ExecutorProfile {self.name!r}: conflicting command adapter "
-                f"identifiers — canonical command_adapter_id={cmd!r}, "
-                f"deprecated command_adapter={cmd_legacy!r}. Use only "
-                f"command_adapter_id; command_adapter is a deprecated alias."
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -277,8 +204,8 @@ class ExecutorRegistry:
             ExecutorProfileCollisionError: if the name collides with a
                 different custom profile already registered (hard semantic
                 conflict — the operator must resolve it by renaming).
-            ValueError: if the name collides with a built-in or if
-                argv_template is invalid.
+            ValueError: if the name collides with a built-in or does not bind
+                a registered custom adapter identity.
 
         If a custom profile with the same name AND identical definition is
         already registered, the call is a no-op (idempotent re-registration).
@@ -300,19 +227,8 @@ class ExecutorRegistry:
                 f"profile and the new definition conflict; rename one of "
                 f"the profiles to resolve the collision."
             )
-        if profile.kind != "builtin":
-            # D7B: custom-adapter profiles skip argv_template validation
-            cmd_adapter = profile.command_adapter_id or ""
-            if not cmd_adapter.startswith("custom-adapter:"):
-                if profile.argv_template is None:
-                    raise ValueError(
-                        f"Custom profile {profile.name!r} requires argv_template"
-                    )
-                errors = validate_argv_template(profile.argv_template)
-                if errors:
-                    raise ValueError(
-                        f"Invalid argv_template for {profile.name!r}: {'; '.join(errors)}"
-                    )
+        if profile.kind != "builtin" and not (profile.command_adapter_id or "").startswith("custom-adapter:"):
+            raise ValueError(_CUSTOM_ADAPTER_GUIDANCE)
         self._profiles[key] = profile
 
     def unregister_custom_profile(self, name: str) -> bool:
@@ -359,8 +275,8 @@ class ExecutorRegistry:
         instead).
 
         Raises:
-            ValueError: if ``profile.name`` collides with a built-in or if
-                ``argv_template`` is invalid.
+            ValueError: if ``profile.name`` collides with a built-in or does
+                not bind a registered custom adapter identity.
         """
         key = profile.name.lower()
         existing = self._profiles.get(key)
@@ -368,19 +284,9 @@ class ExecutorRegistry:
             raise ValueError(
                 f"Cannot replace built-in executor profile {profile.name!r}"
             )
-        # Validate argv_template for custom profiles (same as register_custom_profile)
-        if profile.kind != "builtin":
-            cmd_adapter = profile.command_adapter_id or ""
-            if not cmd_adapter.startswith("custom-adapter:"):
-                if profile.argv_template is None:
-                    raise ValueError(
-                        f"Custom profile {profile.name!r} requires argv_template"
-                    )
-                errors = validate_argv_template(profile.argv_template)
-                if errors:
-                    raise ValueError(
-                        f"Invalid argv_template for {profile.name!r}: {'; '.join(errors)}"
-                    )
+        # Apply the same canonical custom-adapter identity gate as registration.
+        if profile.kind != "builtin" and not (profile.command_adapter_id or "").startswith("custom-adapter:"):
+            raise ValueError(_CUSTOM_ADAPTER_GUIDANCE)
         self._profiles[key] = profile
         return existing is not None
 
@@ -474,15 +380,14 @@ class ExecutorRegistry:
         drive through this method so validation can never silently
         diverge.
 
-        Raises ``ValueError`` for: invalid adapter, missing/bad argv_template,
-        unsupported placeholder, declared-name mismatch, non-string command.
+        Raises ``ValueError`` for invalid workspace or command-adapter identity.
         """
         if not isinstance(name, str) or not name:
             raise ValueError(f"executor_profiles key must be a non-empty string")
         if not isinstance(cfg, dict):
             raise ValueError(f"executor_profiles.{name} must be a mapping")
-        command = cfg.get("command")
-        argv_template = cfg.get("argv_template")
+        if "command" in cfg or "argv_template" in cfg or "envelope_policy" in cfg:
+            raise ValueError(_CUSTOM_ADAPTER_GUIDANCE)
         # ── D6: dual-read workspace adapter (canonical workspace_adapter_id
         #     wins over deprecated adapter/adapter_id; conflict → error) ──
         #     Presence detection: if any two explicitly-supplied keys disagree,
@@ -529,9 +434,8 @@ class ExecutorRegistry:
                 f"{adapter!r}"
             )
         # ── end workspace adapter dual-read ───────────────────────────────
-        # ── D6: dual-read command adapter (canonical command_adapter_id
-        #     wins over deprecated command_adapter; conflict → error) ─────
-        command_adapter = cfg.get("command_adapter")
+        if "command_adapter" in cfg:
+            raise ValueError(_CUSTOM_ADAPTER_GUIDANCE)
         command_adapter_id_from_cfg = cfg.get("command_adapter_id")
         # ── D7B: detect custom-adapter binding early ────────────────
         custom_adapter_id: str | None = None
@@ -549,127 +453,27 @@ class ExecutorRegistry:
                         f"'custom-adapter:' requires a non-empty adapter id"
                     )
                 # Defer adapter validation until after conflict check
-            elif command_adapter_id_from_cfg not in {"generic-cli"}:
+            else:
                 raise ValueError(
                     f"executor_profiles.{name}.command_adapter_id must be "
-                    f"'generic-cli' or 'custom-adapter:<id>', got "
+                    f"'custom-adapter:<id>', got "
                     f"{command_adapter_id_from_cfg!r}"
                 )
-            if command_adapter is not None and command_adapter != command_adapter_id_from_cfg:
-                raise ValueError(
-                    f"executor_profiles.{name}: conflicting command "
-                    f"adapter — canonical command_adapter_id="
-                    f"{command_adapter_id_from_cfg!r}, deprecated "
-                    f"command_adapter={command_adapter!r}. Use "
-                    f"command_adapter_id; command_adapter is a "
-                    f"deprecated alias."
-                )
-            command_adapter = command_adapter_id_from_cfg
-        elif command_adapter is None:
-            command_adapter = "generic-cli"
-        elif command_adapter is not None:
-            if not isinstance(command_adapter, str):
-                raise ValueError(
-                    f"executor_profiles.{name}.command_adapter must be a "
-                    f"string, got {type(command_adapter).__name__}"
-                )
-            if command_adapter.startswith("custom-adapter:"):
-                custom_adapter_id = command_adapter[len("custom-adapter:"):]
-                if not custom_adapter_id:
-                    raise ValueError(
-                        f"executor_profiles.{name}.command_adapter: "
-                        f"'custom-adapter:' requires a non-empty adapter id"
-                    )
-                # Defer adapter validation until after conflict check
-            elif command_adapter not in {"generic-cli"}:
-                raise ValueError(
-                    f"executor_profiles.{name}.command_adapter must be "
-                    f"'generic-cli' or 'custom-adapter:<id>', got "
-                    f"{command_adapter!r}"
-                )
-        # ── end command adapter dual-read ────────────────────────────────
-        # ── D7B: custom-adapter profiles skip argv_template/command validation ─
+        else:
+            raise ValueError(_CUSTOM_ADAPTER_GUIDANCE)
         # Validate the adapter binding AFTER conflict checks complete
         if custom_adapter_id is not None:
             cls._validate_custom_adapter_binding(custom_adapter_id)
-        is_custom_adapter = custom_adapter_id is not None
-        if not is_custom_adapter:
-            # Validate argv_template placeholders (generic-cli only)
-            if not isinstance(argv_template, list) or not argv_template:
-                raise ValueError(
-                    f"executor_profiles.{name}.argv_template required "
-                    f"for generic-cli profiles"
-                )
-            argv_errors = validate_argv_template([str(e) for e in argv_template])
-            if argv_errors:
-                raise ValueError(
-                    f"Invalid argv_template for {name!r}: {'; '.join(argv_errors)}"
-                )
-            # Resolve command — the declared executable name (informational only;
-            # the machine-local binary registry is the sole resolution source).
-            # None means skip validation (e.g., in tests).
-            if command is not None and not isinstance(command, str):
-                raise ValueError(
-                    f"executor_profiles.{name}.command must be a string"
-                )
-
-            argv0 = [str(e) for e in argv_template][0]
-            if command is not None and argv0:
-                # Command and argv_template[0] must be the same declared name.
-                # The machine-local binary registry (executors.json) keyed by
-                # the profile name is the sole resolution source at launch
-                # (THR-107 seq155) — neither shutil.which nor PATH discovery
-                # is used here.
-                if command != argv0:
-                    raise ValueError(
-                        f"executor_profiles.{name}: command {command!r} and "
-                        f"argv_template[0] {argv0!r} must be the same executable "
-                        f"name. The profile name is the binary registry key."
-                    )
-            elif command is not None and not argv0:
-                raise ValueError(
-                    f"executor_profiles.{name}: argv_template[0] is empty. "
-                    f"The first element must be the executable name matching "
-                    f"'command'."
-                )
-        # ── D7A: envelope policy validation ─────────────────────────
-        envelope_policy = cfg.get("envelope_policy")
-        if envelope_policy is not None:
-            if not isinstance(envelope_policy, str):
-                raise ValueError(
-                    f"executor_profiles.{name}.envelope_policy must be a string, "
-                    f"got {type(envelope_policy).__name__}"
-                )
-            if envelope_policy not in {"strict"}:
-                raise ValueError(
-                    f"executor_profiles.{name}.envelope_policy must be 'strict' "
-                    f"(the only supported value), got {envelope_policy!r}"
-                )
-        # ── end envelope policy validation ──────────────────────────
-        # ── D7B: custom-adapter profiles skip argv_template/command ────────
-        if is_custom_adapter:
+        if custom_adapter_id is not None:
             marker = "AGENTS.md" if adapter in {"codex", "opencode", "pi"} else ".claude/skills/start-task/SKILL.md"
             return ExecutorProfile(
                 name=name,
                 kind="custom",
                 workspace_adapter_id=adapter,
-                command_adapter_id=command_adapter,
+                command_adapter_id=command_adapter_id_from_cfg,
                 readiness_marker_fragment=marker,
-                argv_template=None,  # custom adapter uses AdapterInput, not argv_template
-                command=None,  # adapter executable is resolved from adapter store, not PATH
-                envelope_policy=None,  # custom adapters speak AdapterOutput contract natively
             )
-        marker = "AGENTS.md" if adapter in {"codex", "opencode", "pi"} else ".claude/skills/start-task/SKILL.md"
-        return ExecutorProfile(
-            name=name,
-            kind="custom",
-            workspace_adapter_id=adapter,
-            command_adapter_id=command_adapter,
-            readiness_marker_fragment=marker,
-            argv_template=[str(e) for e in argv_template],
-            command=command,
-            envelope_policy=envelope_policy,
-        )
+        raise ValueError(_CUSTOM_ADAPTER_GUIDANCE)
 
 
 # ---------------------------------------------------------------------------
@@ -705,9 +509,8 @@ def build_executor(
 ) -> "AgentExecutor":
     """Build an executor instance for a registered profile name.
 
-    For built-in profiles, returns the specialized executor class
-    (ClaudeExecutor, CodexExecutor, etc.). For custom profiles, returns a
-    GenericCliExecutor configured from the profile's argv_template.
+    For built-in profiles, returns the specialized executor class. Custom
+    profiles resolve only through an approved registered custom adapter.
 
     Raises ValueError if the name is not registered.
     """
@@ -716,7 +519,6 @@ def build_executor(
         CodexExecutor,
         OpencodeExecutor,
         PiExecutor,
-        GenericCliExecutor,
     )
 
     registry = get_registry()
@@ -820,11 +622,4 @@ def build_executor(
         )
         return executor
 
-    # Custom profile — GenericCliExecutor (unchanged, no adapter injected)
-    assert profile.argv_template is not None
-    return GenericCliExecutor(
-        profile_name=name,
-        argv_template=profile.argv_template,
-        provider=name,
-        envelope_policy=profile.envelope_policy,
-    )
+    raise ValueError(_CUSTOM_ADAPTER_GUIDANCE)

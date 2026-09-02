@@ -48,7 +48,7 @@ function errMessage(err: unknown, fallback: string): string {
 
 /** Extract the stable adapter id from a profile that backs a custom CLI. */
 function adapterIdFromProfile(profile: RuntimeProfileEntry): string | null {
-  if (!profile.command_adapter_id || profile.command_adapter_id === 'generic-cli') {
+  if (!profile.command_adapter_id) {
     return null;
   }
   const prefix = 'custom-adapter:';
@@ -99,10 +99,7 @@ function ProfileRow({
   const remove = useRemoveRuntimeProfile();
   const qc = useQueryClient();
   const adapter = findAdapter(profile, adapters);
-  // Adapter-backed CLIs have profile.command === null; their truthful executable
-  // lives on the approved adapter entry. Generic CLIs keep their stored command.
-  const executable =
-    adapter && profile.command === null ? adapter.executable : profile.command;
+  const executable = adapter?.executable ?? null;
 
   const onConfirmRemove = async (): Promise<void> => {
     setError(null);
@@ -147,9 +144,6 @@ function ProfileRow({
             {/* seq334: adapter-backed rows show only the approved executable; do not
                 surface implementation-term “adapter” or binding ids. Generic rows
                 keep their existing presentation. */}
-            {!adapter && (profile.workspace_adapter_id || profile.adapter) ? (
-              <span className="text-text-muted"> · Workspace adapter: {profile.workspace_adapter_id || profile.adapter}</span>
-            ) : null}
           </p>
         ) : (
           <p className="text-text-muted text-sm">No executable recorded for this profile.</p>

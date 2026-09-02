@@ -889,9 +889,9 @@ def test_manage_agent_update_executor_regenerates_bootstrap(
         ExecutorProfile(
             name="testcustom",
             kind="custom",
-            adapter_id="pi",
+            workspace_adapter_id="pi",
+            command_adapter_id="custom-adapter:testcustom",
             readiness_marker_fragment="AGENTS.md",
-            argv_template=["echo", "{prompt}"],
         )
     )
 
@@ -1974,9 +1974,9 @@ def test_validate_executor_accepts_registered_custom_profile() -> None:
         ExecutorProfile(
             name="testcustom",
             kind="custom",
-            adapter_id="pi",
+            workspace_adapter_id="pi",
+            command_adapter_id="custom-adapter:testcustom",
             readiness_marker_fragment="AGENTS.md",
-            argv_template=["echo", "{prompt}"],
         )
     )
     # Must not raise — the registered custom profile IS a valid executor.
@@ -1996,9 +1996,9 @@ def test_set_executor_accepts_registered_custom_profile_via_route(
         ExecutorProfile(
             name="testcustom",
             kind="custom",
-            adapter_id="pi",
+            workspace_adapter_id="pi",
+            command_adapter_id="custom-adapter:testcustom",
             readiness_marker_fragment="AGENTS.md",
-            argv_template=["echo", "{prompt}"],
         )
     )
     _seed_active_agent(org_state, "custom_agent", executor="claude")

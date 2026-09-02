@@ -29,28 +29,47 @@ def store():
 class TestRuntimeTokenMint:
     """Runtime mint: org-agnostic token creation."""
 
+    def test_mint_runtime_rejects_omitted_purpose_before_effects(self, store):
+        with pytest.raises(TypeError):
+            store.mint_runtime("my-executor")
+        assert store._tokens == {}
+        assert store._challenges == {}
+
+    def test_mint_runtime_rejects_profile_purpose_before_effects(self, store):
+        callback_called = False
+
+        def on_mint(_token, _record):
+            nonlocal callback_called
+            callback_called = True
+
+        with pytest.raises(ValueError, match="binary.*adapter"):
+            store.mint_runtime("my-executor", purpose="profile", on_mint=on_mint)
+        assert callback_called is False
+        assert store._tokens == {}
+        assert store._challenges == {}
+
     def test_mint_runtime_returns_prefixed_token(self, store):
-        token, _expires = store.mint_runtime("my-executor")
+        token, _expires = store.mint_runtime("my-executor", purpose="binary")
         assert token.startswith(REGISTRATION_TOKEN_PREFIX)
         assert len(token) > len(REGISTRATION_TOKEN_PREFIX) + 20
 
     def test_mint_runtime_returns_expires_at_in_future(self, store):
         now = 1_000_000.0
-        _token, expires = store.mint_runtime("my-executor", now=now)
+        _token, expires = store.mint_runtime("my-executor", purpose="binary", now=now)
         assert expires == now + DEFAULT_REGISTRATION_TOKEN_TTL_SECONDS
 
     def test_mint_runtime_expires_prior_unconsumed_token_for_same_name(self, store):
         now = 1_000_000.0
-        token1, _ = store.mint_runtime("my-executor", now=now)
+        token1, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         # Token1 is still unconsumed
-        token2, _ = store.mint_runtime("my-executor", now=now + 1)
+        token2, _ = store.mint_runtime("my-executor", purpose="binary", now=now + 1)
         # Token1 should now be consumed (expired by the newer mint)
         assert store.validate_runtime(token1, now=now + 1) is None
 
     def test_mint_runtime_does_not_affect_org_scoped_tokens(self, store):
         now = 1_000_000.0
         org_token, _ = store.mint("alpha", "my-executor", now=now)
-        rt_token, _ = store.mint_runtime("my-executor", now=now)
+        rt_token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         # Org token still valid for its org
         assert store.validate(org_token, "alpha", now=now) is not None
         # Runtime token valid via runtime validate
@@ -58,14 +77,14 @@ class TestRuntimeTokenMint:
 
     def test_mint_runtime_token_not_valid_for_org(self, store):
         now = 1_000_000.0
-        rt_token, _ = store.mint_runtime("my-executor", now=now)
+        rt_token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         # Runtime tokens should be rejected by org-scoped validate
         assert store.validate(rt_token, "alpha", now=now) is None
 
     def test_mint_runtime_and_org_independent_by_name(self, store):
         now = 1_000_000.0
-        rt_token_a, _ = store.mint_runtime("executor-a", now=now)
-        rt_token_b, _ = store.mint_runtime("executor-b", now=now)
+        rt_token_a, _ = store.mint_runtime("executor-a", purpose="binary", now=now)
+        rt_token_b, _ = store.mint_runtime("executor-b", purpose="binary", now=now)
         # Both should be valid
         assert store.validate_runtime(rt_token_a, now=now) is not None
         assert store.validate_runtime(rt_token_b, now=now) is not None
@@ -79,7 +98,7 @@ class TestRuntimeTokenValidate:
 
     def test_validate_runtime_valid_token(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         record = store.validate_runtime(token, now=now)
         assert record is not None
         assert record.org == _RUNTIME_ORG
@@ -88,7 +107,7 @@ class TestRuntimeTokenValidate:
 
     def test_validate_runtime_expired_token_rejected(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         past_ttl = now + DEFAULT_REGISTRATION_TOKEN_TTL_SECONDS + 1
         assert store.validate_runtime(token, now=past_ttl) is None
 
@@ -97,7 +116,7 @@ class TestRuntimeTokenValidate:
 
     def test_validate_runtime_does_not_consume(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         store.validate_runtime(token, now=now)
         record = store.validate_runtime(token, now=now)
         assert record is not None
@@ -106,7 +125,7 @@ class TestRuntimeTokenValidate:
     def test_validate_runtime_accepts_token_regardless_of_org(self, store):
         """Runtime validate is org-agnostic — any valid runtime token passes."""
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         assert store.validate_runtime(token, now=now) is not None
 
 
@@ -118,20 +137,20 @@ class TestRuntimeTokenConsume:
 
     def test_consume_runtime_valid_token(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         record = store.consume_runtime(token, now=now)
         assert record is not None
         assert record.consumed
 
     def test_consume_runtime_second_use_rejected(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         assert store.consume_runtime(token, now=now) is not None
         assert store.consume_runtime(token, now=now) is None
 
     def test_consume_runtime_expired_token_rejected(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         past_ttl = now + DEFAULT_REGISTRATION_TOKEN_TTL_SECONDS + 1
         assert store.consume_runtime(token, now=past_ttl) is None
 
@@ -150,7 +169,7 @@ class TestRuntimeTokenReserve:
 
     def test_reserve_runtime_valid_token(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         record = store.reserve_runtime(token, now=now)
         assert record is not None
         # Token is reserved but not consumed
@@ -159,24 +178,24 @@ class TestRuntimeTokenReserve:
 
     def test_reserve_runtime_second_reserve_rejected(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         assert store.reserve_runtime(token, now=now) is not None
         assert store.reserve_runtime(token, now=now) is None
 
     def test_commit_runtime_succeeds_after_reserve(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         assert store.reserve_runtime(token, now=now) is not None
         assert store.commit_runtime(token, now=now)
 
     def test_commit_runtime_fails_without_reserve(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         assert not store.commit_runtime(token, now=now)
 
     def test_release_runtime_succeeds_after_reserve(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         assert store.reserve_runtime(token, now=now) is not None
         assert store.release_runtime(token, now=now)
         # Token is now valid again
@@ -184,7 +203,7 @@ class TestRuntimeTokenReserve:
 
     def test_release_runtime_fails_without_reserve(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         assert not store.release_runtime(token, now=now)
 
     def test_runtime_org_tokens_isolated(self, store):
@@ -203,7 +222,7 @@ class TestRuntimeConformanceStateMachine:
 
     def test_mint_runtime_opens_challenge_with_required_steps(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         challenge = store.get_challenge_runtime(token)
         assert challenge is not None
         assert len(challenge.steps) == len(RegistrationTokenStore.DEFAULT_CONFORMANCE_STEPS)
@@ -214,12 +233,12 @@ class TestRuntimeConformanceStateMachine:
 
     def test_all_steps_incomplete_initially(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         assert not store.is_challenge_complete_runtime(token, now=now)
 
     def test_record_step_arrival_runtime(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         assert store.record_step_arrival_runtime(token, "workspace_access", now=now)
         challenge = store.get_challenge_runtime(token)
         ws_step = next(s for s in challenge.steps if s.step_id == "workspace_access")
@@ -228,7 +247,7 @@ class TestRuntimeConformanceStateMachine:
 
     def test_record_step_runtime_requires_valid_token(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         past_ttl = now + DEFAULT_REGISTRATION_TOKEN_TTL_SECONDS + 1
         assert not store.record_step_arrival_runtime(
             token, "workspace_access", now=past_ttl
@@ -236,7 +255,7 @@ class TestRuntimeConformanceStateMachine:
 
     def test_record_step_runtime_requires_unconsumed_token(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         store.consume_runtime(token, now=now)
         assert not store.record_step_arrival_runtime(
             token, "workspace_access", now=now
@@ -244,7 +263,7 @@ class TestRuntimeConformanceStateMachine:
 
     def test_all_complete_flips_only_when_every_step_arrived(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         assert not store.is_challenge_complete_runtime(token, now=now)
         store.record_step_arrival_runtime(token, "workspace_access", now=now)
         assert not store.is_challenge_complete_runtime(token, now=now)
@@ -257,7 +276,7 @@ class TestRuntimeConformanceStateMachine:
 
     def test_expired_token_cannot_complete_runtime(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         for step_id in ["workspace_access", "loopback_reachable", "cli_callback", "emit_envelope"]:
             store.record_step_arrival_runtime(token, step_id, now=now)
         past_ttl = now + DEFAULT_REGISTRATION_TOKEN_TTL_SECONDS + 1
@@ -265,7 +284,7 @@ class TestRuntimeConformanceStateMachine:
 
     def test_pending_steps_runtime_returns_unarrived_step_ids(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         store.record_step_arrival_runtime(token, "workspace_access", now=now)
         pending = store.get_pending_steps_runtime(token, now=now)
         assert pending is not None
@@ -278,14 +297,14 @@ class TestRuntimeConformanceStateMachine:
 
     def test_duplicate_step_arrival_runtime_is_noop(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         assert store.record_step_arrival_runtime(token, "workspace_access", now=now)
         assert not store.record_step_arrival_runtime(token, "workspace_access", now=now + 1)
 
     def test_runtime_challenge_isolated_from_org_challenge(self, store):
         """Runtime challenges are independent of org-scoped challenges."""
         now = 1_000_000.0
-        rt_token, _ = store.mint_runtime("my-executor", now=now)
+        rt_token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         org_token, _ = store.mint("alpha", "my-executor", now=now)
 
         # Record a step on runtime token
@@ -314,20 +333,20 @@ class TestValidateRawCompatibility:
 
     def test_validate_raw_finds_runtime_token(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         record = store._validate_raw(token, now=now)
         assert record is not None
         assert record.org == _RUNTIME_ORG
 
     def test_validate_raw_rejects_consumed_runtime_token(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         store.consume_runtime(token, now=now)
         assert store._validate_raw(token, now=now) is None
 
     def test_validate_raw_rejects_expired_runtime_token(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
         past_ttl = now + DEFAULT_REGISTRATION_TOKEN_TTL_SECONDS + 1
         assert store._validate_raw(token, now=past_ttl) is None
 
@@ -342,7 +361,7 @@ class TestRuntimeTokenConcurrency:
 
     def test_consume_runtime_with_lock_exactly_one_wins(self, store):
         now = 1_000_000.0
-        token, _ = store.mint_runtime("my-executor", now=now)
+        token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
 
         success_count = 0
         success_lock = threading.Lock()
@@ -372,7 +391,7 @@ class TestRuntimeTokenConcurrency:
 
     def test_concurrent_mint_runtime_vs_consume_runtime_consistency(self, store):
         now = 1_000_000.0
-        old_token, _ = store.mint_runtime("my-executor", now=now)
+        old_token, _ = store.mint_runtime("my-executor", purpose="binary", now=now)
 
         consume_successes = []
         lock = threading.Lock()
@@ -380,7 +399,7 @@ class TestRuntimeTokenConcurrency:
 
         def mint_new():
             barrier.wait()
-            store.mint_runtime("my-executor", now=now + 1)
+            store.mint_runtime("my-executor", purpose="binary", now=now + 1)
 
         def consume_old():
             barrier.wait()

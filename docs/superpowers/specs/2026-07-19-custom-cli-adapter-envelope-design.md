@@ -752,3 +752,7 @@ For the dev who implements this spec (phase 1):
 9. [ ] Update `protocol/05c-orchestrator.md` (founder-authorized)
 10. [ ] Update `protocol/05b-agent-runtime.md` (founder-authorized)
 11. [ ] PR description MUST include: "design approved by founder at THR-107 seqXX" + link to this spec
+> **Historical supersession (TASK-6514):** This document records the former
+> template-based custom CLI design. Its executable generic profile behavior was
+> retired directly; current custom CLIs use approved `custom-adapter:<id>`
+> profiles and the AdapterInput/AdapterOutput v1 contract.

@@ -610,68 +610,28 @@ class AuditLogger:
             },
         )
 
-    def log_executor_registered(
-        self,
-        *,
-        profile_name: str,
-        command: str,
-        argv_template: list[str],
-        adapter: str,
-        actor: str = "founder",
-    ) -> None:
-        """Record a successful runtime-level executor registration.
-
-        THR-088 Slice B: runtime-level registration is org-agnostic, so it writes
-        to a dedicated runtime audit database (not a per-org db). Uses the
-        scope-prefix convention for ``task_id`` analogous to ``config:<section>``
-        (THR-035 / TASK-967).
-
-        Row shape:
-          task_id = "executor:<profile_name>"
-          action  = "executor_registered"
-          payload = {command, argv_template, adapter}
-        """
-        self._db.insert_audit_log(
-            task_id=f"executor:{profile_name}",
-            agent=actor,
-            action="executor_registered",
-            payload={
-                "command": command,
-                "argv_template": [str(e) for e in argv_template],
-                "adapter": adapter,
-            },
-        )
-
     def log_executor_removed(
         self,
         *,
         profile_name: str,
-        command: str,
-        argv_template: list[str],
-        adapter: str,
+        command_adapter_id: str,
         actor: str = "founder",
     ) -> None:
         """Record a successful runtime-level executor profile removal.
 
-        THR-107 S4a: mirrors ``log_executor_registered`` — same dedicated
-        runtime audit database, same scope-prefix ``task_id`` convention,
-        same payload keys (the payload captures the REMOVED definition);
-        only the action verb differs.
+        The payload captures only the retired profile's registered custom
+        adapter identity; legacy command and argv fields are not supported.
 
         Row shape:
           task_id = "executor:<profile_name>"
           action  = "executor_removed"
-          payload = {command, argv_template, adapter}
+          payload = {command_adapter_id}
         """
         self._db.insert_audit_log(
             task_id=f"executor:{profile_name}",
             agent=actor,
             action="executor_removed",
-            payload={
-                "command": command,
-                "argv_template": [str(e) for e in argv_template],
-                "adapter": adapter,
-            },
+            payload={"command_adapter_id": command_adapter_id},
         )
 
     def log_learning_added(

@@ -13,7 +13,7 @@ TDD at shipping seams:
 8. No Python import/discovery
 9. No permission expansion
 10. Built-in workspace permissions and all four built-in launches unchanged
-11. Generic-cli strict + legacy D7A behavior unchanged
+11. Registered custom-adapter behavior remains unchanged
 12. D6 canonical/legacy alias compatibility
 13. Profile route collision/token/audit no-residue, D7A atomic replacement,
     and audit-failure rollback preserved
@@ -555,31 +555,6 @@ class TestCustomAdapterExecutorLaunch:
 class TestCustomAdapterBindingValidation:
     """validate_custom_profile_config binding validation."""
 
-    def test_generic_cli_unchanged(self):
-        """Generic-cli profiles continue to work unchanged."""
-        profile = ExecutorRegistry.validate_custom_profile_config(
-            "test-profile",
-            {
-                "command": "echo",
-                "argv_template": ["echo", "{prompt}"],
-                "command_adapter_id": "generic-cli",
-            },
-        )
-        assert profile.command_adapter_id == "generic-cli"
-        assert profile.argv_template is not None
-        assert not (profile.command_adapter_id or "").startswith("custom-adapter:")
-
-    def test_generic_cli_default_unchanged(self):
-        """Omitted command_adapter_id defaults to generic-cli."""
-        profile = ExecutorRegistry.validate_custom_profile_config(
-            "test-profile",
-            {
-                "command": "echo",
-                "argv_template": ["echo", "{prompt}"],
-            },
-        )
-        assert profile.command_adapter_id == "generic-cli"
-
     def test_custom_adapter_binding_rejects_unknown(self):
         """Binding to an unknown adapter id → rejection."""
         with pytest.raises(ValueError, match="Unknown adapter"):
@@ -626,37 +601,6 @@ class TestCustomAdapterBindingValidation:
             },
         )
         assert profile.command_adapter_id == "custom-adapter:approved-adapter"
-        assert profile.argv_template is None  # custom adapter, no argv_template
-        assert profile.command is None  # custom adapter, no PATH resolution
-        assert profile.envelope_policy is None  # custom adapter, native contract
-
-    def test_custom_adapter_binding_via_deprecated_alias(self):
-        """Binding via deprecated command_adapter alias also works."""
-        with patch("runtime.orchestrator.custom_adapter_registry.resolve_adapter") as mock_resolve:
-            mock_resolve.return_value = MagicMock(
-                executable="/fake/adapter",
-                executable_hash="a" * 64,
-                version="1.0.0",
-                contract_version=1,
-            )
-            profile = ExecutorRegistry.validate_custom_profile_config(
-                "test-profile",
-                {
-                    "command_adapter": "custom-adapter:approved-adapter",
-                },
-            )
-            assert profile.command_adapter_id == "custom-adapter:approved-adapter"
-
-    def test_custom_adapter_conflicting_aliases_rejected(self):
-        """Conflicting command_adapter_id vs command_adapter → rejection."""
-        with pytest.raises(ValueError, match="conflicting"):
-            ExecutorRegistry.validate_custom_profile_config(
-                "test-profile",
-                {
-                    "command_adapter_id": "custom-adapter:adapter-a",
-                    "command_adapter": "custom-adapter:adapter-b",
-                },
-            )
 
     def test_custom_adapter_empty_id_rejected(self):
         """'custom-adapter:' with no id → rejection."""
@@ -671,28 +615,6 @@ class TestCustomAdapterBindingValidation:
 
 class TestBuildExecutorRouting:
     """build_executor routes to correct executor class."""
-
-    def test_generic_cli_profile_routes_to_generic_cli(self):
-        """A generic-cli profile → GenericCliExecutor."""
-        reset_registry()
-        registry = get_registry()
-        profile = ExecutorProfile(
-            name="mycli",
-            kind="custom",
-            workspace_adapter_id="pi",
-            command_adapter_id="generic-cli",
-            readiness_marker_fragment="AGENTS.md",
-            argv_template=["mycli", "{prompt}"],
-            command="mycli",
-            envelope_policy="strict",
-        )
-        registry.register_custom_profile(profile)
-        _register_binary_for_profile("mycli")
-
-        from runtime.orchestrator.executors import GenericCliExecutor
-        settings = Settings()
-        executor = build_executor("mycli", settings)
-        assert isinstance(executor, GenericCliExecutor)
 
     @patch("runtime.orchestrator.custom_adapter_registry.resolve_adapter")
     def test_custom_adapter_profile_routes_to_custom_adapter_executor(self, mock_resolve):
@@ -776,38 +698,6 @@ class TestInvocationContext:
         )
         result = executor.run(workspace=tmp_path, prompt="test", session_id="test-sess")
         assert result.success
-
-
-class TestRegistrationRouteCompatibility:
-    """D7B compatibility with existing registration routes."""
-
-    def test_generic_cli_with_strict_envelope_unchanged(self):
-        """Generic-cli with envelope_policy strict still works."""
-        profile = ExecutorRegistry.validate_custom_profile_config(
-            "strict-cli",
-            {
-                "command": "echo",
-                "argv_template": ["echo", "{prompt}"],
-                "command_adapter_id": "generic-cli",
-                "envelope_policy": "strict",
-            },
-        )
-        assert profile.command_adapter_id == "generic-cli"
-        assert profile.envelope_policy == "strict"
-
-    def test_legacy_stored_profile_unchanged(self):
-        """D7B does not break legacy stored profile validation."""
-        # A profile without command_adapter_id should still default to generic-cli
-        profile = ExecutorRegistry.validate_custom_profile_config(
-            "legacy",
-            {
-                "command": "echo",
-                "argv_template": ["echo", "{prompt}"],
-                "adapter": "pi",
-            },
-        )
-        assert profile.command_adapter_id == "generic-cli"
-        assert profile.workspace_adapter_id == "pi"
 
 
 class TestAdapterStoreCompatibility:
@@ -1529,39 +1419,6 @@ class TestThrottleIntegration:
         assert result.token_usage is not None
         assert result.token_usage.input_tokens == 100
 
-    def test_generic_cli_still_uses_throttle(self, tmp_path):
-        """GenericCliExecutor still routes through _run_command → throttle (regression)."""
-        from runtime.orchestrator.throttle import get_throttle, set_throttle
-        from runtime.orchestrator.throttle import ProviderThrottle
-
-        calls = []
-
-        class SpyThrottle(ProviderThrottle):
-            def run(self, provider, launch, on_event=None, **kwargs):
-                calls.append({"provider": provider})
-                return launch()
-
-        from runtime.orchestrator.executors import GenericCliExecutor
-        executor = GenericCliExecutor(
-            profile_name="test-cli",
-            argv_template=["echo", "test"],
-            provider="test-cli-provider",
-        )
-
-        old = get_throttle()
-        set_throttle(SpyThrottle(ceiling_default=10))
-        try:
-            result = executor.run(
-                workspace=tmp_path, prompt="test",
-                timeout_seconds=5, session_id="test-sess"
-            )
-        finally:
-            set_throttle(old)
-
-        assert len(calls) == 1
-        assert calls[0]["provider"] == "test-cli-provider"
-
-
 class TestCustomAdapterBinaryPreflight:
     """THR-107: Custom-adapter profiles launch through their APPROVED,
     hash-verified adapter executable WITHOUT requiring a separate
@@ -1720,19 +1577,6 @@ class TestCentralizedAdapterEligibility:
             name="pending-test",
             kind="custom",
             command_adapter_id="custom-adapter:nonexistent-adapter",
-        )
-
-        binding = ExecutorRegistry._resolve_custom_adapter_eligibility(profile)
-        assert binding is None
-
-    def test_generic_cli_profile_not_eligible(self):
-        """Generic-cli profiles are not custom-adapter eligible."""
-        from runtime.orchestrator.executor_registry import ExecutorProfile, ExecutorRegistry
-
-        profile = ExecutorProfile(
-            name="generic-test",
-            kind="custom",
-            command_adapter_id="generic-cli",
         )
 
         binding = ExecutorRegistry._resolve_custom_adapter_eligibility(profile)
