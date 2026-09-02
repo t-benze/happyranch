@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import datetime, timezone
+
+from runtime.models import AuthorityPolicyActivation, AuthorityPolicyRelease
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+
+
+def _seed_agent(org, name="engineering_manager", *, team="engineering", role="manager"):
+    agent = AgentDef(
+        name=name, team=team, role=role, executor="claude", allow_rules=tuple(),
+        repos={}, enrolled_by=None, enrolled_at_task=None,
+        enrolled_at=datetime.now(timezone.utc), system_prompt="prompt", description="desc",
+    )
+    paths = OrgPaths(root=org.root)
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    (paths.agents_dir / f"{name}.md").write_text(render_agent_text(agent))
+
+
+def _seed_active(org):
+    clauses = '[{"action":"escalate_to_founder","category":"protected","condition":"stop","id":"esc-protected"}]'
+    release = AuthorityPolicyRelease(
+        team="engineering", policy_id="engineering/pre-escalation-authority",
+        version=1, title="Policy", normative_text="text", clauses_json=clauses,
+        continuation_phrase="routine same-root follow-through of the already-completed slice",
+        actor_kind="shared_local_operator_credential",
+    )
+    store = AuthorityPolicyStore(org.db)
+    release = store.create_release(release)
+    activation = AuthorityPolicyActivation.create(
+        id="APA-1", team="engineering", epoch=1, release_id=release.id,
+        action="bootstrap", actor_kind="shared_local_operator_credential",
+        request_id="REQ-1", request_digest=hashlib.sha256(b"request").hexdigest(),
+    )
+    return release, store.activate(activation)
+
+
+def test_eligible_empty_omits_active_and_agent_payload_stays_clean(client_with_runtime):
+    client, org = client_with_runtime
+    _seed_agent(org)
+    response = client.get(
+        "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy"
+    )
+    assert response.status_code == 200
+    assert response.json()["bootstrap_required"] is True
+    assert "active" not in response.json()
+    roster = client.get("/api/v1/orgs/alpha/agents")
+    assert roster.status_code == 200
+    assert b"policy" not in roster.content
+    assert all("team_escalation_policy" not in row for row in roster.json()["agents"])
+
+
+def test_eligible_active_projection(client_with_runtime):
+    client, org = client_with_runtime
+    _seed_agent(org)
+    release, activation = _seed_active(org)
+    response = client.get(
+        "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["active"]["activation_id"] == activation.id
+    assert body["active"]["release"]["id"] == release.id
+    assert body["active"]["release"]["clauses"][0]["id"] == "esc-protected"
+    assert body["active"]["release"]["continuation_phrase"] == (
+        "routine same-root follow-through of the already-completed slice"
+    )
+    assert body["active"]["release"]["actor_attribution"] == (
+        "shared local operator credential"
+    )
+    assert body["activation_guard"] == {
+        "ready": False, "reason": "TASK-6335 production verification required"
+    }
+
+
+def test_store_corruption_is_sanitized(client_with_runtime):
+    client, org = client_with_runtime
+    _seed_agent(org)
+    _, activation = _seed_active(org)
+    org.db._conn.execute("DROP TRIGGER authority_policy_activations_no_update")
+    org.db._conn.execute(
+        "UPDATE authority_policy_activations SET activation_digest=? WHERE id=?",
+        ("0" * 64, activation.id),
+    )
+    response = client.get(
+        "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy"
+    )
+    assert response.status_code == 500
+    assert response.json() == {"detail": {"code": "policy_store_unavailable"}}
+    assert "digest" not in response.text
+
+
+def test_bearer_and_ineligible_targets_are_fail_closed(client_with_runtime):
+    client, org = client_with_runtime
+    _seed_agent(org)
+    _seed_agent(org, "dev_agent", role="worker")
+    no_bearer = client.get(
+        "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy",
+        headers={"Authorization": "Bearer wrong"},
+    )
+    assert no_bearer.status_code == 401
+    expected = {"detail": {"code": "policy_surface_not_available"}}
+    for target in ("dev_agent", "missing", "content_manager", "engineering_head"):
+        response = client.get(
+            f"/api/v1/orgs/alpha/agents/{target}/team-escalation-policy"
+        )
+        assert response.status_code == 404
+        assert response.json() == expected
+
+
+def test_org_isolation_precedes_policy_surface(client_with_runtime):
+    client, org = client_with_runtime
+    _seed_agent(org)
+    response = client.get(
+        "/api/v1/orgs/other/agents/engineering_manager/team-escalation-policy"
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "unknown_org"

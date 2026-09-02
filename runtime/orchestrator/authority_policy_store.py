@@ -38,6 +38,9 @@ class AuthorityPolicyStore:
     def get_activation(self, activation_id: str) -> AuthorityPolicyActivation | None:
         return self._db.get_authority_policy_activation(activation_id)
 
+    def get_current_activation(self, team: str) -> AuthorityPolicyActivation | None:
+        return self._db.get_current_authority_policy_activation(team)
+
     def claim_candidate_with_pin(
         self,
         *,

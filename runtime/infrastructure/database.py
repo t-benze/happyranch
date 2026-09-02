@@ -11111,6 +11111,23 @@ class Database:
         return None if row is None else self._authority_policy_activation_from_row(row)
 
     @_synchronized
+    def get_current_authority_policy_activation(
+        self, team: str
+    ) -> AuthorityPolicyActivation | None:
+        """Return the latest authenticated activation for ``team``, if any.
+
+        The point-read decoder is deliberately the sole validation boundary:
+        it authenticates the linked release and replays the complete sealed
+        activation history through the selected receipt.
+        """
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_activations "
+            "WHERE team=? ORDER BY epoch DESC LIMIT 1",
+            (team,),
+        ).fetchone()
+        return None if row is None else self._authority_policy_activation_from_row(row)
+
+    @_synchronized
     def get_authority_candidate_policy_pin(
         self, candidate_id: str
     ) -> AuthorityCandidatePolicyPin | None:

@@ -383,6 +383,14 @@ export interface AgentsApi {
   >;
 }
 
+export interface AuthorityPolicyApi {
+  useTeamEscalationPolicy: (agent: {
+    name: string;
+    team: string;
+    role: string;
+  } | undefined) => QueryLike<import('@/lib/api/authorityPolicy').TeamEscalationPolicyResponse>;
+}
+
 export interface AgentsRoutes {
   inbox: () => string;
   pending: () => string;
@@ -583,6 +591,7 @@ export interface ThreadRoutes {
 export interface DataContextValue {
   orgs: OrgsApi;
   agents: AgentsApi;
+  authorityPolicy: AuthorityPolicyApi;
   audit: AuditApi;
   threads: ThreadsApi;
   tasks: TasksApi;

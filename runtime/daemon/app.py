@@ -15,6 +15,7 @@ from runtime.daemon.routes import (
     assistant,
     assistant_a_mode,
     audit,
+    authority_policy,
     auth,
     custom_skills,
     dashboard,
@@ -432,6 +433,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(assistant_a_mode.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(agents.router, prefix="/api/v1/orgs/{slug}")
+    app.include_router(authority_policy.router, prefix="/api/v1/orgs/{slug}", tags=["authority-policy"])
     app.include_router(teams.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(audit.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(tokens.router, prefix="/api/v1/orgs/{slug}")
