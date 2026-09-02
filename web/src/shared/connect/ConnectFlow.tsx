@@ -125,7 +125,6 @@ export function BuiltinConnect({
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
   const flow = useRuntimeConnect({
-    purpose: 'binary',
     requirePresent: true,
     via: 'builtin',
     onConnected,

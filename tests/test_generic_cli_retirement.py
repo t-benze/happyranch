@@ -18,6 +18,20 @@ from runtime.orchestrator.executor_registry import ExecutorRegistry
 
 
 GUIDANCE = "command_adapter_id='custom-adapter:<id>'"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+GENERATED_OR_ENVIRONMENT_PARTS = {
+    ".git", ".claude", ".happyranch", ".mypy_cache", ".pytest_cache",
+    ".tox", ".venv", "build", "dist", "node_modules", "venv",
+}
+
+
+def repository_source_files(suffixes):
+    for path in REPOSITORY_ROOT.rglob("*"):
+        relative = path.relative_to(REPOSITORY_ROOT)
+        if any(part in GENERATED_OR_ENVIRONMENT_PARTS for part in relative.parts):
+            continue
+        if path.is_file() and path.suffix in suffixes:
+            yield path, relative.as_posix()
 
 
 @pytest.mark.parametrize(
@@ -66,7 +80,7 @@ def test_builtin_catalog_parity_after_retirement():
 
 def test_canonical_execution_model_has_only_registered_custom_adapter_contract():
     protocol = (
-        Path(__file__).parents[1] / "protocol" / "05b-agent-runtime.md"
+        REPOSITORY_ROOT / "protocol" / "05b-agent-runtime.md"
     ).read_text()
     section = protocol.split("### Per-agent executor selection", 1)[1].split(
         "**Per-agent model override", 1
@@ -96,7 +110,7 @@ def test_canonical_execution_model_has_only_registered_custom_adapter_contract()
 
 
 def test_all_canonical_current_docs_reject_retired_generic_profile_promises():
-    root = Path(__file__).parents[1]
+    root = REPOSITORY_ROOT
     surfaces = {
         "README": (root / "README.md").read_text(),
         "executor guide": (
@@ -124,7 +138,7 @@ def test_all_canonical_current_docs_reject_retired_generic_profile_promises():
 
 
 def test_repository_has_only_classified_retired_generic_profile_references():
-    root = Path(__file__).parents[1]
+    root = REPOSITORY_ROOT
     source_suffixes = {".md", ".py", ".ts", ".tsx", ".yaml", ".yml"}
     retired = re.compile(
         r"generic[-_]cli|GenericCli|argv_template|"
@@ -150,13 +164,13 @@ def test_repository_has_only_classified_retired_generic_profile_references():
     }
 
     residual_files = set()
-    for path in root.rglob("*"):
-        if not path.is_file() or path.suffix not in source_suffixes:
-            continue
-        relative = path.relative_to(root).as_posix()
-        if any(part in {".git", ".claude", "node_modules"} for part in path.parts):
-            continue
-        if retired.search(path.read_text(encoding="utf-8")):
+    for path, relative in repository_source_files(source_suffixes):
+        body = path.read_text(encoding="utf-8")
+        if relative == "docs/agent-guides/agent-executors-and-permissions.md":
+            # Ignore only the exact current retirement notice; stale promises
+            # elsewhere in this guide remain visible to the scan.
+            body = body.replace("Legacy `generic-cli`,", "Legacy retired adapter,")
+        if retired.search(body):
             residual_files.add(relative)
 
     assert residual_files <= allowed, sorted(residual_files - allowed)
@@ -165,7 +179,7 @@ def test_repository_has_only_classified_retired_generic_profile_references():
 
 
 def test_repository_rejects_stale_custom_profile_registration_workflow():
-    root = Path(__file__).parents[1]
+    root = REPOSITORY_ROOT
     current_surfaces = (
         root / "README.md",
         root / "docs" / "agent-guides" / "agent-executors-and-permissions.md",
@@ -181,14 +195,10 @@ def test_repository_rejects_stale_custom_profile_registration_workflow():
     )
 
     repository_residuals = set()
-    for path in root.rglob("*"):
-        if not path.is_file() or path.suffix not in {".md", ".py", ".ts", ".tsx"}:
-            continue
-        if any(part in {".git", ".claude", "node_modules"} for part in path.parts):
-            continue
+    for path, relative in repository_source_files({".md", ".py", ".ts", ".tsx"}):
         body = path.read_text(encoding="utf-8")
         if any(fragment in body for fragment in forbidden[:3]):
-            repository_residuals.add(path.relative_to(root).as_posix())
+            repository_residuals.add(relative)
     assert repository_residuals <= {"tests/test_generic_cli_retirement.py"}
 
     for surface in current_surfaces:

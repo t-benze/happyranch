@@ -292,25 +292,12 @@ class TestSubmitGating:
         assert resp.status_code == 422, resp.text
         assert "adapter" in resp.json()["detail"].lower()
 
-    def test_missing_intended_profile_name_rejected(self, app_and_client, route_setup, token_store):
-        """Token with purpose='profile' (no intended_profile_name) is rejected."""
-        app, master_token, store = app_and_client
-        token, _exp = store.mint_runtime(name="test-cli", purpose="profile")
-        for step_id in store.DEFAULT_CONFORMANCE_STEPS:
-            store.record_step_arrival_runtime(token, step_id)
-
-        script = _make_conformant_adapter_script(route_setup, "test-cli-adapter")
-        client = TestClient(app)
-        resp = client.post(
-            "/api/v1/runtime/adapters/submit",
-            json={
-                "executable": str(script),
-                "version": "1.0.0",
-                **_dep_manifest(script),
-            },
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert resp.status_code == 422, resp.text
+    def test_retired_profile_purpose_cannot_mint_submission_token(self, token_store):
+        """Retired profile purpose fails before token or challenge creation."""
+        with pytest.raises(ValueError, match="binary.*adapter"):
+            token_store.mint_runtime(name="test-cli", purpose="profile")
+        assert token_store._tokens == {}
+        assert token_store._challenges == {}
 
     def test_incomplete_challenge_rejected(self, app_and_client, route_setup, token_store):
         """Token with incomplete conformance challenge is rejected."""
@@ -1548,7 +1535,7 @@ class TestRaceSafety:
 # ---------------------------------------------------------------------------
 
 class TestLegacyCompatibility:
-    """Verify legacy generic profiles and token purposes are not mutated."""
+    """Verify adapter routes do not mutate runtime profiles."""
 
     def test_adapter_routes_do_not_mutate_runtime_profiles(self, app_and_client):
         """Accessing adapters routes does not mutate runtime profiles."""
@@ -1567,23 +1554,19 @@ class TestLegacyCompatibility:
                     f"Profile {name!r} mutated by adapter list"
                 )
 
-    def test_existing_registration_token_purposes_unaffected(self, token_store):
-        """Existing token purposes (binary, profile) still work."""
+    def test_remaining_registration_token_purposes_unaffected(self, token_store):
+        """Binary and adapter token purposes remain available."""
         store = token_store
 
         # Mint binary-purpose token
         token, _exp = store.mint_runtime(name="test-binary", purpose="binary")
         assert store.validate_runtime(token) is not None
 
-        # Mint profile-purpose token (org-scoped)
-        token2, _exp2 = store.mint_runtime(name="test-profile", purpose="profile")
-        assert store.validate_runtime(token2) is not None
-
         # Mint adapter-purpose token
-        token3, _exp3 = store.mint_runtime(
+        token2, _exp2 = store.mint_runtime(
             name="test-adapter", purpose="adapter", intended_profile_name="test-adapter"
         )
-        assert store.validate_runtime(token3) is not None
+        assert store.validate_runtime(token2) is not None
 
 
 # ============================================================================
@@ -1807,22 +1790,6 @@ class TestContractReferenceAuth:
         client = TestClient(app)
         resp = client.get("/api/v1/runtime/adapters/contract-reference")
         assert resp.status_code == 401, resp.text
-
-    def test_profile_purpose_token_rejected(self, app_and_client, token_store):
-        """A profile-purpose token is rejected — only adapter-purpose accepted."""
-        app, master_token, store = app_and_client
-        token, _exp = store.mint_runtime(name="test-cli", purpose="profile")
-
-        # Complete conformance for the token
-        for step_id in store.DEFAULT_CONFORMANCE_STEPS:
-            store.record_step_arrival_runtime(token, step_id)
-
-        client = TestClient(app)
-        resp = client.get(
-            "/api/v1/runtime/adapters/contract-reference",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert resp.status_code == 422, resp.text
 
     def test_binary_purpose_token_rejected(self, app_and_client, token_store):
         """A binary-purpose token is rejected — only adapter-purpose accepted."""

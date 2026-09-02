@@ -4,14 +4,8 @@
  * onboarding ConnectRuntimeStep (THR-088) so BOTH onboarding and Settings ▸
  * Executors consume ONE implementation with no logic/contract fork (THR-107).
  *
- * The binary-vs-profile split is a runtime PARAMETER of this engine, not two
- * code paths: built-in mints a purpose='binary' token and targets
- * register-binary (poll requires `present`); custom mints a profile-purpose
- * token first, then the consumer handles a separate binary-purpose stage
- * (see ConnectFlow's two-stage custom flow: ProfileStage → BinaryStage).
- * ProfileStage passes `requirePresent: false` — appearance-only is deliberate
- * to permit advancing to the binary stage; only BinaryStage
- * (`requirePresent: true`) may report the externally connected state.
+ * The remaining flow explicitly mints a purpose='binary' token and targets
+ * register-binary. Registered custom adapters use useDirectConnect below.
  *
  * This module is CHROME-FREE: no step eyebrow, no wizard headings, no
  * Continue/Skip navigation. Consumers inject that chrome via ConnectFlow slots.
@@ -30,10 +24,7 @@ import type { DirectConnectStatus, ForgetWrapperStatus } from '@/lib/api/directC
 export const KINDS = executorBinaries.EXECUTOR_BINARY_KINDS;
 export type Kind = (typeof KINDS)[number];
 
-/** The four built-in adapters — a CUSTOM runtime name may not collide with
- *  them: built-ins are minted from the dropdown (purpose='binary') and a custom
- *  name is minted from the form (purpose='profile'); the registry rejects a
- *  custom profile that would shadow a built-in. */
+/** The four built-in adapters. */
 export const BUILTINS = new Set<string>(KINDS);
 /** Mirrors a sane executor-profile identifier: lowercase, starts alpha. */
 export const NAME_RE = /^[a-z][a-z0-9-]{1,39}$/;
@@ -178,12 +169,10 @@ export function buildConnectPrompt(
  *  `present`/`path` from the machine-local binary registry (executors.json)
  *  keyed by the profile name (THR-107 seq155). */
 export function useRuntimeConnect({
-  purpose,
   requirePresent,
   via,
   onConnected,
 }: {
-  purpose?: 'binary';
   requirePresent: boolean;
   via: ConnectMode;
   onConnected: (c: Connected) => void;
@@ -196,9 +185,7 @@ export function useRuntimeConnect({
 
   const mint = useMutation({
     mutationFn: (n: string) =>
-      settingsApi.mintRuntimeRegistrationToken(
-        purpose ? { name: n, purpose } : { name: n },
-      ),
+      settingsApi.mintRuntimeRegistrationToken({ name: n, purpose: 'binary' }),
     onSuccess: (resp, n) => {
       setName(n);
       setToken(resp.token);

@@ -95,38 +95,20 @@ skill computes the workspace root as 5 parents above the task worktree
 exists. It is a narrow, non-permission tool with no DB, API, schema, audit,
 auth, notification, or sandbox footprint.
 
-**Custom CLI profiles** (example — OpenClaw):
-
 **Custom-adapter profiles** (D7B, ``command_adapter_id: custom-adapter:<id>``)
 route through ``CustomAdapterExecutor`` instead — see
 [Custom adapter profiles](#custom-adapter-profiles-thr-107-d7b) below.
 
-**Result-envelope (THR-107).** Custom CLIs may opt into token metering by
-emitting a single-line JSON envelope on stdout between sentinel markers:
-
-```
-__HR_ENVELOPE_BEGIN__
-{"envelope_version":1,"token_usage":{"input_tokens":1500,"output_tokens":420,"model":"my-cli"}}
-__HR_ENVELOPE_END__
-```
-
-**D7A strict enforcement (2026-07-27):** new registrations and re-registrations
-automatically receive ``envelope_policy: "strict"``. A strict profile MUST
-emit a valid v1 envelope on every execution — missing, malformed, or
-invalid-version envelopes fail closed with an actionable error. Existing
-profiles without ``envelope_policy`` are LEGACY COMPATIBILITY (optional
-envelope). To opt into strict enforcement: verify your CLI emits a valid
-v1 envelope, then re-register.
-
-The envelope is **mandatory for strict profiles, optional for legacy**.
-The ``envelope_version`` must be ``1`` (integer). The
-``token_usage`` object maps 1:1 to the ``TokenUsage`` model with identical
-key names. A top-level ``model`` field backfills ``token_usage.model`` when
-absent. Multiple envelopes are last-wins. A minimal valid sample is:
-
-```json
-{"envelope_version":1,"token_usage":{"input_tokens":1,"output_tokens":1}}
-```
+**Custom-adapter result contract (THR-107).** Every registered custom adapter
+receives one v1 ``AdapterInput`` JSON object on stdin and MUST return one valid
+v1 ``AdapterOutput`` JSON object on stdout. This contract is mandatory; there
+is no optional sentinel envelope or legacy profile fallback. Before launch the
+daemon requires founder approval and an exact profile bind, verifies the
+approved executable SHA-256, and resolves eligibility server-authoritatively.
+Direct-connect uses the same approved bind/hash/eligibility contract.
+Recovery is explicit: repair or re-register a valid approved adapter, or
+reassign the agent to a built-in executor. Built-in executor transport is
+unchanged and does not use ``AdapterOutput``.
 
 **Adapter contract reference (THR-107 seq184).** The authoritative v1
 ``AdapterInput``/``AdapterOutput`` contract is served by the running daemon via
