@@ -81,12 +81,3 @@ function ThemeToggle(): JSX.Element {
     </button>
   );
 }
-
-export const meta = {
-  name: 'AppBar',
-  layer: 'layout',
-  import: '@/design-system/layouts/AppShell/AppBar',
-  variants: {},
-  consumes: ['components.topbar', 'layout.grid.app_shell'],
-  example: '<AppBar />',
-} as const;

@@ -136,12 +136,3 @@ export function ThreadHeader({
     </header>
   );
 }
-
-export const meta = {
-  name: "ThreadHeader",
-  layer: "pattern",
-  import: "@/design-system/patterns/ThreadHeader",
-  variants: { status: ["open", "archived"] },
-  consumes: ["layout.grid.threads_page"],
-  example: "<ThreadHeader threadId='THR-042' subject='Refund policy' status='open' participants={['founder', 'compliance_head']} />",
-} as const;

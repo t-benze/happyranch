@@ -101,12 +101,3 @@ function Node({
     </div>
   );
 }
-
-export const meta = {
-  name: 'TraceTree',
-  layer: 'pattern',
-  import: '@/design-system/patterns/TraceTree',
-  variants: { density: ['comfortable', 'compact'] },
-  consumes: ['components.trace_tree'],
-  example: '<TraceTree root={{} as any} costs={{}} density="compact" />',
-} as const;

@@ -193,14 +193,6 @@ function ThemeToggle(): JSX.Element {
   );
 }
 
-export const meta = {
-  name: "TopBar",
-  layer: "layout",
-  import: "@/design-system/layouts/AppShell/TopBar",
-  variants: {},
-  consumes: ["components.topbar", "layout.grid.app_shell"],
-  example: "<TopBar />",
-} as const;
 
 function NavTab({
   to,

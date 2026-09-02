@@ -27,12 +27,3 @@ export function CrescentMoonBadge({ className }: CrescentMoonBadgeProps): JSX.El
     </svg>
   );
 }
-
-export const meta = {
-  name: "CrescentMoonBadge",
-  layer: "pattern",
-  import: "@/design-system/patterns/CrescentMoonBadge",
-  variants: {},
-  consumes: ["components.badge"],
-  example: "<CrescentMoonBadge />",
-} as const;

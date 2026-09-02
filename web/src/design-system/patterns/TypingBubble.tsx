@@ -89,12 +89,3 @@ function TypingDots({ animate }: { animate: boolean }): JSX.Element {
     </div>
   );
 }
-
-export const meta = {
-  name: "TypingBubble",
-  layer: "pattern",
-  import: "@/design-system/patterns/TypingBubble",
-  variants: { status: ["queued", "working"] },
-  consumes: [],
-  example: "<TypingBubble agentName='engineering_head' status='working' startedAt={null} />",
-} as const;

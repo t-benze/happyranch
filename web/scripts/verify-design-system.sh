@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 #
 # CI gate for the web design system. Runs typecheck + lint + tests +
-# registry regeneration + freshness check + hex-code grep. Mirrors the
-# rules in `web/DESIGN_SYSTEM.md` §10 / §13.
+# deterministic Storybook static build + hex-code grep.
 #
 # Exit codes:
 #   0 — clean
 #   1 — typecheck, lint, test, or build failure
-#   2 — registry.json out of date (commit the regenerated copy)
 #   3 — hex code found outside tokens.css (escapes the token layer)
 #
 # Run locally before pushing: `bash scripts/verify-design-system.sh`
@@ -24,16 +22,8 @@ npm run lint
 echo "==> Tests"
 npm test -- --run
 
-echo "==> Build registry"
-npm run build:registry
-
-echo "==> Registry freshness"
-if ! git diff --quiet src/design-system/registry.json; then
-  echo "FAIL: src/design-system/registry.json is stale."
-  echo "      Run 'npm run build:registry' locally and commit the result."
-  exit 2
-fi
-echo "  ok"
+echo "==> Build Storybook"
+npm run build-storybook
 
 echo "==> Hex codes outside tokens.css"
 HEX_HITS=$(

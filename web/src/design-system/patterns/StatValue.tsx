@@ -61,12 +61,3 @@ export function StatValue({
     </span>
   );
 }
-
-export const meta = {
-  name: 'StatValue',
-  layer: 'pattern',
-  import: '@/design-system/patterns/StatValue',
-  variants: { align: ['right', 'inline'], format: ['tokens', 'count'] },
-  consumes: ['components.stat_value'],
-  example: "<StatValue value={3707054} format='tokens' suffix='cache' />",
-} as const;

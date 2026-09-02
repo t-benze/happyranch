@@ -17,7 +17,7 @@ All slices are **PRESENTATION-only** and land on already-Direction-A foundations
 
 | # | Slice | Mockup(s) | Scope (presentation-only) |
 |---|---|---|---|
-| **0** | **Token foundation** (blocks all) | `ds.css` | Diff `ds.css` → `tokens.css`; add missing **name-aliases only**; **zero new raw values**; regenerate `registry.json` (MEM-126); pass hex gate (MEM-073). No visual change expected. |
+| **0** | **Token foundation** (blocks all) | `ds.css` | Diff `ds.css` → `tokens.css`; add missing **name-aliases only**; **zero new raw values**; update Storybook coverage; pass hex gate (MEM-073). No visual change expected. |
 | 1 | Home / Dashboard | a-dashboard | Flavor-tinted escalation chips (real `flavor`), **client-derived** "stale 24h+" from `age_seconds`, heartbeat/org-pulse/activity restyle. Keep roots-only. Drop $-today line. |
 | 2a | Threads list | a-threads | Full-width single-column list, segmented All/Open/Archived pill, LED status dots, dream-tag. |
 | 2b | Thread detail | a-thread-detail | Rail + responder-strip + decline-row + system-divider restyle. **Thread-tasks rail = STATUS-PILL + ID** (founder seq79 — overrides the artifact's id-only note). Omit per-thread "715K tokens" unless a real field is confirmed. Escalation buttons stay **navigation-only**. |

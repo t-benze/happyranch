@@ -170,12 +170,3 @@ export function MentionTextarea({
     </>
   );
 }
-
-export const meta = {
-  name: 'MentionTextarea',
-  layer: 'pattern',
-  import: '@/design-system/patterns/MentionTextarea',
-  variants: {},
-  consumes: ['components.textarea'],
-  example: "<MentionTextarea value='' onChange={() => {}} agents={[]} />",
-} as const;

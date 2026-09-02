@@ -183,12 +183,3 @@ export function RecipientsInput({
     </>
   );
 }
-
-export const meta = {
-  name: 'RecipientsInput',
-  layer: 'pattern',
-  import: '@/design-system/patterns/RecipientsInput',
-  variants: {},
-  consumes: ['MentionAutocomplete'],
-  example: '<RecipientsInput value="" onChange={() => {}} agents={[]} />',
-} as const;
