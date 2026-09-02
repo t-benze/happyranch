@@ -77,7 +77,6 @@ def _executor_error_detail(result, rc) -> str:
     terminal_error = str(getattr(result, "terminal_error", "") or "").strip()
     if (
         terminal_error
-        and stderr.strip()
         and not _meaningful_stderr(stderr)
     ):
         return terminal_error[:_REASON_DETAIL_CAP]

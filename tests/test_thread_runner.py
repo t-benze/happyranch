@@ -168,6 +168,22 @@ def test_executor_error_detail_retains_credit_exhaustion_diagnostics() -> None:
     assert '"result":"Your account has insufficient credits' in detail
 
 
+def test_executor_error_detail_prefers_structured_failure_when_stderr_empty() -> None:
+    from runtime.daemon.thread_runner import _executor_error_detail
+
+    result = SimpleNamespace(
+        error=(
+            "Command exited with code 1: "
+            '{"type":"result","subtype":"error_during_execution",'
+            '"is_error":true,"result":"You\'ve hit your session limit"}'
+        ),
+        stderr_tail="",
+        terminal_error="session_limit",
+    )
+
+    assert _executor_error_detail(result, 1) == "session_limit"
+
+
 def test_executor_error_detail_prefers_structured_failure_over_known_trust_warning() -> None:
     from runtime.daemon.thread_runner import _executor_error_detail
 
