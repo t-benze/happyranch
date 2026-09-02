@@ -46,7 +46,8 @@ Detailed contracts: `protocol/05b-agent-runtime.md` § "Canonical skill store + 
   jobs and `JobStatus` semantics are unchanged. V0 omits coarse manifests and
   derives the normalized observation-policy digest; its typed parser requires
   admission context for every phase/terminal frame, binds envelope and exact
-  phase identities/fences, and validates terminal links against supplied
+  bundle-derived phase identities/fences, rejects inconsistent supplied phase
+  context, and validates exact-cardinality terminal links against supplied
   canonical `PhaseFinished` receipts before deriving precedence. See
   `protocol/05b-agent-runtime.md`.
 - **Web Contract** — see the dedicated section below. Org-portability Slice A (THR-187) adds CLI-only `happyranch orgs portability-preflight <slug>` (read-only exhaustive root classification + quiescence) and founder-only `happyranch orgs reconcile-portability <slug> --from-file <abs.json>` (zombie reconciliation). No archive/export/import yet. Preflight refuses when **any** schedule is armed or firing and reports only existing controls as remedies (`happyranch todos pause|cancel` for armed; wait-for-terminal for firing; `happyranch cancel`/`jobs stop` for live work; `reconcile-portability` for a confirmed zombie). See `docs/agent-guides/features-and-invariants.md` (Org Portability) and `protocol/05c-orchestrator.md`.

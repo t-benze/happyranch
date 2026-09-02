@@ -1864,11 +1864,15 @@ mismatched observation-policy identity on observation receipts.
 `TerminalProposed` carries unique complete phase/finalization receipt links and
 is valid only when every link exactly matches a supplied, canonically
 revalidated `PhaseFinished` receipt and those receipts alone recompute its
-status/reason; duplicate/reused digests and extra/missing evidence are refused.
+status/reason. The immutable bundle derives the complete `(phase, ordinal)`
+identity set and cardinality (including exactly one finalization); inconsistent
+caller-supplied phase context, duplicate/reused digests, and extra/missing or
+same-phase/different-ordinal evidence are refused.
 `parse_remote_frame` is the shipping untrusted-input seam: every phase and
 terminal frame requires the exact admission offer plus admitted phase
-name/ordinal/digest context, and all envelope runner/generation/attempt/fence/
-lease facts are bound to it. `PHASE_LOG_CHUNK` carries the admitted phase digest
+name/ordinal/digest context reconciled to that offer's immutable bundle, and all
+envelope runner/generation/attempt/fence/lease facts are bound to it.
+`PHASE_LOG_CHUNK` carries the admitted phase digest
 like the other phase frames. S1 does not produce or persist that context.
 
 This section describes S1 only. There is deliberately no shipping producer or

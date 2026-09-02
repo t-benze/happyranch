@@ -653,6 +653,74 @@ def test_terminal_rejects_reused_digest_and_incomplete_or_extra_canonical_receip
         )
 
 
+def test_terminal_rejects_same_required_phase_at_a_different_ordinal() -> None:
+    receipts = canonical_terminal_receipts()
+    run_receipt = next(receipt for receipt in receipts if receipt.phase == PhaseName.RUN)
+    extra_value = run_receipt.model_dump(mode="json")
+    extra_value["ordinal"] = 2
+    extra_value["receipt_digest"] = canonical_digest({
+        key: value for key, value in extra_value.items() if key != "receipt_digest"
+    })
+    extra = PhaseFinished.model_validate(extra_value)
+    supplied = receipts + (extra,)
+    raw = canonical_terminal_frame(supplied)
+    phases = admitted_phases() + (
+        AdmittedPhase(phase="run", ordinal=2, phase_digest=run_receipt.phase_digest),
+    )
+
+    with pytest.raises(ValueError, match="admitted phase context does not match admitted bundle"):
+        parse_remote_frame(
+            raw, admission_offer=admission_offer(), admitted_phases=phases,
+            canonical_receipts=supplied,
+        )
+
+
+def test_parser_rejects_admitted_phase_identities_inconsistent_with_bundle() -> None:
+    raw = frame_data({
+        "phase": "run", "ordinal": 2,
+        "phase_digest": admission_offer().bundle.run.digest(),
+        "started_at": "2026-09-02T12:00:01Z",
+    })
+    raw["type"] = "PHASE_STARTED"
+    phases = admitted_phases() + (
+        AdmittedPhase(
+            phase="run", ordinal=2, phase_digest=admission_offer().bundle.run.digest(),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="admitted phase context does not match admitted bundle"):
+        parse_remote_frame(raw, admission_offer=admission_offer(), admitted_phases=phases)
+
+
+def test_parser_rejects_admitted_phase_digest_inconsistent_with_bundle() -> None:
+    phases = tuple(
+        item if item.phase != PhaseName.RUN else item.model_copy(update={"phase_digest": "0" * 64})
+        for item in admitted_phases()
+    )
+    raw = frame_data({
+        "phase": "run", "ordinal": 1, "phase_digest": "0" * 64,
+        "started_at": "2026-09-02T12:00:01Z",
+    })
+    raw["type"] = "PHASE_STARTED"
+
+    with pytest.raises(ValueError, match="admitted phase digest does not match admitted bundle"):
+        parse_remote_frame(raw, admission_offer=admission_offer(), admitted_phases=phases)
+
+
+def test_parser_rejects_admitted_bundle_inconsistent_with_admission_offer() -> None:
+    incompatible = copy.deepcopy(bundle_data())
+    incompatible["job_id"] = "JOB-other"
+
+    with pytest.raises(ValueError, match="admitted bundle does not match admission offer"):
+        parse_remote_frame(
+            canonical_terminal_frame(),
+            admitted_bundle=JobBundle.model_validate(incompatible),
+            admission_offer=admission_offer(),
+            admitted_phases=admitted_phases(),
+            canonical_receipts=canonical_terminal_receipts(),
+        )
+
+
 def test_envelope_rejects_bad_version_identity_time_and_unknown_keys() -> None:
     bundle = JobBundle.model_validate(bundle_data())
     offer = AdmissionOffer(

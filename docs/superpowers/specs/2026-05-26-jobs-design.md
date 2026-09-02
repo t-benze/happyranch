@@ -37,12 +37,15 @@ that every producer supplies complete authoritative inputs.
 The shipping typed frame parser rejects unknown/malformed payloads and requires
 the exact admission offer plus admitted phase name/ordinal/digest context for
 every phase and terminal frame. It binds envelope runner/generation/attempt/
-fence/lease facts to that admission. Phase receipts enforce phase-matched
+fence/lease facts to that admission and rejects supplied phase context unless
+its identities and bundle-derived digests match the immutable bundle exactly.
+Phase receipts enforce phase-matched
 reasons, setup-only skip semantics, timestamps, output caps, exit-code shape,
 observation-policy identity, and derived receipt digests. Terminal proposals
 are checked against the supplied canonical `PhaseFinished` receipts, reject
-duplicate/reused digests and incomplete/extra evidence, and derive canonical
-precedence only from those validated receipts.
+duplicate/reused digests and incomplete/extra or same-phase/different-ordinal
+evidence against the bundle-derived identity cardinality, require exactly one
+finalization, and derive canonical precedence only from validated receipts.
 
 Runner authentication/enrollment, schema/migrations and persistence, actual
 transport, leases/fences/journals, observation execution, subprocess phase

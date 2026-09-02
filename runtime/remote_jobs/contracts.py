@@ -511,11 +511,22 @@ class ReceiptLink(CanonicalModel):
 
 
 class AdmittedPhase(CanonicalModel):
-    """Exact phase identity supplied by the admission coordinator to the parser."""
+    """Phase digest context reconciled with bundle-derived phase identity."""
 
     phase: PhaseName
     ordinal: PositiveInt
     phase_digest: Digest
+
+
+def _required_phase_identities(bundle: JobBundle) -> tuple[tuple[PhaseName, int], ...]:
+    identities: list[tuple[PhaseName, int]] = []
+    if bundle.pre_run is not None:
+        identities.extend(((PhaseName.PRE_RUN, 1), (PhaseName.WORKSPACE_OBSERVATION, 1)))
+    identities.append((PhaseName.RUN, 1))
+    if bundle.post_run is not None:
+        identities.append((PhaseName.POST_RUN, 1))
+    identities.append((PhaseName.FINALIZATION, 1))
+    return tuple(identities)
 
 
 class TerminalProposed(CanonicalModel):
@@ -569,12 +580,8 @@ class TerminalProposed(CanonicalModel):
             admitted = JobBundle.model_validate(bundle)
             if self.bundle_digest != admitted.digest():
                 raise ValueError("terminal bundle_digest does not match admitted bundle")
-            expected_phases = {PhaseName.RUN, PhaseName.FINALIZATION}
-            if admitted.pre_run is not None:
-                expected_phases.update({PhaseName.PRE_RUN, PhaseName.WORKSPACE_OBSERVATION})
-            if admitted.post_run is not None:
-                expected_phases.add(PhaseName.POST_RUN)
-            if {link.phase for link in links} != expected_phases:
+            required_identities = _required_phase_identities(admitted)
+            if len(links) != len(required_identities) or set(identities) != set(required_identities):
                 raise ValueError("terminal proposal omits or adds a phase receipt")
             policy_digest = admitted.reuse.observation_policy.policy_digest if admitted.reuse else None
             observation = next((link for link in links if link.phase == PhaseName.WORKSPACE_OBSERVATION), None)
@@ -858,9 +865,12 @@ def parse_remote_frame(
     payload_model = _PAYLOAD_MODELS[frame_type]
     context: dict[str, Any] = {}
     offer = None if admission_offer is None else AdmissionOffer.model_validate(admission_offer)
-    bundle = offer.bundle if offer is not None else (
+    supplied_bundle = (
         None if admitted_bundle is None else JobBundle.model_validate(admitted_bundle)
     )
+    if offer is not None and supplied_bundle is not None and supplied_bundle != offer.bundle:
+        raise ValueError("admitted bundle does not match admission offer")
+    bundle = offer.bundle if offer is not None else supplied_bundle
     phase_context_types = {
         FrameType.PHASE_STARTED, FrameType.PHASE_LOG_CHUNK,
         FrameType.PHASE_FINISHED, FrameType.TERMINAL_PROPOSED,
@@ -876,6 +886,21 @@ def parse_remote_frame(
         raise ValueError(f"{frame_type.value} validation requires admission validation context")
     if frame_type in phase_context_types and phases is None:
         raise ValueError(f"{frame_type.value} validation requires admission validation context")
+    if phases is not None and bundle is not None:
+        identities = tuple((item.phase, item.ordinal) for item in phases)
+        required_identities = _required_phase_identities(bundle)
+        if len(identities) != len(required_identities) or set(identities) != set(required_identities):
+            raise ValueError("admitted phase context does not match admitted bundle")
+        derived_digests = {
+            PhaseName.RUN: bundle.run.digest(),
+        }
+        if bundle.pre_run is not None and bundle.reuse is not None:
+            derived_digests[PhaseName.PRE_RUN] = bundle.pre_run.digest()
+            derived_digests[PhaseName.WORKSPACE_OBSERVATION] = bundle.reuse.observation_policy.digest()
+        if bundle.post_run is not None:
+            derived_digests[PhaseName.POST_RUN] = bundle.post_run.digest()
+        if any(item.phase_digest != derived_digests[item.phase] for item in phases if item.phase in derived_digests):
+            raise ValueError("admitted phase digest does not match admitted bundle")
     if bundle is not None:
         context["admitted_bundle"] = bundle
         payload = value.get("payload")
