@@ -70,34 +70,76 @@ function importedAndRendered(
       }
     }
   }
-  const visited = new Set<ts.Node>();
-  function renders(node: ts.Node): boolean {
-    if (visited.has(node)) return false;
-    visited.add(node);
+  const visitedHelpers = new Set<ts.Node>();
+
+  function declarationsIn(block: ts.Block, parent: Map<string, ts.Node>): Map<string, ts.Node> {
+    const declarations = new Map(parent);
+    for (const statement of block.statements) {
+      if (ts.isFunctionDeclaration(statement) && statement.name) declarations.set(statement.name.text, statement);
+      if (ts.isVariableStatement(statement)) {
+        for (const item of statement.declarationList.declarations) {
+          if (ts.isIdentifier(item.name) && item.initializer) declarations.set(item.name.text, item.initializer);
+        }
+      }
+    }
+    return declarations;
+  }
+
+  function executeHelper(helper: ts.Node, scope: Map<string, ts.Node>): boolean {
+    if (visitedHelpers.has(helper)) return false;
+    visitedHelpers.add(helper);
+
+    if (ts.isArrowFunction(helper) || ts.isFunctionExpression(helper) || ts.isFunctionDeclaration(helper)) {
+      if (!helper.body) return false;
+      if (ts.isBlock(helper.body)) {
+        const helperScope = declarationsIn(helper.body, scope);
+        for (const statement of helper.body.statements) {
+          if (ts.isReturnStatement(statement) && statement.expression && renders(statement.expression, helperScope)) return true;
+        }
+        return false;
+      }
+      return renders(helper.body, scope);
+    }
+    return false;
+  }
+
+  function renders(node: ts.Node, scope: Map<string, ts.Node>): boolean {
 
     if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
       if (ts.isIdentifier(node.tagName)) {
         if (importedNames.has(node.tagName.text)) return true;
-        const local = localDeclarations.get(node.tagName.text);
-        if (local && renders(local)) return true;
+        const local = scope.get(node.tagName.text);
+        if (local && executeHelper(local, scope)) return true;
       }
     }
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
       if (importedNames.has(node.expression.text)) return true;
-      const local = localDeclarations.get(node.expression.text);
-      if (local && renders(local)) return true;
+      const local = scope.get(node.expression.text);
+      if (local && executeHelper(local, scope)) return true;
     }
 
-    return node.getChildren(sourceFile).some(renders);
+    if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && ts.isCallExpression(node.parent)) {
+      const call = node.parent;
+      if (call.arguments.includes(node) && ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === 'map') {
+        let receiver: ts.Expression = call.expression.expression;
+        while (ts.isParenthesizedExpression(receiver) || ts.isAsExpression(receiver)) receiver = receiver.expression;
+        if (ts.isArrayLiteralExpression(receiver) && executeHelper(node, scope)) return true;
+      }
+    }
+
+    if (ts.isFunctionLike(node) || ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node)) return false;
+    return node.getChildren(sourceFile).some((child) => renders(child, scope));
   }
 
   const initializer = declaration.initializer;
-  if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) return renders(initializer);
+  if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) {
+    return executeHelper(initializer, localDeclarations);
+  }
   if (!ts.isObjectLiteralExpression(initializer)) return false;
 
   return initializer.properties.some((property) => {
     if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) return false;
-    if (property.name.text === 'render') return renders(property.initializer);
+    if (property.name.text === 'render') return executeHelper(property.initializer, localDeclarations);
     if (property.name.text !== 'component' || !ts.isIdentifier(property.initializer)) return false;
     return importedNames.has(property.initializer.text);
   });
@@ -135,6 +177,47 @@ describe('Storybook design-system coverage', () => {
       "export const TaskCardPlaceholder = { parameters: { componentName: TaskCard.name }, render: () => <Button /> };",
     ].join('\n');
     expect(importedAndRendered(placeholder, storyFile, 'TaskCardPlaceholder', component)).toBe(false);
+  });
+
+  test.each([
+    ['args', 'args: { placeholder: TaskCard }'],
+    ['docs parameters', 'parameters: { docs: { source: TaskCard } }'],
+    ['an unrelated value', 'unrelated: TaskCard'],
+  ])('rejects an imported component referenced only through %s', (_form, metadata) => {
+    const storyFile = join(designSystemRoot, 'patterns/Adversarial.stories.tsx');
+    const component = { name: 'TaskCard', source: join(designSystemRoot, 'patterns/TaskCard.tsx') };
+    const storyCode = [
+      "import { Button } from '../primitives/Button';",
+      "import { TaskCard } from './TaskCard';",
+      `export const TaskCardPlaceholder = { ${metadata}, render: () => <Button /> };`,
+    ].join('\n');
+    expect(importedAndRendered(storyCode, storyFile, 'TaskCardPlaceholder', component)).toBe(false);
+  });
+
+  test('rejects JSX inside an uncalled nested render helper', () => {
+    const storyFile = join(designSystemRoot, 'patterns/Adversarial.stories.tsx');
+    const component = { name: 'TaskCard', source: join(designSystemRoot, 'patterns/TaskCard.tsx') };
+    const storyCode = [
+      "import { Button } from '../primitives/Button';",
+      "import { TaskCard } from './TaskCard';",
+      'export const TaskCardPlaceholder = {',
+      '  render: () => {',
+      '    const NeverCalled = () => <TaskCard />;',
+      '    return <Button />;',
+      '  },',
+      '};',
+    ].join('\n');
+    expect(importedAndRendered(storyCode, storyFile, 'TaskCardPlaceholder', component)).toBe(false);
+  });
+
+  test('rejects a name-only render placeholder', () => {
+    const storyFile = join(designSystemRoot, 'patterns/Adversarial.stories.tsx');
+    const component = { name: 'TaskCard', source: join(designSystemRoot, 'patterns/TaskCard.tsx') };
+    const storyCode = [
+      "import { TaskCard } from './TaskCard';",
+      'export const TaskCardPlaceholder = { render: () => TaskCard.name };',
+    ].join('\n');
+    expect(importedAndRendered(storyCode, storyFile, 'TaskCardPlaceholder', component)).toBe(false);
   });
 
   test.each([
