@@ -21,6 +21,15 @@ _ENV_KEYS = ("TMPDIR", "TMP", "TEMP", "HAPPYRANCH_TASK_TMP_ROOT", "HAPPYRANCH_TA
 _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PRODUCERS = 128
 MANIFEST_VERSION = 1
+_MANIFEST_KEYS = {
+    "version", "task_id", "required_root", "observed_root",
+    "root_classification", "manifest_classification", "lock_classification",
+    "producers",
+}
+_PRODUCER_KEYS = {
+    "producer_kind", "producer_id", "required", "observed",
+    "classification", "observed_at",
+}
 
 
 class TaskScratchError(RuntimeError):
@@ -55,6 +64,67 @@ def _mkdir_owned(path: Path, *, parent: Path | None = None) -> None:
     if parent is not None and path.resolve().parent != parent.resolve():
         raise TaskScratchError(f"scratch path escaped canonical parent: {path}")
     os.chmod(path, 0o700)
+
+
+def _validated_producers(data: object) -> list[dict[str, object]]:
+    """Validate the exact bounded version-1 manifest and producer shape."""
+    if not isinstance(data, Mapping) or set(data) != _MANIFEST_KEYS:
+        raise TaskScratchError("manifest is corrupt")
+    if type(data["version"]) is not int or data["version"] != MANIFEST_VERSION:
+        raise TaskScratchError("manifest is corrupt")
+    scalar_contract = {
+        "task_id": _TASK_ID,
+        "required_root": None,
+        "observed_root": None,
+    }
+    for field, pattern in scalar_contract.items():
+        value = data[field]
+        if not isinstance(value, str) or not value or len(value) > 4096:
+            raise TaskScratchError("manifest is corrupt")
+        if pattern is not None and not pattern.fullmatch(value):
+            raise TaskScratchError("manifest is corrupt")
+    if data["required_root"] != data["observed_root"]:
+        raise TaskScratchError("manifest is corrupt")
+    if (
+        data["root_classification"] != "regenerable_scratch"
+        or data["manifest_classification"] != "durable_recovery_artifact"
+        or data["lock_classification"] != "durable_recovery_artifact"
+    ):
+        raise TaskScratchError("manifest is corrupt")
+    producers = data["producers"]
+    if not isinstance(producers, list) or len(producers) > _MAX_PRODUCERS:
+        raise TaskScratchError("manifest is corrupt")
+    for producer in producers:
+        if not isinstance(producer, Mapping) or set(producer) != _PRODUCER_KEYS:
+            raise TaskScratchError("manifest is corrupt")
+        for field in ("producer_kind", "producer_id"):
+            value = producer[field]
+            if not isinstance(value, str) or not _PRODUCER_ID.fullmatch(value):
+                raise TaskScratchError("manifest is corrupt")
+        required = producer["required"]
+        observed = producer["observed"]
+        if (
+            not isinstance(required, Mapping)
+            or set(required) != {"canonical_root", "ownership"}
+            or required["canonical_root"] != data["required_root"]
+            or required["ownership"] != "runtime"
+            or not isinstance(observed, Mapping)
+            or set(observed) != {"canonical_root", "mode"}
+            or observed["canonical_root"] != data["observed_root"]
+            or observed["mode"] != "0700"
+            or producer["classification"] != "regenerable_scratch"
+        ):
+            raise TaskScratchError("manifest is corrupt")
+        observed_at = producer["observed_at"]
+        if not isinstance(observed_at, str) or len(observed_at) > 64:
+            raise TaskScratchError("manifest is corrupt")
+        try:
+            timestamp = datetime.fromisoformat(observed_at)
+        except ValueError as exc:
+            raise TaskScratchError("manifest is corrupt") from exc
+        if timestamp.tzinfo is None:
+            raise TaskScratchError("manifest is corrupt")
+    return [dict(producer) for producer in producers]
 
 
 def prepare_task_scratch(
@@ -100,9 +170,13 @@ def _write_observation(contract: TaskScratch) -> None:
                     current = json.loads(raw)
                 except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                     raise TaskScratchError("manifest is corrupt") from exc
+                if not isinstance(current, Mapping):
+                    raise TaskScratchError("manifest is corrupt")
                 if current.get("version") != MANIFEST_VERSION or current.get("task_id") != contract.task_id:
                     raise TaskScratchError("manifest identity/version mismatch")
-            producers = list(current.get("producers", []))
+                producers = _validated_producers(current)
+            else:
+                producers = []
             observation = {
                 "producer_kind": contract.producer_kind,
                 "producer_id": contract.producer_id,
@@ -198,10 +272,11 @@ def observe_task_scratch_manifest(*, workspace: Path, task_id: str) -> dict[str,
         if len(raw) > _MAX_MANIFEST_BYTES:
             raise TaskScratchError("manifest exceeds bounded size")
         data = json.loads(raw)
+        if not isinstance(data, Mapping):
+            raise TaskScratchError("manifest is corrupt")
         if data.get("version") != MANIFEST_VERSION or data.get("task_id") != task_id:
             return {"status": "stale", "path": str(path)}
-        if len(data.get("producers", [])) > _MAX_PRODUCERS:
-            raise TaskScratchError("manifest producer bound exceeded")
+        _validated_producers(data)
         return {"status": "ok", "path": str(path), "manifest": data}
     except (OSError, json.JSONDecodeError, UnicodeDecodeError, TaskScratchError) as exc:
         return {"status": "corrupt", "path": str(path), "reason": str(exc)}

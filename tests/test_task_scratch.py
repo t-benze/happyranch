@@ -134,6 +134,66 @@ def test_missing_corrupt_and_stale_manifest_are_report_only_observations(tmp_pat
     assert observe_task_scratch_manifest(workspace=workspace, task_id="TASK-5")["status"] == "stale"
 
 
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        [],
+        {"version": 1, "task_id": "TASK-6", "producers": "agent"},
+        {"version": 1, "task_id": "TASK-6", "producers": ["agent"]},
+        {
+            "version": 1,
+            "task_id": "TASK-6",
+            "producers": [{
+                "producer_kind": 1,
+                "producer_id": "sess",
+                "required": {"canonical_root": "/tmp/root", "ownership": "runtime"},
+                "observed": {"canonical_root": "/tmp/root", "mode": "0700"},
+                "classification": "regenerable_scratch",
+                "observed_at": "2026-09-02T00:00:00+00:00",
+            }],
+        },
+    ],
+    ids=["non-object", "producers-string", "producer-non-mapping", "malformed-field"],
+)
+def test_malformed_valid_json_manifest_is_reported_corrupt(tmp_path, manifest):
+    workspace = _workspace(tmp_path)
+    manifest_dir = workspace / ".happyranch/task-scratch-manifests"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "TASK-6.json").write_text(json.dumps(manifest))
+
+    observed = observe_task_scratch_manifest(workspace=workspace, task_id="TASK-6")
+
+    assert observed["status"] == "corrupt"
+
+
+@pytest.mark.parametrize(
+    "producers",
+    [
+        "agent",
+        ["agent"],
+        [{"producer_kind": "agent"}],
+    ],
+    ids=["non-list", "non-mapping-entry", "malformed-fields"],
+)
+def test_prepare_normalizes_malformed_valid_json_manifest(tmp_path, producers):
+    workspace = _workspace(tmp_path)
+    manifest_dir = workspace / ".happyranch/task-scratch-manifests"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "TASK-7.json").write_text(json.dumps({
+        "version": 1,
+        "task_id": "TASK-7",
+        "producers": producers,
+    }))
+
+    with pytest.raises(TaskScratchError, match="manifest is corrupt"):
+        prepare_task_scratch(
+            workspace=workspace,
+            task_id="TASK-7",
+            producer_kind="agent",
+            producer_id="sess",
+        )
+
+
 def test_manifest_has_no_deletion_consumer():
     root = Path(__file__).parents[1]
     scheduler = (root / "runtime/daemon/workspace_cleanup_scheduler.py").read_text()

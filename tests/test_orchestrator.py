@@ -3436,3 +3436,34 @@ def test_task_subtask_model_mismatch_detected_by_fake_executor(
         f"a success here means the model was dropped. "
         f"error={result.error!r}"
     )
+
+
+def test_malformed_task_scratch_manifest_preserves_agent_failure_note_and_audit(
+    orchestrator, test_runtime, monkeypatch,
+):
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    task_id = orchestrator.create_task("Malformed task scratch manifest")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-malformed")
+    manifest_dir = (
+        test_runtime.workspaces_dir
+        / "dev_agent/.happyranch/task-scratch-manifests"
+    )
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / f"{task_id}.json").write_text(json.dumps({
+        "version": 1,
+        "task_id": task_id,
+        "producers": "agent",
+    }))
+
+    result, report = orchestrator._run_agent(task_id, "dev_agent", "")
+
+    assert result.success is False
+    assert result.error == "manifest is corrupt"
+    assert report is None
+    task = orchestrator._db.get_task(task_id)
+    assert task is not None
+    assert task.note == "Task scratch containment refused launch: manifest is corrupt"
+    audits = orchestrator._db.get_audit_logs(task_id)
+    failures = [row for row in audits if row["action"] == "task_scratch_containment_failed"]
+    assert len(failures) == 1
+    assert failures[0]["payload"] == {"error": "manifest is corrupt"}
