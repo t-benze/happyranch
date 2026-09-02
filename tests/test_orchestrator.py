@@ -335,6 +335,66 @@ def test_worker_prompt_omits_role_guidance_block(
     assert "  |\n" not in prompt
 
 
+def test_run_agent_shipping_seam_injects_manager_policy_binds_session_and_omits_worker(
+    orchestrator, test_runtime, monkeypatch,
+):
+    from runtime.orchestrator.active_authority_policy import (
+        RESERVED_TEAM_POLICY_HEADER, load_session_policy_snapshot,
+    )
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    from tests.authority_policy_test_factory import activate_test_policy
+
+    from runtime.orchestrator.teams import TeamManager
+    from tests.conftest import seed_test_agents
+    seed_test_agents(test_runtime, ("engineering_manager", "dev_agent"))
+    _setup_workspaces(test_runtime, ["engineering_manager", "dev_agent"])
+    orchestrator._teams._teams["engineering"] = TeamManager(
+        name="engineering_manager", team="engineering", workers=("dev_agent",),
+    )
+    release, activation = activate_test_policy(orchestrator._db)
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="provider-session",
+    )
+
+    manager_task = orchestrator.create_task("manager work")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-policy-manager")
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        orchestrator._run_agent(manager_task, "engineering_manager", "decide")
+    manager_prompt = mock_executor.run.call_args.kwargs["prompt"]
+    assert manager_prompt.count(RESERVED_TEAM_POLICY_HEADER) == 1
+    assert release.id in manager_prompt and release.policy_digest in manager_prompt
+    pinned = load_session_policy_snapshot(
+        db=orchestrator._db, store=AuthorityPolicyStore(orchestrator._db),
+        task_id=manager_task, session_id="sess-policy-manager",
+        agent_name="engineering_manager",
+    )
+    assert pinned.release.id == release.id
+    assert pinned.activation.id == activation.id
+
+    worker_task = orchestrator.create_task("worker work")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-policy-worker")
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        orchestrator._run_agent(worker_task, "dev_agent", "")
+    assert RESERVED_TEAM_POLICY_HEADER not in mock_executor.run.call_args.kwargs["prompt"]
+
+
+@pytest.mark.parametrize("marker", [
+    "## [RESERVED] Active Team Escalation Policy",
+    "<!-- BEGIN HAPPYRANCH ACTIVE TEAM POLICY -->",
+    "<!-- END HAPPYRANCH ACTIVE TEAM POLICY -->",
+])
+def test_run_agent_shipping_seam_rejects_reserved_untrusted_brief(
+    orchestrator, test_runtime, monkeypatch, marker,
+):
+    from runtime.orchestrator.active_authority_policy import ActiveAuthorityPolicyError
+    _setup_workspaces(test_runtime)
+    task_id = orchestrator.create_task(f"hostile {marker}")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-hostile")
+    with pytest.raises(ActiveAuthorityPolicyError, match="server-reserved"):
+        orchestrator._run_agent(task_id, "dev_agent", "")
+
+
 def test_codex_agent_prompt_uses_provider_specific_wording(
     orchestrator, test_runtime, monkeypatch,
 ):

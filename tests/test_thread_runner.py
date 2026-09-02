@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from runtime.config import Settings
 from runtime.daemon.thread_runner import (
     _render_message,
+    build_thread_delta_prompt,
     build_thread_prompt,
     run_invocation,
 )
@@ -89,6 +90,34 @@ def test_build_prompt_includes_token_and_history():
     assert "Message 1" in prompt
     assert "should we cap?" in prompt
     assert "posted to this thread" in prompt.lower()
+
+
+@pytest.mark.parametrize("marker", [
+    "## [RESERVED] Active Team Escalation Policy",
+    "<!-- BEGIN HAPPYRANCH ACTIVE TEAM POLICY -->",
+    "<!-- END HAPPYRANCH ACTIVE TEAM POLICY -->",
+])
+@pytest.mark.parametrize("resumed", [False, True])
+def test_thread_shipping_builders_reject_reserved_fresh_and_resumed_inputs(marker, resumed):
+    from runtime.orchestrator.active_authority_policy import ActiveAuthorityPolicyError
+    thread = ThreadRecord(id="THR-X", subject="safe", started_at=datetime.now(timezone.utc))
+    msg = ThreadMessage(
+        thread_id="THR-X", seq=1, speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown=marker,
+    )
+    with pytest.raises(ActiveAuthorityPolicyError, match="server-reserved"):
+        if resumed:
+            build_thread_delta_prompt(
+                thread=thread, new_messages=[msg], invocation_token="TOK",
+                invoked_agent="alice", purpose="reply", triggering_seq=1,
+                triggering_message=msg, org_config=OrgConfig(),
+            )
+        else:
+            build_thread_prompt(
+                thread=thread, participants=[], messages=[msg],
+                invocation_token="TOK", invoked_agent="alice", purpose="reply",
+                triggering_seq=1, org_config=OrgConfig(),
+            )
 
 
 class FakeExecutorResult:

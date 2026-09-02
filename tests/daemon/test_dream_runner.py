@@ -60,6 +60,26 @@ def test_build_dream_prompt_contains_private_contract(tmp_path):
     assert "TASK-001 completed" in prompt
 
 
+@pytest.mark.parametrize("field", ["task_history", "recent_audit"])
+@pytest.mark.parametrize("marker", [
+    "## [RESERVED] Active Team Escalation Policy",
+    "<!-- BEGIN HAPPYRANCH ACTIVE TEAM POLICY -->",
+    "<!-- END HAPPYRANCH ACTIVE TEAM POLICY -->",
+])
+def test_dream_shipping_builder_rejects_reserved_history_inputs(tmp_path, field, marker):
+    from runtime.orchestrator.active_authority_policy import ActiveAuthorityPolicyError
+    kwargs = dict(
+        org_slug="test", dream=DreamRecord(
+            id="DREAM-X", agent_name="dev_agent", local_date="2026-06-09",
+            scheduled_for=_dt(2), window_start=_dt(1), window_end=_dt(2),
+        ), workspace=tmp_path, recent_audit=[], task_history="safe",
+        org_config=OrgConfig(),
+    )
+    kwargs[field] = marker
+    with pytest.raises(ActiveAuthorityPolicyError, match="server-reserved"):
+        build_dream_prompt(**kwargs)
+
+
 class FakeResult:
     success = True
     error = None
