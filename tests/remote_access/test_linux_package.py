@@ -101,8 +101,8 @@ def test_real_systemd_harness_is_zero_skip_and_uses_only_pinned_peer_artifacts()
 
 def test_real_systemd_harness_uses_headscale_025_policy_schema() -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    assert '"proto":"*"' in harness
-    assert '"proto":["*"]' not in harness
+    assert "'{\"acls\":[{\"action\":\"accept\",\"src\":[\"*\"],\"dst\":[\"*:*\"]}]}'" in harness
+    assert '"proto"' not in harness
 
 
 def test_real_systemd_early_failure_cleanup_does_not_treat_exited_fixture_as_residue() -> None:

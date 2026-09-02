@@ -140,7 +140,7 @@ policy:
   mode: file
   path: $work/hs/policy.json
 EOF
-printf '%s\n' '{"acls":[{"action":"accept","src":["*"],"dst":["*:*"],"proto":"*"}]}' >"$work/hs/policy.json"
+printf '%s\n' '{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}' >"$work/hs/policy.json"
 sudo install -m 0644 "$work/tls/cert.pem" /usr/local/share/ca-certificates/happyranch-n3-ci.crt
 sudo update-ca-certificates >/dev/null
 "$work/headscale" serve --config "$work/hs/config.yaml" >"$work/headscale.log" 2>&1 & headscale_pid=$!
