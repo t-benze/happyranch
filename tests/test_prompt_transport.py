@@ -9,8 +9,8 @@ Covers:
   output/model/permission/resume flags and parsers are unchanged; a
   >=512 KiB UTF-8 prompt launches via stdin while the same payload on an
   argv transport is rejected by the guard.
-- Codex stays byte-identical (stdin ``-`` already); OpenCode and generic CLI
-  remain argv-based and behaviorally unchanged except for the new guard.
+- Codex stays byte-identical (stdin ``-`` already); OpenCode remains argv-based
+  and behaviorally unchanged except for the new guard.
 """
 
 from __future__ import annotations
