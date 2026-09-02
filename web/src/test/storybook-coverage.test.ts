@@ -70,20 +70,37 @@ function importedAndRendered(
       }
     }
   }
-  let rendered = false;
   const visited = new Set<ts.Node>();
-  function visit(node: ts.Node): void {
-    if (visited.has(node)) return;
+  function renders(node: ts.Node): boolean {
+    if (visited.has(node)) return false;
     visited.add(node);
-    if (ts.isIdentifier(node) && importedNames.has(node.text)) rendered = true;
-    if (ts.isIdentifier(node)) {
-      const local = localDeclarations.get(node.text);
-      if (local) visit(local);
+
+    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      if (ts.isIdentifier(node.tagName)) {
+        if (importedNames.has(node.tagName.text)) return true;
+        const local = localDeclarations.get(node.tagName.text);
+        if (local && renders(local)) return true;
+      }
     }
-    ts.forEachChild(node, visit);
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      if (importedNames.has(node.expression.text)) return true;
+      const local = localDeclarations.get(node.expression.text);
+      if (local && renders(local)) return true;
+    }
+
+    return node.getChildren(sourceFile).some(renders);
   }
-  visit(declaration.initializer);
-  return rendered;
+
+  const initializer = declaration.initializer;
+  if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) return renders(initializer);
+  if (!ts.isObjectLiteralExpression(initializer)) return false;
+
+  return initializer.properties.some((property) => {
+    if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) return false;
+    if (property.name.text === 'render') return renders(property.initializer);
+    if (property.name.text !== 'component' || !ts.isIdentifier(property.initializer)) return false;
+    return importedNames.has(property.initializer.text);
+  });
 }
 
 describe('Storybook design-system coverage', () => {
@@ -109,11 +126,26 @@ describe('Storybook design-system coverage', () => {
     }
   });
 
-  test('a merely named placeholder rendering another component is rejected', () => {
+  test('an imported component referenced only in story metadata while another component renders is rejected', () => {
     const storyFile = join(designSystemRoot, 'patterns/Adversarial.stories.tsx');
     const component = { name: 'TaskCard', source: join(designSystemRoot, 'patterns/TaskCard.tsx') };
-    const placeholder = "import { Button } from '../primitives/Button'; export const TaskCardPlaceholder = { render: () => <Button /> };";
+    const placeholder = [
+      "import { Button } from '../primitives/Button';",
+      "import { TaskCard } from './TaskCard';",
+      "export const TaskCardPlaceholder = { parameters: { componentName: TaskCard.name }, render: () => <Button /> };",
+    ].join('\n');
     expect(importedAndRendered(placeholder, storyFile, 'TaskCardPlaceholder', component)).toBe(false);
+  });
+
+  test.each([
+    ['inline JSX render', "export const TaskCardStory = { render: () => <TaskCard /> };"],
+    ['local render helper', "const Example = () => <TaskCard />; export const TaskCardStory = { render: () => <Example /> };"],
+    ['CSF component field', "export const TaskCardStory = { component: TaskCard };"],
+  ])('accepts the exact imported component through a supported %s', (_form, story) => {
+    const storyFile = join(designSystemRoot, 'patterns/Positive.stories.tsx');
+    const component = { name: 'TaskCard', source: join(designSystemRoot, 'patterns/TaskCard.tsx') };
+    const storyCode = `import { TaskCard } from './TaskCard';\n${story}`;
+    expect(importedAndRendered(storyCode, storyFile, 'TaskCardStory', component)).toBe(true);
   });
 
   test('coverage ledger contains every reusable component exactly once', () => {

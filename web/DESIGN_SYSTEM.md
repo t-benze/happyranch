@@ -49,8 +49,9 @@ Use controls/autodocs for real public variants. Interaction stories must be safe
 to click/type. Add loading, empty, error, populated, auth, and permission states
 only where the reusable unit owns them. `storybook-coverage.test.ts` discovers
 component sources and parses this authoritative ledger, then proves each story
-mapping imports and renders its exact component. It includes a red-side test
-showing a same-named placeholder rendering another component fails. New sources,
+mapping imports and renders its exact component through the mapped story's JSX,
+render helper, or CSF component field. Its red-side test imports and references
+the expected component only in metadata while rendering another component. New sources,
 missing exports, stale mappings, and unjustified overlaps therefore fail without
 creating another generated registry or catalogue artifact.
 
