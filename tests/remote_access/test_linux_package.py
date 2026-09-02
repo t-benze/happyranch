@@ -119,6 +119,12 @@ def test_real_systemd_harness_probes_headscale_health_over_configured_https() ->
     assert "http://127.0.0.1:19090/health" not in harness
 
 
+def test_real_systemd_harness_proves_root_owned_binary_is_service_executable() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    assert '== "root:root:755"' in harness
+    assert 'sudo -u happyranch test -x "$binary"' in harness
+
+
 def test_real_systemd_early_failure_cleanup_does_not_treat_exited_fixture_as_residue() -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
     assert "wait_status" not in harness
@@ -192,6 +198,60 @@ def test_fixture_install_upgrade_uninstall_is_owner_only_and_residue_free(tmp_pa
     uninstall_linux_package(root)
     assert not (root / "opt/happyranch").exists()
     assert not list((root / "etc/systemd/system").glob("happyranch-*"))
+
+
+def test_system_service_install_keeps_root_payload_executable_by_service_user(tmp_path: Path) -> None:
+    package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
+    root = tmp_path / "root"
+    install_linux_package(package, root, system_service=True)
+    for name in ("happyranch-connector", "happyranch-tsnet-sidecar"):
+        binary = root / "opt/happyranch/bin" / name
+        assert binary.stat().st_mode & 0o777 == 0o755
+
+
+def test_no_root_install_retains_owner_only_payload_mode(tmp_path: Path) -> None:
+    package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
+    root = tmp_path / "root"
+    install_linux_package(package, root, system_service=False)
+    for name in ("happyranch-connector", "happyranch-tsnet-sidecar"):
+        assert (root / "opt/happyranch/bin" / name).stat().st_mode & 0o777 == 0o700
+
+
+def test_install_rejects_ambiguous_service_mode_before_write(tmp_path: Path) -> None:
+    package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
+    root = tmp_path / "root"
+    with pytest.raises(PackageError, match="install_mode_invalid"):
+        install_linux_package(package, root, system_service=1)  # type: ignore[arg-type]
+    assert not root.exists()
+
+
+def test_system_service_mode_survives_rollback_and_reentry(tmp_path: Path) -> None:
+    package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
+    root = tmp_path / "root"
+    install_linux_package(package, root, system_service=True)
+    with pytest.raises(RuntimeError, match="injected"):
+        install_linux_package(
+            package,
+            root,
+            system_service=True,
+            fault=lambda name: (_ for _ in ()).throw(RuntimeError("injected"))
+            if name == "payload_published" else None,
+        )
+    install_linux_package(package, root, system_service=True)
+    for name in ("happyranch-connector", "happyranch-tsnet-sidecar"):
+        assert (root / "opt/happyranch/bin" / name).stat().st_mode & 0o777 == 0o755
+
+
+@pytest.mark.parametrize("field", ["uid", "gid"])
+def test_archive_rejects_non_root_payload_ownership_before_write(tmp_path: Path, field: str) -> None:
+    package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
+    def mutate(entries) -> None:
+        member, _ = next(item for item in entries if item[0].name.endswith("happyranch-connector"))
+        setattr(member, field, 1000)
+    root = tmp_path / "root"
+    with pytest.raises(PackageError, match="archive_owner_invalid"):
+        install_linux_package(_rewrite_package(package, tmp_path / f"bad-{field}.tar", mutate), root)
+    assert not root.exists()
 
 
 @pytest.mark.parametrize("boundary", ["payload_old_retained", "payload_published", *[f"unit_published:{name}" for name in ("happyranch-connector.service", "happyranch-tsnet-sidecar.service", "happyranch-managed.target")]])
@@ -289,6 +349,7 @@ def test_exact_archive_allowlist_rejects_manifested_extra_payload(tmp_path: Path
         entries[manifest_index] = member, json.dumps(manifest).encode()
         extra = tarfile.TarInfo("happyranch-linux-amd64/bin/other")
         extra.mode = 0o700
+        extra.uname = extra.gname = "root"
         entries.append((extra, payload))
     with pytest.raises(PackageError, match="manifest_path_invalid"):
         install_linux_package(_rewrite_package(package, tmp_path / "bad.tar", mutate), tmp_path / "root")
@@ -301,6 +362,7 @@ def test_archive_rejects_traversal_and_unmanifested_members_before_write(tmp_pat
         def mutate(entries, member_name=name) -> None:
             member = tarfile.TarInfo(member_name)
             member.mode = 0o600
+            member.uname = member.gname = "root"
             entries.append((member, b"hostile"))
         root = tmp_path / expected
         with pytest.raises(PackageError, match=expected):

@@ -185,8 +185,12 @@ sudo env "PATH=$PATH" uv run python - "$PACKAGE_TAR" <<'PY'
 import sys
 from pathlib import Path
 from runtime.remote_access.linux_package import install_linux_package
-install_linux_package(Path(sys.argv[1]), Path('/'))
+install_linux_package(Path(sys.argv[1]), Path('/'), system_service=True)
 PY
+for binary in /opt/happyranch/bin/happyranch-connector /opt/happyranch/bin/happyranch-tsnet-sidecar; do
+  [[ "$(stat -c %U:%G:%a "$binary")" == "root:root:755" ]] || fail "system-service binary custody mismatch"
+  sudo -u happyranch test -x "$binary" || fail "system-service user cannot execute packaged binary"
+done
 sudo systemctl daemon-reload
 
 # semantic evidence: startup
@@ -310,7 +314,7 @@ def fault(name):
     if name == os.environ['BOUNDARY']:
         raise RuntimeError('injected')
 try:
-    install_linux_package(Path(sys.argv[1]), Path('/'), fault=fault)
+    install_linux_package(Path(sys.argv[1]), Path('/'), system_service=True, fault=fault)
 except RuntimeError:
     pass
 else:
@@ -324,7 +328,7 @@ PY
 import sys
 from pathlib import Path
 from runtime.remote_access.linux_package import install_linux_package
-install_linux_package(Path(sys.argv[1]), Path('/'))
+install_linux_package(Path(sys.argv[1]), Path('/'), system_service=True)
 PY
   sudo systemctl daemon-reload
   sudo systemctl start happyranch-managed.target
@@ -341,7 +345,7 @@ def fault(name):
     if name == os.environ['BOUNDARY']:
         raise RuntimeError('injected')
 try:
-    install_linux_package(Path(sys.argv[1]), Path('/'), fault=fault)
+    install_linux_package(Path(sys.argv[1]), Path('/'), system_service=True, fault=fault)
 except RuntimeError:
     pass
 else:
@@ -355,7 +359,7 @@ sudo env "PATH=$PATH" uv run python - "$PACKAGE_TAR" <<'PY'
 import sys
 from pathlib import Path
 from runtime.remote_access.linux_package import install_linux_package
-install_linux_package(Path(sys.argv[1]), Path('/'))
+install_linux_package(Path(sys.argv[1]), Path('/'), system_service=True)
 PY
 absent /.happyranch-install-transaction.json
 absent /.happyranch-backup

@@ -27,8 +27,8 @@ UNITS = (
     "happyranch-managed.target",
 )
 PAYLOAD_MODES = {
-    "bin/happyranch-tsnet-sidecar": "0o700",
-    "bin/happyranch-connector": "0o700",
+    "bin/happyranch-tsnet-sidecar": "0o755",
+    "bin/happyranch-connector": "0o755",
     "share/happyranch.whl": "0o600",
     "share/dependency-inventory.json": "0o600",
     "share/sbom.cdx.json": "0o600",
@@ -178,8 +178,8 @@ def build_linux_package(output: Path, sidecar: Path, connector: Path, wheel: Pat
             raise PackageError("wheel_invalid")
     units = render_composite_units()
     files: dict[str, tuple[bytes, int]] = {
-        "bin/happyranch-tsnet-sidecar": (sidecar.read_bytes(), 0o700),
-        "bin/happyranch-connector": (connector.read_bytes(), 0o700),
+        "bin/happyranch-tsnet-sidecar": (sidecar.read_bytes(), 0o755),
+        "bin/happyranch-connector": (connector.read_bytes(), 0o755),
         "share/happyranch.whl": (wheel.read_bytes(), 0o600),
         "share/dependency-inventory.json": (inventory_path.read_bytes(), 0o600),
         "share/sbom.cdx.json": (_sbom(inventory, version), 0o600),
@@ -264,6 +264,8 @@ def _read_verified(package: Path) -> tuple[dict[str, bytes], dict[str, object]]:
             relative = str(path.relative_to(PREFIX))
             if relative in files:
                 raise PackageError("archive_duplicate_member")
+            if member.uid != 0 or member.gid != 0 or member.uname != "root" or member.gname != "root":
+                raise PackageError("archive_owner_invalid")
             files[relative] = archive.extractfile(member).read()
             modes[relative] = member.mode & 0o7777
     try:
@@ -364,7 +366,15 @@ def _recover_interrupted(root: Path) -> None:
     marker.unlink()
 
 
-def install_linux_package(package: Path, root: Path, *, fault: Callable[[str], None] | None = None) -> dict[str, object]:
+def install_linux_package(
+    package: Path,
+    root: Path,
+    *,
+    system_service: bool = False,
+    fault: Callable[[str], None] | None = None,
+) -> dict[str, object]:
+    if type(system_service) is not bool:
+        raise PackageError("install_mode_invalid")
     files, manifest = _read_verified(package)
     _recover_interrupted(root)
     opt = root / "opt/happyranch"
@@ -380,7 +390,7 @@ def install_linux_package(package: Path, root: Path, *, fault: Callable[[str], N
             target = staging / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(raw)
-            mode = 0o700 if name.startswith("bin/") else 0o600
+            mode = int(PAYLOAD_MODES[name], 8) if system_service else (0o700 if name.startswith("bin/") else 0o600)
             target.chmod(mode)
         (staging / "manifest.json").write_bytes(files["manifest.json"])
         (staging / "manifest.json").chmod(0o600)
