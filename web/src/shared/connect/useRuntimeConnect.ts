@@ -65,9 +65,8 @@ export const FIELD_CLASS =
 /** Build the copy-paste prompt (no `/connect` link). `target` picks the
  *  register route + body while the conformance challenge stays identical:
  *  'binary' → register-binary (built-in path, kind carried by the token),
- *  'profile' → register (legacy custom profile via generic-cli),
  *  'adapter' → adapter-submission (v1 wrapper → PENDING → founder approves & connects atomically, seq237). */
-export type ConnectTarget = 'binary' | 'profile' | 'adapter';
+export type ConnectTarget = 'binary' | 'adapter';
 
 /** Escape a string for safe single-quoted shell use (single quotes -> '\''). */
 function shQuote(s: string): string {
@@ -160,40 +159,13 @@ export function buildConnectPrompt(
     ].join('\n');
   }
 
-  // Profile and adapter targets — unchanged semantic behavior (THR-107 seq352).
-  const intro =
-    target === 'profile'
-      ? [
-          `# You're being connected to HappyRanch as an executor named "${name}".`,
-          `# Do all of this in one run, then stop. Send this header on every request:`,
-          `#   Authorization: Bearer ${token}`,
-          ``,
-          `# 1. Introduce yourself: work out the exact command that runs you`,
-          `#    headless / single-shot, using these placeholders:`,
-          `#      {prompt}  {timeout_seconds}  {workspace}`,
-        ]
-      : [];
-  const registerStep =
-    target === 'profile'
-      ? [
-          `# 3. Register — POST to`,
-          `#    ${base}/executors/runtime/register`,
-          `#    body {"command":"<your-cli>","argv_template":["<your-cli>","--flag","{prompt}"],"adapter":"pi"}`,
-          `#    Note: 'command' is the declared executable; argv_template[0]`,
-          `#    must be the SAME executable (the one GenericCliExecutor launches).`,
-        ]
-      : [];
   return [
-    ...intro,
-    ``,
     `# 2. Complete the conformance challenge — POST each step id to`,
     `#    ${base}/executors/runtime/conformance-checkin`,
     `#    body {"step_id":"<id>"} for each of:`,
     `#      workspace_access   loopback_reachable   cli_callback`,
     `#    then post emit_envelope with a sample envelope:`,
     `#    body {"step_id":"emit_envelope","envelope":{"envelope_version":1,"token_usage":{"input_tokens":1,"output_tokens":1,"model":"custom-cli"}}}`,
-    ``,
-    ...registerStep,
     ``,
     `# This token is valid for about 30 minutes. This screen updates live.`,
   ].join('\n');

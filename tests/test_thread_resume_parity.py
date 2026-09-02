@@ -1231,7 +1231,7 @@ def test_orchestrator_task_path_source_never_references_resume():
 def test_executor_run_default_never_resumes_across_providers():
     """The resume parameter defaults to None on every resume-capable
     executor, so any caller that omits it (tasks, wakes, dreams) gets a
-    fresh invocation. The resume-incapable executors (opencode, generic-CLI)
+    fresh invocation. The resume-incapable registered custom adapter executor
     do not even accept the parameter."""
     import inspect
     from runtime.orchestrator import executors as ex_mod
@@ -1244,7 +1244,7 @@ def test_executor_run_default_never_resumes_across_providers():
         assert param.default is None, (
             f"{cls_name}.run resume_session_id default must be None"
         )
-    for cls_name in ("GenericCliExecutor", "CustomAdapterExecutor"):
+    for cls_name in ("CustomAdapterExecutor",):
         cls = getattr(ex_mod, cls_name)
         sig = inspect.signature(cls.run)
         assert "resume_session_id" not in sig.parameters, (

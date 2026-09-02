@@ -1609,8 +1609,6 @@ def bind_adapter_profile(
             )
 
         profile_cfg = {
-            "command": None,
-            "argv_template": None,
             "workspace_adapter_id": re_read_entry.workspace_adapter,
             "command_adapter_id": f"custom-adapter:{adapter_id}",
         }

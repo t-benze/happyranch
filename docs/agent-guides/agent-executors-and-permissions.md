@@ -97,77 +97,9 @@ auth, notification, or sandbox footprint.
 
 **Custom CLI profiles** (example — OpenClaw):
 
-Any agentic CLI that accepts a prompt via a positional flag and returns
-structured output can register as a custom profile. **THR-107:** custom
-profiles are defined exclusively in the **machine-global runtime store**
-(`<daemon-home>/executor_profiles.yaml`, typically
-`~/.happyranch/executor_profiles.yaml`) — registered once per machine and
-visible to EVERY org. The legacy per-org `org/config.yaml`
-`executor_profiles` block is removed: it is no longer parsed, and a
-one-shot startup migration lifts any lingering block into the runtime
-store with a loud deprecation warning (name collisions across orgs are
-logged and skipped — the existing store definition wins). A custom
-profile declares an `argv_template` with supported placeholders
-(`{prompt}`, `{timeout_seconds}`, `{workspace}`) and an `adapter` for
-workspace preparation (one of `claude`, `codex`, `opencode`, `pi` —
-typically `pi` for AGENTS.md-based CLIs).
-
-```yaml
-# ~/.happyranch/executor_profiles.yaml (machine-global runtime store;
-# written by the registration flow — not hand-edited)
-openclaw:
-  command: openclaw
-  argv_template:
-    - openclaw
-    - agent
-    - --local
-    - --json
-    - --message
-    - "{prompt}"
-    - --timeout
-    - "{timeout_seconds}"
-  adapter: pi
-  # D6 (2026-07-27): adapter is the DEPRECATED alias for workspace_adapter_id.
-  # For new profiles, use workspace_adapter_id: pi instead.
-  workspace_adapter_id: pi
-  # Optional — THR-107 D9 / Phase 3. Accepted values: generic-cli (template-based
-  # generic CLI) or custom-adapter:<id> (D7B — separately registered,
-  # founder-approved, hash-verified custom adapter executable).
-  # D6: command_adapter is the DEPRECATED alias for command_adapter_id.
-  # For new profiles, use command_adapter_id: generic-cli instead.
-  command_adapter_id: generic-cli
-  command_adapter: generic-cli
-```
-
-**Generic-cli profiles** use the `GenericCliExecutor` which validates the
-argv template at registration time and substitutes placeholders at launch.
-No shell string is constructed — each template element becomes exactly one
-argv element, with placeholders replaced by their resolved values.
-
 **Custom-adapter profiles** (D7B, ``command_adapter_id: custom-adapter:<id>``)
 route through ``CustomAdapterExecutor`` instead — see
 [Custom adapter profiles](#custom-adapter-profiles-thr-107-d7b) below.
-
-**Adapter vs command_adapter (THR-107 D9 / Phase 3 + D6).** These are separately
-composable. The canonical workspace `workspace_adapter_id` (deprecated alias:
-`adapter`) controls which bootstrap files are written (e.g., `CLAUDE.md` with
-`--allowedTools` for claude, or `AGENTS.md` for pi). The canonical
-`command_adapter_id` (deprecated alias: `command_adapter`) controls which
-execution template builds argv and parses result output. For custom profiles
-this is `generic-cli` (template-based generic CLI) or `custom-adapter:<id>`
-(D7B — separately registered, founder-approved, hash-verified custom adapter
-executable, subprocess-only, mandatory v1 AdapterInput/AdapterOutput,
-D5 baseline-only posture).
-
-*Concrete example:* A custom profile with `workspace_adapter_id: claude` and
-`command_adapter_id: generic-cli` gets a Claude workspace (CLAUDE.md,
-settings.json, `--allowedTools` generation) but uses the generic template-based
-executor for argv construction and result parsing. The workspace adapter controls
-permission files; the command adapter controls subprocess launch. These may
-differ — crossing them without explicit intent would be a security bug.
-Similarly, `workspace_adapter_id: pi` with `command_adapter_id: generic-cli`
-writes AGENTS.md (no permission file) while launching via the generic CLI
-template.
 
 **Result-envelope (THR-107).** Custom CLIs may opt into token metering by
 emitting a single-line JSON envelope on stdout between sentinel markers:
@@ -195,20 +127,6 @@ absent. Multiple envelopes are last-wins. A minimal valid sample is:
 ```json
 {"envelope_version":1,"token_usage":{"input_tokens":1,"output_tokens":1}}
 ```
-
-The full generic-cli envelope contract is in
-``docs/superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md``.
-
-**Custom adapter profiles (THR-107 D7B).** Profiles with
-``command_adapter_id: custom-adapter:<id>`` bind to exactly one registered,
-conformance-passed, founder-APPROVED custom adapter executable. The
-``CustomAdapterExecutor`` spawns the adapter as a subprocess with the v1
-``AdapterInput`` JSON on stdin and parses the v1 ``AdapterOutput`` JSON from
-stdout. No ``argv_template``, ``command``, or PATH resolution is used — the
-adapter executable's absolute path is resolved from the approved adapter entry.
-Custom-adapter profiles do **not** require a separate ``executors.json`` record
-keyed by their profile name — the approved adapter's absolute path IS the launch
-artifact, verified by hash at every launch.
 
 **Adapter contract reference (THR-107 seq184).** The authoritative v1
 ``AdapterInput``/``AdapterOutput`` contract is served by the running daemon via
@@ -357,9 +275,6 @@ registration AND blocks every launch at runtime (D7B). The
 contract-reference's self-test/probe fixture uses the same real
 token-derived ID so adapter authors can verify exact-ID compatibility
 before submission.
-
-**Rollback:** re-register the profile with ``command_adapter_id: generic-cli``
-or revert the deployment. Legacy stored profiles are never auto-mutated.
 
 **D5 baseline-only:** the custom adapter contract introduces no allow-rule,
 sandbox, network-access, filesystem-access, or permission changes.
@@ -515,18 +430,6 @@ gate) consumes a fully-conformant token and writes the profile.
 
 Registration succeeds **only** when ALL of the following are true:
 
-1. Token is valid, unexpired, unconsumed, and loopback (checked by the dependency gate).
-2. Token org matches the route slug.
-3. The conformance challenge is fully complete — all four steps arrived.
-4. Static validation passes: adapter is a known value, the declared
-   `command` name matches `argv_template[0]` (string-equality validation;
-   PATH resolution is not used — THR-107 seq155), `argv_template` is a
-   non-empty list of strings with supported placeholders (`{prompt}`,
-   `{timeout_seconds}`, `{workspace}`), and the profile name does not
-   collide with a built-in executor.
-5. No conflicting custom profile with a different definition is already registered
-   (identical re-registration is idempotent).
-
 These checks are enforced against the daemon's own token-store state —
 the register request cannot succeed by asserting conformance in its
 payload; the token must already have been driven through the token-gated
@@ -551,40 +454,7 @@ either publishes. The write order is:
 
 ### Settings → Executors generator
 
-The founder initiates the flow from the Settings → Executors panel
-(`web/src/features/settings/sections/ExecutorsSection.tsx`). The UI
-**collects only the candidate CLI's profile name** (the command,
-`argv_template`, and adapter are determined by the candidate, not the
-founder). On "Generate", the SPA calls
-``POST /api/v1/auth/registration-token/runtime`` (loopback-only,
-master-bearer-authed) and renders a generated prompt for the candidate to
-paste into their CLI.
-
 The generated prompt drives the candidate through:
-
-1. **Self-introduction** — the candidate works out their own `command`,
-   `argv_template` (with `{prompt}`, `{timeout_seconds}`, `{workspace}`
-   placeholders), and `adapter` (typically `pi`).
-2. **Conformance check-ins** — the candidate POSTs each step
-   (`workspace_access`, `loopback_reachable`, `cli_callback`,
-   `emit_envelope`) to `/api/v1/executors/runtime/conformance-checkin`
-   with the `hrreg_` token as a Bearer header.
-3. **Registration** — the candidate POSTs to
-   `/api/v1/executors/runtime/register` with a JSON body carrying
-   `command`, `argv_template`, `adapter`, and an optional
-   `command_adapter` (THR-107 D9 / Phase 3). The daemon validates that
-   `command` and `argv_template[0]` are identical strings; a mismatch
-   returns **422** at registration time with an actionable error
-   message. PATH resolution is no longer performed — the registered
-   binary path is validated at launch time via the machine-local
-   ``executors.json`` pin (THR-107 seq155). The token is reserved
-   before any durable write and released on failure, so the candidate
-   can retry within the unexpired TTL.
-
-The UI does **not** collect `command`, `argv_template`, or `adapter`
-directly, and the generated prompt does **not** instruct the candidate
-to run `happyranch executors register --org` — the candidate drives the
-flow entirely via loopback HTTP calls to the runtime routes above.
 
 #### Built-in binary registration (THR-107 seq352)
 
@@ -658,33 +528,6 @@ Two founder-facing management routes expose the machine-global runtime
 store for LIST + REMOVE (standard daemon bearer auth — same posture as
 `GET /api/v1/executor-binaries`; **no** registration token, these are
 management reads/writes, not registration):
-
-- `GET /api/v1/executors/runtime/profiles` — lists every custom profile
-  in the runtime store: `name`, `command`, canonical `workspace_adapter_id`
-  (workspace adapter selector) and `command_adapter_id` (command adapter
-  selector), plus deprecated aliases `adapter`, `adapter_id` (workspace
-  aliases only), and `command_adapter` (command alias only), with a
-  `present`/`path` signal mirroring `/health/prereqs`. Custom
-  profiles (generic-CLI) and **built-ins** derive `present`/`path` from the
-  machine-local binary registry (``executors.json``) keyed by the
-  profile name — the same gating for both (THR-107 seq155).  Custom-adapter
-  profiles (``command_adapter_id: custom-adapter:<id>``) are an exception —
-  they use the exact founder-APPROVED, hash-verified absolute adapter
-  executable as their launch artifact and do **not** require a separate
-  ``executors.json`` record.  No
-  ``shutil.which`` or PATH-based fallback is used.  Built-in presence
-  is not reflected in this route (this route lists only custom profiles
-  from the runtime store — use ``/health/prereqs`` for built-in
-  availability).
-- `DELETE /api/v1/executors/runtime/profiles/{name}` — removes one
-  profile from BOTH surfaces, durable store first (source of truth),
-  then the transient in-memory registry
-  (`ExecutorRegistry.unregister_custom_profile`) so the removed profile
-  does not linger in-process until restart. 404 when the name is not in
-  the store; built-in executor names are never removable. The removal is
-  audited to `runtime-audit.db` with the same row shape as registration
-  (`task_id='executor:<name>'`, payload `{command, argv_template,
-  adapter}`, action `executor_removed`).
 
 ## Executor Notes
 
@@ -790,3 +633,8 @@ until explicitly retired.
 master-bearer ``/register`` route (no intended profile, operational/recovery
 path) is a separate founder authorization/contract decision and is **not**
 implemented in this phase.
+> **Current custom executor contract (TASK-6514):** Template-based generic
+> profiles are retired. Register and approve a custom adapter, then bind a
+> profile with `command_adapter_id: custom-adapter:<id>`. Recovery uses an
+> existing built-in executor or ordinary re-registration of a valid approved
+> custom-adapter profile; there is no automatic or versioned fallback.

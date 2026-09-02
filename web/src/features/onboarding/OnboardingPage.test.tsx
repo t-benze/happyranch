@@ -29,18 +29,6 @@ async function skipConnect(user: UserEvent): Promise<void> {
   await user.click(await screen.findByRole('button', { name: /skip/i }));
 }
 
-/** Step 1 leads with the built-in dropdown; the custom copy-paste flow is a
- *  secondary affordance. Custom-flow tests switch into it first. */
-async function goCustom(user: UserEvent): Promise<void> {
-  await user.click(
-    await screen.findByRole('button', { name: /connect a custom cli instead/i }),
-  );
-  // Default custom path is now adapter-backed; click through to legacy
-  await user.click(
-    await screen.findByRole('button', { name: /use legacy simple integration instead/i }),
-  );
-}
-
 beforeEach(() => {
   vi.restoreAllMocks();
   // Default: a healthy, empty container (no orgs, none broken).
@@ -224,91 +212,6 @@ describe('OnboardingPage — Step 1 (connect a built-in agentic CLI)', () => {
     expect(
       screen.queryByRole('heading', { name: /connect your agentic cli/i }),
     ).not.toBeInTheDocument();
-  });
-});
-
-describe('OnboardingPage — Step 1 (custom CLI flow, preserved)', () => {
-  test('Generate is disabled until the name is valid and rejects built-ins', async () => {
-    const user = userEvent.setup();
-    renderPage();
-    await goCustom(user);
-    const input = await screen.findByLabelText(/name this cli/i);
-    const gen = screen.getByRole('button', { name: /generate connect prompt/i });
-    expect(gen).toBeDisabled();
-
-    // A built-in name is refused (would 422 on register / false-positive detect).
-    await user.type(input, 'claude');
-    expect(gen).toBeDisabled();
-    expect(screen.getByText(/isn.t a built-in/i)).toBeInTheDocument();
-
-    await user.clear(input);
-    await user.type(input, 'my-cli');
-    expect(gen).not.toBeDisabled();
-  });
-
-  test('Generate mints a runtime token and shows the copy-paste prompt', async () => {
-    const user = userEvent.setup();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, 'clipboard', {
-      value: { writeText },
-      configurable: true,
-    });
-    const mintSpy = vi
-      .spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockResolvedValue({ token: 'hr_tok_ABC123', expires_at: Date.now() / 1000 + 1800 });
-    renderPage();
-    await goCustom(user);
-
-    await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    await waitFor(() => expect(mintSpy).toHaveBeenCalledWith({ name: 'my-cli' }));
-
-    // The prompt block carries the minted token and the EXISTING loopback
-    // register route — no `/connect` one-click URL.
-    const pre = await screen.findByText(/You're being connected to HappyRanch/i);
-    expect(pre).toHaveTextContent('hr_tok_ABC123');
-    expect(pre).toHaveTextContent('/executors/runtime/register');
-    expect(pre).toHaveTextContent('/executors/runtime/conformance-checkin');
-    expect(pre).not.toHaveTextContent('/connect/');
-
-    // Copy writes the prompt to the clipboard.
-    await user.click(screen.getByRole('button', { name: /^copy prompt$/i }));
-    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('hr_tok_ABC123'));
-  });
-
-  test('poll flips detecting → connected when the name appears in prereqs, then Continue advances', async () => {
-    const user = userEvent.setup();
-    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken').mockResolvedValue({
-      token: 'hr_tok_XYZ',
-      expires_at: Date.now() / 1000 + 1800,
-    });
-    // prereqs now includes the freshly-registered runtime name.
-    vi.spyOn(healthApi, 'getPrereqs').mockResolvedValue({
-      prereqs: [
-        { tool: 'my-cli', present: true, path: '/opt/bin/my-cli', hint: '' },
-      ],
-    });
-    renderPage();
-    await goCustom(user);
-
-    await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    // Detect strip → connected card.
-    await waitFor(() =>
-      expect(
-        screen.getByRole('heading', { name: /my-cli connected/i }),
-      ).toBeInTheDocument(),
-    );
-    // Resolved path from prereqs is shown (real, not fabricated).
-    expect(screen.getByText('/opt/bin/my-cli')).toBeInTheDocument();
-
-    // Continue advances to Step 2 (org create).
-    await user.click(screen.getByRole('button', { name: /continue/i }));
-    expect(
-      await screen.findByRole('heading', { name: /welcome to happyranch/i }),
-    ).toBeInTheDocument();
   });
 });
 
@@ -724,76 +627,6 @@ describe('OnboardingPage — Step 1 (direct-connect default flow, THR-107 slice 
     expect(retrySpy).not.toHaveBeenCalled();
     expect(vi.spyOn(directConnectApi, 'commit')).not.toHaveBeenCalled();
   }, 20000);
-});
-
-describe('OnboardingPage — Custom two-stage flow regression (profile → binary)', () => {
-  test('profile token → binary mint → register-binary prompt → present:true connected', async () => {
-    const user = userEvent.setup();
-    const mintLog: Array<Record<string, unknown>> = [];
-
-    // Track every mint call to assert payloads.
-    vi.spyOn(settingsApi, 'mintRuntimeRegistrationToken')
-      .mockImplementation(async (payload) => {
-        mintLog.push({ ...payload });
-        return { token: `hr_tok_${mintLog.length}`, expires_at: Date.now() / 1000 + 1800 };
-      });
-
-    // Prereqs include name with present:false — ProfileStage (requirePresent:false)
-    // will detect the name, transition to BinaryStage, and auto-mint the binary
-    // token in the same render cycle. We assert both mints happened with correct
-    // purpose fences.
-    vi.mocked(healthApi.getPrereqs).mockResolvedValue({
-      prereqs: [
-        { tool: 'my-cli', present: false, path: null, hint: '' },
-      ],
-    });
-
-    renderPage();
-    await goCustom(user);
-
-    // Fill in the custom CLI name and generate.
-    await user.type(await screen.findByLabelText(/name this cli/i), 'my-cli');
-    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
-
-    // (a)+(c) ProfileStage detects the name (requirePresent:false, matches on
-    // name alone), transitions to BinaryStage which auto-mints the binary-purpose
-    // token. Assert both mints with correct purpose fences.
-    await waitFor(() => expect(mintLog.length).toBe(2), { timeout: 8000 });
-    expect(mintLog[0]).toEqual({ name: 'my-cli' });
-    expect(mintLog[1]).toEqual({ name: 'my-cli', purpose: 'binary' });
-
-    // (b)+(c) The waiting UI shows the binary-stage prompt with register-binary
-    // route (NOT the profile register route).
-    const promptEl = await screen.findByText(/register the binary path/i, {}, { timeout: 5000 });
-    expect(promptEl.closest('pre')).toHaveTextContent('/executors/runtime/register-binary');
-    expect(promptEl.closest('pre')).toHaveTextContent('$BIN');
-
-    // (c+) Explicit red-side: the connected card must NOT appear while
-    // present:false — ProfileStage appearance-only advances to BinaryStage,
-    // but only present:true + registered path permits the connected state.
-    expect(screen.queryByRole('heading', { name: /connected/i })).not.toBeInTheDocument();
-
-    // (d) Switch prereqs to present:true with a registered path.
-    vi.mocked(healthApi.getPrereqs).mockResolvedValue({
-      prereqs: [
-        { tool: 'my-cli', present: true, path: '/opt/bin/my-cli', hint: '' },
-      ],
-    });
-
-    // Connected card appears only after present:true refetch.
-    await waitFor(
-      () => {
-        expect(
-          screen.getByRole('heading', { name: /my-cli connected/i }),
-        ).toBeInTheDocument();
-      },
-      { timeout: 8000 },
-    );
-    expect(screen.getByText('/opt/bin/my-cli')).toBeInTheDocument();
-
-    // No removed "on PATH" wording in the connected card.
-    expect(screen.queryByText(/on PATH/i)).not.toBeInTheDocument();
-  });
 });
 
 describe('OnboardingPage — TTL expiry (THR-107 seq189)', () => {

@@ -222,7 +222,6 @@ have every executor explicitly registered.
 ``command_adapter_id: custom-adapter:<id>`` use the exact founder-APPROVED,
 hash-verified absolute adapter executable as their launch artifact — they do **not**
 require a separate ``executors.json`` record keyed by their profile name.
-All other profiles (built-ins, generic-cli custom) always resolve through
 ``executors.json``.
 
 ```bash

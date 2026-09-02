@@ -32,7 +32,6 @@ from runtime.models import (
 )
 from runtime.orchestrator.executors import (
     ExecutorResult,
-    GenericCliExecutor,
     _meaningful_stderr,
 )
 from runtime.orchestrator.executor_registry import build_executor, get_registry
@@ -664,8 +663,8 @@ def _classify_session_evicted(
 # re-emitted), pi (0.84.2: `-p --session <id> --mode json`, same session.id
 # re-emitted), opencode (1.18.25, TASK-6080 audit: `run -s <id> --dir <ws>
 # --format json` with the prompt on stdin, same sessionID re-emitted; resume
-# REQUIRES the identical project directory). Every other profile (generic-CLI,
-# custom-adapter) stays fresh (full prompt every turn).
+# REQUIRES the identical project directory). Registered custom-adapter profiles
+# stay fresh (full prompt every turn).
 _RESUME_CAPABLE_EXECUTORS = frozenset({"claude", "codex", "pi", "opencode"})
 
 

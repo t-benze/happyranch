@@ -283,7 +283,6 @@ Claude-backed thread participants reuse their Claude session across turns. State
 
 Implementation: `runtime/daemon/thread_runner.py`, `runtime/orchestrator/executors.py`, `runtime/infrastructure/database.py`, and `runtime/infrastructure/audit_logger.py`.
 
-**TASK-5977 (THR-200 seq 31) parity:** the same resume machinery is proven and shipped for **codex** (installed codex-cli 0.148.0: `codex exec resume <thread_id> --json -`, same `thread.started.thread_id` re-emitted after continuation, prompt via stdin) and **pi** (installed pi 0.84.2: `pi -p --mode json --session <id>`, same session header `id` re-emitted, prompt via stdin). **TASK-6080 (THR-200 seq 48):** the same envelope now ships for **opencode** (installed 1.18.25: `opencode run -s <id> --dir <workspace> --format json` with the prompt on stdin, same top-level `sessionID` re-emitted after continuation; eviction = rc=1 + empty stdout + one complete LF/CRLF-delimited physical stderr line exactly `Error: Session not found` after ANSI stripping; unrelated physical lines may coexist, but same-line prefix/suffix and cross-line assembly never match; resume REQUIRES the identical project directory — the thread workspace `<org>/workspaces/<agent>` is stable across turns, and org relocation / workspace-path changes must invalidate stored opencode ids). Generic-CLI and registered custom-adapter profiles remain fresh-only by design (their resume contract is not part of the standard envelope — decision matrix in TASK-6080). Evidence-backed per-executor support matrix lives in `protocol/05b-agent-runtime.md` (Thread provider-session lifecycle).
 
 Traps:
 
@@ -337,7 +336,6 @@ Traps:
   the full prompt (never omits a required sequence) and recovers after one
   successfully settled full-prompt turn — no watermark-comparison change.
 - **Transport (THR-200).** Claude/Pi/Codex/OpenCode deliver the prompt on stdin
-  (pinned-version canaries) — resume prompts included; generic-CLI stays
   argv-based with a pre-spawn `prompt_transport_too_large` guard. Encoded
   byte size is transport-only, never a cost/reset policy.
 - **pi uses `--session`, never `--session-id`.** `--session` fails when the id

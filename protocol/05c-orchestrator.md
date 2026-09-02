@@ -68,19 +68,6 @@ The orchestrator is the application code that ties everything together. It spawn
 
 **7. Provides the founder dashboard.** Aggregates audit logs, escalation summaries, and team health metrics into a weekly report.
 
-**8. Executor result-envelope contract (THR-107).** Custom (non-built-in) CLIs
-may opt into token metering by emitting a versioned JSON envelope on stdout. The
-daemon-side generic parser ``_parse_generic_cli_usage``
-(``runtime/orchestrator/executors.py``) reads it via sentinel markers
-``__HR_ENVELOPE_BEGIN__`` / ``__HR_ENVELOPE_END__``. **D7A (2026-07-27):** new
-registrations and re-registrations auto-receive ``envelope_policy: "strict"``
-with mandatory v1 enforcement at the ``GenericCliExecutor`` launch/result seam.
-Existing stored profiles without the ``envelope_policy`` field are LEGACY
-COMPATIBILITY with unchanged optional-envelope behavior. The envelope is
-validated at registration-time via the ``emit_envelope`` conformance step
-(``DEFAULT_CONFORMANCE_STEPS`` in ``runtime/daemon/registration_token.py``).
-A candidate CLI must POST a valid sample envelope to complete registration.
-
 **D7B custom-adapter profiles** (``command_adapter_id: custom-adapter:<id>``):
 bind to exactly one registered, conformance-passed, founder-APPROVED custom
 adapter executable. The ``CustomAdapterExecutor`` spawns the adapter as a
@@ -176,74 +163,6 @@ Known workspace-trust warning-only stderr cannot outrank a parsed structured
 Claude terminal reason in the human summary; raw classification inputs and the
 existing throttle/supervisor/breaker retry ownership are unchanged.
 
-**Thread provider-session state (THR-200).** The per-``(thread, agent)``
-resumable provider session id + delta watermark on ``thread_participants``
-is an optimization, never a correctness dependency, for the executors whose
-resume contract is PROVEN against the installed CLI (claude 2.1.241, codex
-0.148.0, pi 0.84.2 — TASK-5977 audit; opencode 1.18.25 — TASK-6080 audit:
-`run -s <id> --dir <ws> --format json`, stdin prompt, same sessionID
-re-emitted, eviction = rc=1 + empty stdout + one complete LF/CRLF-delimited
-stderr line exactly `Error: Session not found` after ANSI-SGR stripping;
-unrelated physical lines may coexist, but same-line prefix/suffix and
-cross-line assembly never match; resume REQUIRES the identical project directory);
-generic-CLI and registered custom-adapter profiles stay fresh (see
-`protocol/05b-agent-runtime.md`). Eviction — a provider-declared
-session-not-found on a resume attempt — invalidates the durable id in the
-SAME transaction as the eviction audit, BEFORE the full-prompt fallback
-launch; a failed fallback leaves the id NULL and the delivery watermark
-unadvanced, so the next wake re-attempts the same required range from a full
-prompt. Archive, successful executor switch, and agent termination clear the
-resume state (id NULL, watermark 0) so any later wake starts fresh. Each
-boundary is a database-owned transaction — the participant reset and its
-``thread_session_invalidated`` audit commit atomically (termination runs
-reset+audit inside the existing terminate-cleanup transaction; archive wraps
-the status flip, every participant reset, and the audit in one transaction),
-so a reset/audit failure leaves no partial lifecycle state: a failed switch
-is rolled back (no new executor installed) and a failed archive leaves the
-thread OPEN with every session row unmodified; participant removal deletes
-the row and its session state together. The GH-688 claim gate stays strict
-(`<` resumes, `=`/`>` use the full prompt) and a resumed delta is authorized
-only when the ENTIRE required post-watermark range is proven present and
-contiguous in the canonical transcript (uncapped load + independent
-authoritative max-seq proof; see `protocol/05b-agent-runtime.md`) — so no
-required sequence is ever omitted; the equality state self-heals after one
-successfully settled full-prompt turn. A stored provider id whose durable
-delivery watermark is null/zero/negative (<= 0) is never eligible for
-resume — the runner makes a fresh invocation with the complete canonical
-transcript. Eviction classification requires the anchored provider-declared
-rc=1 stderr signature bound to the exact attempted session id (the id is
-regex-escaped), never a generic legacy substring, wrong/missing id,
-prefix/suffix near-match, or a marker embedded in auth/quota/transport
-output.
-Prompt bodies travel via stdin for claude/pi/codex/opencode (opencode
-large-prompt stdin verified live on 1.18.25) and via argv (guard-
-limited) for generic-CLI; encoded byte size is transport-only, never
-a cost or reset policy.
-For a first conformance-probe failure the canonical ledger state is
-``failed_retryable`` with ``retry_eligible: true``. The normal flow retry is a
-same-token corrected-artifact retry: the founder modifies the wrapper/child
-artifacts and reruns the existing generated prompt before the original
-30-minute expiry. ``/connect`` admits exactly one genuinely changed candidate;
-unchanged or merely reordered artifacts receive an indefinite, non-consuming
-``409 Duplicate``. A second terminal failure closes the lifecycle as
-``exhausted``; expiry closes it as ``expired``; both are nonretryable. The
-separate master-bearer ``POST .../{operation_id}/retry`` lifecycle is the
-historical immutable-snapshot validation path: it revalidates the exact
-persisted wrapper/child path-and-hash snapshot before its bounded probe, but
-only for terminal ``failed`` projections and never as a corrected-artifact
-retry. It neither replays a registration token nor starts a fresh registration,
-and it never rewrites the original failed projection or its append-only
-evidence. Its separate attempt/event facts may establish a live bound profile;
-status then reports that live connection while exposing the retained historical
-failure. Cleanup via `POST .../{operation_id}/forget` removes only the
-permitted derived artifacts, failed projection row, and any retry-attempt row
-for that operation; the parent authority, accepted candidates, identity
-history, receipts, operations, and events remain append-only and retained for
-the authority lifetime. The normal Settings/onboarding UI now drives
-Connect → Connected in one flow; the PENDING/approve/reject/bind-profile
-routes remain as operator-only disposition tooling, no longer wired into the
-normal UI.
-
 **Correction — `workspace_adapter_id` is CLI-declared, not founder-chosen.**
 The Slice 1A paragraph above describes `workspace_adapter_id` as a
 mint-time founder choice; that shipped, then was reversed once tracing
@@ -274,21 +193,6 @@ non-null ``token_usage`` at conformance time.  Legacy entries without the
 manifest retain their exact current launch behavior and are never
 auto-mutated.  A dependency change requires re-submission and founder
 re-approval.
-
-The full generic-CLI envelope contract is in
-``docs/superpowers/specs/2026-07-19-custom-cli-adapter-envelope-design.md``.
-
-**Profile identity (D6, THR-107 seq115).** Every registered executor profile
-carries two canonical identity fields: ``workspace_adapter_id`` (workspace
-preparation bootstrap-file/permission-surface selector) and
-``command_adapter_id`` (execution adapter selector — built-in profiles carry
-their own first-party adapter, custom profiles may be ``"generic-cli"`` or ``"custom-adapter:<id>"`` (D7B)). Legacy
-fields ``adapter_id``, ``adapter``, and ``command_adapter`` are preserved as
-deprecated read-compatible aliases. Dual-read resolves deterministically;
-conflicting canonical vs deprecated values raise ``ValueError`` before any
-durable-store, registry, audit, or token-side-effect. Existing profiles require
-no immediate re-registration; stored profiles are never auto-mutated. See
-unified adapter-runtime architecture spec §6.3 and §9.3.
 
 ### Inter-Team communication patterns
 
@@ -1929,3 +1833,8 @@ canonical skill store + symlink materialization path.
 - Add new daemon routes
 - Add a web admin UI
 - Delete ``protocol/skills/`` directories (reversible via flag)
+> **TASK-6514 direct retirement:** Custom executor identity is exclusively an
+> explicit `custom-adapter:<id>` binding. The former generic template identity,
+> aliases/default, parser and launch path are retired without read compatibility
+> or automatic migration. Recovery uses a built-in reassignment or ordinary
+> registration of a valid approved custom-adapter profile.
