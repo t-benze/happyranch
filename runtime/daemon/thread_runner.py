@@ -739,6 +739,7 @@ def build_thread_prompt(
     now: Callable[[], datetime] | None = None,
     managed_skills_index: str = "",
     protocol_doc_manifest: str = "",
+    active_policy_section: str = "",
 ) -> str:
     triggering = next((m for m in messages if m.seq == triggering_seq), None)
     parts_str = ", ".join(p.agent_name for p in participants)
@@ -773,6 +774,7 @@ def build_thread_prompt(
         f"dispatch). It authorizes this single turn and is single-use for the\n"
         f"terminal callback (reply/decline).\n\n"
         f"Consult `protocol/skills/thread/SKILL.md` and respond.\n"
+        f"{active_policy_section}"
     )
 
 
@@ -789,6 +791,7 @@ def build_thread_delta_prompt(
     now: Callable[[], datetime] | None = None,
     managed_skills_index: str = "",
     protocol_doc_manifest: str = "",
+    active_policy_section: str = "",
 ) -> str:
     """Turn 2+ prompt for a resumed agent session (issue #53).
 
@@ -824,6 +827,7 @@ def build_thread_delta_prompt(
         f"dispatch). It authorizes this single turn and is single-use for the\n"
         f"terminal callback (reply/decline).\n\n"
         f"Consult `protocol/skills/thread/SKILL.md` and respond.\n"
+        f"{active_policy_section}"
     )
 
 
@@ -1208,6 +1212,13 @@ async def run_invocation(
             ))
             and delta_complete
         )
+        from runtime.orchestrator.active_authority_policy import resolve_active_team_policy_section
+        from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+        active_policy_section = resolve_active_team_policy_section(
+            store=AuthorityPolicyStore(org_state.db), team=agent_team,
+            agent_name=inv.agent_name,
+            eligible=bool(getattr(org_state, "teams", None) and org_state.teams.is_team_manager(inv.agent_name)),
+        )
         if can_resume:
             new_messages = [m for m in messages if m.seq > last_seq]
             triggering = next((m for m in messages if m.seq == inv.triggering_seq), None)
@@ -1218,6 +1229,7 @@ async def run_invocation(
                 triggering_message=triggering, org_config=org_config,
                 managed_skills_index=managed_skills_index,
                 protocol_doc_manifest=protocol_doc_manifest,
+                active_policy_section=active_policy_section,
             )
             resume_sid = stored_sid
             shown_seqs = [m.seq for m in new_messages]
@@ -1229,6 +1241,7 @@ async def run_invocation(
                 org_config=org_config,
                 managed_skills_index=managed_skills_index,
                 protocol_doc_manifest=protocol_doc_manifest,
+                active_policy_section=active_policy_section,
             )
             shown_seqs = [m.seq for m in messages]
 
@@ -1531,6 +1544,7 @@ async def run_invocation(
                     org_config=org_config,
                     managed_skills_index=managed_skills_index,
                     protocol_doc_manifest=protocol_doc_manifest,
+                    active_policy_section=active_policy_section,
                 )
                 # Re-apply the guardrail for the fallback prompt too.
                 escalation_note2 = _maybe_unresolved_escalations_note(
@@ -1688,6 +1702,7 @@ async def run_invocation(
                         purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
                         org_config=org_config,
                         managed_skills_index=managed_skills_index,
+                        active_policy_section=active_policy_section,
                     )
                     + "\n"
                     + (escalation_note + "\n" if escalation_note else "")

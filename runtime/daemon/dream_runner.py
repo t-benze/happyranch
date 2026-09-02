@@ -61,6 +61,7 @@ def build_dream_prompt(
     now: Callable[[], datetime] | None = None,
     managed_skills_index: str = "",
     protocol_doc_manifest: str = "",
+    active_policy_section: str = "",
 ) -> str:
     """Compose the private dream-session prompt.
 
@@ -93,6 +94,7 @@ Task history:
 
 Recent audit:
 {recent_audit}
+{active_policy_section}
 """
 
 
@@ -285,6 +287,13 @@ async def run_dream(
             task_id=dream_id,
         )
 
+    from runtime.orchestrator.active_authority_policy import resolve_active_team_policy_section
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    active_policy_section = resolve_active_team_policy_section(
+        store=AuthorityPolicyStore(org_state.db), team=agent_def.team,
+        agent_name=dream.agent_name,
+        eligible=bool(getattr(org_state, "teams", None) and org_state.teams.is_team_manager(dream.agent_name)),
+    )
     prompt = build_dream_prompt(
         org_slug=org_state.slug,
         dream=dream,
@@ -294,6 +303,7 @@ async def run_dream(
         org_config=org_config,
         managed_skills_index=managed_skills_index,
         protocol_doc_manifest=protocol_doc_manifest,
+        active_policy_section=active_policy_section,
     )
 
     executor_name = _prov  # already resolved above (TASK-2511)

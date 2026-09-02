@@ -99,6 +99,7 @@ def build_schedule_prompt(
     now: Callable[[], datetime] | None = None,
     managed_skills_index: str = "",
     protocol_doc_manifest: str = "",
+    active_policy_section: str = "",
 ) -> str:
     """Compose the schedule-fire prompt.
 
@@ -138,6 +139,7 @@ happyranch schedules spawn --org {org_slug} --schedule-id {schedule_id} --from-f
 
 Do not call create_task directly and do not dispatch other agents: the spawn
 endpoint creates the root task on your own team, targeted to you as executor.
+{active_policy_section}
 
 ## Normalized Brief (the task that fires)
 {normalized_brief}
@@ -268,6 +270,13 @@ async def run_schedule(
             task_id=schedule_id,
         )
 
+    from runtime.orchestrator.active_authority_policy import resolve_active_team_policy_section
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    active_policy_section = resolve_active_team_policy_section(
+        store=AuthorityPolicyStore(org_state.db), team=agent_def.team,
+        agent_name=record.agent_name,
+        eligible=bool(getattr(org_state, "teams", None) and org_state.teams.is_team_manager(record.agent_name)),
+    )
     prompt = build_schedule_prompt(
         org_slug=org_state.slug,
         schedule_id=schedule_id,
@@ -282,6 +291,7 @@ async def run_schedule(
         org_config=org_config,
         managed_skills_index=managed_skills_index,
         protocol_doc_manifest=protocol_doc_manifest,
+        active_policy_section=active_policy_section,
     )
 
     executor_name = _prov

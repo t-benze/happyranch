@@ -68,6 +68,7 @@ def build_wake_prompt(
     now: Callable[[], datetime] | None = None,
     managed_skills_index: str = "",
     protocol_doc_manifest: str = "",
+    active_policy_section: str = "",
 ) -> str:
     """Compose the wake-session prompt.
 
@@ -116,6 +117,7 @@ endpoint creates the root tasks on your own team, targeted to you as executor.
 ## Routine Tasks (verbatim from your agent file)
 {dropped_block}
 {preamble_block}{routine_block}
+{active_policy_section}
 """
 
 
@@ -239,6 +241,13 @@ async def run_wake(
             task_id=work_hour_id,
         )
 
+    from runtime.orchestrator.active_authority_policy import resolve_active_team_policy_section
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    active_policy_section = resolve_active_team_policy_section(
+        store=AuthorityPolicyStore(org_state.db), team=agent_def.team,
+        agent_name=record.agent_name,
+        eligible=bool(getattr(org_state, "teams", None) and org_state.teams.is_team_manager(record.agent_name)),
+    )
     prompt = build_wake_prompt(
         org_slug=org_state.slug,
         work_hour_id=work_hour_id,
@@ -254,6 +263,7 @@ async def run_wake(
         dropped=parsed.dropped,
         managed_skills_index=managed_skills_index,
         protocol_doc_manifest=protocol_doc_manifest,
+        active_policy_section=active_policy_section,
     )
 
     executor_name = _prov  # already resolved above (TASK-2511)

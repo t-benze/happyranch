@@ -393,6 +393,7 @@ class Orchestrator:
         managed_skills_index: str = "",
         protocol_doc_manifest: str = "",
         attachments_block: str = "",
+        active_policy_section: str = "",
     ) -> str:
         if provider == "codex":
             intro = (
@@ -442,6 +443,7 @@ class Orchestrator:
             f"{attachments_block}"
             f"{skills_block}"
             f"{docs_block}"
+            f"{active_policy_section}"
         )
 
     def _materialize_task_attachments(
@@ -901,6 +903,17 @@ class Orchestrator:
             session_id=session_id,
         )
 
+        from runtime.orchestrator.active_authority_policy import (
+            assert_no_reserved_team_policy_header,
+            resolve_active_team_policy_section,
+        )
+        from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+        assert_no_reserved_team_policy_header(brief, source="task brief")
+        assert_no_reserved_team_policy_header(prompt or "", source="role guidance")
+        active_policy_section = resolve_active_team_policy_section(
+            store=AuthorityPolicyStore(self._db), team=team, agent_name=agent_name,
+            eligible=self._teams.is_team_manager(agent_name),
+        )
         full_prompt = self._build_agent_prompt(
             provider,
             agent_name,
@@ -912,6 +925,7 @@ class Orchestrator:
             managed_skills_index=managed_skills_index,
             protocol_doc_manifest=protocol_doc_manifest,
             attachments_block=attachments_block,
+            active_policy_section=(f"\n{active_policy_section}" if active_policy_section else ""),
         )
 
         if self._sessions is not None:

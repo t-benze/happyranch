@@ -1518,6 +1518,7 @@ _RESERVED_AGENT_BODY_HEADERS: frozenset[str] = frozenset({
     "Task Completion Format",
     "Task Recall",
     "Workflow",
+    "[RESERVED] Active Team Escalation Policy",
 })
 
 

@@ -1914,3 +1914,22 @@ canonical skill store + symlink materialization path.
 - Add new daemon routes
 - Add a web admin UI
 - Delete ``protocol/skills/`` directories (reversible via flag)
+### Active manager policy prompt and evaluator pin (THR-181 S4)
+
+For Engineering only, the runtime resolves the authenticated current immutable
+authority-policy release at each launch producer and renders one server-reserved,
+clearly delimited section containing release id, version, digest, clauses, and the
+exact canonical continuation phrase. The task, thread (new/resumed/fallback), wake,
+dream, and schedule producers all consume this resolver. Only the eligible
+`engineering_manager` receives it; worker prompt bytes omit it. Agent-authored
+system/brief/role material using the reserved header is rejected. Absence of an
+activation is the compatible ordinary-launch state; corrupt or incoherent active
+history fails closed.
+
+At the authority hook, a DB-backed policy candidate and its S1 policy pin are one
+transaction. The pin binds immutable release and activation epoch plus evaluator
+provider/executor; candidate identity binds exact policy, prompt/template, and
+model id/version/digests. Evaluation uses the authenticated pinned release snapshot,
+never a second lookup of mutable current activation. A newly DB-backed candidate
+without a valid pin fails closed. Historical static-policy candidates retain their
+documented unpinned compatibility behavior and are never backfilled.

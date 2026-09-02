@@ -833,10 +833,13 @@ class LLMSubprocessAuthorityEvaluator:
 
     # -- AuthorityEvaluator contract --------------------------------------
 
-    def evaluate(self, snapshot: AuthorityInputSnapshot) -> AuthorityEvaluationResult:
+    def evaluate(
+        self, snapshot: AuthorityInputSnapshot, *, policy: AuthorityPolicy | None = None
+    ) -> AuthorityEvaluationResult:
         from runtime.models import AuthorityDispositionCode as _Code
+        effective_policy = policy or POLICY_BY_TEAM[snapshot.team]
         prompt = build_authority_evaluation_prompt(
-            policy=POLICY_BY_TEAM[snapshot.team],
+            policy=effective_policy,
             candidate_id=snapshot.candidate_id,
             team=snapshot.team,
             manager_agent=snapshot.manager_agent,
@@ -887,8 +890,7 @@ class LLMSubprocessAuthorityEvaluator:
                 _Code.MALFORMED_OUTPUT, "evaluator output policy/team/candidate/input mismatch"
             )
         disposition = AuthorityDisposition(parsed.disposition)
-        policy = POLICY_BY_TEAM.get(parsed.team)
-        clause = policy.clause_by_id(parsed.clause_id) if policy and parsed.clause_id else None
+        clause = effective_policy.clause_by_id(parsed.clause_id) if parsed.clause_id else None
         expected_action = (
             ACTION_CONTINUE_SAME_ROOT
             if disposition == AuthorityDisposition.CONTINUE_SAME_ROOT
@@ -1420,6 +1422,24 @@ def run_authority_hook(
         return "escalate"
 
     db = orch._db
+    active_activation = None
+    active_release = None
+    try:
+        from runtime.orchestrator.active_authority_policy import policy_from_release
+        from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+        policy_store = AuthorityPolicyStore(db)
+        active_activation = policy_store.get_current_activation(task.team)
+        if active_activation is not None:
+            active_release = policy_store.get_release(active_activation.release_id)
+            if active_release is None:
+                raise ValueError("active authority release is missing")
+            policy = policy_from_release(active_release)
+    except Exception as exc:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            policy=policy, error=f"active policy resolution failed: {exc}",
+        )
+        return "escalate"
     current = db.get_task(task.id)
     if current is None:
         return "escalate"
@@ -1498,7 +1518,7 @@ def run_authority_hook(
 
     # ---- 3. Claim the candidate (deterministic CAS) ----
     try:
-        candidate_id, won = db.claim_authority_candidate(
+        candidate_kwargs = dict(
             root_task_id=current.id,
             team=current.team,
             manager_agent=current.assigned_agent or agent,
@@ -1518,6 +1538,20 @@ def run_authority_hook(
             snapshot_digest=input_digest,
             fence_results={name: fr.model_dump(mode="json") for name, fr in fences.items()},
         )
+        if active_activation is not None and active_release is not None:
+            evaluator_provider = getattr(evaluator, "provider_id", "local") if evaluator else "none"
+            evaluator_kind = getattr(evaluator, "_executor_kind", "none") if evaluator else "none"
+            candidate, _pin = policy_store.claim_candidate_with_pin(
+                release_id=active_release.id,
+                activation_id=active_activation.id,
+                activation_epoch=active_activation.epoch,
+                provider_id=evaluator_provider,
+                executor_kind=evaluator_kind,
+                **candidate_kwargs,
+            )
+            candidate_id, won = candidate.id, True
+        else:
+            candidate_id, won = db.claim_authority_candidate(**candidate_kwargs)
     except Exception as exc:
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
@@ -1578,7 +1612,11 @@ def run_authority_hook(
         )
     else:
         try:
-            result = evaluator.evaluate(snapshot)
+            result = (
+                evaluator.evaluate(snapshot, policy=policy)
+                if active_activation is not None
+                else evaluator.evaluate(snapshot)
+            )
         except Exception as exc:
             result = AuthorityEvaluationResult(
                 disposition=AuthorityDisposition.EVALUATOR_ERROR,
