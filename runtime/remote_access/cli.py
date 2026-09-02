@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sys
 from pathlib import Path
@@ -73,6 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_lifecycle("status", "print the connector service status")
     add_lifecycle("readiness", "evaluate the five readiness gates (exit 0 only when ready)")
     add_lifecycle("diagnose", "redacted local diagnostics")
+    retire = sub.add_parser("retire-enrollment-source", help=argparse.SUPPRESS)
+    retire.add_argument("--source", required=True)
+    retire.add_argument("--marker", required=True)
 
     pair = add_lifecycle("pair", "issue a one-time pairing code for a device (Supported-DIY ceremony)")
     pair.add_argument("--device", required=True, help="human-readable device name (e.g. macbook-pro)")
@@ -106,6 +110,13 @@ def _print_json(payload: dict) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "retire-enrollment-source":
+        try:
+            _retire_enrollment_source(Path(args.source), Path(args.marker))
+            return 0
+        except OSError:
+            print("error: enrollment_source_retirement_failed", file=sys.stderr)
+            return 1
     try:
         config = _load_config(args.config)
     except (ConnectorConfigError, json.JSONDecodeError, OSError) as exc:
@@ -195,6 +206,45 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 1
+
+
+def _retire_enrollment_source(source: Path, marker: Path) -> None:
+    """Retire the one-use source after READY; recover either side of rename."""
+    if not source.is_absolute() or not marker.is_absolute() or source.name != "enrollment.key" or marker.name != "credential.consumed":
+        raise OSError("invalid retirement path")
+    retiring = source.with_name(source.name + ".retiring")
+    marker_ok = marker.is_file() and not marker.is_symlink() and marker.stat().st_mode & 0o777 == 0o600
+    if retiring.exists() or retiring.is_symlink():
+        if retiring.is_symlink() or not retiring.is_file():
+            raise OSError("invalid retirement residue")
+        if marker_ok:
+            retiring.unlink()
+        elif not source.exists():
+            retiring.replace(source)
+        else:
+            raise OSError("incoherent retirement residue")
+        _fsync_dir(source.parent)
+        if not marker_ok:
+            raise OSError("enrollment not durable")
+    if not marker_ok:
+        raise OSError("enrollment not durable")
+    if not source.exists():
+        return
+    st = source.lstat()
+    if source.is_symlink() or not source.is_file() or st.st_mode & 0o777 != 0o600 or st.st_uid != os.geteuid():
+        raise OSError("invalid enrollment source")
+    source.replace(retiring)
+    _fsync_dir(source.parent)
+    retiring.unlink()
+    _fsync_dir(source.parent)
+
+
+def _fsync_dir(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _run_ceremony(args, supervisor: ConnectorSupervisor) -> int:

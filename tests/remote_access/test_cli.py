@@ -141,8 +141,9 @@ def test_parser_exposes_all_commands() -> None:
         "revoke",
         "remove-device",
         "pairing-status",
-        "recovery",
-    }
+            "recovery",
+            "retire-enrollment-source",
+        }
 
 
 def test_missing_config_returns_1(tmp_path, capsys) -> None:

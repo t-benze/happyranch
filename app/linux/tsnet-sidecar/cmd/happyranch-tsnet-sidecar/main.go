@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -28,7 +29,17 @@ func main() {
 		os.Exit(2)
 	}
 	var cfg sidecar.Config
-	if json.Unmarshal(raw, &cfg) != nil || cfg.Validate() != nil {
+	if json.Unmarshal(raw, &cfg) != nil {
+		fmt.Fprintln(os.Stderr, "configuration_invalid")
+		os.Exit(2)
+	}
+	credentialsDir := os.Getenv("CREDENTIALS_DIRECTORY")
+	if !filepath.IsAbs(credentialsDir) {
+		fmt.Fprintln(os.Stderr, "credential_unavailable")
+		os.Exit(2)
+	}
+	cfg.CredentialFile = filepath.Join(filepath.Clean(credentialsDir), "enrollment.key")
+	if cfg.Validate() != nil {
 		fmt.Fprintln(os.Stderr, "configuration_invalid")
 		os.Exit(2)
 	}

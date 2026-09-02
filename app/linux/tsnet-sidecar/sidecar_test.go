@@ -194,6 +194,51 @@ func TestStartSuccessConsumesCredentialThenProxiesRawBytes(t *testing.T) {
 	}
 }
 
+func TestSystemdStagedCredentialIsReadOnceAndNeverUnlinked(t *testing.T) {
+	cfg := validConfig(t)
+	credentialDir := filepath.Dir(cfg.CredentialFile)
+	t.Setenv("CREDENTIALS_DIRECTORY", credentialDir)
+	if err := os.Chmod(cfg.CredentialFile, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	events := []string{}
+	probeClient, probeServer := net.Pipe()
+	defer probeServer.Close()
+	listener := &oneListener{acceptErr: net.ErrClosed, events: &events, accepted: make(chan struct{})}
+	e := &fakeEngine{listener: listener, receipt: RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: true}, events: &events}
+	s := New(cfg, e, dialFunc(func(context.Context, string, string) (net.Conn, error) { return probeClient, nil }))
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cfg.CredentialFile); err != nil {
+		t.Fatalf("systemd-staged credential must remain systemd-owned: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, consumedMarker)); err != nil {
+		t.Fatalf("durable consumption marker missing: %v", err)
+	}
+	_ = s.Stop()
+}
+
+func TestEnrolledStateRestartDoesNotReadOrRequireCredential(t *testing.T) {
+	cfg := validConfig(t)
+	if err := os.Remove(cfg.CredentialFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.StateDir, consumedMarker), []byte("durable\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events := []string{}
+	probeClient, probeServer := net.Pipe()
+	defer probeServer.Close()
+	listener := &oneListener{acceptErr: net.ErrClosed, events: &events, accepted: make(chan struct{})}
+	e := &fakeEngine{listener: listener, receipt: RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: true}, events: &events}
+	s := New(cfg, e, dialFunc(func(context.Context, string, string) (net.Conn, error) { return probeClient, nil }))
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Stop()
+}
+
 func TestPartialStartAndFailuresCloseListenerFirst(t *testing.T) {
 	cfg := validConfig(t)
 	events := []string{}

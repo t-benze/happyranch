@@ -14,6 +14,7 @@ import zipfile
 import pytest
 
 from app.linux.package.build_connector import build_connector
+from runtime.remote_access.cli import _retire_enrollment_source
 from runtime.remote_access.linux_package import (
     CompositeServiceManager,
     PackageError,
@@ -80,8 +81,10 @@ def test_composite_units_start_connector_before_admission_and_stop_reverse() -> 
     assert "Type=notify" in sidecar
     assert "ExecStartPre=/opt/happyranch/bin/happyranch-connector diagnose --config /etc/happyranch/connector.json" in sidecar
     assert "ExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json" in sidecar
-    for directive in ("User=happyranch", "CapabilityBoundingSet=", "PrivateDevices=yes", "LoadCredential=enrollment.key:"):
+    for directive in ("User=happyranch", "CapabilityBoundingSet=", "PrivateDevices=yes", "LoadCredential=-enrollment.key:"):
         assert directive in sidecar
+    assert "StateDirectoryMode=0700" in sidecar
+    assert "ExecStartPost=+/opt/happyranch/bin/happyranch-connector retire-enrollment-source" in sidecar
     assert "UMask=0077" in connector and "UMask=0077" in sidecar
     assert "0.0.0.0" not in connector + sidecar
 
@@ -180,6 +183,17 @@ def test_archive_rejects_duplicate_member(tmp_path: Path) -> None:
             target.addfile(member, io.BytesIO(raw))
     with pytest.raises(PackageError, match="archive_duplicate_member"):
         install_linux_package(duplicate, tmp_path / "root")
+
+
+def test_archive_rejects_actual_mode_mismatch_before_write(tmp_path: Path) -> None:
+    package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
+    def mutate(entries) -> None:
+        member, _raw = next(item for item in entries if item[0].name.endswith("happyranch-tsnet-sidecar"))
+        member.mode = 0o777
+    root = tmp_path / "root"
+    with pytest.raises(PackageError, match="archive_mode_invalid"):
+        install_linux_package(_rewrite_package(package, tmp_path / "bad-mode.tar", mutate), root)
+    assert not root.exists()
 
 
 def test_install_rejects_tampered_payload_without_partial_residue(tmp_path: Path) -> None:
@@ -305,6 +319,48 @@ def test_interrupted_payload_publication_restores_last_known_good(tmp_path: Path
     after = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
     assert after == before
     assert not list(root.glob(".happyranch-*"))
+
+
+def test_interrupted_fresh_install_without_backup_recovers(tmp_path: Path) -> None:
+    package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / ".happyranch-units-backup").mkdir(mode=0o700)
+    (root / ".happyranch-install-transaction.json").write_text(
+        '{"phase":"payload_retained","schema_version":1}\n'
+    )
+    install_linux_package(package, root)
+    assert (root / "opt/happyranch/manifest.json").exists()
+    assert not list(root.glob(".happyranch-*"))
+
+
+def test_pre_marker_empty_unit_backup_is_recoverable(tmp_path: Path) -> None:
+    package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
+    root = tmp_path / "root"
+    (root / ".happyranch-units-backup").mkdir(parents=True, mode=0o700)
+    install_linux_package(package, root)
+    assert (root / "opt/happyranch/manifest.json").exists()
+    assert not list(root.glob(".happyranch-*"))
+
+
+def test_enrollment_source_retirement_is_atomic_reentrant_and_rolls_back(tmp_path: Path) -> None:
+    source = tmp_path / "enrollment.key"
+    marker = tmp_path / "state" / "credential.consumed"
+    marker.parent.mkdir(mode=0o700)
+    source.write_text("one-use\n")
+    source.chmod(0o600)
+    marker.write_text("durable\n")
+    marker.chmod(0o600)
+    _retire_enrollment_source(source, marker)
+    assert not source.exists() and not source.with_name("enrollment.key.retiring").exists()
+    _retire_enrollment_source(source, marker)
+
+    marker.unlink()
+    source.with_name("enrollment.key.retiring").write_text("rollback\n")
+    source.with_name("enrollment.key.retiring").chmod(0o600)
+    with pytest.raises(OSError, match="enrollment not durable"):
+        _retire_enrollment_source(source, marker)
+    assert source.read_text() == "rollback\n"
 
 
 def test_packaged_connector_binary_executes_outside_source_checkout(tmp_path: Path) -> None:

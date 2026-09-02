@@ -128,9 +128,11 @@ func (s *Sidecar) Start(ctx context.Context) error {
 		s.closeEngine()
 		return ErrCredential
 	}
-	if err := commitConsumption(s.cfg); err != nil {
-		s.closeEngine()
-		return ErrCredential
+	if len(credential) != 0 {
+		if err := commitConsumption(s.cfg); err != nil {
+			s.closeEngine()
+			return ErrCredential
+		}
 	}
 	probe, err := s.dialer.DialContext(ctx, "tcp", s.cfg.ConnectorAddr)
 	if err != nil || probe == nil || probe.Close() != nil {
@@ -160,17 +162,28 @@ func consumeInput(c Config) ([]byte, error) {
 	if err := noSymlinkPath(c.StateDir); err != nil {
 		return nil, err
 	}
-	if err := noSymlinkPath(c.CredentialFile); err != nil {
-		return nil, err
-	}
 	if err := requireOwnerDir(c.StateDir); err != nil {
 		return nil, err
 	}
-	if _, err := os.Lstat(filepath.Join(c.StateDir, consumedMarker)); err == nil || !os.IsNotExist(err) {
+	_, markerErr := os.Lstat(filepath.Join(c.StateDir, consumedMarker))
+	_, credentialErr := os.Lstat(c.CredentialFile)
+	if markerErr == nil {
+		if credentialErr == nil || !os.IsNotExist(credentialErr) {
+			return nil, ErrCredential
+		}
+		return nil, nil
+	}
+	if !os.IsNotExist(markerErr) {
 		return nil, ErrCredential
 	}
+	if err := noSymlinkPath(c.CredentialFile); err != nil {
+		return nil, err
+	}
 	st, err := os.Lstat(c.CredentialFile)
-	if err != nil || st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() || st.Mode().Perm() != 0o600 || !ownedByCurrentUser(st) {
+	systemdCredential := isSystemdCredential(c.CredentialFile)
+	if err != nil || st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() ||
+		(!systemdCredential && (st.Mode().Perm() != 0o600 || !ownedByCurrentUser(st))) ||
+		(systemdCredential && st.Mode().Perm()&0o022 != 0) {
 		return nil, ErrCredential
 	}
 	b, err := os.ReadFile(c.CredentialFile)
@@ -232,14 +245,21 @@ func commitConsumption(c Config) error {
 	if err = syncDir(c.StateDir); err != nil {
 		return err
 	}
-	if err = os.Remove(c.CredentialFile); err != nil {
-		return err
-	}
-	if err = syncDir(filepath.Dir(c.CredentialFile)); err != nil {
-		return err
+	if !isSystemdCredential(c.CredentialFile) {
+		if err = os.Remove(c.CredentialFile); err != nil {
+			return err
+		}
+		if err = syncDir(filepath.Dir(c.CredentialFile)); err != nil {
+			return err
+		}
 	}
 	ok = true
 	return nil
+}
+
+func isSystemdCredential(path string) bool {
+	dir := os.Getenv("CREDENTIALS_DIRECTORY")
+	return filepath.IsAbs(dir) && filepath.Clean(path) == filepath.Join(filepath.Clean(dir), "enrollment.key")
 }
 func syncDir(path string) error {
 	f, err := os.Open(path)

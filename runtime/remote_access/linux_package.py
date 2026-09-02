@@ -90,6 +90,7 @@ PartOf=happyranch-managed.target
 Type=notify
 ExecStartPre={prefix}/bin/happyranch-connector diagnose --config /etc/happyranch/connector.json
 ExecStart={prefix}/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json
+ExecStartPost=+{prefix}/bin/happyranch-connector retire-enrollment-source --source /etc/happyranch/enrollment.key --marker /var/lib/happyranch-tsnet-sidecar/credential.consumed
 User=happyranch
 Group=happyranch
 Restart=on-failure
@@ -114,9 +115,10 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 UMask=0077
 StateDirectory=happyranch-tsnet-sidecar
+StateDirectoryMode=0700
 RuntimeDirectory=happyranch-tsnet-sidecar
 LogsDirectory=happyranch-tsnet-sidecar
-LoadCredential=enrollment.key:/etc/happyranch/enrollment.key
+LoadCredential=-enrollment.key:/etc/happyranch/enrollment.key
 
 [Install]
 WantedBy=happyranch-managed.target
@@ -253,6 +255,7 @@ def _validate_evidence(inventory: Mapping[str, object], notices: bytes) -> None:
 
 def _read_verified(package: Path) -> tuple[dict[str, bytes], dict[str, object]]:
     files: dict[str, bytes] = {}
+    modes: dict[str, int] = {}
     with tarfile.open(package) as archive:
         for member in archive.getmembers():
             path = PurePosixPath(member.name)
@@ -262,6 +265,7 @@ def _read_verified(package: Path) -> tuple[dict[str, bytes], dict[str, object]]:
             if relative in files:
                 raise PackageError("archive_duplicate_member")
             files[relative] = archive.extractfile(member).read()
+            modes[relative] = member.mode & 0o7777
     try:
         manifest = json.loads(files["manifest.json"])
         if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1 or manifest["architecture"] != "linux-amd64" or type(manifest["version"]) is not str or not manifest["version"]:
@@ -275,6 +279,10 @@ def _read_verified(package: Path) -> tuple[dict[str, bytes], dict[str, object]]:
             raise PackageError("manifest_membership_mismatch")
         if declared_paths != set(PAYLOAD_MODES):
             raise PackageError("manifest_path_invalid")
+        expected_modes = {name: int(mode, 8) for name, mode in PAYLOAD_MODES.items()}
+        expected_modes["manifest.json"] = 0o600
+        if any(modes[name] != mode for name, mode in expected_modes.items()):
+            raise PackageError("archive_mode_invalid")
         for item in entries:
             if not isinstance(item, dict) or set(item) != {"path", "sha256", "mode"} or any(type(item[k]) is not str for k in item):
                 raise PackageError("manifest_invalid")
@@ -326,8 +334,9 @@ def _recover_interrupted(root: Path) -> None:
     backup, unit_backup, marker = _transaction_paths(root)
     stages = list(root.glob(".happyranch-stage-*")) if root.exists() else []
     if not marker.exists():
-        if backup.exists() or unit_backup.exists():
+        if backup.exists() or (unit_backup.exists() and any(unit_backup.iterdir())):
             raise PackageError("transaction_state_invalid")
+        if unit_backup.exists(): shutil.rmtree(unit_backup)
         for stage in stages: shutil.rmtree(stage)
         return
     try:
@@ -340,7 +349,9 @@ def _recover_interrupted(root: Path) -> None:
         if opt.exists(): shutil.rmtree(opt)
         opt.parent.mkdir(parents=True, exist_ok=True)
         backup.replace(opt)
-    elif state["phase"] != "prepared":
+    elif state["phase"] != "prepared" and not (
+        state["phase"] == "payload_retained" and not opt.exists()
+    ):
         raise PackageError("transaction_state_invalid")
     if unit_backup.exists():
         units.mkdir(parents=True, exist_ok=True)
