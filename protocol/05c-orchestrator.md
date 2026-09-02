@@ -171,6 +171,11 @@ deferrals are excluded and never released by breaker recovery. Durable receipts
 and lease CAS preserve OPEN/PROBE across restart and reject duplicate/stale
 callbacks. No manual action or wire/web projection is added.
 
+Thread failure audit payloads expose capped raw stdout/stderr tails additively.
+Known workspace-trust warning-only stderr cannot outrank a parsed structured
+Claude terminal reason in the human summary; raw classification inputs and the
+existing throttle/supervisor/breaker retry ownership are unchanged.
+
 **Thread provider-session state (THR-200).** The per-``(thread, agent)``
 resumable provider session id + delta watermark on ``thread_participants``
 is an optimization, never a correctness dependency, for the executors whose

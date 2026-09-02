@@ -33,6 +33,7 @@ from runtime.models import (
 from runtime.orchestrator.executors import (
     ExecutorResult,
     GenericCliExecutor,
+    _meaningful_stderr,
 )
 from runtime.orchestrator.executor_registry import build_executor, get_registry
 from runtime.orchestrator.host_supervisor import (
@@ -72,6 +73,15 @@ def _executor_error_detail(result, rc) -> str:
     (e.g. an ``API Error: 529 Overloaded`` raised inside the claude CLI), which
     was previously only recoverable by digging into the claude session JSONL.
     """
+    stderr = str(getattr(result, "stderr_tail", "") or "")
+    terminal_error = str(getattr(result, "terminal_error", "") or "").strip()
+    if (
+        terminal_error
+        and stderr.strip()
+        and not _meaningful_stderr(stderr)
+    ):
+        return terminal_error[:_REASON_DETAIL_CAP]
+
     raw = (str(getattr(result, "error", "") or "")
            or str(getattr(result, "stderr_tail", "") or "")).strip()
     prefix = f"Command exited with code {rc}"
@@ -1814,6 +1824,8 @@ async def run_invocation(
                 purpose=inv.purpose.value,
                 reason=reason,
                 kind="thread_invocation_failed",
+                stdout_tail=str(getattr(retry_result, "stdout_tail", "") or ""),
+                stderr_tail=str(getattr(retry_result, "stderr_tail", "") or ""),
             )
             await _publish_invocation_event(
                 org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
@@ -1844,6 +1856,8 @@ async def run_invocation(
             purpose=inv.purpose.value,
             reason=reason,
             kind="thread_invocation_failed",
+            stdout_tail=str(getattr(result, "stdout_tail", "") or ""),
+            stderr_tail=str(getattr(result, "stderr_tail", "") or ""),
         )
         await _publish_invocation_event(
             org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,

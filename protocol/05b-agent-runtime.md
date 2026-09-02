@@ -271,6 +271,14 @@ releases it for a later tick. The durable invocation claim remains the
 exactly-once provider-launch authority.
 PR B adds no API/OpenAPI/TypeScript/web projection or manual action.
 
+Failed thread-invocation audits add capped ``stdout_tail`` and ``stderr_tail``
+payload fields without changing the audit scope identity. Human-facing Claude
+failure detail prefers a parsed structured terminal result only when all raw
+stderr lines are the known workspace-trust warning shape. Classifier inputs,
+exact eviction detection, retry ownership, and breaker qualification continue
+to consume the unchanged executor result fields. A session-limit notice is not
+an automatic short-backoff rate-limit retry signal.
+
 **Custom CLI result-envelope (THR-107).** Custom CLIs may opt into token metering
 by emitting a versioned JSON envelope on stdout, delimited by the sentinel markers
 ``__HR_ENVELOPE_BEGIN__`` and ``__HR_ENVELOPE_END__``. The daemon parses the

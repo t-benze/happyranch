@@ -168,6 +168,48 @@ def test_executor_error_detail_retains_credit_exhaustion_diagnostics() -> None:
     assert '"result":"Your account has insufficient credits' in detail
 
 
+def test_executor_error_detail_prefers_structured_failure_over_known_trust_warning() -> None:
+    from runtime.daemon.thread_runner import _executor_error_detail
+
+    result = SimpleNamespace(
+        error=("Command exited with code 1: Running as unit: "
+               "happyranch-session-THR-220-67724507.scope; invocation ID: abc123"),
+        stderr_tail=(
+            "Running as unit: happyranch-session-THR-220-67724507.scope; "
+            "invocation ID: abc123\n"
+            "Ignoring 1 permissions.allow entry from .claude/settings.json: "
+            "this workspace has not been trusted.\n"
+        ),
+        stdout_tail=(
+            '{"type":"result","subtype":"error_during_execution",'
+            '"is_error":true,"result":"You\'ve hit your session limit '
+            '· resets 7:10pm (Asia/Shanghai)"}'
+        ),
+        terminal_error="session_limit",
+    )
+
+    assert _executor_error_detail(result, 1) == "session_limit"
+
+
+@pytest.mark.parametrize("stderr", [
+    "fatal: this workspace has not been trusted because launch failed",
+    ("Running as unit: happyranch-session-THR-220-a.scope; invocation ID: abc123\n"
+     "meaningful second line"),
+    "prefix Ignoring 1 permissions.allow entry from .claude/settings.json: this workspace has not been trusted.",
+])
+def test_executor_error_detail_does_not_strip_trust_word_lookalikes(stderr: str) -> None:
+    from runtime.daemon.thread_runner import _executor_error_detail
+
+    result = SimpleNamespace(
+        error=f"Command exited with code 1: {stderr}",
+        stderr_tail=stderr,
+        stdout_tail='{"result":"Session limit reached"}',
+        terminal_error="session_limit",
+    )
+
+    assert _executor_error_detail(result, 1) != "session_limit"
+
+
 @pytest.mark.asyncio
 async def test_run_invocation_no_callback_silent_decline(tmp_path, monkeypatch):
     db = Database(tmp_path / "happyranch.db")
@@ -352,6 +394,8 @@ async def test_no_callback_failure_preserves_claude_diagnostics_in_audit_reason(
                 ),
             )
             result.returncode = 1
+            result.stdout_tail = "structured stdout"
+            result.stderr_tail = "raw stderr warning"
             return result
 
     monkeypatch.setattr(
@@ -381,6 +425,8 @@ async def test_no_callback_failure_preserves_claude_diagnostics_in_audit_reason(
         if row["action"] == "thread_invocation_failed"
     )
     assert audit_row["payload"]["reason"] == inv_after.decline_reason
+    assert audit_row["payload"]["stdout_tail"] == "structured stdout"
+    assert audit_row["payload"]["stderr_tail"] == "raw stderr warning"
 
 
 @pytest.mark.asyncio
