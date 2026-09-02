@@ -11,6 +11,32 @@
 - `docs/superpowers/specs/2026-05-14-web-ui-design.md` — three-layer web architecture (`lib/api → features/<domain> → components`) and OpenAPI snapshot contract.
 - `docs/superpowers/specs/2026-05-13-threads-design.md` — agent-initiated → founder-review pattern reused.
 
+## 2026-09-02 remote-jobs S1 addendum
+
+The generic remote-job program extends this local-jobs design without changing
+its request behavior, lifecycle, `JobStatus`, or reason semantics. S1 ships
+only `runtime.remote_jobs` pure v1 contract models: closed/strict envelopes and
+payloads, immutable whole-job bundles, deterministic compact sorted-key UTF-8
+JSON and SHA-256 digests, the complete stable remote-reason taxonomy and exact
+primary precedence, and the corrected reuse identity:
+
+1. exact admitted `pre_run` digest;
+2. exact `(runner_id, runner_generation, workspace_id, workspace_generation)`;
+3. exact versioned exclusions/observation-policy digest; and
+4. a fresh complete observation matching the successful receipt over every
+   required reusable root.
+
+The pure observation policy binds both required roots and observed roots and
+refuses a required root hidden by an exclusion. S1 performs no observation and
+creates no receipt. It also has no runtime importer: later slices must prove
+that every producer supplies complete authoritative inputs.
+
+Runner authentication/enrollment, schema/migrations and persistence, actual
+transport, leases/fences/journals, observation execution, subprocess phase
+engine/finalization, coordinator and terminal-before-resume integration,
+CLI/API/UI, deployment, and activation are explicitly unimplemented. No S1
+model authorizes work, authenticates a peer, or changes existing local jobs.
+
 ## 1. Goal
 
 Today's `scripts` module exists to solve one problem — an agent hits a permission wall, founder runs the command, agent unblocks via revisit. It can't address a second problem that turns out to be just as common: **agents block on shell calls that don't return** (dev servers, watchers, polling loops, long builds). The current bash tool synchronously blocks until the command exits or the session times out — at which point the task is marked terminal FAILED and the agent has made no progress.
