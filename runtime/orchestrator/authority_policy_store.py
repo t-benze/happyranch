@@ -76,6 +76,9 @@ class AuthorityPolicyStore:
     def get_current_activation(self, team: str) -> AuthorityPolicyActivation | None:
         return self._db.get_current_authority_policy_activation(team)
 
+    def get_candidate_pin(self, candidate_id: str) -> AuthorityCandidatePolicyPin | None:
+        return self._db.get_authority_candidate_policy_pin(candidate_id)
+
     def claim_candidate_with_pin(
         self,
         *,

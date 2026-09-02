@@ -683,6 +683,43 @@ def test_candidate_pin_failure_rolls_back_candidate(tmp_path):
     assert db._conn.execute("SELECT COUNT(*) FROM authority_candidate_policy_pins WHERE candidate_id=?", (candidate.id,)).fetchone()[0] == 1
 
 
+def test_shipping_pin_transaction_preserves_all_identities_across_restart_and_duplicate(tmp_path):
+    """S4 evidence at the actual store transaction, not a rendering helper."""
+    path = tmp_path / "db.sqlite"
+    db = Database(path)
+    store = AuthorityPolicyStore(db)
+    release = store.create_release(_release())
+    activation = store.activate(_activation(release))
+    kwargs = _candidate(release)
+    candidate, pin = store.claim_candidate_with_pin(
+        **kwargs, release_id=release.id, activation_id=activation.id,
+        activation_epoch=activation.epoch, provider_id="openai",
+        executor_kind="codex",
+    )
+    assert (candidate.prompt_id, candidate.prompt_version, candidate.prompt_digest) == (
+        kwargs["prompt_id"], kwargs["prompt_version"], kwargs["prompt_digest"],
+    )
+    assert (candidate.model_id, candidate.model_version, candidate.model_digest) == (
+        kwargs["model_id"], kwargs["model_version"], kwargs["model_digest"],
+    )
+    assert (pin.provider_id, pin.executor_kind) == ("openai", "codex")
+    with pytest.raises(sqlite3.IntegrityError):
+        store.claim_candidate_with_pin(
+            **kwargs, release_id=release.id, activation_id=activation.id,
+            activation_epoch=activation.epoch, provider_id="openai",
+            executor_kind="codex",
+        )
+    assert len(db.list_authority_candidates_for_root("T-1")) == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_candidate_policy_pins WHERE candidate_id=?",
+        (candidate.id,),
+    ).fetchone()[0] == 1
+    db.close()
+    reopened = Database(path)
+    persisted = AuthorityPolicyStore(reopened).get_candidate_pin(candidate.id)
+    assert persisted == pin
+
+
 def test_corrupt_release_digest_fails_closed(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     release = AuthorityPolicyStore(db).create_release(_release())
