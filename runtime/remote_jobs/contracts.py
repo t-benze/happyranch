@@ -21,6 +21,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -139,7 +140,6 @@ class PreRunMode(StrEnum):
 
 class ObservationMethod(StrEnum):
     FULL_CONTENT_SHA256 = "full_content_sha256"
-    BOUNDED_COARSE_MANIFEST_V1 = "bounded_coarse_manifest_v1"
 
 
 class SymlinkPolicy(StrEnum):
@@ -243,6 +243,9 @@ class ObservationPolicy(CanonicalModel):
             for excluded in self.excluded_paths:
                 if excluded == required or excluded.startswith(required + "/"):
                     raise ValueError(f"required root has an excluded descendant: {required}")
+        material = self.model_dump(mode="json", exclude={"policy_digest"})
+        if canonical_digest(material) != self.policy_digest:
+            raise ValueError("policy_digest does not match normalized observation policy")
         return self
 
 
@@ -367,6 +370,39 @@ class PhaseFinished(CanonicalModel):
     )
     _finished = field_validator("finished_at")(_canonical_utc)
 
+    @model_validator(mode="after")
+    def legal_receipt(self, info: ValidationInfo) -> "PhaseFinished":
+        _validate_phase_result(self.phase, self.outcome, self.stable_reason)
+        started = None if self.started_at is None else datetime.fromisoformat(self.started_at[:-1] + "+00:00")
+        finished = datetime.fromisoformat(self.finished_at[:-1] + "+00:00")
+        if self.outcome == "skipped":
+            if self.started_at is not None or self.exit_code is not None or self.stdout_bytes or self.stderr_bytes:
+                raise ValueError("skipped pre_run has no start, exit code, or output")
+        else:
+            if started is None:
+                raise ValueError("executed phase requires started_at")
+            if finished < started:
+                raise ValueError("finished_at precedes started_at")
+        if self.outcome == "succeeded" and self.phase in {PhaseName.PRE_RUN, PhaseName.RUN, PhaseName.POST_RUN}:
+            if self.exit_code != 0:
+                raise ValueError("successful script phase requires exit_code 0")
+        elif self.stable_reason is not None and self.stable_reason.value.endswith("_nonzero"):
+            if self.exit_code is None or self.exit_code == 0:
+                raise ValueError("nonzero outcome requires a nonzero exit_code")
+        elif self.exit_code is not None:
+            raise ValueError("exit_code is absent unless a script exited")
+        phase_spec = (info.context or {}).get("phase_spec")
+        if phase_spec is not None:
+            spec = PhaseSpec.model_validate(phase_spec)
+            if self.stdout_bytes > spec.stdout_limit_bytes or self.stderr_bytes > spec.stderr_limit_bytes:
+                raise ValueError("phase byte counters exceed admitted caps")
+            if self.phase_digest != spec.digest():
+                raise ValueError("phase_digest does not match admitted phase")
+        material = self.model_dump(mode="json", exclude={"receipt_digest"})
+        if canonical_digest(material) != self.receipt_digest:
+            raise ValueError("receipt_digest does not match phase receipt")
+        return self
+
 
 class CancelRequested(CanonicalModel):
     frame_type: ClassVar[str] = "CANCEL_REQUESTED"
@@ -445,13 +481,68 @@ class ReconcileResponse(CanonicalModel):
         return self
 
 
+class ReceiptLink(CanonicalModel):
+    phase: PhaseName
+    ordinal: PositiveInt
+    outcome: Literal["succeeded", "failed", "timed_out", "output_capped", "cancelled", "skipped"]
+    stable_reason: "StableReason | None" = None
+    receipt_digest: Digest
+    observation_policy_digest: Digest | None = None
+
+    @model_validator(mode="after")
+    def legal_result(self) -> "ReceiptLink":
+        _validate_phase_result(self.phase, self.outcome, self.stable_reason, terminal_link=True)
+        if self.phase == PhaseName.WORKSPACE_OBSERVATION:
+            if self.observation_policy_digest is None:
+                raise ValueError("workspace observation link requires policy digest")
+        elif self.observation_policy_digest is not None:
+            raise ValueError("policy digest is valid only on workspace observation link")
+        return self
+
+
 class TerminalProposed(CanonicalModel):
     frame_type: ClassVar[str] = "TERMINAL_PROPOSED"
-    receipt_digests: tuple[Digest, ...]
-    finalization_receipt_digest: Digest
+    bundle_digest: Digest
+    receipt_links: tuple[ReceiptLink, ...]
+    finalization_receipt_link: ReceiptLink
     primary_status: Literal["completed", "failed", "rejected"]
     primary_reason: "StableReason | None"
     terminal_digest: Digest
+
+    @model_validator(mode="after")
+    def complete_consistent_terminal(self, info: ValidationInfo) -> "TerminalProposed":
+        if not self.receipt_links:
+            raise ValueError("terminal proposal omits phase receipt links")
+        if self.finalization_receipt_link.phase != PhaseName.FINALIZATION:
+            raise ValueError("finalization receipt link must name finalization")
+        links = (*self.receipt_links, self.finalization_receipt_link)
+        identities = [(link.phase, link.ordinal) for link in links]
+        if len(set(identities)) != len(identities):
+            raise ValueError("duplicate receipt link")
+        reasons = [link.stable_reason for link in links if link.stable_reason is not None]
+        expected = resolve_primary_outcome(reasons)
+        if self.primary_status != expected.status or self.primary_reason != expected.reason:
+            raise ValueError("terminal status/reason contradict receipt precedence")
+        bundle = (info.context or {}).get("admitted_bundle")
+        if bundle is not None:
+            admitted = JobBundle.model_validate(bundle)
+            if self.bundle_digest != admitted.digest():
+                raise ValueError("terminal bundle_digest does not match admitted bundle")
+            expected_phases = {PhaseName.RUN, PhaseName.FINALIZATION}
+            if admitted.pre_run is not None:
+                expected_phases.update({PhaseName.PRE_RUN, PhaseName.WORKSPACE_OBSERVATION})
+            if admitted.post_run is not None:
+                expected_phases.add(PhaseName.POST_RUN)
+            if {link.phase for link in links} != expected_phases:
+                raise ValueError("terminal proposal omits or adds a phase receipt")
+            policy_digest = admitted.reuse.observation_policy.policy_digest if admitted.reuse else None
+            observation = next((link for link in links if link.phase == PhaseName.WORKSPACE_OBSERVATION), None)
+            if observation is not None and observation.observation_policy_digest != policy_digest:
+                raise ValueError("observation receipt policy digest mismatch")
+        material = self.model_dump(mode="json", exclude={"terminal_digest"})
+        if canonical_digest(material) != self.terminal_digest:
+            raise ValueError("terminal_digest does not match proposal")
+        return self
 
 
 class Hello(CanonicalModel):
@@ -551,10 +642,32 @@ class RemoteFrame(CanonicalModel, Generic[PayloadT]):
         return value
 
     @model_validator(mode="after")
-    def type_matches_payload(self) -> "RemoteFrame[PayloadT]":
+    def type_matches_payload(self, info: ValidationInfo) -> "RemoteFrame[PayloadT]":
         expected = getattr(self.payload, "frame_type", None)
         if expected is not None and self.type.value != expected:
             raise ValueError(f"frame type {self.type.value} does not match payload {expected}")
+        payload = self.payload
+        comparisons: list[tuple[str, Any, Any]] = []
+        for name in ("runner_id", "runner_generation", "attempt_id", "fence_token", "lease_generation"):
+            if hasattr(payload, name):
+                comparisons.append((name, getattr(self, name), getattr(payload, name)))
+        if isinstance(payload, AdmissionOffer):
+            comparisons.extend((
+                ("bundle.runner_id", self.runner_id, payload.bundle.runner.runner_id),
+                ("bundle.runner_generation", self.runner_generation, payload.bundle.runner.runner_generation),
+            ))
+        admitted = (info.context or {}).get("admitted_bundle")
+        if isinstance(payload, AdmissionAccepted) and admitted is not None:
+            comparisons.extend((
+                ("bundle_digest", admitted.digest(), payload.bundle_digest),
+                ("bundle.runner_id", admitted.runner.runner_id, payload.runner_id),
+                ("bundle.runner_generation", admitted.runner.runner_generation, payload.runner_generation),
+                ("bundle.workspace_id", admitted.workspace.workspace_id, payload.workspace_id),
+                ("bundle.workspace_generation", admitted.workspace.workspace_generation, payload.workspace_generation),
+            ))
+        for name, envelope_value, payload_value in comparisons:
+            if envelope_value != payload_value:
+                raise ValueError(f"envelope {name} does not match payload")
         return self
 
 
@@ -620,3 +733,93 @@ def resolve_primary_outcome(reasons: Iterable[StableReason | str]) -> PrimaryOut
                 status = "rejected" if candidate in _ADMISSION_REASONS or candidate == "founder_rejected" else "failed"
                 return PrimaryOutcome(status=status, reason=StableReason(candidate))
     raise AssertionError("stable reason is missing from precedence table")
+
+
+def _validate_phase_result(
+    phase: PhaseName,
+    outcome: str,
+    reason: StableReason | None,
+    *,
+    terminal_link: bool = False,
+) -> None:
+    value = None if reason is None else reason.value
+    script_phase = phase.value if phase in {PhaseName.PRE_RUN, PhaseName.RUN, PhaseName.POST_RUN} else None
+    if outcome == "skipped":
+        if phase != PhaseName.PRE_RUN or value is not None:
+            raise ValueError("only reusable pre_run may be skipped without a reason")
+        return
+    if phase == PhaseName.WORKSPACE_OBSERVATION:
+        expected = {
+            "succeeded": {None},
+            "failed": {"workspace_observation_failed", "workspace_observation_mismatch"},
+            "output_capped": {"workspace_observation_cap"},
+        }
+    elif phase == PhaseName.FINALIZATION:
+        expected = {
+            "succeeded": {None},
+            "failed": set(_FINALIZATION_REASONS) | (
+                set(_AUTHORITY_REASONS) | set(_ADMISSION_REASONS) | {"founder_rejected"}
+                if terminal_link else set()
+            ),
+            "cancelled": {"cancelled"} if terminal_link else set(),
+        }
+    else:
+        expected = {
+            "succeeded": {None},
+            "failed": {f"{script_phase}_spawn_failed", f"{script_phase}_nonzero"},
+            "timed_out": {f"{script_phase}_timeout"},
+            "output_capped": {f"{script_phase}_output_cap"},
+            "cancelled": {f"{script_phase}_cancelled"},
+        }
+    if value not in expected.get(outcome, set()):
+        raise ValueError(f"{phase.value} {outcome} has an illegal stable reason")
+
+
+_PAYLOAD_MODELS: dict[FrameType, type[CanonicalModel]] = {
+    FrameType.HELLO: Hello,
+    FrameType.HELLO_ACK: HelloAck,
+    FrameType.ADMISSION_OFFER: AdmissionOffer,
+    FrameType.ADMISSION_ACCEPTED: AdmissionAccepted,
+    FrameType.ADMISSION_REFUSED: AdmissionRefused,
+    FrameType.PHASE_STARTED: PhaseStarted,
+    FrameType.PHASE_LOG_CHUNK: PhaseLogChunk,
+    FrameType.PHASE_FINISHED: PhaseFinished,
+    FrameType.LEASE_RENEW: LeaseRenew,
+    FrameType.LEASE_ACK: LeaseAck,
+    FrameType.CANCEL_REQUESTED: CancelRequested,
+    FrameType.CANCEL_ACCEPTED: CancelAccepted,
+    FrameType.RECONCILE_REQUEST: ReconcileRequest,
+    FrameType.RECONCILE_RESPONSE: ReconcileResponse,
+    FrameType.TERMINAL_PROPOSED: TerminalProposed,
+    FrameType.TERMINAL_ACCEPTED: TerminalAccepted,
+}
+
+
+def parse_remote_frame(
+    value: Any,
+    *,
+    admitted_bundle: JobBundle | dict[str, Any] | None = None,
+) -> RemoteFrame[CanonicalModel]:
+    """Parse an untrusted v1 frame into its exact typed payload and bind duplicates."""
+
+    if not isinstance(value, dict):
+        raise ValueError("remote frame must be a JSON object")
+    frame_type = FrameType(value.get("type"))
+    payload_model = _PAYLOAD_MODELS[frame_type]
+    context: dict[str, Any] = {}
+    bundle = None if admitted_bundle is None else JobBundle.model_validate(admitted_bundle)
+    if frame_type in {FrameType.ADMISSION_ACCEPTED, FrameType.PHASE_FINISHED, FrameType.TERMINAL_PROPOSED} and bundle is None:
+        raise ValueError(f"{frame_type.value} validation requires the admitted bundle")
+    if bundle is not None:
+        context["admitted_bundle"] = bundle
+        payload = value.get("payload")
+        if frame_type == FrameType.PHASE_FINISHED and isinstance(payload, dict):
+            phase = PhaseName(payload.get("phase"))
+            spec = {
+                PhaseName.PRE_RUN: bundle.pre_run,
+                PhaseName.RUN: bundle.run,
+                PhaseName.POST_RUN: bundle.post_run,
+            }.get(phase)
+            if spec is not None:
+                context["phase_spec"] = spec
+    return RemoteFrame[payload_model].model_validate(value, context=context)  # type: ignore[valid-type,return-value]

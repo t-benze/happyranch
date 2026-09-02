@@ -1836,6 +1836,11 @@ attestation/capabilities/network policy, workspace identity/generation and
 agent owner, every declared phase script/interpreter/cwd/env/cap, and reuse and
 observation policy. It is frozen after validation.
 
+V0 supports only `full_content_sha256`; the bounded coarse-manifest proposal
+is omitted. The policy digest is recomputed from the complete normalized
+version, root sets, exclusions, bounds, and filesystem handling rules, so an
+arbitrary asserted digest cannot rename a different supported policy.
+
 The once-per-workspace-generation skip contract has four indivisible logical
 parts: admitted `pre_run` digest; exact `(runner_id, runner_generation,
 workspace_id, workspace_generation)`; exact versioned exclusions/observation
@@ -1853,6 +1858,13 @@ observation failure/mismatch; run failure; post-run failure; success. Rejected
 admission and founder rejection map to the preserved public `rejected` status;
 other terminal reasons map to `failed`; no reasons maps to `completed`.
 Subordinate receipts remain inputs/evidence and are not erased by selection.
+`PhaseFinished` rejects cross-phase reasons, impossible skip/start/exit shapes,
+reversed timestamps, cap overruns, and non-derived receipt digests.
+`TerminalProposed` carries unique complete phase/finalization receipt links and
+is valid only when those reasons recompute its status/reason and the bundle,
+policy, receipt links, and terminal digest agree. `parse_remote_frame` is the
+shipping untrusted-input seam: it selects the exact typed payload and binds all
+duplicated envelope, payload, and admitted-bundle identities and fences.
 
 This section describes S1 only. There is deliberately no shipping producer or
 consumer yet. Later slices must prove producer completeness and implement
