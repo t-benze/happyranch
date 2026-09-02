@@ -524,7 +524,9 @@ class AuthorityEvaluator(Protocol):
     model_version: str
     model_digest: str
 
-    def evaluate(self, snapshot: AuthorityInputSnapshot) -> AuthorityEvaluationResult:
+    def evaluate(
+        self, snapshot: AuthorityInputSnapshot, *, policy: AuthorityPolicy | None = None
+    ) -> AuthorityEvaluationResult:
         ...
 
 
@@ -622,8 +624,10 @@ class StrictFakeAuthorityEvaluator:
 
     # -- AuthorityEvaluator contract --------------------------------------
 
-    def evaluate(self, snapshot: AuthorityInputSnapshot) -> AuthorityEvaluationResult:
-        self._validate_snapshot(snapshot)
+    def evaluate(
+        self, snapshot: AuthorityInputSnapshot, *, policy: AuthorityPolicy | None = None
+    ) -> AuthorityEvaluationResult:
+        self._validate_snapshot(snapshot, policy=policy)
         # Server-derived facts OUTRANK reason prose (and any pinned verdict):
         # a server-proven must-escalate fact forces ESCALATE even when the
         # untrusted reason omits or misstates the condition.
@@ -682,13 +686,16 @@ class StrictFakeAuthorityEvaluator:
 
     # -- strict validation ------------------------------------------------
 
-    def _validate_snapshot(self, snapshot: AuthorityInputSnapshot) -> None:
-        policy = POLICY_BY_TEAM.get(snapshot.team)
-        if policy is None:
+    def _validate_snapshot(
+        self, snapshot: AuthorityInputSnapshot, *, policy: AuthorityPolicy | None = None
+    ) -> None:
+        effective_policy = policy or POLICY_BY_TEAM.get(snapshot.team)
+        if effective_policy is None:
             raise ValueError(f"no release-controlled policy for team {snapshot.team!r}")
-        if snapshot.policy_id != policy.id or snapshot.policy_version != policy.version:
+        if (snapshot.policy_id != effective_policy.id
+                or snapshot.policy_version != effective_policy.version):
             raise ValueError("snapshot policy identity does not match the release policy")
-        if snapshot.policy_digest != policy.digest:
+        if snapshot.policy_digest != effective_policy.digest:
             raise ValueError("snapshot policy digest does not match the release policy")
         if snapshot.prompt_digest != PROMPT_DIGEST:
             raise ValueError("snapshot prompt digest does not match the release prompt")
