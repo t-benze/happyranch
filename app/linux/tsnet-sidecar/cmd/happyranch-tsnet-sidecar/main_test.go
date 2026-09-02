@@ -3,10 +3,44 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
 )
+
+type countingStopper struct{ calls int }
+
+func (s *countingStopper) Stop() error {
+	s.calls++
+	return nil
+}
+
+func TestStopTwiceUsesSameProductionInstanceAndReceiptsEachInvocation(t *testing.T) {
+	stopper := &countingStopper{}
+	file, err := os.CreateTemp(t.TempDir(), "receipt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := stopTwice(stopper, file, 4242); err != nil {
+		t.Fatal(err)
+	}
+	if stopper.calls != 2 {
+		t.Fatalf("Stop calls = %d, want 2", stopper.calls)
+	}
+	if err := file.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "lifecycle_stop_complete run=4242 invocation=1\nlifecycle_stop_complete run=4242 invocation=2\n"
+	if string(raw) != want {
+		t.Fatalf("receipt = %q, want %q", raw, want)
+	}
+}
 
 type recordingNotifier struct {
 	mu    sync.Mutex

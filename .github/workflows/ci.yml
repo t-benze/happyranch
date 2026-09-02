@@ -128,6 +128,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
@@ -148,7 +150,19 @@ jobs:
       - name: Exercise actual packaged composite against pinned Headscale and peer
         env:
           PACKAGE_TAR: ${{ env.PACKAGE_TMP }}/happyranch-linux-amd64.tar
+          PROOF_SUBJECT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          N3_DIAGNOSTICS_DIR: ${{ runner.temp }}/managed-n3-evidence
         run: app/linux/package/real_systemd_n3.sh
+      - name: Validate successful Managed N3 execution artifact
+        if: success()
+        run: python app/linux/package/n3_evidence.py validate "${{ runner.temp }}/managed-n3-evidence/execution-evidence.json" --expected-subject "${{ github.event.pull_request.head.sha || github.sha }}"
+      - name: Upload Managed N3 execution evidence and diagnostics
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: managed-n3-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/managed-n3-evidence
+          if-no-files-found: error
 
   # ── macOS canonical skill store validation (same-owner, unconditional) ──
   # Executor and daemon share the same OS identity — same-owner is the only

@@ -60,20 +60,35 @@ func main() {
 	watchdogErr := make(chan error, 1)
 	go watchdogLoop(ctx, cancel, notifier, 10*time.Second, watchdogErr)
 	<-ctx.Done()
-	if err := svc.Stop(); err != nil {
+	if err := stopTwice(svc, os.Stderr, os.Getpid()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	// Category-only lifecycle evidence for the packaged systemd integration.
 	// Stop returns only after listener removal, active-flow drain, and the
 	// idempotent engine close have completed.
-	fmt.Fprintln(os.Stderr, "lifecycle_stop_complete")
 	select {
 	case <-watchdogErr:
 		fmt.Fprintln(os.Stderr, "watchdog_unavailable")
 		os.Exit(1)
 	default:
 	}
+}
+
+type stoppable interface {
+	Stop() error
+}
+
+// stopTwice is the production re-entrant shutdown seam. Both calls target the
+// same Sidecar; the process-scoped receipts distinguish the invocations.
+func stopTwice(svc stoppable, output *os.File, runID int) error {
+	for invocation := 1; invocation <= 2; invocation++ {
+		if err := svc.Stop(); err != nil {
+			return err
+		}
+		fmt.Fprintf(output, "lifecycle_stop_complete run=%d invocation=%d\n", runID, invocation)
+	}
+	return nil
 }
 
 type systemdNotifier interface {

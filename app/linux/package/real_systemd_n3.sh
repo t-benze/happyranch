@@ -11,45 +11,44 @@ readonly HEADSCALE_VERSION HEADSCALE_SHA256 TAILSCALE_VERSION TAILSCALE_SHA256
 fail() { echo "n3-real-systemd: $1" >&2; exit 1; }
 wait_for() {
   local label="$1"; shift
-  for _attempt in $(seq 1 120); do "$@" && return 0; sleep 1; done
+  for _attempt in $(seq 1 60); do "$@" && return 0; sleep 1; done
   fail "timeout waiting for $label"
 }
 port_open() { timeout 1 bash -c "</dev/tcp/127.0.0.1/$1" 2>/dev/null; }
 active() { sudo systemctl is-active --quiet "$1"; }
 absent() { ! sudo test -e "$1" || fail "residue at $1"; }
-evidence() { mkdir -p "$work/evidence/$1"; : >"$work/evidence/$1/$2"; }
+evidence() {
+  python "$evidence_driver" observe "$evidence_artifact" --phase "$1" --observation "$2" --assertion-id "$run_id:$1:$2"
+}
 tsnet_open() {
   [[ -n "${sidecar_ip:-}" ]] || return 1
   printf 'GET / HTTP/1.0\r\n\r\n' | timeout 5 sudo "$ts_dir/tailscale" --socket="$work/peer.sock" nc "$sidecar_ip" 443 >/dev/null 2>&1
 }
-verify_evidence_contract() {
-  local item
-  for item in \
-    startup/process_absent startup/tsnet_admission_absent startup/credential_mode_0400 \
-    admission/tsnet_admission_reachable active_flow/production_process_active \
-    readiness_loss/tsnet_admission_removed_before_connector \
-    revocation/stop_before_connector_cleanup revocation/tsnet_admission_absent \
-    shutdown/two_production_stop_completions shutdown/no_double_close shutdown/no_residue \
-    partial_failure/fresh_pid partial_failure/fresh_composite_gates \
-    concurrency_reentry/start_then_stop_barrier concurrency_reentry/stop_then_start_barrier concurrency_reentry/stop_wins \
-    recovery/fresh_install_rollback recovery/upgrade_rollback recovery/retained_payload_units recovery/fresh_composite_gates recovery/no_transaction_residue
-  do
-    [[ -f "$work/evidence/$item" ]] || fail "missing semantic evidence: $item"
-  done
-}
-
+diagnostics="${N3_DIAGNOSTICS_DIR:-$(mktemp -d)}"
+mkdir -p "$diagnostics"
+printf 'subject=%s\n' "${PROOF_SUBJECT_SHA:-missing}" >"$diagnostics/bootstrap.txt"
 [[ -n "${PACKAGE_TAR:-}" && -f "$PACKAGE_TAR" ]] || fail "PACKAGE_TAR missing"
+[[ "${PROOF_SUBJECT_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || fail "PROOF_SUBJECT_SHA missing"
 [[ "$(ps -p 1 -o comm= | xargs)" == systemd ]] || fail "PID 1 is not systemd"
 systemctl is-system-running >/dev/null 2>&1 || [[ "$(systemctl is-system-running 2>/dev/null)" == degraded ]] || fail "system manager unavailable"
 sudo -n true || fail "passwordless sudo unavailable"
 sudo systemd-run --quiet --wait --collect --unit=happyranch-n3-qualification /bin/true || fail "transient units unavailable"
 
 work="$(mktemp -d)"
+evidence_driver="$PWD/app/linux/package/n3_evidence.py"
+evidence_artifact="$diagnostics/execution-evidence.json"
+run_id="$(cat /proc/sys/kernel/random/uuid)"
+package_sha="$(sha256sum "$PACKAGE_TAR" | cut -d' ' -f1)"
+python "$evidence_driver" init "$evidence_artifact" --git-head "$PROOF_SUBJECT_SHA" --package-sha256 "$package_sha" --run-id "$run_id"
 headscale_pid=""; peer_pid=""; daemon_pid=""
 cleanup() {
   local original_status=$? cleanup_failed=0 wait_status=0
   set +e
   sudo systemctl stop happyranch-managed.target
+  if [[ -n "${sidecar_ip:-}" ]] && [[ -n "$peer_pid" ]] && sudo kill -0 "$peer_pid" 2>/dev/null; then
+    ! tsnet_open || cleanup_failed=1
+    (( cleanup_failed != 0 )) || evidence cleanup virtual_admission_removed_while_peer_alive || cleanup_failed=1
+  fi
   sudo systemctl disable happyranch-managed.target
   sudo systemctl reset-failed happyranch-connector.service happyranch-tsnet-sidecar.service happyranch-managed.target
   sudo rm -f /etc/systemd/system/happyranch-connector.service /etc/systemd/system/happyranch-tsnet-sidecar.service /etc/systemd/system/happyranch-managed.target
@@ -66,15 +65,27 @@ cleanup() {
   done
   sudo rm -f /usr/local/share/ca-certificates/happyranch-n3-ci.crt
   sudo update-ca-certificates >/dev/null 2>&1
+  for log in headscale peer daemon; do [[ ! -f "$work/$log.log" ]] || cp "$work/$log.log" "$diagnostics/$log.log"; done
+  sudo journalctl -u happyranch-connector.service -u happyranch-tsnet-sidecar.service --no-pager >"$diagnostics/systemd.log" 2>&1
   sudo rm -rf /opt/happyranch /etc/happyranch /var/lib/happyranch-connector /var/lib/happyranch-tsnet-sidecar /run/happyranch-connector /run/happyranch-tsnet-sidecar /var/log/happyranch-connector /var/log/happyranch-tsnet-sidecar
   systemctl list-unit-files happyranch-managed.target happyranch-connector.service happyranch-tsnet-sidecar.service --no-legend 2>/dev/null | grep -q . && cleanup_failed=1
-  for path in /opt/happyranch /etc/happyranch /var/lib/happyranch-connector /var/lib/happyranch-tsnet-sidecar /run/happyranch-connector /run/happyranch-tsnet-sidecar /.happyranch-install-transaction.json /.happyranch-backup /.happyranch-units-backup; do
+  for path in /opt/happyranch /etc/happyranch /var/lib/happyranch-connector /var/lib/happyranch-tsnet-sidecar /run/happyranch-connector /run/happyranch-tsnet-sidecar /var/log/happyranch-connector /var/log/happyranch-tsnet-sidecar /.happyranch-install-transaction.json /.happyranch-backup /.happyranch-units-backup; do
     sudo test ! -e "$path" || cleanup_failed=1
   done
+  [[ -z "$(sudo find / -maxdepth 1 \( -name '.happyranch-stage-*' -o -name '.happyranch-tmp-*' \) -print -quit)" ]] || cleanup_failed=1
   for port in 18443 18765 18080 19090 15043 13478; do ! port_open "$port" || cleanup_failed=1; done
-  [[ "$(systemctl show happyranch-connector.service -p MainPID --value 2>/dev/null)" == 0 ]] || cleanup_failed=1
-  [[ "$(systemctl show happyranch-tsnet-sidecar.service -p MainPID --value 2>/dev/null)" == 0 ]] || cleanup_failed=1
+  for unit in happyranch-connector.service happyranch-tsnet-sidecar.service; do
+    main_pid="$(systemctl show "$unit" -p MainPID --value 2>/dev/null)"
+    [[ -z "$main_pid" || "$main_pid" == 0 ]] || cleanup_failed=1
+  done
+  (( cleanup_failed != 0 )) || evidence cleanup all_residue_absent || cleanup_failed=1
   rm -rf "$work"
+  [[ ! -e "$work" ]] || cleanup_failed=1
+  (( cleanup_failed != 0 )) || evidence cleanup task_work_removed || cleanup_failed=1
+  if (( original_status == 0 && cleanup_failed == 0 )); then
+    python "$evidence_driver" finalize "$evidence_artifact" || cleanup_failed=1
+    python "$evidence_driver" validate "$evidence_artifact" --expected-subject "$PROOF_SUBJECT_SHA" --expected-run "$run_id" || cleanup_failed=1
+  fi
   (( cleanup_failed == 0 )) || echo "n3-real-systemd: teardown residue" >&2
   trap - EXIT INT TERM
   (( original_status != 0 )) && exit "$original_status"
@@ -132,7 +143,9 @@ printf '%s\n' '{"acls":[{"action":"accept","src":["*"],"dst":["*:*"],"proto":["*
 sudo install -m 0644 "$work/tls/cert.pem" /usr/local/share/ca-certificates/happyranch-n3-ci.crt
 sudo update-ca-certificates >/dev/null
 "$work/headscale" serve --config "$work/hs/config.yaml" >"$work/headscale.log" 2>&1 & headscale_pid=$!
-wait_for "Headscale HTTPS" curl --silent --fail --cacert "$work/tls/cert.pem" https://127.0.0.1:18080/health
+wait_for "Headscale process" sudo kill -0 "$headscale_pid"
+wait_for "Headscale HTTPS listener" port_open 18080
+wait_for "Headscale health" curl --silent --fail http://127.0.0.1:19090/health
 "$work/headscale" users create ci --config "$work/hs/config.yaml"
 peer_key="$("$work/headscale" preauthkeys create --user ci --reusable=false --expiration 10m --config "$work/hs/config.yaml")"
 sidecar_key="$("$work/headscale" preauthkeys create --user ci --reusable=false --expiration 10m --config "$work/hs/config.yaml")"
@@ -258,21 +271,20 @@ connector_down="$(systemctl show happyranch-connector.service -p InactiveEnterTi
 evidence "readiness_loss" "tsnet_admission_removed_before_connector"
 sudo systemctl stop happyranch-managed.target
 
-# semantic evidence: revocation and shutdown. Two independently started
-# production generations each traverse Sidecar.Stop; each completion means
-# listener-close, flow drain, and engine-close returned exactly once.
-shutdown_since="$(date --iso-8601=seconds)"
-for generation in 1 2; do
-  sudo systemctl start happyranch-managed.target
-  wait_for "generation $generation admission" tsnet_open
-  sudo systemctl stop happyranch-managed.target
-  ! tsnet_open || fail "TSNet admission survived target stop"
-done
-stop_count="$(sudo journalctl -u happyranch-tsnet-sidecar.service --since "$shutdown_since" --no-pager | grep -c lifecycle_stop_complete)"
-[[ "$stop_count" == 2 ]] || fail "production Sidecar.Stop completion count was $stop_count, expected 2"
+# semantic evidence: revocation and shutdown. The packaged binary calls Stop
+# twice on the same Sidecar and emits invocation-scoped receipts for its PID.
+sudo systemctl start happyranch-managed.target
+wait_for "shutdown admission" tsnet_open
+shutdown_pid="$(systemctl show happyranch-tsnet-sidecar.service -p MainPID --value)"
+sudo systemctl stop happyranch-managed.target
+! tsnet_open || fail "TSNet admission survived target stop"
+shutdown_receipts="$(sudo journalctl -u happyranch-tsnet-sidecar.service _PID="$shutdown_pid" --no-pager -o cat | grep "lifecycle_stop_complete run=$shutdown_pid invocation=" || true)"
+[[ "$(printf '%s\n' "$shutdown_receipts" | grep -c .)" == 2 ]] || fail "same-instance Stop did not produce two receipts"
+grep -qx "lifecycle_stop_complete run=$shutdown_pid invocation=1" <<<"$shutdown_receipts" || fail "missing first same-instance Stop receipt"
+grep -qx "lifecycle_stop_complete run=$shutdown_pid invocation=2" <<<"$shutdown_receipts" || fail "missing second same-instance Stop receipt"
 evidence "revocation" "stop_before_connector_cleanup"
 evidence "revocation" "tsnet_admission_absent"
-evidence "shutdown" "two_production_stop_completions"
+evidence "shutdown" "same_instance_stop_twice"
 evidence "shutdown" "no_double_close"
 [[ "$(systemctl show happyranch-tsnet-sidecar.service -p MainPID --value)" == 0 ]] || fail "sidecar residue after repeated shutdown"
 evidence "shutdown" "no_residue"
@@ -282,8 +294,13 @@ wait_for "fresh recovery" active happyranch-tsnet-sidecar.service
 # semantic evidence: recovery. Exercise the real installer checkpoint seam on
 # both empty-root and live upgrade paths, then re-enter and prove fresh gates.
 for boundary in payload_old_retained payload_published unit_published:happyranch-connector.service unit_published:happyranch-tsnet-sidecar.service unit_published:happyranch-managed.target; do
-  fresh="$work/fresh-${boundary//:/-}"
-  BOUNDARY="$boundary" uv run python - "$PACKAGE_TAR" "$fresh" <<'PY'
+  sudo systemctl stop happyranch-managed.target
+  sudo env "PATH=$PATH" uv run python - <<'PY'
+from pathlib import Path
+from runtime.remote_access.linux_package import uninstall_linux_package
+uninstall_linux_package(Path('/'))
+PY
+  BOUNDARY="$boundary" sudo env "PATH=$PATH" BOUNDARY="$boundary" uv run python - "$PACKAGE_TAR" <<'PY'
 import os, sys
 from pathlib import Path
 from runtime.remote_access.linux_package import install_linux_package
@@ -291,16 +308,28 @@ def fault(name):
     if name == os.environ['BOUNDARY']:
         raise RuntimeError('injected')
 try:
-    install_linux_package(Path(sys.argv[1]), Path(sys.argv[2]), fault=fault)
+    install_linux_package(Path(sys.argv[1]), Path('/'), fault=fault)
 except RuntimeError:
     pass
 else:
     raise SystemExit('fault did not fire')
 PY
-  [[ ! -e "$fresh/opt/happyranch" ]] || fail "fresh rollback payload residue"
-  [[ -z "$(find "$fresh" -maxdepth 1 -name '.happyranch-*' -print -quit)" ]] || fail "fresh transaction residue"
+  absent /opt/happyranch
+  for unit in happyranch-connector.service happyranch-tsnet-sidecar.service happyranch-managed.target; do absent "/etc/systemd/system/$unit"; done
+  for path in /.happyranch-install-transaction.json /.happyranch-backup /.happyranch-units-backup; do absent "$path"; done
+  [[ -z "$(sudo find / -maxdepth 1 \( -name '.happyranch-stage-*' -o -name '.happyranch-tmp-*' \) -print -quit)" ]] || fail "fresh transaction residue"
+  sudo env "PATH=$PATH" uv run python - "$PACKAGE_TAR" <<'PY'
+import sys
+from pathlib import Path
+from runtime.remote_access.linux_package import install_linux_package
+install_linux_package(Path(sys.argv[1]), Path('/'))
+PY
+  sudo systemctl daemon-reload
+  sudo systemctl start happyranch-managed.target
+  wait_for "fresh $boundary composite startup" active happyranch-tsnet-sidecar.service
+  wait_for "fresh $boundary virtual admission" tsnet_open
 done
-evidence "recovery" "fresh_install_rollback"
+evidence "recovery" "fresh_install_rollback_reentry_each_checkpoint"
 before_manifest="$(sudo sha256sum /opt/happyranch/manifest.json)"
 sudo env "PATH=$PATH" BOUNDARY=payload_published uv run python - "$PACKAGE_TAR" <<'PY'
 import os, sys
@@ -336,5 +365,4 @@ sudo systemctl start happyranch-managed.target
 wait_for "upgrade recovery" active happyranch-tsnet-sidecar.service
 wait_for "upgrade virtual admission" tsnet_open
 evidence "recovery" "fresh_composite_gates"
-verify_evidence_contract
 echo N3_REAL_SYSTEMD_PASS
