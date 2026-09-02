@@ -1922,14 +1922,21 @@ clearly delimited section containing release id, version, digest, clauses, and t
 exact canonical continuation phrase. The task, thread (new/resumed/fallback), wake,
 dream, and schedule producers all consume this resolver. Only the eligible
 `engineering_manager` receives it; worker prompt bytes omit it. Agent-authored
-system/brief/role material using the reserved header is rejected. Absence of an
+system/brief/role material and thread history/deltas, schedule briefs, wake
+routines, and dream history/audit inputs using the reserved header or either
+delimiter marker are rejected before launch. Absence of an
 activation is the compatible ordinary-launch state; corrupt or incoherent active
 history fails closed.
 
-At the authority hook, a DB-backed policy candidate and its S1 policy pin are one
+Each eligible task launch persists the exact authenticated release/activation
+identity rendered in that session (or an explicit static-mode receipt) in the
+existing append-only audit structure. The authority hook reads that session
+receipt and never resolves mutable current activation. At the hook, a DB-backed
+policy candidate and its S1 policy pin are one
 transaction. The pin binds immutable release and activation epoch plus evaluator
 provider/executor; candidate identity binds exact policy, prompt/template, and
 model id/version/digests. Evaluation uses the authenticated pinned release snapshot,
-never a second lookup of mutable current activation. A newly DB-backed candidate
+re-authenticating the persisted pin and immutable release before evaluation
+recording and continuation commit. A newly DB-backed candidate
 without a valid pin fails closed. Historical static-policy candidates retain their
 documented unpinned compatibility behavior and are never backfilled.

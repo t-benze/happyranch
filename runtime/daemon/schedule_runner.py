@@ -109,6 +109,8 @@ def build_schedule_prompt(
     ``current_time`` is injected (fresh per fire) via the shared renderer using
     the org's effective timezone.
     """
+    from runtime.orchestrator.active_authority_policy import assert_no_reserved_team_policy_header
+    assert_no_reserved_team_policy_header(normalized_brief, source="schedule normalized brief")
     tz, label = resolve_org_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
     skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""

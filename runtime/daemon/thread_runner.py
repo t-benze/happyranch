@@ -741,9 +741,12 @@ def build_thread_prompt(
     protocol_doc_manifest: str = "",
     active_policy_section: str = "",
 ) -> str:
+    from runtime.orchestrator.active_authority_policy import assert_no_reserved_team_policy_header
     triggering = next((m for m in messages if m.seq == triggering_seq), None)
     parts_str = ", ".join(p.agent_name for p in participants)
     history = "\n".join(_render_message(m) for m in messages)
+    assert_no_reserved_team_policy_header(thread.subject, source="thread subject")
+    assert_no_reserved_team_policy_header(history, source="thread history")
     forwarded = (
         f"Forwarded from {thread.forwarded_from_id}."
         if thread.forwarded_from_id else ""
@@ -805,12 +808,15 @@ def build_thread_delta_prompt(
     agent sees the current local wall clock even mid-thread. ``now`` is
     injectable for tests.
     """
+    from runtime.orchestrator.active_authority_policy import assert_no_reserved_team_policy_header
     note = _purpose_note(
         purpose, triggering_seq, invoked_agent,
         triggering_message=triggering_message,
     )
     doctrine = _decline_by_default_doctrine() if purpose == "reply" else ""
     delta = "\n".join(_render_message(m) for m in new_messages)
+    assert_no_reserved_team_policy_header(thread.subject, source="thread subject")
+    assert_no_reserved_team_policy_header(delta, source="thread delta")
     tz, label = resolve_org_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
     skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""

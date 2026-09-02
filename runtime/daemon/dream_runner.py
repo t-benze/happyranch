@@ -70,6 +70,9 @@ def build_dream_prompt(
     machine-local -> UTC), so dream sessions carry the same local wall clock as
     every other agent session. ``now`` is injectable for tests.
     """
+    from runtime.orchestrator.active_authority_policy import assert_no_reserved_team_policy_header
+    assert_no_reserved_team_policy_header(task_history, source="dream task history")
+    assert_no_reserved_team_policy_header(str(recent_audit), source="dream recent audit")
     tz, label = resolve_dreaming_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
     skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""

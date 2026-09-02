@@ -905,15 +905,31 @@ class Orchestrator:
 
         from runtime.orchestrator.active_authority_policy import (
             assert_no_reserved_team_policy_header,
-            resolve_active_team_policy_section,
+            persist_session_policy_binding,
+            render_active_team_policy,
+            resolve_active_team_policy_snapshot,
         )
         from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
         assert_no_reserved_team_policy_header(brief, source="task brief")
         assert_no_reserved_team_policy_header(prompt or "", source="role guidance")
-        active_policy_section = resolve_active_team_policy_section(
+        assert_no_reserved_team_policy_header(memory_digest or "", source="memory digest")
+        assert_no_reserved_team_policy_header(managed_skills_index, source="managed skills index")
+        assert_no_reserved_team_policy_header(protocol_doc_manifest, source="protocol manifest")
+        assert_no_reserved_team_policy_header(attachments_block, source="attachment manifest")
+        policy_snapshot = resolve_active_team_policy_snapshot(
             store=AuthorityPolicyStore(self._db), team=team, agent_name=agent_name,
             eligible=self._teams.is_team_manager(agent_name),
         )
+        active_policy_section = (
+            render_active_team_policy(
+                release=policy_snapshot.release, activation=policy_snapshot.activation,
+            ) if policy_snapshot is not None else ""
+        )
+        if self._teams.is_team_manager(agent_name):
+            persist_session_policy_binding(
+                db=self._db, task_id=task_id, session_id=session_id,
+                agent_name=agent_name, snapshot=policy_snapshot,
+            )
         full_prompt = self._build_agent_prompt(
             provider,
             agent_name,

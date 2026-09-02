@@ -1425,14 +1425,18 @@ def run_authority_hook(
     active_activation = None
     active_release = None
     try:
-        from runtime.orchestrator.active_authority_policy import policy_from_release
+        from runtime.orchestrator.active_authority_policy import (
+            load_session_policy_snapshot, policy_from_release,
+        )
         from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
         policy_store = AuthorityPolicyStore(db)
-        active_activation = policy_store.get_current_activation(task.team)
-        if active_activation is not None:
-            active_release = policy_store.get_release(active_activation.release_id)
-            if active_release is None:
-                raise ValueError("active authority release is missing")
+        launch_snapshot = load_session_policy_snapshot(
+            db=db, store=policy_store, task_id=task.id,
+            session_id=task.current_session_id or "", agent_name=agent,
+        )
+        if launch_snapshot is not None:
+            active_activation = launch_snapshot.activation
+            active_release = launch_snapshot.release
             policy = policy_from_release(active_release)
     except Exception as exc:
         _record_hook_outcome(
@@ -1560,6 +1564,34 @@ def run_authority_hook(
         )
         return "escalate"
 
+    def _authenticate_persisted_candidate_policy() -> None:
+        if active_release is None or active_activation is None:
+            return
+        pin = policy_store.get_candidate_pin(candidate_id)
+        if pin is None:
+            raise ValueError("DB-backed authority candidate is missing its policy pin")
+        expected_provider = getattr(evaluator, "provider_id", "local") if evaluator else "none"
+        expected_kind = getattr(evaluator, "_executor_kind", "none") if evaluator else "none"
+        if (pin.release_id != active_release.id
+                or pin.activation_id != active_activation.id
+                or pin.activation_epoch != active_activation.epoch
+                or pin.provider_id != expected_provider
+                or pin.executor_kind != expected_kind):
+            raise ValueError("authority candidate policy pin identity mismatch")
+        reread_release = policy_store.get_release(pin.release_id)
+        if reread_release is None or policy_from_release(reread_release) != policy:
+            raise ValueError("authority candidate release snapshot mismatch")
+
+    try:
+        _authenticate_persisted_candidate_policy()
+    except Exception as exc:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            policy=policy, snapshot=snapshot, candidate_id=candidate_id,
+            fences=fences, lifecycle="created", error=f"candidate pin authentication failed: {exc}",
+        )
+        return "escalate"
+
     if not won:
         # CAS loser: the exact deterministic tuple was already claimed. Never
         # evaluate again, never continue — fail closed.
@@ -1625,6 +1657,17 @@ def run_authority_hook(
                 error=f"evaluator raised: {exc}",
             )
     verdict = _normalize_result(policy, candidate_id, input_digest, result)
+
+    try:
+        _authenticate_persisted_candidate_policy()
+    except Exception as exc:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            policy=policy, snapshot=snapshot, candidate_id=candidate_id,
+            fences=fences, lifecycle="created", verdict=verdict,
+            error=f"pre-evaluation-commit pin authentication failed: {exc}",
+        )
+        return "escalate"
 
     # ---- 6b. SERVER-DERIVED must-escalate gate. A server-PROVEN fact
     # (adverse child review verdict, partial-work/zombie evidence, DB-schema
@@ -1814,6 +1857,16 @@ def run_authority_hook(
 
     # ---- 11. Execute the verdict ----
     if verdict.disposition == AuthorityDisposition.CONTINUE_SAME_ROOT:
+        try:
+            _authenticate_persisted_candidate_policy()
+        except Exception as exc:
+            _record_hook_outcome(
+                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                policy=policy, snapshot=snapshot, candidate_id=candidate_id,
+                fences=fences, lifecycle="consumed", verdict=verdict,
+                error=f"continuation pin authentication failed: {exc}",
+            )
+            return "escalate"
         clause = policy.clause_by_id(verdict.clause_id)
         note = (
             f"authority-policy continued same root: "

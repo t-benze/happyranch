@@ -83,6 +83,9 @@ def build_wake_prompt(
     the org's effective timezone, so wake sessions carry the same local wall
     clock as every other agent session. ``now`` is injectable for tests.
     """
+    from runtime.orchestrator.active_authority_policy import assert_no_reserved_team_policy_header
+    assert_no_reserved_team_policy_header(preamble, source="wake routine preamble")
+    assert_no_reserved_team_policy_header("\n".join(routines), source="wake routines")
     tz, label = resolve_org_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
     skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""

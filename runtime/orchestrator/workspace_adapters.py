@@ -1559,6 +1559,14 @@ def _assert_no_reserved_headers_in_body(agent_name: str, body: str) -> None:
             f"the agent file. Reserved headers are owned by the system "
             f"(see _RESERVED_AGENT_BODY_HEADERS in workspace_adapters.py)."
         )
+    try:
+        from runtime.orchestrator.active_authority_policy import assert_no_reserved_team_policy_header
+        assert_no_reserved_team_policy_header(body, source=f"agent body {agent_name}")
+    except Exception as exc:
+        from runtime.orchestrator.active_authority_policy import ActiveAuthorityPolicyError
+        if isinstance(exc, ActiveAuthorityPolicyError):
+            raise ReservedHeaderInAgentBody(str(exc)) from exc
+        raise
 
 
 def _task_completion_format_section() -> list[str]:
