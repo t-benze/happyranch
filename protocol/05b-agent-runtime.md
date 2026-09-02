@@ -1823,3 +1823,40 @@ topology and the effective admission cap/reason from the active supervisor
 capability. Below-envelope values remain valid with an intentional-backpressure
 warning; above-envelope values warn that admission capacity cannot create
 producers.
+
+# Generic remote-job v1 contracts (S1 only)
+
+`runtime.remote_jobs` defines the pure, immutable version-1 packet vocabulary.
+All objects reject unknown keys and invalid versions, enums, identifiers,
+timestamps, caps, and digest encodings. Canonical bytes are compact sorted-key
+JSON encoded as UTF-8 with Unicode preserved; unset optional fields are omitted
+while an explicitly supplied null remains present. SHA-256 is computed only
+over those bytes. A whole-job bundle binds selected runner/generation and
+attestation/capabilities/network policy, workspace identity/generation and
+agent owner, every declared phase script/interpreter/cwd/env/cap, and reuse and
+observation policy. It is frozen after validation.
+
+The once-per-workspace-generation skip contract has four indivisible logical
+parts: admitted `pre_run` digest; exact `(runner_id, runner_generation,
+workspace_id, workspace_generation)`; exact versioned exclusions/observation
+policy digest; and a fresh complete observation matching one durable successful
+executed-setup receipt across every required reusable root. Required roots must
+be observed and cannot have required descendants excluded. S1 represents this
+policy but neither observes a workspace nor persists/authorizes reuse.
+
+Stable reasons are the closed v1 taxonomy in
+`runtime.remote_jobs.contracts.StableReason`; raw exception/diagnostic text is
+never a stable reason. Primary selection is deterministic and ordered exactly:
+invalid/stale fence or uncertainty; finalization/persistence safety; accepted
+cancellation; earliest phase timeout/output cap; pre-run failure; workspace
+observation failure/mismatch; run failure; post-run failure; success. Rejected
+admission and founder rejection map to the preserved public `rejected` status;
+other terminal reasons map to `failed`; no reasons maps to `completed`.
+Subordinate receipts remain inputs/evidence and are not erased by selection.
+
+This section describes S1 only. There is deliberately no shipping producer or
+consumer yet. Later slices must prove producer completeness and implement
+runner authentication/enrollment, DDL/persistence, transport, observation,
+phase execution/finalization, coordination/terminal-before-resume, CLI/API/UI,
+deployment, and activation. None of those behaviors, and no change to local
+jobs or `JobStatus`, is claimed here.
