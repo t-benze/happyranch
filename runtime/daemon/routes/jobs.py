@@ -800,6 +800,8 @@ async def _run_job_core(
                 max_runtime_seconds=timeout,
                 max_output_bytes=record.max_output_bytes,
                 publish=_sync_publish,
+                task_id=record.task_id,
+                workspace_root=str(workspace_root),
             )
         except FileNotFoundError:
             finished = _now_iso()

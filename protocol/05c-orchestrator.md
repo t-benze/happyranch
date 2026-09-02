@@ -1331,9 +1331,24 @@ unit puts executor language/package caches below each agent workspace's
 but ``.happyranch/cache`` is not cleanup-eligible and this unit
 grants no new cleanup authority. Cache setup refuses symlinked child components
 and fails closed without falling back to ``/tmp``; same-UID post-validation
-races remain because the workspace is not an OS isolation boundary. ``TMPDIR``
-and small callback payload contracts are unchanged, and automatic
-temporary-file cleanup is not implemented.
+races remain because the workspace is not an OS isolation boundary.
+Task-agent and job launches prepare a canonical per-task mode-0700
+``.happyranch/task-tmp/TASK-N`` root, inject it through
+``TMPDIR``/``TMP``/``TEMP``, and atomically append bounded
+required-versus-observed producer evidence to a separate v1 manifest under
+``.happyranch/task-scratch-manifests``. Every executor branch, including
+generic and registered custom adapters, consumes the shared environment seam;
+the job runner applies the same contract before subprocess creation.
+Containment-variable/sidecar drift fails closed through existing task/job
+error and audit handling while unrelated environment survives.
+
+The manifest reader is report-only: missing, corrupt, and stale observations
+are evidence, not repair or cleanup triggers. No teardown or periodic cleanup
+path imports or consumes this manifest, no deletion eligibility changes, and
+no file removal is activated. Later deletion remains separately gated on the
+existing THR-090 zombie-reaper lifecycle evidence plus immediate fail-closed
+OS process/cwd/open-file checks; Git/repository evidence remains a skip rule.
+Small daemon callback payload contracts are unchanged.
 
 1. **Measures** the OWNING AGENT's workspace with an explicit bounded,
    fail-open budget: one true wall-clock deadline shared across all

@@ -35,6 +35,12 @@ from runtime.orchestrator.executors import (
     OpencodeExecutor,
     PiExecutor,
 )
+from runtime.orchestrator.task_scratch import (
+    TaskScratchError,
+    activate_task_scratch,
+    prepare_task_scratch,
+    reset_task_scratch,
+)
 from runtime.orchestrator.org_config import (
     load_org_config,
     render_current_time_line,
@@ -962,6 +968,61 @@ class Orchestrator:
             self._db.insert_audit_log(task_id, agent_name, action, payload)
 
         timeout_seconds = self._resolve_session_timeout(agent_name, task_id=task_id)
+        try:
+            scratch = prepare_task_scratch(
+                workspace=workspace,
+                task_id=task_id,
+                producer_kind="agent",
+                producer_id=session_id,
+            )
+        except TaskScratchError as exc:
+            self._db.update_task(task_id, note=f"Task scratch containment refused launch: {exc}")
+            self._db.insert_audit_log(
+                task_id, agent_name, "task_scratch_containment_failed", {"error": str(exc)}
+            )
+            return ExecutorResult(
+                success=False, duration_seconds=0, session_id=session_id, error=str(exc)
+            ), None
+        scratch_token = activate_task_scratch(scratch)
+        try:
+            result = self._launch_agent_with_scratch(
+                task_id=task_id,
+                agent_name=agent_name,
+                workspace=workspace,
+                provider=provider,
+                model_name=model_name,
+                executor=executor,
+                session_id=session_id,
+                full_prompt=full_prompt,
+                timeout_seconds=timeout_seconds,
+                on_started=_on_started,
+                on_throttle_event=_on_throttle_event,
+                pre_launch_integrity_validator=_pre_launch_integrity_validator,
+            )
+        finally:
+            reset_task_scratch(scratch_token)
+        self._audit.log_session_end(
+            task_id=task_id,
+            agent=agent_name,
+            duration_seconds=result.duration_seconds,
+            token_usage=result.token_usage,
+        )
+
+        # THR-109: clean up the regenerable per-session materialized
+        # attachment directory. Bytes of record live in the task-attachment
+        # private store; the materialized files are a cache.
+        _cleanup_session_attachments(workspace, session_id)
+
+        report = self._read_completion_from_db(task_id, agent_name, session_id)
+        return result, report
+
+    def _launch_agent_with_scratch(
+        self, *, task_id: str, agent_name: str, workspace: Path, provider: str,
+        model_name: str | None, executor, session_id: str, full_prompt: str,
+        timeout_seconds: int, on_started: Callable[[int], None],
+        on_throttle_event, pre_launch_integrity_validator: Callable[[], None],
+    ) -> ExecutorResult:
+        """Launch after the task scratch context has been installed."""
         if self._host_supervisor is not None:
             # THR-207 task-producer wiring: the session runs through the
             # daemon-wide HostSessionSupervisor (admission lease, atomic
@@ -977,9 +1038,9 @@ class Orchestrator:
                 session_id=session_id,
                 full_prompt=full_prompt,
                 timeout_seconds=timeout_seconds,
-                on_started=_on_started,
-                on_throttle_event=_on_throttle_event,
-                pre_launch_integrity_validator=_pre_launch_integrity_validator,
+                on_started=on_started,
+                on_throttle_event=on_throttle_event,
+                pre_launch_integrity_validator=pre_launch_integrity_validator,
             )
         else:
             # Legacy uncontained path (tests / idle state): executor
@@ -989,26 +1050,13 @@ class Orchestrator:
                 prompt=full_prompt,
                 session_id=session_id,
                 timeout_seconds=timeout_seconds,
-                on_started=_on_started,
-                on_throttle_event=_on_throttle_event,
+                on_started=on_started,
+                on_throttle_event=on_throttle_event,
                 model=model_name,
-                pre_launch_validator=_pre_launch_integrity_validator,
+                pre_launch_validator=pre_launch_integrity_validator,
                 org_slug=self._slug,
             )
-        self._audit.log_session_end(
-            task_id=task_id,
-            agent=agent_name,
-            duration_seconds=result.duration_seconds,
-            token_usage=result.token_usage,
-        )
-
-        # THR-109: clean up the regenerable per-session materialized
-        # attachment directory. Bytes of record live in the task-attachment
-        # private store; the materialized files are a cache.
-        _cleanup_session_attachments(workspace, session_id)
-
-        report = self._read_completion_from_db(task_id, agent_name, session_id)
-        return result, report
+        return result
 
     def _run_agent_launch_contained(
         self,

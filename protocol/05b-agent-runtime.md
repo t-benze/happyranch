@@ -1504,8 +1504,25 @@ setup refuses symlinked child components and fails closed without falling back
 to shared ``/tmp``; same-UID post-validation races remain because the
 workspace is not an OS isolation boundary. The daemon still never inspects or
 reclaims ``/tmp``.
-Small atomic callback payloads retain their explicit ``/tmp`` contracts, and
-``TMPDIR`` is not globally redirected.
+Small atomic daemon callback payloads retain their explicit ``/tmp`` contracts.
+Runtime-launched task-agent and job subprocesses instead receive one canonical
+mode-0700 root at
+``<workspace>/.happyranch/task-tmp/<canonical TASK-N>`` through ``TMPDIR``,
+``TMP``, ``TEMP``, and a runtime sidecar variable. The runtime rejects a
+containment-variable/sidecar change between preparation and launch, preserves
+all unrelated inherited environment, and refuses traversal, ambiguous task
+suffixes, symlink substitution, or non-directory roots before spawning.
+
+Each launch atomically records a bounded v1 observation under
+``.happyranch/task-scratch-manifests/TASK-N.json``: required versus observed
+root/ownership, producer kind/id, and explicit ``regenerable_scratch`` root
+versus ``durable_recovery_artifact`` manifest classification. The reader is
+report-only and reports missing/corrupt/stale state without repair. The
+manifest is never deletion authority. TASK-6501 ships no teardown removal,
+periodic eligibility expansion, deletion driver, backlog mutation, or deploy;
+the later teardown design must combine THR-090 lifecycle evidence with fresh
+fail-closed OS cwd/open-file/process checks, while Git/repository evidence
+remains a skip rule.
 
 ### Three layers of memory
 
