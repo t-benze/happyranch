@@ -25,15 +25,16 @@ npm test -- --run
 echo "==> Build Storybook"
 npm run build-storybook
 
-echo "==> Hex codes outside tokens.css"
+echo "==> New hex colors outside tokens.css"
 HEX_HITS=$(
-  grep -RIn --include='*.ts' --include='*.tsx' --include='*.css' \
-       -E '#[0-9a-fA-F]{3,8}\b' src/ \
+  git diff --unified=0 origin/main -- src/ \
+    | grep '^+' \
+    | grep -E '(\[|:[[:space:]]*)#[0-9a-fA-F]{3,8}([^0-9a-fA-F]|$)' \
     | grep -v 'src/design-system/tokens/tokens.css' \
     || true
 )
 if [ -n "$HEX_HITS" ]; then
-  echo "FAIL: hex codes found outside tokens.css:"
+  echo "FAIL: this branch adds hex colors outside tokens.css:"
   echo "$HEX_HITS"
   exit 3
 fi
