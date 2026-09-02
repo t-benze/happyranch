@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from runtime.daemon.jobs_runner import run_job
+
 
 @pytest.fixture
 def tmp_paths():
@@ -20,7 +22,6 @@ def tmp_paths():
 
 
 def test_run_job_captures_stdout_and_exit_zero(tmp_paths):
-    from runtime.daemon.jobs_runner import run_job
     tmp_paths["cwd"].mkdir()
     result = asyncio.run(run_job(
         script_text="echo hello",
@@ -182,3 +183,25 @@ def test_run_job_strips_venv_from_child_environment(tmp_paths):
     assert "HAPPYRANCH_ORG_SLUG=testorg-jobs" in out, (
         f"HAPPYRANCH_ORG_SLUG must be passed through with exact value; got:\n{out}"
     )
+
+
+def test_shipping_job_launch_is_contained_and_manifest_survives(tmp_path, monkeypatch):
+    for key in ("HAPPYRANCH_TASK_TMP_ROOT", "HAPPYRANCH_TASK_SCRATCH_MANIFEST"):
+        monkeypatch.delenv(key, raising=False)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    stdout = tmp_path / "stdout"
+    stderr = tmp_path / "stderr"
+    result = asyncio.run(run_job(
+        job_id="JOB-6501", task_id="TASK-6501", workspace_root=str(workspace),
+        script_text='touch "$TMPDIR/sentinel"; printf "%s\\n%s\\n" "$TMPDIR" "$HAPPYRANCH_TASK_SCRATCH_MANIFEST"',
+        interpreter="bash", cwd=str(workspace), stdout_path=str(stdout),
+        stderr_path=str(stderr), max_runtime_seconds=30, publish=lambda _evt: None,
+    ))
+    expected_root = workspace / ".happyranch/task-tmp/TASK-6501"
+    expected_manifest = workspace / ".happyranch/task-scratch-manifests/TASK-6501.json"
+    assert result.status == "completed"
+    assert stdout.read_text().splitlines() == [str(expected_root), str(expected_manifest)]
+    assert expected_root.is_dir()
+    assert (expected_root / "sentinel").is_file()  # launch completion performs zero teardown deletion
+    assert expected_manifest.is_file()

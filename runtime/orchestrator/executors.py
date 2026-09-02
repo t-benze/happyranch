@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Literal
 from runtime.config import Settings
 from runtime.models import TokenUsage
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.task_scratch import apply_task_scratch_environment
 from runtime.platform.isolation import (
     PlatformIsolationError,
     detect_platform_isolation,
@@ -398,16 +399,17 @@ def _callee_env(
     required HAPPYRANCH_* runtime variables are preserved.
 
     When *workspace* is provided, known high-volume language/package caches
-    are rooted below ``<workspace>/.happyranch/cache``.  ``TMPDIR`` is left
-    untouched: small atomic callback payloads may continue to use the host
-    temporary directory.  Cache preparation fails closed rather than silently
-    falling back to shared temporary storage.
+    are rooted below ``<workspace>/.happyranch/cache``.  During a runtime-owned
+    task launch, the active task-scratch contract injects its canonical
+    ``TMPDIR``/``TMP``/``TEMP`` and sidecars here; daemon callback payloads are
+    outside this child environment. Cache preparation fails closed rather than
+    silently falling back to shared temporary storage.
 
     When *org_slug* is provided, ``HAPPYRANCH_ORG_SLUG`` is set so executor
     subprocesses can resolve org context without literal ``{ORG_SLUG}``
     substitution in canonical skill bodies.
     """
-    env = _sanitize_child_env(dict(os.environ))
+    env = apply_task_scratch_environment(_sanitize_child_env(dict(os.environ)))
     if workspace is not None:
         env.update(_prepare_workspace_cache_dirs(workspace))
     if org_slug is not None:
