@@ -64,6 +64,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	// Category-only lifecycle evidence for the packaged systemd integration.
+	// Stop returns only after listener removal, active-flow drain, and the
+	// idempotent engine close have completed.
+	fmt.Fprintln(os.Stderr, "lifecycle_stop_complete")
 	select {
 	case <-watchdogErr:
 		fmt.Fprintln(os.Stderr, "watchdog_unavailable")

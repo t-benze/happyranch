@@ -98,9 +98,12 @@ def test_real_systemd_harness_is_zero_skip_and_uses_only_pinned_peer_artifacts()
     assert "ExpectedPeers\\\":[\\\"synthetic-peer-ci" in harness
     assert "stat -c %a /run/credentials/happyranch-tsnet-sidecar.service/enrollment.key" in harness
     assert "PID 1 is not systemd" in harness and "transient units unavailable" in harness
-    assert "proof: startup_failure_cleanup" in harness and "sidecar process survived failed startup" in harness
-    assert "teardown residue" in harness
-    assert "automatic Restart=" in harness and "concurrent stop lost" in harness
+    assert 'evidence "startup" "process_absent"' in harness and "sidecar process survived failed startup" in harness
+    assert "verify_evidence_contract" in harness and "teardown residue" in harness
+    assert "automatic Restart=" in harness and "start barrier entered" in harness and "stop barrier entered" in harness
+    assert 'tailscale" --socket="$work/peer.sock" nc "$sidecar_ip" 443' in harness
+    assert "fault did not fire" in harness and "upgrade rollback lost retained payload" in harness
+    assert 'wait "$pid"' in harness and 'kill -0 "$pid"' in harness
     assert "N3_REAL_SYSTEMD_PASS" in harness
     assert not any(word in harness for word in ("pytest.skip", "xfail", "docker run", "notify probe"))
 
