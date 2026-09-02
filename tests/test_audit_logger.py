@@ -66,6 +66,22 @@ def test_log_session_end(db):
     assert logs[0]["payload"]["token_count"] is None
 
 
+def test_thread_invocation_failed_tails_are_additive_and_capped(db):
+    logger = AuditLogger(db)
+    logger.log_thread_invocation_failed(
+        "THR-001", agent="dev_agent", token="token-123456",
+        purpose="reply", reason="no_callback: rc=1",
+        stdout_tail="prefix-" + "o" * 2500,
+        stderr_tail="prefix-" + "e" * 2500,
+    )
+
+    payload = db.get_audit_logs("THR-001")[0]["payload"]
+    assert payload["reason"] == "no_callback: rc=1"
+    assert payload["invocation_token"] == "token-12…"
+    assert payload["stdout_tail"] == "o" * 2000
+    assert payload["stderr_tail"] == "e" * 2000
+
+
 def test_log_completion_report(db):
     logger = AuditLogger(db)
     report = CompletionReport(

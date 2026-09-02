@@ -1772,12 +1772,21 @@ class AuditLogger:
         purpose: str,
         reason: str,
         kind: str = "thread_invocation_failed",
+        stdout_tail: str = "",
+        stderr_tail: str = "",
     ) -> None:
+        tail_cap = 2000
         self._db.insert_audit_log(
             task_id=thread_id,
             agent=agent,
             action=kind,
-            payload={"invocation_token": token[:8] + "…", "purpose": purpose, "reason": reason},
+            payload={
+                "invocation_token": token[:8] + "…",
+                "purpose": purpose,
+                "reason": reason,
+                "stdout_tail": str(stdout_tail or "")[-tail_cap:],
+                "stderr_tail": str(stderr_tail or "")[-tail_cap:],
+            },
         )
 
     def log_agent_backfilled(

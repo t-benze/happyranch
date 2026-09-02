@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -903,6 +904,29 @@ def is_rate_limit_signature(text: str) -> bool:
     return ("hit your limit" in haystack and "reset" in haystack) or "rate limit" in haystack
 
 
+_BENIGN_LAUNCHER_STDERR_LINES = (
+    re.compile(
+        r"^Running as unit: happyranch-session-[A-Za-z0-9_.-]+\.scope; "
+        r"invocation ID: [0-9a-f]+$"
+    ),
+    re.compile(
+        r"^Ignoring [1-9][0-9]* permissions\.allow entr(?:y|ies) from "
+        r"\.claude/settings\.json: this workspace has not been trusted(?:[.;].*)?$"
+    ),
+    re.compile(r"^To trust this workspace, (?:accept|complete) the trust dialog\.?$"),
+    re.compile(r"^Set hasTrustDialogAccepted to true to trust this workspace\.?$"),
+)
+
+
+def _meaningful_stderr(text: str) -> str:
+    """Remove only complete, known-benign launcher/Claude warning lines."""
+    return "\n".join(
+        line for line in (text or "").splitlines()
+        if line.strip()
+        and not any(pattern.fullmatch(line.strip()) for pattern in _BENIGN_LAUNCHER_STDERR_LINES)
+    ).strip()
+
+
 def _run_command(
     cmd: list[str],
     workspace: Path,
@@ -1067,7 +1091,7 @@ def _run_command(
         rate_limited = is_rate_limit_signature(full_stdout + "\n" + full_stderr)
         if proc.returncode != 0:
             # Subprocess failed → no token_usage row, per spec §4.3.
-            error_summary = (full_stderr or full_stdout or "").strip()
+            error_summary = (_meaningful_stderr(full_stderr) or full_stdout or "").strip()
             if error_summary:
                 error_summary = f": {error_summary}"
             # THR-116: extract a classified terminal failure reason from

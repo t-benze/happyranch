@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 from pathlib import Path
@@ -646,6 +647,11 @@ def test_is_rate_limit_signature_matches_known_phrases():
     assert not is_rate_limit_signature("you hit your limit of free retries")
     assert not is_rate_limit_signature("all good, wrote files")
     assert not is_rate_limit_signature("")
+    # A provider-declared session cap is a truthful terminal classification,
+    # not an automatic short-backoff retry signal.
+    assert not is_rate_limit_signature(
+        "You've hit your session limit · resets 7:10pm (Asia/Shanghai)"
+    )
 
 
 @patch("runtime.orchestrator.executors.subprocess")
@@ -1573,7 +1579,12 @@ def test_claude_executor_session_limit_terminal_error(mock_subprocess, tmp_path,
     mock_subprocess.Popen.return_value = _popen_mock(
         returncode=1,
         stdout='{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Session limit reached"}',
-        stderr="Workspace trust warning: untrusted directory\n",
+        stderr=(
+            "Running as unit: happyranch-session-THR-220-67724507.scope; "
+            "invocation ID: abc123\n"
+            "Ignoring 1 permissions.allow entry from .claude/settings.json: "
+            "this workspace has not been trusted.\n"
+        ),
     )
 
     executor = ClaudeExecutor(
@@ -1587,9 +1598,78 @@ def test_claude_executor_session_limit_terminal_error(mock_subprocess, tmp_path,
 
     assert result.success is False
     assert result.terminal_error == "session_limit"
-    # stderr noise is still in the raw error
-    assert "Workspace trust warning" in result.error
+    assert "Session limit reached" in result.error
+    assert "this workspace has not been trusted" in result.stderr_tail
     assert result.returncode == 1
+
+
+@patch("runtime.orchestrator.executors.subprocess")
+def test_claude_executor_real_session_limit_result_is_terminal_not_retryable(
+    mock_subprocess, tmp_path, runtime,
+):
+    from runtime.config import Settings
+    from runtime.orchestrator.executors import ClaudeExecutor
+
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    notice = "You've hit your session limit · resets 7:10pm (Asia/Shanghai)"
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout=json.dumps({
+            "type": "result", "subtype": "error_during_execution",
+            "is_error": True, "result": notice,
+        }, ensure_ascii=False),
+        stderr=(
+            "Running as unit: happyranch-session-THR-220-67724507.scope; "
+            "invocation ID: abc123\n"
+            "Ignoring 1 permissions.allow entry from .claude/settings.json: "
+            "this workspace has not been trusted.\n"
+        ),
+    )
+
+    result = ClaudeExecutor(
+        claude_cli_path="claude", permission_mode="auto",
+        settings=Settings(), paths=runtime,
+    ).run(
+        workspace=workspace, prompt="hello", timeout_seconds=30,
+        session_id="sess-test",
+    )
+
+    assert notice in result.stdout_tail
+    assert "this workspace has not been trusted" in result.stderr_tail
+    assert notice in result.error
+    assert "happyranch-session-THR-220-a.scope" not in result.error
+    assert result.terminal_error == "session_limit"
+    assert result.rate_limited is False
+
+
+@pytest.mark.parametrize("meaningful", [
+    "fatal: this workspace has not been trusted by the remote API",
+    "prefix Running as unit: happyranch-session-x.scope; invocation ID: abc123",
+    "Ignoring permissions.allow entry failed while parsing settings",
+])
+@patch("runtime.orchestrator.executors.subprocess")
+def test_claude_error_summary_keeps_benign_word_lookalikes(
+    mock_subprocess, meaningful, tmp_path, runtime,
+):
+    workspace = tmp_path / "dev_agent"
+    workspace.mkdir()
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout='{"type":"result","subtype":"error_during_execution"}',
+        stderr=(
+            "Running as unit: happyranch-session-THR-220-a.scope; "
+            f"invocation ID: abc123\n{meaningful}\n"
+        ),
+    )
+
+    result = ClaudeExecutor(
+        claude_cli_path="claude", permission_mode="auto",
+        settings=Settings(), paths=runtime,
+    ).run(workspace=workspace, prompt="hello", timeout_seconds=30)
+
+    assert meaningful in result.error
+    assert "happyranch-session-THR-220-a.scope" not in result.error
 
 
 @patch("runtime.orchestrator.executors.subprocess")
