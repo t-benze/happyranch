@@ -26,14 +26,49 @@ class AuthorityPolicyStore:
     def create_release(self, release: AuthorityPolicyRelease) -> AuthorityPolicyRelease:
         return self._db.create_authority_policy_release(release)
 
+    def create_release_with_audit(
+        self,
+        release: AuthorityPolicyRelease,
+        *,
+        request_id: str,
+        request_digest: str,
+    ) -> AuthorityPolicyRelease:
+        return self._db.create_authority_policy_release_with_audit(
+            release,
+            request_id=request_id,
+            request_digest=request_digest,
+        )
+
     def activate(self, activation: AuthorityPolicyActivation) -> AuthorityPolicyActivation:
         receipt = AuthorityPolicyActivation.model_validate(
             activation.model_dump(mode="python", round_trip=True, warnings=False)
         )
         return self._db.activate_authority_policy(receipt)
 
+    def activate_with_audit(
+        self,
+        *,
+        team: str,
+        release_id: str,
+        expected_previous_epoch: int,
+        action: str,
+        request_id: str,
+        request_digest: str,
+    ) -> AuthorityPolicyActivation:
+        return self._db.activate_authority_policy_with_audit(
+            team=team,
+            release_id=release_id,
+            expected_previous_epoch=expected_previous_epoch,
+            action=action,
+            request_id=request_id,
+            request_digest=request_digest,
+        )
+
     def get_release(self, release_id: str) -> AuthorityPolicyRelease | None:
         return self._db.get_authority_policy_release(release_id)
+
+    def next_release_version(self, team: str, policy_id: str) -> int:
+        return self._db.get_next_authority_policy_release_version(team, policy_id)
 
     def get_activation(self, activation_id: str) -> AuthorityPolicyActivation | None:
         return self._db.get_authority_policy_activation(activation_id)

@@ -412,11 +412,32 @@ store exposes only immutable release/activation data and honest
 `shared local operator credential` attribution. The database/store current
 read selects the maximum team epoch and reuses the S1 release, activation
 seal, and full-history validators; missing/corrupt/incoherent state is the
-sanitized `policy_store_unavailable` failure. This read surface neither
-creates nor activates policy and reports `can_mutate=false` in both empty and
-active responses. Its activation guard remains not ready with
+sanitized `policy_store_unavailable` failure. The S2 read itself neither
+creates nor activates policy. S3 exposes immutable release creation and thus
+truthfully reports `can_mutate=true` in both empty and active responses; that
+capability never implies activation. Its activation guard remains not ready with
 `TASK-6335 production verification required`; runtime injection and candidate
 pin production integration remain later slices.
+
+**Dark policy mutation API (S3).** `POST .../releases` server-owns the exact
+Engineering team/policy identity and next version, validates the closed typed
+clause vocabulary (all protected/mechanical clauses, unique ids, exact
+category/action pairs, one continuation clause), byte-exact canonical phrase,
+bounded nonblank prose/JSON, and secret-shaped input rejection, then derives
+the canonical APR id/digest. It appends the immutable release and one
+`config:authority-policy:engineering` conventional audit receipt atomically;
+the audit contains only ids, digests, action, team, and shared-local-operator
+attribution, with that closed receipt derived and verified at the transaction
+owner rather than accepted from a caller. The transaction resolves a request
+id's exact request-digest replay before validating the mutable active base; a
+new request still validates that base and a changed digest still conflicts.
+`POST .../activations` accepts the CAS/reactivation contract but, while the
+stable production-verification guard is closed, returns `412
+activation_guard_not_ready` before any release lookup or write, leaving zero
+activation/audit residue and no guessed-release oracle. The S1 store owns the
+separately testable sealed CAS, exact replay, stale epoch, same-team linkage,
+and older-version rollback transaction for the later guard opening; no route
+SQL, runtime injection, or production activation is added.
 
 Release identity is derived at the typed store boundary, never supplied as a
 second caller-controlled authority. Its canonical JSON and SHA-256 cover

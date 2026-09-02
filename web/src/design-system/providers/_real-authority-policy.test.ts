@@ -18,7 +18,7 @@ const manager = { name: 'engineering_manager', team: 'engineering', role: 'manag
 const empty = {
   team: 'engineering' as const,
   target_manager: 'engineering_manager' as const,
-  can_mutate: false as const,
+  can_mutate: true as const,
   bootstrap_required: true as const,
   activation_guard: { ready: false as const, reason: 'TASK-6335 production verification required' },
 };
@@ -60,7 +60,7 @@ describe('team escalation policy query gate', () => {
     expect(client.getQueryCache().getAll()).toHaveLength(0);
   });
 
-  it('exposes loading then active read-only state for the eligible tuple', async () => {
+  it('exposes loading then active release-creation state for the eligible tuple', async () => {
     let resolve!: (value: typeof active) => void;
     vi.mocked(api.getTeamEscalationPolicy).mockReturnValue(
       new Promise((done) => { resolve = done; }),
@@ -69,14 +69,14 @@ describe('team escalation policy query gate', () => {
     expect(hook.result.current.isLoading).toBe(true);
     resolve(active);
     await waitFor(() => expect(hook.result.current.data).toEqual(active));
-    expect(hook.result.current.data?.can_mutate).toBe(false);
+    expect(hook.result.current.data?.can_mutate).toBe(true);
   });
 
-  it('exposes the empty read-only state for the eligible tuple', async () => {
+  it('exposes the empty release-creation state for the eligible tuple', async () => {
     vi.mocked(api.getTeamEscalationPolicy).mockResolvedValue(empty);
     const { hook } = setup();
     await waitFor(() => expect(hook.result.current.data).toEqual(empty));
-    expect(hook.result.current.data?.can_mutate).toBe(false);
+    expect(hook.result.current.data?.can_mutate).toBe(true);
   });
 
   it('exposes sanitized query errors', async () => {

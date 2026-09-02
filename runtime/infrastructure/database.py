@@ -11014,11 +11014,129 @@ class Database:
         return release
 
     @_synchronized
+    def create_authority_policy_release_with_audit(
+        self,
+        release: AuthorityPolicyRelease,
+        *,
+        request_id: str,
+        request_digest: str,
+    ) -> AuthorityPolicyRelease:
+        """Resolve replay, then append a release and closed audit atomically."""
+        if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 128:
+            raise ValueError("request_id must be a non-empty string of at most 128 characters")
+        validate_authority_digest(request_digest, "request_digest")
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self._conn.execute(
+                "SELECT task_id,agent,payload FROM audit_log "
+                "WHERE action=? ORDER BY id",
+                ("authority_policy_release_created",),
+            ).fetchall()
+            for row in rows:
+                try:
+                    payload = json.loads(row["payload"])
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise ValueError("authority policy release audit receipt is corrupt") from exc
+                if not isinstance(payload, dict):
+                    raise ValueError("authority policy release audit receipt is corrupt")
+                release_id = payload.get("release_id")
+                persisted = (
+                    self.get_authority_policy_release(release_id)
+                    if isinstance(release_id, str)
+                    else None
+                )
+                if persisted is None:
+                    raise ValueError("authority policy release audit linkage is corrupt")
+                expected_payload = {
+                    "action": "create_release",
+                    "actor_kind": "shared_local_operator_credential",
+                    "policy_digest": persisted.policy_digest,
+                    "release_id": persisted.id,
+                    "request_digest": payload.get("request_digest"),
+                    "request_id": payload.get("request_id"),
+                    "team": persisted.team,
+                }
+                if (
+                    payload != expected_payload
+                    or row["task_id"] != f"config:authority-policy:{persisted.team}"
+                    or row["agent"] != "shared_local_operator_credential"
+                ):
+                    raise ValueError("authority policy release audit receipt is corrupt")
+                if payload.get("request_id") != request_id:
+                    continue
+                if payload.get("request_digest") != request_digest:
+                    raise sqlite3.IntegrityError(
+                        "authority policy release idempotency mismatch"
+                    )
+                self._conn.commit()
+                return persisted
+
+            release = AuthorityPolicyRelease.model_validate(
+                release.model_dump(mode="python", round_trip=True, warnings=False)
+            )
+            values = release.model_dump(mode="json")
+            scope = f"config:authority-policy:{release.team}"
+            current = self._conn.execute(
+                "SELECT * FROM authority_policy_activations WHERE team=? "
+                "ORDER BY epoch DESC LIMIT 1",
+                (release.team,),
+            ).fetchone()
+            current_release = None
+            if current is not None:
+                current_activation = self._authority_policy_activation_from_row(current)
+                current_release = self.get_authority_policy_release(
+                    current_activation.release_id
+                )
+                if current_release is None:
+                    raise ValueError("active authority policy release is missing")
+            expected_base = None if current_release is None else current_release.id
+            if release.based_on_release_id != expected_base:
+                raise sqlite3.IntegrityError("authority policy release base conflict")
+            self._conn.execute(
+                """INSERT INTO authority_policy_releases
+                   (id,team,policy_id,version,title,normative_text,clauses_json,
+                    continuation_phrase,canonical_payload_json,policy_digest,
+                    based_on_release_id,actor_kind,created_at)
+                   VALUES (:id,:team,:policy_id,:version,:title,:normative_text,
+                           :clauses_json,:continuation_phrase,:canonical_payload_json,
+                           :policy_digest,:based_on_release_id,:actor_kind,:created_at)""",
+                values,
+            )
+            self.insert_audit_log_uncommitted(
+                task_id=scope,
+                agent="shared_local_operator_credential",
+                action="authority_policy_release_created",
+                payload={
+                    "action": "create_release",
+                    "actor_kind": "shared_local_operator_credential",
+                    "policy_digest": release.policy_digest,
+                    "release_id": release.id,
+                    "request_digest": request_digest,
+                    "request_id": request_id,
+                    "team": release.team,
+                },
+            )
+            self._conn.commit()
+            return release
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
     def get_authority_policy_release(self, release_id: str) -> AuthorityPolicyRelease | None:
         row = self._conn.execute(
             "SELECT * FROM authority_policy_releases WHERE id=?", (release_id,)
         ).fetchone()
         return None if row is None else self._authority_policy_release_from_row(row)
+
+    @_synchronized
+    def get_next_authority_policy_release_version(self, team: str, policy_id: str) -> int:
+        row = self._conn.execute(
+            "SELECT MAX(version) AS version FROM authority_policy_releases "
+            "WHERE team=? AND policy_id=?",
+            (team, policy_id),
+        ).fetchone()
+        return 1 if row is None or row["version"] is None else int(row["version"]) + 1
 
     @_synchronized
     def activate_authority_policy(
@@ -11096,6 +11214,120 @@ class Database:
                            :expected_previous_epoch,:action,:actor_kind,:request_id,
                            :request_digest,:created_at,:activation_digest)""",
                 activation.model_dump(mode="json"),
+            )
+            self._conn.commit()
+            return activation
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def activate_authority_policy_with_audit(
+        self,
+        *,
+        team: str,
+        release_id: str,
+        expected_previous_epoch: int,
+        action: str,
+        request_id: str,
+        request_digest: str,
+    ) -> AuthorityPolicyActivation:
+        """Server-construct and atomically append a CAS activation plus audit."""
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            duplicate = self._conn.execute(
+                "SELECT * FROM authority_policy_activations WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+            if duplicate is not None:
+                if duplicate["request_digest"] != request_digest:
+                    raise sqlite3.IntegrityError(
+                        "authority activation idempotency mismatch"
+                    )
+                persisted = self._authority_policy_activation_from_row(duplicate)
+                self._conn.commit()
+                return persisted
+            release = self.get_authority_policy_release(release_id)
+            if release is None or release.team != team:
+                raise LookupError("authority activation release unavailable")
+            previous = self._conn.execute(
+                "SELECT * FROM authority_policy_activations WHERE team=? "
+                "ORDER BY epoch DESC LIMIT 1",
+                (team,),
+            ).fetchone()
+            if previous is None or previous["epoch"] != expected_previous_epoch:
+                raise sqlite3.IntegrityError("authority activation CAS conflict")
+            epoch = previous["epoch"] + 1
+            created_at = _now()
+            activation_id = "APA-" + hashlib.sha256(
+                f"{team}:{request_id}:{request_digest}".encode("utf-8")
+            ).hexdigest()
+            activation = AuthorityPolicyActivation.create(
+                id=activation_id,
+                team=team,
+                epoch=epoch,
+                release_id=release_id,
+                previous_activation_id=previous["id"],
+                expected_previous_epoch=expected_previous_epoch,
+                action=action,
+                actor_kind="shared_local_operator_credential",
+                request_id=request_id,
+                request_digest=request_digest,
+                created_at=created_at,
+            )
+            previously_activated = self._conn.execute(
+                "SELECT 1 FROM authority_policy_activations "
+                "WHERE team=? AND release_id=? LIMIT 1",
+                (team, release_id),
+            ).fetchone() is not None
+            if action == "activate" and previously_activated:
+                raise sqlite3.IntegrityError("activate target was previously activated")
+            if action == "reactivate_rollback":
+                older = self._conn.execute(
+                    """SELECT 1 FROM authority_policy_releases target
+                       JOIN authority_policy_releases current ON current.id=?
+                       WHERE target.id=? AND target.policy_id=current.policy_id
+                         AND target.version<current.version""",
+                    (previous["release_id"], release_id),
+                ).fetchone()
+                if (
+                    not previously_activated
+                    or release_id == previous["release_id"]
+                    or older is None
+                ):
+                    raise sqlite3.IntegrityError(
+                        "reactivation target is not an older prior release"
+                    )
+            self._conn.execute(
+                """INSERT INTO authority_policy_activations
+                   (id,team,epoch,release_id,previous_activation_id,
+                    expected_previous_epoch,action,actor_kind,request_id,
+                    request_digest,created_at,activation_digest)
+                   VALUES (:id,:team,:epoch,:release_id,:previous_activation_id,
+                           :expected_previous_epoch,:action,:actor_kind,:request_id,
+                           :request_digest,:created_at,:activation_digest)""",
+                activation.model_dump(mode="json"),
+            )
+            audit_action = (
+                "authority_policy_activated"
+                if action == "activate"
+                else "authority_policy_reactivated"
+            )
+            payload = {
+                "activation_id": activation.id,
+                "action": action,
+                "actor_kind": "shared_local_operator_credential",
+                "epoch": epoch,
+                "policy_digest": release.policy_digest,
+                "release_id": release.id,
+                "request_digest": request_digest,
+                "team": team,
+            }
+            self.insert_audit_log_uncommitted(
+                task_id=f"config:authority-policy:{team}",
+                agent="shared_local_operator_credential",
+                action=audit_action,
+                payload=payload,
             )
             self._conn.commit()
             return activation
