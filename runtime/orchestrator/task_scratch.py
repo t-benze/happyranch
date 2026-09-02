@@ -66,7 +66,9 @@ def _mkdir_owned(path: Path, *, parent: Path | None = None) -> None:
     os.chmod(path, 0o700)
 
 
-def _validated_producers(data: object) -> list[dict[str, object]]:
+def _validated_producers(
+    data: object, *, expected_task_id: str, expected_root: Path,
+) -> list[dict[str, object]]:
     """Validate the exact bounded version-1 manifest and producer shape."""
     if not isinstance(data, Mapping) or set(data) != _MANIFEST_KEYS:
         raise TaskScratchError("manifest is corrupt")
@@ -83,7 +85,12 @@ def _validated_producers(data: object) -> list[dict[str, object]]:
             raise TaskScratchError("manifest is corrupt")
         if pattern is not None and not pattern.fullmatch(value):
             raise TaskScratchError("manifest is corrupt")
-    if data["required_root"] != data["observed_root"]:
+    canonical_root = str(expected_root)
+    if (
+        data["task_id"] != expected_task_id
+        or data["required_root"] != canonical_root
+        or data["observed_root"] != canonical_root
+    ):
         raise TaskScratchError("manifest is corrupt")
     if (
         data["root_classification"] != "regenerable_scratch"
@@ -106,11 +113,11 @@ def _validated_producers(data: object) -> list[dict[str, object]]:
         if (
             not isinstance(required, Mapping)
             or set(required) != {"canonical_root", "ownership"}
-            or required["canonical_root"] != data["required_root"]
+            or required["canonical_root"] != canonical_root
             or required["ownership"] != "runtime"
             or not isinstance(observed, Mapping)
             or set(observed) != {"canonical_root", "mode"}
-            or observed["canonical_root"] != data["observed_root"]
+            or observed["canonical_root"] != canonical_root
             or observed["mode"] != "0700"
             or producer["classification"] != "regenerable_scratch"
         ):
@@ -174,7 +181,11 @@ def _write_observation(contract: TaskScratch) -> None:
                     raise TaskScratchError("manifest is corrupt")
                 if current.get("version") != MANIFEST_VERSION or current.get("task_id") != contract.task_id:
                     raise TaskScratchError("manifest identity/version mismatch")
-                producers = _validated_producers(current)
+                producers = _validated_producers(
+                    current,
+                    expected_task_id=contract.task_id,
+                    expected_root=contract.root,
+                )
             else:
                 producers = []
             observation = {
@@ -262,7 +273,9 @@ def observe_task_scratch_manifest(*, workspace: Path, task_id: str) -> dict[str,
         task_id = _validate_component(task_id, _TASK_ID, "task_id")
     except TaskScratchError as exc:
         return {"status": "invalid", "reason": str(exc)}
-    path = Path(workspace) / ".happyranch" / "task-scratch-manifests" / f"{task_id}.json"
+    workspace = Path(workspace).resolve()
+    expected_root = workspace / ".happyranch" / "task-tmp" / task_id
+    path = workspace / ".happyranch" / "task-scratch-manifests" / f"{task_id}.json"
     if not path.exists():
         return {"status": "missing", "path": str(path)}
     try:
@@ -276,7 +289,11 @@ def observe_task_scratch_manifest(*, workspace: Path, task_id: str) -> dict[str,
             raise TaskScratchError("manifest is corrupt")
         if data.get("version") != MANIFEST_VERSION or data.get("task_id") != task_id:
             return {"status": "stale", "path": str(path)}
-        _validated_producers(data)
+        _validated_producers(
+            data,
+            expected_task_id=task_id,
+            expected_root=expected_root,
+        )
         return {"status": "ok", "path": str(path), "manifest": data}
     except (OSError, json.JSONDecodeError, UnicodeDecodeError, TaskScratchError) as exc:
         return {"status": "corrupt", "path": str(path), "reason": str(exc)}

@@ -3467,3 +3467,47 @@ def test_malformed_task_scratch_manifest_preserves_agent_failure_note_and_audit(
     failures = [row for row in audits if row["action"] == "task_scratch_containment_failed"]
     assert len(failures) == 1
     assert failures[0]["payload"] == {"error": "manifest is corrupt"}
+
+
+def test_wrong_root_task_scratch_manifest_preserves_agent_failure_note_and_audit(
+    orchestrator, test_runtime, monkeypatch,
+):
+    _setup_workspaces(test_runtime, ["dev_agent"])
+    task_id = orchestrator.create_task("Wrong-root task scratch manifest")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-wrong-root")
+    manifest_dir = (
+        test_runtime.workspaces_dir
+        / "dev_agent/.happyranch/task-scratch-manifests"
+    )
+    manifest_dir.mkdir(parents=True)
+    wrong_root = "/attacker/chosen"
+    (manifest_dir / f"{task_id}.json").write_text(json.dumps({
+        "version": 1,
+        "task_id": task_id,
+        "required_root": wrong_root,
+        "observed_root": wrong_root,
+        "root_classification": "regenerable_scratch",
+        "manifest_classification": "durable_recovery_artifact",
+        "lock_classification": "durable_recovery_artifact",
+        "producers": [{
+            "producer_kind": "agent",
+            "producer_id": "sess-old",
+            "required": {"canonical_root": wrong_root, "ownership": "runtime"},
+            "observed": {"canonical_root": wrong_root, "mode": "0700"},
+            "classification": "regenerable_scratch",
+            "observed_at": "2026-09-02T00:00:00+00:00",
+        }],
+    }))
+
+    result, report = orchestrator._run_agent(task_id, "dev_agent", "")
+
+    assert result.success is False
+    assert result.error == "manifest is corrupt"
+    assert report is None
+    task = orchestrator._db.get_task(task_id)
+    assert task is not None
+    assert task.note == "Task scratch containment refused launch: manifest is corrupt"
+    audits = orchestrator._db.get_audit_logs(task_id)
+    failures = [row for row in audits if row["action"] == "task_scratch_containment_failed"]
+    assert len(failures) == 1
+    assert failures[0]["payload"] == {"error": "manifest is corrupt"}

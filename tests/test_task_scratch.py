@@ -194,6 +194,56 @@ def test_prepare_normalizes_malformed_valid_json_manifest(tmp_path, producers):
         )
 
 
+def _fully_shaped_manifest(*, task_id: str, root: str) -> dict[str, object]:
+    return {
+        "version": 1,
+        "task_id": task_id,
+        "required_root": root,
+        "observed_root": root,
+        "root_classification": "regenerable_scratch",
+        "manifest_classification": "durable_recovery_artifact",
+        "lock_classification": "durable_recovery_artifact",
+        "producers": [{
+            "producer_kind": "agent",
+            "producer_id": "sess",
+            "required": {"canonical_root": root, "ownership": "runtime"},
+            "observed": {"canonical_root": root, "mode": "0700"},
+            "classification": "regenerable_scratch",
+            "observed_at": "2026-09-02T00:00:00+00:00",
+        }],
+    }
+
+
+def test_prepare_rejects_fully_shaped_manifest_for_wrong_canonical_root(tmp_path):
+    workspace = _workspace(tmp_path)
+    manifest_dir = workspace / ".happyranch/task-scratch-manifests"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "TASK-8.json").write_text(json.dumps(
+        _fully_shaped_manifest(task_id="TASK-8", root="/attacker/chosen")
+    ))
+
+    with pytest.raises(TaskScratchError, match="manifest is corrupt"):
+        prepare_task_scratch(
+            workspace=workspace,
+            task_id="TASK-8",
+            producer_kind="agent",
+            producer_id="sess-new",
+        )
+
+
+def test_observer_reports_fully_shaped_wrong_canonical_root_as_corrupt(tmp_path):
+    workspace = _workspace(tmp_path)
+    manifest_dir = workspace / ".happyranch/task-scratch-manifests"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "TASK-9.json").write_text(json.dumps(
+        _fully_shaped_manifest(task_id="TASK-9", root="/attacker/chosen")
+    ))
+
+    observed = observe_task_scratch_manifest(workspace=workspace, task_id="TASK-9")
+
+    assert observed["status"] == "corrupt"
+
+
 def test_manifest_has_no_deletion_consumer():
     root = Path(__file__).parents[1]
     scheduler = (root / "runtime/daemon/workspace_cleanup_scheduler.py").read_text()
