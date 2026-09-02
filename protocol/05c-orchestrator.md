@@ -427,7 +427,10 @@ bounded nonblank prose/JSON, and secret-shaped input rejection, then derives
 the canonical APR id/digest. It appends the immutable release and one
 `config:authority-policy:engineering` conventional audit receipt atomically;
 the audit contains only ids, digests, action, team, and shared-local-operator
-attribution. A request id replays only its exact request digest.
+attribution, with that closed receipt derived and verified at the transaction
+owner rather than accepted from a caller. The transaction resolves a request
+id's exact request-digest replay before validating the mutable active base; a
+new request still validates that base and a changed digest still conflicts.
 `POST .../activations` accepts the CAS/reactivation contract but, while the
 stable production-verification guard is closed, returns `412
 activation_guard_not_ready` before any release lookup or write, leaving zero

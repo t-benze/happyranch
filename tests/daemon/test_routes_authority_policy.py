@@ -187,6 +187,42 @@ def test_create_release_is_canonical_immutable_audited_and_exactly_replayed(
     assert mutated.json()["detail"]["code"] == "idempotency_conflict"
 
 
+def test_create_release_exact_replay_precedes_advanced_active_base(
+    client_with_runtime,
+):
+    client, org = client_with_runtime
+    _seed_agent(org)
+    url = "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy/releases"
+    body = _release_body()
+    first = client.post(url, json=body)
+    assert first.status_code == 201
+    release = AuthorityPolicyStore(org.db).get_release(first.json()["release"]["id"])
+    assert release is not None
+    AuthorityPolicyStore(org.db).activate(
+        AuthorityPolicyActivation.create(
+            id="APA-advanced", team="engineering", epoch=1, release_id=release.id,
+            action="bootstrap", actor_kind="shared_local_operator_credential",
+            request_id="REQ-bootstrap", request_digest=hashlib.sha256(b"bootstrap").hexdigest(),
+        )
+    )
+
+    replay = client.post(url, json=body)
+    assert replay.status_code == 201
+    assert replay.json() == first.json()
+    mutated = client.post(url, json={**body, "title": "mutated retry"})
+    assert mutated.status_code == 409
+    assert mutated.json()["detail"]["code"] == "idempotency_conflict"
+    stale_new = client.post(url, json={**body, "request_id": "REQ-create-new"})
+    assert stale_new.status_code == 409
+    assert stale_new.json()["detail"]["code"] == "base_release_changed"
+    assert org.db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_releases"
+    ).fetchone()[0] == 1
+    assert org.db._conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='authority_policy_release_created'"
+    ).fetchone()[0] == 1
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

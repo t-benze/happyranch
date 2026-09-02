@@ -92,6 +92,109 @@ def _activation_request_digest(*, release_id, expected, action, request_id):
     }, sort_keys=True, separators=(",", ":")))
 
 
+def _release_request_digest(request_id: str) -> str:
+    return _digest(f"release:{request_id}")
+
+
+def test_atomic_release_exact_replay_after_advancement_and_restart(tmp_path):
+    path = tmp_path / "db.sqlite"
+    db = Database(path)
+    store = AuthorityPolicyStore(db)
+    request_id = "REQ-release-v1"
+    request_digest = _release_request_digest(request_id)
+    release = _release(version=1)
+    persisted = store.create_release_with_audit(
+        release, request_id=request_id, request_digest=request_digest,
+    )
+    store.activate(_activation(persisted))
+    db.close()
+
+    restarted = Database(path)
+    restarted_store = AuthorityPolicyStore(restarted)
+    assert restarted_store.create_release_with_audit(
+        _release(version=2, title="discarded replay candidate", based_on_release_id=persisted.id),
+        request_id=request_id, request_digest=request_digest,
+    ) == persisted
+    with pytest.raises(sqlite3.IntegrityError, match="idempotency"):
+        restarted_store.create_release_with_audit(
+            _release(version=2, based_on_release_id=persisted.id),
+            request_id=request_id, request_digest=_digest("mutated"),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="base"):
+        restarted_store.create_release_with_audit(
+            _release(version=2, title="stale new request"),
+            request_id="REQ-release-new", request_digest=_release_request_digest("REQ-release-new"),
+        )
+    assert restarted._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_releases"
+    ).fetchone()[0] == 1
+    assert restarted._conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='authority_policy_release_created'"
+    ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("bad_payload", [
+    {},
+    {"request_id": "REQ-wrong"},
+    {"normative_text": "policy prose"},
+    {"evaluator_text": "model prose"},
+    {"token": "secret-value"},
+    {"extra": "secret-shaped-value"},
+])
+def test_atomic_release_rejects_caller_owned_audit_payload_without_residue(
+    tmp_path, bad_payload,
+):
+    db = Database(tmp_path / "db.sqlite")
+    store = AuthorityPolicyStore(db)
+    with pytest.raises(TypeError):
+        store.create_release_with_audit(
+            _release(),
+            request_id="REQ-release",
+            request_digest=_release_request_digest("REQ-release"),
+            audit_payload=bad_payload,
+        )
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_policy_releases").fetchone()[0] == 0
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='authority_policy_release_created'"
+    ).fetchone()[0] == 0
+
+
+def test_atomic_release_concurrent_exact_replay_has_one_release_and_audit(tmp_path):
+    path = tmp_path / "db.sqlite"
+    seed = Database(path)
+    seed.close()
+    release = _release()
+    barrier = threading.Barrier(2)
+    results = []
+    failures = []
+
+    def create() -> None:
+        db = Database(path)
+        store = AuthorityPolicyStore(db)
+        barrier.wait()
+        try:
+            results.append(store.create_release_with_audit(
+                release, request_id="REQ-race", request_digest=_release_request_digest("REQ-race"),
+            ))
+        except Exception as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+        finally:
+            db.close()
+
+    threads = [threading.Thread(target=create) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert failures == []
+    assert results == [release, release]
+    check = Database(path)
+    assert check._conn.execute("SELECT COUNT(*) FROM authority_policy_releases").fetchone()[0] == 1
+    assert check._conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='authority_policy_release_created'"
+    ).fetchone()[0] == 1
+
+
 def test_atomic_activation_api_exact_replay_stale_cross_team_and_audit(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     store = AuthorityPolicyStore(db)

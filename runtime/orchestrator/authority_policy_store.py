@@ -32,13 +32,11 @@ class AuthorityPolicyStore:
         *,
         request_id: str,
         request_digest: str,
-        audit_payload: dict,
     ) -> AuthorityPolicyRelease:
         return self._db.create_authority_policy_release_with_audit(
             release,
             request_id=request_id,
             request_digest=request_digest,
-            audit_payload=audit_payload,
         )
 
     def activate(self, activation: AuthorityPolicyActivation) -> AuthorityPolicyActivation:

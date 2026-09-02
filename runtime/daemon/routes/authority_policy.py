@@ -196,25 +196,6 @@ def create_team_escalation_policy_release(
     _require_eligible_manager(org, agent_name)
     try:
         store = AuthorityPolicyStore(org.db)
-        current = store.get_current_activation(_ELIGIBLE_TEAM)
-        current_release = None if current is None else store.get_release(current.release_id)
-        if current is not None and current_release is None:
-            raise ValueError("active release is missing")
-        if current_release is None:
-            if body.based_on_release_id is not None:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={"code": "base_release_changed"},
-                )
-        elif body.based_on_release_id != current_release.id:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "base_release_changed",
-                    "current_release_id": current_release.id,
-                    "current_epoch": current.epoch,
-                },
-            )
         clauses = [clause.model_dump(mode="json") for clause in body.clauses]
         clauses_json = json.dumps(
             clauses, sort_keys=True, separators=(",", ":"), ensure_ascii=False
@@ -237,20 +218,10 @@ def create_team_escalation_policy_release(
             ensure_ascii=False,
         )
         request_digest = hashlib.sha256(request_json.encode("utf-8")).hexdigest()
-        audit_payload = {
-            "action": "create_release",
-            "actor_kind": "shared_local_operator_credential",
-            "policy_digest": release.policy_digest,
-            "release_id": release.id,
-            "request_digest": request_digest,
-            "request_id": body.request_id,
-            "team": _ELIGIBLE_TEAM,
-        }
         persisted = store.create_release_with_audit(
             release,
             request_id=body.request_id,
             request_digest=request_digest,
-            audit_payload=audit_payload,
         )
         response.headers["ETag"] = f'"release-{persisted.policy_digest}"'
         return {
@@ -261,12 +232,14 @@ def create_team_escalation_policy_release(
     except HTTPException:
         raise
     except sqlite3.IntegrityError as exc:
-        code = (
-            "idempotency_conflict"
-            if "idempotency" in str(exc)
-            else "release_conflict"
-        )
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": code}) from None
+        message = str(exc)
+        if "idempotency" in message:
+            detail = {"code": "idempotency_conflict"}
+        elif "base" in message:
+            detail = {"code": "base_release_changed"}
+        else:
+            detail = {"code": "release_conflict"}
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from None
     except Exception:
         _logger.exception("authority policy release creation unavailable for org=%s", slug)
         raise HTTPException(
