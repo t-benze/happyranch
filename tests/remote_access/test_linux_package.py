@@ -105,6 +105,11 @@ def test_real_systemd_harness_uses_headscale_025_policy_schema() -> None:
     assert '"proto"' not in harness
 
 
+def test_real_systemd_harness_keeps_headscale_control_socket_in_task_root() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    assert "unix_socket: $work/hs/headscale.sock" in harness
+
+
 def test_real_systemd_early_failure_cleanup_does_not_treat_exited_fixture_as_residue() -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
     assert "wait_status" not in harness

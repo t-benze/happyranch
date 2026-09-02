@@ -111,6 +111,7 @@ server_url: https://127.0.0.1:18080
 listen_addr: 127.0.0.1:18080
 metrics_listen_addr: 127.0.0.1:19090
 grpc_listen_addr: 127.0.0.1:15043
+unix_socket: $work/hs/headscale.sock
 noise:
   private_key_path: $work/hs/noise.key
 prefixes:
