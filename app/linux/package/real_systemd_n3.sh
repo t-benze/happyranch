@@ -147,7 +147,7 @@ sudo update-ca-certificates >/dev/null
 "$work/headscale" serve --config "$work/hs/config.yaml" >"$work/headscale.log" 2>&1 & headscale_pid=$!
 wait_for "Headscale process" sudo kill -0 "$headscale_pid"
 wait_for "Headscale HTTPS listener" port_open 18080
-wait_for "Headscale health" curl --silent --fail http://127.0.0.1:19090/health
+wait_for "Headscale health" curl --silent --fail --cacert "$work/tls/cert.pem" https://127.0.0.1:18080/health
 "$work/headscale" users create ci --config "$work/hs/config.yaml"
 peer_key="$("$work/headscale" preauthkeys create --user ci --reusable=false --expiration 10m --config "$work/hs/config.yaml")"
 sidecar_key="$("$work/headscale" preauthkeys create --user ci --reusable=false --expiration 10m --config "$work/hs/config.yaml")"

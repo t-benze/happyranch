@@ -110,6 +110,15 @@ def test_real_systemd_harness_keeps_headscale_control_socket_in_task_root() -> N
     assert "unix_socket: $work/hs/headscale.sock" in harness
 
 
+def test_real_systemd_harness_probes_headscale_health_over_configured_https() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    assert (
+        'curl --silent --fail --cacert "$work/tls/cert.pem" '
+        "https://127.0.0.1:18080/health"
+    ) in harness
+    assert "http://127.0.0.1:19090/health" not in harness
+
+
 def test_real_systemd_early_failure_cleanup_does_not_treat_exited_fixture_as_residue() -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
     assert "wait_status" not in harness
