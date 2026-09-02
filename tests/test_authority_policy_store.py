@@ -82,6 +82,99 @@ def _candidate(release, *, root="T-1"):
     )
 
 
+def _activation_request_digest(*, release_id, expected, action, request_id):
+    return _digest(json.dumps({
+        "release_id": release_id,
+        "expected_previous_epoch": expected,
+        "action": action,
+        "request_id": request_id,
+        "acknowledge_shared_credential_attribution": True,
+    }, sort_keys=True, separators=(",", ":")))
+
+
+def test_atomic_activation_api_exact_replay_stale_cross_team_and_audit(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    store = AuthorityPolicyStore(db)
+    v1 = store.create_release(_release(version=1))
+    bootstrap = store.activate(_activation(v1))
+    v2 = store.create_release(_release(version=2, title="Policy v2", based_on_release_id=v1.id))
+    digest = _activation_request_digest(
+        release_id=v2.id, expected=1, action="activate", request_id="REQ-activate-v2"
+    )
+    receipt = store.activate_with_audit(
+        team="engineering", release_id=v2.id, expected_previous_epoch=1,
+        action="activate", request_id="REQ-activate-v2", request_digest=digest,
+    )
+    assert receipt.epoch == 2 and receipt.previous_activation_id == bootstrap.id
+    assert store.activate_with_audit(
+        team="engineering", release_id=v2.id, expected_previous_epoch=1,
+        action="activate", request_id="REQ-activate-v2", request_digest=digest,
+    ) == receipt
+    with pytest.raises(sqlite3.IntegrityError, match="idempotency"):
+        store.activate_with_audit(
+            team="engineering", release_id=v2.id, expected_previous_epoch=1,
+            action="activate", request_id="REQ-activate-v2", request_digest=_digest("mutated"),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="CAS"):
+        store.activate_with_audit(
+            team="engineering", release_id=v1.id, expected_previous_epoch=1,
+            action="reactivate_rollback", request_id="REQ-stale",
+            request_digest=_digest("stale"),
+        )
+    other = store.create_release(_release(team="content", version=1))
+    with pytest.raises(LookupError):
+        store.activate_with_audit(
+            team="engineering", release_id=other.id, expected_previous_epoch=2,
+            action="activate", request_id="REQ-cross", request_digest=_digest("cross"),
+        )
+    rollback_digest = _activation_request_digest(
+        release_id=v1.id, expected=2, action="reactivate_rollback", request_id="REQ-rollback"
+    )
+    rollback = store.activate_with_audit(
+        team="engineering", release_id=v1.id, expected_previous_epoch=2,
+        action="reactivate_rollback", request_id="REQ-rollback",
+        request_digest=rollback_digest,
+    )
+    assert rollback.epoch == 3 and rollback.action == "reactivate_rollback"
+    audits = db.get_audit_logs("config:authority-policy:engineering")
+    assert [row["action"] for row in audits] == [
+        "authority_policy_activated", "authority_policy_reactivated"
+    ]
+    assert all("normative_text" not in (row["payload"] or "") for row in audits)
+
+
+def test_atomic_activation_audit_failure_rolls_back_and_restart_replays(tmp_path, monkeypatch):
+    path = tmp_path / "db.sqlite"
+    db = Database(path)
+    store = AuthorityPolicyStore(db)
+    v1 = store.create_release(_release(version=1))
+    store.activate(_activation(v1))
+    v2 = store.create_release(_release(version=2, title="Policy v2", based_on_release_id=v1.id))
+    digest = _activation_request_digest(
+        release_id=v2.id, expected=1, action="activate", request_id="REQ-atomic"
+    )
+    original = db.insert_audit_log_uncommitted
+    monkeypatch.setattr(db, "insert_audit_log_uncommitted", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("audit")))
+    with pytest.raises(RuntimeError, match="audit"):
+        store.activate_with_audit(
+            team="engineering", release_id=v2.id, expected_previous_epoch=1,
+            action="activate", request_id="REQ-atomic", request_digest=digest,
+        )
+    assert store.get_current_activation("engineering").epoch == 1
+    assert db.get_audit_logs("config:authority-policy:engineering") == []
+    monkeypatch.setattr(db, "insert_audit_log_uncommitted", original)
+    receipt = store.activate_with_audit(
+        team="engineering", release_id=v2.id, expected_previous_epoch=1,
+        action="activate", request_id="REQ-atomic", request_digest=digest,
+    )
+    db.close()
+    reopened = AuthorityPolicyStore(Database(path))
+    assert reopened.activate_with_audit(
+        team="engineering", release_id=v2.id, expected_previous_epoch=1,
+        action="activate", request_id="REQ-atomic", request_digest=digest,
+    ) == receipt
+
+
 @pytest.mark.parametrize("boundary", ["database", "store"])
 def test_current_activation_read_empty_and_current(tmp_path, boundary):
     db = Database(tmp_path / "db.sqlite")

@@ -952,6 +952,57 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/team-escalation-policy/activations": {
+      "POST": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "404",
+          "409",
+          "412",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/team-escalation-policy/releases": {
+      "POST": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "201",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/artifacts": {
       "GET": {
         "params": [
