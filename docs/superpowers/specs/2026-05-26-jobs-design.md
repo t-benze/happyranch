@@ -34,12 +34,15 @@ S1 performs no observation and
 creates no receipt. It also has no runtime importer: later slices must prove
 that every producer supplies complete authoritative inputs.
 
-The shipping typed frame parser rejects unknown/malformed payloads and binds
-every duplicated envelope/payload/bundle identity and fence value. Phase
-receipts enforce phase-matched reasons, setup-only skip semantics, timestamps,
-output caps, exit-code shape, and derived receipt digests. Terminal proposals
-carry complete unique phase/finalization receipt links and recompute canonical
-precedence plus bundle, observation-policy, and terminal digest consistency.
+The shipping typed frame parser rejects unknown/malformed payloads and requires
+the exact admission offer plus admitted phase name/ordinal/digest context for
+every phase and terminal frame. It binds envelope runner/generation/attempt/
+fence/lease facts to that admission. Phase receipts enforce phase-matched
+reasons, setup-only skip semantics, timestamps, output caps, exit-code shape,
+observation-policy identity, and derived receipt digests. Terminal proposals
+are checked against the supplied canonical `PhaseFinished` receipts, reject
+duplicate/reused digests and incomplete/extra evidence, and derive canonical
+precedence only from those validated receipts.
 
 Runner authentication/enrollment, schema/migrations and persistence, actual
 transport, leases/fences/journals, observation execution, subprocess phase

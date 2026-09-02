@@ -335,6 +335,7 @@ class PhaseLogChunk(CanonicalModel):
     frame_type: ClassVar[str] = "PHASE_LOG_CHUNK"
     phase: PhaseName
     ordinal: PositiveInt
+    phase_digest: Digest
     stream: Literal["stdout", "stderr"]
     offset: NonNegativeInt
     data_b64: str
@@ -363,6 +364,7 @@ class PhaseFinished(CanonicalModel):
     exit_code: int | None = None
     stdout_bytes: NonNegativeInt
     stderr_bytes: NonNegativeInt
+    observation_policy_digest: Digest | None = None
     receipt_digest: Digest
 
     _started = field_validator("started_at")(
@@ -373,6 +375,14 @@ class PhaseFinished(CanonicalModel):
     @model_validator(mode="after")
     def legal_receipt(self, info: ValidationInfo) -> "PhaseFinished":
         _validate_phase_result(self.phase, self.outcome, self.stable_reason)
+        policy_digest = (info.context or {}).get("observation_policy_digest")
+        if self.phase == PhaseName.WORKSPACE_OBSERVATION:
+            if self.observation_policy_digest is None:
+                raise ValueError("workspace observation receipt requires policy digest")
+            if policy_digest is not None and self.observation_policy_digest != policy_digest:
+                raise ValueError("observation receipt policy digest does not match admission")
+        elif self.observation_policy_digest is not None:
+            raise ValueError("policy digest is valid only on workspace observation receipt")
         started = None if self.started_at is None else datetime.fromisoformat(self.started_at[:-1] + "+00:00")
         finished = datetime.fromisoformat(self.finished_at[:-1] + "+00:00")
         if self.outcome == "skipped":
@@ -398,7 +408,7 @@ class PhaseFinished(CanonicalModel):
                 raise ValueError("phase byte counters exceed admitted caps")
             if self.phase_digest != spec.digest():
                 raise ValueError("phase_digest does not match admitted phase")
-        material = self.model_dump(mode="json", exclude={"receipt_digest"})
+        material = self.model_dump(mode="json", exclude={"receipt_digest"}, exclude_unset=True)
         if canonical_digest(material) != self.receipt_digest:
             raise ValueError("receipt_digest does not match phase receipt")
         return self
@@ -500,6 +510,14 @@ class ReceiptLink(CanonicalModel):
         return self
 
 
+class AdmittedPhase(CanonicalModel):
+    """Exact phase identity supplied by the admission coordinator to the parser."""
+
+    phase: PhaseName
+    ordinal: PositiveInt
+    phase_digest: Digest
+
+
 class TerminalProposed(CanonicalModel):
     frame_type: ClassVar[str] = "TERMINAL_PROPOSED"
     bundle_digest: Digest
@@ -519,7 +537,30 @@ class TerminalProposed(CanonicalModel):
         identities = [(link.phase, link.ordinal) for link in links]
         if len(set(identities)) != len(identities):
             raise ValueError("duplicate receipt link")
-        reasons = [link.stable_reason for link in links if link.stable_reason is not None]
+        receipt_evidence = (info.context or {}).get("canonical_receipts")
+        if receipt_evidence is not None:
+            receipts = tuple(receipt_evidence)
+            receipt_digests = [receipt.receipt_digest for receipt in receipts]
+            if len(set(receipt_digests)) != len(receipt_digests):
+                raise ValueError("duplicate receipt digest in canonical receipts")
+            if len(set(link.receipt_digest for link in links)) != len(links):
+                raise ValueError("duplicate receipt digest in terminal links")
+            by_identity = {(receipt.phase, receipt.ordinal): receipt for receipt in receipts}
+            if len(by_identity) != len(receipts) or set(by_identity) != set(identities):
+                raise ValueError("terminal links do not exactly cover canonical receipts")
+            for link in links:
+                receipt = by_identity[(link.phase, link.ordinal)]
+                facts = (
+                    link.receipt_digest == receipt.receipt_digest,
+                    link.outcome == receipt.outcome,
+                    link.stable_reason == receipt.stable_reason,
+                    link.observation_policy_digest == receipt.observation_policy_digest,
+                )
+                if not all(facts):
+                    raise ValueError("terminal link does not match canonical receipt")
+            reasons = [receipt.stable_reason for receipt in receipts if receipt.stable_reason is not None]
+        else:
+            reasons = [link.stable_reason for link in links if link.stable_reason is not None]
         expected = resolve_primary_outcome(reasons)
         if self.primary_status != expected.status or self.primary_reason != expected.reason:
             raise ValueError("terminal status/reason contradict receipt precedence")
@@ -657,14 +698,20 @@ class RemoteFrame(CanonicalModel, Generic[PayloadT]):
                 ("bundle.runner_generation", self.runner_generation, payload.bundle.runner.runner_generation),
             ))
         admitted = (info.context or {}).get("admitted_bundle")
-        if isinstance(payload, AdmissionAccepted) and admitted is not None:
+        if admitted is not None:
             comparisons.extend((
-                ("bundle_digest", admitted.digest(), payload.bundle_digest),
-                ("bundle.runner_id", admitted.runner.runner_id, payload.runner_id),
-                ("bundle.runner_generation", admitted.runner.runner_generation, payload.runner_generation),
-                ("bundle.workspace_id", admitted.workspace.workspace_id, payload.workspace_id),
-                ("bundle.workspace_generation", admitted.workspace.workspace_generation, payload.workspace_generation),
+                ("bundle.runner_id", admitted.runner.runner_id, self.runner_id),
+                ("bundle.runner_generation", admitted.runner.runner_generation, self.runner_generation),
             ))
+            for name, expected_value in (
+                ("runner_id", admitted.runner.runner_id),
+                ("runner_generation", admitted.runner.runner_generation),
+                ("workspace_id", admitted.workspace.workspace_id),
+                ("workspace_generation", admitted.workspace.workspace_generation),
+                ("bundle_digest", admitted.digest()),
+            ):
+                if hasattr(payload, name):
+                    comparisons.append((f"bundle.{name}", expected_value, getattr(payload, name)))
         for name, envelope_value, payload_value in comparisons:
             if envelope_value != payload_value:
                 raise ValueError(f"envelope {name} does not match payload")
@@ -799,6 +846,9 @@ def parse_remote_frame(
     value: Any,
     *,
     admitted_bundle: JobBundle | dict[str, Any] | None = None,
+    admission_offer: AdmissionOffer | dict[str, Any] | None = None,
+    admitted_phases: Iterable[AdmittedPhase | dict[str, Any]] | None = None,
+    canonical_receipts: Iterable[PhaseFinished | dict[str, Any] | bytes] | None = None,
 ) -> RemoteFrame[CanonicalModel]:
     """Parse an untrusted v1 frame into its exact typed payload and bind duplicates."""
 
@@ -807,14 +857,34 @@ def parse_remote_frame(
     frame_type = FrameType(value.get("type"))
     payload_model = _PAYLOAD_MODELS[frame_type]
     context: dict[str, Any] = {}
-    bundle = None if admitted_bundle is None else JobBundle.model_validate(admitted_bundle)
-    if frame_type in {FrameType.ADMISSION_ACCEPTED, FrameType.PHASE_FINISHED, FrameType.TERMINAL_PROPOSED} and bundle is None:
-        raise ValueError(f"{frame_type.value} validation requires the admitted bundle")
+    offer = None if admission_offer is None else AdmissionOffer.model_validate(admission_offer)
+    bundle = offer.bundle if offer is not None else (
+        None if admitted_bundle is None else JobBundle.model_validate(admitted_bundle)
+    )
+    phase_context_types = {
+        FrameType.PHASE_STARTED, FrameType.PHASE_LOG_CHUNK,
+        FrameType.PHASE_FINISHED, FrameType.TERMINAL_PROPOSED,
+    }
+    admission_context_types = set(FrameType) - {
+        FrameType.HELLO, FrameType.HELLO_ACK, FrameType.ADMISSION_OFFER,
+        FrameType.ADMISSION_REFUSED,
+    }
+    phases = None if admitted_phases is None else tuple(
+        AdmittedPhase.model_validate(item) for item in admitted_phases
+    )
+    if frame_type in admission_context_types and offer is None:
+        raise ValueError(f"{frame_type.value} validation requires admission validation context")
+    if frame_type in phase_context_types and phases is None:
+        raise ValueError(f"{frame_type.value} validation requires admission validation context")
     if bundle is not None:
         context["admitted_bundle"] = bundle
         payload = value.get("payload")
-        if frame_type == FrameType.PHASE_FINISHED and isinstance(payload, dict):
+        if frame_type in {FrameType.PHASE_STARTED, FrameType.PHASE_LOG_CHUNK, FrameType.PHASE_FINISHED} and isinstance(payload, dict):
             phase = PhaseName(payload.get("phase"))
+            ordinal = payload.get("ordinal")
+            matches = [item for item in phases or () if item.phase == phase and item.ordinal == ordinal]
+            if len(matches) != 1 or payload.get("phase_digest") != matches[0].phase_digest:
+                raise ValueError("frame phase identity does not match admitted phase")
             spec = {
                 PhaseName.PRE_RUN: bundle.pre_run,
                 PhaseName.RUN: bundle.run,
@@ -822,4 +892,53 @@ def parse_remote_frame(
             }.get(phase)
             if spec is not None:
                 context["phase_spec"] = spec
+            if phase == PhaseName.WORKSPACE_OBSERVATION and bundle.reuse is not None:
+                context["observation_policy_digest"] = bundle.reuse.observation_policy.policy_digest
+    if offer is not None:
+        for name, actual, expected in (
+            ("runner_id", value.get("runner_id"), offer.bundle.runner.runner_id),
+            ("runner_generation", value.get("runner_generation"), offer.bundle.runner.runner_generation),
+            ("attempt_id", value.get("attempt_id"), offer.attempt_id),
+            ("fence_token", value.get("fence_token"), offer.fence_token),
+            ("lease_generation", value.get("lease_generation"), offer.lease_generation),
+        ):
+            if actual != expected:
+                raise ValueError(f"frame {name} does not match admission")
+    if frame_type == FrameType.TERMINAL_PROPOSED:
+        if canonical_receipts is None:
+            raise ValueError("TERMINAL_PROPOSED validation requires canonical receipts")
+        parsed_receipts: list[PhaseFinished] = []
+        for item in canonical_receipts:
+            supplied_bytes = item if isinstance(item, bytes) else None
+            if isinstance(item, bytes):
+                try:
+                    item = json.loads(item.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise ValueError("canonical receipt bytes are invalid JSON") from exc
+            raw_receipt = (
+                item.model_dump(mode="json", exclude_unset=True)
+                if isinstance(item, PhaseFinished) else item
+            )
+            receipt_phase = PhaseName(raw_receipt.get("phase"))
+            match = next(
+                (phase for phase in phases or () if phase.phase == receipt_phase and phase.ordinal == raw_receipt.get("ordinal")),
+                None,
+            )
+            if match is None or raw_receipt.get("phase_digest") != match.phase_digest:
+                raise ValueError("canonical receipt does not match admitted phase")
+            receipt_context: dict[str, Any] = {}
+            spec = {
+                PhaseName.PRE_RUN: bundle.pre_run,
+                PhaseName.RUN: bundle.run,
+                PhaseName.POST_RUN: bundle.post_run,
+            }.get(receipt_phase)
+            if spec is not None:
+                receipt_context["phase_spec"] = spec
+            if receipt_phase == PhaseName.WORKSPACE_OBSERVATION and bundle.reuse is not None:
+                receipt_context["observation_policy_digest"] = bundle.reuse.observation_policy.policy_digest
+            parsed_receipt = PhaseFinished.model_validate(raw_receipt, context=receipt_context)
+            if supplied_bytes is not None and parsed_receipt.canonical_bytes() != supplied_bytes:
+                raise ValueError("receipt bytes are not canonical JSON")
+            parsed_receipts.append(parsed_receipt)
+        context["canonical_receipts"] = tuple(parsed_receipts)
     return RemoteFrame[payload_model].model_validate(value, context=context)  # type: ignore[valid-type,return-value]

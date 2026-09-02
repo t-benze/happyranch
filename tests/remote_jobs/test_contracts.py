@@ -11,9 +11,12 @@ from runtime.remote_jobs.contracts import (
     ALL_STABLE_REASONS,
     AdmissionAccepted,
     AdmissionOffer,
+    AdmittedPhase,
     ObservationPolicy,
     PhaseFinished,
+    PhaseLogChunk,
     PhaseName,
+    PhaseStarted,
     TerminalProposed,
     CanonicalModel,
     JobBundle,
@@ -105,6 +108,26 @@ def frame_data(payload: dict[str, object]) -> dict[str, object]:
         "sent_at": "2026-09-02T12:00:00Z",
         "payload": payload,
     }
+
+
+def admission_offer() -> AdmissionOffer:
+    bundle = JobBundle.model_validate(bundle_data())
+    return AdmissionOffer(
+        bundle=bundle, bundle_digest=bundle.digest(), attempt_id="RATT-abc123",
+        fence_token="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", lease_generation=1,
+        lease_expires_at="2026-09-02T12:05:00Z",
+    )
+
+
+def admitted_phases() -> tuple[AdmittedPhase, ...]:
+    bundle = JobBundle.model_validate(bundle_data())
+    return (
+        AdmittedPhase(phase="pre_run", ordinal=1, phase_digest=bundle.pre_run.digest()),  # type: ignore[union-attr]
+        AdmittedPhase(phase="workspace_observation", ordinal=1, phase_digest=bundle.reuse.observation_policy.digest()),  # type: ignore[union-attr]
+        AdmittedPhase(phase="run", ordinal=1, phase_digest=bundle.run.digest()),
+        AdmittedPhase(phase="post_run", ordinal=1, phase_digest=bundle.post_run.digest()),  # type: ignore[union-attr]
+        AdmittedPhase(phase="finalization", ordinal=1, phase_digest="f" * 64),
+    )
 
 
 def test_canonical_json_fixed_utf8_vectors() -> None:
@@ -348,20 +371,87 @@ def test_typed_frame_parser_binds_every_duplicated_payload_field(
 ) -> None:
     raw = frame_data(payload.model_dump(mode="json"))
     raw["type"] = frame_type
-    bundle = JobBundle.model_validate(bundle_data())
-    parsed = parse_remote_frame(raw, admitted_bundle=bundle if frame_type == "ADMISSION_ACCEPTED" else None)
+    parsed = parse_remote_frame(raw, admission_offer=admission_offer())
     assert parsed.type.value == frame_type
     bad = copy.deepcopy(raw)
     bad[field] = 9 if field == "lease_generation" else f"{bad[field]}-different"
-    with pytest.raises(ValidationError, match="does not match"):
-        parse_remote_frame(bad, admitted_bundle=bundle if frame_type == "ADMISSION_ACCEPTED" else None)
+    with pytest.raises(ValueError, match="does not match"):
+        parse_remote_frame(bad, admission_offer=admission_offer())
 
 
 def test_typed_parser_requires_bundle_for_bundle_dependent_frames() -> None:
     raw = frame_data(phase_finished_data(phase_digest=canonical_digest(phase())))
     raw["type"] = "PHASE_FINISHED"
-    with pytest.raises(ValueError, match="requires the admitted bundle"):
+    with pytest.raises(ValueError, match="admission validation context"):
         parse_remote_frame(raw)
+
+
+@pytest.mark.parametrize("frame_type", ["PHASE_STARTED", "PHASE_LOG_CHUNK", "PHASE_FINISHED", "TERMINAL_PROPOSED"])
+def test_post_admission_frames_require_complete_validation_context(frame_type: str) -> None:
+    payloads: dict[str, dict[str, object]] = {
+        "PHASE_STARTED": PhaseStarted(
+            phase="run", ordinal=1, phase_digest=canonical_digest(phase()),
+            started_at="2026-09-02T12:00:00Z",
+        ).model_dump(mode="json"),
+        "PHASE_LOG_CHUNK": PhaseLogChunk(
+            phase="run", ordinal=1, phase_digest=canonical_digest(phase()),
+            stream="stdout", offset=0, data_b64="b2s=",
+        ).model_dump(mode="json"),
+        "PHASE_FINISHED": phase_finished_data(phase_digest=canonical_digest(phase())),
+        "TERMINAL_PROPOSED": terminal_data(),
+    }
+    raw = frame_data(payloads[frame_type])
+    raw["type"] = frame_type
+    with pytest.raises(ValueError, match="admission validation context"):
+        parse_remote_frame(raw, admitted_bundle=JobBundle.model_validate(bundle_data()))
+
+
+@pytest.mark.parametrize("frame_type", ["PHASE_STARTED", "PHASE_LOG_CHUNK", "PHASE_FINISHED"])
+@pytest.mark.parametrize("field", ["runner_id", "runner_generation", "attempt_id", "fence_token", "lease_generation"])
+def test_phase_frame_rejects_each_envelope_admission_mismatch(frame_type: str, field: str) -> None:
+    phase_digest = next(item.phase_digest for item in admitted_phases() if item.phase == PhaseName.RUN)
+    payloads: dict[str, dict[str, object]] = {
+        "PHASE_STARTED": PhaseStarted(
+            phase="run", ordinal=1, phase_digest=phase_digest, started_at="2026-09-02T12:00:00Z",
+        ).model_dump(mode="json"),
+        "PHASE_LOG_CHUNK": PhaseLogChunk(
+            phase="run", ordinal=1, phase_digest=phase_digest, stream="stdout", offset=0, data_b64="b2s=",
+        ).model_dump(mode="json"),
+        "PHASE_FINISHED": phase_finished_data(phase_digest=phase_digest),
+    }
+    raw = frame_data(payloads[frame_type])
+    raw["type"] = frame_type
+    raw[field] = 9 if field in {"runner_generation", "lease_generation"} else {
+        "runner_id": "RUNNER-other", "attempt_id": "RATT-other",
+        "fence_token": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE",
+    }[field]
+    with pytest.raises(ValueError, match="admission"):
+        parse_remote_frame(raw, admission_offer=admission_offer(), admitted_phases=admitted_phases())
+
+
+@pytest.mark.parametrize("frame_type", ["PHASE_STARTED", "PHASE_LOG_CHUNK", "PHASE_FINISHED"])
+@pytest.mark.parametrize("field,replacement", [("phase", "post_run"), ("ordinal", 2), ("phase_digest", "0" * 64)])
+def test_phase_frame_rejects_each_admitted_phase_mismatch(
+    frame_type: str, field: str, replacement: object,
+) -> None:
+    payload = {
+        "PHASE_STARTED": {
+            "phase": "run", "ordinal": 1, "phase_digest": next(item.phase_digest for item in admitted_phases() if item.phase == PhaseName.RUN),
+            "started_at": "2026-09-02T12:00:00Z",
+        },
+        "PHASE_LOG_CHUNK": {
+            "phase": "run", "ordinal": 1, "phase_digest": next(item.phase_digest for item in admitted_phases() if item.phase == PhaseName.RUN),
+            "stream": "stdout", "offset": 0, "data_b64": "b2s=",
+        },
+        "PHASE_FINISHED": phase_finished_data(phase_digest=next(item.phase_digest for item in admitted_phases() if item.phase == PhaseName.RUN)),
+    }[frame_type]
+    payload[field] = replacement
+    if frame_type == "PHASE_FINISHED":
+        payload["receipt_digest"] = canonical_digest({k: v for k, v in payload.items() if k != "receipt_digest"})
+    raw = frame_data(payload)
+    raw["type"] = frame_type
+    with pytest.raises(ValueError, match="admitted phase"):
+        parse_remote_frame(raw, admission_offer=admission_offer(), admitted_phases=admitted_phases())
 
 
 def terminal_data(*reasons: str) -> dict[str, object]:
@@ -415,31 +505,13 @@ def test_terminal_proposed_accepts_every_public_terminal_class(
 
 
 def test_terminal_parser_requires_complete_bundle_and_policy_bound_receipts() -> None:
-    bundle = JobBundle.model_validate(bundle_data())
-    policy_digest = bundle.reuse.observation_policy.policy_digest  # type: ignore[union-attr]
-    links = [
-        ReceiptLink(phase="pre_run", ordinal=1, outcome="skipped", receipt_digest="a" * 64),
-        ReceiptLink(
-            phase="workspace_observation", ordinal=1, outcome="succeeded",
-            receipt_digest="b" * 64, observation_policy_digest=policy_digest,
-        ),
-        ReceiptLink(
-            phase="run", ordinal=1, outcome="failed", stable_reason="run_nonzero",
-            receipt_digest="c" * 64,
-        ),
-        ReceiptLink(phase="post_run", ordinal=1, outcome="succeeded", receipt_digest="d" * 64),
-    ]
-    final = ReceiptLink(phase="finalization", ordinal=1, outcome="succeeded", receipt_digest="e" * 64)
-    body = {
-        "bundle_digest": bundle.digest(),
-        "receipt_links": [link.model_dump(mode="json") for link in links],
-        "finalization_receipt_link": final.model_dump(mode="json"),
-        "primary_status": "failed", "primary_reason": "run_nonzero",
+    receipts = canonical_terminal_receipts()
+    raw = canonical_terminal_frame(receipts)
+    kwargs = {
+        "admission_offer": admission_offer(), "admitted_phases": admitted_phases(),
+        "canonical_receipts": receipts,
     }
-    proposal = {**body, "terminal_digest": canonical_digest(body)}
-    raw = frame_data(proposal)
-    raw["type"] = "TERMINAL_PROPOSED"
-    assert parse_remote_frame(raw, admitted_bundle=bundle).payload.primary_reason == "run_nonzero"
+    assert parse_remote_frame(raw, **kwargs).payload.primary_reason == "run_nonzero"
     for mutate in ("omit", "policy", "bundle"):
         bad = copy.deepcopy(raw)
         if mutate == "omit":
@@ -449,7 +521,136 @@ def test_terminal_parser_requires_complete_bundle_and_policy_bound_receipts() ->
         else:
             bad["payload"]["bundle_digest"] = "0" * 64  # type: ignore[index]
         with pytest.raises(ValidationError):
-            parse_remote_frame(bad, admitted_bundle=bundle)
+            parse_remote_frame(bad, **kwargs)
+
+
+def canonical_terminal_receipts() -> tuple[PhaseFinished, ...]:
+    phases = {item.phase: item for item in admitted_phases()}
+    policy_digest = admission_offer().bundle.reuse.observation_policy.policy_digest  # type: ignore[union-attr]
+    values = (
+        phase_finished_data(
+            phase="pre_run", phase_digest=phases[PhaseName.PRE_RUN].phase_digest,
+            outcome="skipped", started_at=None, exit_code=None, stdout_bytes=0, stderr_bytes=0,
+        ),
+        phase_finished_data(
+            phase="workspace_observation", phase_digest=phases[PhaseName.WORKSPACE_OBSERVATION].phase_digest,
+            exit_code=None, observation_policy_digest=policy_digest,
+        ),
+        phase_finished_data(
+            phase="run", phase_digest=phases[PhaseName.RUN].phase_digest,
+            outcome="failed", stable_reason="run_nonzero", exit_code=2,
+        ),
+        phase_finished_data(
+            phase="post_run", phase_digest=phases[PhaseName.POST_RUN].phase_digest,
+        ),
+        phase_finished_data(
+            phase="finalization", phase_digest=phases[PhaseName.FINALIZATION].phase_digest,
+            exit_code=None,
+        ),
+    )
+    return tuple(PhaseFinished.model_validate(value) for value in values)
+
+
+def canonical_terminal_frame(receipts: tuple[PhaseFinished, ...] | None = None) -> dict[str, object]:
+    receipts = receipts or canonical_terminal_receipts()
+    links = [
+        ReceiptLink(
+            phase=receipt.phase, ordinal=receipt.ordinal, outcome=receipt.outcome,
+            stable_reason=receipt.stable_reason, receipt_digest=receipt.receipt_digest,
+            observation_policy_digest=receipt.observation_policy_digest,
+        )
+        for receipt in receipts
+    ]
+    final = next(link for link in links if link.phase == PhaseName.FINALIZATION)
+    phase_links = [link for link in links if link.phase != PhaseName.FINALIZATION]
+    expected = resolve_primary_outcome(
+        receipt.stable_reason for receipt in receipts if receipt.stable_reason is not None
+    )
+    body = {
+        "bundle_digest": admission_offer().bundle_digest,
+        "receipt_links": [link.model_dump(mode="json") for link in phase_links],
+        "finalization_receipt_link": final.model_dump(mode="json"),
+        "primary_status": expected.status, "primary_reason": expected.reason,
+    }
+    raw = frame_data({**body, "terminal_digest": canonical_digest(body)})
+    raw["type"] = "TERMINAL_PROPOSED"
+    return raw
+
+
+@pytest.mark.parametrize("field", ["runner_id", "runner_generation", "attempt_id", "fence_token", "lease_generation"])
+def test_terminal_frame_rejects_each_envelope_admission_mismatch(field: str) -> None:
+    receipts = canonical_terminal_receipts()
+    raw = canonical_terminal_frame(receipts)
+    raw[field] = 9 if field in {"runner_generation", "lease_generation"} else {
+        "runner_id": "RUNNER-other", "attempt_id": "RATT-other",
+        "fence_token": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE",
+    }[field]
+    with pytest.raises(ValueError, match="admission"):
+        parse_remote_frame(
+            raw, admission_offer=admission_offer(), admitted_phases=admitted_phases(),
+            canonical_receipts=receipts,
+        )
+
+
+def test_terminal_parser_revalidates_canonical_receipt_bytes() -> None:
+    receipts = canonical_terminal_receipts()
+    parsed = parse_remote_frame(
+        canonical_terminal_frame(receipts), admission_offer=admission_offer(),
+        admitted_phases=admitted_phases(),
+        canonical_receipts=tuple(receipt.canonical_bytes() for receipt in receipts),
+    )
+    assert parsed.payload.primary_reason == StableReason.RUN_NONZERO
+    noncanonical = (b" " + receipts[0].canonical_bytes(),) + tuple(
+        receipt.canonical_bytes() for receipt in receipts[1:]
+    )
+    with pytest.raises(ValueError, match="not canonical"):
+        parse_remote_frame(
+            canonical_terminal_frame(receipts), admission_offer=admission_offer(),
+            admitted_phases=admitted_phases(), canonical_receipts=noncanonical,
+        )
+
+
+@pytest.mark.parametrize(
+    "field,replacement",
+    [
+        ("phase", "post_run"), ("ordinal", 2), ("receipt_digest", "0" * 64),
+        ("outcome", "succeeded"), ("stable_reason", None),
+        ("observation_policy_digest", "0" * 64),
+    ],
+)
+def test_terminal_links_bind_each_summary_field_to_canonical_receipts(
+    field: str, replacement: object,
+) -> None:
+    raw = canonical_terminal_frame()
+    index = 1 if field == "observation_policy_digest" else 2
+    raw["payload"]["receipt_links"][index][field] = replacement  # type: ignore[index]
+    body = {k: v for k, v in raw["payload"].items() if k != "terminal_digest"}  # type: ignore[union-attr]
+    raw["payload"]["terminal_digest"] = canonical_digest(body)  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        parse_remote_frame(
+            raw, admission_offer=admission_offer(), admitted_phases=admitted_phases(),
+            canonical_receipts=canonical_terminal_receipts(),
+        )
+
+
+def test_terminal_rejects_reused_digest_and_incomplete_or_extra_canonical_receipts() -> None:
+    receipts = canonical_terminal_receipts()
+    raw = canonical_terminal_frame(receipts)
+    for supplied in (receipts[:-1], receipts + (receipts[0],)):
+        with pytest.raises(ValidationError):
+            parse_remote_frame(
+                raw, admission_offer=admission_offer(), admitted_phases=admitted_phases(),
+                canonical_receipts=supplied,
+            )
+    reused = copy.deepcopy(raw)
+    reused["payload"]["receipt_links"][1]["receipt_digest"] = reused["payload"]["receipt_links"][0]["receipt_digest"]  # type: ignore[index]
+    body = {k: v for k, v in reused["payload"].items() if k != "terminal_digest"}  # type: ignore[union-attr]
+    reused["payload"]["terminal_digest"] = canonical_digest(body)  # type: ignore[index]
+    with pytest.raises(ValidationError, match="duplicate receipt digest"):
+        parse_remote_frame(
+            reused, admission_offer=admission_offer(), admitted_phases=admitted_phases(),
+            canonical_receipts=receipts,
+        )
 
 
 def test_envelope_rejects_bad_version_identity_time_and_unknown_keys() -> None:

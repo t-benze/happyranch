@@ -1859,12 +1859,17 @@ admission and founder rejection map to the preserved public `rejected` status;
 other terminal reasons map to `failed`; no reasons maps to `completed`.
 Subordinate receipts remain inputs/evidence and are not erased by selection.
 `PhaseFinished` rejects cross-phase reasons, impossible skip/start/exit shapes,
-reversed timestamps, cap overruns, and non-derived receipt digests.
+reversed timestamps, cap overruns, non-derived receipt digests, and missing or
+mismatched observation-policy identity on observation receipts.
 `TerminalProposed` carries unique complete phase/finalization receipt links and
-is valid only when those reasons recompute its status/reason and the bundle,
-policy, receipt links, and terminal digest agree. `parse_remote_frame` is the
-shipping untrusted-input seam: it selects the exact typed payload and binds all
-duplicated envelope, payload, and admitted-bundle identities and fences.
+is valid only when every link exactly matches a supplied, canonically
+revalidated `PhaseFinished` receipt and those receipts alone recompute its
+status/reason; duplicate/reused digests and extra/missing evidence are refused.
+`parse_remote_frame` is the shipping untrusted-input seam: every phase and
+terminal frame requires the exact admission offer plus admitted phase
+name/ordinal/digest context, and all envelope runner/generation/attempt/fence/
+lease facts are bound to it. `PHASE_LOG_CHUNK` carries the admitted phase digest
+like the other phase frames. S1 does not produce or persist that context.
 
 This section describes S1 only. There is deliberately no shipping producer or
 consumer yet. Later slices must prove producer completeness and implement
