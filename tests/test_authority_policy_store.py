@@ -82,6 +82,202 @@ def _candidate(release, *, root="T-1"):
     )
 
 
+def _activation_request_digest(*, release_id, expected, action, request_id):
+    return _digest(json.dumps({
+        "release_id": release_id,
+        "expected_previous_epoch": expected,
+        "action": action,
+        "request_id": request_id,
+        "acknowledge_shared_credential_attribution": True,
+    }, sort_keys=True, separators=(",", ":")))
+
+
+def _release_request_digest(request_id: str) -> str:
+    return _digest(f"release:{request_id}")
+
+
+def test_atomic_release_exact_replay_after_advancement_and_restart(tmp_path):
+    path = tmp_path / "db.sqlite"
+    db = Database(path)
+    store = AuthorityPolicyStore(db)
+    request_id = "REQ-release-v1"
+    request_digest = _release_request_digest(request_id)
+    release = _release(version=1)
+    persisted = store.create_release_with_audit(
+        release, request_id=request_id, request_digest=request_digest,
+    )
+    store.activate(_activation(persisted))
+    db.close()
+
+    restarted = Database(path)
+    restarted_store = AuthorityPolicyStore(restarted)
+    assert restarted_store.create_release_with_audit(
+        _release(version=2, title="discarded replay candidate", based_on_release_id=persisted.id),
+        request_id=request_id, request_digest=request_digest,
+    ) == persisted
+    with pytest.raises(sqlite3.IntegrityError, match="idempotency"):
+        restarted_store.create_release_with_audit(
+            _release(version=2, based_on_release_id=persisted.id),
+            request_id=request_id, request_digest=_digest("mutated"),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="base"):
+        restarted_store.create_release_with_audit(
+            _release(version=2, title="stale new request"),
+            request_id="REQ-release-new", request_digest=_release_request_digest("REQ-release-new"),
+        )
+    assert restarted._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_releases"
+    ).fetchone()[0] == 1
+    assert restarted._conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='authority_policy_release_created'"
+    ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("bad_payload", [
+    {},
+    {"request_id": "REQ-wrong"},
+    {"normative_text": "policy prose"},
+    {"evaluator_text": "model prose"},
+    {"token": "secret-value"},
+    {"extra": "secret-shaped-value"},
+])
+def test_atomic_release_rejects_caller_owned_audit_payload_without_residue(
+    tmp_path, bad_payload,
+):
+    db = Database(tmp_path / "db.sqlite")
+    store = AuthorityPolicyStore(db)
+    with pytest.raises(TypeError):
+        store.create_release_with_audit(
+            _release(),
+            request_id="REQ-release",
+            request_digest=_release_request_digest("REQ-release"),
+            audit_payload=bad_payload,
+        )
+    assert db._conn.execute("SELECT COUNT(*) FROM authority_policy_releases").fetchone()[0] == 0
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='authority_policy_release_created'"
+    ).fetchone()[0] == 0
+
+
+def test_atomic_release_concurrent_exact_replay_has_one_release_and_audit(tmp_path):
+    path = tmp_path / "db.sqlite"
+    seed = Database(path)
+    seed.close()
+    release = _release()
+    barrier = threading.Barrier(2)
+    results = []
+    failures = []
+
+    def create() -> None:
+        db = Database(path)
+        store = AuthorityPolicyStore(db)
+        barrier.wait()
+        try:
+            results.append(store.create_release_with_audit(
+                release, request_id="REQ-race", request_digest=_release_request_digest("REQ-race"),
+            ))
+        except Exception as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+        finally:
+            db.close()
+
+    threads = [threading.Thread(target=create) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert failures == []
+    assert results == [release, release]
+    check = Database(path)
+    assert check._conn.execute("SELECT COUNT(*) FROM authority_policy_releases").fetchone()[0] == 1
+    assert check._conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE action='authority_policy_release_created'"
+    ).fetchone()[0] == 1
+
+
+def test_atomic_activation_api_exact_replay_stale_cross_team_and_audit(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    store = AuthorityPolicyStore(db)
+    v1 = store.create_release(_release(version=1))
+    bootstrap = store.activate(_activation(v1))
+    v2 = store.create_release(_release(version=2, title="Policy v2", based_on_release_id=v1.id))
+    digest = _activation_request_digest(
+        release_id=v2.id, expected=1, action="activate", request_id="REQ-activate-v2"
+    )
+    receipt = store.activate_with_audit(
+        team="engineering", release_id=v2.id, expected_previous_epoch=1,
+        action="activate", request_id="REQ-activate-v2", request_digest=digest,
+    )
+    assert receipt.epoch == 2 and receipt.previous_activation_id == bootstrap.id
+    assert store.activate_with_audit(
+        team="engineering", release_id=v2.id, expected_previous_epoch=1,
+        action="activate", request_id="REQ-activate-v2", request_digest=digest,
+    ) == receipt
+    with pytest.raises(sqlite3.IntegrityError, match="idempotency"):
+        store.activate_with_audit(
+            team="engineering", release_id=v2.id, expected_previous_epoch=1,
+            action="activate", request_id="REQ-activate-v2", request_digest=_digest("mutated"),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="CAS"):
+        store.activate_with_audit(
+            team="engineering", release_id=v1.id, expected_previous_epoch=1,
+            action="reactivate_rollback", request_id="REQ-stale",
+            request_digest=_digest("stale"),
+        )
+    other = store.create_release(_release(team="content", version=1))
+    with pytest.raises(LookupError):
+        store.activate_with_audit(
+            team="engineering", release_id=other.id, expected_previous_epoch=2,
+            action="activate", request_id="REQ-cross", request_digest=_digest("cross"),
+        )
+    rollback_digest = _activation_request_digest(
+        release_id=v1.id, expected=2, action="reactivate_rollback", request_id="REQ-rollback"
+    )
+    rollback = store.activate_with_audit(
+        team="engineering", release_id=v1.id, expected_previous_epoch=2,
+        action="reactivate_rollback", request_id="REQ-rollback",
+        request_digest=rollback_digest,
+    )
+    assert rollback.epoch == 3 and rollback.action == "reactivate_rollback"
+    audits = db.get_audit_logs("config:authority-policy:engineering")
+    assert [row["action"] for row in audits] == [
+        "authority_policy_activated", "authority_policy_reactivated"
+    ]
+    assert all("normative_text" not in (row["payload"] or "") for row in audits)
+
+
+def test_atomic_activation_audit_failure_rolls_back_and_restart_replays(tmp_path, monkeypatch):
+    path = tmp_path / "db.sqlite"
+    db = Database(path)
+    store = AuthorityPolicyStore(db)
+    v1 = store.create_release(_release(version=1))
+    store.activate(_activation(v1))
+    v2 = store.create_release(_release(version=2, title="Policy v2", based_on_release_id=v1.id))
+    digest = _activation_request_digest(
+        release_id=v2.id, expected=1, action="activate", request_id="REQ-atomic"
+    )
+    original = db.insert_audit_log_uncommitted
+    monkeypatch.setattr(db, "insert_audit_log_uncommitted", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("audit")))
+    with pytest.raises(RuntimeError, match="audit"):
+        store.activate_with_audit(
+            team="engineering", release_id=v2.id, expected_previous_epoch=1,
+            action="activate", request_id="REQ-atomic", request_digest=digest,
+        )
+    assert store.get_current_activation("engineering").epoch == 1
+    assert db.get_audit_logs("config:authority-policy:engineering") == []
+    monkeypatch.setattr(db, "insert_audit_log_uncommitted", original)
+    receipt = store.activate_with_audit(
+        team="engineering", release_id=v2.id, expected_previous_epoch=1,
+        action="activate", request_id="REQ-atomic", request_digest=digest,
+    )
+    db.close()
+    reopened = AuthorityPolicyStore(Database(path))
+    assert reopened.activate_with_audit(
+        team="engineering", release_id=v2.id, expected_previous_epoch=1,
+        action="activate", request_id="REQ-atomic", request_digest=digest,
+    ) == receipt
+
+
 @pytest.mark.parametrize("boundary", ["database", "store"])
 def test_current_activation_read_empty_and_current(tmp_path, boundary):
     db = Database(tmp_path / "db.sqlite")
@@ -485,6 +681,43 @@ def test_candidate_pin_failure_rolls_back_candidate(tmp_path):
             **_candidate(release), release_id=release.id, activation_id=activation.id,
             activation_epoch=1, provider_id="openai", executor_kind="codex")
     assert db._conn.execute("SELECT COUNT(*) FROM authority_candidate_policy_pins WHERE candidate_id=?", (candidate.id,)).fetchone()[0] == 1
+
+
+def test_shipping_pin_transaction_preserves_all_identities_across_restart_and_duplicate(tmp_path):
+    """S4 evidence at the actual store transaction, not a rendering helper."""
+    path = tmp_path / "db.sqlite"
+    db = Database(path)
+    store = AuthorityPolicyStore(db)
+    release = store.create_release(_release())
+    activation = store.activate(_activation(release))
+    kwargs = _candidate(release)
+    candidate, pin = store.claim_candidate_with_pin(
+        **kwargs, release_id=release.id, activation_id=activation.id,
+        activation_epoch=activation.epoch, provider_id="openai",
+        executor_kind="codex",
+    )
+    assert (candidate.prompt_id, candidate.prompt_version, candidate.prompt_digest) == (
+        kwargs["prompt_id"], kwargs["prompt_version"], kwargs["prompt_digest"],
+    )
+    assert (candidate.model_id, candidate.model_version, candidate.model_digest) == (
+        kwargs["model_id"], kwargs["model_version"], kwargs["model_digest"],
+    )
+    assert (pin.provider_id, pin.executor_kind) == ("openai", "codex")
+    with pytest.raises(sqlite3.IntegrityError):
+        store.claim_candidate_with_pin(
+            **kwargs, release_id=release.id, activation_id=activation.id,
+            activation_epoch=activation.epoch, provider_id="openai",
+            executor_kind="codex",
+        )
+    assert len(db.list_authority_candidates_for_root("T-1")) == 1
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_candidate_policy_pins WHERE candidate_id=?",
+        (candidate.id,),
+    ).fetchone()[0] == 1
+    db.close()
+    reopened = Database(path)
+    persisted = AuthorityPolicyStore(reopened).get_candidate_pin(candidate.id)
+    assert persisted == pin
 
 
 def test_corrupt_release_digest_fails_closed(tmp_path):

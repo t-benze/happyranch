@@ -524,7 +524,9 @@ class AuthorityEvaluator(Protocol):
     model_version: str
     model_digest: str
 
-    def evaluate(self, snapshot: AuthorityInputSnapshot) -> AuthorityEvaluationResult:
+    def evaluate(
+        self, snapshot: AuthorityInputSnapshot, *, policy: AuthorityPolicy | None = None
+    ) -> AuthorityEvaluationResult:
         ...
 
 
@@ -622,8 +624,10 @@ class StrictFakeAuthorityEvaluator:
 
     # -- AuthorityEvaluator contract --------------------------------------
 
-    def evaluate(self, snapshot: AuthorityInputSnapshot) -> AuthorityEvaluationResult:
-        self._validate_snapshot(snapshot)
+    def evaluate(
+        self, snapshot: AuthorityInputSnapshot, *, policy: AuthorityPolicy | None = None
+    ) -> AuthorityEvaluationResult:
+        self._validate_snapshot(snapshot, policy=policy)
         # Server-derived facts OUTRANK reason prose (and any pinned verdict):
         # a server-proven must-escalate fact forces ESCALATE even when the
         # untrusted reason omits or misstates the condition.
@@ -682,13 +686,16 @@ class StrictFakeAuthorityEvaluator:
 
     # -- strict validation ------------------------------------------------
 
-    def _validate_snapshot(self, snapshot: AuthorityInputSnapshot) -> None:
-        policy = POLICY_BY_TEAM.get(snapshot.team)
-        if policy is None:
+    def _validate_snapshot(
+        self, snapshot: AuthorityInputSnapshot, *, policy: AuthorityPolicy | None = None
+    ) -> None:
+        effective_policy = policy or POLICY_BY_TEAM.get(snapshot.team)
+        if effective_policy is None:
             raise ValueError(f"no release-controlled policy for team {snapshot.team!r}")
-        if snapshot.policy_id != policy.id or snapshot.policy_version != policy.version:
+        if (snapshot.policy_id != effective_policy.id
+                or snapshot.policy_version != effective_policy.version):
             raise ValueError("snapshot policy identity does not match the release policy")
-        if snapshot.policy_digest != policy.digest:
+        if snapshot.policy_digest != effective_policy.digest:
             raise ValueError("snapshot policy digest does not match the release policy")
         if snapshot.prompt_digest != PROMPT_DIGEST:
             raise ValueError("snapshot prompt digest does not match the release prompt")
@@ -833,10 +840,13 @@ class LLMSubprocessAuthorityEvaluator:
 
     # -- AuthorityEvaluator contract --------------------------------------
 
-    def evaluate(self, snapshot: AuthorityInputSnapshot) -> AuthorityEvaluationResult:
+    def evaluate(
+        self, snapshot: AuthorityInputSnapshot, *, policy: AuthorityPolicy | None = None
+    ) -> AuthorityEvaluationResult:
         from runtime.models import AuthorityDispositionCode as _Code
+        effective_policy = policy or POLICY_BY_TEAM[snapshot.team]
         prompt = build_authority_evaluation_prompt(
-            policy=POLICY_BY_TEAM[snapshot.team],
+            policy=effective_policy,
             candidate_id=snapshot.candidate_id,
             team=snapshot.team,
             manager_agent=snapshot.manager_agent,
@@ -887,8 +897,7 @@ class LLMSubprocessAuthorityEvaluator:
                 _Code.MALFORMED_OUTPUT, "evaluator output policy/team/candidate/input mismatch"
             )
         disposition = AuthorityDisposition(parsed.disposition)
-        policy = POLICY_BY_TEAM.get(parsed.team)
-        clause = policy.clause_by_id(parsed.clause_id) if policy and parsed.clause_id else None
+        clause = effective_policy.clause_by_id(parsed.clause_id) if parsed.clause_id else None
         expected_action = (
             ACTION_CONTINUE_SAME_ROOT
             if disposition == AuthorityDisposition.CONTINUE_SAME_ROOT
@@ -1420,6 +1429,28 @@ def run_authority_hook(
         return "escalate"
 
     db = orch._db
+    active_activation = None
+    active_release = None
+    try:
+        from runtime.orchestrator.active_authority_policy import (
+            load_session_policy_snapshot, policy_from_release,
+        )
+        from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+        policy_store = AuthorityPolicyStore(db)
+        launch_snapshot = load_session_policy_snapshot(
+            db=db, store=policy_store, task_id=task.id,
+            session_id=task.current_session_id or "", agent_name=agent,
+        )
+        if launch_snapshot is not None:
+            active_activation = launch_snapshot.activation
+            active_release = launch_snapshot.release
+            policy = policy_from_release(active_release)
+    except Exception as exc:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            policy=policy, error=f"active policy resolution failed: {exc}",
+        )
+        return "escalate"
     current = db.get_task(task.id)
     if current is None:
         return "escalate"
@@ -1498,7 +1529,7 @@ def run_authority_hook(
 
     # ---- 3. Claim the candidate (deterministic CAS) ----
     try:
-        candidate_id, won = db.claim_authority_candidate(
+        candidate_kwargs = dict(
             root_task_id=current.id,
             team=current.team,
             manager_agent=current.assigned_agent or agent,
@@ -1518,11 +1549,53 @@ def run_authority_hook(
             snapshot_digest=input_digest,
             fence_results={name: fr.model_dump(mode="json") for name, fr in fences.items()},
         )
+        if active_activation is not None and active_release is not None:
+            evaluator_provider = getattr(evaluator, "provider_id", "local") if evaluator else "none"
+            evaluator_kind = getattr(evaluator, "_executor_kind", "none") if evaluator else "none"
+            candidate, _pin = policy_store.claim_candidate_with_pin(
+                release_id=active_release.id,
+                activation_id=active_activation.id,
+                activation_epoch=active_activation.epoch,
+                provider_id=evaluator_provider,
+                executor_kind=evaluator_kind,
+                **candidate_kwargs,
+            )
+            candidate_id, won = candidate.id, True
+        else:
+            candidate_id, won = db.claim_authority_candidate(**candidate_kwargs)
     except Exception as exc:
         _record_hook_outcome(
             db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
             policy=policy, snapshot=snapshot, fences=fences,
             error=f"candidate claim failed: {exc}",
+        )
+        return "escalate"
+
+    def _authenticate_persisted_candidate_policy() -> None:
+        if active_release is None or active_activation is None:
+            return
+        pin = policy_store.get_candidate_pin(candidate_id)
+        if pin is None:
+            raise ValueError("DB-backed authority candidate is missing its policy pin")
+        expected_provider = getattr(evaluator, "provider_id", "local") if evaluator else "none"
+        expected_kind = getattr(evaluator, "_executor_kind", "none") if evaluator else "none"
+        if (pin.release_id != active_release.id
+                or pin.activation_id != active_activation.id
+                or pin.activation_epoch != active_activation.epoch
+                or pin.provider_id != expected_provider
+                or pin.executor_kind != expected_kind):
+            raise ValueError("authority candidate policy pin identity mismatch")
+        reread_release = policy_store.get_release(pin.release_id)
+        if reread_release is None or policy_from_release(reread_release) != policy:
+            raise ValueError("authority candidate release snapshot mismatch")
+
+    try:
+        _authenticate_persisted_candidate_policy()
+    except Exception as exc:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            policy=policy, snapshot=snapshot, candidate_id=candidate_id,
+            fences=fences, lifecycle="created", error=f"candidate pin authentication failed: {exc}",
         )
         return "escalate"
 
@@ -1578,7 +1651,11 @@ def run_authority_hook(
         )
     else:
         try:
-            result = evaluator.evaluate(snapshot)
+            result = (
+                evaluator.evaluate(snapshot, policy=policy)
+                if active_activation is not None
+                else evaluator.evaluate(snapshot)
+            )
         except Exception as exc:
             result = AuthorityEvaluationResult(
                 disposition=AuthorityDisposition.EVALUATOR_ERROR,
@@ -1587,6 +1664,17 @@ def run_authority_hook(
                 error=f"evaluator raised: {exc}",
             )
     verdict = _normalize_result(policy, candidate_id, input_digest, result)
+
+    try:
+        _authenticate_persisted_candidate_policy()
+    except Exception as exc:
+        _record_hook_outcome(
+            db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+            policy=policy, snapshot=snapshot, candidate_id=candidate_id,
+            fences=fences, lifecycle="created", verdict=verdict,
+            error=f"pre-evaluation-commit pin authentication failed: {exc}",
+        )
+        return "escalate"
 
     # ---- 6b. SERVER-DERIVED must-escalate gate. A server-PROVEN fact
     # (adverse child review verdict, partial-work/zombie evidence, DB-schema
@@ -1776,6 +1864,16 @@ def run_authority_hook(
 
     # ---- 11. Execute the verdict ----
     if verdict.disposition == AuthorityDisposition.CONTINUE_SAME_ROOT:
+        try:
+            _authenticate_persisted_candidate_policy()
+        except Exception as exc:
+            _record_hook_outcome(
+                db, task_id=task.id, agent=agent, outcome=OUTCOME_CAPTURE_FAILURE,
+                policy=policy, snapshot=snapshot, candidate_id=candidate_id,
+                fences=fences, lifecycle="consumed", verdict=verdict,
+                error=f"continuation pin authentication failed: {exc}",
+            )
+            return "escalate"
         clause = policy.clause_by_id(verdict.clause_id)
         note = (
             f"authority-policy continued same root: "

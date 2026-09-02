@@ -412,11 +412,32 @@ store exposes only immutable release/activation data and honest
 `shared local operator credential` attribution. The database/store current
 read selects the maximum team epoch and reuses the S1 release, activation
 seal, and full-history validators; missing/corrupt/incoherent state is the
-sanitized `policy_store_unavailable` failure. This read surface neither
-creates nor activates policy and reports `can_mutate=false` in both empty and
-active responses. Its activation guard remains not ready with
+sanitized `policy_store_unavailable` failure. The S2 read itself neither
+creates nor activates policy. S3 exposes immutable release creation and thus
+truthfully reports `can_mutate=true` in both empty and active responses; that
+capability never implies activation. Its activation guard remains not ready with
 `TASK-6335 production verification required`; runtime injection and candidate
 pin production integration remain later slices.
+
+**Dark policy mutation API (S3).** `POST .../releases` server-owns the exact
+Engineering team/policy identity and next version, validates the closed typed
+clause vocabulary (all protected/mechanical clauses, unique ids, exact
+category/action pairs, one continuation clause), byte-exact canonical phrase,
+bounded nonblank prose/JSON, and secret-shaped input rejection, then derives
+the canonical APR id/digest. It appends the immutable release and one
+`config:authority-policy:engineering` conventional audit receipt atomically;
+the audit contains only ids, digests, action, team, and shared-local-operator
+attribution, with that closed receipt derived and verified at the transaction
+owner rather than accepted from a caller. The transaction resolves a request
+id's exact request-digest replay before validating the mutable active base; a
+new request still validates that base and a changed digest still conflicts.
+`POST .../activations` accepts the CAS/reactivation contract but, while the
+stable production-verification guard is closed, returns `412
+activation_guard_not_ready` before any release lookup or write, leaving zero
+activation/audit residue and no guessed-release oracle. The S1 store owns the
+separately testable sealed CAS, exact replay, stale epoch, same-team linkage,
+and older-version rollback transaction for the later guard opening; no route
+SQL, runtime injection, or production activation is added.
 
 Release identity is derived at the typed store boundary, never supplied as a
 second caller-controlled authority. Its canonical JSON and SHA-256 cover
@@ -1310,9 +1331,24 @@ unit puts executor language/package caches below each agent workspace's
 but ``.happyranch/cache`` is not cleanup-eligible and this unit
 grants no new cleanup authority. Cache setup refuses symlinked child components
 and fails closed without falling back to ``/tmp``; same-UID post-validation
-races remain because the workspace is not an OS isolation boundary. ``TMPDIR``
-and small callback payload contracts are unchanged, and automatic
-temporary-file cleanup is not implemented.
+races remain because the workspace is not an OS isolation boundary.
+Task-agent and job launches prepare a canonical per-task mode-0700
+``.happyranch/task-tmp/TASK-N`` root, inject it through
+``TMPDIR``/``TMP``/``TEMP``, and atomically append bounded
+required-versus-observed producer evidence to a separate v1 manifest under
+``.happyranch/task-scratch-manifests``. Every executor branch, including
+generic and registered custom adapters, consumes the shared environment seam;
+the job runner applies the same contract before subprocess creation.
+Containment-variable/sidecar drift fails closed through existing task/job
+error and audit handling while unrelated environment survives.
+
+The manifest reader is report-only: missing, corrupt, and stale observations
+are evidence, not repair or cleanup triggers. No teardown or periodic cleanup
+path imports or consumes this manifest, no deletion eligibility changes, and
+no file removal is activated. Later deletion remains separately gated on the
+existing THR-090 zombie-reaper lifecycle evidence plus immediate fail-closed
+OS process/cwd/open-file checks; Git/repository evidence remains a skip rule.
+Small daemon callback payload contracts are unchanged.
 
 1. **Measures** the OWNING AGENT's workspace with an explicit bounded,
    fail-open budget: one true wall-clock deadline shared across all
@@ -1893,3 +1929,29 @@ canonical skill store + symlink materialization path.
 - Add new daemon routes
 - Add a web admin UI
 - Delete ``protocol/skills/`` directories (reversible via flag)
+### Active manager policy prompt and evaluator pin (THR-181 S4)
+
+For Engineering only, the runtime resolves the authenticated current immutable
+authority-policy release at each launch producer and renders one server-reserved,
+clearly delimited section containing release id, version, digest, clauses, and the
+exact canonical continuation phrase. The task, thread (new/resumed/fallback), wake,
+dream, and schedule producers all consume this resolver. Only the eligible
+`engineering_manager` receives it; worker prompt bytes omit it. Agent-authored
+system/brief/role material and thread history/deltas, schedule briefs, wake
+routines, and dream history/audit inputs using the reserved header or either
+delimiter marker are rejected before launch. Absence of an
+activation is the compatible ordinary-launch state; corrupt or incoherent active
+history fails closed.
+
+Each eligible task launch persists the exact authenticated release/activation
+identity rendered in that session (or an explicit static-mode receipt) in the
+existing append-only audit structure. The authority hook reads that session
+receipt and never resolves mutable current activation. At the hook, a DB-backed
+policy candidate and its S1 policy pin are one
+transaction. The pin binds immutable release and activation epoch plus evaluator
+provider/executor; candidate identity binds exact policy, prompt/template, and
+model id/version/digests. Evaluation uses the authenticated pinned release snapshot,
+re-authenticating the persisted pin and immutable release before evaluation
+recording and continuation commit. A newly DB-backed candidate
+without a valid pin fails closed. Historical static-policy candidates retain their
+documented unpinned compatibility behavior and are never backfilled.

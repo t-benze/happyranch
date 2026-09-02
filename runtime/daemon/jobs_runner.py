@@ -19,6 +19,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from runtime.orchestrator.executors import _sanitize_child_env
+from runtime.orchestrator.task_scratch import (
+    activate_task_scratch,
+    apply_task_scratch_environment,
+    prepare_task_scratch,
+    reset_task_scratch,
+)
 
 if TYPE_CHECKING:
     from runtime.orchestrator.orchestrator import Orchestrator
@@ -307,6 +313,8 @@ async def run_job(
     max_runtime_seconds: int | None,
     publish: Callable[[dict], None],
     max_output_bytes: int | None = None,
+    task_id: str | None = None,
+    workspace_root: str | None = None,
 ) -> JobRunResult:
     """Spawn the script, pump streams, return JobRunResult.
 
@@ -330,20 +338,28 @@ async def run_job(
         raise FileNotFoundError(f"interpreter unavailable: {interpreter}")
 
     started = datetime.now(timezone.utc)
-    proc = await asyncio.create_subprocess_exec(
-        binary,
-        "-",  # read script from stdin (bash/sh/zsh/python3 all honor this)
-        cwd=cwd,
-        # Sanitize inherited venv/uv vars (VIRTUAL_ENV, UV_PROJECT_ENVIRONMENT)
-        # before passing to the child so job scripts cannot accidentally steer
-        # package installation into the canonical shared venv.
-        # dict() is required: uvloop rejects os.environ (Mapping) with TypeError.
-        env=_sanitize_child_env(dict(os.environ)),
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,
-    )
+    scratch_token = None
+    if task_id is not None and workspace_root is not None:
+        scratch = prepare_task_scratch(
+            workspace=Path(workspace_root), task_id=task_id,
+            producer_kind="job", producer_id=job_id or "anonymous",
+        )
+        scratch_token = activate_task_scratch(scratch)
+    try:
+        child_env = apply_task_scratch_environment(_sanitize_child_env(dict(os.environ)))
+        proc = await asyncio.create_subprocess_exec(
+            binary,
+            "-",  # read script from stdin (bash/sh/zsh/python3 all honor this)
+            cwd=cwd,
+            env=child_env,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+    finally:
+        if scratch_token is not None:
+            reset_task_scratch(scratch_token)
     if job_id is not None:
         _INFLIGHT[job_id] = proc
 

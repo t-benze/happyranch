@@ -14,6 +14,116 @@ def test_submit_task_returns_id(tmp_home, app, auth_headers) -> None:
     assert r.json()["task_id"].startswith("TASK-")
 
 
+def test_manager_policy_identity_connected_launch_completion_hook(
+    client_with_runtime, monkeypatch,
+) -> None:
+    """S4 shipping proof: real launch -> HTTP completion -> hook -> pin."""
+    from unittest.mock import MagicMock, patch
+    from runtime.models import TaskStatus
+    from runtime.orchestrator.authority import StrictFakeAuthorityEvaluator, run_authority_hook
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    from runtime.orchestrator.executors import ExecutorResult
+    from runtime.orchestrator.teams import TeamManager
+    from tests.authority_policy_test_factory import activate_test_policy
+    from tests.conftest import seed_test_agents
+
+    client, org = client_with_runtime
+    manager = "engineering_manager"
+    paths = org.orchestrator._paths
+    seed_test_agents(paths, (manager,))
+    workspace = paths.workspaces_dir / manager
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "task_history.md").write_text(f"# Task History: {manager}\n")
+    org.orchestrator._teams._teams["engineering"] = TeamManager(
+        name=manager, team="engineering", workers=("dev_agent",),
+    )
+    evaluator = StrictFakeAuthorityEvaluator()
+    evaluator.provider_id = "strict-fake"
+    evaluator._executor_kind = "test"
+    org.orchestrator._authority_evaluator = evaluator
+    org.orchestrator._host_supervisor = None
+    release, activation = activate_test_policy(org.db)
+    task_id = org.orchestrator.create_task("manager policy handoff")
+    org.db.update_task(
+        task_id, assigned_agent=manager, status=TaskStatus.IN_PROGRESS,
+        orchestration_step_count=1,
+    )
+    monkeypatch.setattr(org.orchestrator, "_build_session_id", lambda: "sess-connected")
+    captured = {}
+    executor = MagicMock()
+
+    def run(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        kwargs["on_started"](4242)
+        response = client.post(
+            f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+            json={"session_id": "sess-connected", "agent": manager,
+                  "status": "completed", "confidence": 90,
+                  "output_summary": "escalate",
+                  "decision": {"action": "escalate", "reason":
+                    "routine same-root follow-through of the already-completed slice"}},
+        )
+        assert response.status_code == 200, response.text
+        return ExecutorResult(success=True, duration_seconds=1, session_id="provider-session")
+
+    executor.run.side_effect = run
+    with patch.object(org.orchestrator, "_build_executor", return_value=executor):
+        result, report = org.orchestrator._run_agent(task_id, manager, "decide")
+    assert result.success and report is not None
+    assert release.id in captured["prompt"]
+    row = org.db.get_latest_task_result(task_id, manager, "sess-connected")
+    assert row is not None
+
+    # Activation changes after launch must not change the session-authenticated release.
+    activate_test_policy(
+        org.db, version=2, epoch=2,
+        previous_activation_id=activation.id, expected_previous_epoch=1,
+    )
+    reason = "routine same-root follow-through of the already-completed slice"
+    outcome = run_authority_hook(
+        org.orchestrator, org.db.get_task(task_id), manager, reason, row["id"],
+    )
+    diagnostics = [
+        entry for entry in org.db.get_audit_logs(task_id)
+        if entry["action"] == "authority_hook"
+    ]
+    assert outcome == "continue_same_root", diagnostics[-1]["payload"].get("error")
+    candidates = org.db.list_authority_candidates_for_root(task_id)
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    pin = AuthorityPolicyStore(org.db).get_candidate_pin(candidate.id)
+    assert pin is not None
+    assert (pin.release_id, pin.activation_id, pin.activation_epoch) == (
+        release.id, activation.id, activation.epoch,
+    )
+    assert (candidate.policy_id, candidate.policy_version, candidate.policy_digest) == (
+        release.policy_id, str(release.version), release.policy_digest,
+    )
+    assert (pin.provider_id, pin.executor_kind) == ("strict-fake", "test")
+    assert org.db.get_authority_evaluation(candidate.id) is not None
+    envelope = org.db.get_active_authority_continue_envelope(task_id)
+    assert envelope is not None
+    assert [event.event_type for event in org.db.list_authority_audit(candidate.id)] == [
+        "candidate_claimed", "evaluation_recorded", "candidate_consumed",
+    ]
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["payload"]["outcome"] == "continued_same_root"
+
+    # A second file-backed reader authenticates the same immutable release and
+    # pin, proving the handoff is not process-memory state.
+    from runtime.infrastructure.database import Database
+    reopened = Database(paths.db_path)
+    try:
+        assert AuthorityPolicyStore(reopened).get_candidate_pin(candidate.id) == pin
+        assert reopened.get_active_authority_continue_envelope(task_id)["id"] == envelope["id"]
+    finally:
+        reopened.close()
+    assert run_authority_hook(
+        org.orchestrator, org.db.get_task(task_id), manager, reason, row["id"],
+    ) == "escalate"
+    assert len(org.db.list_authority_candidates_for_root(task_id)) == 1
+
+
 def test_submit_task_idle_returns_409(tmp_home, app_idle, auth_headers) -> None:
     r = TestClient(app_idle).post(
         "/api/v1/orgs/alpha/tasks",

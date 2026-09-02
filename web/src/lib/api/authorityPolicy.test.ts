@@ -11,7 +11,7 @@ import { request } from './client';
 const empty = {
   team: 'engineering',
   target_manager: 'engineering_manager',
-  can_mutate: false,
+  can_mutate: true,
   bootstrap_required: true,
   activation_guard: {
     ready: false,
@@ -22,18 +22,18 @@ const empty = {
 describe('team escalation policy response contract', () => {
   beforeEach(() => vi.mocked(request).mockReset());
 
-  it('narrows can_mutate to literal false and decodes the read-only response', async () => {
-    expectTypeOf<TeamEscalationPolicyResponse['can_mutate']>().toEqualTypeOf<false>();
+  it('narrows can_mutate to literal true for immutable release creation', async () => {
+    expectTypeOf<TeamEscalationPolicyResponse['can_mutate']>().toEqualTypeOf<true>();
     vi.mocked(request).mockResolvedValue(empty);
 
     await expect(getTeamEscalationPolicy('alpha', 'engineering_manager'))
       .resolves.toEqual(empty);
   });
 
-  it('rejects a server response that advertises mutation capability', () => {
+  it('rejects a server response that withdraws release creation', () => {
     expect(() => decodeTeamEscalationPolicyResponse({
       ...empty,
-      can_mutate: true,
+      can_mutate: false,
     })).toThrow('Invalid team escalation policy response');
   });
 });

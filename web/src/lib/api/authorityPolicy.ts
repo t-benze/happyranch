@@ -10,7 +10,8 @@ export interface AuthorityPolicyClause {
 export interface TeamEscalationPolicyResponse {
   team: 'engineering';
   target_manager: 'engineering_manager';
-  can_mutate: false;
+  /** Immutable release creation is exposed; activation remains guard-closed. */
+  can_mutate: true;
   bootstrap_required?: true;
   activation_guard: { ready: false; reason: string };
   active?: {
@@ -40,7 +41,7 @@ export function decodeTeamEscalationPolicyResponse(
   if (
     !value ||
     typeof value !== 'object' ||
-    (value as { can_mutate?: unknown }).can_mutate !== false
+    (value as { can_mutate?: unknown }).can_mutate !== true
   ) {
     throw new Error('Invalid team escalation policy response');
   }
