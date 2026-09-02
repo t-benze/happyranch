@@ -99,6 +99,19 @@ def test_real_systemd_harness_is_zero_skip_and_uses_only_pinned_peer_artifacts()
     assert result.returncode == 0, result.stderr
 
 
+def test_real_systemd_harness_uses_headscale_025_policy_schema() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    assert '"proto":"*"' in harness
+    assert '"proto":["*"]' not in harness
+
+
+def test_real_systemd_early_failure_cleanup_does_not_treat_exited_fixture_as_residue() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    assert "wait_status" not in harness
+    assert 'cp "$work/$log.log" "$diagnostics/$log.log"' in harness
+    assert harness.index('cp "$work/$log.log" "$diagnostics/$log.log"') < harness.index('rm -rf "$work"')
+
+
 def test_composite_service_manager_executes_start_ready_stop_crash_restart() -> None:
     events: list[tuple[str, ...]] = []
     active = {"happyranch-connector.service": False, "happyranch-tsnet-sidecar.service": False}

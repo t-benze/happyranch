@@ -42,7 +42,7 @@ package_sha="$(sha256sum "$PACKAGE_TAR" | cut -d' ' -f1)"
 python "$evidence_driver" init "$evidence_artifact" --git-head "$PROOF_SUBJECT_SHA" --package-sha256 "$package_sha" --run-id "$run_id"
 headscale_pid=""; peer_pid=""; daemon_pid=""
 cleanup() {
-  local original_status=$? cleanup_failed=0 wait_status=0
+  local original_status=$? cleanup_failed=0
   set +e
   sudo systemctl stop happyranch-managed.target
   if [[ -n "${sidecar_ip:-}" ]] && [[ -n "$peer_pid" ]] && sudo kill -0 "$peer_pid" 2>/dev/null; then
@@ -58,8 +58,9 @@ cleanup() {
   done
   for pid in "$peer_pid" "$daemon_pid" "$headscale_pid"; do
     if [[ -n "$pid" ]]; then
-      wait "$pid" 2>/dev/null; wait_status=$?
-      [[ "$wait_status" -eq 143 || "$wait_status" -eq 0 ]] || cleanup_failed=1
+      # The primary failure may be the fixture exiting before teardown. Reap
+      # it, but determine residue from liveness after the reap, not exit code.
+      wait "$pid" 2>/dev/null
     fi
     [[ -z "$pid" ]] || ! sudo kill -0 "$pid" 2>/dev/null || cleanup_failed=1
   done
@@ -139,7 +140,7 @@ policy:
   mode: file
   path: $work/hs/policy.json
 EOF
-printf '%s\n' '{"acls":[{"action":"accept","src":["*"],"dst":["*:*"],"proto":["*"]}]}' >"$work/hs/policy.json"
+printf '%s\n' '{"acls":[{"action":"accept","src":["*"],"dst":["*:*"],"proto":"*"}]}' >"$work/hs/policy.json"
 sudo install -m 0644 "$work/tls/cert.pem" /usr/local/share/ca-certificates/happyranch-n3-ci.crt
 sudo update-ca-certificates >/dev/null
 "$work/headscale" serve --config "$work/hs/config.yaml" >"$work/headscale.log" 2>&1 & headscale_pid=$!
