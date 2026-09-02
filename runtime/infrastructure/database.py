@@ -16,7 +16,10 @@ from runtime.models import (
     AuthorityAuditEventType,
     AuthorityAuditPayload,
     AuthorityCandidate,
+    AuthorityCandidatePolicyPin,
     AuthorityEvaluation,
+    AuthorityPolicyActivation,
+    AuthorityPolicyRelease,
     AuthorityFenceResult,
     AuthorityRedactionClass,
     AuthorityRetentionClass,
@@ -132,6 +135,77 @@ _AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL = """
                          AND NEW.consumed_at IS OLD.consumed_at)
                     );
                 END;
+"""
+
+
+_AUTHORITY_POLICY_ACTIVATIONS_VALIDATE_INSERT_SQL = """
+CREATE TRIGGER authority_policy_activations_validate_insert
+BEFORE INSERT ON authority_policy_activations
+BEGIN
+    SELECT RAISE(ABORT, 'authority activation release/team mismatch')
+    WHERE NOT EXISTS (SELECT 1 FROM authority_policy_releases r
+                      WHERE r.id=NEW.release_id AND r.team=NEW.team);
+    SELECT RAISE(ABORT, 'authority activation predecessor mismatch')
+    WHERE (
+        (SELECT COUNT(*) FROM authority_policy_activations a
+         WHERE a.team=NEW.team)=0
+        AND (NEW.epoch!=1 OR NEW.previous_activation_id IS NOT NULL
+             OR NEW.expected_previous_epoch NOT IN (0))
+    ) OR (
+        (SELECT COUNT(*) FROM authority_policy_activations a
+         WHERE a.team=NEW.team)>0
+        AND NOT EXISTS (
+            SELECT 1 FROM authority_policy_activations a
+            WHERE a.id=NEW.previous_activation_id AND a.team=NEW.team
+              AND a.epoch=NEW.expected_previous_epoch
+              AND NEW.epoch=a.epoch+1
+              AND a.epoch=(SELECT MAX(last.epoch)
+                           FROM authority_policy_activations last
+                           WHERE last.team=NEW.team))
+    );
+    SELECT RAISE(ABORT, 'authority activation action/history mismatch')
+    WHERE (
+        (SELECT COUNT(*) FROM authority_policy_activations a
+         WHERE a.team=NEW.team)=0
+        AND NEW.action!='bootstrap'
+    ) OR (
+        (SELECT COUNT(*) FROM authority_policy_activations a
+         WHERE a.team=NEW.team)>0
+        AND (
+            NEW.action='bootstrap'
+            OR (NEW.action='activate' AND EXISTS (
+                SELECT 1 FROM authority_policy_activations a
+                WHERE a.team=NEW.team AND a.release_id=NEW.release_id
+            ))
+            OR (NEW.action='reactivate_rollback' AND (
+                NOT EXISTS (
+                    SELECT 1 FROM authority_policy_activations a
+                    WHERE a.team=NEW.team AND a.release_id=NEW.release_id
+                )
+                OR NEW.release_id=(
+                    SELECT a.release_id FROM authority_policy_activations a
+                    WHERE a.team=NEW.team ORDER BY a.epoch DESC LIMIT 1
+                )
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM authority_policy_releases target
+                    JOIN authority_policy_activations current_activation
+                      ON current_activation.team=NEW.team
+                     AND current_activation.epoch=(
+                         SELECT MAX(last.epoch)
+                         FROM authority_policy_activations last
+                         WHERE last.team=NEW.team
+                     )
+                    JOIN authority_policy_releases current
+                      ON current.id=current_activation.release_id
+                    WHERE target.id=NEW.release_id
+                      AND target.policy_id=current.policy_id
+                      AND target.version<current.version
+                )
+            ))
+        )
+    );
+END;
 """
 
 
@@ -480,7 +554,9 @@ class Database:
         self._migrate_drop_talk_surface_if_needed()
         self._retire_skill_lifecycle_if_present()
         self._create_tables()
+        self._migrate_dark_authority_activation_seal_if_needed()
         self._create_authority_tables()
+        self._retrofit_authority_policy_activation_trigger_if_needed()
         self._retrofit_authority_audit_fk_if_needed()
         self._retrofit_authority_lifecycle_trigger_if_needed()
         self._ensure_task_attachments_storage_key_unique()
@@ -2003,6 +2079,63 @@ class Database:
         the persistence API below.
         """
         self._conn.executescript(f"""
+            CREATE TABLE IF NOT EXISTS authority_policy_releases (
+                id TEXT PRIMARY KEY,
+                team TEXT NOT NULL,
+                policy_id TEXT NOT NULL,
+                version INTEGER NOT NULL CHECK(version > 0),
+                title TEXT NOT NULL,
+                normative_text TEXT NOT NULL,
+                clauses_json TEXT NOT NULL,
+                continuation_phrase TEXT NOT NULL,
+                canonical_payload_json TEXT NOT NULL,
+                policy_digest TEXT NOT NULL UNIQUE,
+                based_on_release_id TEXT REFERENCES authority_policy_releases(id) ON DELETE RESTRICT,
+                actor_kind TEXT NOT NULL CHECK(actor_kind='shared_local_operator_credential'),
+                created_at TEXT NOT NULL,
+                UNIQUE(team, policy_id, version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_releases_team_version
+                ON authority_policy_releases(team, version DESC);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_releases_validate_insert
+                BEFORE INSERT ON authority_policy_releases
+                BEGIN
+                    SELECT RAISE(ABORT, 'authority policy release base/team mismatch')
+                    WHERE NEW.based_on_release_id IS NOT NULL AND NOT EXISTS (
+                        SELECT 1 FROM authority_policy_releases r
+                        WHERE r.id=NEW.based_on_release_id AND r.team=NEW.team);
+                END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_releases_no_update
+                BEFORE UPDATE ON authority_policy_releases
+                BEGIN SELECT RAISE(ABORT, 'authority policy releases are immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_releases_no_delete
+                BEFORE DELETE ON authority_policy_releases
+                BEGIN SELECT RAISE(ABORT, 'authority policy releases cannot be deleted'); END;
+
+            CREATE TABLE IF NOT EXISTS authority_policy_activations (
+                id TEXT PRIMARY KEY,
+                team TEXT NOT NULL,
+                epoch INTEGER NOT NULL CHECK(epoch > 0),
+                release_id TEXT NOT NULL REFERENCES authority_policy_releases(id) ON DELETE RESTRICT,
+                previous_activation_id TEXT REFERENCES authority_policy_activations(id) ON DELETE RESTRICT,
+                expected_previous_epoch INTEGER CHECK(expected_previous_epoch IS NULL OR expected_previous_epoch >= 0),
+                action TEXT NOT NULL CHECK(action IN ('activate','reactivate_rollback','bootstrap')),
+                actor_kind TEXT NOT NULL CHECK(actor_kind='shared_local_operator_credential'),
+                request_id TEXT NOT NULL UNIQUE,
+                request_digest TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                activation_digest TEXT NOT NULL,
+                UNIQUE(team, epoch)
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_activations_team_epoch
+                ON authority_policy_activations(team, epoch DESC);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_activations_no_update
+                BEFORE UPDATE ON authority_policy_activations
+                BEGIN SELECT RAISE(ABORT, 'authority policy activations are immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_activations_no_delete
+                BEFORE DELETE ON authority_policy_activations
+                BEGIN SELECT RAISE(ABORT, 'authority policy activations cannot be deleted'); END;
+
             CREATE TABLE IF NOT EXISTS authority_candidates (
                 id                       TEXT PRIMARY KEY,
                 claim_key                TEXT NOT NULL UNIQUE,
@@ -2072,6 +2205,38 @@ class Database:
                 BEGIN
                     SELECT RAISE(ABORT, 'authority candidate identity is immutable');
                 END;
+
+            CREATE TABLE IF NOT EXISTS authority_candidate_policy_pins (
+                candidate_id TEXT PRIMARY KEY REFERENCES authority_candidates(id) ON DELETE RESTRICT,
+                release_id TEXT NOT NULL REFERENCES authority_policy_releases(id) ON DELETE RESTRICT,
+                activation_id TEXT NOT NULL REFERENCES authority_policy_activations(id) ON DELETE RESTRICT,
+                activation_epoch INTEGER NOT NULL CHECK(activation_epoch > 0),
+                provider_id TEXT NOT NULL,
+                executor_kind TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TRIGGER IF NOT EXISTS authority_candidate_policy_pins_validate_insert
+                BEFORE INSERT ON authority_candidate_policy_pins
+                BEGIN
+                    SELECT RAISE(ABORT, 'authority candidate pin identity mismatch')
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM authority_candidates c
+                        JOIN authority_policy_releases r ON r.id=NEW.release_id
+                        JOIN authority_policy_activations a ON a.id=NEW.activation_id
+                        WHERE c.id=NEW.candidate_id AND c.team=r.team
+                          AND c.team=a.team AND a.release_id=r.id
+                          AND a.epoch=NEW.activation_epoch
+                          AND c.policy_id=r.policy_id
+                          AND c.policy_version=CAST(r.version AS TEXT)
+                          AND c.policy_digest=r.policy_digest
+                    );
+                END;
+            CREATE TRIGGER IF NOT EXISTS authority_candidate_policy_pins_no_update
+                BEFORE UPDATE ON authority_candidate_policy_pins
+                BEGIN SELECT RAISE(ABORT, 'authority candidate policy pins are immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_candidate_policy_pins_no_delete
+                BEFORE DELETE ON authority_candidate_policy_pins
+                BEGIN SELECT RAISE(ABORT, 'authority candidate policy pins cannot be deleted'); END;
 
             CREATE TABLE IF NOT EXISTS authority_evaluations (
                 id                       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2204,7 +2369,40 @@ class Database:
             -- earlier reviewed heads that already carry the weaker trigger body are
             -- upgraded by ``_retrofit_authority_lifecycle_trigger_if_needed``.
             {_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL}
-            """)
+        """)
+        self._conn.commit()
+
+    def _migrate_dark_authority_activation_seal_if_needed(self) -> None:
+        """Upgrade only an empty interrupted-development activation table.
+
+        S1 is unmerged and dark.  A pre-seal table containing rows has no
+        truthful stored activation seal to preserve, so reopening fails closed
+        instead of inventing provenance.  Empty interrupted tables can safely
+        receive the final required column before normal creation resumes.
+        """
+        exists = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='authority_policy_activations'"
+        ).fetchone()
+        if exists is None:
+            return
+        columns = {
+            row["name"] for row in self._conn.execute(
+                "PRAGMA table_info(authority_policy_activations)"
+            )
+        }
+        if "activation_digest" in columns:
+            return
+        if self._conn.execute(
+            "SELECT 1 FROM authority_policy_activations LIMIT 1"
+        ).fetchone() is not None:
+            raise ValueError(
+                "populated dark authority activations lack truthful activation_digest"
+            )
+        self._conn.execute(
+            "ALTER TABLE authority_policy_activations "
+            "ADD COLUMN activation_digest TEXT NOT NULL"
+        )
         self._conn.commit()
 
     def _retrofit_authority_audit_fk_if_needed(self) -> None:
@@ -2307,6 +2505,36 @@ class Database:
                 "BEFORE DELETE ON authority_audit "
                 "BEGIN SELECT RAISE(ABORT, 'authority audit is append-only'); END;"
             )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def _retrofit_authority_policy_activation_trigger_if_needed(self) -> None:
+        """Create or retrofit the activation validator without per-open DDL.
+
+        The full normalized stored definition is compared with the canonical
+        statement, rather than checking one repaired predicate, so any absent,
+        legacy, or otherwise stale trigger is rebuilt exactly once. A database
+        that already carries the canonical trigger returns before DROP/CREATE,
+        preserving ordinary-open WAL/SHM history.
+        """
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger'"
+            " AND name='authority_policy_activations_validate_insert'"
+        ).fetchone()
+
+        def normalized(sql: str) -> str:
+            return " ".join(sql.strip().removesuffix(";").split())
+
+        expected = normalized(_AUTHORITY_POLICY_ACTIVATIONS_VALIDATE_INSERT_SQL)
+        if row is not None and normalized(row["sql"]) == expected:
+            return
+        try:
+            self._conn.execute(
+                "DROP TRIGGER IF EXISTS authority_policy_activations_validate_insert"
+            )
+            self._conn.execute(_AUTHORITY_POLICY_ACTIVATIONS_VALIDATE_INSERT_SQL)
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -10674,6 +10902,286 @@ class Database:
     # credentials, task prose, and unredacted model exchanges are never
     # accepted or persisted.
 
+    def _authority_policy_release_from_row(self, row) -> AuthorityPolicyRelease:
+        try:
+            release = AuthorityPolicyRelease.model_validate(dict(row))
+        except ValueError as exc:
+            raise ValueError("authority policy release has corrupt digest or semantics") from exc
+        canonical_digest = hashlib.sha256(
+            release.canonical_payload_json.encode("utf-8")
+        ).hexdigest()
+        if canonical_digest != release.policy_digest:
+            raise ValueError(f"authority policy release {release.id!r} has a corrupt digest")
+        return release
+
+    def _authority_policy_activation_from_row(self, row) -> AuthorityPolicyActivation:
+        try:
+            activation = AuthorityPolicyActivation.model_validate(dict(row))
+        except ValueError as exc:
+            raise ValueError("authority policy activation has corrupt digest or semantics") from exc
+        release = self.get_authority_policy_release(activation.release_id)
+        if release is None or release.team != activation.team:
+            raise ValueError(f"authority policy activation {activation.id!r} has corrupt linkage")
+        self._validate_authority_activation_history(activation)
+        return activation
+
+    def _validate_authority_activation_history(
+        self, receipt: AuthorityPolicyActivation
+    ) -> None:
+        """Replay the sealed team history through the requested receipt."""
+        rows = self._conn.execute(
+            "SELECT * FROM authority_policy_activations "
+            "WHERE team=? AND epoch<=? ORDER BY epoch",
+            (receipt.team, receipt.epoch),
+        ).fetchall()
+        if len(rows) != receipt.epoch or not rows:
+            raise ValueError(f"authority policy activation {receipt.id!r} has corrupt history")
+        prior = None
+        activated_release_ids: set[str] = set()
+        for expected_epoch, row in enumerate(rows, 1):
+            try:
+                item = AuthorityPolicyActivation.model_validate(dict(row))
+            except ValueError as exc:
+                raise ValueError("authority policy activation history is corrupt") from exc
+            release = self.get_authority_policy_release(item.release_id)
+            if release is None or release.team != item.team or item.epoch != expected_epoch:
+                raise ValueError("authority policy activation history linkage is corrupt")
+            if prior is None:
+                valid = (
+                    item.action == "bootstrap"
+                    and item.previous_activation_id is None
+                    and item.expected_previous_epoch in (None, 0)
+                )
+            else:
+                valid = (
+                    item.previous_activation_id == prior.id
+                    and item.expected_previous_epoch == prior.epoch
+                    and item.action != "bootstrap"
+                )
+                if valid and item.action == "activate":
+                    valid = item.release_id not in activated_release_ids
+                elif valid and item.action == "reactivate_rollback":
+                    current = self.get_authority_policy_release(prior.release_id)
+                    valid = (
+                        item.release_id in activated_release_ids
+                        and item.release_id != prior.release_id
+                        and current is not None
+                        and release.policy_id == current.policy_id
+                        and release.version < current.version
+                    )
+            if not valid:
+                raise ValueError("authority policy activation history semantics are corrupt")
+            activated_release_ids.add(item.release_id)
+            prior = item
+        if prior is None or prior.id != receipt.id:
+            raise ValueError(f"authority policy activation {receipt.id!r} has corrupt history")
+
+    @_synchronized
+    def create_authority_policy_release(self, release: AuthorityPolicyRelease) -> AuthorityPolicyRelease:
+        """Append an immutable release, idempotent only for an exact record."""
+        # Pydantic intentionally reuses an already-constructed model instance.
+        # Rebuild from a deep primitive snapshot so post-validation mutation,
+        # including a nested value smuggled into a typed field, cannot bypass
+        # canonical semantic identity validation at the durable boundary.
+        release = AuthorityPolicyRelease.model_validate(
+            release.model_dump(mode="python", round_trip=True, warnings=False)
+        )
+        expected = hashlib.sha256(release.canonical_payload_json.encode("utf-8")).hexdigest()
+        if expected != release.policy_digest:
+            raise ValueError("policy_digest does not match canonical_payload_json")
+        values = release.model_dump(mode="json")
+        try:
+            self._conn.execute(
+                """INSERT INTO authority_policy_releases
+                   (id,team,policy_id,version,title,normative_text,clauses_json,
+                    continuation_phrase,canonical_payload_json,policy_digest,
+                    based_on_release_id,actor_kind,created_at)
+                   VALUES (:id,:team,:policy_id,:version,:title,:normative_text,
+                           :clauses_json,:continuation_phrase,:canonical_payload_json,
+                           :policy_digest,:based_on_release_id,:actor_kind,:created_at)""",
+                values,
+            )
+            self._conn.commit()
+        except sqlite3.IntegrityError:
+            self._conn.rollback()
+            row = self._conn.execute(
+                "SELECT * FROM authority_policy_releases WHERE id=? OR policy_digest=?",
+                (release.id, release.policy_digest),
+            ).fetchone()
+            if row is not None and dict(row) == values:
+                return release
+            raise
+        return release
+
+    @_synchronized
+    def get_authority_policy_release(self, release_id: str) -> AuthorityPolicyRelease | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_releases WHERE id=?", (release_id,)
+        ).fetchone()
+        return None if row is None else self._authority_policy_release_from_row(row)
+
+    @_synchronized
+    def activate_authority_policy(
+        self, activation: AuthorityPolicyActivation
+    ) -> AuthorityPolicyActivation:
+        """Append the next team epoch under BEGIN IMMEDIATE CAS semantics."""
+        # Rebuild from a deep primitive snapshot without generating a seal.
+        # Missing, malformed, or mismatched receipts fail before BEGIN, even
+        # when a caller bypassed Pydantic's assignment guard.
+        activation = AuthorityPolicyActivation.model_validate(
+            activation.model_dump(mode="python", round_trip=True, warnings=False)
+        )
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            duplicate = self._conn.execute(
+                "SELECT * FROM authority_policy_activations WHERE request_id=?",
+                (activation.request_id,),
+            ).fetchone()
+            if duplicate is not None:
+                persisted = self._authority_policy_activation_from_row(duplicate)
+                if persisted.model_dump(mode="json") != activation.model_dump(mode="json"):
+                    raise sqlite3.IntegrityError("authority activation idempotency mismatch")
+                self._conn.commit()
+                return persisted
+            previous = self._conn.execute(
+                "SELECT * FROM authority_policy_activations WHERE team=? ORDER BY epoch DESC LIMIT 1",
+                (activation.team,),
+            ).fetchone()
+            previous_epoch = None if previous is None else previous["epoch"]
+            expected_epoch = activation.expected_previous_epoch
+            if previous is None:
+                if expected_epoch not in (None, 0) or activation.epoch != 1 or activation.previous_activation_id is not None:
+                    raise sqlite3.IntegrityError("authority activation bootstrap CAS conflict")
+                if activation.action != "bootstrap":
+                    raise sqlite3.IntegrityError("first authority activation must be bootstrap")
+            elif (
+                expected_epoch != previous_epoch
+                or activation.epoch != previous_epoch + 1
+                or activation.previous_activation_id != previous["id"]
+            ):
+                raise sqlite3.IntegrityError("authority activation CAS conflict")
+            elif activation.action == "bootstrap":
+                raise sqlite3.IntegrityError("authority bootstrap is forbidden after history exists")
+            else:
+                previously_activated = self._conn.execute(
+                    "SELECT 1 FROM authority_policy_activations WHERE team=? AND release_id=? LIMIT 1",
+                    (activation.team, activation.release_id),
+                ).fetchone() is not None
+                if activation.action == "activate" and previously_activated:
+                    raise sqlite3.IntegrityError("activate target was previously activated")
+                if activation.action == "reactivate_rollback" and (
+                    not previously_activated or activation.release_id == previous["release_id"]
+                ):
+                    raise sqlite3.IntegrityError("reactivation target is not a non-current prior release")
+                if activation.action == "reactivate_rollback":
+                    older = self._conn.execute(
+                        """SELECT 1
+                           FROM authority_policy_releases target
+                           JOIN authority_policy_releases current ON current.id=?
+                           WHERE target.id=?
+                             AND target.policy_id=current.policy_id
+                             AND target.version<current.version""",
+                        (previous["release_id"], activation.release_id),
+                    ).fetchone()
+                    if older is None:
+                        raise sqlite3.IntegrityError(
+                            "reactivation rollback target is not an older policy version"
+                        )
+            self._conn.execute(
+                """INSERT INTO authority_policy_activations
+                   (id,team,epoch,release_id,previous_activation_id,
+                    expected_previous_epoch,action,actor_kind,request_id,
+                    request_digest,created_at,activation_digest)
+                   VALUES (:id,:team,:epoch,:release_id,:previous_activation_id,
+                           :expected_previous_epoch,:action,:actor_kind,:request_id,
+                           :request_digest,:created_at,:activation_digest)""",
+                activation.model_dump(mode="json"),
+            )
+            self._conn.commit()
+            return activation
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def get_authority_policy_activation(self, activation_id: str) -> AuthorityPolicyActivation | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_activations WHERE id=?", (activation_id,)
+        ).fetchone()
+        return None if row is None else self._authority_policy_activation_from_row(row)
+
+    @_synchronized
+    def get_authority_candidate_policy_pin(
+        self, candidate_id: str
+    ) -> AuthorityCandidatePolicyPin | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_candidate_policy_pins WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        pin = AuthorityCandidatePolicyPin.model_validate(dict(row))
+        # Re-resolve every immutable identity on reads; missing/corrupt linkage
+        # fails closed even if a damaged database bypassed normal FK/triggers.
+        linked = self._conn.execute(
+            """SELECT 1 FROM authority_candidates c
+               JOIN authority_policy_releases r ON r.id=?
+               JOIN authority_policy_activations a ON a.id=?
+               WHERE c.id=? AND c.team=r.team AND c.team=a.team
+                 AND a.release_id=r.id AND a.epoch=?
+                 AND c.policy_id=r.policy_id
+                 AND c.policy_version=CAST(r.version AS TEXT)
+                 AND c.policy_digest=r.policy_digest""",
+            (pin.release_id, pin.activation_id, pin.candidate_id, pin.activation_epoch),
+        ).fetchone()
+        if linked is None:
+            raise ValueError(f"authority candidate policy pin {candidate_id!r} is corrupt")
+        self.get_authority_policy_release(pin.release_id)
+        activation = self.get_authority_policy_activation(pin.activation_id)
+        if activation is None:
+            raise ValueError(f"authority candidate policy pin {candidate_id!r} is corrupt")
+        return pin
+
+    @_synchronized
+    def claim_authority_candidate_with_policy_pin(
+        self,
+        *,
+        release_id: str,
+        activation_id: str,
+        activation_epoch: int,
+        provider_id: str,
+        executor_kind: str,
+        **candidate_kwargs,
+    ) -> tuple[AuthorityCandidate, AuthorityCandidatePolicyPin]:
+        """Dark S1 API: atomically insert exactly one candidate and its pin."""
+        if not provider_id or not executor_kind:
+            raise ValueError("provider_id and executor_kind must be non-empty")
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            candidate_id, won = self.claim_authority_candidate(
+                **candidate_kwargs, _commit=False
+            )
+            if not won:
+                raise sqlite3.IntegrityError("candidate policy pin claim already exists")
+            now = datetime.now(timezone.utc).isoformat()
+            self._conn.execute(
+                """INSERT INTO authority_candidate_policy_pins
+                   (candidate_id,release_id,activation_id,activation_epoch,
+                    provider_id,executor_kind,created_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (candidate_id, release_id, activation_id, activation_epoch,
+                 provider_id, executor_kind, now),
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        candidate = self.get_authority_candidate(candidate_id)
+        pin = self.get_authority_candidate_policy_pin(candidate_id)
+        if candidate is None or pin is None:
+            raise RuntimeError("atomic authority candidate policy pin write disappeared")
+        return candidate, pin
+
     @_synchronized
     def claim_authority_candidate(
         self,
@@ -10698,6 +11206,7 @@ class Database:
         snapshot_retention_class: str = "digest_only",
         snapshot_redaction_class: str = "redacted",
         fence_results: dict | None = None,
+        _commit: bool = True,
     ) -> tuple[str, bool]:
         """Deterministic, barrier-ready CAS claim/create contract.
 
@@ -10851,7 +11360,8 @@ class Database:
                     "the deterministic immutable claim tuple"
                 ) from exc
             raise
-        self._conn.commit()
+        if _commit:
+            self._conn.commit()
         return candidate_id, cur.rowcount == 1
 
     @_synchronized

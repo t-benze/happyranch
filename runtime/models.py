@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from enum import StrEnum
 
@@ -1111,6 +1113,170 @@ class AuthorityCandidate(BaseModel):
     @classmethod
     def _versions_are_bounded(cls, value, info):
         return validate_authority_version(value, info.field_name)
+
+
+class AuthorityPolicyRelease(BaseModel):
+    """One immutable authored team-policy release.
+
+    The digest covers exactly policy_id, version, team, title,
+    normative_text, clauses, and continuation_phrase. Release ancestry,
+    actor attribution, and creation time are receipts and are deliberately
+    outside that semantic identity.
+    """
+    model_config = {"extra": "forbid", "frozen": True}
+
+    id: str
+    team: str
+    policy_id: str
+    version: int = Field(gt=0)
+    title: str
+    normative_text: str
+    clauses_json: str
+    continuation_phrase: str
+    canonical_payload_json: str
+    policy_digest: str
+    based_on_release_id: str | None = None
+    actor_kind: Literal["shared_local_operator_credential"]
+    created_at: datetime = Field(default_factory=_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_and_validate_semantic_identity(cls, raw):
+        if not isinstance(raw, dict):
+            return raw
+        values = dict(raw)
+        try:
+            clauses = json.loads(values["clauses_json"])
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("clauses_json must be canonical JSON") from exc
+        if not isinstance(clauses, list):
+            raise ValueError("clauses_json must be a JSON array")
+        clause_keys = {"id", "category", "condition", "action"}
+        seen: set[str] = set()
+        for clause in clauses:
+            if not isinstance(clause, dict) or set(clause) != clause_keys:
+                raise ValueError("each policy clause must have the exact closed schema")
+            if any(not isinstance(clause[key], str) or not clause[key].strip() for key in clause_keys):
+                raise ValueError("policy clause fields must be nonblank strings")
+            if clause["action"] not in {"escalate_to_founder", "continue_same_root"}:
+                raise ValueError("policy clause action is outside the closed vocabulary")
+            if clause["id"] in seen:
+                raise ValueError("policy clause ids must be unique")
+            seen.add(clause["id"])
+        canonical_clauses = json.dumps(
+            clauses, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        if values["clauses_json"] != canonical_clauses:
+            raise ValueError("clauses_json is not canonical")
+        payload = {
+            "policy_id": values.get("policy_id"), "version": values.get("version"),
+            "team": values.get("team"), "title": values.get("title"),
+            "normative_text": values.get("normative_text"), "clauses": clauses,
+            "continuation_phrase": values.get("continuation_phrase"),
+        }
+        canonical_payload = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        digest = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+        expected_id = f"APR-{digest}"
+        for field, expected in (
+            ("canonical_payload_json", canonical_payload),
+            ("policy_digest", digest), ("id", expected_id),
+        ):
+            supplied = values.get(field)
+            if supplied is not None and supplied != expected:
+                raise ValueError(f"{field} does not match canonical policy semantics")
+            values[field] = expected
+        return values
+
+    @field_validator("policy_digest")
+    @classmethod
+    def _policy_digest_is_bounded_hex(cls, value, info):
+        return validate_authority_digest(value, info.field_name)
+
+
+class _AuthorityPolicyActivationDraft(BaseModel):
+    """Trusted construction input; never accepted as a persisted receipt."""
+    model_config = {"extra": "forbid", "frozen": True}
+
+    id: str
+    team: str
+    epoch: int = Field(gt=0)
+    release_id: str
+    previous_activation_id: str | None = None
+    expected_previous_epoch: int | None = Field(default=None, ge=0)
+    action: Literal["activate", "reactivate_rollback", "bootstrap"]
+    actor_kind: Literal["shared_local_operator_credential"]
+    request_id: str
+    request_digest: str
+    created_at: datetime = Field(default_factory=_now)
+
+    @field_validator("request_digest")
+    @classmethod
+    def _request_digest_is_bounded_hex(cls, value, info):
+        return validate_authority_digest(value, info.field_name)
+
+
+def _authority_activation_digest(values: dict[str, object]) -> str:
+    """Derive a seal from an already validated closed canonical payload."""
+    payload = {
+        field: values[field]
+        for field in (
+            "id", "team", "epoch", "release_id", "previous_activation_id",
+            "expected_previous_epoch", "action", "actor_kind", "request_id",
+            "request_digest", "created_at",
+        )
+    }
+    if isinstance(payload["created_at"], datetime):
+        payload["created_at"] = payload["created_at"].isoformat()
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class AuthorityPolicyActivation(_AuthorityPolicyActivationDraft):
+    """Immutable receipt whose mandatory seal is never derived at ingress."""
+
+    activation_digest: str
+
+    @classmethod
+    def create(cls, **values: object) -> AuthorityPolicyActivation:
+        """Trusted fresh-activation factory; the sole seal-derivation boundary."""
+        draft = _AuthorityPolicyActivationDraft.model_validate(values)
+        snapshot = draft.model_dump(mode="python", round_trip=True, warnings=False)
+        return cls.model_validate({
+            **snapshot,
+            "activation_digest": _authority_activation_digest(snapshot),
+        })
+
+    @model_validator(mode="after")
+    def _validate_activation_digest(self) -> AuthorityPolicyActivation:
+        snapshot = self.model_dump(
+            mode="python", exclude={"activation_digest"}, round_trip=True,
+            warnings=False,
+        )
+        if self.activation_digest != _authority_activation_digest(snapshot):
+            raise ValueError("activation_digest does not match canonical activation semantics")
+        return self
+
+    @field_validator("activation_digest")
+    @classmethod
+    def _activation_digest_is_bounded_hex(cls, value, info):
+        return validate_authority_digest(value, info.field_name)
+
+
+class AuthorityCandidatePolicyPin(BaseModel):
+    """Immutable one-to-one release/activation identity for a DB-policy candidate."""
+    model_config = {"extra": "forbid", "frozen": True}
+
+    candidate_id: str
+    release_id: str
+    activation_id: str
+    activation_epoch: int = Field(gt=0)
+    provider_id: str
+    executor_kind: str
+    created_at: datetime = Field(default_factory=_now)
 
 
 class AuthorityEvaluation(BaseModel):
