@@ -15,16 +15,15 @@ Each agent in the organization is not just an LLM call — it's a full coding-ag
 Agents run through a configured coding-agent CLI. The runtime ships with four
 built-in adapter profiles: Claude Code (`claude -p` with `--permission-mode auto`),
 Codex (`codex exec --json -`), opencode (`opencode run`), and Pi (`pi -p ... --mode json`).
-Any agentic CLI that can accept a prompt argument and produce structured output may
-register as a custom executor profile via the machine-global runtime store
-(``~/.happyranch/executor_profiles.yaml``) — the runtime validates
-argv templates against supported placeholders and builds per-profile subprocess
-launches generically (THR-052 seq 6 founder ruling). Registration uses a founder-minted
-scoped token and a four-step conformance challenge (workspace_access, loopback_reachable,
-cli_callback, emit_envelope). This gives every agent full coding-agent capabilities:
-file system access, shell commands, web search, and git operations. Executor selection
-is stored in the org agent frontmatter (``AgentDef.executor``), so agents can run on
-different executors in the same org.
+Custom executors use only registered profiles whose
+``command_adapter_id: custom-adapter:<id>`` binds to a conformance-passed,
+founder-approved adapter. The stable v1 ``AdapterInput``/``AdapterOutput`` contract,
+profile binding, server-authoritative eligibility, and executable SHA-256 checks apply
+at approval and every launch; the direct-connect flow uses the same approval and bind
+primitives. There is no automatic or versioned fallback. Recovery is ordinary
+reassignment to a built-in executor or ordinary re-registration of a valid approved
+custom-adapter profile. Executor selection is stored in the org agent frontmatter
+(``AgentDef.executor``), so agents can run on different executors in the same org.
 
 **Per-agent model override (Issue #568).** An agent may override the default
 model its executor launches with via the ``model:`` field in its frontmatter

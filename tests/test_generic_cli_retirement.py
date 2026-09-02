@@ -1,6 +1,7 @@
 """Founder-approved direct retirement contract for legacy generic profiles."""
 
 from argparse import Namespace
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -60,3 +61,34 @@ def test_api_legacy_writers_fail_before_request_state(endpoint):
 
 def test_builtin_catalog_parity_after_retirement():
     assert ExecutorRegistry().list_profile_names() == ["claude", "codex", "opencode", "pi"]
+
+
+def test_canonical_execution_model_has_only_registered_custom_adapter_contract():
+    protocol = (
+        Path(__file__).parents[1] / "protocol" / "05b-agent-runtime.md"
+    ).read_text()
+    section = protocol.split("### Per-agent executor selection", 1)[1].split(
+        "**Per-agent model override", 1
+    )[0]
+    section = " ".join(section.split())
+
+    required = (
+        "command_adapter_id: custom-adapter:<id>",
+        "founder-approved adapter",
+        "server-authoritative eligibility",
+        "SHA-256 checks",
+        "direct-connect flow",
+        "There is no automatic or versioned fallback",
+        "reassignment to a built-in executor",
+        "re-registration of a valid approved custom-adapter profile",
+    )
+    forbidden = (
+        "Any agentic CLI",
+        "argv templates",
+        "builds per-profile subprocess launches generically",
+        "founder-minted scoped token",
+        "four-step conformance challenge",
+    )
+
+    assert all(fragment in section for fragment in required)
+    assert all(fragment not in section for fragment in forbidden)
