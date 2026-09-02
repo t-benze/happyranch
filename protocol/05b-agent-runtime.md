@@ -752,11 +752,17 @@ even when they share both `storage_key` and `display_name`.
 
 ### Executor abstraction
 
-The executor interface supports multiple backends. Four built-in adapters are
-provided; additional agentic CLIs can be registered as custom profiles via org
-configuration (THR-052). Swapping an agent from one executor to another is a
-one-line config change in the agent's `org/agents/<name>.md` frontmatter
-(`AgentDef.executor`; THR-095 — workspace `agent.yaml` is no longer read).
+The executor interface supports four built-in adapters (`claude`, `codex`,
+`opencode`, and `pi`) plus registered custom profiles. Every custom profile must
+carry an explicit `command_adapter_id: custom-adapter:<id>` bound to one
+registered, conformance-passed, founder-approved adapter. Executable identity,
+SHA-256 checks, shared health/conformance routes, direct-connect projection, and
+launch eligibility are server-authoritative. Generic command/argv templates and
+omitted adapter identifiers are rejected; there is no silent conversion or
+automatic/versioned fallback. Supported recovery is reassignment to a built-in
+executor or ordinary re-registration of a valid approved custom-adapter profile.
+Swapping an agent's registered profile remains a one-line `AgentDef.executor`
+frontmatter change; workspace `agent.yaml` is no longer read (THR-095).
 
 ### Host-session admission and terminal cleanup ordering (THR-207 / TASK-5584)
 

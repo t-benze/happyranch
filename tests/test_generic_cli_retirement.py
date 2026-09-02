@@ -92,3 +92,31 @@ def test_canonical_execution_model_has_only_registered_custom_adapter_contract()
 
     assert all(fragment in section for fragment in required)
     assert all(fragment not in section for fragment in forbidden)
+
+
+def test_all_canonical_current_docs_reject_retired_generic_profile_promises():
+    root = Path(__file__).parents[1]
+    surfaces = {
+        "README": (root / "README.md").read_text(),
+        "executor guide": (
+            root / "docs" / "agent-guides" / "agent-executors-and-permissions.md"
+        ).read_text(),
+        "runtime protocol": (root / "protocol" / "05b-agent-runtime.md").read_text(),
+        "bundled manage-agent skill": (
+            root / "protocol" / "skills" / "manage-agent" / "SKILL.md"
+        ).read_text(),
+        "runtime manage-agent skill": (
+            root / "runtime" / "skills" / "manage-agent" / "SKILL.md"
+        ).read_text(),
+    }
+    forbidden = (
+        "org-config custom profiles",
+        "additional agentic CLIs can be registered",
+        "custom profiles for any agentic CLI",
+        "three phases — **Mint**",
+        "four required check-in steps",
+    )
+
+    for name, body in surfaces.items():
+        assert "custom-adapter:<id>" in body, name
+        assert not any(fragment in body for fragment in forbidden), name

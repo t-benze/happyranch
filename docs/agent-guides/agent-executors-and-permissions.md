@@ -373,46 +373,23 @@ independent git-based canonical source detection — it never trusts the
 ``.pth``-selected ``runtime`` import or an untrusted environment override
 for the expected canonical path.
 
-## Self-Registration (custom executors)
+## Registered custom executors
 
-THR-052 adds a founder-initiated, candidate-CLI-completed registration flow for
-custom executor profiles. The flow has three phases — **Mint** (founder generates
-a scoped token from Settings), **Conform** (candidate CLI proves it can run in
-the agent workspace), and **Register** (daemon atomically writes the profile).
+Custom executor profiles use an explicit
+`command_adapter_id: custom-adapter:<id>` binding. The referenced adapter must
+already be registered, pass the shared conformance and health contract, and be
+founder-approved. Profile validation binds the adapter's executable identity and
+SHA-256 hashes; launch eligibility is re-derived from server-authoritative
+registry state rather than trusted from profile text. The same registered
+adapter identity is used by the direct-connect flow and its commit projection.
 
-### Registration tokens
-
-Tokens are held in an **in-memory, hashed** store (`runtime/daemon/registration_token.py`).
-No DB schema, no migration. Daemon restart invalidates outstanding tokens (they
-are short-lived — the founder re-mints in one click). Key properties:
-
-- **Prefix**: `hrreg_` — distinct from the master bearer so the two can never be
-  confused. `require_token()` (master bearer check) rejects any token that does
-  not match the daemon's token file exactly; the `hrreg_` prefix is a separate
-  namespace that never goes through the master-bearer gate.
-- **TTL**: 1800 seconds (30 minutes). Minting a new token for the same `(org, name)`
-  expires any prior unconsumed token — a stale copy-paste prompt cannot be replayed.
-- **Single-use**: `consume()` is an atomic validate-and-mark gate. Replay returns 401.
-- **Reserve/commit/release**: The register route reserves the token before any
-  durable work, commits (permanently consumes) only on clean success, and releases
-  on any failure — so a config-write error does **not** consume the token; the
-  candidate can retry within the unexpired TTL.
-
-### Conformance challenge
-
-Each minted token opens a conformance challenge with four required check-in
-steps (mirrored in `RegistrationTokenStore.DEFAULT_CONFORMANCE_STEPS`):
-
-| Step | What it proves | How it arrives |
-| --- | --- | --- |
-| `workspace_access` | The candidate CLI can read the agent prompt, workspace layout, and skills | Auto-completed by the candidate CLI (it is running locally) |
-| `loopback_reachable` | The candidate CLI can reach `http://127.0.0.1` (the daemon loopback) | Auto-completed by the candidate CLI |
-| `cli_callback` | The candidate CLI can invoke `happyranch executors register` with the `hrreg_` token | Completed when the candidate runs the register verb |
-| `emit_envelope` | The candidate CLI can produce a well-formed result-envelope (THR-107 Phase 1) | CLI posts a sample envelope with the checkin; validated against the envelope schema |
-
-The candidate CLI reports step arrivals via `POST /api/v1/orgs/{slug}/executors/conformance-checkin`
-(gated by `require_registration_token()` — loopback-only; other routes' auth is
-unchanged). The daemon tracks arrivals idempotently and exposes pending steps.
+Legacy `generic-cli`, command/argv templates, omitted adapter identifiers, and
+candidate-driven Mint/Conform/Register profile creation are retired. They are
+rejected with guidance to register and approve an adapter and bind its
+`custom-adapter:<id>`; there is no silent conversion or automatic/versioned
+fallback. Supported recovery is to reassign the agent to `claude`, `codex`,
+`opencode`, or `pi`, or ordinarily re-register a valid approved custom-adapter
+profile after correcting its registration, conformance, health, or hash state.
 
 ### Direct custom-CLI receipt boundary (Slice A)
 
