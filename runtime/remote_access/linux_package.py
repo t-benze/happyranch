@@ -73,7 +73,9 @@ class CompositeServiceManager:
 
 def render_composite_units(prefix: str = "/opt/happyranch") -> dict[str, str]:
     connector = render_connector_unit(ConnectorUnitSpec(
-        exec_start=(f"{prefix}/bin/happyranch-connector", "run", "--managed", "--config", "/etc/happyranch/connector.json"),
+        exec_start=(f"{prefix}/bin/happyranch-tsnet-sidecar", "supervise-connector",
+                    f"{prefix}/bin/happyranch-connector", "run", "--managed", "--config",
+                    "/etc/happyranch/connector.json"),
         user="happyranch", group="happyranch",
         daemon_token_path="/etc/happyranch/daemon.token",
     )).replace("After=network-online.target", "After=network-online.target\nBefore=happyranch-tsnet-sidecar.service\nPartOf=happyranch-managed.target").replace("WantedBy=multi-user.target", "WantedBy=happyranch-managed.target")
@@ -88,6 +90,7 @@ PartOf=happyranch-managed.target
 
 [Service]
 Type=notify
+NotifyAccess=main
 ExecStartPre={prefix}/bin/happyranch-connector diagnose --config /etc/happyranch/connector.json
 ExecStart={prefix}/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json
 ExecStartPost=+{prefix}/bin/happyranch-connector retire-enrollment-source --source /etc/happyranch/enrollment.key --marker /var/lib/happyranch-tsnet-sidecar/credential.consumed

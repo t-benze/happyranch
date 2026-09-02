@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -8,6 +9,38 @@ import (
 	"testing"
 	"time"
 )
+
+func TestStructuredChildHealthAcceptsExactRecords(t *testing.T) {
+	records := make(chan childHealth, 2)
+	failed := make(chan error, 1)
+	scanChildHealth(bytes.NewBufferString(healthRecord("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1, "ready")), records, failed)
+	select {
+	case err := <-failed:
+		t.Fatal(err)
+	default:
+	}
+	record := <-records
+	if record.Version != 1 || record.Sequence != 1 || record.State != "ready" {
+		t.Fatalf("unexpected record: %#v", record)
+	}
+}
+
+func TestStructuredChildHealthRejectsMalformedPartialAndUnknownShape(t *testing.T) {
+	for _, raw := range []string{
+		"not-json\n",
+		`{"version":1,"generation":"a","sequence":1}` + "\n",
+		`{"version":1,"generation":"a","sequence":1,"state":"ready","extra":true}` + "\n",
+	} {
+		records := make(chan childHealth, 2)
+		failed := make(chan error, 1)
+		scanChildHealth(bytes.NewBufferString(raw), records, failed)
+		select {
+		case <-failed:
+		default:
+			t.Fatalf("accepted malformed record %q", raw)
+		}
+	}
+}
 
 type countingStopper struct{ calls int }
 

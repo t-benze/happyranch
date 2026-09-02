@@ -1,5 +1,7 @@
 # Managed remote access: Linux package operations (N3)
 
+The connector unit retains `NotifyAccess=main`. Its Go main supervisor starts the frozen Python connector child with a private health pipe and without `NOTIFY_SOCKET`; only canonical versioned, generation-bound, strictly monotonic records can cause the main process to emit READY or WATCHDOG. Missing/stale, malformed, partial, duplicated, reordered, unknown, or post-exit health stops watchdog publication and terminates the child so its admission-first shutdown runs before systemd restart.
+
 N3 composes the portable Python connector and embedded Linux tsnet sidecar into one reproducible root-owned artifact. In system-service mode its payload root, binary directory, and binaries are mode `0755`, so dedicated non-root system-service users can traverse to and execute the binaries while ownership remains root. The installer selects that contract only with explicit `system_service=True`; optional no-root installation keeps those directories and binaries owner-only (`0700`). It does not provision a control plane, deploy a service, enable managed access by default, or begin macOS work.
 
 ```sh

@@ -17,6 +17,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "supervise-connector" {
+		os.Exit(runConnectorSupervisor(os.Args[2:]))
+	}
 	configPath := flag.String("config", "", "absolute path to the manual-N5 sidecar JSON configuration")
 	flag.Parse()
 	if *configPath == "" {

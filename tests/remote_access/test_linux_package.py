@@ -75,10 +75,13 @@ def test_composite_units_start_connector_before_admission_and_stop_reverse() -> 
     connector = units["happyranch-connector.service"]
     sidecar = units["happyranch-tsnet-sidecar.service"]
     assert "Type=notify" in connector
+    assert "NotifyAccess=main" in connector
+    assert "ExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar supervise-connector /opt/happyranch/bin/happyranch-connector run --managed" in connector
     assert "Before=happyranch-tsnet-sidecar.service" in connector
     assert "After=happyranch-connector.service" in sidecar
     assert "BindsTo=happyranch-connector.service" in sidecar
     assert "Type=notify" in sidecar
+    assert "NotifyAccess=main" in sidecar
     assert "ExecStartPre=/opt/happyranch/bin/happyranch-connector diagnose --config /etc/happyranch/connector.json" in sidecar
     assert "ExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json" in sidecar
     for directive in ("User=happyranch", "CapabilityBoundingSet=", "PrivateDevices=yes", "LoadCredential=-enrollment.key:"):
@@ -474,6 +477,7 @@ def test_packaged_connector_binary_executes_outside_source_checkout(tmp_path: Pa
     package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
     root = tmp_path / "root"
     install_linux_package(package, root)
-    result = subprocess.run([root / "opt/happyranch/bin/happyranch-connector", "-I", "-c", "import sys; print(sys.executable)"],
+    result = subprocess.run([root / "opt/happyranch/bin/happyranch-connector", "--help"],
                             cwd=tmp_path, text=True, capture_output=True, check=True)
-    assert str(root) not in result.stderr
+    assert "usage:" in result.stdout
+    assert "No module named" not in result.stderr
