@@ -1613,7 +1613,7 @@ producers.
 > conformance, health, direct-connect, and server-authoritative eligibility
 > contracts remain unchanged.
 
-# Generic remote-job v1 contracts (S1 only)
+# Generic remote-job v1 contracts and dark persistence (S1-S2)
 
 `runtime.remote_jobs` defines the pure, immutable version-1 packet vocabulary.
 All objects reject unknown keys and invalid versions, enums, identifiers,
@@ -1673,9 +1673,22 @@ envelope runner/generation/attempt/fence/lease facts are bound to it.
 `PHASE_LOG_CHUNK` carries the admitted phase digest
 like the other phase frames. S1 does not produce or persist that context.
 
-This section describes S1 only. There is deliberately no shipping producer or
-consumer yet. Later slices must prove producer completeness and implement
-runner authentication/enrollment, DDL/persistence, transport, observation,
+S2 installs the approved additive SQLite persistence contract at every managed
+`Database()` open. It contains `remote_runners` (including the sole active
+certificate serial and SPKI fingerprint), `remote_runner_workspaces`,
+`remote_job_attempts`, `remote_phase_receipts`,
+`remote_pre_run_observations`, and `remote_protocol_frames`; there is no
+runner-key history table. Exact partial indexes and composite workspace
+foreign keys enforce live-workspace, live-attempt, identity, generation, and
+four-part reuse isolation. A named staged marker and preflight shape validation
+make absent, complete, and expected-partial stores converge while conflicting
+tables, columns, keys, predicates, or index order fail closed. Five nullable
+`jobs` linkage columns are additive; legacy rows receive no backfill and retain
+their exact status, reason, blocked-job, and audit-scope semantics.
+
+There is deliberately no shipping producer or consumer yet. Later slices must
+prove producer completeness and implement runner authentication/enrollment,
+transport, observation,
 phase execution/finalization, coordination/terminal-before-resume, CLI/API/UI,
 deployment, and activation. None of those behaviors, and no change to local
 jobs or `JobStatus`, is claimed here.

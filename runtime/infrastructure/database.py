@@ -551,9 +551,15 @@ class Database:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._migrate_jobs_table_if_needed()
+        from runtime.infrastructure.remote_job_schema import (
+            validate_remote_job_schema_preflight,
+        )
+
+        validate_remote_job_schema_preflight(self._conn)
         self._migrate_drop_talk_surface_if_needed()
         self._retire_skill_lifecycle_if_present()
         self._create_tables()
+        self._migrate_remote_job_schema()
         self._migrate_dark_authority_activation_seal_if_needed()
         self._create_authority_tables()
         self._retrofit_authority_policy_activation_trigger_if_needed()
@@ -565,6 +571,15 @@ class Database:
         # `_synchronized`) is preserved across both surfaces.
         self.work_hours = WorkHoursStore(self._conn, self._lock)
         self.schedules = ScheduleStore(self._conn, self._lock)
+
+    def _migrate_remote_job_schema(self) -> None:
+        """Install the exact additive generic remote-job S2 schema."""
+        from runtime.infrastructure.remote_job_schema import migrate_remote_job_schema
+
+        migrate_remote_job_schema(
+            self._conn,
+            stage_hook=getattr(self, "_remote_schema_stage_hook", None),
+        )
 
     @_synchronized
     def execute(self, sql: str, parameters=()):

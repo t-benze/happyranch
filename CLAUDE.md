@@ -38,11 +38,16 @@ Detailed contracts: `protocol/05b-agent-runtime.md` § "Canonical skill store + 
 
 - **Active team escalation policy (THR-181 S4).** Only the authenticated current immutable release is injected, under the server-reserved `## [RESERVED] Active Team Escalation Policy` section, into eligible `engineering_manager` task, thread (fresh and resumed), wake, dream, and schedule prompts. Worker prompts remain byte-absent. Every untrusted rendered input rejects the reserved header and begin/end markers. No active release preserves ordinary launches. Task launch durably records either the exact rendered release/activation identity or the explicit static mode; the authority hook reads only that session binding, never mutable current activation. DB-policy authority candidates atomically pin that identity and evaluator provider/executor plus the candidate's prompt/model identities, and the pin/release is re-authenticated before evaluation recording and continuation commit. Legacy static candidates remain unpinned and are never backfilled.
 
-- **Generic remote jobs S1 is contracts-only.** `runtime/remote_jobs/` contains
+- **Generic remote jobs S1 contracts + dark S2 persistence.** `runtime/remote_jobs/` contains
   strict immutable v1 models, canonical UTF-8 JSON/SHA-256 helpers, whole-job
   bundle validation, the corrected four-part pre-run reuse identity, and the
   closed stable-reason precedence table. It has no shipping caller yet. Runner
-  authentication/enrollment, DDL/persistence, network transport, observation
+  S2 adds only the exact additive, staged, fail-closed SQLite schema in
+  `runtime/infrastructure/remote_job_schema.py`: the six runner/workspace/
+  attempt/receipt/observation/frame tables (no key-history table), exact
+  indexes and composite foreign keys, and five nullable `jobs` linkage
+  columns. Existing rows are not backfilled or reinterpreted. Runner
+  authentication/enrollment, network transport, observation
   execution, subprocess engines/finalization, coordination/resume, CLI/web,
   deployment, and activation remain unimplemented later slices. Existing local
   jobs and `JobStatus` semantics are unchanged. V0 omits coarse manifests and
