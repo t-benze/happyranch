@@ -46,12 +46,3 @@ export default function Mermaid({ source }: { source: string }): JSX.Element {
     />
   );
 }
-
-export const meta = {
-  name: 'Mermaid',
-  layer: 'pattern',
-  import: '@/design-system/patterns/Mermaid',
-  variants: {},
-  consumes: ['components.code_block'],
-  example: '<Mermaid source="flowchart LR; A-->B" />',
-} as const;

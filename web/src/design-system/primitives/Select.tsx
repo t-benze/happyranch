@@ -158,12 +158,3 @@ export {
   SelectScrollUpButton,
   SelectScrollDownButton,
 };
-
-export const meta = {
-  name: "Select",
-  layer: "primitive",
-  import: "@/design-system/primitives/Select",
-  variants: {},
-  consumes: ["components.select"],
-  example: "<Select value='a'><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value='a'>A</SelectItem></SelectContent></Select>",
-} as const;

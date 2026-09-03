@@ -118,12 +118,3 @@ export function TaskCard({ task, to, active, density = 'comfortable', taskRoutes
     </div>
   );
 }
-
-export const meta = {
-  name: "TaskCard",
-  layer: "pattern",
-  import: "@/design-system/patterns/TaskCard",
-  variants: {},
-  consumes: ["components.badge"],
-  example: "<TaskCard task={task} to='/orgs/x/tasks/TASK-001' />",
-} as const;

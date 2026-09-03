@@ -70,8 +70,9 @@ fixed filesystem paths).
 ### `web`
 
 Runs the full Web CI pipeline in `web/`: `npm ci`, `npm run lint`,
-`npm run typecheck`, `npm run build`, and `npx vitest run`. The build step
-includes `build:registry` (prebuild) followed by `tsc` and `vite build`.
+`npm run typecheck`, `npm run build`, `npm run build-storybook`, and
+`npx vitest run`. The two explicit build commands build the SPA and the
+deterministic static Storybook catalogue exactly once each.
 `vitest run` is non-watch mode; do not use bare `vitest` which enters watch
 mode and hangs.
 

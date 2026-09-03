@@ -45,7 +45,7 @@ The founder-supplied HTML bundle is evidence of proposed UX only. When it confli
 | Dreams and KB-candidate actions | status/list/detail, accept/dismiss candidate | Evidence FR-13–15; reflection, learning, and KB promotion remain distinct. |
 | Health/prereqs | daemon-global health and prerequisite probes | Evidence FR-16–18; evidence, not SLA. |
 | Assistant dock and conversation switcher | status/conversation CRUD, WebSocket turns, transparent tool activity | Evidence FR-19–23; not a governance-write surface. |
-| `/__prototypes/*`, `/__design__`, mock providers, tests, scripts, static assets | build-gated development/design support | Excluded: frontend/design-system owner; not authoritative runtime product behavior. |
+| `/__prototypes/*`, Storybook, mock providers, tests, scripts, static assets | build-gated development/design support | Excluded: frontend/design-system owner; not authoritative runtime product behavior. |
 | NotFound and bookmarks/index redirects | navigation plumbing (`/spend`, `/schedule`, org index) | Excluded as independent scope; retain behavior only as compatibility. |
 
 ## Reconciliation completeness and retained decisions

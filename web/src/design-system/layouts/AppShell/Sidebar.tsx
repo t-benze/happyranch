@@ -354,12 +354,3 @@ function SidebarNavItem({
     </NavLink>
   );
 }
-
-export const meta = {
-  name: "Sidebar",
-  layer: "layout",
-  import: "@/design-system/layouts/AppShell/Sidebar",
-  variants: {},
-  consumes: ["components.sidebar", "layout.grid.app_shell"],
-  example: "<Sidebar />",
-} as const;

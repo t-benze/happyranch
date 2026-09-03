@@ -231,7 +231,7 @@ export const meta = {
 } as const;
 ```
 
-The `meta` export feeds `registry.json` on `npm run build:registry`.
+Storybook CSF stories now document reusable component variants and examples.
 
 ### 4.5 New feature-local components (NOT promoted)
 
@@ -332,7 +332,7 @@ If any row in this table flips to "depends" or "no" during implementation, the d
 - `web/src/design-system/providers/DataContext.ts` — extend the context shape
 - `web/src/design-system/providers/AppProvider.tsx` — wire the real dashboard hook
 - `web/src/design-system/providers/PrototypeProvider.tsx` — wire the mock dashboard hook
-- `web/src/design-system/registry.json` — regenerated; commits the Sparkline entry
+- `web/src/design-system/patterns/Patterns.stories.tsx` — documents Sparkline variants
 - `web/src/features/dashboard/DashboardPage.tsx` — full rewrite per §4.3
 - `web/src/features/dashboard/DashboardPage.test.tsx` — replace existing tests with loading / error / empty / populated branches
 - `web/src/features/dashboard/dashboard-shortcuts.ts` — keep but verify it doesn't reference removed elements

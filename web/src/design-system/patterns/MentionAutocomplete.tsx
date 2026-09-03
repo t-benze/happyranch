@@ -119,12 +119,3 @@ export function MentionAutocomplete({
     document.body,
   );
 }
-
-export const meta = {
-  name: 'MentionAutocomplete',
-  layer: 'pattern',
-  import: '@/design-system/patterns/MentionAutocomplete',
-  variants: {},
-  consumes: [],
-  example: "<MentionAutocomplete anchor={{x:0,y:0,width:0,height:0}} matches={[]} onSelect={() => {}} onDismiss={() => {}} />",
-} as const;

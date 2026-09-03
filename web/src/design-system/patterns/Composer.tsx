@@ -276,12 +276,3 @@ export function Composer({
     </div>
   );
 }
-
-export const meta = {
-  name: "Composer",
-  layer: "pattern",
-  import: "@/design-system/patterns/Composer",
-  variants: {},
-  consumes: ["components.textarea", "components.button"],
-  example: "<Composer onSend={(md) => {}} helper='Enter to send · Shift+Enter for new line' agents={[]} threadId='THR-001' orgSlug='happyranch' abortReplies={{ active: true, isPending: false, onAbort: () => {} }} />",
-} as const;

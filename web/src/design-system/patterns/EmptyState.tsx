@@ -32,12 +32,3 @@ export function EmptyState({ icon, title, body, cta }: EmptyStateProps): JSX.Ele
     </div>
   );
 }
-
-export const meta = {
-  name: "EmptyState",
-  layer: "pattern",
-  import: "@/design-system/patterns/EmptyState",
-  variants: {},
-  consumes: ["components.empty_state"],
-  example: "<EmptyState title='No threads' body='Start one with happyranch threads compose.' />",
-} as const;

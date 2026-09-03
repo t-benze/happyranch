@@ -27,12 +27,3 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
   },
 );
 Input.displayName = 'Input';
-
-export const meta = {
-  name: "Input",
-  layer: "primitive",
-  import: "@/design-system/primitives/Input",
-  variants: {},
-  consumes: ["components.input"],
-  example: "<Input type='text' placeholder='Subject' />",
-} as const;

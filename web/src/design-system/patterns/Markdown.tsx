@@ -42,12 +42,3 @@ export function Markdown({ body }: { body: string }): JSX.Element {
     </div>
   );
 }
-
-export const meta = {
-  name: 'Markdown',
-  layer: 'pattern',
-  import: '@/design-system/patterns/Markdown',
-  variants: {},
-  consumes: ['typography.body', 'components.code_block'],
-  example: '<Markdown body="**hello**" />',
-} as const;

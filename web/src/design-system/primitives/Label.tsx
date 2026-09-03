@@ -25,12 +25,3 @@ export const Label = React.forwardRef<
   />
 ));
 Label.displayName = LabelPrimitive.Root.displayName;
-
-export const meta = {
-  name: "Label",
-  layer: "primitive",
-  import: "@/design-system/primitives/Label",
-  variants: {},
-  consumes: ["components.label"],
-  example: "<Label htmlFor='subject'>Subject</Label>",
-} as const;
