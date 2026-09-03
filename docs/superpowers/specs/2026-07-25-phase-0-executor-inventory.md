@@ -390,3 +390,6 @@ No production symbol is edited by this inventory PR.
 ---
 
 *Phase 0 — DOCS + TESTS ONLY. No production code change, no adapter extraction, no compatibility facade, no schema/auth/protocol change.*
+> **Historical supersession (TASK-6514):** This inventory preserves the former
+> generic executor implementation as provenance. TASK-6514 removed those
+> executable symbols; current custom profiles bind approved custom adapters.

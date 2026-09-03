@@ -255,6 +255,26 @@ def test_runtime_mint_openapi_exposes_optional_direct_workspace_adapter() -> Non
     assert allowed_adapter_schema["enum"] == ["claude", "codex", "opencode", "pi"]
     assert {variant["type"] for variant in workspace_adapter["anyOf"]} == {"string", "null"}
     assert "workspace_adapter_id" not in schema.get("required", [])
+    assert "purpose" in schema["required"]
+    assert schema["properties"]["purpose"]["pattern"] == "^(binary|adapter)$"
+
+
+def test_runtime_mint_rejects_omitted_and_profile_purpose_before_store_effects(
+    client, daemon_state
+) -> None:
+    store = daemon_state.registration_token_store
+    direct_store = daemon_state.direct_connect_authority_store
+    before_tokens = dict(store._tokens)
+    before_challenges = dict(store._challenges)
+    before_operations = direct_store.list_operations_pending_projection()
+
+    for body in ({"name": "retired"}, {"name": "retired", "purpose": "profile"}):
+        response = client.post("/api/v1/auth/registration-token/runtime", json=body)
+        assert response.status_code == 422
+
+    assert store._tokens == before_tokens
+    assert store._challenges == before_challenges
+    assert direct_store.list_operations_pending_projection() == before_operations
 
 
 def test_authority_store_has_no_org_input_or_yaml_projection(tmp_path) -> None:

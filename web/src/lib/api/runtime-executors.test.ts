@@ -36,32 +36,26 @@ describe('runtime-executors api', () => {
     );
   });
 
-  it('RuntimeProfileEntry carries canonical and deprecated fields in list response', async () => {
+  it('RuntimeProfileEntry carries the canonical custom-adapter identity', async () => {
     const mockResponse = {
       profiles: [
         {
           name: 'openclaw',
-          command: 'openclaw',
           adapter: 'pi',
           adapter_id: 'pi',
           workspace_adapter_id: 'pi',
-          command_adapter_id: 'generic-cli',
-          command_adapter: 'generic-cli',
+          command_adapter_id: 'custom-adapter:openclaw',
           present: true,
           path: '/usr/local/bin/openclaw',
-          envelope_policy: null,
         },
         {
-          name: 'legacy-runner',
-          command: 'legacy-runner',
+          name: 'approved-runner',
           adapter: 'pi',
           adapter_id: 'pi',
           workspace_adapter_id: 'pi',
-          command_adapter_id: 'generic-cli',
-          command_adapter: 'generic-cli',
+          command_adapter_id: 'custom-adapter:approved-runner',
           present: false,
           path: null,
-          envelope_policy: null,
         },
       ],
     } satisfies import('./runtime-executors').RuntimeProfileList;
@@ -70,18 +64,15 @@ describe('runtime-executors api', () => {
       .mockResolvedValue(mockResponse);
     const result = await runtimeExecutors.listRuntimeProfiles();
     expect(spy).toHaveBeenCalledWith('/executors/runtime/profiles');
-    // Assert exact field contract: canonical fields present, deprecated aliases preserved
     expect(result.profiles).toHaveLength(2);
     expect(result.profiles[0].workspace_adapter_id).toBe('pi');
-    expect(result.profiles[0].command_adapter_id).toBe('generic-cli');
+    expect(result.profiles[0].command_adapter_id).toBe('custom-adapter:openclaw');
     expect(result.profiles[0].adapter).toBe('pi'); // deprecated alias preserved
     expect(result.profiles[0].adapter_id).toBe('pi'); // deprecated alias preserved
-    expect(result.profiles[0].command_adapter).toBe('generic-cli'); // deprecated alias preserved
     expect(result.profiles[1].workspace_adapter_id).toBe('pi');
-    expect(result.profiles[1].command_adapter_id).toBe('generic-cli');
+    expect(result.profiles[1].command_adapter_id).toBe('custom-adapter:approved-runner');
     expect(result.profiles[1].adapter).toBe('pi');
     expect(result.profiles[1].adapter_id).toBe('pi');
-    expect(result.profiles[1].command_adapter).toBe('generic-cli');
   });
 
   it('RuntimeProfileEntry type assertion carries canonical fields', async () => {
@@ -89,19 +80,15 @@ describe('runtime-executors api', () => {
     // If RuntimeProfileEntry does not have workspace_adapter_id, tsc fails.
     const entry: import('./runtime-executors').RuntimeProfileEntry = {
       name: 'test',
-      command: 'test-cli',
       adapter: 'claude',
       adapter_id: 'claude',
       workspace_adapter_id: 'claude',
-      command_adapter_id: 'generic-cli',
-      command_adapter: 'generic-cli',
+      command_adapter_id: 'custom-adapter:test',
       present: true,
       path: '/usr/bin/test-cli',
-      envelope_policy: null,
     };
     expect(entry.workspace_adapter_id).toBe('claude');
-    expect(entry.command_adapter_id).toBe('generic-cli');
-    expect(entry.command_adapter).toBe('generic-cli');
+    expect(entry.command_adapter_id).toBe('custom-adapter:test');
     expect(entry.adapter).toBe('claude');
     expect(entry.adapter_id).toBe('claude');
   });

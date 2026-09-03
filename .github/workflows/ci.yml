@@ -55,11 +55,11 @@ jobs:
         run: npm run lint
       - name: Typecheck
         run: npm run typecheck
-      # Runs prebuild (build:registry) then tsc + vite build.
       - name: Build
         run: npm run build
+      - name: Build Storybook
+        run: npm run build-storybook
       # Bare `vitest` is watch mode and would hang CI; `vitest run` is non-watch.
-      # Run after build so the build:registry output exists.
       - name: Test (non-watch)
         run: npx vitest run
 

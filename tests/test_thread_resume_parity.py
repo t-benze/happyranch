@@ -1231,8 +1231,8 @@ def test_orchestrator_task_path_source_never_references_resume():
 def test_executor_run_default_never_resumes_across_providers():
     """The resume parameter defaults to None on every resume-capable
     executor, so any caller that omits it (tasks, wakes, dreams) gets a
-    fresh invocation. The resume-incapable executors (opencode, generic-CLI)
-    do not even accept the parameter."""
+    fresh invocation. PR-1 gives custom adapters a dormant uniform parameter,
+    but thread_runner still excludes custom profiles from resume eligibility."""
     import inspect
     from runtime.orchestrator import executors as ex_mod
 
@@ -1244,10 +1244,12 @@ def test_executor_run_default_never_resumes_across_providers():
         assert param.default is None, (
             f"{cls_name}.run resume_session_id default must be None"
         )
-    for cls_name in ("GenericCliExecutor", "CustomAdapterExecutor"):
-        cls = getattr(ex_mod, cls_name)
-        sig = inspect.signature(cls.run)
-        assert "resume_session_id" not in sig.parameters, (
-            f"{cls_name}.run must not accept resume_session_id — its resume "
-            f"contract is unproven and it stays fresh"
-        )
+    custom_param = inspect.signature(ex_mod.CustomAdapterExecutor.run).parameters[
+        "resume_session_id"
+    ]
+    assert custom_param.default is None
+
+    from runtime.daemon import thread_runner
+    assert thread_runner._RESUME_CAPABLE_EXECUTORS == frozenset(
+        {"claude", "codex", "pi", "opencode"}
+    ), "PR-1 must not earn or consume custom-adapter resume capability"

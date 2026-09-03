@@ -74,7 +74,7 @@ npm run typecheck
 npm run build
 ```
 
-Expected: both succeed. (The `build` runs `build:registry` which scans `meta` blocks — none changed, so registry is unaffected.)
+Expected: both succeed. (The current design-system coverage gate is Storybook-based.)
 
 - [ ] **Step 1.4: Commit**
 
@@ -742,7 +742,7 @@ npm run typecheck
 npm run build
 ```
 
-Expected: both pass. Build step also re-runs `build:registry` — confirm it picks up the new Markdown / Mermaid `meta` blocks without error.
+Expected: both pass. Add/update the Markdown and Mermaid Storybook stories and run the coverage test.
 
 - [ ] **Step 7.9: Commit**
 

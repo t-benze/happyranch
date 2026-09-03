@@ -35,6 +35,7 @@ _ACTIVATION_GUARD = {
 }
 _POLICY = POLICY_BY_TEAM[_ELIGIBLE_TEAM]
 _KNOWN_CLAUSES = {clause.id: clause for clause in _POLICY.clauses}
+_CANONICAL_CLAUSE_IDS = tuple(clause.id for clause in _POLICY.clauses)
 _SECRET_SHAPE = re.compile(
     r"(?i)(?:authorization\s*:\s*bearer|bearer\s+[a-z0-9._-]{16,}|"
     r"(?:api[_-]?key|secret|password|token)\s*[:=]\s*\S{8,})"
@@ -93,6 +94,8 @@ class CreatePolicyReleaseRequest(BaseModel):
                 continuation_count += 1
         if seen != set(_KNOWN_CLAUSES):
             raise ValueError("all protected and mechanical policy clauses are required")
+        if tuple(clause.id for clause in self.clauses) != _CANONICAL_CLAUSE_IDS:
+            raise ValueError("policy clauses must use canonical server ordering")
         if continuation_count != 1:
             raise ValueError("exactly one continuation clause is required")
         material = self.model_dump_json()
@@ -139,6 +142,7 @@ def get_team_escalation_policy(slug: str, agent_name: str, org: OrgDep) -> dict:
             "target_manager": _ELIGIBLE_AGENT,
             "can_mutate": True,
             "activation_guard": _ACTIVATION_GUARD,
+            "bootstrap_template": _bootstrap_template(),
         }
         if activation is None:
             result["bootstrap_required"] = True
@@ -285,4 +289,22 @@ def _project_release(release: AuthorityPolicyRelease) -> dict:
         "digest": release.policy_digest,
         "created_at": release.created_at.isoformat(),
         "actor_attribution": "shared local operator credential",
+    }
+
+
+def _bootstrap_template() -> dict:
+    """Project the one canonical server definition used by validation/runtime."""
+    return {
+        "title": _POLICY.title,
+        "normative_text": _POLICY.normative_text,
+        "clauses": [
+            {
+                "id": clause.id,
+                "category": clause.category,
+                "condition": clause.condition,
+                "action": clause.action,
+            }
+            for clause in _POLICY.clauses
+        ],
+        "continuation_phrase": CONTINUE_ROUTINE_PHRASE,
     }

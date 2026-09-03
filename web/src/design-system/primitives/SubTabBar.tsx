@@ -50,12 +50,3 @@ export function SubTabBar({ tabs, active, className }: SubTabBarProps): JSX.Elem
     </Tabs.Root>
   );
 }
-
-export const meta = {
-  name: 'SubTabBar',
-  layer: 'primitive',
-  import: '@/design-system/primitives/SubTabBar',
-  variants: {},
-  consumes: ['components.subtabbar'],
-  example: '<SubTabBar tabs={[]} active="activity" />',
-} as const;

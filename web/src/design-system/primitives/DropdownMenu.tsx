@@ -172,12 +172,3 @@ export {
   DropdownMenuSubTrigger,
   DropdownMenuRadioGroup,
 };
-
-export const meta = {
-  name: "DropdownMenu",
-  layer: "primitive",
-  import: "@/design-system/primitives/DropdownMenu",
-  variants: {},
-  consumes: ["components.dropdown_menu"],
-  example: "<DropdownMenu><DropdownMenuTrigger>Open</DropdownMenuTrigger><DropdownMenuContent><DropdownMenuItem>Action</DropdownMenuItem></DropdownMenuContent></DropdownMenu>",
-} as const;

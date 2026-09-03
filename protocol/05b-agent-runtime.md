@@ -15,16 +15,15 @@ Each agent in the organization is not just an LLM call — it's a full coding-ag
 Agents run through a configured coding-agent CLI. The runtime ships with four
 built-in adapter profiles: Claude Code (`claude -p` with `--permission-mode auto`),
 Codex (`codex exec --json -`), opencode (`opencode run`), and Pi (`pi -p ... --mode json`).
-Any agentic CLI that can accept a prompt argument and produce structured output may
-register as a custom executor profile via the machine-global runtime store
-(``~/.happyranch/executor_profiles.yaml``) — the runtime validates
-argv templates against supported placeholders and builds per-profile subprocess
-launches generically (THR-052 seq 6 founder ruling). Registration uses a founder-minted
-scoped token and a four-step conformance challenge (workspace_access, loopback_reachable,
-cli_callback, emit_envelope). This gives every agent full coding-agent capabilities:
-file system access, shell commands, web search, and git operations. Executor selection
-is stored in the org agent frontmatter (``AgentDef.executor``), so agents can run on
-different executors in the same org.
+Custom executors use only registered profiles whose
+``command_adapter_id: custom-adapter:<id>`` binds to a conformance-passed,
+founder-approved adapter. The stable v1 ``AdapterInput``/``AdapterOutput`` contract,
+profile binding, server-authoritative eligibility, and executable SHA-256 checks apply
+at approval and every launch; the direct-connect flow uses the same approval and bind
+primitives. There is no automatic or versioned fallback. Recovery is ordinary
+reassignment to a built-in executor or ordinary re-registration of a valid approved
+custom-adapter profile. Executor selection is stored in the org agent frontmatter
+(``AgentDef.executor``), so agents can run on different executors in the same org.
 
 **Per-agent model override (Issue #568).** An agent may override the default
 model its executor launches with via the ``model:`` field in its frontmatter
@@ -65,23 +64,6 @@ prompt is one opaque string; the kernel caps a single argv element (Linux
 hosts; macOS/Windows limits differ). Prompt bodies therefore belong on **stdin**
 for every stdin-capable built-in:
 
-- **Claude** (pinned 2.1.241): ``claude -p --permission-mode <m> --allowedTools
-  <t> --output-format json [--resume <id>]`` with the prompt delivered via
-  ``input_text`` (stdin). Verified by canary: exact Unicode/newline semantics
-  preserved, ``>=512 KiB`` UTF-8 prompts launch, JSON envelope + session id
-  parsed.
-- **Pi** (pinned 0.84.2): ``pi -p --mode json`` with the prompt on stdin.
-  Verified by canary: piped stdin becomes the SOLE user prompt (``role:
-  user`` / ``type: text``, exact bytes) with no argv message.
-- **Codex**: unchanged — ``codex exec ... --json -`` already reads stdin.
-- **OpenCode** (pinned 1.18.25, TASK-6080 audit): ``opencode run`` with NO
-  positional message reads the sole user prompt from stdin (verified live:
-  a 606,099-byte prompt through a pipe completes; the same payload as an
-  argv element fails at the kernel single-argument limit).
-- **generic-CLI profiles remain argv-based** (prompt transport is
-  profile-defined via ``{prompt}`` template substitution) until their
-  stdin contracts are separately proven.
-
 Before any Popen, ``_run_command`` runs a **portable pre-spawn argv guard**:
 when the prompt travels via argv (``input_text`` is None), every argv element
 is checked against the platform-safe per-argument byte limit and an oversized
@@ -96,104 +78,6 @@ executions (the limit is never below the platform's kernel floor).
 **Thread provider-session lifecycle (THR-200).** ``thread_participants``
 carries the resumable provider session id + delta watermark
 (``agent_session_id``, ``last_resumed_seq``). Lifecycle rules:
-
-- **Resume is an optimization, never a correctness dependency**, for the
-  executors whose provider-session contract is PROVEN against the installed
-  CLI (TASK-5977 + TASK-6080 audits, THR-200 seq 31) — claude (pinned
-  2.1.241, in production since THR-200), codex (installed codex-cli
-  0.148.0), pi (installed pi 0.84.2), and opencode (installed 1.18.25); the
-  SQLite transcript is canonical for every executor. Generic-CLI and
-  custom-adapter profiles stay fresh (full prompt every turn) — their
-  resume contract is not part of the standard envelope (see the custom-CLI
-  decision matrix, TASK-6080). A GH-688 claimed REPLY
-  may resume with a delta ONLY when the stored watermark is strictly below
-  the claim's ``running_from_seq`` AND the ENTIRE required post-watermark
-  range is proven present and contiguous at the production seam: the runner
-  loads the canonical transcript UNCAPPED, queries the independent
-  authoritative transcript max (``get_thread_max_message_seq``), and only
-  then authorizes a delta when every required claimed sequence exists (no
-  truncation, no internal holes; a claimed REPLY additionally requires the
-  claim's inclusive end to exist in the transcript). ``<``/``=``/``>``
-  watermark cases, equal/ahead watermarks, a null/zero/negative (<= 0)
-  watermark (a stored provider id with a durable watermark <= 0 is
-  INELIGIBLE for resume — the runner makes a fresh invocation with the
-  complete canonical transcript), truncated loads, and any
-  missing internal sequence all fail closed to the genuinely complete
-  canonical full-transcript fresh prompt — a delta can never omit a required
-  sequence. The equality state (watermark == ``running_from_seq``) is NOT
-  permanent: after ONE successfully transported, terminally settled
-  full-prompt turn both watermarks converge to the same frontier and resume
-  eligibility returns. Do not implement a standalone watermark-comparison
-  change.
-- **Per-executor resume argv (evidence-backed, TASK-5977/TASK-6080)**:
-  claude ``claude -p ... --output-format json --resume <id>``; codex
-  ``codex exec resume <thread_id> --json -`` (the resume subcommand has NO
-  ``--sandbox`` flag, so the same workspace-write sandbox + localhost
-  network posture is carried as ``-c sandbox_mode="workspace-write" -c
-  sandbox_workspace_write.network_access=true``; ``-`` reads the prompt from
-  stdin — large-prompt-safe); pi ``pi -p --mode json --session <id>``
-  (``--session`` FAILS when the id is missing — the eviction signature;
-  ``--session-id`` would silently create a fresh session and is never used);
-  opencode ``opencode run -s <id> --dir <workspace> --format json`` with the
-  prompt on stdin (the SAME project directory is REQUIRED — an opencode
-  session is bound to its project dir and a different ``--dir`` hangs
-  rather than failing fast; the thread workspace ``<org>/workspaces/<agent>``
-  is stable across turns, and org relocation / workspace-path changes must
-  invalidate stored opencode session ids).
-  All four read the prompt via stdin (``input_text``) — never argv.
-  Verified live: each emits its stable id on a fresh non-interactive run
-  (claude ``.session_id``; codex ``thread.started.thread_id``; pi session
-  header ``id``; opencode ``sessionID`` NDJSON field) and re-emits the SAME
-  id after non-interactive continuation.
-- **Eviction (provider-declared session-not-found)**: the eviction audit and
-  the durable ``agent_session_id = NULL`` invalidation commit in ONE
-  transaction BEFORE the full-prompt fallback launch. If the fallback also
-  fails, the id remains NULL and the delivery watermark does NOT advance —
-  the next wake re-attempts the same range from a full prompt. The
-  classifier is executor-specific, reads ONLY the proven return code and
-  stream, and REQUIRES the anchored provider-declared signature bound to the
-  exact attempted session id as the COMPLETE observed stderr line
-  (horizontal whitespace [ \t] only where the observed contract permits
-  spacing; LF/CRLF are never consumed) — claude ``No conversation found with session
-  ID: <attempted-id>``, codex ``Error: thread/resume: thread/resume failed:
-  no rollout found for thread id
-  <attempted-id> (code -32600)`` (the CLI envelope is part of the observed
-  line), pi ``No session found matching
-  '<attempted-id>'`` (each rc=1, stderr, and verified 2026-08-28 to echo
-  the attempted id verbatim; the id is regex-escaped) — and opencode
-  1.18.25 (rc=1, stdout EMPTY, with one complete LF/CRLF-delimited physical
-  stderr line exactly ``Error: Session not found`` after ANSI-SGR stripping;
-  unrelated physical lines may coexist, but same-line prefix/suffix and
-  cross-line assembly never match; the attempted id is NOT echoed;
-  a global auth/quota/transport token veto is deliberately not applied —
-  the exact-line match + empty-stdout requirement reject the embedding class,
-  and an unrelated warning line containing a token would falsely
-  veto a genuine eviction) — and never classifies
-  generic legacy substrings, cross-provider text, stdout-only text, wrong
-  rc, wrong/missing id, prefix/suffix near-matches, a marker embedded in
-  auth/quota/transport output, or ambiguous output as eviction (no
-  fresh retry for those).
-  (THR-187/THR-195 missing-session wedges are this mechanism; THR-198's
-  healthy-session equality wedge needs only transport — no row change.)
-- **Lifecycle invalidation**: thread archive, a SUCCESSFUL executor switch,
-  and agent termination clear resume state (id NULL, watermark 0) so any later
-  wake starts fresh. Each boundary is a database-owned transaction: the
-  participant reset and its ``thread_session_invalidated`` audit commit
-  atomically (the termination reset+audit run inside the existing
-  terminate-cleanup transaction; archive wraps the ``ARCHIVED`` status flip,
-  every participant reset, and the audit in one transaction). A reset/audit
-  failure leaves no partial lifecycle state — a failed switch is rolled back
-  (prior frontmatter restored, workspace re-reconciled, so no new executor is
-  installed) and a failed archive leaves the thread OPEN with every session
-  row unmodified. Participant removal already hard-deletes the row (session
-  state goes with it — no redundant clear). The proven contracts do NOT
-  require executor/model/config fingerprint invalidation (codex and pi
-  resume across model/config changes), so no fingerprint column is added.
-  EXCEPTION (TASK-6080): an opencode session is bound to its project
-  directory — resume is only safe for the IDENTICAL workspace path, so org
-  relocation or any workspace-path change must invalidate stored opencode
-  thread session ids (schema-free; a relocation-time sweep is a separate
-  founder-gated follow-up).
 
 **Thread reply delivery lifecycle (GH-688 Phase 1).** Conversational
 ``REPLY`` wakes are coalesced and durably tracked per ``(thread_id,
@@ -279,23 +163,6 @@ exact eviction detection, retry ownership, and breaker qualification continue
 to consume the unchanged executor result fields. A session-limit notice is not
 an automatic short-backoff rate-limit retry signal.
 
-**Custom CLI result-envelope (THR-107).** Custom CLIs may opt into token metering
-by emitting a versioned JSON envelope on stdout, delimited by the sentinel markers
-``__HR_ENVELOPE_BEGIN__`` and ``__HR_ENVELOPE_END__``. The daemon parses the
-envelope via a generic best-effort parser (``_parse_generic_cli_usage`` in
-``runtime/orchestrator/executors.py``).
-
-**D7A strict enforcement (2026-07-27):** new custom-CLI registrations and
-re-registrations durably record ``envelope_policy: "strict"`` and enforce
-mandatory v1 envelope compliance at the ``GenericCliExecutor`` launch/result
-seam. A strict profile whose stdout lacks a valid v1 envelope returns a
-deterministic failed ``ExecutorResult`` with actionable re-registration/verification
-guidance (tails preserved, forensic accounting intact). Existing stored profiles
-without the ``envelope_policy`` field are LEGACY COMPATIBILITY entries with
-unchanged optional-envelope behavior. The envelope is **optional for legacy
-entries, mandatory for strict entries** — absence preserves legacy behavior
-(no token accounting) for legacy profiles; strict profiles fail closed.
-
 The envelope schema maps 1:1 to
 the ``TokenUsage`` model (``runtime/models.py:302``) with identical key names.
 Token-accounting invariants (``total`` excludes cache reads, nullable tolerance,
@@ -319,6 +186,38 @@ canonical adapter path (<daemon-home>/adapters/<canonical-id>, 0700). Scoped
 submissions must create the wrapper at exactly this path; the route and
 registration seam independently enforce canonical placement. The
 master-bearer ``/register`` route is unchanged. The server-derived schema is canonical. Key invariants:
+
+**THR-200 session plumbing (PR 1/3).** The v1 contract remains version 1:
+``AdapterInput.session`` may carry a non-empty provider session id only for a
+thread invocation, and ``AdapterOutput.session_status`` is the optional
+``fresh | resumed | not_found`` outcome. ``fresh`` means a new provider session,
+``resumed`` means the supplied session continued, and ``not_found`` means the
+supplied session did not exist. A sent session requires a status; ``resumed`` or
+``not_found`` without a sent session, successful ``not_found``, and
+``not_found`` with non-empty result text are contract failures. This additive
+field keeps legacy kimi/codebuddy-shaped outputs valid without re-registration.
+Tasks always stay fresh. This PR earns and consumes no resume capability:
+custom profiles remain excluded by ``thread_runner`` and SQLite thread
+transcripts and delivery state remain canonical.
+
+**THR-200 resume conformance (PR 2/3).** ``thread_resume`` is a
+server-reserved, server-earned ``AdapterEntry.capabilities`` value. Both
+registration request shapes reject a submitted claim and expose an explicit
+``verify_thread_resume`` opt-in. The probe makes three sequential provider
+calls in one runtime-owned temporary workspace: fresh must return an opaque
+canary and nonempty provider session id; resume receives a new canary but not
+the old one and must return both with ``session_status=resumed`` and a nonempty
+stable-or-replaced id; a mandatory fabricated ``hr-probe-missing-<uuid>`` id
+must return false success, ``session_status=not_found``, and no result text or
+canary output. Only a full pass atomically publishes the capability plus
+``thread_resume_verified_at`` and the probed contract version in the existing
+adapter YAML entry. Every failure removes the workspace and leaves any durable
+entry byte-identical. Re-registration without a new passing opt-in proof clears
+the earned state and always clears approval; executable, dependency, declared
+capability, or workspace-adapter identity changes likewise cannot inherit it.
+PR 2 does not consume this receipt: ``thread_runner``, built-in resume, task
+freshness, existing custom-profile full-transcript behavior, and contract v1
+remain unchanged.
 
 **Wrapper-owned headless launch posture.** A custom-adapter wrapper MUST
 choose and apply its underlying CLI's own non-interactive, sufficiently
@@ -560,80 +459,6 @@ same column. The Settings/onboarding "Workspace CLI" dropdown described
 above no longer exists — `AdapterConnect`'s form is name-only; the
 generated connect prompt instead has the wrapper author pick their own
 convention and send it in the manifest body.
-
-- **Registration → conformance → founder approval or rejection:** a custom
-  adapter executable is registered with its absolute path, SHA-256 hash, version,
-  and capabilities; submitted to a bounded stdin/stdout conformance probe; then
-  enters **PENDING** and cannot bind to any profile or launch. From PENDING, the
-  founder has two exact-snapshot management actions:
-  - **PENDING exact-snapshot founder approve:** ``POST /runtime/adapters/{id}/approve``
-    atomically validates the six material identity facts (executable, executable_hash,
-    version, capabilities, contract_version, workspace_adapter) of the exact durable
-    snapshot. Any mismatch, missing adapter, non-PENDING state, or already-approved
-    incompatible repeat fails before persistence. **THR-107 seq237:** When the adapter
-    has an ``intended_profile_name``, the server atomically approves the snapshot AND
-    creates/binds that named custom profile in one transaction — ``eligibility`` becomes
-    ``already_bound`` immediately, and no client-side bind follow-up is needed. Adapters
-    without an intended profile (master-bearer registration path) are approved without
-    auto-binding; they retain explicit advanced Bind recovery via Settings.
-  - **PENDING exact-snapshot founder reject/removal:**
-  - **PENDING exact-snapshot founder reject/removal:**
-    ``POST /runtime/adapters/{id}/reject`` atomically validates the same six
-    material identity facts and removes the PENDING durable entry. Rejects stale,
-    hash-changed (re-registered), and non-PENDING snapshots without mutation. No
-    persisted rejected status — the PENDING entry is removed. No SQLite/schema change.
-  - **APPROVED bind (recovery / legacy):** ``POST /runtime/adapters/{id}/bind-profile``
-    binds a profile name to the APPROVED adapter. For adapters with a non-null
-    ``intended_profile_name``, the caller must supply the exact intended name.
-    For adapters without an intended profile (``recovery_ready`` eligibility), the
-    founder explicitly provides the desired profile name. After binding, the server
-    reports ``eligibility: already_bound`` for that adapter. The durable UI must
-    retain and render the adapter as Connected after a fresh render from a server
-    ``already_bound`` response — not filter or unmount it. **This route is now
-    secondary to atomic approve-and-bind (seq237) for adapters with intended profiles.**
-  - **Approved-only removal:** ``DELETE /runtime/adapters/{id}`` removes an
-    APPROVED custom adapter with an exact snapshot of all material identity/binding
-    facts. Rejects stale, re-registered, wrong-target, and profile-referenced
-    snapshots. Preserves approved-only semantics — the reject path above is the
-    separate PENDING removal.
-- **Exact hash verified at EVERY launch:** before each ``Popen``, the
-  ``CustomAdapterExecutor`` re-verifies path type (exists, regular file, executable)
-  and SHA-256 against the approved binding. Hash mismatch, removal, non-regular, or
-  non-executable → launch fails closed with actionable re-registration/approval error.
-  The hash is checked *inside* the per-attempt launch closure, so a throttle retry
-  after a rate-limited response re-verifies the artifact before the next Popen.
-- **Mandatory AdapterOutput:** custom-adapter profiles require a valid v1
-  ``AdapterOutput`` JSON object. Missing, malformed, non-object, unknown-version,
-  oversized (>1MB), identity/version/contract mismatch, or success/returncode
-  inconsistency → deterministic failed ``ExecutorResult``. The adapter must echo
-  the daemon-generated invocation ``session_id`` and match the approved
-  ``adapter_version`` and ``contract_version``.
-- **Subprocess-only — no Python import/discovery.** Custom adapters run as separate
-  subprocesses. The daemon never imports, discovers, or executes third-party Python
-  modules from adapter executables.
-- **Legacy generic-cli profiles remain readable** and are never auto-mutated.
-  This register → conformance → PENDING → founder exact-snapshot approve (or
-  reject) → APPROVED + bind path is now operator-only disposition tooling
-  (its routes and TS bindings are preserved, but no normal-flow UI calls
-  them — see the THR-107 Slices 1–3 paragraph above for the normal
-  direct-connect path). Approve transitions APPROVED + atomic profile bind
-  for intended adapters (``already_bound``) OR leaves no-intended adapters
-  for advanced Bind recovery (``recovery_ready``). PENDING rejection
-  atomically removes the entry with no persisted rejected status.
-  Approved-only removal is a separate DELETE path for APPROVED adapters.
-  Rollback: re-register the profile as ``generic-cli`` or revert the
-  deployment.
-- **D5 baseline-only posture:** the custom adapter contract introduces no allow-rule,
-  sandbox, network-access, filesystem-access, or permission changes.
-- **THR-107 seq244 dependency manifest:** new adapter registrations require
-  ``dependency_manifest_version: 1`` with a non-empty list of declared child
-  executable dependencies (absolute path + SHA-256). Dependencies are validated
-  at registration and re-verified before every launch. Manifest-adapters are
-  explicitly absolute and hash-pinned/revalidated with no executor fallback to
-  ambient PATH; the adapter process inherits normalized PATH for normal
-  callback/utility availability.
-  ``token_metering`` capability enforces truthful non-null token_usage at
-  conformance. Legacy entries without the manifest are preserved unchanged.
 
 The signed architecture is at
 ``docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md``.
@@ -959,31 +784,17 @@ even when they share both `storage_key` and `display_name`.
 
 ### Executor abstraction
 
-The executor interface supports multiple backends. Four built-in adapters are
-provided; additional agentic CLIs can be registered as custom profiles via org
-configuration (THR-052). Swapping an agent from one executor to another is a
-one-line config change in the agent's `org/agents/<name>.md` frontmatter
-(`AgentDef.executor`; THR-095 — workspace `agent.yaml` is no longer read).
-
-**Profile identity (D6, THR-107 seq115).** Each registered executor profile
-carries two canonical identity fields:
-- ``workspace_adapter_id`` — selects workspace preparation (bootstrap file,
-  permission surface). One of ``claude``/``codex``/``opencode``/``pi``.
-- ``command_adapter_id`` — selects the command execution adapter (argv
-  construction and output parsing). For built-in profiles this matches
-  ``workspace_adapter_id`` (each carries its own first-party adapter); for
-  custom profiles this may be ``"generic-cli"`` (template-based generic CLI)
-  or ``"custom-adapter:<id>"`` (bound to a separately registered,
-  founder-approved, hash-verified custom adapter executable — D7B,
-  subprocess-only, mandatory v1 AdapterInput/AdapterOutput, D5 baseline-only
-  posture).
-
-Legacy fields ``adapter_id``/``adapter`` (deprecated alias for
-``workspace_adapter_id``) and ``command_adapter`` (deprecated alias for
-``command_adapter_id``) remain for read compatibility. The canonical
-fields are the preferred surface for all consumers. See the
-unified adapter-runtime architecture spec (§6.3) for dual-read,
-conflict-detection, and no-auto-mutation guarantees.
+The executor interface supports four built-in adapters (`claude`, `codex`,
+`opencode`, and `pi`) plus registered custom profiles. Every custom profile must
+carry an explicit `command_adapter_id: custom-adapter:<id>` bound to one
+registered, conformance-passed, founder-approved adapter. Executable identity,
+SHA-256 checks, shared health/conformance routes, direct-connect projection, and
+launch eligibility are server-authoritative. Generic command/argv templates and
+omitted adapter identifiers are rejected; there is no silent conversion or
+automatic/versioned fallback. Supported recovery is reassignment to a built-in
+executor or ordinary re-registration of a valid approved custom-adapter profile.
+Swapping an agent's registered profile remains a one-line `AgentDef.executor`
+frontmatter change; workspace `agent.yaml` is no longer read (THR-095).
 
 ### Host-session admission and terminal cleanup ordering (THR-207 / TASK-5584)
 
@@ -1208,14 +1019,6 @@ the operational probe (explicit skip reason thereafter).
 
 ### Executor binary-path resolution (THR-085 / THR-107 seq155)
 
-Built-in and generic-CLI custom executor profiles require a valid explicit
-machine-local binary registry entry before launch. Custom-adapter profiles
-(``command_adapter_id: custom-adapter:<id>``) are an exception — they use
-the exact founder-APPROVED, hash-verified absolute adapter executable as their
-launch artifact and do **not** require a separate ``executors.json`` record
-keyed by the profile name. At spawn time, each
-executor's CLI binary is resolved as follows:
-
 1. **Machine-local registry** — for non-custom-adapter profiles, consult the
    per-host binary-path registry at
    `<daemon-home>/executors.json`. The executor name (e.g. `claude`) is the sole
@@ -1234,12 +1037,6 @@ the approved adapter entry — its absolute path, SHA-256 hash, version, and
 contract version are verified at construction time and re-verified before
 each ``Popen``. Missing, tampered, non-regular, or non-executable adapters
 fail closed.
-
-Absolute `cli_path` values in Settings are never used as a bypass — only
-an explicit ``executors.json`` entry keyed by the executor name (or, for
-custom-adapter profiles, the approved adapter entry) permits launch.
-This applies to all four built-ins (claude, codex, opencode, pi), generic-CLI
-custom profiles, and custom-adapter-backed profiles.
 
 The actionble block is an `ExecutorBinaryBlocked` exception (subclass of
 `RuntimeError`). It always names the specific executor kind and gives the
@@ -1823,3 +1620,94 @@ topology and the effective admission cap/reason from the active supervisor
 capability. Below-envelope values remain valid with an intentional-backpressure
 warning; above-envelope values warn that admission capacity cannot create
 producers.
+> **TASK-6514 direct retirement:** Legacy template-based generic executor
+> profiles are neither readable, writable, nor launchable. There is no
+> deprecation window, migration command, receipt flow, auto-conversion, or
+> versioned rollback. An omitted command adapter, the retired generic identity,
+> and command/argv profile fields fail before registry/store/audit mutation with
+> guidance to register and approve an adapter and bind
+> `command_adapter_id: custom-adapter:<id>`. Recovery is ordinary reassignment
+> to a built-in executor or ordinary re-registration of a valid approved custom
+> adapter profile. The AdapterInput/AdapterOutput v1 approval, binding, hash,
+> conformance, health, direct-connect, and server-authoritative eligibility
+> contracts remain unchanged.
+
+# Generic remote-job v1 contracts and dark persistence (S1-S2)
+
+`runtime.remote_jobs` defines the pure, immutable version-1 packet vocabulary.
+All objects reject unknown keys and invalid versions, enums, identifiers,
+timestamps, caps, and digest encodings. Canonical bytes are compact sorted-key
+JSON encoded as UTF-8 with Unicode preserved; unset optional fields are omitted
+while an explicitly supplied null remains present. SHA-256 is computed only
+over those bytes. A whole-job bundle binds selected runner/generation and
+attestation/capabilities/network policy, workspace identity/generation and
+agent owner, every declared phase script/interpreter/cwd/env/cap, and reuse and
+observation policy. It is frozen after validation.
+
+V0 supports only `full_content_sha256`; the bounded coarse-manifest proposal
+is omitted. The policy digest is recomputed from the complete normalized
+version, root sets, exclusions, bounds, and filesystem handling rules, so an
+arbitrary asserted digest cannot rename a different supported policy.
+
+The once-per-workspace-generation skip contract has four indivisible logical
+parts: admitted `pre_run` digest; exact `(runner_id, runner_generation,
+workspace_id, workspace_generation)`; exact versioned exclusions/observation
+policy digest; and a fresh complete observation matching one durable successful
+executed-setup receipt across every required reusable root. Required roots must
+be observed and cannot have required descendants excluded. S1 represents this
+policy but neither observes a workspace nor persists/authorizes reuse.
+
+Stable reasons are the closed v1 taxonomy in
+`runtime.remote_jobs.contracts.StableReason`; raw exception/diagnostic text is
+never a stable reason. Primary selection is deterministic and ordered exactly:
+invalid/stale fence or uncertainty; finalization/persistence safety; accepted
+cancellation; earliest phase timeout/output cap; pre-run failure; workspace
+observation failure/mismatch; run failure; post-run failure; success. Rejected
+admission and founder rejection map to the preserved public `rejected` status;
+other terminal reasons map to `failed`; no reasons maps to `completed`.
+Subordinate receipts remain inputs/evidence and are not erased by selection.
+`PhaseFinished` rejects cross-phase reasons, impossible skip/start/exit shapes,
+reversed timestamps, cap overruns, non-derived receipt digests, and missing or
+mismatched observation-policy identity on observation receipts. Script-phase
+receipts require their admitted `PhaseSpec` validation context, while workspace
+observation receipts require the admitted observation-policy digest context;
+context-free direct construction cannot skip either binding.
+`TerminalProposed` carries unique complete phase/finalization receipt links and
+is valid only when every link exactly matches a supplied, canonically
+revalidated `PhaseFinished` receipt and those receipts alone recompute its
+status/reason. The immutable bundle derives the complete `(phase, ordinal)`
+identity set and cardinality (including exactly one finalization); inconsistent
+caller-supplied phase context, duplicate/reused digests, and extra/missing or
+same-phase/different-ordinal evidence are refused.
+`TerminalProposed` public validation requires both the admitted bundle and
+canonical `PhaseFinished` evidence; omitting either rejects construction instead
+of falling back to caller-asserted receipt summaries. Likewise, direct
+`RemoteFrame` validation requires the admitted bundle for every admission-bound
+frame type, so the public models and `parse_remote_frame` do not form competing
+strict and lenient authorities.
+`parse_remote_frame` is the shipping untrusted-input seam: every phase and
+terminal frame requires the exact admission offer plus admitted phase
+name/ordinal/digest context reconciled to that offer's immutable bundle, and all
+envelope runner/generation/attempt/fence/lease facts are bound to it.
+`PHASE_LOG_CHUNK` carries the admitted phase digest
+like the other phase frames. S1 does not produce or persist that context.
+
+S2 installs the approved additive SQLite persistence contract at every managed
+`Database()` open. It contains `remote_runners` (including the sole active
+certificate serial and SPKI fingerprint), `remote_runner_workspaces`,
+`remote_job_attempts`, `remote_phase_receipts`,
+`remote_pre_run_observations`, and `remote_protocol_frames`; there is no
+runner-key history table. Exact partial indexes and composite workspace
+foreign keys enforce live-workspace, live-attempt, identity, generation, and
+four-part reuse isolation. A named staged marker and preflight shape validation
+make absent, complete, and expected-partial stores converge while conflicting
+tables, columns, keys, predicates, or index order fail closed. Five nullable
+`jobs` linkage columns are additive; legacy rows receive no backfill and retain
+their exact status, reason, blocked-job, and audit-scope semantics.
+
+There is deliberately no shipping producer or consumer yet. Later slices must
+prove producer completeness and implement runner authentication/enrollment,
+transport, observation,
+phase execution/finalization, coordination/terminal-before-resume, CLI/API/UI,
+deployment, and activation. None of those behaviors, and no change to local
+jobs or `JobStatus`, is claimed here.

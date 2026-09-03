@@ -94,25 +94,3 @@ export function StatusBadge({ status, blockKind }: StatusBadgeProps): JSX.Elemen
     </span>
   );
 }
-
-export const meta = {
-  name: "StatusBadge",
-  layer: "pattern",
-  import: "@/design-system/patterns/StatusBadge",
-  variants: {
-    status: [
-      "open",
-      "archived",
-      "pending",
-      "in_progress",
-      "escalated",
-      "completed",
-      "failed",
-      "cancelled",
-      "superseded",
-      "blocked",
-    ],
-  },
-  consumes: ["components.badge"],
-  example: "<StatusBadge status='open' />",
-} as const;

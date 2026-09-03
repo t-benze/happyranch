@@ -292,25 +292,12 @@ class TestSubmitGating:
         assert resp.status_code == 422, resp.text
         assert "adapter" in resp.json()["detail"].lower()
 
-    def test_missing_intended_profile_name_rejected(self, app_and_client, route_setup, token_store):
-        """Token with purpose='profile' (no intended_profile_name) is rejected."""
-        app, master_token, store = app_and_client
-        token, _exp = store.mint_runtime(name="test-cli", purpose="profile")
-        for step_id in store.DEFAULT_CONFORMANCE_STEPS:
-            store.record_step_arrival_runtime(token, step_id)
-
-        script = _make_conformant_adapter_script(route_setup, "test-cli-adapter")
-        client = TestClient(app)
-        resp = client.post(
-            "/api/v1/runtime/adapters/submit",
-            json={
-                "executable": str(script),
-                "version": "1.0.0",
-                **_dep_manifest(script),
-            },
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert resp.status_code == 422, resp.text
+    def test_retired_profile_purpose_cannot_mint_submission_token(self, token_store):
+        """Retired profile purpose fails before token or challenge creation."""
+        with pytest.raises(ValueError, match="binary.*adapter"):
+            token_store.mint_runtime(name="test-cli", purpose="profile")
+        assert token_store._tokens == {}
+        assert token_store._challenges == {}
 
     def test_incomplete_challenge_rejected(self, app_and_client, route_setup, token_store):
         """Token with incomplete conformance challenge is rejected."""
@@ -1273,140 +1260,6 @@ class TestRaceSafety:
         finally:
             monkeypatch.setattr(ExecutorRegistry, "replace_custom_profile", original_replace)
 
-    def test_legacy_simple_to_adapter_upgrade(
-        self, app_and_client, route_setup, token_store, monkeypatch
-    ):
-        """A pre-existing valid non-builtin custom profile (legacy/simple
-        definition with command+argv_template, not command_adapter_id) must
-        upgrade successfully to the exact approved adapter profile via bind.
-
-        The bind route permits the existing custom profile (non-builtin gate),
-        saves the adapter profile durably, then replaces it in the in-memory
-        registry via the D7A replace_custom_profile seam.  The response must
-        show connected and the durable + in-memory + audit facts must reflect
-        the adapter-backed profile."""
-        from runtime.orchestrator.runtime_executor_store import (
-            save_runtime_profile,
-            remove_runtime_profile,
-        )
-        from runtime.orchestrator.executor_registry import (
-            ExecutorRegistry,
-            get_registry as _reg,
-        )
-
-        app, master_token, store = app_and_client
-        profile_name = "legacy-upgrade-cli"
-        adapter_id = self._submit_and_approve_static(
-            app, master_token, store, route_setup, profile_name
-        )
-
-        # Load the approved adapter entry for exact workspace_adapter assertions.
-        adapter_entry = load_adapters().get(adapter_id)
-        assert adapter_entry is not None, "Approved adapter entry must exist"
-        assert adapter_entry.status == "approved"
-
-        # Stage: pre-existing legacy/simple custom profile (command +
-        # argv_template, not command_adapter_id).
-        # The command and argv_template[0] must be the same executable name.
-        legacy_cfg = {
-            "command": "python3",
-            "argv_template": ["python3", "{prompt}"],
-        }
-        save_runtime_profile(profile_name, legacy_cfg)
-        registry = _reg()
-        # Register the legacy profile in the in-memory registry.
-        legacy_profile = ExecutorRegistry.validate_custom_profile_config(
-            profile_name, legacy_cfg
-        )
-        registry.replace_custom_profile(legacy_profile)
-
-        # Pre-request snapshots.
-        pre_profiles = dict(load_runtime_profiles())
-        pre_in_memory = registry.get_profile(profile_name)
-        assert profile_name in pre_profiles, "Legacy profile must exist durably"
-        assert pre_in_memory is not None, "Legacy profile must be in registry"
-        assert pre_in_memory.command_adapter_id == "generic-cli", (
-            "Legacy profile must have generic-cli command_adapter_id, "
-            f"got {pre_in_memory.command_adapter_id!r}"
-        )
-
-        # Audit pre-snapshot: globally unfiltered, taken BEFORE bind.
-        from runtime.runtime import daemon_home as dh_audit
-        from runtime.infrastructure.database import Database
-        audit_db_path = dh_audit() / "runtime-audit.db"
-        pre_db = Database(audit_db_path)
-        try:
-            pre_all_rows, _ = pre_db.query_audit_logs()
-            pre_count = len(pre_all_rows)
-        finally:
-            pre_db.close()
-
-        mc = self._master_client(app, master_token)
-        resp = mc.post(
-            f"/api/v1/runtime/adapters/{adapter_id}/bind-profile",
-            json={"profile_name": profile_name},
-        )
-        assert resp.status_code == 200, (
-            f"Legacy upgrade bind failed: {resp.status_code} {resp.text}"
-        )
-        body = resp.json()
-        assert body["status"] == "connected"
-        assert body["profile_name"] == profile_name
-        assert body["adapter_id"] == adapter_id
-        assert body["command_adapter_id"] == f"custom-adapter:{adapter_id}"
-
-        # Durable store: profile now adapter-backed.
-        post_profiles = load_runtime_profiles()
-        assert profile_name in post_profiles
-        assert post_profiles[profile_name]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
-        assert post_profiles[profile_name]["workspace_adapter_id"] == adapter_entry.workspace_adapter
-
-        # In-memory registry: profile is adapter-backed.
-        post_in_memory = registry.get_profile(profile_name)
-        assert post_in_memory is not None
-        assert post_in_memory.command_adapter_id == f"custom-adapter:{adapter_id}"
-        assert post_in_memory.workspace_adapter_id == adapter_entry.workspace_adapter
-        assert post_in_memory.kind == "custom"
-
-        # Audit post-snapshot: globally unfiltered, proves exactly one
-        # canonical executor:<profile_name> / executor_registered row was
-        # added while all pre-existing rows remained unchanged.
-        post_db = Database(audit_db_path)
-        try:
-            post_all_rows, _ = post_db.query_audit_logs()
-        finally:
-            post_db.close()
-
-        # Exactly one new row was added.
-        assert len(post_all_rows) == pre_count + 1, (
-            f"Expected {pre_count} + 1 audit rows, got {len(post_all_rows)}"
-        )
-        new_rows = post_all_rows[pre_count:]
-        assert len(new_rows) == 1
-        new_row = new_rows[0]
-        assert new_row["task_id"] == f"executor:{profile_name}", (
-            f"Unexpected task_id: {new_row['task_id']!r}"
-        )
-        assert new_row["action"] == "executor_registered"
-        payload = new_row.get("payload", {}) or {}
-        expected_payload = {
-            "adapter_id": adapter_id,
-            "command_adapter_id": f"custom-adapter:{adapter_id}",
-            "workspace_adapter_id": adapter_entry.workspace_adapter,
-        }
-        assert payload == expected_payload, (
-            f"Unexpected audit payload: {payload!r}"
-        )
-
-        # All pre-existing rows are identical.
-        assert post_all_rows[:pre_count] == pre_all_rows, (
-            "Pre-existing audit rows were mutated during bind"
-        )
-
-        # Cleanup: remove the profile so other tests aren't affected.
-        remove_runtime_profile(profile_name)
-        registry.unregister_custom_profile(profile_name)
-
     def test_approve_rollback_on_replace_and_audit_failure(
         self, app_and_client, route_setup, token_store, monkeypatch
     ):
@@ -1682,7 +1535,7 @@ class TestRaceSafety:
 # ---------------------------------------------------------------------------
 
 class TestLegacyCompatibility:
-    """Verify legacy generic profiles and token purposes are not mutated."""
+    """Verify adapter routes do not mutate runtime profiles."""
 
     def test_adapter_routes_do_not_mutate_runtime_profiles(self, app_and_client):
         """Accessing adapters routes does not mutate runtime profiles."""
@@ -1701,23 +1554,19 @@ class TestLegacyCompatibility:
                     f"Profile {name!r} mutated by adapter list"
                 )
 
-    def test_existing_registration_token_purposes_unaffected(self, token_store):
-        """Existing token purposes (binary, profile) still work."""
+    def test_remaining_registration_token_purposes_unaffected(self, token_store):
+        """Binary and adapter token purposes remain available."""
         store = token_store
 
         # Mint binary-purpose token
         token, _exp = store.mint_runtime(name="test-binary", purpose="binary")
         assert store.validate_runtime(token) is not None
 
-        # Mint profile-purpose token (org-scoped)
-        token2, _exp2 = store.mint_runtime(name="test-profile", purpose="profile")
-        assert store.validate_runtime(token2) is not None
-
         # Mint adapter-purpose token
-        token3, _exp3 = store.mint_runtime(
+        token2, _exp2 = store.mint_runtime(
             name="test-adapter", purpose="adapter", intended_profile_name="test-adapter"
         )
-        assert store.validate_runtime(token3) is not None
+        assert store.validate_runtime(token2) is not None
 
 
 # ============================================================================
@@ -1941,22 +1790,6 @@ class TestContractReferenceAuth:
         client = TestClient(app)
         resp = client.get("/api/v1/runtime/adapters/contract-reference")
         assert resp.status_code == 401, resp.text
-
-    def test_profile_purpose_token_rejected(self, app_and_client, token_store):
-        """A profile-purpose token is rejected — only adapter-purpose accepted."""
-        app, master_token, store = app_and_client
-        token, _exp = store.mint_runtime(name="test-cli", purpose="profile")
-
-        # Complete conformance for the token
-        for step_id in store.DEFAULT_CONFORMANCE_STEPS:
-            store.record_step_arrival_runtime(token, step_id)
-
-        client = TestClient(app)
-        resp = client.get(
-            "/api/v1/runtime/adapters/contract-reference",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert resp.status_code == 422, resp.text
 
     def test_binary_purpose_token_rejected(self, app_and_client, token_store):
         """A binary-purpose token is rejected — only adapter-purpose accepted."""

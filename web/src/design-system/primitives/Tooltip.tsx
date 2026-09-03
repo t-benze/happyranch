@@ -41,12 +41,3 @@ const TooltipContent = React.forwardRef<
 TooltipContent.displayName = TooltipPrimitive.Content.displayName;
 
 export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider };
-
-export const meta = {
-  name: "Tooltip",
-  layer: "primitive",
-  import: "@/design-system/primitives/Tooltip",
-  variants: {},
-  consumes: ["components.tooltip"],
-  example: "<Tooltip><TooltipTrigger>Hover</TooltipTrigger><TooltipContent>Hint</TooltipContent></Tooltip>",
-} as const;

@@ -169,12 +169,3 @@ export function AuditRow({
     </li>
   );
 }
-
-export const meta = {
-  name: 'AuditRow',
-  layer: 'pattern',
-  import: '@/design-system/patterns/AuditRow',
-  variants: { density: ['comfortable', 'compact'] },
-  consumes: ['components.audit_row'],
-  example: '<AuditRow entry={{} as any} density="compact" />',
-} as const;

@@ -29,12 +29,3 @@ export function ThreadsLayout({ inbox, detail }: ThreadsLayoutProps): JSX.Elemen
     </div>
   );
 }
-
-export const meta = {
-  name: "ThreadsLayout",
-  layer: "layout",
-  import: "@/design-system/layouts/ThreadsLayout",
-  variants: {},
-  consumes: ["layout.grid.threads_page"],
-  example: "<ThreadsLayout inbox={<aside />} detail={<section />} />",
-} as const;

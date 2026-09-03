@@ -231,13 +231,3 @@ export function CommandPalette({
     </Dialog>
   );
 }
-
-export const meta = {
-  name: 'CommandPalette',
-  layer: 'pattern',
-  import: '@/design-system/patterns/CommandPalette',
-  variants: {},
-  consumes: ['components.dialog'],
-  example:
-    "<CommandPalette open={false} onClose={() => {}} sections={[]} onSelect={() => {}} />",
-} as const;

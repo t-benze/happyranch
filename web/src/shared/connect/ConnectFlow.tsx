@@ -15,7 +15,7 @@
  * for the honesty-fence rationale (scoped tokens only, no invented status, the
  * connected card shows only register-real data).
  */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { AlertTriangle, ArrowLeft, Check, ChevronRight, RefreshCw } from 'lucide-react';
 import { ApiError } from '@/lib/api';
@@ -66,12 +66,10 @@ export function ConnectFlow({
   connectedPrimaryAction,
 }: ConnectFlowProps): JSX.Element {
   const [mode, setMode] = useState<ConnectMode>('builtin');
-  const [customSubMode, setCustomSubMode] = useState<'adapter' | 'legacy'>('adapter');
   const [connected, setConnected] = useState<Connected | null>(null);
 
   const switchToCustom = (): void => {
     setMode('custom');
-    setCustomSubMode('adapter');
   };
 
   return (
@@ -94,19 +92,10 @@ export function ConnectFlow({
               skipSlot={formSkipSlot}
               waitingSkipSlot={waitingSkipSlot}
             />
-          ) : customSubMode === 'adapter' ? (
+          ) : (
             <AdapterConnect
               onConnected={setConnected}
               onUseBuiltin={() => setMode('builtin')}
-              onUseLegacy={() => setCustomSubMode('legacy')}
-              skipSlot={formSkipSlot}
-              waitingSkipSlot={waitingSkipSlot}
-            />
-          ) : (
-            <CustomConnect
-              onConnected={setConnected}
-              onUseBuiltin={() => setMode('builtin')}
-              onUseAdapter={() => setCustomSubMode('adapter')}
               skipSlot={formSkipSlot}
               waitingSkipSlot={waitingSkipSlot}
             />
@@ -136,7 +125,6 @@ export function BuiltinConnect({
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
   const flow = useRuntimeConnect({
-    purpose: 'binary',
     requirePresent: true,
     via: 'builtin',
     onConnected,
@@ -222,13 +210,11 @@ export function BuiltinConnect({
 export function AdapterConnect({
   onConnected,
   onUseBuiltin,
-  onUseLegacy,
   skipSlot,
   waitingSkipSlot,
 }: {
   onConnected: (c: Connected) => void;
   onUseBuiltin?: () => void;
-  onUseLegacy?: () => void;
   skipSlot?: ReactNode;
   waitingSkipSlot?: ReactNode;
 }): JSX.Element {
@@ -416,276 +402,9 @@ export function AdapterConnect({
           )}
           {skipSlot}
         </div>
-        <div className="mt-3">
-          {onUseLegacy && (
-            <button
-              type="button"
-              onClick={onUseLegacy}
-              className="text-text-muted hover:text-text-secondary text-xs underline-offset-2 hover:underline"
-            >
-              Use legacy simple integration instead
-            </button>
-          )}
-        </div>
         <HowThisWorks />
       </form>
     </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  CUSTOM — two-stage: profile token → register → binary token → pin   */
-/* ------------------------------------------------------------------ */
-
-export function CustomConnect({
-  onConnected,
-  onUseBuiltin,
-  onUseAdapter,
-  skipSlot,
-  waitingSkipSlot,
-}: {
-  onConnected: (c: Connected) => void;
-  /** Switch back to the built-in dropdown. Omit on custom-only mounts (e.g.
-   *  Settings ▸ Executors, where built-ins live in a separate section) — the
-   *  "Connect a built-in CLI instead" toggle then renders nothing. */
-  onUseBuiltin?: () => void;
-  /** Switch to the adapter-backed flow (default path). */
-  onUseAdapter?: () => void;
-  skipSlot?: ReactNode;
-  waitingSkipSlot?: ReactNode;
-}): JSX.Element {
-  const [phase, setPhase] = useState<'profile' | 'binary'>('profile');
-  const [profileName, setProfileName] = useState('');
-
-  if (phase === 'profile') {
-    return (
-      <ProfileStage
-        key="profile"
-        onUseBuiltin={onUseBuiltin}
-        onUseAdapter={onUseAdapter}
-        skipSlot={skipSlot}
-        waitingSkipSlot={waitingSkipSlot}
-        onProfileRegistered={(name: string) => {
-          setProfileName(name);
-          setPhase('binary');
-        }}
-      />
-    );
-  }
-
-  return (
-    <BinaryStage
-      key="binary"
-      profileName={profileName}
-      onConnected={onConnected}
-      onBack={() => setPhase('profile')}
-      waitingSkipSlot={waitingSkipSlot}
-    />
-  );
-}
-
-/** Stage 1: prompt the user to register their custom profile, poll for the
- *  name to appear in prereqs (appearance-only — requirePresent: false — so
- *  the flow can advance to registration), then transition to stage 2.
- *  Only the binary-purpose stage (stage 2) may report externally connected
- *  after present:true and a pinned path. */
-function ProfileStage({
-  onUseBuiltin,
-  onUseAdapter,
-  skipSlot,
-  waitingSkipSlot,
-  onProfileRegistered,
-}: {
-  onUseBuiltin?: () => void;
-  onUseAdapter?: () => void;
-  skipSlot?: ReactNode;
-  waitingSkipSlot?: ReactNode;
-  onProfileRegistered: (name: string) => void;
-}): JSX.Element {
-  const [nameInput, setNameInput] = useState('');
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
-
-  const flow = useRuntimeConnect({
-    requirePresent: false,
-    via: 'custom',
-    onConnected: (c) => onProfileRegistered(c.name),
-  });
-
-  const nameIsBuiltin = BUILTINS.has(nameInput.trim());
-  const nameValid = NAME_RE.test(nameInput.trim()) && !nameIsBuiltin;
-
-  const generate = (): void => {
-    const name = nameInput.trim();
-    if (nameValid) flow.start(name);
-  };
-
-  if (flow.state === 'waiting') {
-    return (
-      <WaitingBody
-        name={flow.name}
-        prompt={buildConnectPrompt(flow.name, flow.token, origin, 'profile')}
-        expired={flow.expired}
-        regenerating={flow.mint.isPending}
-        onRegenerate={flow.regenerate}
-        onBack={flow.back}
-        skipSlot={waitingSkipSlot}
-      />
-    );
-  }
-
-  return (
-    <div className="mt-6 max-w-lg">
-      <div className="border-border-warning/40 bg-surface-sunken mb-4 rounded-md border px-3 py-2">
-        <p className="text-text-primary text-sm font-medium">
-          Legacy / simple integration
-        </p>
-        <p className="text-text-secondary mt-0.5 text-xs">
-          This is the older direct-template path. For a more robust connection
-          with pinned-hash verification and founder-approval gating, use the{' '}
-          <button
-            type="button"
-            onClick={onUseAdapter}
-            className="text-accent hover:underline"
-          >
-            adapter-backed registration
-          </button>{' '}
-          instead.
-        </p>
-      </div>
-      <p className="text-text-secondary text-base leading-relaxed">
-        Connect a conformant CLI using the legacy generic-template integration.
-        Paste the generated prompt into your CLI — it proves it works and
-        registers as a generic-cli profile.
-      </p>
-      <form
-        className="mt-6 space-y-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          generate();
-        }}
-      >
-        <Label htmlFor="runtime-name">Name this CLI</Label>
-        <p className="text-text-muted -mt-1 text-xs">
-          A short identifier for the CLI you&rsquo;re connecting — becomes its
-          executor name.
-        </p>
-        <Input
-          id="runtime-name"
-          value={nameInput}
-          onChange={(e) => {
-            setNameInput(e.target.value);
-            flow.mint.reset();
-          }}
-          placeholder="e.g. my-cli"
-          autoFocus
-          autoComplete="off"
-          spellCheck={false}
-          aria-invalid={nameInput && !nameValid && !flow.mint.isPending ? true : undefined}
-        />
-        <p className="text-xs">
-          {nameInput && nameIsBuiltin ? (
-            <span className="text-feedback-danger">
-              Pick a name that isn&rsquo;t a built-in (claude, codex, opencode,
-              pi) — connect those from the dropdown instead.
-            </span>
-          ) : nameValid ? (
-            <span className="text-feedback-success inline-flex items-center gap-1 font-medium">
-              <Check aria-hidden="true" size={13} />
-              Lowercase letters, numbers and hyphens
-            </span>
-          ) : (
-            <span className="text-text-muted">
-              Lowercase letters, numbers and hyphens · starts with a letter
-            </span>
-          )}
-        </p>
-        {flow.mint.isError && (
-          <p className="text-feedback-danger text-sm" role="alert">
-            {flow.mint.error instanceof ApiError
-              ? `Could not generate a prompt (${flow.mint.error.status}).`
-              : 'Could not generate a prompt. Is the daemon reachable?'}
-          </p>
-        )}
-        <div className="flex flex-wrap items-center gap-3 pt-3">
-          <Button type="submit" disabled={!nameValid || flow.mint.isPending}>
-            {flow.mint.isPending ? 'Generating…' : 'Generate connect prompt'}
-          </Button>
-          {onUseBuiltin && (
-            <button
-              type="button"
-              onClick={onUseBuiltin}
-              className="text-text-secondary hover:text-text-primary inline-flex items-center gap-1.5 text-xs underline-offset-2 hover:underline"
-            >
-              <ArrowLeft aria-hidden="true" size={14} />
-              Connect a built-in CLI instead
-            </button>
-          )}
-          {skipSlot}
-        </div>
-        <HowThisWorks />
-      </form>
-    </div>
-  );
-}
-
-/** Stage 2: auto-mint a binary-purpose token for the registered profile,
- *  prompt to register its absolute binary path, poll for present:true. */
-function BinaryStage({
-  profileName,
-  onConnected,
-  onBack,
-  waitingSkipSlot,
-}: {
-  profileName: string;
-  onConnected: (c: Connected) => void;
-  onBack: () => void;
-  waitingSkipSlot?: ReactNode;
-}): JSX.Element {
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
-
-  const flow = useRuntimeConnect({
-    purpose: 'binary',
-    requirePresent: true,
-    via: 'custom',
-    onConnected,
-  });
-
-  // Auto-start the binary mint as soon as this stage mounts.
-  useEffect(() => {
-    if (flow.state === 'form' && !flow.mint.isPending) {
-      flow.start(profileName);
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  if (flow.state === 'waiting') {
-    return (
-      <WaitingBody
-        name={flow.name}
-        prompt={buildConnectPrompt(flow.name, flow.token, origin, 'binary')}
-        expired={flow.expired}
-        regenerating={flow.mint.isPending}
-        onRegenerate={flow.regenerate}
-        onBack={() => {
-          flow.back();
-          onBack();
-        }}
-        skipSlot={waitingSkipSlot}
-      />
-    );
-  }
-
-  // Still in 'form' state means the auto-start hasn't fired yet or the
-  // mint just reset. Show a spinner with the profile name.
-  return (
-    <WaitingBody
-      name={profileName}
-      prompt={''}
-      expired={false}
-      regenerating={flow.mint.isPending}
-      onRegenerate={() => flow.start(profileName)}
-      onBack={onBack}
-      skipSlot={waitingSkipSlot}
-    />
   );
 }
 
@@ -719,7 +438,6 @@ export function WaitingBody({
 
   return (
     <div className="mt-6 max-w-2xl">
-      {/* Prompt block — dot header + mono caption + Copy, mono body. */}
       <div className="border-border-default bg-surface shadow-pasture-sm overflow-hidden rounded-lg border">
         <div className="border-border-default bg-surface-sunken flex items-center justify-between border-b px-4 py-2.5">
           <div className="flex items-center gap-2">
@@ -758,7 +476,6 @@ export function WaitingBody({
         </span>
       </div>
 
-      {/* Detect strip — driven by the prereqs poll (single honest signal). */}
       {expired ? (
         <div className="border-feedback-warning/30 bg-feedback-warning/5 mt-6 rounded-lg border p-4">
           <p className="text-text-primary text-sm font-semibold">
@@ -819,10 +536,6 @@ export function WaitingBody({
     </div>
   );
 }
-
-/* ------------------------------------------------------------------ */
-/*  Connected — name (FE-known) + registered path (register-real)      */
-/* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
 /*  Adapter-specific waiting — adapter-wrapper prompt + live status    */

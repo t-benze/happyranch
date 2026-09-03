@@ -6,5 +6,8 @@ export const mockAuthorityPolicyApi: AuthorityPolicyApi = {
     isLoading: false,
     isError: false,
     error: null,
+    refetch: async () => undefined,
   }),
+  useCreateTeamEscalationPolicyRelease: () => ({ mutateAsync: async () => { throw new Error('Unavailable in prototype'); }, isPending: false }),
+  useActivateTeamEscalationPolicyRelease: () => ({ mutateAsync: async () => { throw new Error('Unavailable in prototype'); }, isPending: false }),
 };

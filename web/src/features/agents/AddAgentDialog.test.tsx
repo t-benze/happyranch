@@ -66,7 +66,7 @@ function stubStandardExecutors() {
   });
   vi.spyOn(runtimeExecutorsApi, 'listRuntimeProfiles').mockResolvedValue({
     profiles: [
-      { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: false, path: null, envelope_policy: null },
+      { name: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'custom-adapter:openclaw', present: false, path: null },
     ],
   });
 }
@@ -257,7 +257,7 @@ describe('AddAgentDialog', () => {
     });
     vi.spyOn(runtimeExecutorsApi, 'listRuntimeProfiles').mockResolvedValue({
       profiles: [
-        { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
+        { name: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'custom-adapter:openclaw', present: true, path: '/usr/bin/openclaw' },
       ],
     });
     const spy = vi.spyOn(agentsApi, 'createAgent').mockResolvedValue({
@@ -381,7 +381,7 @@ describe('AddAgentDialog', () => {
     });
     vi.spyOn(runtimeExecutorsApi, 'listRuntimeProfiles').mockResolvedValue({
       profiles: [
-        { name: 'openclaw', command: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/openclaw', envelope_policy: null },
+        { name: 'openclaw', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'custom-adapter:openclaw', present: true, path: '/usr/bin/openclaw' },
       ],
     });
 
@@ -451,7 +451,7 @@ describe('AddAgentDialog', () => {
     // A custom profile with a non-four-name executor, launchable.
     vi.spyOn(runtimeExecutorsApi, 'listRuntimeProfiles').mockResolvedValue({
       profiles: [
-        { name: 'my-runner', command: 'my-runner', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'generic-cli', command_adapter: 'generic-cli', present: true, path: '/usr/bin/my-runner', envelope_policy: null },
+        { name: 'my-runner', adapter: 'pi', workspace_adapter_id: 'pi', adapter_id: 'pi', command_adapter_id: 'custom-adapter:openclaw', present: true, path: '/usr/bin/my-runner' },
       ],
     });
 

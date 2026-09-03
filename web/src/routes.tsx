@@ -41,7 +41,6 @@ import { SettingsPage } from '@/features/settings/SettingsPage';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { TodosPage } from '@/features/todos/TodosPage';
 import { PROTOTYPES_DISABLED, prototypeRoutes } from '@/prototypes';
-import { DESIGN_ROUTE_DISABLED, designRoutes } from '@/design-system/__design__';
 
 function RootRedirect(): JSX.Element {
   const orgsQuery = useOrgsList();
@@ -91,7 +90,6 @@ export function AppRoutes(): JSX.Element {
           and OrgSlugContext — keeping mock-only behaviour fully isolated
           from the daemon-backed routes. */}
       {!PROTOTYPES_DISABLED && prototypeRoutes()}
-      {!DESIGN_ROUTE_DISABLED && designRoutes()}
       <Route element={<AppShell />}>
         <Route index element={<RootRedirect />} />
         {/* Onboarding is GLOBAL (not org-scoped): the Welcome/create/success

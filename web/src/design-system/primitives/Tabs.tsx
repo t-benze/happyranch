@@ -108,14 +108,3 @@ const TabsContent = React.forwardRef<
 TabsContent.displayName = TabsPrimitive.Content.displayName;
 
 export { Tabs, TabsList, TabsTrigger, TabsContent };
-
-export const meta = {
-  name: "Tabs",
-  layer: "primitive",
-  import: "@/design-system/primitives/Tabs",
-  variants: {
-    variant: ["pills", "underline", "segmented"],
-  },
-  consumes: ["components.tabs"],
-  example: "<Tabs value='open'><TabsList><TabsTrigger value='open'>open</TabsTrigger></TabsList></Tabs>",
-} as const;

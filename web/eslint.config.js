@@ -30,7 +30,6 @@ export default tseslint.config(
     ignores: [
       "dist",
       "node_modules",
-      "src/design-system/registry.json",
       "scripts/**",
       "vitest.setup.ts",
       "vite.config.ts",

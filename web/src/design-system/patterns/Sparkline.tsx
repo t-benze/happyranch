@@ -57,12 +57,3 @@ export function Sparkline({
     </svg>
   );
 }
-
-export const meta = {
-  name: "Sparkline",
-  layer: "pattern",
-  import: "@/design-system/patterns/Sparkline",
-  variants: { variant: ["default", "green", "yellow", "red"] },
-  consumes: ["typography.mono_sm", "colors.semantic.dark.tier"],
-  example: "<Sparkline data={[0.8, 0.84, 0.78, 0.82, 0.86]} />",
-} as const;

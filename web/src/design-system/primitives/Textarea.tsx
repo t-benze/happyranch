@@ -24,12 +24,3 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
   },
 );
 Textarea.displayName = 'Textarea';
-
-export const meta = {
-  name: "Textarea",
-  layer: "primitive",
-  import: "@/design-system/primitives/Textarea",
-  variants: {},
-  consumes: ["components.textarea"],
-  example: "<Textarea placeholder='Compose…' />",
-} as const;

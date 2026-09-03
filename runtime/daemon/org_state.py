@@ -164,24 +164,6 @@ class OrgState:
         paths = OrgPaths(root=root)
         db = Database(paths.db_path)
         teams = TeamsRegistry.load(root)
-        # THR-107: the per-org executor_profiles config surface is removed
-        # — the machine-global runtime store (executor_profiles.yaml under
-        # daemon home) is the sole definition surface, loaded once at
-        # daemon startup (DaemonState.from_runtime). If this org's
-        # config.yaml still carries a legacy executor_profiles block, lift
-        # it into the runtime store with a loud deprecation warning so no
-        # deployed definition is silently dropped. This never registers
-        # into the process registry here and never fails the org load.
-        from runtime.orchestrator.runtime_executor_store import (
-            migrate_legacy_org_profiles,
-        )
-        try:
-            migrate_legacy_org_profiles(paths.org_config_path, slug)
-        except Exception as exc:
-            logger.warning(
-                "org %r: legacy executor_profiles migration failed: %s",
-                slug, exc,
-            )
         # THR-095: one-shot seed — copy the 4 web-writable knobs from
         # config.yaml into the org_settings DB table exactly once per org.
         # Idempotent (sentinel); runs on every daemon startup but is a no-op
@@ -225,6 +207,5 @@ class OrgState:
 
     def close(self) -> None:
         self.db.close()
-
 
 

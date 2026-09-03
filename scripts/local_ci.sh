@@ -14,7 +14,7 @@
 # Targets:
 #   python       uv sync --frozen; uv run pytest tests/ -v -n 4
 #   web          cd web; npm ci; npm run lint; npm run typecheck;
-#                npm run build; npx vitest run
+#                npm run build; npm run build-storybook; npx vitest run
 #   integration  uv sync --frozen; uv run pytest tests/ -v -m integration
 #   all          python + web (default; mirrors GitHub PR CI)
 #   help         Show this help
@@ -218,6 +218,8 @@ run_web() {
   npm run typecheck
   echo -e "${YELLOW}--- Build ---${NC}"
   npm run build
+  echo -e "${YELLOW}--- Storybook static build ---${NC}"
+  npm run build-storybook
   echo -e "${YELLOW}--- Test (non-watch) ---${NC}"
   npx vitest run
 }
@@ -246,7 +248,7 @@ show_help() {
   echo "  python       Run Python unit tests"
   echo "               (uv sync --frozen + uv run pytest tests/ -v -n 4)"
   echo "  web          Run Web CI"
-  echo "               (npm ci + lint + typecheck + build + vitest run)"
+  echo "               (npm ci + lint + typecheck + build + build-storybook + vitest run)"
   echo "  integration  Run Python integration tests"
   echo "               (uv run pytest tests/ -v -m integration)"
   echo "  all          Default: runs python + web (mirrors GitHub PR CI)"

@@ -33,12 +33,3 @@ export function ContentWrap({ children, className }: ContentWrapProps): JSX.Elem
     </div>
   );
 }
-
-export const meta = {
-  name: 'ContentWrap',
-  layer: 'layout',
-  import: '@/design-system/layouts/ContentWrap/ContentWrap',
-  variants: {},
-  consumes: ['layout.content', 'layout.wrap'],
-  example: '<ContentWrap>{children}</ContentWrap>',
-} as const;

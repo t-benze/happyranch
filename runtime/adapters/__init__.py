@@ -5,8 +5,8 @@ runtime-writable manifest and NOT a custom-adapter execution or plugin-loader
 mechanism. The catalog maps the four built-in executor profile names to their
 corresponding first-party adapter classes and profile metadata.
 
-Custom profiles and ``GenericCliExecutor`` are explicitly excluded — this
-catalog is solely for the four built-ins: Claude, Codex, OpenCode, and Pi.
+Custom profiles are explicitly excluded — this catalog is solely for the four
+built-ins: Claude, Codex, OpenCode, and Pi.
 
 **D2:** The adapter-class catalog provides data-driven adapter injection
 into ``build_executor``.
@@ -132,10 +132,8 @@ _BUILTIN_CATALOG: tuple[BuiltinAdapterDescriptor, ...] = (
 # ---------------------------------------------------------------------------
 # Maps built-in executor profile name → adapter class.
 # Excludes custom profiles — this catalog is built-in only.
-# ``command_adapter_id: generic-cli`` profiles route through the existing
-# GenericCliExecutor factory path. ``command_adapter_id:
-# custom-adapter:<id>`` profiles (D7B) route through
-# ``CustomAdapterExecutor`` instead and are not covered by this catalog.
+# ``command_adapter_id: custom-adapter:<id>`` profiles route through
+# ``CustomAdapterExecutor`` and are not covered by this catalog.
 # (D10/D11 shipped a static data-driven factory dict; see executor_registry.py).
 # Derived from _BUILTIN_CATALOG so there is no parallel truth.
 # ---------------------------------------------------------------------------

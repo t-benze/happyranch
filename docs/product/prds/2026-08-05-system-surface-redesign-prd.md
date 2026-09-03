@@ -27,7 +27,7 @@ The Work Hours enablement control is the first concrete application. Its target 
 - The current Work Hours projection is not a blank slate: it has the feature switch in its header, an impact-preview then confirm/save eligibility flow, a confirm-before-disable safeguard, “saved; effective at the next scheduler pass” feedback, and a config-read recovery banner. Settings is a full page with a narrow content panel/left sub-navigation (plus a TopBar shortcut); Work Hours is a wider workspace under **Operate**, with overview/wakes tabs and agent detail. The desktop shell has no responsive reorganization target.
 - Dashboard, metrics, health, runtime/config/process claims, and streaming state are time-bounded daemon projections and can be unavailable or stale. A stream augments polling/cache; it is not a durable-delivery guarantee.
 - B2 custom Skills use the same immediately editable record for verified agents and founders. It is default Hidden — eligibility not configured, retains version/provenance/validation/materialization evidence, and has no legacy proposal UI, routes, history, or compatibility behavior.
-- The founder bundle is design evidence, not a current contract. `/__prototypes/*`, `/__design__`, mock providers, component registry, redirect plumbing, and NotFound are explicitly outside this product redesign scope.
+- The founder bundle is design evidence, not a current contract. `/__prototypes/*`, Storybook tooling, mock providers, redirect plumbing, and NotFound are explicitly outside this product redesign scope.
 
 ### Redesign requirements (not yet authorized to build)
 

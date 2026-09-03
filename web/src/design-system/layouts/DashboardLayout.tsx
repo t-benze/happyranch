@@ -63,13 +63,3 @@ export function DashboardLayout({
     </div>
   );
 }
-
-export const meta = {
-  name: 'DashboardLayout',
-  layer: 'layout',
-  import: '@/design-system/layouts/DashboardLayout',
-  variants: {},
-  consumes: [],
-  example:
-    "<DashboardLayout health={<div/>} pending={<div/>} activeByTeam={<div/>} blocked={<div/>} />",
-} as const;

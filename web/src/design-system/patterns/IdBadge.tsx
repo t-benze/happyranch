@@ -34,12 +34,3 @@ export function IdBadge({ id, kind, to }: IdBadgeProps): JSX.Element {
     inner
   );
 }
-
-export const meta = {
-  name: "IdBadge",
-  layer: "pattern",
-  import: "@/design-system/patterns/IdBadge",
-  variants: { kind: ["thread", "task"] },
-  consumes: ["components.badge"],
-  example: "<IdBadge id='THR-042' kind='thread' />",
-} as const;

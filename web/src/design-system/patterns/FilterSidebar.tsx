@@ -65,12 +65,3 @@ export function FilterSidebar({ groups, value, onChange }: FilterSidebarProps): 
     </aside>
   );
 }
-
-export const meta = {
-  name: 'FilterSidebar',
-  layer: 'pattern',
-  import: '@/design-system/patterns/FilterSidebar',
-  variants: {},
-  consumes: ['components.filter_sidebar'],
-  example: "<FilterSidebar groups={[]} value={{}} onChange={() => {}} />",
-} as const;

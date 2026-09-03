@@ -22,18 +22,14 @@ export const mintRegistrationToken = (
   });
 
 // ── Runtime-level registration token mint (THR-088 F-Step1) ──
-// Machine-global mint: no org — the resulting executor profile is registered
-// on the runtime (not scoped to an org). The daemon binds the minted `name`
-// to that profile (`profile_name = record.name`), so the FE fixes the name up
-// front and later polls GET /health/prereqs for it. Route is already shipped +
-// classified (founder-only, loopback + master-bearer, like the org mint above).
+// Machine-global mint for built-in binary registration or custom-adapter
+// submission. Purpose is mandatory so retired profile registration cannot be
+// selected through omission.
 
 export interface RuntimeRegistrationTokenMintRequest {
   name: string;
-  /** 'profile' for executor profile registration (default),
-   *  'binary' for binary-path registration,
-   *  'adapter' for custom-adapter submission. */
-  purpose?: string;
+  /** Explicit registration flow; legacy profile registration is retired. */
+  purpose: 'binary' | 'adapter';
   /** For 'adapter' purpose: the profile name this adapter is bound to. */
   intended_profile_name?: string;
   /** Optional Slice-1A direct-authority workspace adapter for adapter mints. */
