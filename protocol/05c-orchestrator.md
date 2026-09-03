@@ -101,6 +101,19 @@ sent, tasks remain fresh, and no capability is earned or consumed here.
 ``thread_runner`` still excludes custom profiles, and SQLite transcript and
 delivery semantics remain canonical.
 
+THR-200 PR 2/3 reserves ``thread_resume`` against all submitted capability
+lists and adds only an explicit registration-time ``verify_thread_resume``
+path. In one daemon-owned temporary workspace, the server proves fresh canary
+delivery and a nonempty provider id, resumes that id with a prompt that omits
+the first canary while requiring the result to recall it alongside a second,
+then requires a fabricated-id ``not_found`` failure with empty result text.
+All three must pass before one atomic AdapterEntry write appends the earned
+capability and records its verification time and probed contract version.
+Failure publishes nothing and cleans the workspace; re-registration clears
+approval and cannot inherit the receipt without another full proof. The receipt
+has no dispatch consumer in PR 2, so custom profiles remain fresh/full-prompt,
+built-in behavior is unchanged, and contract version 1 remains current.
+
 **THR-107 Slice 1A mint authority foundation.** The existing
 master-authenticated runtime adapter-purpose mint optionally accepts an exact
 first-party ``workspace_adapter_id`` and persists a nonsecret,

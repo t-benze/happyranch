@@ -78,7 +78,7 @@ class AdapterEntry:
       - executable: absolute path to the adapter executable
       - executable_hash: SHA-256 hex digest of the executable
       - version: adapter version string
-      - capabilities: list of declared capabilities
+      - capabilities: list of server-accepted or server-earned capabilities
       - contract_version: which AdapterInput/AdapterOutput version it speaks
       - workspace_adapter: which workspace prep adapter to use
       - status: "pending" ONLY in D3 (D4 adds "approved")
@@ -119,6 +119,10 @@ class AdapterEntry:
     # THR-107 seq244: dependency manifest
     dependency_manifest_version: int | None = None
     dependencies: list[dict] = field(default_factory=list)
+    # THR-200: server-earned resume conformance receipt.  These fields are
+    # absent for legacy/fresh-only adapters and never accepted as claims.
+    thread_resume_verified_at: str | None = None
+    thread_resume_contract_version: int | None = None
 
     def to_dict(self) -> dict:
         """Serialize to a plain dict for YAML persistence."""
@@ -146,6 +150,10 @@ class AdapterEntry:
             d["dependency_manifest_version"] = self.dependency_manifest_version
         if self.dependencies:
             d["dependencies"] = self.dependencies
+        if self.thread_resume_verified_at is not None:
+            d["thread_resume_verified_at"] = self.thread_resume_verified_at
+        if self.thread_resume_contract_version is not None:
+            d["thread_resume_contract_version"] = self.thread_resume_contract_version
         return d
 
     @classmethod
@@ -168,6 +176,8 @@ class AdapterEntry:
             intended_profile_name=d.get("intended_profile_name"),
             dependency_manifest_version=d.get("dependency_manifest_version"),
             dependencies=d.get("dependencies", []),
+            thread_resume_verified_at=d.get("thread_resume_verified_at"),
+            thread_resume_contract_version=d.get("thread_resume_contract_version"),
         )
 
 
