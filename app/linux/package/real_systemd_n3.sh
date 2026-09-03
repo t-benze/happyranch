@@ -196,6 +196,7 @@ for binary in /opt/happyranch/bin/happyranch-connector /opt/happyranch/bin/happy
   sudo -u happyranch test -x "$binary" || fail "system-service user cannot execute packaged binary"
 done
 sudo systemctl daemon-reload
+[[ "$(sudo stat -c %U:%G:%a /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf)" == "root:root:600" ]] || fail "transient credential drop-in custody mismatch"
 
 # semantic evidence: startup
 sudo mv /etc/happyranch/enrollment.key /etc/happyranch/enrollment.key.held
@@ -218,7 +219,10 @@ sidecar_ready="$(systemctl show happyranch-tsnet-sidecar.service -p ActiveEnterT
 [[ "$sidecar_ready" -le "$connector_ready" ]] || fail "connector reported composite READY before sidecar admission"
 [[ "$(sudo stat -c %a /run/credentials/happyranch-tsnet-sidecar.service/enrollment.key)" == 400 ]] || fail "systemd credential is not 0400"
 absent /etc/happyranch/enrollment.key
+absent /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf
 evidence "startup" "credential_mode_0400"
+evidence "startup" "credential_source_retired"
+evidence "startup" "credential_dropin_retired"
 evidence "startup" "composite_ready_after_sidecar"
 sidecar_ip="$(sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json | python -c 'import json,sys; d=json.load(sys.stdin); print(next(ip for p in d.get("Peer",{}).values() if p.get("HostName")=="home-sidecar-ci" for ip in p.get("TailscaleIPs",[]) if ":" not in ip))')"
 wait_for "virtual TSNet listener" tsnet_open
@@ -231,6 +235,17 @@ watchdog_after="$(systemctl show happyranch-connector.service -p WatchdogTimesta
 [[ "$watchdog_after" -gt "$watchdog_before" ]] || fail "connector watchdog did not follow current composite health"
 active happyranch-tsnet-sidecar.service || fail "watchdog continued without sidecar health"
 evidence "active_flow" "watchdog_composite_current"
+
+sudo systemctl stop happyranch-tsnet-sidecar.service
+wait_for "connector watchdog cessation" bash -c '! systemctl is-active --quiet happyranch-connector.service'
+! tsnet_open || fail "admission survived sidecar health loss"
+watchdog_stopped="$(systemctl show happyranch-connector.service -p WatchdogTimestampMonotonic --value)"
+sleep 2
+[[ "$(systemctl show happyranch-connector.service -p WatchdogTimestampMonotonic --value)" == "$watchdog_stopped" ]] || fail "watchdog refreshed after sidecar loss"
+evidence "active_flow" "watchdog_ceased_on_sidecar_loss"
+sudo systemctl start happyranch-managed.target
+wait_for "composite restart after health loss" active happyranch-tsnet-sidecar.service
+wait_for "virtual admission after health recovery" tsnet_open
 
 # semantic evidence: partial_failure
 old_pid="$(systemctl show happyranch-tsnet-sidecar.service -p MainPID --value)"

@@ -47,7 +47,7 @@ func runCompositeOrdering(t *testing.T, initiallyActive bool) []string {
 	done := make(chan int, 1)
 	go func() {
 		done <- superviseConnector(ctx, []string{os.Args[0], "-test.run=TestConnectorHealthChild"}, n, time.Second, 50*time.Millisecond, nil,
-			func(context.Context) bool { return active.Load() },
+			func(context.Context) sidecarObservation { if active.Load() { return sidecarPresentHealthy }; return sidecarAbsent },
 			func(context.Context) bool { active.Store(false); return true })
 	}()
 	if !initiallyActive {
@@ -100,7 +100,7 @@ func TestRepeatedWaitingCannotExtendStartupDeadline(t *testing.T) {
 	n := &recordingNotifier{}
 	started := time.Now()
 	code := superviseConnector(context.Background(), []string{os.Args[0], "-test.run=TestConnectorHealthChild"}, n,
-		20*time.Millisecond, 50*time.Millisecond, nil, func(context.Context) bool { return false }, func(context.Context) bool { return true })
+		20*time.Millisecond, 50*time.Millisecond, nil, func(context.Context) sidecarObservation { return sidecarAbsent }, func(context.Context) bool { return true })
 	if code != 1 || time.Since(started) > 300*time.Millisecond {
 		t.Fatalf("deadline refreshed: code=%d elapsed=%s", code, time.Since(started))
 	}
@@ -111,28 +111,30 @@ func TestRepeatedWaitingCannotExtendStartupDeadline(t *testing.T) {
 	}
 }
 
-func TestSystemdSidecarHealthRequiresExactActiveState(t *testing.T) {
+func TestSystemdSidecarHealthRequiresCompleteAuthoritativeState(t *testing.T) {
 	dir := t.TempDir()
 	command := filepath.Join(dir, "systemctl")
-	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'active\\n'\n"), 0700); err != nil {
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'active\\nrunning\\nsuccess\\n42\\n'\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
-	if !systemdSidecarHealthy(context.Background()) {
+	if systemdSidecarState(context.Background()) != sidecarPresentHealthy {
 		t.Fatal("active sidecar was rejected")
 	}
-	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'activating\\n'\n"), 0700); err != nil {
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'activating\\nstart\\nsuccess\\n42\\n'\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if systemdSidecarHealthy(context.Background()) {
+	if systemdSidecarState(context.Background()) != sidecarPresentUnhealthy {
 		t.Fatal("partial sidecar readiness was accepted")
 	}
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'garbage\\n'\n"), 0700); err != nil { t.Fatal(err) }
+	if systemdSidecarState(context.Background()) != sidecarUnknown { t.Fatal("malformed state was not unknown") }
 }
 
 func TestAdmissionRemovalWaitsForSidecarBeforeConnectorCleanup(t *testing.T) {
 	active := true
 	events := []string{}
-	healthy := func(context.Context) bool { events = append(events, "probe"); return active }
+	healthy := func(context.Context) sidecarObservation { events = append(events, "probe"); if active { return sidecarPresentHealthy }; return sidecarAbsent }
 	stop := func(context.Context) bool { events = append(events, "sidecar-stop"); active = false; return true }
 	if !removeSidecarAdmission(context.Background(), healthy, stop) {
 		t.Fatal("admission removal failed")
@@ -144,12 +146,20 @@ func TestAdmissionRemovalWaitsForSidecarBeforeConnectorCleanup(t *testing.T) {
 
 func TestAdmissionRemovalIsIdempotentWhenSidecarAlreadyStopped(t *testing.T) {
 	called := false
-	if !removeSidecarAdmission(context.Background(), func(context.Context) bool { return false }, func(context.Context) bool { called = true; return true }) {
+	if !removeSidecarAdmission(context.Background(), func(context.Context) sidecarObservation { return sidecarAbsent }, func(context.Context) bool { called = true; return true }) {
 		t.Fatal("already removed admission was rejected")
 	}
 	if called {
 		t.Fatal("stopped sidecar was signalled twice")
 	}
+}
+
+func TestAdmissionRemovalUnknownFailsClosedWithoutCleanup(t *testing.T) {
+	called := false
+	if removeSidecarAdmission(context.Background(), func(context.Context) sidecarObservation { return sidecarUnknown }, func(context.Context) bool { called = true; return true }) {
+		t.Fatal("unknown state claimed admission removed")
+	}
+	if called { t.Fatal("unknown state triggered stop") }
 }
 
 func TestStructuredChildHealthAcceptsExactRecords(t *testing.T) {

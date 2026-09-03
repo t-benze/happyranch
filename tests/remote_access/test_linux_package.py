@@ -85,10 +85,12 @@ def test_composite_units_start_services_concurrently_without_readiness_cycle() -
     assert "NotifyAccess=main" in sidecar
     assert "ExecStartPre=/opt/happyranch/bin/happyranch-connector diagnose --config /etc/happyranch/connector.json" in sidecar
     assert "ExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json" in sidecar
-    for directive in ("User=happyranch", "CapabilityBoundingSet=", "PrivateDevices=yes", "LoadCredential=-enrollment.key:"):
+    for directive in ("User=happyranch", "CapabilityBoundingSet=", "PrivateDevices=yes"):
         assert directive in sidecar
     assert "StateDirectoryMode=0700" in sidecar
+    assert "LoadCredential=" not in sidecar
     assert "ExecStartPost=+/opt/happyranch/bin/happyranch-connector retire-enrollment-source" in sidecar
+    assert "--dropin /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf" in sidecar
     assert "UMask=0077" in connector and "UMask=0077" in sidecar
     assert "0.0.0.0" not in connector + sidecar
 
@@ -485,6 +487,39 @@ def test_enrollment_source_retirement_is_atomic_reentrant_and_rolls_back(tmp_pat
     with pytest.raises(OSError, match="enrollment not durable"):
         _retire_enrollment_source(source, marker)
     assert source.read_text() == "rollback\n"
+
+
+def test_enrollment_source_retirement_removes_transient_dropin_after_marker(tmp_path: Path) -> None:
+    source = tmp_path / "enrollment.key"
+    marker = tmp_path / "state" / "credential.consumed"
+    dropin = tmp_path / "unit.d" / "10-enrollment-credential.conf"
+    marker.parent.mkdir()
+    dropin.parent.mkdir()
+    source.write_text("one-use\n")
+    source.chmod(0o600)
+    marker.write_text("durable\n")
+    marker.chmod(0o600)
+    dropin.write_text("[Service]\nLoadCredential=enrollment.key:/source\n")
+    dropin.chmod(0o600)
+    reloads: list[str] = []
+    _retire_enrollment_source(source, marker, dropin=dropin, reload_manager=lambda: reloads.append("reload"))
+    assert not source.exists()
+    assert not dropin.exists()
+    _retire_enrollment_source(source, marker, dropin=dropin, reload_manager=lambda: reloads.append("reload"))
+    assert reloads == ["reload"]
+
+
+def test_system_install_stages_credential_only_in_transient_dropin(tmp_path: Path) -> None:
+    package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
+    root = tmp_path / "root"
+    source = root / "etc/happyranch/enrollment.key"
+    source.parent.mkdir(parents=True)
+    source.write_text("one-use\n")
+    source.chmod(0o600)
+    install_linux_package(package, root, system_service=True)
+    dropin = root / "etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf"
+    assert dropin.read_text() == "[Service]\nLoadCredential=enrollment.key:/etc/happyranch/enrollment.key\n"
+    assert dropin.stat().st_mode & 0o777 == 0o600
 
 
 def test_packaged_connector_binary_executes_outside_source_checkout(tmp_path: Path) -> None:

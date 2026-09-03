@@ -37,11 +37,14 @@ func main() {
 		os.Exit(2)
 	}
 	credentialsDir := os.Getenv("CREDENTIALS_DIRECTORY")
-	if !filepath.IsAbs(credentialsDir) {
-		fmt.Fprintln(os.Stderr, "credential_unavailable")
-		os.Exit(2)
+	if filepath.IsAbs(credentialsDir) {
+		cfg.CredentialFile = filepath.Join(filepath.Clean(credentialsDir), "enrollment.key")
+	} else {
+		// After successful one-use enrollment the privileged post-start helper
+		// removes both the source and transient LoadCredential drop-in.  Restarts
+		// therefore prove the durable marker against the confirmed-absent source.
+		cfg.CredentialFile = "/etc/happyranch/enrollment.key"
 	}
-	cfg.CredentialFile = filepath.Join(filepath.Clean(credentialsDir), "enrollment.key")
 	if cfg.Validate() != nil {
 		fmt.Fprintln(os.Stderr, "configuration_invalid")
 		os.Exit(2)

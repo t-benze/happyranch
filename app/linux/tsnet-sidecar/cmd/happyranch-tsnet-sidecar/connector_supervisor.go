@@ -40,36 +40,42 @@ func runConnectorSupervisor(argv []string) int {
 		fmt.Fprintln(os.Stderr, "readiness_unavailable")
 		return 1
 	}
-	return superviseConnector(context.Background(), argv, notifier, 80*time.Second, 12*time.Second, nil, systemdSidecarHealthy, systemdStopSidecar)
+	return superviseConnector(context.Background(), argv, notifier, 80*time.Second, 12*time.Second, nil, systemdSidecarState, systemdStopSidecar)
 }
 
-type sidecarHealthProbe func(context.Context) bool
+type sidecarObservation uint8
+const (
+	sidecarUnknown sidecarObservation = iota
+	sidecarAbsent
+	sidecarPresentUnhealthy
+	sidecarPresentHealthy
+)
+type sidecarHealthProbe func(context.Context) sidecarObservation
 type sidecarStop func(context.Context) bool
 
-func systemdSidecarHealthy(parent context.Context) bool {
+func systemdSidecarState(parent context.Context) sidecarObservation {
 	ctx, cancel := context.WithTimeout(parent, time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "systemctl", "show", "happyranch-tsnet-sidecar.service", "--property=ActiveState", "--value")
+	cmd := exec.CommandContext(ctx, "systemctl", "show", "happyranch-tsnet-sidecar.service",
+		"--property=ActiveState", "--property=SubState", "--property=Result", "--property=MainPID", "--value")
 	cmd.Env = withoutNotifySocket(os.Environ())
 	result, err := cmd.Output()
-	return err == nil && string(result) == "active\n"
+	if err != nil { return sidecarUnknown }
+	lines := strings.Split(strings.TrimSuffix(string(result), "\n"), "\n")
+	if len(lines) != 4 { return sidecarUnknown }
+	pid, pidErr := strconv.Atoi(lines[3])
+	if lines[0] == "inactive" && lines[1] == "dead" && pidErr == nil && pid == 0 { return sidecarAbsent }
+	if lines[0] == "active" && lines[1] == "running" && lines[2] == "success" && pidErr == nil && pid > 1 { return sidecarPresentHealthy }
+	if pidErr == nil && (pid == 0 || pid > 1) && (lines[0] == "active" || lines[0] == "activating" || lines[0] == "deactivating" || lines[0] == "failed") { return sidecarPresentUnhealthy }
+	return sidecarUnknown
 }
 
 func systemdStopSidecar(parent context.Context) bool {
-	ctx, cancel := context.WithTimeout(parent, time.Second)
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "systemctl", "show", "happyranch-tsnet-sidecar.service", "--property=MainPID", "--value")
+	cmd := exec.CommandContext(ctx, "systemctl", "stop", "--no-block", "happyranch-tsnet-sidecar.service")
 	cmd.Env = withoutNotifySocket(os.Environ())
-	result, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-	pidText := strings.TrimSpace(string(result))
-	pid, err := strconv.Atoi(pidText)
-	if err != nil || pid <= 1 || strconv.Itoa(pid) != pidText {
-		return false
-	}
-	return syscall.Kill(pid, syscall.SIGTERM) == nil
+	return cmd.Run() == nil
 }
 
 func withoutNotifySocket(env []string) []string {
@@ -83,9 +89,11 @@ func withoutNotifySocket(env []string) []string {
 }
 
 func removeSidecarAdmission(ctx context.Context, healthy sidecarHealthProbe, stop sidecarStop) bool {
-	if !healthy(ctx) {
+	state := healthy(ctx)
+	if state == sidecarAbsent {
 		return true
 	}
+	if state == sidecarUnknown { return false }
 	if !stop(ctx) {
 		return false
 	}
@@ -100,9 +108,11 @@ func removeSidecarAdmission(ctx context.Context, healthy sidecarHealthProbe, sto
 		case <-deadline.C:
 			return false
 		case <-ticker.C:
-			if !healthy(ctx) {
+			state = healthy(ctx)
+			if state == sidecarAbsent {
 				return true
 			}
+			if state == sidecarUnknown { return false }
 		}
 	}
 }
@@ -160,12 +170,14 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 	stopping := false
 	stopChild := func() {
 		if !stopping {
-			stopping = true
 			_ = notifier.Notify("STOPPING=1", "STATUS=connector stopping")
 			// The sidecar owns external admission.  Signal its MainPID and wait
 			// for systemd to observe it inactive before beginning connector
 			// child cleanup.  Both services retain their own MainPID ownership.
-			_ = removeSidecarAdmission(context.Background(), sidecarHealthy, stopSidecar)
+			if !removeSidecarAdmission(context.Background(), sidecarHealthy, stopSidecar) {
+				return
+			}
+			stopping = true
 			_ = cmd.Process.Signal(syscall.SIGTERM)
 		}
 	}
@@ -199,7 +211,7 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 					stopChild()
 				} else {
 					childReady = true
-					if sidecarHealthy(ctx) {
+					if sidecarHealthy(ctx) == sidecarPresentHealthy {
 						if notifier.Notify("READY=1", "STATUS=composite healthy") != nil {
 							stopChild()
 							continue
@@ -217,7 +229,7 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 			case "healthy":
 				if !childReady || stopping {
 					stopChild()
-				} else if !ready && !sidecarHealthy(ctx) {
+				} else if !ready && sidecarHealthy(ctx) != sidecarPresentHealthy {
 					// Connector-first startup: retain the original absolute
 					// deadline while the independently starting sidecar finishes.
 					continue
@@ -234,6 +246,8 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 						}
 					}
 					timer.Reset(staleAfter)
+				} else if sidecarHealthy(ctx) != sidecarPresentHealthy {
+					stopChild()
 				} else if notifier.Notify("WATCHDOG=1") != nil {
 					stopChild()
 				} else {

@@ -91,7 +91,7 @@ Type=notify
 NotifyAccess=main
 ExecStartPre={prefix}/bin/happyranch-connector diagnose --config /etc/happyranch/connector.json
 ExecStart={prefix}/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json
-ExecStartPost=+{prefix}/bin/happyranch-connector retire-enrollment-source --source /etc/happyranch/enrollment.key --marker /var/lib/happyranch-tsnet-sidecar/credential.consumed
+ExecStartPost=+{prefix}/bin/happyranch-connector retire-enrollment-source --source /etc/happyranch/enrollment.key --marker /var/lib/happyranch-tsnet-sidecar/credential.consumed --dropin /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf
 User=happyranch
 Group=happyranch
 Restart=on-failure
@@ -119,8 +119,6 @@ StateDirectory=happyranch-tsnet-sidecar
 StateDirectoryMode=0700
 RuntimeDirectory=happyranch-tsnet-sidecar
 LogsDirectory=happyranch-tsnet-sidecar
-LoadCredential=-enrollment.key:/etc/happyranch/enrollment.key
-
 [Install]
 WantedBy=happyranch-managed.target
 """.format(prefix=prefix)
@@ -420,10 +418,20 @@ def install_linux_package(
             target.write_bytes(files[f"systemd/{unit}"])
             target.chmod(0o600)
             checkpoint(f"unit_published:{unit}")
+        credential_source = root / "etc/happyranch/enrollment.key"
+        credential_dropin = units / "happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf"
+        if system_service and credential_source.is_file():
+            credential_dropin.parent.mkdir(mode=0o755, exist_ok=True)
+            credential_dropin.write_text(
+                "[Service]\nLoadCredential=enrollment.key:/etc/happyranch/enrollment.key\n"
+            )
+            credential_dropin.chmod(0o600)
         shutil.rmtree(backup, ignore_errors=True)
         shutil.rmtree(unit_backup, ignore_errors=True)
         marker.unlink()
     except Exception:
+        credential_dropin = units / "happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf"
+        if credential_dropin.exists(): credential_dropin.unlink()
         shutil.rmtree(staging, ignore_errors=True)
         if opt.exists(): shutil.rmtree(opt)
         if backup.exists(): backup.replace(opt)
