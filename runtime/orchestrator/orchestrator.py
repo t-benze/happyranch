@@ -611,6 +611,7 @@ class Orchestrator:
         if row is None:
             return None
         decision: NextStep | None = None
+        manager_self_evaluation = None
         raw_decision = row.get("decision_json")
         if raw_decision:
             # A row with garbage in decision_json is a corruption signal, not
@@ -620,6 +621,9 @@ class Orchestrator:
             try:
                 parsed = json.loads(raw_decision)
                 if isinstance(parsed, dict):
+                    manager_self_evaluation = parsed.pop(
+                        "_manager_self_evaluation", None
+                    )
                     decision = NextStep(**parsed)
             except (json.JSONDecodeError, TypeError, ValueError, ValidationError):
                 decision = None
@@ -631,6 +635,7 @@ class Orchestrator:
             output_summary=row["output_summary"] or "",
             verdict=row.get("verdict"),
             decision=decision,
+            manager_self_evaluation=manager_self_evaluation,
             risks_flagged=row.get("risks_flagged") or [],
             dependencies=[],
             suggested_reviewer_focus=[],
@@ -929,12 +934,17 @@ class Orchestrator:
         active_policy_section = (
             render_active_team_policy(
                 release=policy_snapshot.release, activation=policy_snapshot.activation,
+                provider_id=provider, executor_kind=provider,
+                model_id=model_name or "default",
+                root_task_id=task_id, manager_session_id=session_id,
             ) if policy_snapshot is not None else ""
         )
         if self._teams.is_team_manager(agent_name):
             persist_session_policy_binding(
                 db=self._db, task_id=task_id, session_id=session_id,
                 agent_name=agent_name, snapshot=policy_snapshot,
+                provider_id=provider, executor_kind=provider,
+                model_id=model_name or "default",
             )
         full_prompt = self._build_agent_prompt(
             provider,
