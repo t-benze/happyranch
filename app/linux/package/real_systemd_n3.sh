@@ -180,7 +180,9 @@ sudo install -m 0600 -o happyranch -g happyranch "$work/policy.json" /etc/happyr
 printf '%s\n' "{\"StateDir\":\"/var/lib/happyranch-tsnet-sidecar\",\"ControlURL\":\"https://127.0.0.1:18080\",\"RoleIdentity\":\"home-sidecar-ci\",\"ExpectedPeers\":[\"synthetic-peer-ci\"],\"ListenAddr\":\":443\",\"ConnectorAddr\":\"127.0.0.1:18443\",\"DERPPolicy\":\"private-only\"}" >"$work/sidecar.json"
 sudo install -m 0600 -o happyranch -g happyranch "$work/sidecar.json" /etc/happyranch/sidecar.json
 printf '%s\n' "$sidecar_key" >"$work/enrollment.key"
-sudo install -m 0600 -o happyranch -g happyranch "$work/enrollment.key" /etc/happyranch/enrollment.key
+# The system manager requires a root-custodied plaintext LoadCredential source;
+# the unprivileged service receives only systemd's private staged copy.
+sudo install -m 0600 -o root -g root "$work/enrollment.key" /etc/happyranch/enrollment.key
 sudo env "PATH=$PATH" uv run python - "$PACKAGE_TAR" <<'PY'
 import sys
 from pathlib import Path

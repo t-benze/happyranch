@@ -131,6 +131,14 @@ def test_real_systemd_harness_proves_root_owned_binary_is_service_executable() -
     assert 'sudo -u happyranch test -x "$binary"' in harness
 
 
+def test_real_systemd_harness_keeps_load_credential_source_root_custodied() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    assert (
+        'sudo install -m 0600 -o root -g root "$work/enrollment.key" '
+        "/etc/happyranch/enrollment.key"
+    ) in harness
+
+
 def test_real_systemd_early_failure_cleanup_does_not_treat_exited_fixture_as_residue() -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
     assert "wait_status" not in harness

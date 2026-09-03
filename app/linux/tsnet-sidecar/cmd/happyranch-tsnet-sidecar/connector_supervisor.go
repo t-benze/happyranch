@@ -49,14 +49,18 @@ type sidecarStop func(context.Context) bool
 func systemdSidecarHealthy(parent context.Context) bool {
 	ctx, cancel := context.WithTimeout(parent, time.Second)
 	defer cancel()
-	result, err := exec.CommandContext(ctx, "systemctl", "show", "happyranch-tsnet-sidecar.service", "--property=ActiveState", "--value").Output()
+	cmd := exec.CommandContext(ctx, "systemctl", "show", "happyranch-tsnet-sidecar.service", "--property=ActiveState", "--value")
+	cmd.Env = withoutNotifySocket(os.Environ())
+	result, err := cmd.Output()
 	return err == nil && string(result) == "active\n"
 }
 
 func systemdStopSidecar(parent context.Context) bool {
 	ctx, cancel := context.WithTimeout(parent, time.Second)
 	defer cancel()
-	result, err := exec.CommandContext(ctx, "systemctl", "show", "happyranch-tsnet-sidecar.service", "--property=MainPID", "--value").Output()
+	cmd := exec.CommandContext(ctx, "systemctl", "show", "happyranch-tsnet-sidecar.service", "--property=MainPID", "--value")
+	cmd.Env = withoutNotifySocket(os.Environ())
+	result, err := cmd.Output()
 	if err != nil {
 		return false
 	}
@@ -66,6 +70,16 @@ func systemdStopSidecar(parent context.Context) bool {
 		return false
 	}
 	return syscall.Kill(pid, syscall.SIGTERM) == nil
+}
+
+func withoutNotifySocket(env []string) []string {
+	clean := make([]string, 0, len(env))
+	for _, item := range env {
+		if !strings.HasPrefix(item, "NOTIFY_SOCKET=") {
+			clean = append(clean, item)
+		}
+	}
+	return clean
 }
 
 func removeSidecarAdmission(ctx context.Context, healthy sidecarHealthProbe, stop sidecarStop) bool {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -269,5 +270,12 @@ func TestWatchdogFailureCancelsService(t *testing.T) {
 	}
 	if <-failed == nil {
 		t.Fatal("notify failure was not reported")
+	}
+}
+
+func TestWithoutNotifySocketPreventsHelperNotification(t *testing.T) {
+	env := withoutNotifySocket([]string{"PATH=/bin", "NOTIFY_SOCKET=/run/systemd/notify", "OTHER=value"})
+	if got := strings.Join(env, "\n"); got != "PATH=/bin\nOTHER=value" {
+		t.Fatalf("helper environment retained notification authority: %q", got)
 	}
 }
