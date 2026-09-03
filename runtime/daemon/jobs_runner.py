@@ -346,7 +346,16 @@ async def run_job(
         )
         scratch_token = activate_task_scratch(scratch)
     try:
-        child_env = apply_task_scratch_environment(_sanitize_child_env(dict(os.environ)))
+        child_env = _sanitize_child_env(dict(os.environ))
+        if scratch_token is not None:
+            # A daemon launched by an agent inherits that parent session's
+            # containment markers.  This job owns a new, task-bound contract;
+            # discard only the superseded sidecar markers before the shared
+            # validator installs the job's canonical values.  TMPDIR/TMP/TEMP
+            # remain intact so unexpected steering is still rejected.
+            child_env.pop("HAPPYRANCH_TASK_TMP_ROOT", None)
+            child_env.pop("HAPPYRANCH_TASK_SCRATCH_MANIFEST", None)
+        child_env = apply_task_scratch_environment(child_env)
         proc = await asyncio.create_subprocess_exec(
             binary,
             "-",  # read script from stdin (bash/sh/zsh/python3 all honor this)

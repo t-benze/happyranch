@@ -186,8 +186,15 @@ def test_run_job_strips_venv_from_child_environment(tmp_paths):
 
 
 def test_shipping_job_launch_is_contained_and_manifest_survives(tmp_path, monkeypatch):
-    for key in ("HAPPYRANCH_TASK_TMP_ROOT", "HAPPYRANCH_TASK_SCRATCH_MANIFEST"):
-        monkeypatch.delenv(key, raising=False)
+    # The daemon can itself be launched from a contained agent session.  A job
+    # gets its own task-bound containment and must replace those inherited
+    # sidecar markers instead of treating the parent's valid markers as a
+    # child-supplied escape attempt.
+    monkeypatch.setenv("HAPPYRANCH_TASK_TMP_ROOT", "/parent/task-tmp/TASK-PARENT")
+    monkeypatch.setenv(
+        "HAPPYRANCH_TASK_SCRATCH_MANIFEST",
+        "/parent/task-scratch-manifests/TASK-PARENT.json",
+    )
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     stdout = tmp_path / "stdout"
