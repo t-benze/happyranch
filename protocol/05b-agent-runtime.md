@@ -187,6 +187,19 @@ submissions must create the wrapper at exactly this path; the route and
 registration seam independently enforce canonical placement. The
 master-bearer ``/register`` route is unchanged. The server-derived schema is canonical. Key invariants:
 
+**THR-200 session plumbing (PR 1/3).** The v1 contract remains version 1:
+``AdapterInput.session`` may carry a non-empty provider session id only for a
+thread invocation, and ``AdapterOutput.session_status`` is the optional
+``fresh | resumed | not_found`` outcome. ``fresh`` means a new provider session,
+``resumed`` means the supplied session continued, and ``not_found`` means the
+supplied session did not exist. A sent session requires a status; ``resumed`` or
+``not_found`` without a sent session, successful ``not_found``, and
+``not_found`` with non-empty result text are contract failures. This additive
+field keeps legacy kimi/codebuddy-shaped outputs valid without re-registration.
+Tasks always stay fresh. This PR earns and consumes no resume capability:
+custom profiles remain excluded by ``thread_runner`` and SQLite thread
+transcripts and delivery state remain canonical.
+
 **Wrapper-owned headless launch posture.** A custom-adapter wrapper MUST
 choose and apply its underlying CLI's own non-interactive, sufficiently
 permissive launch posture for every unattended daemon session. It MUST NOT

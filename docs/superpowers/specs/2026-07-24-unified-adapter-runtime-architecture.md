@@ -186,6 +186,8 @@ daemon-supplied or daemon-translated permission policy or field to
   },
   "error": "Session timed out",              // string | null. Human-readable error.
   "agent_session_id": "abc123",               // string | null. The agent CLI's own session id (for resume).
+  "session_status": "fresh",                  // "fresh" | "resumed" | "not_found" | null.
+                                             // Optional THR-200 provider-session outcome.
   "rate_limited": false,                     // bool. Did the provider rate-limit this attempt?
   "adapter_metadata": {                      // object, required. ADDITIVE field.
     "adapter": "happyranch-claude-adapter",   // string, required. MUST exactly equal the stable server-derived canonical_adapter_id from the contract-reference / submitted adapter ID. Never a display name, provider, or arbitrary implementation identity. A mismatch fails the conformance probe at registration AND blocks every launch at runtime (D7B).
@@ -196,6 +198,20 @@ daemon-supplied or daemon-translated permission policy or field to
   "raw_forensics_ref": null                  // string | null. Path/ref to raw forensic capture.
 }
 ```
+
+**THR-200 PR 1/3 session semantics.** This is an additive optional extension to
+the stable v1 wire shape, so ``contract_version`` remains exactly 1 and legacy
+kimi/codebuddy-shaped outputs need no re-registration. ``fresh`` declares a new
+provider session, ``resumed`` declares successful continuation of the supplied
+session, and ``not_found`` declares that the supplied session did not exist.
+``AdapterInput.session`` is dormant plumbing and is constructed only for a
+truthful thread invocation with a non-empty resume id; tasks are always fresh.
+A sent session requires ``session_status``. ``resumed``/``not_found`` without a
+sent session, ``not_found`` with ``success=true``, and ``not_found`` with
+non-empty ``result.text`` are rejected after launch before any provider session
+id is returned, preserving forensic tails. PR 1 proves and consumes no custom
+adapter resume capability: ``thread_runner`` and its built-in-only resume set
+are unchanged, and SQLite transcript/delivery semantics remain canonical.
 
 ### 2.3 TokenUsage Semantics (preserved from current code)
 

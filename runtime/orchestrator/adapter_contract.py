@@ -7,8 +7,8 @@ probe run at registration time (D3) AND the runtime launch path (D7B) where
 ``CustomAdapterExecutor`` maps the adapter's AdapterOutput into the existing
 ``ExecutorResult`` lifecycle.
 
-The contract is additive — it does not alter ``ExecutorResult``, any
-existing audit shape, or any SQLite column.
+The contract is additive — optional fields may be mapped into
+``ExecutorResult`` without changing any existing audit shape or SQLite column.
 
 D3: conformance-probe validation at registration time.
 D7B: runtime enforcement — every custom-adapter launch requires a valid v1
@@ -31,7 +31,7 @@ change the AdapterInput/AdapterOutput contract version.  The
 """
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, Field
 
@@ -139,6 +139,15 @@ class AdapterOutput(BaseModel):
     token_usage: TokenUsageInfo | None = Field(None, description="Token usage (maps to TokenUsage model)")
     error: str | None = Field(None, description="Human-readable error")
     agent_session_id: str | None = Field(None, description="Agent CLI's own session id (for resume)")
+    session_status: Literal["fresh", "resumed", "not_found"] | None = Field(
+        None,
+        description=(
+            "Optional provider-session outcome: fresh means a new session was "
+            "created, resumed means the supplied session continued, and "
+            "not_found means the supplied session did not exist. Omission is "
+            "valid only when AdapterInput.session was omitted."
+        ),
+    )
     rate_limited: bool = Field(False, description="Did the provider rate-limit this attempt?")
     adapter_metadata: AdapterMetadata = Field(..., description="Provenance metadata from the adapter")
     child_session_id: str | None = Field(None, description="Future: spawned child session id")

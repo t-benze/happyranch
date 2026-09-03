@@ -140,6 +140,133 @@ def _valid_adapter_output(**kwargs) -> dict:
     return defaults
 
 
+def _run_session_output(tmp_path: Path, output: dict, *, kind: str = "thread",
+                        resume_session_id: str | None = None) -> tuple[ExecutorResult, dict]:
+    """Run a real adapter and return its result plus captured AdapterInput."""
+    from runtime.orchestrator.adapter_store import compute_sha256
+    import sys as _sys
+
+    capture = tmp_path / "session-input.json"
+    script = textwrap.dedent(f"""\
+        #!{_sys.executable}
+        import json, sys
+        data = sys.stdin.read()
+        with open({str(capture)!r}, "w") as fh:
+            fh.write(data)
+        sys.stdout.write({json.dumps(output)!r})
+    """)
+    executable = tmp_path / "session-adapter.py"
+    executable.write_text(script)
+    executable.chmod(executable.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    executor = CustomAdapterExecutor(
+        profile_name="test", adapter_entry_id="test-adapter",
+        adapter_executable=str(executable),
+        adapter_hash=compute_sha256(str(executable)), adapter_version="1.0.0",
+        adapter_contract_version=1, provider="test",
+    )
+    executor.set_invocation_context(
+        agent="dev_agent", org="happyranch", invocation_kind=kind,
+        task_id="TASK-001" if kind == "task" else None,
+    )
+    result = executor.run(
+        workspace=tmp_path, prompt="test", session_id="test-sess",
+        resume_session_id=resume_session_id,
+    )
+    captured = json.loads(capture.read_text()) if capture.exists() else {}
+    return result, captured
+
+
+class TestAdapterSessionContract:
+    """THR-200 PR-1 dormant custom-adapter session plumbing."""
+
+    def test_legacy_no_session_output_remains_valid_v1(self, tmp_path):
+        result, envelope = _run_session_output(tmp_path, _valid_adapter_output())
+        assert result.success
+        assert result.session_status is None
+        assert envelope["contract_version"] == 1
+        assert envelope["session"] is None
+
+    @pytest.mark.parametrize(
+        ("resume", "status", "provider_id"),
+        [
+            (None, "fresh", "provider-new"),
+            ("provider-old", "resumed", "provider-old"),
+            ("provider-old", "fresh", "provider-replacement"),
+        ],
+    )
+    def test_session_status_and_provider_id_map(
+        self, tmp_path, resume, status, provider_id,
+    ):
+        output = _valid_adapter_output(
+            session_status=status, agent_session_id=provider_id,
+        )
+        result, envelope = _run_session_output(
+            tmp_path, output, resume_session_id=resume,
+        )
+        assert result.success
+        assert result.session_status == status
+        assert result.agent_session_id == provider_id
+        assert envelope["session"] == (
+            {"resume_session_id": "provider-old"} if resume else None
+        )
+
+    def test_not_found_failure_maps_without_session_id(self, tmp_path):
+        output = _valid_adapter_output(
+            success=False, returncode=1, session_status="not_found",
+            agent_session_id=None, result=None,
+        )
+        result, _ = _run_session_output(
+            tmp_path, output, resume_session_id="provider-missing",
+        )
+        assert not result.success
+        assert result.failure_category == "provider_nonzero"
+        assert result.provider_launched is True
+        assert result.session_status == "not_found"
+        assert result.agent_session_id is None
+
+    @pytest.mark.parametrize(
+        ("resume", "status", "success", "text"),
+        [
+            (None, "resumed", True, None),
+            (None, "not_found", False, None),
+            ("provider-old", "not_found", True, None),
+            ("provider-old", "not_found", False, "unexpected text"),
+            ("provider-old", None, True, None),
+        ],
+    )
+    def test_incoherent_session_output_fails_post_launch(
+        self, tmp_path, resume, status, success, text,
+    ):
+        output = _valid_adapter_output(
+            success=success,
+            returncode=0 if success else 1,
+            result={"text": text} if text is not None else None,
+            agent_session_id="must-not-escape",
+        )
+        if status is not None:
+            output["session_status"] = status
+        result, _ = _run_session_output(
+            tmp_path, output, resume_session_id=resume,
+        )
+        assert not result.success
+        assert result.failure_category == "post_launch_contract"
+        assert result.provider_launched is True
+        assert result.agent_session_id is None
+        assert result.session_status is None
+
+    def test_task_resume_request_fails_pre_launch_without_adapter_input(self, tmp_path):
+        output = _valid_adapter_output(session_status="resumed")
+        result, envelope = _run_session_output(
+            tmp_path, output, kind="task", resume_session_id="provider-old",
+        )
+        assert not result.success
+        assert result.failure_category == "pre_launch"
+        assert result.provider_launched is False
+        assert result.agent_session_id is None
+        assert result.session_status is None
+        assert envelope == {}
+
+
 class TestCustomAdapterExecutorBasic:
     """Basic CustomAdapterExecutor construction and safety checks."""
 

@@ -110,6 +110,19 @@ Recovery is explicit: repair or re-register a valid approved adapter, or
 reassign the agent to a built-in executor. Built-in executor transport is
 unchanged and does not use ``AdapterOutput``.
 
+THR-200 PR 1/3 keeps this contract at version 1 while adding dormant optional
+session plumbing. A non-empty ``AdapterInput.session.resume_session_id`` is
+valid only for truthful thread invocations. Optional
+``AdapterOutput.session_status`` means ``fresh`` (new provider session),
+``resumed`` (supplied session continued), or ``not_found`` (supplied session
+absent). A sent session requires a status; incoherent combinations fail as
+post-launch contract errors before an ``agent_session_id`` can reach mutation
+callers, with stdout/stderr tails preserved. Legacy outputs remain compatible
+when no session was sent, including existing kimi/codebuddy-shaped output.
+Tasks remain fresh. PR 1 neither proves nor consumes a custom-adapter resume
+capability; ``thread_runner`` remains unchanged and excludes custom profiles,
+while SQLite thread transcript/delivery semantics remain canonical.
+
 **Adapter contract reference (THR-107 seq184).** The authoritative v1
 ``AdapterInput``/``AdapterOutput`` contract is served by the running daemon via
 ``GET /api/v1/runtime/adapters/contract-reference`` — accessible during
