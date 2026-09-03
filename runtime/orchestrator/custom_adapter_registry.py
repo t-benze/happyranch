@@ -30,7 +30,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput
+from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput, SessionInfo
 from runtime.orchestrator.adapter_store import (
     AdapterEntry,
     _save_adapter_locked,
@@ -382,7 +382,14 @@ def validate_capabilities(capabilities: list[str]) -> list[str]:
     for cap in capabilities:
         if not isinstance(cap, str) or not cap.strip():
             raise ValueError(f"capability {cap!r} must be a non-empty string")
-        cleaned.append(cap.strip())
+        normalized = cap.strip()
+        if normalized == "thread_resume":
+            raise ValueError(
+                "thread_resume is a server-earned capability and cannot be "
+                "submitted; register with verify_thread_resume=true so the "
+                "runtime can run the stateful conformance probe"
+            )
+        cleaned.append(normalized)
     return cleaned
 
 
@@ -567,8 +574,13 @@ def _read_bounded(
 def build_probe_input(
     adapter_name: str,
     *,
+    workspace: str | Path = "/tmp/happyranch-probe-workspace",
+    session: SessionInfo | None = None,
+    deadline_seconds: int = 30,
     prompt_canary: str | None = None,
     invocation_id: str | None = None,
+    prompt: str | None = None,
+    invocation_kind: str = "task",
 ) -> AdapterInput:
     """Build a minimal, deterministic ``AdapterInput`` for the conformance probe.
 
@@ -593,9 +605,9 @@ def build_probe_input(
             task_id=None,
             agent="dev_agent",
             org="happyranch",
-            invocation_kind="task",
+            invocation_kind=invocation_kind,
         ),
-        prompt=(
+        prompt=prompt if prompt is not None else (
             "conformance-probe: Forward this entire normal v1 AdapterInput.prompt "
             "through one real provider invocation and obtain a genuine terminal "
             "provider response. The wrapper owns the AdapterOutput envelope; the "
@@ -613,10 +625,10 @@ def build_probe_input(
             "success. Do not use optional tools or explore the workspace during this "
             "short probe. Normal task behavior is unchanged."
         ),
-        workspace="/tmp/happyranch-probe-workspace",
+        workspace=str(workspace),
         timeout=TimeoutInfo(
-            deadline_seconds=30,
-            max_runtime_seconds=30,
+            deadline_seconds=deadline_seconds,
+            max_runtime_seconds=deadline_seconds,
         ),
         executor_context=ExecutorContext(
             provider=adapter_name,
@@ -624,6 +636,7 @@ def build_probe_input(
             adapter_version="1.0.0",
             permission_mode="default",
         ),
+        session=session,
     )
 
 
@@ -632,6 +645,10 @@ def run_conformance_probe(
     adapter_name: str,
     *,
     require_prompt_delivery: bool = False,
+    probe_input: AdapterInput | None = None,
+    expected_canary: str | None = None,
+    require_success: bool = True,
+    deadline_seconds: int | None = None,
 ) -> AdapterOutput:
     """Run a bounded stdin/stdout conformance probe against an adapter executable.
 
@@ -656,6 +673,8 @@ def run_conformance_probe(
 
     ZERO durable residue is left on failure — this is a pure validation step.
     """
+    if deadline_seconds is None:
+        deadline_seconds = CONFORMANCE_PROBE_TIMEOUT_SECONDS
     prompt_canary = None
     invocation_id = None
     if require_prompt_delivery:
@@ -663,11 +682,13 @@ def run_conformance_probe(
         # from satisfying direct-connect's behavioral gate.
         prompt_canary = f"direct-connect-canary:{secrets.token_urlsafe(24)}"
         invocation_id = f"probe-sess-{uuid.uuid4()}"
-    probe_input = build_probe_input(
-        adapter_name,
-        prompt_canary=prompt_canary,
+    probe_input = probe_input or build_probe_input(
+        adapter_name, prompt_canary=prompt_canary,
         invocation_id=invocation_id,
+        deadline_seconds=max(1, int(deadline_seconds)),
     )
+    if expected_canary is None:
+        expected_canary = prompt_canary
     input_json = probe_input.model_dump_json()
 
     def direct_failure(reason: str) -> ValueError:
@@ -711,13 +732,13 @@ def run_conformance_probe(
             proc,
             stdout_limit=CONFORMANCE_PROBE_MAX_STDOUT_BYTES,
             stderr_limit=CONFORMANCE_PROBE_MAX_STDERR_BYTES,
-            timeout=CONFORMANCE_PROBE_TIMEOUT_SECONDS,
+            timeout=deadline_seconds,
         )
         # Both streams reached EOF — wait for the process with the
         # REMAINING budget from the original monotonic deadline.
         # A fresh unconditional timeout would let an adapter escape
         # the deadline merely by closing its streams before hanging.
-        remaining = CONFORMANCE_PROBE_TIMEOUT_SECONDS - (
+        remaining = deadline_seconds - (
             time.monotonic() - conformance_start
         )
         if remaining <= 0:
@@ -726,7 +747,7 @@ def run_conformance_probe(
                 raise direct_failure("timed out")
             raise ValueError(
                 f"Conformance probe timed out after "
-                f"{CONFORMANCE_PROBE_TIMEOUT_SECONDS}s for {executable!r}"
+                f"{deadline_seconds}s for {executable!r}"
             )
         try:
             proc.wait(timeout=remaining)
@@ -736,7 +757,7 @@ def run_conformance_probe(
                 raise direct_failure("timed out")
             raise ValueError(
                 f"Conformance probe timed out after "
-                f"{CONFORMANCE_PROBE_TIMEOUT_SECONDS}s for {executable!r}"
+                f"{deadline_seconds}s for {executable!r}"
             )
     except subprocess.TimeoutExpired as exc:
         _kill_and_reap(proc)
@@ -747,7 +768,7 @@ def run_conformance_probe(
             stderr_tail = exc.stderr.decode("utf-8", errors="replace")[-2000:]
         raise ValueError(
             f"Conformance probe timed out after "
-            f"{CONFORMANCE_PROBE_TIMEOUT_SECONDS}s for {executable!r}. "
+            f"{deadline_seconds}s for {executable!r}. "
             f"stderr tail: {stderr_tail[:500]}"
         )
     except BoundedReadError as exc:
@@ -848,7 +869,7 @@ def run_conformance_probe(
         ) from exc
 
     # Basic sanity: success must be true
-    if not output.success:
+    if require_success and not output.success:
         if require_prompt_delivery:
             raise direct_failure("provider reported failure")
         error_msg = output.error or "(no error message)"
@@ -881,10 +902,96 @@ def run_conformance_probe(
             raise direct_failure("return code is inconsistent")
         if output.session_id != probe_input.invocation.invocation_id:
             raise direct_failure("invocation id is missing or does not match")
-        if output.result is None or output.result.text is None or prompt_canary not in output.result.text:
+        if (output.result is None or output.result.text is None
+                or expected_canary not in output.result.text):
             raise direct_failure("terminal result did not prove prompt delivery")
 
     return output
+
+
+def run_resume_conformance_probe(
+    executable: str,
+    adapter_name: str,
+    *,
+    deadline_seconds: int = 120,
+) -> AdapterOutput:
+    """Earn thread resume via fresh, genuine-resume, and missing-id probes.
+
+    All three provider invocations share one runtime-owned workspace.  The
+    temporary workspace is removed on every exit, and callers persist nothing
+    until this function returns successfully.
+    """
+    from runtime.runtime import daemon_home
+
+    root = daemon_home() / "adapter-probes"
+    root.mkdir(parents=True, exist_ok=True)
+    canary_a = f"thread-resume-a:{secrets.token_urlsafe(24)}"
+    canary_b = f"thread-resume-b:{secrets.token_urlsafe(24)}"
+    canary_c = f"thread-resume-c:{secrets.token_urlsafe(24)}"
+    per_stage_deadline = max(1, deadline_seconds // 3)
+
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="thread-resume-", dir=root) as td:
+        workspace = Path(td)
+        fresh_input = build_probe_input(
+            adapter_name, workspace=workspace, session=None,
+            deadline_seconds=per_stage_deadline, prompt_canary=canary_a,
+            invocation_id=f"probe-sess-{uuid.uuid4()}", invocation_kind="thread",
+        )
+        fresh = run_conformance_probe(
+            executable, adapter_name, require_prompt_delivery=True,
+            probe_input=fresh_input, expected_canary=canary_a,
+            deadline_seconds=per_stage_deadline,
+        )
+        if not fresh.agent_session_id:
+            raise ValueError("Resume conformance fresh stage returned no agent_session_id")
+        if fresh.session_status not in (None, "fresh"):
+            raise ValueError("Resume conformance fresh stage returned incoherent session_status")
+
+        # Deliberately do not put canary A in this prompt.  Its appearance in
+        # the result can therefore only come from retained provider context.
+        resume_prompt = (
+            "thread-resume-conformance: Resume the requested provider session. "
+            "Repeat the complete opaque canary from the immediately preceding "
+            "turn verbatim, then include this new opaque canary verbatim: "
+            f"{canary_b}"
+        )
+        resume_input = build_probe_input(
+            adapter_name, workspace=workspace,
+            session=SessionInfo(resume_session_id=fresh.agent_session_id),
+            deadline_seconds=per_stage_deadline, prompt=resume_prompt,
+            invocation_id=f"probe-sess-{uuid.uuid4()}", invocation_kind="thread",
+        )
+        resumed = run_conformance_probe(
+            executable, adapter_name, require_prompt_delivery=True,
+            probe_input=resume_input, expected_canary=canary_b,
+            deadline_seconds=per_stage_deadline,
+        )
+        resumed_text = resumed.result.text if resumed.result is not None else None
+        if (resumed.session_status != "resumed" or not resumed.agent_session_id
+                or not resumed_text or canary_a not in resumed_text
+                or canary_b not in resumed_text):
+            raise ValueError("Resume conformance resume stage did not prove retained context")
+
+        missing_id = f"hr-probe-missing-{uuid.uuid4()}"
+        missing_input = build_probe_input(
+            adapter_name, workspace=workspace,
+            session=SessionInfo(resume_session_id=missing_id),
+            deadline_seconds=per_stage_deadline, prompt_canary=canary_c,
+            invocation_id=f"probe-sess-{uuid.uuid4()}", invocation_kind="thread",
+        )
+        missing = run_conformance_probe(
+            executable, adapter_name, require_prompt_delivery=False,
+            probe_input=missing_input, require_success=False,
+            deadline_seconds=per_stage_deadline,
+        )
+        missing_text = missing.result.text if missing.result is not None else None
+        if (missing.session_id != missing_input.invocation.invocation_id
+                or missing.session_status != "not_found" or missing.success
+                or (missing_text is not None and missing_text.strip())
+                or any(c in (missing_text or "") for c in (canary_a, canary_b, canary_c))):
+            raise ValueError("Resume conformance missing-session stage was incoherent")
+        return fresh
 
 
 # ---------------------------------------------------------------------------
@@ -929,6 +1036,7 @@ def register_custom_adapter(
     intended_profile_name: str | None = None,
     dependency_manifest_version: int | None = None,
     dependencies: list[dict] | None = None,
+    verify_thread_resume: bool = False,
 ) -> AdapterEntry:
     """Register a custom adapter executable.
 
@@ -1065,7 +1173,18 @@ def register_custom_adapter(
         adapter_id = generate_adapter_id(adapter_name)
 
     # Step 7: Conformance probe (spawns subprocess — no durable residue on failure)
-    conformance_output = run_conformance_probe(str(executable_path), adapter_id)
+    if verify_thread_resume:
+        conformance_output = run_resume_conformance_probe(
+            str(executable_path), adapter_id,
+        )
+        persisted_capabilities = [*capabilities, "thread_resume"]
+        thread_resume_verified_at = datetime.now(timezone.utc).isoformat()
+        thread_resume_contract_version = conformance_output.adapter_metadata.contract_version
+    else:
+        conformance_output = run_conformance_probe(str(executable_path), adapter_id)
+        persisted_capabilities = capabilities
+        thread_resume_verified_at = None
+        thread_resume_contract_version = None
 
     # seq244: Token-metering truthfulness — if capabilities include
     # "token_metering", the conformance probe MUST produce a valid
@@ -1123,7 +1242,7 @@ def register_custom_adapter(
             executable=str(executable_path),
             executable_hash=file_hash,
             version=version,
-            capabilities=capabilities,
+            capabilities=persisted_capabilities,
             contract_version=1,
             workspace_adapter=workspace_adapter,
             status="pending",  # ALWAYS pending
@@ -1134,6 +1253,8 @@ def register_custom_adapter(
             intended_profile_name=intended_profile_name,
             dependency_manifest_version=dep_manifest_version,
             dependencies=normalized_deps,
+            thread_resume_verified_at=thread_resume_verified_at,
+            thread_resume_contract_version=thread_resume_contract_version,
         )
 
         # Re-registration guard: if existing entry differs, status MUST be
@@ -1143,7 +1264,7 @@ def register_custom_adapter(
             if (existing.executable == str(executable_path) and
                     existing.executable_hash == file_hash and
                     existing.version == version and
-                    existing.capabilities == capabilities and
+                    existing.capabilities == persisted_capabilities and
                     existing.workspace_adapter == workspace_adapter and
                     existing.dependency_manifest_version == dep_manifest_version and
                     existing.dependencies == normalized_deps):
@@ -1165,6 +1286,8 @@ def register_custom_adapter(
                     intended_profile_name=intended_profile_name,
                     dependency_manifest_version=dep_manifest_version,
                     dependencies=normalized_deps,
+                    thread_resume_verified_at=thread_resume_verified_at,
+                    thread_resume_contract_version=thread_resume_contract_version,
                 )
             else:
                 # Changed — new registration, pending
@@ -1357,6 +1480,8 @@ def approve_adapter(
     auto_bind_profile: bool = False,
     dependency_manifest_version: int | None = None,
     dependencies: list[dict] | None = None,
+    thread_resume_verified_at: str | None = None,
+    thread_resume_contract_version: int | None = None,
 ) -> AdapterEntry:
     """Approve a pending custom adapter (D4 founder-gated approval gate).
 
@@ -1448,7 +1573,9 @@ def approve_adapter(
                     entry.contract_version == contract_version and
                     entry.workspace_adapter == workspace_adapter and
                     entry.dependency_manifest_version == dependency_manifest_version and
-                    _entry_deps == _req_deps):
+                    _entry_deps == _req_deps and
+                    entry.thread_resume_verified_at == thread_resume_verified_at and
+                    entry.thread_resume_contract_version == thread_resume_contract_version):
                 logger.info(
                     "approve_adapter: adapter %r already approved with identical "
                     "facts — idempotent no-op", adapter_id
@@ -1516,6 +1643,16 @@ def approve_adapter(
                 f"store has {len(_entry_deps)} record(s), "
                 f"approval request has {len(_req_deps)} record(s)"
             )
+        if entry.thread_resume_verified_at != thread_resume_verified_at:
+            raise ValueError(
+                f"thread_resume_verified_at mismatch for {adapter_id!r}: "
+                "refetch the server-issued conformance receipt before approval"
+            )
+        if entry.thread_resume_contract_version != thread_resume_contract_version:
+            raise ValueError(
+                f"thread_resume_contract_version mismatch for {adapter_id!r}: "
+                "refetch the server-issued conformance receipt before approval"
+            )
 
         # Transition from PENDING → APPROVED
         now = datetime.now(timezone.utc).isoformat()
@@ -1536,6 +1673,8 @@ def approve_adapter(
             intended_profile_name=entry.intended_profile_name,
             dependency_manifest_version=entry.dependency_manifest_version,
             dependencies=entry.dependencies,
+            thread_resume_verified_at=entry.thread_resume_verified_at,
+            thread_resume_contract_version=entry.thread_resume_contract_version,
         )
         _save_adapter_locked(approved_entry)
         logger.info(
@@ -1577,6 +1716,8 @@ def approve_adapter(
                     intended_profile_name=entry.intended_profile_name,
                     dependency_manifest_version=entry.dependency_manifest_version,
                     dependencies=entry.dependencies,
+                    thread_resume_verified_at=entry.thread_resume_verified_at,
+                    thread_resume_contract_version=entry.thread_resume_contract_version,
                 )
                 _save_adapter_locked(rolled_back)
                 logger.warning(

@@ -200,6 +200,25 @@ Tasks always stay fresh. This PR earns and consumes no resume capability:
 custom profiles remain excluded by ``thread_runner`` and SQLite thread
 transcripts and delivery state remain canonical.
 
+**THR-200 resume conformance (PR 2/3).** ``thread_resume`` is a
+server-reserved, server-earned ``AdapterEntry.capabilities`` value. Both
+registration request shapes reject a submitted claim and expose an explicit
+``verify_thread_resume`` opt-in. The probe makes three sequential provider
+calls in one runtime-owned temporary workspace: fresh must return an opaque
+canary and nonempty provider session id; resume receives a new canary but not
+the old one and must return both with ``session_status=resumed`` and a nonempty
+stable-or-replaced id; a mandatory fabricated ``hr-probe-missing-<uuid>`` id
+must return false success, ``session_status=not_found``, and no result text or
+canary output. Only a full pass atomically publishes the capability plus
+``thread_resume_verified_at`` and the probed contract version in the existing
+adapter YAML entry. Every failure removes the workspace and leaves any durable
+entry byte-identical. Re-registration without a new passing opt-in proof clears
+the earned state and always clears approval; executable, dependency, declared
+capability, or workspace-adapter identity changes likewise cannot inherit it.
+PR 2 does not consume this receipt: ``thread_runner``, built-in resume, task
+freshness, existing custom-profile full-transcript behavior, and contract v1
+remain unchanged.
+
 **Wrapper-owned headless launch posture.** A custom-adapter wrapper MUST
 choose and apply its underlying CLI's own non-interactive, sufficiently
 permissive launch posture for every unattended daemon session. It MUST NOT

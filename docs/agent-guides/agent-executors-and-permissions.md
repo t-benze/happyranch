@@ -123,6 +123,20 @@ Tasks remain fresh. PR 1 neither proves nor consumes a custom-adapter resume
 capability; ``thread_runner`` remains unchanged and excludes custom profiles,
 while SQLite thread transcript/delivery semantics remain canonical.
 
+THR-200 PR 2/3 adds an explicit registration-time
+``verify_thread_resume`` opt-in. ``thread_resume`` is reserved: a submitted
+capability claim is rejected, and only the server may append it after three
+stateful provider calls in one daemon-owned temporary workspace prove a fresh
+opaque canary and session id, a genuine resume that recalls that canary without
+receiving it again, and a fabricated-id ``not_found`` failure with no model
+text. The entry stores the capability, verification timestamp, and probed v1
+contract version in one atomic YAML replacement only after all stages pass;
+failure leaves the previous entry byte-identical and removes the workspace.
+Re-registration always requires a new opt-in proof and resets approval. This
+earned receipt remains dormant: no runner reads it in PR 2, built-ins and
+registered kimi/codebuddy ordinary behavior are unchanged, and custom profiles
+still receive fresh/full SQLite-canonical thread prompts.
+
 **Adapter contract reference (THR-107 seq184).** The authoritative v1
 ``AdapterInput``/``AdapterOutput`` contract is served by the running daemon via
 ``GET /api/v1/runtime/adapters/contract-reference`` — accessible during
@@ -210,7 +224,9 @@ persist provider stdout, stderr, errors, or the canary.
    ``AdapterInput``/``AdapterOutput`` JSON Schemas (loopback-only, read-only).
 1. **Register** — operator submits executable path, version, capabilities via
    ``POST /api/v1/runtime/adapters/register`` → PENDING adapter entry with
-   SHA-256 hash computed at registration.
+   SHA-256 hash computed at registration. The optional
+   ``verify_thread_resume: true`` request runs the separately earned THR-200
+   probe; clients may not put ``thread_resume`` in ``capabilities``.
 2. **Conform** — bounded stdin/stdout conformance probe (``POST
    /api/v1/runtime/adapters/{id}/conformance``) validates the adapter speaks v1
    ``AdapterInput``/``AdapterOutput``.

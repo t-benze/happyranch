@@ -137,6 +137,13 @@ class AdapterRegisterRequest(BaseModel):
             "Required and non-empty."
         ),
     )
+    verify_thread_resume: bool = Field(
+        False,
+        description=(
+            "Explicitly run the server-owned three-stage thread-resume probe. "
+            "The thread_resume capability cannot be submitted directly."
+        ),
+    )
 
     model_config = {"extra": "forbid"}
 
@@ -168,6 +175,8 @@ class AdapterEntryResponse(BaseModel):
     intended_profile_name: str | None = None
     dependency_manifest_version: int | None = None
     dependencies: list[dict] = []
+    thread_resume_verified_at: str | None = None
+    thread_resume_contract_version: int | None = None
     eligibility: str | None = Field(
         None,
         description=(
@@ -222,6 +231,10 @@ class AdapterSubmitRequest(BaseModel):
         ...,
         min_length=1,
         description="List of declared child executable dependencies.",
+    )
+    verify_thread_resume: bool = Field(
+        False,
+        description="Opt in to the server-owned three-stage thread-resume probe.",
     )
 
     model_config = {"extra": "forbid"}
@@ -415,6 +428,12 @@ class AdapterApproveRequest(BaseModel):
             "List of declared child executable dependencies (must match store "
             "exactly in order and content). None/empty for legacy entries."
         ),
+    )
+    thread_resume_verified_at: str | None = Field(
+        None, description="Server-issued resume receipt timestamp (must match exactly)."
+    )
+    thread_resume_contract_version: int | None = Field(
+        None, description="Server-probed resume contract version (must match exactly)."
     )
 
     model_config = {"extra": "forbid"}
@@ -651,6 +670,8 @@ def _entry_to_response(entry) -> AdapterEntryResponse:
         intended_profile_name=entry.intended_profile_name,
         dependency_manifest_version=entry.dependency_manifest_version,
         dependencies=entry.dependencies,
+        thread_resume_verified_at=entry.thread_resume_verified_at,
+        thread_resume_contract_version=entry.thread_resume_contract_version,
         eligibility=_compute_eligibility(entry),
     )
 
@@ -705,6 +726,7 @@ def register_adapter(body: AdapterRegisterRequest) -> AdapterEntryResponse:
             registered_by="",
             dependency_manifest_version=body.dependency_manifest_version,
             dependencies=body.dependencies,
+            verify_thread_resume=body.verify_thread_resume,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -799,6 +821,8 @@ def approve_registered_adapter(
             auto_bind_profile=auto_bind,
             dependency_manifest_version=body.dependency_manifest_version,
             dependencies=body.dependencies,
+            thread_resume_verified_at=body.thread_resume_verified_at,
+            thread_resume_contract_version=body.thread_resume_contract_version,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -1044,6 +1068,7 @@ def submit_adapter(
             intended_profile_name=intended_profile,
             dependency_manifest_version=body.dependency_manifest_version,
             dependencies=body.dependencies,
+            verify_thread_resume=body.verify_thread_resume,
         )
     except ValueError as exc:
         # Release the token on failure so it remains retryable
