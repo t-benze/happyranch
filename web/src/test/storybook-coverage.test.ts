@@ -1,12 +1,17 @@
 import { readFileSync, readdirSync } from 'node:fs';
-import { dirname, join, normalize, relative, resolve } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webRoot = join(here, '../..');
 const designSystemRoot = join(webRoot, 'src/design-system');
 const guide = readFileSync(join(webRoot, 'DESIGN_SYSTEM.md'), 'utf8');
+
+const componentModules = import.meta.glob<Record<string, unknown>>(
+  ['../design-system/{primitives,patterns,layouts}/**/*.tsx', '!../design-system/**/*.test.tsx', '!../design-system/**/*.stories.tsx'],
+  { eager: true },
+);
+const storyModules = import.meta.glob<Record<string, unknown>>('../design-system/**/*.stories.tsx', { eager: true });
 
 function filesBelow(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -16,10 +21,11 @@ function filesBelow(directory: string): string[] {
 }
 
 type ReusableComponent = { name: string; source: string };
-type StoryMapping = { storyFile: string; storyExport: string };
+type ModuleExport = { file: string; exportName: string };
+type LedgerMapping = { source: ModuleExport; story: ModuleExport };
 
 const reusableComponents: ReusableComponent[] = filesBelow(designSystemRoot)
-  .filter((path) => /\/(primitives|patterns|layouts)\/[^/]+\.tsx$/.test(path))
+  .filter((path) => /\/(primitives|patterns|layouts)\/.+\.tsx$/.test(path))
   .filter((path) => !/\.(test|stories)\.tsx$/.test(path))
   .map((source) => ({ name: source.match(/([^/]+)\.tsx$/)?.[1] ?? '', source }))
   .filter(({ name }) => Boolean(name));
@@ -30,210 +36,84 @@ function ledgerEntry(name: string): string {
   return row;
 }
 
-function storyMapping(row: string): StoryMapping | null {
-  const match = row.match(/\[story:([^#\]]+)#([^\]]+)\]/);
-  return match ? { storyFile: match[1], storyExport: match[2] } : null;
+function moduleExport(row: string, kind: 'source' | 'story'): ModuleExport | null {
+  const match = row.match(new RegExp(`\\[${kind}:([^#\\]]+)#([^\\]]+)\\]`));
+  return match ? { file: match[1], exportName: match[2] } : null;
 }
 
-function importedAndRendered(
-  storyCode: string,
-  storyFile: string,
-  storyExport: string,
-  component: ReusableComponent,
-): boolean {
-  const sourceFile = ts.createSourceFile(storyFile, storyCode, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const importedNames = new Set<string>();
-  for (const statement of sourceFile.statements) {
-    if (!ts.isImportDeclaration(statement) || !statement.importClause || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-    const resolvedImport = resolve(dirname(storyFile), statement.moduleSpecifier.text);
-    const expected = component.source.replace(/\.tsx$/, '');
-    if (normalize(resolvedImport) !== normalize(expected)) continue;
-    const bindings = statement.importClause.namedBindings;
-    if (bindings && ts.isNamedImports(bindings)) {
-      for (const element of bindings.elements) importedNames.add(element.name.text);
-    }
-    if (statement.importClause.name) importedNames.add(statement.importClause.name.text);
-  }
+function ledgerMapping(row: string): LedgerMapping | null {
+  const source = moduleExport(row, 'source');
+  const story = moduleExport(row, 'story');
+  return source && story ? { source, story } : null;
+}
 
-  const declaration = sourceFile.statements
-    .filter(ts.isVariableStatement)
-    .flatMap((statement) => [...statement.declarationList.declarations])
-    .find((item) => ts.isIdentifier(item.name) && item.name.text === storyExport);
-  if (!declaration?.initializer || importedNames.size === 0) return false;
+function viteKey(file: string): string {
+  return `../design-system/${file}`;
+}
 
-  const localDeclarations = new Map<string, ts.Node>();
-  for (const statement of sourceFile.statements) {
-    if (ts.isFunctionDeclaration(statement) && statement.name) localDeclarations.set(statement.name.text, statement);
-    if (ts.isVariableStatement(statement)) {
-      for (const item of statement.declarationList.declarations) {
-        if (ts.isIdentifier(item.name) && item.initializer) localDeclarations.set(item.name.text, item.initializer);
-      }
-    }
-  }
-  const visitedHelpers = new Set<ts.Node>();
+function runtimeCoverageError(component: unknown, storyModule: Record<string, unknown>, storyExport: string): string | null {
+  const meta = storyModule.default;
+  if (!meta || typeof meta !== 'object') return 'story module must have an object default meta export';
+  if (!('component' in meta)) return 'default meta must declare component';
+  if (meta.component !== component) return 'default meta.component must be the exact source export object';
 
-  function declarationsIn(block: ts.Block, parent: Map<string, ts.Node>): Map<string, ts.Node> {
-    const declarations = new Map(parent);
-    for (const statement of block.statements) {
-      if (ts.isFunctionDeclaration(statement) && statement.name) declarations.set(statement.name.text, statement);
-      if (ts.isVariableStatement(statement)) {
-        for (const item of statement.declarationList.declarations) {
-          if (ts.isIdentifier(item.name) && item.initializer) declarations.set(item.name.text, item.initializer);
-        }
-      }
-    }
-    return declarations;
-  }
-
-  function executeHelper(helper: ts.Node, scope: Map<string, ts.Node>): boolean {
-    if (visitedHelpers.has(helper)) return false;
-    visitedHelpers.add(helper);
-
-    if (ts.isArrowFunction(helper) || ts.isFunctionExpression(helper) || ts.isFunctionDeclaration(helper)) {
-      if (!helper.body) return false;
-      if (ts.isBlock(helper.body)) {
-        const helperScope = declarationsIn(helper.body, scope);
-        for (const statement of helper.body.statements) {
-          if (ts.isReturnStatement(statement) && statement.expression && renders(statement.expression, helperScope)) return true;
-        }
-        return false;
-      }
-      return renders(helper.body, scope);
-    }
-    return false;
-  }
-
-  function renders(node: ts.Node, scope: Map<string, ts.Node>): boolean {
-
-    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
-      if (ts.isIdentifier(node.tagName)) {
-        if (importedNames.has(node.tagName.text)) return true;
-        const local = scope.get(node.tagName.text);
-        if (local && executeHelper(local, scope)) return true;
-      }
-    }
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-      if (importedNames.has(node.expression.text)) return true;
-      const local = scope.get(node.expression.text);
-      if (local && executeHelper(local, scope)) return true;
-    }
-
-    if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && ts.isCallExpression(node.parent)) {
-      const call = node.parent;
-      if (call.arguments.includes(node) && ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === 'map') {
-        let receiver: ts.Expression = call.expression.expression;
-        while (ts.isParenthesizedExpression(receiver) || ts.isAsExpression(receiver)) receiver = receiver.expression;
-        if (ts.isArrayLiteralExpression(receiver) && executeHelper(node, scope)) return true;
-      }
-    }
-
-    if (ts.isFunctionLike(node) || ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node)) return false;
-    return node.getChildren(sourceFile).some((child) => renders(child, scope));
-  }
-
-  const initializer = declaration.initializer;
-  if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) {
-    return executeHelper(initializer, localDeclarations);
-  }
-  if (!ts.isObjectLiteralExpression(initializer)) return false;
-
-  return initializer.properties.some((property) => {
-    if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) return false;
-    if (property.name.text === 'render') return executeHelper(property.initializer, localDeclarations);
-    if (property.name.text !== 'component' || !ts.isIdentifier(property.initializer)) return false;
-    return importedNames.has(property.initializer.text);
-  });
+  const story = storyModule[storyExport];
+  if (!story || typeof story !== 'object') return `missing named story export ${storyExport}`;
+  if ('render' in story && story.render !== undefined) return `${storyExport} must use Storybook's default component render`;
+  return null;
 }
 
 describe('Storybook design-system coverage', () => {
   test('every discovered reusable source has one explicit story or justified exclusion mapping', () => {
     for (const component of reusableComponents) {
       const row = ledgerEntry(component.name);
-      const mapping = storyMapping(row);
+      const mapping = ledgerMapping(row);
       const exclusion = row.includes(`[excluded:${component.name}]`);
       expect(Number(Boolean(mapping)) + Number(exclusion), `${component.name} mapping count`).toBe(1);
     }
   });
 
-  test('every story mapping imports and renders its named component', () => {
+  test('every story mapping uses exact runtime component identity and a default-render story', () => {
     for (const component of reusableComponents) {
-      const mapping = storyMapping(ledgerEntry(component.name));
+      const mapping = ledgerMapping(ledgerEntry(component.name));
       if (!mapping) continue;
-      const storyFile = join(designSystemRoot, mapping.storyFile);
-      const storyCode = readFileSync(storyFile, 'utf8');
+      expect(mapping.source.file, `${component.name} source path`).toBe(relative(designSystemRoot, component.source));
+      const sourceModule = componentModules[viteKey(mapping.source.file)];
+      const storyModule = storyModules[viteKey(mapping.story.file)];
+      expect(sourceModule, `${component.name} source module ${mapping.source.file}`).toBeDefined();
+      expect(storyModule, `${component.name} story module ${mapping.story.file}`).toBeDefined();
+      const sourceExport = sourceModule?.[mapping.source.exportName];
+      expect(sourceExport, `${component.name} source export ${mapping.source.exportName}`).toBeDefined();
       expect(
-        importedAndRendered(storyCode, storyFile, mapping.storyExport, component),
-        `${component.name} -> ${relative(webRoot, storyFile)}#${mapping.storyExport}`,
-      ).toBe(true);
+        runtimeCoverageError(sourceExport, storyModule ?? {}, mapping.story.exportName),
+        `${component.name} -> ${mapping.story.file}#${mapping.story.exportName}`,
+      ).toBeNull();
     }
   });
 
-  test('an imported component referenced only in story metadata while another component renders is rejected', () => {
-    const storyFile = join(designSystemRoot, 'patterns/Adversarial.stories.tsx');
-    const component = { name: 'TaskCard', source: join(designSystemRoot, 'patterns/TaskCard.tsx') };
-    const placeholder = [
-      "import { Button } from '../primitives/Button';",
-      "import { TaskCard } from './TaskCard';",
-      "export const TaskCardPlaceholder = { parameters: { componentName: TaskCard.name }, render: () => <Button /> };",
-    ].join('\n');
-    expect(importedAndRendered(placeholder, storyFile, 'TaskCardPlaceholder', component)).toBe(false);
-  });
-
   test.each([
-    ['args', 'args: { placeholder: TaskCard }'],
-    ['docs parameters', 'parameters: { docs: { source: TaskCard } }'],
-    ['an unrelated value', 'unrelated: TaskCard'],
-  ])('rejects an imported component referenced only through %s', (_form, metadata) => {
-    const storyFile = join(designSystemRoot, 'patterns/Adversarial.stories.tsx');
-    const component = { name: 'TaskCard', source: join(designSystemRoot, 'patterns/TaskCard.tsx') };
-    const storyCode = [
-      "import { Button } from '../primitives/Button';",
-      "import { TaskCard } from './TaskCard';",
-      `export const TaskCardPlaceholder = { ${metadata}, render: () => <Button /> };`,
-    ].join('\n');
-    expect(importedAndRendered(storyCode, storyFile, 'TaskCardPlaceholder', component)).toBe(false);
+    ['same-name lexical shadowing', () => { const TaskCard = () => null; return { source: () => null, story: { default: { component: TaskCard }, Coverage: {} } }; }],
+    ['aliased import wired to the wrong component', () => { const SourceAlias = () => null; const Other = () => null; return { source: SourceAlias, story: { default: { component: Other }, Coverage: {} } }; }],
+    ['metadata/name-only reference', () => { const Source = () => null; return { source: Source, story: { default: { title: Source.name }, Coverage: { parameters: { componentName: Source.name } } } }; }],
+    ['custom render returning another component', () => { const Source = () => null; const Other = () => null; return { source: Source, story: { default: { component: Source }, Coverage: { render: () => Other() } } }; }],
+    ['missing default meta', () => { const Source = () => null; return { source: Source, story: { Coverage: {} } }; }],
+    ['default meta mismatch', () => { const Source = () => null; return { source: Source, story: { default: { component: () => null }, Coverage: {} } }; }],
+  ])('fails closed for %s', (_case, fixture) => {
+    const { source, story } = fixture();
+    expect(runtimeCoverageError(source, story, 'Coverage')).not.toBeNull();
   });
 
-  test('rejects JSX inside an uncalled nested render helper', () => {
-    const storyFile = join(designSystemRoot, 'patterns/Adversarial.stories.tsx');
-    const component = { name: 'TaskCard', source: join(designSystemRoot, 'patterns/TaskCard.tsx') };
-    const storyCode = [
-      "import { Button } from '../primitives/Button';",
-      "import { TaskCard } from './TaskCard';",
-      'export const TaskCardPlaceholder = {',
-      '  render: () => {',
-      '    const NeverCalled = () => <TaskCard />;',
-      '    return <Button />;',
-      '  },',
-      '};',
-    ].join('\n');
-    expect(importedAndRendered(storyCode, storyFile, 'TaskCardPlaceholder', component)).toBe(false);
+  test('accepts an aliased import only when meta identity is exact and the story uses default render', () => {
+    const ImportedUnderAlias = () => null;
+    expect(runtimeCoverageError(ImportedUnderAlias, { default: { component: ImportedUnderAlias }, Coverage: {} }, 'Coverage')).toBeNull();
   });
 
-  test('rejects a name-only render placeholder', () => {
-    const storyFile = join(designSystemRoot, 'patterns/Adversarial.stories.tsx');
-    const component = { name: 'TaskCard', source: join(designSystemRoot, 'patterns/TaskCard.tsx') };
-    const storyCode = [
-      "import { TaskCard } from './TaskCard';",
-      'export const TaskCardPlaceholder = { render: () => TaskCard.name };',
-    ].join('\n');
-    expect(importedAndRendered(storyCode, storyFile, 'TaskCardPlaceholder', component)).toBe(false);
-  });
-
-  test.each([
-    ['inline JSX render', "export const TaskCardStory = { render: () => <TaskCard /> };"],
-    ['local render helper', "const Example = () => <TaskCard />; export const TaskCardStory = { render: () => <Example /> };"],
-    ['CSF component field', "export const TaskCardStory = { component: TaskCard };"],
-  ])('accepts the exact imported component through a supported %s', (_form, story) => {
-    const storyFile = join(designSystemRoot, 'patterns/Positive.stories.tsx');
-    const component = { name: 'TaskCard', source: join(designSystemRoot, 'patterns/TaskCard.tsx') };
-    const storyCode = `import { TaskCard } from './TaskCard';\n${story}`;
-    expect(importedAndRendered(storyCode, storyFile, 'TaskCardStory', component)).toBe(true);
-  });
-
-  test('coverage ledger contains every reusable component exactly once', () => {
+  test('coverage ledger contains every reusable component exactly once with the expected totals', () => {
     for (const { name } of reusableComponents) {
       expect(guide.split(`| \`${name}\` |`).length - 1, `${name} ledger rows`).toBe(1);
     }
+    const rows = reusableComponents.map(({ name }) => ledgerEntry(name));
+    expect(rows.filter((row) => ledgerMapping(row)).length).toBe(40);
+    expect(rows.filter((row) => row.includes('[excluded:')).length).toBe(4);
   });
 });
