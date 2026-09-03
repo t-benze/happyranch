@@ -47,6 +47,11 @@ from runtime.remote_access.supervisor import (
     ConnectorSupervisor,
 )
 
+
+def _expected_systemd_credentials_directory(unit: str) -> Path:
+    """Return the only systemd staging directory trusted for ``unit``."""
+    return Path("/run/credentials") / unit
+
 _DEFAULT_CONFIG = "~/.happyranch/remote_access/config.json"
 
 
@@ -155,14 +160,27 @@ def main(argv: list[str] | None = None) -> int:
                     return 0
             print("credential_absent", file=sys.stderr)
             return 1
-        expected_directory = Path("/run/credentials") / args.unit
+        expected_directory = _expected_systemd_credentials_directory(args.unit)
         if Path(credentials_directory) != expected_directory:
+            print("credential_staging_incompatible", file=sys.stderr)
+            return 1
+        try:
+            directory_metadata = expected_directory.lstat()
+            directory_is_safe = (
+                directory_metadata.st_mode & 0o170000 == 0o040000
+                and not expected_directory.is_symlink()
+                and not os.access(expected_directory, os.W_OK)
+            )
+        except OSError:
+            directory_is_safe = False
+        if not directory_is_safe:
             print("credential_staging_incompatible", file=sys.stderr)
             return 1
         category = credential_capability(
             Path(credentials_directory) / args.name,
-            expected_uid=0,
+            expected_uid=None,
             allowed_modes=(0o400,),
+            require_read_only=True,
         )
         if category != "credential_valid":
             print(category, file=sys.stderr)

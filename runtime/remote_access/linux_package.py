@@ -42,8 +42,9 @@ TRANSACTION_MARKER = ".happyranch-install-transaction.json"
 def credential_capability(
     source: Path,
     *,
-    expected_uid: int,
+    expected_uid: int | None,
     allowed_modes: tuple[int, ...] = (0o600,),
+    require_read_only: bool = False,
 ) -> str:
     """Classify credential usability without exposing paths, bytes, or OS errors."""
     path = Path(source)
@@ -62,7 +63,10 @@ def credential_capability(
         metadata = path.lstat()
         if not stat.S_ISREG(metadata.st_mode):
             return "credential_wrong_type"
-        if metadata.st_uid != expected_uid or stat.S_IMODE(metadata.st_mode) not in allowed_modes:
+        if (
+            (expected_uid is not None and metadata.st_uid != expected_uid)
+            or stat.S_IMODE(metadata.st_mode) not in allowed_modes
+        ):
             return "credential_wrong_custody"
         descriptor = os.open(
             path,
@@ -73,6 +77,17 @@ def credential_capability(
                 return "credential_staging_incompatible"
         finally:
             os.close(descriptor)
+        if require_read_only:
+            try:
+                descriptor = os.open(
+                    path,
+                    os.O_WRONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+                )
+            except OSError:
+                pass
+            else:
+                os.close(descriptor)
+                return "credential_staging_incompatible"
     except OSError:
         return "credential_staging_incompatible"
     return "credential_valid"

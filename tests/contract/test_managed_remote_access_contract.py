@@ -1389,8 +1389,8 @@ def _assert_n3_lifecycle_evidence(matrix: list[dict]) -> None:
         "startup": {
             "process_absent",
             "tsnet_admission_absent",
-            "connector_staged_credential_root_owned_0400",
-            "sidecar_staged_credential_root_owned_0400",
+            "connector_staged_credential_service_owned_read_only",
+            "sidecar_staged_credential_service_owned_read_only",
             "credential_source_retired",
             "credential_dropin_retired",
             "composite_ready_after_sidecar",

@@ -563,6 +563,19 @@ def test_credential_capability_distinguishes_fail_closed_categories(tmp_path: Pa
     assert credential_capability(source, expected_uid=uid) == "credential_valid"
 
 
+def test_staged_credential_capability_rejects_service_writable_file(tmp_path: Path) -> None:
+    source = tmp_path / "credential"
+    source.write_text("secret\n")
+    source.chmod(0o600)
+
+    assert credential_capability(
+        source,
+        expected_uid=None,
+        allowed_modes=(0o600,),
+        require_read_only=True,
+    ) == "credential_staging_incompatible"
+
+
 @pytest.mark.parametrize(
     ("kind", "category"),
     [
@@ -603,24 +616,98 @@ def test_system_install_preflights_daemon_source_before_publication(
         ("enrollment.key", "happyranch-tsnet-sidecar.service"),
     ],
 )
-def test_packaged_preflight_accepts_root_owned_systemd_staged_credential(
+def test_packaged_preflight_uses_ownership_neutral_systemd_staged_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     name: str,
     unit: str,
 ) -> None:
-    observed: list[tuple[Path, int, tuple[int, ...]]] = []
+    observed: list[tuple[Path, int | None, tuple[int, ...], bool]] = []
 
-    def classify(path: Path, *, expected_uid: int, allowed_modes: tuple[int, ...]) -> str:
-        observed.append((path, expected_uid, allowed_modes))
+    def classify(
+        path: Path,
+        *,
+        expected_uid: int | None,
+        allowed_modes: tuple[int, ...],
+        require_read_only: bool,
+    ) -> str:
+        observed.append((path, expected_uid, allowed_modes, require_read_only))
         return "credential_valid"
 
     monkeypatch.setattr("runtime.remote_access.cli.credential_capability", classify)
-    monkeypatch.setenv("CREDENTIALS_DIRECTORY", f"/run/credentials/{unit}")
+    staged = tmp_path / "run" / "credentials" / unit
+    staged.mkdir(parents=True)
+    staged.chmod(0o500)
+    monkeypatch.setattr(
+        "runtime.remote_access.cli._expected_systemd_credentials_directory",
+        lambda _unit: staged,
+    )
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(staged))
     assert connector_cli_main([
         "credential-capability", "--name", name, "--unit", unit,
     ]) == 0
-    assert observed == [(Path(f"/run/credentials/{unit}/{name}"), 0, (0o400,))]
+    assert observed == [(staged / name, None, (0o400,), True)]
+
+
+@pytest.mark.parametrize(
+    ("name", "unit"),
+    [
+        ("daemon.token", "happyranch-connector.service"),
+        ("enrollment.key", "happyranch-tsnet-sidecar.service"),
+    ],
+)
+def test_packaged_preflight_accepts_systemd_staging_owned_by_service_uid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    unit: str,
+) -> None:
+    staged = tmp_path / "run" / "credentials" / unit
+    staged.mkdir(parents=True)
+    credential = staged / name
+    credential.write_text("secret\n")
+    credential.chmod(0o400)
+    staged.chmod(0o500)
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(staged))
+    monkeypatch.setattr(
+        "runtime.remote_access.cli._expected_systemd_credentials_directory",
+        lambda _unit: staged,
+        raising=False,
+    )
+
+    assert connector_cli_main([
+        "credential-capability", "--name", name, "--unit", unit,
+    ]) == 0
+
+
+@pytest.mark.parametrize(
+    ("name", "unit"),
+    [
+        ("daemon.token", "happyranch-connector.service"),
+        ("enrollment.key", "happyranch-tsnet-sidecar.service"),
+    ],
+)
+def test_packaged_preflight_rejects_service_writable_staging_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+    unit: str,
+) -> None:
+    staged = tmp_path / unit
+    staged.mkdir()
+    (staged / name).write_text("secret\n")
+    (staged / name).chmod(0o400)
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(staged))
+    monkeypatch.setattr(
+        "runtime.remote_access.cli._expected_systemd_credentials_directory",
+        lambda _unit: staged,
+    )
+
+    assert connector_cli_main([
+        "credential-capability", "--name", name, "--unit", unit,
+    ]) == 1
+    assert capsys.readouterr().err.strip() == "credential_staging_incompatible"
 
 
 @pytest.mark.parametrize(
@@ -658,6 +745,7 @@ def test_packaged_preflight_rejects_invalid_systemd_staging_provenance(
     ("credential_wrong_type", "credential_unsafe_symlink", "credential_wrong_custody", "credential_staging_incompatible"),
 )
 def test_each_rendered_unit_rejects_invalid_staged_type_mode_or_path_without_leak(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     name: str,
@@ -665,7 +753,14 @@ def test_each_rendered_unit_rejects_invalid_staged_type_mode_or_path_without_lea
     category: str,
 ) -> None:
     secret = "forbidden-credential-material"
-    monkeypatch.setenv("CREDENTIALS_DIRECTORY", f"/run/credentials/{unit}")
+    staged = tmp_path / unit
+    staged.mkdir()
+    staged.chmod(0o500)
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(staged))
+    monkeypatch.setattr(
+        "runtime.remote_access.cli._expected_systemd_credentials_directory",
+        lambda _unit: staged,
+    )
     monkeypatch.setattr(
         "runtime.remote_access.cli.credential_capability",
         lambda *_args, **_kwargs: category,
@@ -682,8 +777,14 @@ def test_each_rendered_unit_rejects_invalid_staged_type_mode_or_path_without_lea
 def test_packaged_preflight_uses_each_units_staged_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    staged = Path("/run/credentials/happyranch-connector.service")
+    staged = tmp_path / "happyranch-connector.service"
+    staged.mkdir()
+    staged.chmod(0o500)
     monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(staged))
+    monkeypatch.setattr(
+        "runtime.remote_access.cli._expected_systemd_credentials_directory",
+        lambda _unit: staged,
+    )
     monkeypatch.setattr(
         "runtime.remote_access.cli.credential_capability",
         lambda path, **_kwargs: "credential_valid" if path.name == "credential.consumed" else "credential_absent",
