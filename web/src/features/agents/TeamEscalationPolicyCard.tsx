@@ -62,16 +62,22 @@ export function TeamEscalationPolicyCard({ agent }: { agent: { name: string; tea
       setSavedInactive({ id: saved.release.id, version: saved.release.version });
       setMessage(`Immutable version ${saved.release.version} saved inactive.`);
       if (andActivate && guard.ready) {
-        await activateRelease.mutateAsync({
-          agentName: agent.name,
-          body: {
-            release_id: saved.release.id,
-            expected_previous_epoch: active?.epoch ?? 0,
-            request_id: crypto.randomUUID(),
-            action: 'activate',
-            acknowledge_shared_credential_attribution: true,
-          },
-        });
+        try {
+          await activateRelease.mutateAsync({
+            agentName: agent.name,
+            body: {
+              release_id: saved.release.id,
+              expected_previous_epoch: active?.epoch ?? 0,
+              request_id: crypto.randomUUID(),
+              action: 'activate',
+              acknowledge_shared_credential_attribution: true,
+            },
+          });
+        } catch (error) {
+          const api = error instanceof ApiError ? error : null;
+          const detail = api?.message ? ` Server response: ${api.message}` : '';
+          setMessage(`Immutable version ${saved.release.version} was saved inactive, but activation failed.${detail} Retry activation from this saved version after resolving the error.`);
+        }
       }
     } catch (error) {
       const api = error instanceof ApiError ? error : null;
