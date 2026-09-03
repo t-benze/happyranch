@@ -64,6 +64,30 @@ function runtimeCoverageError(component: unknown, storyModule: Record<string, un
 }
 
 describe('Storybook design-system coverage', () => {
+  test('the Pasture catalogue represents every reference section and state contract', () => {
+    const pasture = readFileSync(join(designSystemRoot, 'Pasture.stories.tsx'), 'utf8');
+    const requiredReferenceCoverage = [
+      'Tokens', 'Radius, shadow & layout', 'Agent identity ramp', 'Typography',
+      'Focus, disabled & buttons', 'Cards', 'Badges, tags, chips & roll-ups',
+      'Form controls & selection', 'Callout, confirm & recovery',
+      'Popover, action bar & tooltip', 'Stats & meters', 'Timeline & tables',
+      'Prose, properties & code', 'Status, provenance & readiness', 'Page states',
+      'Assistant dock', 'Dev affordance, rename map & screen-scoped',
+      "['empty', 'loading', 'error', 'unauthorized', 'populated']",
+    ];
+    for (const requirement of requiredReferenceCoverage) {
+      expect(pasture, `Pasture reference requirement: ${requirement}`).toContain(requirement);
+    }
+  });
+
+  test('the catalogue defaults to the reference light theme and preserves responsive navigation ordering', () => {
+    const preview = readFileSync(join(webRoot, '.storybook/preview.tsx'), 'utf8');
+    const manager = readFileSync(join(webRoot, '.storybook/manager-head.html'), 'utf8');
+    expect(preview).toContain("initialGlobals: { theme: 'light' }");
+    expect(preview).toContain("['Overview', 'Foundations', 'Components', 'Patterns', 'Page States', 'Layouts']");
+    expect(manager).toContain('@media (max-width: 390px)');
+  });
+
   test('every discovered reusable source has one explicit story or justified exclusion mapping', () => {
     for (const component of reusableComponents) {
       const row = ledgerEntry(component.name);

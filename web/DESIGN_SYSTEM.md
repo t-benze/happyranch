@@ -32,8 +32,16 @@ used. `.storybook/main.ts` uses React-Vite, the application `@` alias, and
 Essentials for controls/docs. `.storybook/preview.tsx` imports `src/styles.css`
 and supplies only `MemoryRouter`, a network-disabled Query client, and
 `TooltipProvider`. Stories use canned data and never contact a live daemon.
-The theme toolbar applies the same `data-theme` contract as the app; Foundations
-shows semantic color and typography tokens in light and dark.
+The theme toolbar applies the same `data-theme` contract as the app and defaults
+to the light Pasture reference. The `Pasture/*` navigation is the specification
+crosswalk: its Overview stories cover tokens, identity, typography,
+focus/disabled, buttons, cards, badges/chips, controls, feedback/recovery,
+overlays, tooltips, stats/meters, timeline/tables, prose/code,
+provenance/readiness, page states, the assistant dock, and the reference's
+rename/screen-scope guidance. The existing `Design System/*` stories remain the
+source-to-story identity ledger and detailed component demonstrations. Manager
+chrome and canvases use the warm Pasture surface treatment; canvas padding and
+examples reflow at 390 CSS px.
 
 ## Authoring and enforced coverage
 
@@ -57,7 +65,11 @@ It also requires a mapped named default-render story. This narrow contract fails
 closed for missing modules/exports/meta, wrong or merely same-named bindings,
 metadata-only references, and custom render overrides. It does not claim to
 interpret JavaScript or TypeScript execution, and creates no generated registry
-or runtime catalogue.
+or runtime catalogue. Reference page states are explicit and fail-closed in the
+same test: empty, loading, error/retry, unauthorized, and populated.
+Unauthorized is a visual/copy proposal only because reusable units do not own
+auth or permission decisions; no gate is simulated. Loading is a local skeleton
+and retry is local state, so Storybook remains daemon-isolated.
 
 ## Coverage ledger
 
@@ -135,5 +147,6 @@ not a product prebuild hook, preventing duplicate builds.
 - [ ] No `/__design__`, route flag, registry, generator, freshness hook, or stale metadata remains.
 - [ ] Every reusable unit has meaningful discoverable coverage or a justified exclusion.
 - [ ] Autodocs/controls, semantic tokens, themes, and safe local providers work.
+- [ ] Every rendered Pasture reference section and its responsive 390 px presentation is represented by a discoverable `Pasture/*` story.
 - [ ] No live daemon, hosted visual service, or product behavior is introduced.
 - [ ] Lint, typecheck, unit tests, SPA build, Storybook build, design-system verification, browser evidence, and Node 24 local CI pass.
