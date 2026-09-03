@@ -78,6 +78,18 @@ def test_eligible_empty_omits_active_and_agent_payload_stays_clean(client_with_r
     assert body["bootstrap_required"] is True
     assert body["can_mutate"] is True
     assert "active" not in body
+    template = body["bootstrap_template"]
+    policy = ENGINEERING_PRE_ESCALATION_POLICY
+    assert template == {
+        "title": policy.title,
+        "normative_text": policy.normative_text,
+        "clauses": [
+            {"id": clause.id, "category": clause.category,
+             "condition": clause.condition, "action": clause.action}
+            for clause in policy.clauses
+        ],
+        "continuation_phrase": CONTINUE_ROUTINE_PHRASE,
+    }
     roster = client.get("/api/v1/orgs/alpha/agents")
     assert roster.status_code == 200
     assert b"policy" not in roster.content
@@ -106,6 +118,24 @@ def test_eligible_active_projection(client_with_runtime):
     assert body["activation_guard"] == {
         "ready": False, "reason": "TASK-6335 production verification required"
     }
+    assert body["bootstrap_template"]["clauses"][0]["id"] == (
+        ENGINEERING_PRE_ESCALATION_POLICY.clauses[0].id
+    )
+
+
+def test_bootstrap_template_round_trips_through_shipping_create_route(client_with_runtime):
+    client, org = client_with_runtime
+    _seed_agent(org)
+    base = "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy"
+    template = client.get(base).json()["bootstrap_template"]
+    response = client.post(
+        f"{base}/releases",
+        json={**template, "based_on_release_id": None, "request_id": "REQ-bootstrap-roundtrip"},
+    )
+    assert response.status_code == 201
+    assert response.json()["activated"] is False
+    assert response.json()["release"]["clauses"] == template["clauses"]
+    assert response.json()["release"]["continuation_phrase"] == CONTINUE_ROUTINE_PHRASE
 
 
 def test_store_corruption_is_sanitized(client_with_runtime):
@@ -230,6 +260,7 @@ def test_create_release_exact_replay_precedes_advanced_active_base(
         lambda body: {**body, "continuation_phrase": CONTINUE_ROUTINE_PHRASE + "!"},
         lambda body: {**body, "clauses": body["clauses"][:-1]},
         lambda body: {**body, "clauses": body["clauses"] + [body["clauses"][0]]},
+        lambda body: {**body, "clauses": list(reversed(body["clauses"]))},
         lambda body: {**body, "clauses": [{**body["clauses"][0], "id": "unknown"}] + body["clauses"][1:]},
         lambda body: {**body, "clauses": [{**body["clauses"][0], "action": "continue_same_root"}] + body["clauses"][1:]},
         lambda body: {**body, "normative_text": "token=abcdefghijklmnopqrstuvwxyz"},

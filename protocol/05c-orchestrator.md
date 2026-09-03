@@ -310,8 +310,12 @@ integration and activation are separately reviewed later slices.
 available only when the per-request roster resolves the exact Engineering
 manager tuple (`engineering_manager`, `engineering`, `manager`). Every other
 target returns the same `policy_surface_not_available` 404 and the shared
-Agent roster/serializer remains unchanged. An eligible empty store returns
-200 with `bootstrap_required=true` and omits `active`; an eligible active
+Agent roster/serializer remains unchanged. Every eligible projection includes
+a deterministic `bootstrap_template` derived from the same server-owned
+`POLICY_BY_TEAM` definition and canonical phrase used by release validation;
+clients carry no second clause authority, and POST requires the canonical
+clause id/category/action ordering. An eligible empty store returns 200 with
+`bootstrap_required=true` and omits `active`; an eligible active
 store exposes only immutable release/activation data and honest
 `shared local operator credential` attribution. The database/store current
 read selects the maximum team epoch and reuses the S1 release, activation

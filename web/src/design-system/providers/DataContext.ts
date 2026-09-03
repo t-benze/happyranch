@@ -388,7 +388,18 @@ export interface AuthorityPolicyApi {
     name: string;
     team: string;
     role: string;
-  } | undefined) => QueryLike<import('@/lib/api/authorityPolicy').TeamEscalationPolicyResponse>;
+  } | undefined) => QueryLike<import('@/lib/api/authorityPolicy').TeamEscalationPolicyResponse> & {
+    refetch: () => Promise<unknown>;
+  };
+  useCreateTeamEscalationPolicyRelease: () => MutationLike<
+    { agentName: string; body: import('@/lib/api/authorityPolicy').CreateAuthorityPolicyReleaseRequest },
+    import('@/lib/api/authorityPolicy').CreateAuthorityPolicyReleaseResponse
+  >;
+  useActivateTeamEscalationPolicyRelease: () => MutationLike<
+    { agentName: string; body: { release_id: string; expected_previous_epoch: number; request_id: string;
+      action: 'activate' | 'reactivate_rollback'; acknowledge_shared_credential_attribution: true } },
+    unknown
+  >;
 }
 
 export interface AgentsRoutes {

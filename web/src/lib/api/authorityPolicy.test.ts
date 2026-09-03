@@ -17,6 +17,10 @@ const empty = {
     ready: false,
     reason: 'TASK-6335 production verification required',
   },
+  bootstrap_template: {
+    title: 'Policy', normative_text: 'Text', clauses: [],
+    continuation_phrase: 'server-authored phrase',
+  },
 } as const;
 
 describe('team escalation policy response contract', () => {
@@ -35,5 +39,11 @@ describe('team escalation policy response contract', () => {
       ...empty,
       can_mutate: false,
     })).toThrow('Invalid team escalation policy response');
+  });
+
+  it('rejects a response that omits the server-authored bootstrap authority', () => {
+    const { bootstrap_template: _omitted, ...withoutTemplate } = empty;
+    expect(() => decodeTeamEscalationPolicyResponse(withoutTemplate))
+      .toThrow('Invalid team escalation policy response');
   });
 });

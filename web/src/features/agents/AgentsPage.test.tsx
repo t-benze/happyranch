@@ -231,6 +231,14 @@ describe('AgentsPage — two-pane roster list', () => {
 });
 
 describe('AgentDetailPane — editable fields', () => {
+  test('omits the team policy card from a worker detail pane', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    mountAt(`/orgs/${SLUG}/agents/support_agent`);
+    expect((await screen.findAllByText('Handles support.')).length).toBeGreaterThan(0);
+    expect(screen.queryByTestId('team-escalation-policy')).not.toBeInTheDocument();
+  });
+
   test('shows executor selector and allows switching', async () => {
     stubBaseHandlers();
     stubDetailHandlers();
