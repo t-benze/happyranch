@@ -186,6 +186,8 @@ daemon-supplied or daemon-translated permission policy or field to
   },
   "error": "Session timed out",              // string | null. Human-readable error.
   "agent_session_id": "abc123",               // string | null. The agent CLI's own session id (for resume).
+  "session_status": "fresh",                  // "fresh" | "resumed" | "not_found" | null.
+                                             // Optional THR-200 provider-session outcome.
   "rate_limited": false,                     // bool. Did the provider rate-limit this attempt?
   "adapter_metadata": {                      // object, required. ADDITIVE field.
     "adapter": "happyranch-claude-adapter",   // string, required. MUST exactly equal the stable server-derived canonical_adapter_id from the contract-reference / submitted adapter ID. Never a display name, provider, or arbitrary implementation identity. A mismatch fails the conformance probe at registration AND blocks every launch at runtime (D7B).
@@ -196,6 +198,20 @@ daemon-supplied or daemon-translated permission policy or field to
   "raw_forensics_ref": null                  // string | null. Path/ref to raw forensic capture.
 }
 ```
+
+**THR-200 PR 1/3 session semantics.** This is an additive optional extension to
+the stable v1 wire shape, so ``contract_version`` remains exactly 1 and legacy
+kimi/codebuddy-shaped outputs need no re-registration. ``fresh`` declares a new
+provider session, ``resumed`` declares successful continuation of the supplied
+session, and ``not_found`` declares that the supplied session did not exist.
+``AdapterInput.session`` is dormant plumbing and is constructed only for a
+truthful thread invocation with a non-empty resume id; tasks are always fresh.
+A sent session requires ``session_status``. ``resumed``/``not_found`` without a
+sent session, ``not_found`` with ``success=true``, and ``not_found`` with
+non-empty ``result.text`` are rejected after launch before any provider session
+id is returned, preserving forensic tails. PR 1 proves and consumes no custom
+adapter resume capability: ``thread_runner`` and its built-in-only resume set
+are unchanged, and SQLite transcript/delivery semantics remain canonical.
 
 ### 2.3 TokenUsage Semantics (preserved from current code)
 
@@ -208,15 +224,17 @@ unchanged:
 4. **`cache_read` / `cache_creation` split preserved**: the two fields stay separate.
 
 No new token fields are introduced. The result contract above preserves the
-current `ExecutorResult` (`executors.py:24-56`) top-level fields unchanged:
+established `ExecutorResult` (`executors.py:24-56`) top-level fields and adds
+the optional top-level `session_status` field:
 `stdout_tail` and `stderr_tail` remain at top level (not nested) because
 they are consumed directly by `run_step` (failure classification at
 `run_step.py:1850-1852`, retry/audit paths at `run_step.py:1922-1928`, and
 `run_step.py:2489-2490`) and `thread_runner` (session recovery at
 `thread_runner.py:58`, invocation error formatting at
-`thread_runner.py:293-294`). The two truly additive fields are `result.text`
-and `adapter_metadata` — neither existing consumer reads them, so they would
-not break existing consumers.
+`thread_runner.py:293-294`). The additive fields are `result.text`,
+`adapter_metadata`, and optional `session_status`. Existing consumers do not
+read the first two, and built-ins and legacy custom-adapter outputs leave
+`session_status` as `None`, so existing consumers remain compatible.
 
 ### 2.5 Nested-Result Field Policy (D12 resolution for compatibility)
 
@@ -372,7 +390,7 @@ same argv, same parser, same `ExecutorResult` for every profile.
 | `executors.py:480-545` (`_parse_generic_cli_usage`) | `runtime/adapters/generic_cli.py:GenericCliAdapter.parse_output()` |
 | `executors.py:971-1038` (GenericCliExecutor.run — template substitution) | `runtime/adapters/generic_cli.py:GenericCliAdapter.build_argv()` |
 | `executors.py:607-725` (`_run_command`) | **Stays** — it is the shared subprocess-launch function below the adapter boundary. Every adapter calls it. |
-| `executors.py:24-56` (`ExecutorResult`) | **Stays** — unchanged; adapters produce it. May gain additive fields (see §2.2). |
+| `executors.py:24-56` (`ExecutorResult`) | **Stays** — adapters produce it; established fields remain unchanged and optional additive `session_status` is present (see §2.2). |
 
 ### 3.4 Non-Goal: Plugin Loader
 
@@ -984,7 +1002,7 @@ not the orchestration layer.
 | P1 | Extract `build_argv()` from each executor class into first-party adapter modules | Proposed this spec §3.3; requires separate founder-approved build task |
 | P2 | Create adapter catalog at `runtime/adapters/catalog.yaml` | Proposed this spec §3.1; requires separate founder-approved build task |
 | P3 | Data-driven `build_executor()` via adapter catalog instead of hard-coded `if/elif` chain | **D10/D11 (TASK-3414, THR-107 seq84, July 2026):** static factory dict replacing the if/elif chain. Full adapter-catalog-based dispatch (as originally proposed in §3.1–3.2) remains unimplemented. |
-| P4 | Add `result.text` and `adapter_metadata` fields to `ExecutorResult` | Proposed this spec §2.2; additive-only, backward-compatible |
+| P4 | Add `result.text` and `adapter_metadata` fields to `ExecutorResult` | Historical proposal in this spec §2.2; additive-only and backward-compatible. The current surface also has the separately approved optional additive `session_status` field. |
 | P5 | Custom adapter executable subprocess model (separate process, stdin/stdout contract) | Proposed this spec §4; requires founder approval for the entire custom-adapter track |
 | P6 | Custom adapter registration: executable path + hash + version + capabilities | Proposed this spec §4.2; requires founder approval |
 | P7 | Extended `ExecutorProfile` with `adapter_version`, `capabilities`, `bootstrap_file`, `contract_version`, `provenance` | Proposed this spec §6.1; additive-only |

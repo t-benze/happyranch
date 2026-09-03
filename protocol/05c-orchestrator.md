@@ -89,6 +89,18 @@ version, and session-id echo enforced before mapping any result; subprocess-only
 (no Python import/discovery); PENDING adapters cannot bind or launch; D5
 baseline-only permission posture.
 
+THR-200 PR 1/3 adds dormant, backward-compatible v1 session plumbing only.
+For a legitimate thread invocation ``AdapterInput.session`` may contain a
+non-empty resume id, and optional ``AdapterOutput.session_status`` reports
+``fresh``, ``resumed``, or ``not_found``. Coherence is validated after launch
+and before any provider session id is exposed; violations are
+``post_launch_contract`` failures with forensic tails preserved. Supplying a
+resume id outside a thread fails pre-launch. ``contract_version`` remains 1,
+legacy outputs without the optional status remain valid when no session was
+sent, tasks remain fresh, and no capability is earned or consumed here.
+``thread_runner`` still excludes custom profiles, and SQLite transcript and
+delivery semantics remain canonical.
+
 **THR-107 Slice 1A mint authority foundation.** The existing
 master-authenticated runtime adapter-purpose mint optionally accepts an exact
 first-party ``workspace_adapter_id`` and persists a nonsecret,

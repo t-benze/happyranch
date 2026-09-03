@@ -56,6 +56,9 @@ class ExecutorResult:
     # to resume thread sessions via `--resume` (issue #53). None for executors that
     # don't emit one and on parse failure.
     agent_session_id: str | None = None
+    # Optional custom-adapter declaration of whether its provider session was
+    # created, resumed, or absent. Built-ins and legacy adapter outputs omit it.
+    session_status: Literal["fresh", "resumed", "not_found"] | None = None
     # True when the subprocess output matched a known provider rate-limit
     # signature (issue #85). Set centrally in ``_run_command`` so every executor
     # exposes one normalized field; the opaque-failure completion path
@@ -1994,6 +1997,7 @@ class CustomAdapterExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        resume_session_id: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
         org_slug: str | None = None,
         running: "RunningHandle | None" = None,
@@ -2022,6 +2026,7 @@ class CustomAdapterExecutor:
             AdapterOutput,
             ExecutorContext,
             InvocationInfo,
+            SessionInfo,
             TimeoutInfo,
         )
         from runtime.orchestrator.adapter_store import compute_sha256
@@ -2051,6 +2056,19 @@ class CustomAdapterExecutor:
                 failure_category="pre_launch",
             )
 
+        if resume_session_id and ctx.get("invocation_kind") != "thread":
+            return ExecutorResult(
+                success=False,
+                duration_seconds=0,
+                session_id=session_id or "",
+                error=(
+                    "Custom adapter resume_session_id is valid only for a "
+                    "thread invocation; task and other invocation kinds must "
+                    "start fresh."
+                ),
+                failure_category="pre_launch",
+            )
+
         # ── Build AdapterInput with truthful invocation context ────
         sid = session_id or f"sess-{uuid.uuid4().hex}"
         ctx = self._invocation_context
@@ -2069,6 +2087,10 @@ class CustomAdapterExecutor:
             timeout=TimeoutInfo(
                 deadline_seconds=timeout_seconds,
                 max_runtime_seconds=timeout_seconds,
+            ),
+            session=(
+                SessionInfo(resume_session_id=resume_session_id)
+                if resume_session_id else None
             ),
             executor_context=ExecutorContext(
                 provider=self._provider,
@@ -2383,6 +2405,42 @@ class CustomAdapterExecutor:
                     provider_launched=True,
                 )
 
+            # THR-200 PR-1: validate the dormant session outcome before any
+            # provider id can reach a caller that might persist it. This is a
+            # post-launch contract failure, not a provider stderr classifier.
+            session_contract_error: str | None = None
+            result_text = output.result.text if output.result is not None else None
+            if not resume_session_id and output.session_status in {"resumed", "not_found"}:
+                session_contract_error = (
+                    f"Adapter reported session_status={output.session_status!r} "
+                    "but AdapterInput.session was omitted"
+                )
+            elif resume_session_id and output.session_status is None:
+                session_contract_error = (
+                    "AdapterInput.session was supplied but AdapterOutput.session_status "
+                    "was omitted"
+                )
+            elif output.session_status == "not_found" and output.success:
+                session_contract_error = (
+                    "Adapter reported session_status='not_found' with success=true"
+                )
+            elif output.session_status == "not_found" and result_text:
+                session_contract_error = (
+                    "Adapter reported session_status='not_found' with non-empty result.text"
+                )
+            if session_contract_error is not None:
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    returncode=output.returncode,
+                    stdout_tail=output.stdout_tail or stdout_tail,
+                    stderr_tail=output.stderr_tail or stderr_tail,
+                    error=session_contract_error,
+                    failure_category="post_launch_contract",
+                    provider_launched=True,
+                )
+
             # ── Map to ExecutorResult ──────────────────────────────
             token_usage: "TokenUsage | None" = None
             if output.token_usage is not None:
@@ -2407,6 +2465,7 @@ class CustomAdapterExecutor:
                 error=output.error,
                 token_usage=token_usage,
                 agent_session_id=output.agent_session_id,
+                session_status=output.session_status,
                 rate_limited=output.rate_limited,
                 failure_category=(
                     None if output.success else "provider_nonzero"
