@@ -203,7 +203,7 @@ sudo systemctl stop happyranch-managed.target
 ! active happyranch-tsnet-sidecar.service || fail "sidecar survived missing-credential startup"
 absent /var/lib/happyranch-tsnet-sidecar/credential.consumed
 [[ "$(systemctl show happyranch-tsnet-sidecar.service -p MainPID --value)" == 0 ]] || fail "sidecar process survived failed startup"
-sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json | python -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(any(p.get("HostName")=="home-sidecar-ci" for p in d.get("Peer",{}).values()))' || fail "failed-start TSNet identity remained visible"
+sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json | python -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(any(p.get("HostName")=="home-sidecar-ci" for p in (d.get("Peer") or {}).values()))' || fail "failed-start TSNet identity remained visible"
 evidence "startup" "process_absent"
 evidence "startup" "tsnet_admission_absent"
 sudo mv /etc/happyranch/enrollment.key.held /etc/happyranch/enrollment.key

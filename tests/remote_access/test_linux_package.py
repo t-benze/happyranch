@@ -138,6 +138,11 @@ def test_real_systemd_early_failure_cleanup_does_not_treat_exited_fixture_as_res
     assert harness.index('cp "$work/$log.log" "$diagnostics/$log.log"') < harness.index('rm -rf "$work"')
 
 
+def test_real_systemd_missing_credential_accepts_null_peer_map_as_no_identity() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    assert '(d.get("Peer") or {}).values()' in harness
+
+
 def test_composite_service_manager_executes_start_ready_stop_crash_restart() -> None:
     events: list[tuple[str, ...]] = []
     active = {"happyranch-connector.service": False, "happyranch-tsnet-sidecar.service": False}
