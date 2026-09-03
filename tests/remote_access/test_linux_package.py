@@ -70,15 +70,16 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
     return sidecar, connector, wheel, inventory, notices
 
 
-def test_composite_units_start_connector_before_admission_and_stop_reverse() -> None:
+def test_composite_units_start_services_concurrently_without_readiness_cycle() -> None:
     units = render_composite_units("/opt/happyranch")
     connector = units["happyranch-connector.service"]
     sidecar = units["happyranch-tsnet-sidecar.service"]
     assert "Type=notify" in connector
     assert "NotifyAccess=main" in connector
     assert "ExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar supervise-connector /opt/happyranch/bin/happyranch-connector run --managed" in connector
-    assert "Before=happyranch-tsnet-sidecar.service" in connector
-    assert "After=happyranch-connector.service" in sidecar
+    assert "Before=happyranch-tsnet-sidecar.service" not in connector
+    assert "After=happyranch-connector.service" not in sidecar
+    assert "Requires=happyranch-connector.service" not in sidecar
     assert "BindsTo=happyranch-connector.service" in sidecar
     assert "Type=notify" in sidecar
     assert "NotifyAccess=main" in sidecar

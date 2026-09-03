@@ -213,15 +213,22 @@ wait_for "connector READY" active happyranch-connector.service
 wait_for "sidecar READY and ExpectedPeers" active happyranch-tsnet-sidecar.service
 connector_ready="$(systemctl show happyranch-connector.service -p ActiveEnterTimestampMonotonic --value)"
 sidecar_ready="$(systemctl show happyranch-tsnet-sidecar.service -p ActiveEnterTimestampMonotonic --value)"
-[[ "$connector_ready" -le "$sidecar_ready" ]] || fail "sidecar admitted before connector"
+[[ "$sidecar_ready" -le "$connector_ready" ]] || fail "connector reported composite READY before sidecar admission"
 [[ "$(sudo stat -c %a /run/credentials/happyranch-tsnet-sidecar.service/enrollment.key)" == 400 ]] || fail "systemd credential is not 0400"
 absent /etc/happyranch/enrollment.key
 evidence "startup" "credential_mode_0400"
+evidence "startup" "composite_ready_after_sidecar"
 sidecar_ip="$(sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json | python -c 'import json,sys; d=json.load(sys.stdin); print(next(ip for p in d.get("Peer",{}).values() if p.get("HostName")=="home-sidecar-ci" for ip in p.get("TailscaleIPs",[]) if ":" not in ip))')"
 wait_for "virtual TSNet listener" tsnet_open
 evidence "admission" "tsnet_admission_reachable"
 [[ "$(systemctl show happyranch-tsnet-sidecar.service -p MainPID --value)" != 0 ]] || fail "production sidecar absent"
 evidence "active_flow" "production_process_active"
+watchdog_before="$(systemctl show happyranch-connector.service -p WatchdogTimestampMonotonic --value)"
+sleep 12
+watchdog_after="$(systemctl show happyranch-connector.service -p WatchdogTimestampMonotonic --value)"
+[[ "$watchdog_after" -gt "$watchdog_before" ]] || fail "connector watchdog did not follow current composite health"
+active happyranch-tsnet-sidecar.service || fail "watchdog continued without sidecar health"
+evidence "active_flow" "watchdog_composite_current"
 
 # semantic evidence: partial_failure
 old_pid="$(systemctl show happyranch-tsnet-sidecar.service -p MainPID --value)"

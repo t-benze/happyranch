@@ -5,10 +5,151 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestConnectorHealthChild(t *testing.T) {
+	if os.Getenv("HAPPYRANCH_TEST_HEALTH_CHILD") == "" {
+		return
+	}
+	fd, _ := strconv.Atoi(os.Getenv("HAPPYRANCH_CHILD_HEALTH_FD"))
+	out := os.NewFile(uintptr(fd), "health")
+	generation := os.Getenv("HAPPYRANCH_CHILD_HEALTH_GENERATION")
+	mode := os.Getenv("HAPPYRANCH_TEST_HEALTH_CHILD")
+	sequence := uint64(1)
+	state := "ready"
+	if mode == "waiting" {
+		state = "waiting"
+	}
+	for {
+		_, _ = out.WriteString(healthRecord(generation, sequence, state))
+		sequence++
+		if state == "ready" {
+			state = "healthy"
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func runCompositeOrdering(t *testing.T, initiallyActive bool) []string {
+	t.Helper()
+	t.Setenv("HAPPYRANCH_TEST_HEALTH_CHILD", "healthy")
+	var active atomic.Bool
+	active.Store(initiallyActive)
+	ctx, cancel := context.WithCancel(context.Background())
+	n := &recordingNotifier{}
+	done := make(chan int, 1)
+	go func() {
+		done <- superviseConnector(ctx, []string{os.Args[0], "-test.run=TestConnectorHealthChild"}, n, time.Second, 50*time.Millisecond, nil,
+			func(context.Context) bool { return active.Load() },
+			func(context.Context) bool { active.Store(false); return true })
+	}()
+	if !initiallyActive {
+		time.Sleep(10 * time.Millisecond)
+		active.Store(true)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		n.mu.Lock()
+		ready := false
+		for _, call := range n.calls {
+			if call == "READY=1" {
+				ready = true
+			}
+		}
+		n.mu.Unlock()
+		if ready {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("supervisor did not stop")
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.calls...)
+}
+
+func TestCompositeReadinessAcceptsConnectorFirstAndSidecarFirst(t *testing.T) {
+	for _, initiallyActive := range []bool{false, true} {
+		calls := runCompositeOrdering(t, initiallyActive)
+		ready := 0
+		for _, call := range calls {
+			if call == "READY=1" {
+				ready++
+			}
+		}
+		if ready != 1 {
+			t.Fatalf("initiallyActive=%v READY count=%d calls=%v", initiallyActive, ready, calls)
+		}
+	}
+}
+
+func TestRepeatedWaitingCannotExtendStartupDeadline(t *testing.T) {
+	t.Setenv("HAPPYRANCH_TEST_HEALTH_CHILD", "waiting")
+	n := &recordingNotifier{}
+	started := time.Now()
+	code := superviseConnector(context.Background(), []string{os.Args[0], "-test.run=TestConnectorHealthChild"}, n,
+		20*time.Millisecond, 50*time.Millisecond, nil, func(context.Context) bool { return false }, func(context.Context) bool { return true })
+	if code != 1 || time.Since(started) > 300*time.Millisecond {
+		t.Fatalf("deadline refreshed: code=%d elapsed=%s", code, time.Since(started))
+	}
+	for _, call := range n.calls {
+		if call == "READY=1" || call == "WATCHDOG=1" {
+			t.Fatalf("partial health notified: %v", n.calls)
+		}
+	}
+}
+
+func TestSystemdSidecarHealthRequiresExactActiveState(t *testing.T) {
+	dir := t.TempDir()
+	command := filepath.Join(dir, "systemctl")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'active\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if !systemdSidecarHealthy(context.Background()) {
+		t.Fatal("active sidecar was rejected")
+	}
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'activating\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if systemdSidecarHealthy(context.Background()) {
+		t.Fatal("partial sidecar readiness was accepted")
+	}
+}
+
+func TestAdmissionRemovalWaitsForSidecarBeforeConnectorCleanup(t *testing.T) {
+	active := true
+	events := []string{}
+	healthy := func(context.Context) bool { events = append(events, "probe"); return active }
+	stop := func(context.Context) bool { events = append(events, "sidecar-stop"); active = false; return true }
+	if !removeSidecarAdmission(context.Background(), healthy, stop) {
+		t.Fatal("admission removal failed")
+	}
+	if len(events) < 3 || events[0] != "probe" || events[1] != "sidecar-stop" || events[2] != "probe" {
+		t.Fatalf("unexpected ordering: %v", events)
+	}
+}
+
+func TestAdmissionRemovalIsIdempotentWhenSidecarAlreadyStopped(t *testing.T) {
+	called := false
+	if !removeSidecarAdmission(context.Background(), func(context.Context) bool { return false }, func(context.Context) bool { called = true; return true }) {
+		t.Fatal("already removed admission was rejected")
+	}
+	if called {
+		t.Fatal("stopped sidecar was signalled twice")
+	}
+}
 
 func TestStructuredChildHealthAcceptsExactRecords(t *testing.T) {
 	records := make(chan childHealth, 2)

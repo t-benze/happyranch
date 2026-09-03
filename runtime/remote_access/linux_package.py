@@ -78,12 +78,10 @@ def render_composite_units(prefix: str = "/opt/happyranch") -> dict[str, str]:
                     "/etc/happyranch/connector.json"),
         user="happyranch", group="happyranch",
         daemon_token_path="/etc/happyranch/daemon.token",
-    )).replace("After=network-online.target", "After=network-online.target\nBefore=happyranch-tsnet-sidecar.service\nPartOf=happyranch-managed.target").replace("WantedBy=multi-user.target", "WantedBy=happyranch-managed.target")
+    )).replace("After=network-online.target", "After=network-online.target\nPartOf=happyranch-managed.target").replace("WantedBy=multi-user.target", "WantedBy=happyranch-managed.target")
     sidecar = """[Unit]
 Description=HappyRanch embedded tsnet sidecar
-Requires=happyranch-connector.service
 BindsTo=happyranch-connector.service
-After=happyranch-connector.service
 After=network-online.target
 Wants=network-online.target
 PartOf=happyranch-managed.target

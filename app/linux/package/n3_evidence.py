@@ -13,9 +13,9 @@ from pathlib import Path
 SCHEMA = "happyranch.managed-n3.execution-evidence"
 VERSION = 1
 PHASES = {
-    "startup": ("process_absent", "tsnet_admission_absent", "credential_mode_0400"),
+    "startup": ("process_absent", "tsnet_admission_absent", "credential_mode_0400", "composite_ready_after_sidecar"),
     "admission": ("tsnet_admission_reachable",),
-    "active_flow": ("production_process_active",),
+    "active_flow": ("production_process_active", "watchdog_composite_current"),
     "readiness_loss": ("tsnet_admission_removed_before_connector",),
     "revocation": ("stop_before_connector_cleanup", "tsnet_admission_absent"),
     "shutdown": ("same_instance_stop_twice", "no_double_close", "no_residue"),
