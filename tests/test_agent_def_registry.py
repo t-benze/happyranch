@@ -34,9 +34,9 @@ class TestAgentDefWithRegistryExecutors:
             ExecutorProfile(
                 name="openclaw",
                 kind="custom",
-                adapter_id="pi",
+                workspace_adapter_id="pi",
+                command_adapter_id="custom-adapter:openclaw",
                 readiness_marker_fragment="AGENTS.md",
-                argv_template=["openclaw", "{prompt}"],
             )
         )
         text = (

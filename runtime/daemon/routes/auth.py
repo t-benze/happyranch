@@ -59,12 +59,12 @@ class RegistrationTokenMintResponse(BaseModel):
 
 
 class RuntimeRegistrationTokenMintRequest(BaseModel):
-    """Runtime-level mint: no org — the profile is machine-global."""
+    """Runtime-level mint for a built-in binary or registered adapter."""
     name: str = Field(..., min_length=1, description="Executor profile name")
     purpose: str = Field(
-        'profile',
-        pattern=r'^(profile|binary|adapter)$',
-        description="'profile' for executor profile registration, 'binary' for binary-path registration, 'adapter' for custom-adapter submission"
+        ...,
+        pattern=r'^(binary|adapter)$',
+        description="'binary' for binary-path registration or 'adapter' for custom-adapter submission",
     )
     intended_profile_name: str | None = Field(
         None,
@@ -130,7 +130,7 @@ def mint_runtime_registration_token(
 
     Loopback-only AND master-bearer-authed. Same auth gating as the
     org-scoped mint, but omits org — the resulting token is valid for
-    the runtime-level registration routes.
+    the runtime-level binary-registration and adapter-submission routes.
     """
     peer = request.client.host if request.client else None
     if peer not in _LOCAL_HOSTS:

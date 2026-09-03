@@ -49,8 +49,8 @@ class RegistrationTokenRecord:
 
     token_hash: str
     org: str
-    name: str  # executor profile name this token is scoped to register
-    purpose: str = 'profile'  # 'profile' for executor profile, 'binary' for binary-path, 'adapter' for custom-adapter submission
+    name: str  # built-in binary kind or custom-adapter submission name
+    purpose: str  # 'binary' for binary-path or 'adapter' for custom-adapter submission
     intended_profile_name: str | None = None  # for 'adapter' purpose: the profile name this adapter is bound to; None for other purposes
     issued_at: float = 0.0
     expires_at: float = 0.0
@@ -164,6 +164,7 @@ class RegistrationTokenStore:
                 token_hash=token_hash,
                 org=org,
                 name=name,
+                purpose="org-scoped",
                 issued_at=now,
                 expires_at=expires_at,
             )
@@ -387,8 +388,8 @@ class RegistrationTokenStore:
     def mint_runtime(
         self,
         name: str,
+        purpose: str,
         now: float | None = None,
-        purpose: str = 'profile',
         intended_profile_name: str | None = None,
         on_mint: Callable[[str, RegistrationTokenRecord], None] | None = None,
     ) -> tuple[str, float]:
@@ -399,8 +400,7 @@ class RegistrationTokenStore:
         Args:
             name: Executor profile name the token is scoped to register.
             now: Injectable clock (seconds since epoch) for testing.
-            purpose: 'profile' for executor profile registration,
-                     'binary' for binary-path registration,
+            purpose: 'binary' for binary-path registration,
                      'adapter' for custom-adapter submission.
             intended_profile_name: For 'adapter' purpose only — the profile
                 name this adapter is bound to. The server derives the exact
@@ -422,9 +422,9 @@ class RegistrationTokenStore:
                 raise ValueError(
                     "intended_profile_name is required for adapter-purpose tokens"
                 )
-        elif purpose not in {'profile', 'binary'}:
+        elif purpose != 'binary':
             raise ValueError(
-                f"Unknown purpose {purpose!r}; must be 'profile', 'binary', or 'adapter'"
+                f"Unknown purpose {purpose!r}; must be 'binary' or 'adapter'"
             )
         if now is None:
             now = time.time()
@@ -460,11 +460,10 @@ class RegistrationTokenStore:
                     raise
         return token, expires_at
 
-    def _expire_prior_runtime(self, name: str, purpose: str = 'profile') -> None:
+    def _expire_prior_runtime(self, name: str, purpose: str) -> None:
         """Mark all unconsumed RUNTIME tokens for ``(name, purpose)`` as consumed.
 
-        Different purposes do NOT expire each other — a binary-purpose token
-        and a profile-purpose token for the same name coexist.
+        Binary and adapter purposes do not expire each other.
         """
         for record in self._tokens.values():
             if (

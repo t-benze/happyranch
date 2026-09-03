@@ -867,30 +867,6 @@ def _parse_pi_usage(stdout: str) -> TokenUsage | None:
     # Fall back to raw-only preservation (original behavior).
     return TokenUsage(usage_raw_json=stdout[:_TAIL_BYTES])
 
-# ── Generic CLI result-envelope sentinels (THR-107) ────────────────────
-
-_HR_ENVELOPE_BEGIN = "__HR_ENVELOPE_BEGIN__"
-_HR_ENVELOPE_END = "__HR_ENVELOPE_END__"
-
-
-def _parse_generic_cli_usage(stdout: str) -> TokenUsage | None:
-    """Parse a custom CLI's stdout for a THR-107 result-envelope.
-
-    THR-107 Phase 2: Delegates to ``GenericCliAdapter.parse_output()``
-    — the single authoritative implementation lives in
-    ``runtime/adapters/generic_cli.py``. This function is preserved as
-    the stable import surface for ``_run_command(usage_parser=...)``
-    and for backward-compatible test imports.
-
-    Best-effort — mirrors the contract of every built-in parser:
-    - Returns None when stdout is empty/whitespace (no parse attempted).
-    - Returns TokenUsage with token fields NULL and raw JSON on parser failure
-      (forensic preservation — same pattern as _parse_claude_usage:222).
-    """
-    from runtime.adapters.generic_cli import GenericCliAdapter
-    return GenericCliAdapter.parse_output(stdout)
-
-
 def is_rate_limit_signature(text: str) -> bool:
     """True when ``text`` matches a known provider rate-limit signature.
 
@@ -1388,9 +1364,8 @@ class ClaudeExecutor:
         """The supervisor ``LaunchSpec`` for a contained Claude launch
         (THR-207 task-producer wiring): argv via the same ``_build_argv`` the
         uncontained path uses, stdin carries the prompt, stdio PIPE/text.
-        ``timeout_seconds`` is accepted for seam uniformity (the session
-        timeout is applied at communicate-time in contained mode; only the
-        generic-CLI argv template substitutes it into argv).
+        ``timeout_seconds`` is accepted for seam uniformity; the session
+        timeout is applied at communicate-time in contained mode.
         """
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         from runtime.orchestrator.workspace_adapters import allow_rules_for_agent
@@ -1818,134 +1793,6 @@ class PiExecutor:
                                resume_session_id=resume_session_id)
         return build_command_launch_spec(
             cmd=cmd, workspace=workspace, input_text=prompt, org_slug=org_slug,
-        )
-
-
-
-class GenericCliExecutor:
-    """Executor for registered custom CLI profiles (THR-052, THR-107 Phase 2).
-
-    THR-107 Phase 2: GenericCliExecutor is now a **compatibility shell**
-    around the first-party ``GenericCliAdapter`` in
-    ``runtime/adapters/generic_cli.py``. The adapter owns the template
-    expansion / argv construction and result-envelope parsing logic.
-    This class delegates to it for bit-for-bit compatibility while
-    preserving the existing public factory contract in ``build_executor``.
-
-    Custom profiles with ``command_adapter_id`` set to ``"generic-cli"``
-    (template-based) use this executor through the (unchanged)
-    custom branch of ``build_executor``. Custom profiles bound to
-    ``"custom-adapter:<id>"`` (separately registered, founder-approved,
-    hash-verified executable — D7B) route through ``CustomAdapterExecutor``
-    instead. Each profile's ``adapter`` field (claude/codex/opencode/pi)
-    still controls workspace preparation only. No model selection is
-    performed — custom profile model_arg
-    is out of scope per founder gate (THR-067).
-
-    The session-lifetime preamble is prepended to the prompt before
-    substitution, same as every other executor.
-
-    ``envelope_policy`` (D7A) controls result-envelope enforcement:
-    - ``None`` (default): legacy compatibility — the v1 envelope is
-      optional and absence preserves pre-D7A behavior.
-    - ``"strict"``: mandatory v1 enforcement — a missing, malformed,
-      invalid-version, or absent envelope fails closed with a
-      deterministic error message including re-registration/verification
-      guidance.
-    """
-
-    def __init__(
-        self,
-        *,
-        profile_name: str,
-        argv_template: list[str],
-        provider: str,
-        envelope_policy: str | None = None,
-    ) -> None:
-        self._profile_name = profile_name
-        self._argv_template = list(argv_template)
-        self._provider = provider
-        self._envelope_policy = envelope_policy
-
-    def run(
-        self,
-        workspace: Path,
-        prompt: str,
-        session_id: str | None = None,
-        timeout_seconds: int = 1800,
-        on_started: Callable[[int], None] | None = None,
-        on_throttle_event: "OnThrottleEvent | None" = None,
-        model: str | None = None,
-        pre_launch_validator: Callable[[], None] | None = None,
-        org_slug: str | None = None,
-        running: "RunningHandle | None" = None,
-        throttle_backoff_seconds: Sequence[float] | None = None,
-    ) -> ExecutorResult:
-        # model is accepted for signature parity but not used — custom
-        # profile model_arg is out of scope per founder gate (THR-067).
-        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
-        from runtime.adapters.generic_cli import GenericCliAdapter
-        cmd = GenericCliAdapter.build_argv(
-            argv_template=self._argv_template,
-            prompt=prompt,
-            workspace=str(workspace),
-            timeout_seconds=timeout_seconds,
-            resolve_binary=_resolve_binary(self._profile_name),
-        )
-
-        # ── D7A strict envelope enforcement ─────────────────────────
-        # When envelope_policy is "strict", add a post-launch validator
-        # that checks stdout for a valid v1 envelope. The validator runs
-        # inside _run_command with access to the full stdout (not just
-        # the tail), so it can detect all failure modes: missing markers,
-        # malformed JSON, missing/incorrect envelope_version, non-dict
-        # content, etc.
-        strict_validator = None
-        if self._envelope_policy == "strict":
-            strict_validator = GenericCliAdapter.validate_strict
-
-        return _run_command(
-            cmd,
-            workspace,
-            session_id,
-            timeout_seconds,
-            on_started=on_started,
-            usage_parser=_parse_generic_cli_usage,
-            provider=self._provider,
-            on_throttle_event=on_throttle_event,
-            strict_envelope_validator=strict_validator,
-            pre_launch_validator=pre_launch_validator,
-            org_slug=org_slug,
-            running=running,
-            throttle_backoff_seconds=throttle_backoff_seconds,
-        )
-
-    def build_launch_spec(
-        self,
-        *,
-        workspace: Path,
-        prompt: str,
-        session_id: str | None = None,
-        model: str | None = None,
-        resume_session_id: str | None = None,
-        org_slug: str | None = None,
-        timeout_seconds: int = 1800,
-    ) -> "LaunchSpec":
-        """The supervisor ``LaunchSpec`` for a contained generic-CLI launch
-        (THR-207 task-producer wiring); the prompt travels via the argv
-        template (with ``{timeout_seconds}`` substitution), so the argv-too-
-        large gate applies (input_text is None)."""
-        prompt = _SESSION_LIFETIME_PREAMBLE + prompt
-        from runtime.adapters.generic_cli import GenericCliAdapter
-        cmd = GenericCliAdapter.build_argv(
-            argv_template=self._argv_template,
-            prompt=prompt,
-            workspace=str(workspace),
-            timeout_seconds=timeout_seconds,
-            resolve_binary=_resolve_binary(self._profile_name),
-        )
-        return build_command_launch_spec(
-            cmd=cmd, workspace=workspace, input_text=None, org_slug=org_slug,
         )
 
 

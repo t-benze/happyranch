@@ -6,7 +6,7 @@ A canonical sample org shipped at `examples/orgs/hk-macau-tourism/` runs a one-p
 
 ## How It Works
 
-HappyRanch runs as a local **HTTP daemon** that dispatches tasks to AI agents running as coding-agent CLI sessions. The `happyranch` CLI is a thin client that talks to the daemon. Each agent has a persistent workspace and a defined role within its org. Executor selection is per-agent: agents run on registered executor profiles — built-in profiles ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, opencode, Pi) plus org-config custom profiles for any agentic CLI.
+HappyRanch runs as a local **HTTP daemon** that dispatches tasks to AI agents running as coding-agent CLI sessions. The `happyranch` CLI is a thin client that talks to the daemon. Each agent has a persistent workspace and a defined role within its org. Executor selection is per-agent: agents run on built-in profiles ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, opencode, Pi) or registered profiles bound to a founder-approved `custom-adapter:<id>`.
 
 A single runtime container hosts **multiple orgs** under `<runtime>/orgs/<slug>/`, each with its own DB, workspaces, KB, and threads. One daemon serves them all concurrently.
 
@@ -441,7 +441,7 @@ repos:
 ---
 ```
 
-`executor` is a registered executor profile name. Built-in profiles are `claude`, `codex`, `opencode`, and `pi`; org-config custom profiles are also valid once registered. If omitted, it defaults to `claude`.
+`executor` is a registered executor profile name. Built-in profiles are `claude`, `codex`, `opencode`, and `pi`; a custom profile is valid only when its explicit `command_adapter_id: custom-adapter:<id>` binding resolves to a registered, conformance-passed, founder-approved adapter. If omitted, `executor` defaults to `claude`.
 
 Repos are cloned into the agent's workspace (`repos/<name>/`) by `happyranch init-agent`, founder enrollment / approval, and `manage-repo add/update`. At each session spawn the daemon only fast-forward-pulls existing clones (`git pull --ff-only`, fail-open); it does not clone a repository that is declared but missing — re-run init or `manage-repo update` to provision it.
 
