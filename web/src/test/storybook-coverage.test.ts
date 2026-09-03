@@ -1,6 +1,15 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createElement, type ReactNode } from 'react';
+import { cleanup, render } from '@testing-library/react';
+import {
+  PASTURE_REFERENCE_RENAMES,
+  PASTURE_REFERENCE_REQUIREMENTS,
+  PASTURE_SCREEN_SCOPED_COMPOSITIONS,
+  type PastureReferenceRequirement,
+} from '../design-system/Pasture.stories';
+import { TooltipProvider } from '../design-system/primitives/Tooltip';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webRoot = join(here, '../..');
@@ -63,21 +72,45 @@ function runtimeCoverageError(component: unknown, storyModule: Record<string, un
   return null;
 }
 
+type RenderableStory = { render?: () => ReactNode };
+
+function referenceRequirementError(requirement: PastureReferenceRequirement, storyModule: Record<string, unknown>): string | null {
+  const story = storyModule[requirement.storyExport] as RenderableStory | undefined;
+  if (!story?.render) return `missing renderable story export ${requirement.storyExport}`;
+  const view = render(createElement(TooltipProvider, null, story.render()));
+  const root = view.container.querySelector(`[data-pasture-requirement="${requirement.id}"]`);
+  if (!root) return `missing requirement root ${requirement.id}`;
+  for (const selector of requirement.selectors) {
+    if (!root.matches(selector) && !root.querySelector(selector)) return `${requirement.id} missing semantic selector ${selector}`;
+  }
+  cleanup();
+  return null;
+}
+
 describe('Storybook design-system coverage', () => {
-  test('the Pasture catalogue represents every reference section and state contract', () => {
-    const pasture = readFileSync(join(designSystemRoot, 'Pasture.stories.tsx'), 'utf8');
-    const requiredReferenceCoverage = [
-      'Tokens', 'Radius, shadow & layout', 'Agent identity ramp', 'Typography',
-      'Focus, disabled & buttons', 'Cards', 'Badges, tags, chips & roll-ups',
-      'Form controls & selection', 'Callout, confirm & recovery',
-      'Popover, action bar & tooltip', 'Stats & meters', 'Timeline & tables',
-      'Prose, properties & code', 'Status, provenance & readiness', 'Page states',
-      'Assistant dock', 'Dev affordance, rename map & screen-scoped',
-      "['empty', 'loading', 'error', 'unauthorized', 'populated']",
-    ];
-    for (const requirement of requiredReferenceCoverage) {
-      expect(pasture, `Pasture reference requirement: ${requirement}`).toContain(requirement);
+  test('the authoritative 25-row manifest resolves to concrete story exports and rendered semantics', () => {
+    expect(PASTURE_REFERENCE_REQUIREMENTS).toHaveLength(25);
+    expect(new Set(PASTURE_REFERENCE_REQUIREMENTS.map(({ id }) => id)).size).toBe(25);
+    const pastureModule = storyModules['../design-system/Pasture.stories.tsx'];
+    expect(pastureModule).toBeDefined();
+    for (const requirement of PASTURE_REFERENCE_REQUIREMENTS) {
+      expect(referenceRequirementError(requirement, pastureModule ?? {}), requirement.id).toBeNull();
     }
+  });
+
+  test('fails closed when combined headings survive but timeline structure or dev guidance is genericized', () => {
+    const timeline = PASTURE_REFERENCE_REQUIREMENTS.find(({ id }) => id === 'timeline')!;
+    const dev = PASTURE_REFERENCE_REQUIREMENTS.find(({ id }) => id === 'dev')!;
+    expect(referenceRequirementError(timeline, { StatsTimelineAndTable: { render: () => createElement('h2', null, 'Timeline & tables') } })).toContain('missing requirement root');
+    expect(referenceRequirementError(dev, { AssistantDockAndDevAffordance: { render: () => createElement('div', { 'data-pasture-requirement': 'dev' }, 'Implementation guidance.') } })).toContain('missing semantic selector');
+  });
+
+  test('the detailed rename map and screen-scoped inventory retain founder-reference facts', () => {
+    expect(PASTURE_REFERENCE_RENAMES).toHaveLength(42);
+    expect(PASTURE_REFERENCE_RENAMES).toContainEqual(['prototype state switchers', '.devstates']);
+    expect(PASTURE_REFERENCE_RENAMES).toContainEqual(['.sched-row (undefined)', '.dtable']);
+    expect(PASTURE_SCREEN_SCOPED_COMPOSITIONS).toHaveLength(55);
+    expect(PASTURE_SCREEN_SCOPED_COMPOSITIONS).toEqual(expect.arrayContaining(['.esc-card', '.thread', '.composer-box', '.kb-entry', '.week', '.dream', '.pred']));
   });
 
   test('the catalogue defaults to the reference light theme and preserves responsive navigation ordering', () => {

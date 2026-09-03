@@ -34,11 +34,14 @@ and supplies only `MemoryRouter`, a network-disabled Query client, and
 `TooltipProvider`. Stories use canned data and never contact a live daemon.
 The theme toolbar applies the same `data-theme` contract as the app and defaults
 to the light Pasture reference. The `Pasture/*` navigation is the specification
-crosswalk: its Overview stories cover tokens, identity, typography,
-focus/disabled, buttons, cards, badges/chips, controls, feedback/recovery,
-overlays, tooltips, stats/meters, timeline/tables, prose/code,
-provenance/readiness, page states, the assistant dock, and the reference's
-rename/screen-scope guidance. The existing `Design System/*` stories remain the
+crosswalk. `PASTURE_REFERENCE_REQUIREMENTS` is the single authoritative 25-row
+manifest, matching the 25 material sections in the rendered founder HTML. Every
+row names a concrete story export and stable rendered semantic selectors.
+Timeline and table, avatars/agent rows, and icon tiles are separate requirements.
+The manifest also enforces the five page states, assistant dock, review-only
+prototype-state selector, 42-entry retired-to-canonical rename map, 55-entry
+screen-scoped composition inventory, and narrow-width contract. The existing
+`Design System/*` stories remain the
 source-to-story identity ledger and detailed component demonstrations. Manager
 chrome and canvases use the warm Pasture surface treatment; canvas padding and
 examples reflow at 390 CSS px.
@@ -61,12 +64,18 @@ only where the reusable unit owns them. Aggregate stories preserve representativ
 states, controls, and interaction examples; their custom renders do not satisfy
 coverage. `storybook-coverage.test.ts` uses Vite's existing module graph to
 import each mapped source and story module and compare runtime object identity.
-It also requires a mapped named default-render story. This narrow contract fails
+It also requires a mapped named default-render story. The same test renders every
+entry in `PASTURE_REFERENCE_REQUIREMENTS` and queries its declared DOM structure
+and semantic attributes. Adversarial fixtures prove that a combined
+"Timeline & tables" heading without a timeline and generic implementation
+guidance without the prototype selector fail. This narrow contract fails
 closed for missing modules/exports/meta, wrong or merely same-named bindings,
 metadata-only references, and custom render overrides. It does not claim to
 interpret JavaScript or TypeScript execution, and creates no generated registry
 or runtime catalogue. Reference page states are explicit and fail-closed in the
-same test: empty, loading, error/retry, unauthorized, and populated.
+same test: empty, loading, error/retry, unauthorized, and populated. Navigation
+ordering and the 390px manager/canvas responsive contract are independently
+asserted.
 Unauthorized is a visual/copy proposal only because reusable units do not own
 auth or permission decisions; no gate is simulated. Loading is a local skeleton
 and retry is local state, so Storybook remains daemon-isolated.
