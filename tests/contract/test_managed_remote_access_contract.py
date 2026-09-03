@@ -43,7 +43,7 @@ FIXTURE_FILES = {
 # Extra required top-level keys beyond the common (version/name/status/description)
 # set, per fixture.
 _TOP_LEVEL_EXTRA = {
-    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "connector_ingress", "readiness", "secrets", "visibility", "fallbacks", "n2_lifecycle_matrix", "acceptance_matrix", "delivery_status"],
+    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "connector_ingress", "readiness", "secrets", "visibility", "fallbacks", "n2_lifecycle_matrix", "n3_lifecycle_matrix", "acceptance_matrix", "delivery_status"],
     "route_policy": [
         "decision_order",
         "default_behavior",
@@ -441,11 +441,11 @@ def test_n2_lifecycle_matrix_covers_shipping_boundaries() -> None:
 
 
 def test_managed_delivery_status_preserves_diy_and_gates_future_units() -> None:
-    assert _load("managed_topology")["delivery_status"] == {"n0": "contract_implemented", "n1": "sidecar_core_build_test_only_no_distribution_or_acceptance", "n2": "managed_loopback_connector_ingress_implemented", "n3_through_n6": "founder_gated_not_authorized", "unit_4b_2": "delivered_independent_not_network_provisioning_or_acceptance", "supported_diy": "unchanged_truthful_voluntary_external_tailscale_or_customer_headscale", "supported_diy_for_founder_acceptance": "non_executable_not_managed_path"}
+    assert _load("managed_topology")["delivery_status"] == {"n0": "contract_implemented", "n1": "sidecar_core_build_test_only", "n2": "managed_loopback_connector_ingress_implemented", "n3": "linux_package_and_composite_supervision_implemented_no_deployment_or_acceptance", "n4_through_n6": "founder_gated_separate_units", "unit_4b_2": "delivered_independent_not_network_provisioning_or_acceptance", "supported_diy": "unchanged_truthful_voluntary_external_tailscale_or_customer_headscale", "supported_diy_for_founder_acceptance": "non_executable_not_managed_path"}
 
 
 _TOP_LEVEL_EXTRA = {
-    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "connector_ingress", "readiness", "secrets", "visibility", "fallbacks", "n2_lifecycle_matrix", "acceptance_matrix", "delivery_status"],
+    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "connector_ingress", "readiness", "secrets", "visibility", "fallbacks", "n2_lifecycle_matrix", "n3_lifecycle_matrix", "acceptance_matrix", "delivery_status"],
     "route_policy": [
         "decision_order",
         "default_behavior",
@@ -1377,6 +1377,32 @@ def test_no_sentinel_credentials_in_serialized_fixtures(name: str) -> None:
     raw = FIXTURE_FILES[name].read_text(encoding="utf-8")
     hits = _scan_sentinels(raw)
     assert not hits, _format_sentinel_hits(name, hits)
+
+
+def test_n3_lifecycle_matrix_covers_shipping_package_boundaries() -> None:
+    topology = _load("managed_topology")
+    matrix = topology["n3_lifecycle_matrix"]
+    assert [row["phase"] for row in matrix] == [
+        "startup", "admission", "active_flow", "readiness_loss", "revocation",
+        "shutdown", "partial_failure", "concurrency_reentry", "recovery",
+    ]
+    assert all(row["shipping_tests"] for row in matrix)
+    observing = {
+        "startup": "test_composite_service_manager_executes_start_ready_stop_crash_restart",
+        "admission": "TestStartSuccessConsumesCredentialThenProxiesRawBytes",
+        "active_flow": "TestStartSuccessConsumesCredentialThenProxiesRawBytes",
+        "readiness_loss": "TestUnexpectedAcceptFailureAutomaticallyTearsDownAndIsReported",
+        "revocation": "test_persisted_revocation_removes_listener_before_stream_cleanup",
+        "shutdown": "TestConcurrentStopIsIdempotent",
+        "partial_failure": "test_install_rejects_tampered_payload_without_partial_residue",
+        "concurrency_reentry": "test_upgrade_rolls_back_at_every_publication_boundary",
+        "recovery": "test_interrupted_payload_publication_restores_last_known_good",
+    }
+    for row in matrix:
+        assert any(observing[row["phase"]] in test_id for test_id in row["shipping_tests"]), row
+        assert all("test_composite_units_start_connector_before_admission_and_stop_reverse" not in test_id
+                   and "test_build_is_reproducible" not in test_id for test_id in row["shipping_tests"]), row
+    assert topology["delivery_status"]["n3"].startswith("linux_package")
 
 
 def test_sentinel_hits_never_echoed_in_validation_errors() -> None:
