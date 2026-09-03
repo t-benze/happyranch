@@ -550,12 +550,12 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
-        self._migrate_jobs_table_if_needed()
         from runtime.infrastructure.remote_job_schema import (
             validate_remote_job_schema_preflight,
         )
 
         validate_remote_job_schema_preflight(self._conn)
+        self._migrate_jobs_table_if_needed()
         self._migrate_drop_talk_surface_if_needed()
         self._retire_skill_lifecycle_if_present()
         self._create_tables()

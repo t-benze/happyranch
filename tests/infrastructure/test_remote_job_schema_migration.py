@@ -14,6 +14,7 @@ from runtime.infrastructure.remote_job_schema import (
     STAGES,
     TABLE_SQL,
 )
+from tests.infrastructure.test_jobs_migration import _seed_legacy_scripts_db
 
 
 REMOTE_TABLES = set(TABLE_SQL)
@@ -37,6 +38,26 @@ def _snapshot(path: Path) -> tuple[list[tuple], list[tuple], list[tuple]]:
         ).fetchall()
         jobs = conn.execute("SELECT * FROM jobs ORDER BY id").fetchall()
         return schema, markers, jobs
+
+
+def _complete_snapshot(path: Path) -> tuple[list[tuple], dict[str, list[tuple]]]:
+    """Capture every persisted schema object and row without normalizing SQL."""
+    with sqlite3.connect(path) as conn:
+        schema = conn.execute(
+            "SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master "
+            "ORDER BY type,name"
+        ).fetchall()
+        tables = [
+            row[1] for row in schema
+            if row[0] == "table" and not str(row[1]).startswith("sqlite_")
+        ]
+        rows = {
+            table: conn.execute(
+                f'SELECT * FROM "{table}" ORDER BY rowid'
+            ).fetchall()
+            for table in tables
+        }
+        return schema, rows
 
 
 def _insert_runner(conn: sqlite3.Connection, runner: str, generation: int = 1) -> None:
@@ -182,6 +203,40 @@ def test_conflicting_exact_shapes_fail_before_migration_mutation(
     with pytest.raises(sqlite3.DatabaseError, match="conflicting remote-job"):
         Database(path)
     assert _snapshot(path) == before
+
+
+def test_v0_script_requests_and_remote_conflict_refuse_before_any_migration(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v0-script-requests-remote-conflict.db"
+    _seed_legacy_scripts_db(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE remote_runners(id TEXT PRIMARY KEY, wrong TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO remote_runners(id, wrong) VALUES "
+            "('RUNNER-conflict', 'must-survive')"
+        )
+        conn.commit()
+
+    before = _complete_snapshot(path)
+    assert "script_requests" in before[1]
+    assert "jobs" not in before[1]
+    assert [row[0] for row in before[1]["script_requests"]] == [
+        "SR-001", "SR-002", "SR-003",
+    ]
+    assert before[1]["script_requests"][0][12] == (
+        "/runtime/orgs/sample/scripts/SR-001.out"
+    )
+
+    for _ in range(2):
+        with pytest.raises(
+            sqlite3.DatabaseError,
+            match="conflicting remote-job table: remote_runners",
+        ):
+            Database(path)
+        assert _complete_snapshot(path) == before
 
 
 def test_conflicting_nullable_job_column_fails_without_other_remote_writes(tmp_path: Path) -> None:
