@@ -388,7 +388,9 @@ export interface AuthorityPolicyApi {
     name: string;
     team: string;
     role: string;
-  } | undefined) => QueryLike<import('@/lib/api/authorityPolicy').TeamEscalationPolicyResponse>;
+  } | undefined) => QueryLike<import('@/lib/api/authorityPolicy').TeamEscalationPolicyResponse> & {
+    refetch: () => Promise<unknown>;
+  };
   useCreateTeamEscalationPolicyRelease: () => MutationLike<
     { agentName: string; body: import('@/lib/api/authorityPolicy').CreateAuthorityPolicyReleaseRequest },
     import('@/lib/api/authorityPolicy').CreateAuthorityPolicyReleaseResponse

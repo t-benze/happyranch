@@ -29,7 +29,7 @@ const active = {
     },
   },
 };
-const query = { data: empty as typeof empty | typeof active | undefined, isLoading: false, isError: false, error: null };
+const query = { data: empty as typeof empty | typeof active | undefined, isLoading: false, isError: false, error: null, refetch: vi.fn() };
 const create = { mutateAsync: vi.fn(), isPending: false };
 const activate = { mutateAsync: vi.fn(), isPending: false };
 
@@ -44,16 +44,25 @@ const agent = { name: 'engineering_manager', team: 'engineering', role: 'manager
 describe('TeamEscalationPolicyCard', () => {
   beforeEach(() => {
     query.data = empty; query.isLoading = false; query.isError = false; query.error = null;
+    query.refetch.mockReset();
     create.mutateAsync.mockReset(); activate.mutateAsync.mockReset();
   });
 
-  it('renders deterministic loading and sanitized error states', () => {
-    query.isLoading = true;
+  it('retries a load error and recovers through loading to loaded data on the same mount', async () => {
+    query.data = undefined; query.isError = true;
     const view = render(<TeamEscalationPolicyCard agent={agent} />);
-    expect(screen.getByText('Loading team policy…')).toBeInTheDocument();
-    query.isLoading = false; query.isError = true;
-    view.rerender(<TeamEscalationPolicyCard agent={agent} />);
     expect(screen.getByRole('alert')).toHaveTextContent('Could not load');
+    query.refetch.mockImplementationOnce(() => {
+      query.isError = false; query.isLoading = true;
+      view.rerender(<TeamEscalationPolicyCard agent={agent} />);
+      return Promise.resolve();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(query.refetch).toHaveBeenCalledOnce();
+    expect(screen.getByText('Loading team policy…')).toBeInTheDocument();
+    query.isLoading = false; query.data = empty;
+    view.rerender(<TeamEscalationPolicyCard agent={agent} />);
+    expect(await screen.findByText('Team-owned')).toBeInTheDocument();
   });
 
   it('labels team ownership, bootstrap and shared-credential limitation', async () => {

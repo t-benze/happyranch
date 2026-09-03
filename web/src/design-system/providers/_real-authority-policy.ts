@@ -26,6 +26,7 @@ export const realAuthorityPolicyApi: AuthorityPolicyApi = {
       isLoading: false,
       isError: false,
       error: null,
+      refetch: async () => undefined,
     };
   },
   useCreateTeamEscalationPolicyRelease: () => {

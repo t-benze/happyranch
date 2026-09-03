@@ -37,7 +37,7 @@ export function TeamEscalationPolicyCard({ agent }: { agent: { name: string; tea
 
   if (query.isLoading) return <PolicyShell><p className="text-text-muted text-sm">Loading team policy…</p></PolicyShell>;
   if (query.isError || !query.data || !draft) {
-    return <PolicyShell><div role="alert" className="text-tier-red flex items-center gap-2 text-sm"><AlertCircle size={14} />Could not load the team policy. Reload to retry.</div></PolicyShell>;
+    return <PolicyShell><div role="alert" className="text-tier-red flex flex-wrap items-center gap-2 text-sm"><AlertCircle size={14} /><span>Could not load the team policy.</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>Retry</Button></div></PolicyShell>;
   }
 
   const dirty = JSON.stringify(draft) !== baseline;
