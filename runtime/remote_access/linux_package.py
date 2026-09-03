@@ -43,7 +43,7 @@ def credential_capability(
     source: Path,
     *,
     expected_uid: int | None,
-    allowed_modes: tuple[int, ...] = (0o600,),
+    allowed_modes: tuple[int, ...] | None = (0o600,),
     require_read_only: bool = False,
 ) -> str:
     """Classify credential usability without exposing paths, bytes, or OS errors."""
@@ -63,10 +63,9 @@ def credential_capability(
         metadata = path.lstat()
         if not stat.S_ISREG(metadata.st_mode):
             return "credential_wrong_type"
-        if (
-            (expected_uid is not None and metadata.st_uid != expected_uid)
-            or stat.S_IMODE(metadata.st_mode) not in allowed_modes
-        ):
+        if expected_uid is not None and metadata.st_uid != expected_uid:
+            return "credential_wrong_custody"
+        if allowed_modes is not None and stat.S_IMODE(metadata.st_mode) not in allowed_modes:
             return "credential_wrong_custody"
         descriptor = os.open(
             path,

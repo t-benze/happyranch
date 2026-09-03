@@ -221,12 +221,24 @@ wait_for "sidecar READY and ExpectedPeers" active happyranch-tsnet-sidecar.servi
 connector_ready="$(systemctl show happyranch-connector.service -p ActiveEnterTimestampMonotonic --value)"
 sidecar_ready="$(systemctl show happyranch-tsnet-sidecar.service -p ActiveEnterTimestampMonotonic --value)"
 [[ "$sidecar_ready" -le "$connector_ready" ]] || fail "connector reported composite READY before sidecar admission"
-[[ "$(sudo stat -c %U:%G:%a /run/credentials/happyranch-connector.service/daemon.token)" == "happyranch:happyranch:400" ]] || fail "connector staged credential capability mismatch"
-[[ "$(sudo stat -c %U:%G:%a /run/credentials/happyranch-tsnet-sidecar.service/enrollment.key)" == "happyranch:happyranch:400" ]] || fail "sidecar staged credential capability mismatch"
+check_staged_credential() {
+  local path="$1" directory="$2" name="$3"
+  [[ "$path" == "$directory/$name" ]] || fail "staged credential provenance mismatch"
+  [[ "$(readlink -f -- "$path")" == "$path" ]] || fail "staged credential escape mismatch"
+  sudo test -f "$path" || fail "staged credential type mismatch"
+  ! sudo test -L "$path" || fail "staged credential symlink mismatch"
+  sudo -u happyranch test -r "$path" || fail "staged credential unreadable"
+  ! sudo -u happyranch test -w "$path" || fail "staged credential service-writable"
+  ! sudo -u happyranch test -w "$directory" || fail "staged credential directory service-writable"
+  printf 'credential_observation name=%s file=%s directory=%s\n' \
+    "$name" "$(sudo stat -c %U:%G:%a:%F "$path")" "$(sudo stat -c %U:%G:%a:%F "$directory")"
+}
+check_staged_credential /run/credentials/happyranch-connector.service/daemon.token /run/credentials/happyranch-connector.service daemon.token
+check_staged_credential /run/credentials/happyranch-tsnet-sidecar.service/enrollment.key /run/credentials/happyranch-tsnet-sidecar.service enrollment.key
 absent /etc/happyranch/enrollment.key
 absent /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf
-evidence "startup" "connector_staged_credential_service_owned_read_only"
-evidence "startup" "sidecar_staged_credential_service_owned_read_only"
+evidence "startup" "connector_staged_credential_service_readable_non_writable"
+evidence "startup" "sidecar_staged_credential_service_readable_non_writable"
 evidence "startup" "credential_source_retired"
 evidence "startup" "credential_dropin_retired"
 evidence "startup" "composite_ready_after_sidecar"

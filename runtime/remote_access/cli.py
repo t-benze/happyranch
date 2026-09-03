@@ -179,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         category = credential_capability(
             Path(credentials_directory) / args.name,
             expected_uid=None,
-            allowed_modes=(0o400,),
+            allowed_modes=None,
             require_read_only=True,
         )
         if category != "credential_valid":

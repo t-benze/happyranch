@@ -628,7 +628,7 @@ def test_packaged_preflight_uses_ownership_neutral_systemd_staged_contract(
         path: Path,
         *,
         expected_uid: int | None,
-        allowed_modes: tuple[int, ...],
+        allowed_modes: tuple[int, ...] | None,
         require_read_only: bool,
     ) -> str:
         observed.append((path, expected_uid, allowed_modes, require_read_only))
@@ -646,7 +646,7 @@ def test_packaged_preflight_uses_ownership_neutral_systemd_staged_contract(
     assert connector_cli_main([
         "credential-capability", "--name", name, "--unit", unit,
     ]) == 0
-    assert observed == [(staged / name, None, (0o400,), True)]
+    assert observed == [(staged / name, None, None, True)]
 
 
 @pytest.mark.parametrize(
@@ -656,7 +656,7 @@ def test_packaged_preflight_uses_ownership_neutral_systemd_staged_contract(
         ("enrollment.key", "happyranch-tsnet-sidecar.service"),
     ],
 )
-def test_packaged_preflight_accepts_systemd_staging_owned_by_service_uid(
+def test_packaged_preflight_accepts_real_systemd_0440_staging(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     name: str,
@@ -666,7 +666,11 @@ def test_packaged_preflight_accepts_systemd_staging_owned_by_service_uid(
     staged.mkdir(parents=True)
     credential = staged / name
     credential.write_text("secret\n")
-    credential.chmod(0o400)
+    # Real systemd 255 on the Ubuntu 24.04 shipping runner stages both
+    # credentials as service-readable, non-writable 0440 files.  The mode is
+    # an implementation detail; the service-observable capability is the
+    # contract.
+    credential.chmod(0o440)
     staged.chmod(0o500)
     monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(staged))
     monkeypatch.setattr(
