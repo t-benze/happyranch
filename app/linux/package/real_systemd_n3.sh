@@ -163,7 +163,9 @@ wait_for "loopback daemon" port_open 18765
 sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin happyranch 2>/dev/null || true
 sudo install -d -m 0700 -o happyranch -g happyranch /etc/happyranch
 printf '%s\n' synthetic-daemon-token >"$work/daemon.token"
-sudo install -m 0600 -o happyranch -g happyranch "$work/daemon.token" /etc/happyranch/daemon.token
+# Both plaintext LoadCredential sources remain root-custodied; service users
+# receive only systemd's private staged copies.
+sudo install -m 0600 -o root -g root "$work/daemon.token" /etc/happyranch/daemon.token
 
 python - "$work" <<'PY'
 import json, sys
@@ -197,6 +199,8 @@ for binary in /opt/happyranch/bin/happyranch-connector /opt/happyranch/bin/happy
 done
 sudo systemctl daemon-reload
 [[ "$(sudo stat -c %U:%G:%a /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf)" == "root:root:600" ]] || fail "transient credential drop-in custody mismatch"
+[[ "$(sudo stat -c %U:%G:%a /etc/happyranch/daemon.token)" == "root:root:600" ]] || fail "daemon credential source custody mismatch"
+[[ "$(sudo stat -c %U:%G:%a /etc/happyranch/enrollment.key)" == "root:root:600" ]] || fail "enrollment credential source custody mismatch"
 
 # semantic evidence: startup
 sudo mv /etc/happyranch/enrollment.key /etc/happyranch/enrollment.key.held

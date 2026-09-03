@@ -143,6 +143,7 @@ def test_parser_exposes_all_commands() -> None:
         "pairing-status",
             "recovery",
             "retire-enrollment-source",
+            "credential-capability",
         }
 
 

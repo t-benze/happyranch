@@ -11,6 +11,7 @@ import tarfile
 import tempfile
 import zipfile
 import subprocess
+import stat
 from typing import Callable, Mapping
 
 from runtime.remote_access.systemd_unit import ConnectorUnitSpec, render_connector_unit
@@ -36,6 +37,58 @@ PAYLOAD_MODES = {
     **{f"systemd/{name}": "0o600" for name in UNITS},
 }
 TRANSACTION_MARKER = ".happyranch-install-transaction.json"
+
+
+def credential_capability(
+    source: Path,
+    *,
+    expected_uid: int,
+    allowed_modes: tuple[int, ...] = (0o600,),
+) -> str:
+    """Classify credential usability without exposing paths, bytes, or OS errors."""
+    path = Path(source)
+    try:
+        current = path
+        while current != current.parent:
+            metadata = current.lstat()
+            if stat.S_ISLNK(metadata.st_mode):
+                return "credential_unsafe_symlink"
+            current = current.parent
+    except FileNotFoundError:
+        return "credential_absent"
+    except OSError:
+        return "credential_staging_incompatible"
+    try:
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            return "credential_wrong_type"
+        if metadata.st_uid != expected_uid or stat.S_IMODE(metadata.st_mode) not in allowed_modes:
+            return "credential_wrong_custody"
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            if not os.read(descriptor, 1):
+                return "credential_staging_incompatible"
+        finally:
+            os.close(descriptor)
+    except OSError:
+        return "credential_staging_incompatible"
+    return "credential_valid"
+
+
+def require_credential_capability(
+    source: Path,
+    *,
+    expected_uid: int,
+    allowed_modes: tuple[int, ...] = (0o600,),
+) -> None:
+    category = credential_capability(
+        source, expected_uid=expected_uid, allowed_modes=allowed_modes
+    )
+    if category != "credential_valid":
+        raise PackageError(category)
 
 
 class CompositeServiceManager:
@@ -78,7 +131,9 @@ def render_composite_units(prefix: str = "/opt/happyranch") -> dict[str, str]:
                     "/etc/happyranch/connector.json"),
         user="happyranch", group="happyranch",
         daemon_token_path="/etc/happyranch/daemon.token",
-    )).replace("After=network-online.target", "After=network-online.target\nPartOf=happyranch-managed.target").replace("WantedBy=multi-user.target", "WantedBy=happyranch-managed.target")
+    )).replace("After=network-online.target", "After=network-online.target\nPartOf=happyranch-managed.target").replace(
+        "[Service]\n", "[Service]\nExecStartPre={prefix}/bin/happyranch-connector credential-capability --name daemon.token\n".format(prefix=prefix), 1
+    ).replace("WantedBy=multi-user.target", "WantedBy=happyranch-managed.target")
     sidecar = """[Unit]
 Description=HappyRanch embedded tsnet sidecar
 BindsTo=happyranch-connector.service
@@ -89,7 +144,7 @@ PartOf=happyranch-managed.target
 [Service]
 Type=notify
 NotifyAccess=main
-ExecStartPre={prefix}/bin/happyranch-connector diagnose --config /etc/happyranch/connector.json
+ExecStartPre={prefix}/bin/happyranch-connector credential-capability --name enrollment.key --consumed-marker /var/lib/happyranch-tsnet-sidecar/credential.consumed
 ExecStart={prefix}/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json
 ExecStartPost=+{prefix}/bin/happyranch-connector retire-enrollment-source --source /etc/happyranch/enrollment.key --marker /var/lib/happyranch-tsnet-sidecar/credential.consumed --dropin /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf
 User=happyranch
@@ -374,6 +429,15 @@ def install_linux_package(
 ) -> dict[str, object]:
     if type(system_service) is not bool:
         raise PackageError("install_mode_invalid")
+    if system_service:
+        require_credential_capability(
+            root / "etc/happyranch/daemon.token", expected_uid=os.geteuid()
+        )
+        enrollment_source = root / "etc/happyranch/enrollment.key"
+        if enrollment_source.exists() or enrollment_source.is_symlink():
+            require_credential_capability(
+                enrollment_source, expected_uid=os.geteuid()
+            )
     files, manifest = _read_verified(package)
     _recover_interrupted(root)
     opt = root / "opt/happyranch"

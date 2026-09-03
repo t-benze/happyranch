@@ -14,15 +14,26 @@ import zipfile
 import pytest
 
 from app.linux.package.build_connector import build_connector
-from runtime.remote_access.cli import _retire_enrollment_source
+from runtime.remote_access.cli import _retire_enrollment_source, main as connector_cli_main
 from runtime.remote_access.linux_package import (
     CompositeServiceManager,
     PackageError,
     build_linux_package,
+    credential_capability,
     install_linux_package,
     render_composite_units,
     uninstall_linux_package,
 )
+
+
+def _stage_system_credentials(root: Path, *, enrollment: bool = False) -> None:
+    config = root / "etc/happyranch"
+    config.mkdir(parents=True, mode=0o700)
+    (config / "daemon.token").write_text("daemon\n")
+    (config / "daemon.token").chmod(0o600)
+    if enrollment:
+        (config / "enrollment.key").write_text("one-use\n")
+        (config / "enrollment.key").chmod(0o600)
 
 
 def test_connector_builder_installs_real_wheel_without_ambient_pip(
@@ -76,6 +87,7 @@ def test_composite_units_start_services_concurrently_without_readiness_cycle() -
     sidecar = units["happyranch-tsnet-sidecar.service"]
     assert "Type=notify" in connector
     assert "NotifyAccess=main" in connector
+    assert "credential-capability --name daemon.token" in connector
     assert "ExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar supervise-connector /opt/happyranch/bin/happyranch-connector run --managed" in connector
     assert "Before=happyranch-tsnet-sidecar.service" not in connector
     assert "After=happyranch-connector.service" not in sidecar
@@ -83,7 +95,7 @@ def test_composite_units_start_services_concurrently_without_readiness_cycle() -
     assert "BindsTo=happyranch-connector.service" in sidecar
     assert "Type=notify" in sidecar
     assert "NotifyAccess=main" in sidecar
-    assert "ExecStartPre=/opt/happyranch/bin/happyranch-connector diagnose --config /etc/happyranch/connector.json" in sidecar
+    assert "ExecStartPre=/opt/happyranch/bin/happyranch-connector credential-capability --name enrollment.key --consumed-marker /var/lib/happyranch-tsnet-sidecar/credential.consumed" in sidecar
     assert "ExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json" in sidecar
     for directive in ("User=happyranch", "CapabilityBoundingSet=", "PrivateDevices=yes"):
         assert directive in sidecar
@@ -135,6 +147,10 @@ def test_real_systemd_harness_proves_root_owned_binary_is_service_executable() -
 
 def test_real_systemd_harness_keeps_load_credential_source_root_custodied() -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    assert (
+        'sudo install -m 0600 -o root -g root "$work/daemon.token" '
+        "/etc/happyranch/daemon.token"
+    ) in harness
     assert (
         'sudo install -m 0600 -o root -g root "$work/enrollment.key" '
         "/etc/happyranch/enrollment.key"
@@ -224,6 +240,7 @@ def test_fixture_install_upgrade_uninstall_is_owner_only_and_residue_free(tmp_pa
 def test_system_service_install_keeps_root_payload_executable_by_service_user(tmp_path: Path) -> None:
     package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
     root = tmp_path / "root"
+    _stage_system_credentials(root)
     install_linux_package(package, root, system_service=True)
     assert (root / "opt/happyranch").stat().st_mode & 0o777 == 0o755
     assert (root / "opt/happyranch/bin").stat().st_mode & 0o777 == 0o755
@@ -253,6 +270,7 @@ def test_install_rejects_ambiguous_service_mode_before_write(tmp_path: Path) -> 
 def test_system_service_mode_survives_rollback_and_reentry(tmp_path: Path) -> None:
     package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
     root = tmp_path / "root"
+    _stage_system_credentials(root)
     install_linux_package(package, root, system_service=True)
     with pytest.raises(RuntimeError, match="injected"):
         install_linux_package(
@@ -513,13 +531,92 @@ def test_system_install_stages_credential_only_in_transient_dropin(tmp_path: Pat
     package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
     root = tmp_path / "root"
     source = root / "etc/happyranch/enrollment.key"
-    source.parent.mkdir(parents=True)
+    _stage_system_credentials(root)
     source.write_text("one-use\n")
     source.chmod(0o600)
     install_linux_package(package, root, system_service=True)
     dropin = root / "etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf"
     assert dropin.read_text() == "[Service]\nLoadCredential=enrollment.key:/etc/happyranch/enrollment.key\n"
     assert dropin.stat().st_mode & 0o777 == 0o600
+
+
+def test_credential_capability_distinguishes_fail_closed_categories(tmp_path: Path) -> None:
+    source = tmp_path / "credential"
+    uid = os.geteuid()
+    assert credential_capability(source, expected_uid=uid) == "credential_absent"
+    source.mkdir()
+    assert credential_capability(source, expected_uid=uid) == "credential_wrong_type"
+    source.rmdir()
+    target = tmp_path / "target"
+    target.write_text("secret\n")
+    target.chmod(0o600)
+    source.symlink_to(target)
+    assert credential_capability(source, expected_uid=uid) == "credential_unsafe_symlink"
+    source.unlink()
+    source.write_text("secret\n")
+    source.chmod(0o640)
+    assert credential_capability(source, expected_uid=uid) == "credential_wrong_custody"
+    source.chmod(0o600)
+    source.write_text("")
+    assert credential_capability(source, expected_uid=uid) == "credential_staging_incompatible"
+    source.write_text("secret\n")
+    assert credential_capability(source, expected_uid=uid) == "credential_valid"
+
+
+@pytest.mark.parametrize(
+    ("kind", "category"),
+    [
+        ("absent", "credential_absent"),
+        ("directory", "credential_wrong_type"),
+        ("symlink", "credential_unsafe_symlink"),
+        ("loose", "credential_wrong_custody"),
+        ("empty", "credential_staging_incompatible"),
+    ],
+)
+def test_system_install_preflights_daemon_source_before_publication(
+    tmp_path: Path, kind: str, category: str
+) -> None:
+    package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
+    root = tmp_path / "root"
+    source = root / "etc/happyranch/daemon.token"
+    source.parent.mkdir(parents=True)
+    if kind == "directory":
+        source.mkdir()
+    elif kind == "symlink":
+        target = tmp_path / "target"
+        target.write_text("daemon\n")
+        target.chmod(0o600)
+        source.symlink_to(target)
+    elif kind != "absent":
+        source.write_text("" if kind == "empty" else "daemon\n")
+        source.chmod(0o640 if kind == "loose" else 0o600)
+    with pytest.raises(PackageError, match=category):
+        install_linux_package(package, root, system_service=True)
+    assert not (root / "opt/happyranch").exists()
+    assert not (root / ".happyranch-install-transaction.json").exists()
+
+
+def test_packaged_preflight_uses_each_units_staged_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    staged = tmp_path / "credentials"
+    staged.mkdir()
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(staged))
+    assert connector_cli_main(["credential-capability", "--name", "daemon.token"]) == 1
+    assert capsys.readouterr().err.strip() == "credential_absent"
+    (staged / "daemon.token").write_text("daemon\n")
+    (staged / "daemon.token").chmod(0o400)
+    assert connector_cli_main(["credential-capability", "--name", "daemon.token"]) == 0
+    assert connector_cli_main(["credential-capability", "--name", "enrollment.key"]) == 1
+    assert capsys.readouterr().err.strip() == "credential_absent"
+    monkeypatch.delenv("CREDENTIALS_DIRECTORY")
+    marker = tmp_path / "credential.consumed"
+    marker.write_text("durable\n")
+    marker.chmod(0o600)
+    assert connector_cli_main([
+        "credential-capability", "--name", "enrollment.key",
+        "--consumed-marker", str(marker),
+    ]) == 0
 
 
 def test_packaged_connector_binary_executes_outside_source_checkout(tmp_path: Path) -> None:
