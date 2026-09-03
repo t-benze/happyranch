@@ -11,6 +11,53 @@
 - `docs/superpowers/specs/2026-05-14-web-ui-design.md` — three-layer web architecture (`lib/api → features/<domain> → components`) and OpenAPI snapshot contract.
 - `docs/superpowers/specs/2026-05-13-threads-design.md` — agent-initiated → founder-review pattern reused.
 
+## 2026-09-02 remote-jobs S1 addendum
+
+The generic remote-job program extends this local-jobs design without changing
+its request behavior, lifecycle, `JobStatus`, or reason semantics. S1 ships
+only `runtime.remote_jobs` pure v1 contract models: closed/strict envelopes and
+payloads, immutable whole-job bundles, deterministic compact sorted-key UTF-8
+JSON and SHA-256 digests, the complete stable remote-reason taxonomy and exact
+primary precedence, and the corrected reuse identity:
+
+1. exact admitted `pre_run` digest;
+2. exact `(runner_id, runner_generation, workspace_id, workspace_generation)`;
+3. exact versioned exclusions/observation-policy digest; and
+4. a fresh complete observation matching the successful receipt over every
+   required reusable root.
+
+The pure observation policy binds both required roots and observed roots and
+refuses a required root hidden by an exclusion. V0 supports only bounded
+full-content SHA-256 observation; the coarse-manifest proposal is omitted, and
+the policy digest is derived from the complete normalized supported policy.
+S1 performs no observation and
+creates no receipt. It also has no runtime importer: later slices must prove
+that every producer supplies complete authoritative inputs.
+
+The shipping typed frame parser rejects unknown/malformed payloads and requires
+the exact admission offer plus admitted phase name/ordinal/digest context for
+every phase and terminal frame. It binds envelope runner/generation/attempt/
+fence/lease facts to that admission and rejects supplied phase context unless
+its identities and bundle-derived digests match the immutable bundle exactly.
+Phase receipts enforce phase-matched
+reasons, setup-only skip semantics, timestamps, output caps, exit-code shape,
+observation-policy identity, and derived receipt digests. Terminal proposals
+are checked against the supplied canonical `PhaseFinished` receipts, reject
+duplicate/reused digests and incomplete/extra or same-phase/different-ordinal
+evidence against the bundle-derived identity cardinality, require exactly one
+finalization, and derive canonical precedence only from validated receipts.
+Every context-dependent public validator is fail-closed: script receipts require
+their admitted phase spec, observation receipts require their admitted policy
+digest, terminal proposals require both admitted-bundle and canonical-receipt
+context, and admission-bound frames require their admitted bundle. Omitting
+context rejects direct model construction rather than selecting a lenient path.
+
+Runner authentication/enrollment, schema/migrations and persistence, actual
+transport, leases/fences/journals, observation execution, subprocess phase
+engine/finalization, coordinator and terminal-before-resume integration,
+CLI/API/UI, deployment, and activation are explicitly unimplemented. No S1
+model authorizes work, authenticates a peer, or changes existing local jobs.
+
 ## 1. Goal
 
 Today's `scripts` module exists to solve one problem — an agent hits a permission wall, founder runs the command, agent unblocks via revisit. It can't address a second problem that turns out to be just as common: **agents block on shell calls that don't return** (dev servers, watchers, polling loops, long builds). The current bash tool synchronously blocks until the command exits or the session times out — at which point the task is marked terminal FAILED and the agent has made no progress.
