@@ -54,6 +54,7 @@ from runtime.models import (
     validate_authority_digest,
     validate_authority_version,
 )
+from runtime.reply_delivery import reply_failure_category
 from runtime.infrastructure.work_hours_store import WorkHoursStore
 from runtime.infrastructure.schedule_store import ScheduleStore
 from runtime.daemon.thread_mentions import (
@@ -10063,6 +10064,10 @@ class Database:
                 # Expose it only for a currently genuine retry diagnostic.
                 last_terminal_reason=(
                     row["last_terminal_reason"]
+                    if state == "retry_required" else None
+                ),
+                current_failure_category=(
+                    reply_failure_category("failed", row["last_terminal_reason"])
                     if state == "retry_required" else None
                 ),
             ))
