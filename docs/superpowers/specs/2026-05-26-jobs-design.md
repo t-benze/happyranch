@@ -52,8 +52,21 @@ digest, terminal proposals require both admitted-bundle and canonical-receipt
 context, and admission-bound frames require their admitted bundle. Omitting
 context rejects direct model construction rather than selecting a lenient path.
 
-Runner authentication/enrollment, schema/migrations and persistence, actual
-transport, leases/fences/journals, observation execution, subprocess phase
+## 2026-09-03 remote-jobs S2 addendum
+
+S2 adds only dark persistence: six exact tables (`remote_runners`,
+`remote_runner_workspaces`, `remote_job_attempts`, `remote_phase_receipts`,
+`remote_pre_run_observations`, and `remote_protocol_frames`), their approved
+partial indexes/composite foreign keys, a named staged migration marker, and
+five nullable linkage columns on `jobs`. The sole active certificate serial
+and SPKI fingerprint live on `remote_runners`; no key-history table exists.
+Migration preflights existing objects before writes, resumes exact partial
+stages, and refuses conflicting shapes or duplicate live workspaces without
+repairing or choosing data. Legacy job values and local HTTP/CLI behavior are
+unchanged and no remote runner, attempt, or linkage is backfilled.
+
+Runner authentication/enrollment, actual transport, leases/fences/journals,
+observation execution, subprocess phase
 engine/finalization, coordinator and terminal-before-resume integration,
 CLI/API/UI, deployment, and activation are explicitly unimplemented. No S1
 model authorizes work, authenticates a peer, or changes existing local jobs.
