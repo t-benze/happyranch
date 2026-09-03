@@ -87,7 +87,7 @@ def test_composite_units_start_services_concurrently_without_readiness_cycle() -
     sidecar = units["happyranch-tsnet-sidecar.service"]
     assert "Type=notify" in connector
     assert "NotifyAccess=main" in connector
-    assert "credential-capability --name daemon.token" in connector
+    assert "credential-capability --name daemon.token --unit happyranch-connector.service" in connector
     assert "ExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar supervise-connector /opt/happyranch/bin/happyranch-connector run --managed" in connector
     assert "Before=happyranch-tsnet-sidecar.service" not in connector
     assert "After=happyranch-connector.service" not in sidecar
@@ -95,7 +95,7 @@ def test_composite_units_start_services_concurrently_without_readiness_cycle() -
     assert "BindsTo=happyranch-connector.service" in sidecar
     assert "Type=notify" in sidecar
     assert "NotifyAccess=main" in sidecar
-    assert "ExecStartPre=/opt/happyranch/bin/happyranch-connector credential-capability --name enrollment.key --consumed-marker /var/lib/happyranch-tsnet-sidecar/credential.consumed" in sidecar
+    assert "ExecStartPre=/opt/happyranch/bin/happyranch-connector credential-capability --name enrollment.key --unit happyranch-tsnet-sidecar.service --consumed-marker /var/lib/happyranch-tsnet-sidecar/credential.consumed" in sidecar
     assert "ExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json" in sidecar
     for directive in ("User=happyranch", "CapabilityBoundingSet=", "PrivateDevices=yes"):
         assert directive in sidecar
@@ -596,25 +596,106 @@ def test_system_install_preflights_daemon_source_before_publication(
     assert not (root / ".happyranch-install-transaction.json").exists()
 
 
+@pytest.mark.parametrize(
+    ("name", "unit"),
+    [
+        ("daemon.token", "happyranch-connector.service"),
+        ("enrollment.key", "happyranch-tsnet-sidecar.service"),
+    ],
+)
+def test_packaged_preflight_accepts_root_owned_systemd_staged_credential(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    unit: str,
+) -> None:
+    observed: list[tuple[Path, int, tuple[int, ...]]] = []
+
+    def classify(path: Path, *, expected_uid: int, allowed_modes: tuple[int, ...]) -> str:
+        observed.append((path, expected_uid, allowed_modes))
+        return "credential_valid"
+
+    monkeypatch.setattr("runtime.remote_access.cli.credential_capability", classify)
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", f"/run/credentials/{unit}")
+    assert connector_cli_main([
+        "credential-capability", "--name", name, "--unit", unit,
+    ]) == 0
+    assert observed == [(Path(f"/run/credentials/{unit}/{name}"), 0, (0o400,))]
+
+
+@pytest.mark.parametrize(
+    ("name", "unit", "directory"),
+    [
+        ("daemon.token", "happyranch-connector.service", "/run/credentials/happyranch-tsnet-sidecar.service"),
+        ("enrollment.key", "happyranch-tsnet-sidecar.service", "/run/credentials/happyranch-connector.service"),
+        ("daemon.token", "happyranch-connector.service", "/tmp/credentials/happyranch-connector.service"),
+        ("enrollment.key", "happyranch-tsnet-sidecar.service", "relative/credentials"),
+    ],
+)
+def test_packaged_preflight_rejects_invalid_systemd_staging_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+    unit: str,
+    directory: str,
+) -> None:
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", directory)
+    assert connector_cli_main([
+        "credential-capability", "--name", name, "--unit", unit,
+    ]) == 1
+    assert capsys.readouterr().err.strip() == "credential_staging_incompatible"
+
+
+@pytest.mark.parametrize(
+    ("name", "unit"),
+    [
+        ("daemon.token", "happyranch-connector.service"),
+        ("enrollment.key", "happyranch-tsnet-sidecar.service"),
+    ],
+)
+@pytest.mark.parametrize(
+    "category",
+    ("credential_wrong_type", "credential_unsafe_symlink", "credential_wrong_custody", "credential_staging_incompatible"),
+)
+def test_each_rendered_unit_rejects_invalid_staged_type_mode_or_path_without_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+    unit: str,
+    category: str,
+) -> None:
+    secret = "forbidden-credential-material"
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", f"/run/credentials/{unit}")
+    monkeypatch.setattr(
+        "runtime.remote_access.cli.credential_capability",
+        lambda *_args, **_kwargs: category,
+    )
+    assert connector_cli_main([
+        "credential-capability", "--name", name, "--unit", unit,
+    ]) == 1
+    error = capsys.readouterr().err.strip()
+    assert error == category
+    assert secret not in error
+    assert "/run/credentials" not in error
+
+
 def test_packaged_preflight_uses_each_units_staged_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    staged = tmp_path / "credentials"
-    staged.mkdir()
+    staged = Path("/run/credentials/happyranch-connector.service")
     monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(staged))
-    assert connector_cli_main(["credential-capability", "--name", "daemon.token"]) == 1
-    assert capsys.readouterr().err.strip() == "credential_absent"
-    (staged / "daemon.token").write_text("daemon\n")
-    (staged / "daemon.token").chmod(0o400)
-    assert connector_cli_main(["credential-capability", "--name", "daemon.token"]) == 0
-    assert connector_cli_main(["credential-capability", "--name", "enrollment.key"]) == 1
+    monkeypatch.setattr(
+        "runtime.remote_access.cli.credential_capability",
+        lambda path, **_kwargs: "credential_valid" if path.name == "credential.consumed" else "credential_absent",
+    )
+    assert connector_cli_main(["credential-capability", "--name", "daemon.token", "--unit", "happyranch-connector.service"]) == 1
     assert capsys.readouterr().err.strip() == "credential_absent"
     monkeypatch.delenv("CREDENTIALS_DIRECTORY")
     marker = tmp_path / "credential.consumed"
     marker.write_text("durable\n")
     marker.chmod(0o600)
     assert connector_cli_main([
-        "credential-capability", "--name", "enrollment.key",
+        "credential-capability", "--name", "enrollment.key", "--unit", "happyranch-tsnet-sidecar.service",
         "--consumed-marker", str(marker),
     ]) == 0
 

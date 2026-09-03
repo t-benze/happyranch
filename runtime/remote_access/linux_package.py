@@ -132,7 +132,7 @@ def render_composite_units(prefix: str = "/opt/happyranch") -> dict[str, str]:
         user="happyranch", group="happyranch",
         daemon_token_path="/etc/happyranch/daemon.token",
     )).replace("After=network-online.target", "After=network-online.target\nPartOf=happyranch-managed.target").replace(
-        "[Service]\n", "[Service]\nExecStartPre={prefix}/bin/happyranch-connector credential-capability --name daemon.token\n".format(prefix=prefix), 1
+        "[Service]\n", "[Service]\nExecStartPre={prefix}/bin/happyranch-connector credential-capability --name daemon.token --unit happyranch-connector.service\n".format(prefix=prefix), 1
     ).replace("WantedBy=multi-user.target", "WantedBy=happyranch-managed.target")
     sidecar = """[Unit]
 Description=HappyRanch embedded tsnet sidecar
@@ -144,7 +144,7 @@ PartOf=happyranch-managed.target
 [Service]
 Type=notify
 NotifyAccess=main
-ExecStartPre={prefix}/bin/happyranch-connector credential-capability --name enrollment.key --consumed-marker /var/lib/happyranch-tsnet-sidecar/credential.consumed
+ExecStartPre={prefix}/bin/happyranch-connector credential-capability --name enrollment.key --unit happyranch-tsnet-sidecar.service --consumed-marker /var/lib/happyranch-tsnet-sidecar/credential.consumed
 ExecStart={prefix}/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json
 ExecStartPost=+{prefix}/bin/happyranch-connector retire-enrollment-source --source /etc/happyranch/enrollment.key --marker /var/lib/happyranch-tsnet-sidecar/credential.consumed --dropin /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf
 User=happyranch

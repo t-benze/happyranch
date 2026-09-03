@@ -83,6 +83,11 @@ def build_parser() -> argparse.ArgumentParser:
     retire.add_argument("--dropin")
     capability = sub.add_parser("credential-capability", help=argparse.SUPPRESS)
     capability.add_argument("--name", choices=("daemon.token", "enrollment.key"), required=True)
+    capability.add_argument(
+        "--unit",
+        choices=("happyranch-connector.service", "happyranch-tsnet-sidecar.service"),
+        required=True,
+    )
     capability.add_argument("--consumed-marker")
 
     pair = add_lifecycle("pair", "issue a one-time pairing code for a device (Supported-DIY ceremony)")
@@ -125,6 +130,13 @@ def main(argv: list[str] | None = None) -> int:
             print("error: enrollment_source_retirement_failed", file=sys.stderr)
             return 1
     if args.command == "credential-capability":
+        expected_unit = {
+            "daemon.token": "happyranch-connector.service",
+            "enrollment.key": "happyranch-tsnet-sidecar.service",
+        }[args.name]
+        if args.unit != expected_unit:
+            print("credential_staging_incompatible", file=sys.stderr)
+            return 1
         if args.consumed_marker and (
             args.name != "enrollment.key"
             or not Path(args.consumed_marker).is_absolute()
@@ -133,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             print("credential_staging_incompatible", file=sys.stderr)
             return 1
         credentials_directory = os.environ.get("CREDENTIALS_DIRECTORY")
-        if not credentials_directory or not Path(credentials_directory).is_absolute():
+        if not credentials_directory:
             if args.consumed_marker:
                 marker = Path(args.consumed_marker)
                 category = credential_capability(
@@ -143,10 +155,14 @@ def main(argv: list[str] | None = None) -> int:
                     return 0
             print("credential_absent", file=sys.stderr)
             return 1
+        expected_directory = Path("/run/credentials") / args.unit
+        if Path(credentials_directory) != expected_directory:
+            print("credential_staging_incompatible", file=sys.stderr)
+            return 1
         category = credential_capability(
             Path(credentials_directory) / args.name,
-            expected_uid=os.geteuid(),
-            allowed_modes=(0o400, 0o600),
+            expected_uid=0,
+            allowed_modes=(0o400,),
         )
         if category != "credential_valid":
             print(category, file=sys.stderr)

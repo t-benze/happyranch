@@ -221,10 +221,12 @@ wait_for "sidecar READY and ExpectedPeers" active happyranch-tsnet-sidecar.servi
 connector_ready="$(systemctl show happyranch-connector.service -p ActiveEnterTimestampMonotonic --value)"
 sidecar_ready="$(systemctl show happyranch-tsnet-sidecar.service -p ActiveEnterTimestampMonotonic --value)"
 [[ "$sidecar_ready" -le "$connector_ready" ]] || fail "connector reported composite READY before sidecar admission"
-[[ "$(sudo stat -c %a /run/credentials/happyranch-tsnet-sidecar.service/enrollment.key)" == 400 ]] || fail "systemd credential is not 0400"
+[[ "$(sudo stat -c %U:%G:%a /run/credentials/happyranch-connector.service/daemon.token)" == "root:root:400" ]] || fail "connector staged credential custody mismatch"
+[[ "$(sudo stat -c %U:%G:%a /run/credentials/happyranch-tsnet-sidecar.service/enrollment.key)" == "root:root:400" ]] || fail "sidecar staged credential custody mismatch"
 absent /etc/happyranch/enrollment.key
 absent /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf
-evidence "startup" "credential_mode_0400"
+evidence "startup" "connector_staged_credential_root_owned_0400"
+evidence "startup" "sidecar_staged_credential_root_owned_0400"
 evidence "startup" "credential_source_retired"
 evidence "startup" "credential_dropin_retired"
 evidence "startup" "composite_ready_after_sidecar"

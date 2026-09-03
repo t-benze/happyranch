@@ -1386,7 +1386,15 @@ def _assert_n3_lifecycle_evidence(matrix: list[dict]) -> None:
     ]
     assert all(row["shipping_tests"] for row in matrix)
     required_observations = {
-        "startup": {"process_absent", "tsnet_admission_absent", "credential_mode_0400", "credential_source_retired", "credential_dropin_retired", "composite_ready_after_sidecar"},
+        "startup": {
+            "process_absent",
+            "tsnet_admission_absent",
+            "connector_staged_credential_root_owned_0400",
+            "sidecar_staged_credential_root_owned_0400",
+            "credential_source_retired",
+            "credential_dropin_retired",
+            "composite_ready_after_sidecar",
+        },
         "admission": {"tsnet_admission_reachable"},
         "active_flow": {"production_process_active", "watchdog_composite_current", "watchdog_ceased_on_sidecar_loss"},
         "readiness_loss": {"tsnet_admission_removed_before_connector"},
