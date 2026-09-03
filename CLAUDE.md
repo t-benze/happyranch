@@ -48,7 +48,10 @@ Detailed contracts: `protocol/05b-agent-runtime.md` § "Canonical skill store + 
   admission context for every phase/terminal frame, binds envelope and exact
   bundle-derived phase identities/fences, rejects inconsistent supplied phase
   context, and validates exact-cardinality terminal links against supplied
-  canonical `PhaseFinished` receipts before deriving precedence. See
+  canonical `PhaseFinished` receipts before deriving precedence. Public
+  context-dependent models fail closed when their admission, phase-spec,
+  observation-policy, or canonical-receipt validation context is absent; direct
+  construction is not a second lenient validation authority. See
   `protocol/05b-agent-runtime.md`.
 - **Web Contract** — see the dedicated section below. Org-portability Slice A (THR-187) adds CLI-only `happyranch orgs portability-preflight <slug>` (read-only exhaustive root classification + quiescence) and founder-only `happyranch orgs reconcile-portability <slug> --from-file <abs.json>` (zombie reconciliation). No archive/export/import yet. Preflight refuses when **any** schedule is armed or firing and reports only existing controls as remedies (`happyranch todos pause|cancel` for armed; wait-for-terminal for firing; `happyranch cancel`/`jobs stop` for live work; `reconcile-portability` for a confirmed zombie). See `docs/agent-guides/features-and-invariants.md` (Org Portability) and `protocol/05c-orchestrator.md`.
 - **GH-688 Phase 1 (thread reply-wake coalescing) is NOT deployed by merge.** Slices A/B (durable `thread_reply_delivery_state` + route/runner/API wiring) and C (web `reply_delivery` pair projection + audit lifecycle + this doc set) are merged code; the runtime only picks them up after a **daemon restart** (the deployment event). The release record/checklist lives at `docs/operations/gh-688-phase1-release-checklist.md` — it defines the deployment epoch, the two-org supersession-rate release gate (measured from the epoch, not merge time), and the post-deploy owner. Do not claim production behavior that only exists in the running daemon.

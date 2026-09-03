@@ -46,6 +46,11 @@ are checked against the supplied canonical `PhaseFinished` receipts, reject
 duplicate/reused digests and incomplete/extra or same-phase/different-ordinal
 evidence against the bundle-derived identity cardinality, require exactly one
 finalization, and derive canonical precedence only from validated receipts.
+Every context-dependent public validator is fail-closed: script receipts require
+their admitted phase spec, observation receipts require their admitted policy
+digest, terminal proposals require both admitted-bundle and canonical-receipt
+context, and admission-bound frames require their admitted bundle. Omitting
+context rejects direct model construction rather than selecting a lenient path.
 
 Runner authentication/enrollment, schema/migrations and persistence, actual
 transport, leases/fences/journals, observation execution, subprocess phase

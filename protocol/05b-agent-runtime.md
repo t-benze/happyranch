@@ -1860,7 +1860,10 @@ other terminal reasons map to `failed`; no reasons maps to `completed`.
 Subordinate receipts remain inputs/evidence and are not erased by selection.
 `PhaseFinished` rejects cross-phase reasons, impossible skip/start/exit shapes,
 reversed timestamps, cap overruns, non-derived receipt digests, and missing or
-mismatched observation-policy identity on observation receipts.
+mismatched observation-policy identity on observation receipts. Script-phase
+receipts require their admitted `PhaseSpec` validation context, while workspace
+observation receipts require the admitted observation-policy digest context;
+context-free direct construction cannot skip either binding.
 `TerminalProposed` carries unique complete phase/finalization receipt links and
 is valid only when every link exactly matches a supplied, canonically
 revalidated `PhaseFinished` receipt and those receipts alone recompute its
@@ -1868,6 +1871,12 @@ status/reason. The immutable bundle derives the complete `(phase, ordinal)`
 identity set and cardinality (including exactly one finalization); inconsistent
 caller-supplied phase context, duplicate/reused digests, and extra/missing or
 same-phase/different-ordinal evidence are refused.
+`TerminalProposed` public validation requires both the admitted bundle and
+canonical `PhaseFinished` evidence; omitting either rejects construction instead
+of falling back to caller-asserted receipt summaries. Likewise, direct
+`RemoteFrame` validation requires the admitted bundle for every admission-bound
+frame type, so the public models and `parse_remote_frame` do not form competing
+strict and lenient authorities.
 `parse_remote_frame` is the shipping untrusted-input seam: every phase and
 terminal frame requires the exact admission offer plus admitted phase
 name/ordinal/digest context reconciled to that offer's immutable bundle, and all

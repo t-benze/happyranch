@@ -328,6 +328,31 @@ def test_phase_finished_accepts_approved_outcomes_and_skip_shape() -> None:
     )
 
 
+def test_phase_finished_script_receipt_rejects_missing_phase_spec_context() -> None:
+    with pytest.raises(ValidationError, match="phase_spec validation context"):
+        PhaseFinished.model_validate(phase_finished_data())
+
+
+def test_phase_finished_observation_rejects_missing_policy_digest_context() -> None:
+    raw = phase_finished_data(
+        phase="workspace_observation", exit_code=None,
+        observation_policy_digest=observation_policy_data()["policy_digest"],
+    )
+    with pytest.raises(ValidationError, match="observation_policy_digest validation context"):
+        PhaseFinished.model_validate(raw)
+
+
+def test_phase_finished_accepts_required_observation_context() -> None:
+    policy_digest = observation_policy_data()["policy_digest"]
+    raw = phase_finished_data(
+        phase="workspace_observation", exit_code=None,
+        observation_policy_digest=policy_digest,
+    )
+    assert PhaseFinished.model_validate(
+        raw, context={"observation_policy_digest": policy_digest},
+    ).observation_policy_digest == policy_digest
+
+
 def test_typed_frame_parser_binds_offer_envelope_and_bundle_one_field_at_a_time() -> None:
     bundle = JobBundle.model_validate(bundle_data())
     offer = AdmissionOffer(
@@ -345,6 +370,23 @@ def test_typed_frame_parser_binds_offer_envelope_and_bundle_one_field_at_a_time(
         bad[path] = replacement
         with pytest.raises(ValidationError, match="does not match"):
             parse_remote_frame(bad)
+
+
+def test_admission_bound_remote_frame_rejects_missing_bundle_context() -> None:
+    accepted = AdmissionAccepted(
+        bundle_digest=admission_offer().bundle_digest,
+        runner_id="RUNNER-abc123", runner_generation=2,
+        workspace_id="RWS-abc123", workspace_generation=3,
+        attempt_id="RATT-abc123",
+        fence_token="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        lease_generation=1,
+    )
+    raw = frame_data(accepted.model_dump(mode="json"))
+    raw["type"] = "ADMISSION_ACCEPTED"
+    with pytest.raises(ValidationError, match="admitted_bundle validation context"):
+        RemoteFrame[AdmissionAccepted].model_validate(raw)
+
+    assert parse_remote_frame(raw, admission_offer=admission_offer()).payload == accepted
 
 
 @pytest.mark.parametrize(
@@ -479,29 +521,50 @@ def terminal_data(*reasons: str) -> dict[str, object]:
     return {**body, "terminal_digest": canonical_digest(body)}
 
 
+def test_terminal_proposed_rejects_missing_canonical_receipt_context() -> None:
+    raw = canonical_terminal_frame()["payload"]
+    with pytest.raises(ValidationError, match="canonical_receipts validation context"):
+        TerminalProposed.model_validate(raw, context={"admitted_bundle": admission_offer().bundle})
+
+
+def test_terminal_proposed_rejects_missing_admitted_bundle_context() -> None:
+    receipts = canonical_terminal_receipts()
+    raw = canonical_terminal_frame(receipts)["payload"]
+    with pytest.raises(ValidationError, match="admitted_bundle validation context"):
+        TerminalProposed.model_validate(raw, context={"canonical_receipts": receipts})
+
+
+def test_terminal_proposed_context_free_construction_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="validation context"):
+        TerminalProposed(**terminal_data("run_nonzero", "finalization_failed"))
+
+
 def test_terminal_proposed_recomputes_precedence_and_rejects_link_defects() -> None:
-    raw = terminal_data("run_nonzero", "finalization_failed")
-    TerminalProposed.model_validate(raw)
+    receipts = canonical_terminal_receipts()
+    raw = canonical_terminal_frame(receipts)["payload"]
+    context = {"canonical_receipts": receipts, "admitted_bundle": admission_offer().bundle}
+    TerminalProposed.model_validate(raw, context=context)
     for mutation in (
-        {"primary_status": "completed"}, {"primary_reason": "run_nonzero"},
+        {"primary_status": "completed"}, {"primary_reason": "finalization_failed"},
         {"terminal_digest": "0" * 64}, {"receipt_links": []},
     ):
         with pytest.raises(ValidationError):
-            TerminalProposed.model_validate({**raw, **mutation})
+            TerminalProposed.model_validate({**raw, **mutation}, context=context)
     duplicate = copy.deepcopy(raw)
     duplicate["receipt_links"].append(copy.deepcopy(duplicate["receipt_links"][0]))  # type: ignore[union-attr,index]
     with pytest.raises(ValidationError, match="duplicate"):
-        TerminalProposed.model_validate(duplicate)
+        TerminalProposed.model_validate(duplicate, context=context)
 
 
 @pytest.mark.parametrize(
-    ("reasons", "status"),
-    [((), "completed"), (("run_nonzero",), "failed"), (("founder_rejected",), "rejected")],
+    "reasons",
+    [(), ("run_nonzero",), ("founder_rejected",)],
 )
-def test_terminal_proposed_accepts_every_public_terminal_class(
-    reasons: tuple[str, ...], status: str,
+def test_terminal_proposed_context_free_validation_rejects_every_public_terminal_class(
+    reasons: tuple[str, ...],
 ) -> None:
-    assert TerminalProposed.model_validate(terminal_data(*reasons)).primary_status == status
+    with pytest.raises(ValidationError, match="validation context"):
+        TerminalProposed.model_validate(terminal_data(*reasons))
 
 
 def test_terminal_parser_requires_complete_bundle_and_policy_bound_receipts() -> None:
@@ -548,7 +611,21 @@ def canonical_terminal_receipts() -> tuple[PhaseFinished, ...]:
             exit_code=None,
         ),
     )
-    return tuple(PhaseFinished.model_validate(value) for value in values)
+    specs = {
+        PhaseName.PRE_RUN: admission_offer().bundle.pre_run,
+        PhaseName.RUN: admission_offer().bundle.run,
+        PhaseName.POST_RUN: admission_offer().bundle.post_run,
+    }
+    receipts = []
+    for value in values:
+        receipt_phase = PhaseName(value["phase"])
+        context: dict[str, object] = {}
+        if receipt_phase in specs:
+            context["phase_spec"] = specs[receipt_phase]
+        if receipt_phase == PhaseName.WORKSPACE_OBSERVATION:
+            context["observation_policy_digest"] = policy_digest
+        receipts.append(PhaseFinished.model_validate(value, context=context))
+    return tuple(receipts)
 
 
 def canonical_terminal_frame(receipts: tuple[PhaseFinished, ...] | None = None) -> dict[str, object]:
@@ -661,7 +738,9 @@ def test_terminal_rejects_same_required_phase_at_a_different_ordinal() -> None:
     extra_value["receipt_digest"] = canonical_digest({
         key: value for key, value in extra_value.items() if key != "receipt_digest"
     })
-    extra = PhaseFinished.model_validate(extra_value)
+    extra = PhaseFinished.model_validate(
+        extra_value, context={"phase_spec": admission_offer().bundle.run},
+    )
     supplied = receipts + (extra,)
     raw = canonical_terminal_frame(supplied)
     phases = admitted_phases() + (

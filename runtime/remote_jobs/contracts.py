@@ -102,6 +102,12 @@ class CanonicalModel(BaseModel):
         return canonical_digest(self)
 
 
+def _require_validation_context(info: ValidationInfo, name: str) -> Any:
+    if info.context is None or name not in info.context or info.context[name] is None:
+        raise ValueError(f"{name} validation context is required")
+    return info.context[name]
+
+
 def _canonical_utc(value: str) -> str:
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z", value):
         raise ValueError("timestamp must be canonical RFC3339 UTC text ending in Z")
@@ -375,11 +381,11 @@ class PhaseFinished(CanonicalModel):
     @model_validator(mode="after")
     def legal_receipt(self, info: ValidationInfo) -> "PhaseFinished":
         _validate_phase_result(self.phase, self.outcome, self.stable_reason)
-        policy_digest = (info.context or {}).get("observation_policy_digest")
         if self.phase == PhaseName.WORKSPACE_OBSERVATION:
+            policy_digest = _require_validation_context(info, "observation_policy_digest")
             if self.observation_policy_digest is None:
                 raise ValueError("workspace observation receipt requires policy digest")
-            if policy_digest is not None and self.observation_policy_digest != policy_digest:
+            if self.observation_policy_digest != policy_digest:
                 raise ValueError("observation receipt policy digest does not match admission")
         elif self.observation_policy_digest is not None:
             raise ValueError("policy digest is valid only on workspace observation receipt")
@@ -401,8 +407,8 @@ class PhaseFinished(CanonicalModel):
                 raise ValueError("nonzero outcome requires a nonzero exit_code")
         elif self.exit_code is not None:
             raise ValueError("exit_code is absent unless a script exited")
-        phase_spec = (info.context or {}).get("phase_spec")
-        if phase_spec is not None:
+        if self.phase in {PhaseName.PRE_RUN, PhaseName.RUN, PhaseName.POST_RUN}:
+            phase_spec = _require_validation_context(info, "phase_spec")
             spec = PhaseSpec.model_validate(phase_spec)
             if self.stdout_bytes > spec.stdout_limit_bytes or self.stderr_bytes > spec.stderr_limit_bytes:
                 raise ValueError("phase byte counters exceed admitted caps")
@@ -540,6 +546,8 @@ class TerminalProposed(CanonicalModel):
 
     @model_validator(mode="after")
     def complete_consistent_terminal(self, info: ValidationInfo) -> "TerminalProposed":
+        receipt_evidence = _require_validation_context(info, "canonical_receipts")
+        bundle = _require_validation_context(info, "admitted_bundle")
         if not self.receipt_links:
             raise ValueError("terminal proposal omits phase receipt links")
         if self.finalization_receipt_link.phase != PhaseName.FINALIZATION:
@@ -548,45 +556,39 @@ class TerminalProposed(CanonicalModel):
         identities = [(link.phase, link.ordinal) for link in links]
         if len(set(identities)) != len(identities):
             raise ValueError("duplicate receipt link")
-        receipt_evidence = (info.context or {}).get("canonical_receipts")
-        if receipt_evidence is not None:
-            receipts = tuple(receipt_evidence)
-            receipt_digests = [receipt.receipt_digest for receipt in receipts]
-            if len(set(receipt_digests)) != len(receipt_digests):
-                raise ValueError("duplicate receipt digest in canonical receipts")
-            if len(set(link.receipt_digest for link in links)) != len(links):
-                raise ValueError("duplicate receipt digest in terminal links")
-            by_identity = {(receipt.phase, receipt.ordinal): receipt for receipt in receipts}
-            if len(by_identity) != len(receipts) or set(by_identity) != set(identities):
-                raise ValueError("terminal links do not exactly cover canonical receipts")
-            for link in links:
-                receipt = by_identity[(link.phase, link.ordinal)]
-                facts = (
-                    link.receipt_digest == receipt.receipt_digest,
-                    link.outcome == receipt.outcome,
-                    link.stable_reason == receipt.stable_reason,
-                    link.observation_policy_digest == receipt.observation_policy_digest,
-                )
-                if not all(facts):
-                    raise ValueError("terminal link does not match canonical receipt")
-            reasons = [receipt.stable_reason for receipt in receipts if receipt.stable_reason is not None]
-        else:
-            reasons = [link.stable_reason for link in links if link.stable_reason is not None]
+        receipts = tuple(receipt_evidence)
+        receipt_digests = [receipt.receipt_digest for receipt in receipts]
+        if len(set(receipt_digests)) != len(receipt_digests):
+            raise ValueError("duplicate receipt digest in canonical receipts")
+        if len(set(link.receipt_digest for link in links)) != len(links):
+            raise ValueError("duplicate receipt digest in terminal links")
+        by_identity = {(receipt.phase, receipt.ordinal): receipt for receipt in receipts}
+        if len(by_identity) != len(receipts) or set(by_identity) != set(identities):
+            raise ValueError("terminal links do not exactly cover canonical receipts")
+        for link in links:
+            receipt = by_identity[(link.phase, link.ordinal)]
+            facts = (
+                link.receipt_digest == receipt.receipt_digest,
+                link.outcome == receipt.outcome,
+                link.stable_reason == receipt.stable_reason,
+                link.observation_policy_digest == receipt.observation_policy_digest,
+            )
+            if not all(facts):
+                raise ValueError("terminal link does not match canonical receipt")
+        reasons = [receipt.stable_reason for receipt in receipts if receipt.stable_reason is not None]
         expected = resolve_primary_outcome(reasons)
         if self.primary_status != expected.status or self.primary_reason != expected.reason:
             raise ValueError("terminal status/reason contradict receipt precedence")
-        bundle = (info.context or {}).get("admitted_bundle")
-        if bundle is not None:
-            admitted = JobBundle.model_validate(bundle)
-            if self.bundle_digest != admitted.digest():
-                raise ValueError("terminal bundle_digest does not match admitted bundle")
-            required_identities = _required_phase_identities(admitted)
-            if len(links) != len(required_identities) or set(identities) != set(required_identities):
-                raise ValueError("terminal proposal omits or adds a phase receipt")
-            policy_digest = admitted.reuse.observation_policy.policy_digest if admitted.reuse else None
-            observation = next((link for link in links if link.phase == PhaseName.WORKSPACE_OBSERVATION), None)
-            if observation is not None and observation.observation_policy_digest != policy_digest:
-                raise ValueError("observation receipt policy digest mismatch")
+        admitted = JobBundle.model_validate(bundle)
+        if self.bundle_digest != admitted.digest():
+            raise ValueError("terminal bundle_digest does not match admitted bundle")
+        required_identities = _required_phase_identities(admitted)
+        if len(links) != len(required_identities) or set(identities) != set(required_identities):
+            raise ValueError("terminal proposal omits or adds a phase receipt")
+        policy_digest = admitted.reuse.observation_policy.policy_digest if admitted.reuse else None
+        observation = next((link for link in links if link.phase == PhaseName.WORKSPACE_OBSERVATION), None)
+        if observation is not None and observation.observation_policy_digest != policy_digest:
+            raise ValueError("observation receipt policy digest mismatch")
         material = self.model_dump(mode="json", exclude={"terminal_digest"})
         if canonical_digest(material) != self.terminal_digest:
             raise ValueError("terminal_digest does not match proposal")
@@ -664,6 +666,12 @@ class FrameType(StrEnum):
     TERMINAL_ACCEPTED = "TERMINAL_ACCEPTED"
 
 
+_ADMISSION_CONTEXT_TYPES = frozenset(FrameType) - {
+    FrameType.HELLO, FrameType.HELLO_ACK, FrameType.ADMISSION_OFFER,
+    FrameType.ADMISSION_REFUSED,
+}
+
+
 PayloadT = TypeVar("PayloadT", bound=CanonicalModel)
 
 
@@ -704,8 +712,10 @@ class RemoteFrame(CanonicalModel, Generic[PayloadT]):
                 ("bundle.runner_id", self.runner_id, payload.bundle.runner.runner_id),
                 ("bundle.runner_generation", self.runner_generation, payload.bundle.runner.runner_generation),
             ))
-        admitted = (info.context or {}).get("admitted_bundle")
-        if admitted is not None:
+        if self.type in _ADMISSION_CONTEXT_TYPES:
+            admitted = JobBundle.model_validate(
+                _require_validation_context(info, "admitted_bundle")
+            )
             comparisons.extend((
                 ("bundle.runner_id", admitted.runner.runner_id, self.runner_id),
                 ("bundle.runner_generation", admitted.runner.runner_generation, self.runner_generation),
@@ -875,14 +885,10 @@ def parse_remote_frame(
         FrameType.PHASE_STARTED, FrameType.PHASE_LOG_CHUNK,
         FrameType.PHASE_FINISHED, FrameType.TERMINAL_PROPOSED,
     }
-    admission_context_types = set(FrameType) - {
-        FrameType.HELLO, FrameType.HELLO_ACK, FrameType.ADMISSION_OFFER,
-        FrameType.ADMISSION_REFUSED,
-    }
     phases = None if admitted_phases is None else tuple(
         AdmittedPhase.model_validate(item) for item in admitted_phases
     )
-    if frame_type in admission_context_types and offer is None:
+    if frame_type in _ADMISSION_CONTEXT_TYPES and offer is None:
         raise ValueError(f"{frame_type.value} validation requires admission validation context")
     if frame_type in phase_context_types and phases is None:
         raise ValueError(f"{frame_type.value} validation requires admission validation context")
