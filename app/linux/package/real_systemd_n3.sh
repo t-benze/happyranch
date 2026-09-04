@@ -206,7 +206,7 @@ sudo systemctl daemon-reload
 sudo mv /etc/happyranch/enrollment.key /etc/happyranch/enrollment.key.held
 sudo systemctl start happyranch-managed.target || true
 sleep 2
-sudo systemctl stop happyranch-managed.target
+sudo systemctl stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service
 ! active happyranch-tsnet-sidecar.service || fail "sidecar survived missing-credential startup"
 absent /var/lib/happyranch-tsnet-sidecar/credential.consumed
 [[ "$(systemctl show happyranch-tsnet-sidecar.service -p MainPID --value)" == 0 ]] || fail "sidecar process survived failed startup"

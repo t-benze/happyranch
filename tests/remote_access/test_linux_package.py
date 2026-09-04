@@ -131,6 +131,9 @@ def test_real_systemd_harness_uses_headscale_025_policy_schema() -> None:
 
 def test_real_systemd_harness_quiesces_failed_staging_before_first_enrollment() -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    stop = harness.index(
+        "stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service"
+    )
     reset = harness.index(
         "reset-failed happyranch-tsnet-sidecar.service happyranch-connector.service happyranch-managed.target"
     )
@@ -139,7 +142,7 @@ def test_real_systemd_harness_quiesces_failed_staging_before_first_enrollment() 
         "mv /etc/happyranch/enrollment.key.held /etc/happyranch/enrollment.key",
         staged_cleanup,
     )
-    assert reset < staged_cleanup < restore
+    assert stop < reset < staged_cleanup < restore
 
 
 def test_real_systemd_harness_keeps_headscale_control_socket_in_task_root() -> None:
