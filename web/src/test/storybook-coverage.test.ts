@@ -1,6 +1,15 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createElement, type ReactNode } from 'react';
+import { cleanup, render } from '@testing-library/react';
+import {
+  PASTURE_REFERENCE_RENAMES,
+  PASTURE_REFERENCE_REQUIREMENTS,
+  PASTURE_SCREEN_SCOPED_COMPOSITIONS,
+  type PastureReferenceRequirement,
+} from '../design-system/Pasture.stories';
+import { TooltipProvider } from '../design-system/primitives/Tooltip';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webRoot = join(here, '../..');
@@ -63,7 +72,55 @@ function runtimeCoverageError(component: unknown, storyModule: Record<string, un
   return null;
 }
 
+type RenderableStory = { render?: () => ReactNode };
+
+function referenceRequirementError(requirement: PastureReferenceRequirement, storyModule: Record<string, unknown>): string | null {
+  const story = storyModule[requirement.storyExport] as RenderableStory | undefined;
+  if (!story?.render) return `missing renderable story export ${requirement.storyExport}`;
+  const view = render(createElement(TooltipProvider, null, story.render()));
+  const root = view.container.querySelector(`[data-pasture-requirement="${requirement.id}"]`);
+  if (!root) return `missing requirement root ${requirement.id}`;
+  for (const selector of requirement.selectors) {
+    if (!root.matches(selector) && !root.querySelector(selector)) return `${requirement.id} missing semantic selector ${selector}`;
+  }
+  cleanup();
+  return null;
+}
+
 describe('Storybook design-system coverage', () => {
+  test('the authoritative 25-row manifest resolves to concrete story exports and rendered semantics', () => {
+    expect(PASTURE_REFERENCE_REQUIREMENTS).toHaveLength(25);
+    expect(new Set(PASTURE_REFERENCE_REQUIREMENTS.map(({ id }) => id)).size).toBe(25);
+    const pastureModule = storyModules['../design-system/Pasture.stories.tsx'];
+    expect(pastureModule).toBeDefined();
+    for (const requirement of PASTURE_REFERENCE_REQUIREMENTS) {
+      expect(referenceRequirementError(requirement, pastureModule ?? {}), requirement.id).toBeNull();
+    }
+  });
+
+  test('fails closed when combined headings survive but timeline structure or dev guidance is genericized', () => {
+    const timeline = PASTURE_REFERENCE_REQUIREMENTS.find(({ id }) => id === 'timeline')!;
+    const dev = PASTURE_REFERENCE_REQUIREMENTS.find(({ id }) => id === 'dev')!;
+    expect(referenceRequirementError(timeline, { StatsTimelineAndTable: { render: () => createElement('h2', null, 'Timeline & tables') } })).toContain('missing requirement root');
+    expect(referenceRequirementError(dev, { AssistantDockAndDevAffordance: { render: () => createElement('div', { 'data-pasture-requirement': 'dev' }, 'Implementation guidance.') } })).toContain('missing semantic selector');
+  });
+
+  test('the detailed rename map and screen-scoped inventory retain founder-reference facts', () => {
+    expect(PASTURE_REFERENCE_RENAMES).toHaveLength(42);
+    expect(PASTURE_REFERENCE_RENAMES).toContainEqual(['prototype state switchers', '.devstates']);
+    expect(PASTURE_REFERENCE_RENAMES).toContainEqual(['.sched-row (undefined)', '.dtable']);
+    expect(PASTURE_SCREEN_SCOPED_COMPOSITIONS).toHaveLength(55);
+    expect(PASTURE_SCREEN_SCOPED_COMPOSITIONS).toEqual(expect.arrayContaining(['.esc-card', '.thread', '.composer-box', '.kb-entry', '.week', '.dream', '.pred']));
+  });
+
+  test('the catalogue defaults to the reference light theme and preserves responsive navigation ordering', () => {
+    const preview = readFileSync(join(webRoot, '.storybook/preview.tsx'), 'utf8');
+    const manager = readFileSync(join(webRoot, '.storybook/manager-head.html'), 'utf8');
+    expect(preview).toContain("initialGlobals: { theme: 'light' }");
+    expect(preview).toContain("['Overview', 'Foundations', 'Components', 'Patterns', 'Page States', 'Layouts']");
+    expect(manager).toContain('@media (max-width: 390px)');
+  });
+
   test('every discovered reusable source has one explicit story or justified exclusion mapping', () => {
     for (const component of reusableComponents) {
       const row = ledgerEntry(component.name);

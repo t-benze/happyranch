@@ -14,7 +14,7 @@ const preview: Preview = {
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <div className="bg-surface text-text-primary min-h-screen p-6">
+            <div className="bg-surface-canvas text-text-primary min-h-screen px-4 py-6 sm:px-8 lg:px-12">
               <Story />
             </div>
           </TooltipProvider>
@@ -28,10 +28,10 @@ const preview: Preview = {
       toolbar: { icon: 'paintbrush', items: ['dark', 'light'] },
     },
   },
-  initialGlobals: { theme: 'dark' },
+  initialGlobals: { theme: 'light' },
   parameters: {
     controls: { expanded: true },
-    options: { storySort: { order: ['Design System', ['Foundations', 'Primitives', 'Patterns', 'Layouts']] } },
+    options: { storySort: { order: ['Pasture', ['Overview', 'Foundations', 'Components', 'Patterns', 'Page States', 'Layouts'], 'Design System'] } },
   },
 };
 
