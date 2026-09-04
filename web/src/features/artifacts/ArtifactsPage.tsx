@@ -512,7 +512,7 @@ export function ArtifactsPage(): JSX.Element {
               Everything the org has produced
             </h1>
           </div>
-          {/* Solid green "↑ Upload" action per the a-artifacts reference (THR-099
+          {/* Solid green "↑ Upload" pill per the a-artifacts reference (THR-099
               Batch 3); switches to a quiet ghost "Cancel" once the form is open
               so the dismiss action does not read as a second primary action. */}
           <Button
