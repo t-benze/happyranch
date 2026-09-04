@@ -88,7 +88,7 @@ visibility through titles, docs, controls, and representative renders.
 
 | Reusable export | Story or exclusion | Representative states / variants | Tokens |
 |---|---|---|---|
-| `Button` | [source:primitives/Button.tsx#Button] [story:primitives/Button.coverage.stories.tsx#Coverage] Primitives / Button States | default, disabled; variant/size controls | `components.button` |
+| `Button` | [source:primitives/Button.tsx#Button] [story:primitives/Button.coverage.stories.tsx#Coverage] Primitives / Button States | default/secondary/outline/ghost/destructive/destructive-outline/link; default/sm/lg/icon; loading, disabled, icon, focus, `asChild` | `components.button` |
 | `Dialog` | [source:primitives/Dialog.tsx#Dialog] [story:primitives/Dialog.coverage.stories.tsx#Coverage] Primitives / Dialog Interaction | trigger → portal | `components.dialog` |
 | `Drawer` | [source:primitives/Drawer.tsx#Drawer] [story:primitives/Drawer.coverage.stories.tsx#Coverage] Primitives / Drawer Interaction | trigger → drawer | `components.drawer` |
 | `DropdownMenu` | [source:primitives/DropdownMenu.tsx#DropdownMenu] [story:primitives/DropdownMenu.coverage.stories.tsx#Coverage] Primitives / Dropdown Menu Interaction | trigger, populated actions | `components.dropdown_menu` |
