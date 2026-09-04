@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from runtime.config import Settings
 from runtime.daemon.__main__ import _sweep_on_startup
@@ -11,6 +14,44 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.runtime import RuntimeDir
+
+
+@pytest.mark.parametrize("self_evaluation", [
+    {"disposition": "CONTINUE_SAME_ROOT", "policy_release_id": "REL-A"},
+    None,
+    {"_error_code": "manager_self_evaluation_malformed"},
+    {"disposition": "CONTINUE_SAME_ROOT", "policy_release_id": "REL-STALE"},
+])
+def test_sweep_orphaned_result_preserves_manager_self_evaluation(
+    tmp_path, self_evaluation,
+):
+    """Startup recovery carries evidence into active-policy validation."""
+    import json
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    task_id = "TASK-ORPH-SELF-EVAL"
+    session_id = "sess-orph-self-eval"
+    db.insert_task(TaskRecord(
+        id=task_id, brief="x", team="engineering",
+        assigned_agent="engineering_head", status=TaskStatus.IN_PROGRESS,
+        task_type="task",
+    ))
+    db.update_task(task_id, current_session_id=session_id)
+    decision = {"action": "escalate", "reason": "routine ambiguity"}
+    if self_evaluation is not None:
+        decision["_manager_self_evaluation"] = self_evaluation
+    db.insert_task_result(
+        task_id=task_id, agent="engineering_head", session_id=session_id,
+        status="completed", confidence_score=90, output_summary="escalate",
+        decision_json=json.dumps(decision),
+    )
+
+    with patch(
+        "runtime.orchestrator.run_step._consume_completion_report"
+    ) as consume:
+        _sweep_on_startup(db, queue, "test", orch)
+
+    assert consume.call_args.args[2].manager_self_evaluation == self_evaluation
 
 
 def _seed_org(tmp_path: Path, slug: str = "test") -> Database:

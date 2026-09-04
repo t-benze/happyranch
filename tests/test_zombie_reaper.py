@@ -38,6 +38,46 @@ def _ago(seconds: int) -> datetime:
 ZOMBIE_PID = 99999  # guaranteed-non-existent pid
 
 
+@pytest.mark.parametrize("self_evaluation", [
+    {"disposition": "CONTINUE_SAME_ROOT", "policy_release_id": "REL-A"},
+    None,
+    {"_error_code": "manager_self_evaluation_malformed"},
+    {"disposition": "CONTINUE_SAME_ROOT", "policy_release_id": "REL-STALE"},
+])
+def test_consume_zombie_fingerprint_preserves_manager_self_evaluation(
+    db: Database, self_evaluation,
+):
+    """Periodic recovery carries evidence into active-policy validation."""
+    import json
+
+    task_id = "T-ZOMBIE-SELF-EVAL"
+    agent = "engineering_head"
+    session_id = "sess-zombie-self-eval"
+    _insert_zombie_candidate(
+        db, task_id, current_session_id=session_id, assigned_agent=agent,
+    )
+    decision = {"action": "escalate", "reason": "routine ambiguity"}
+    if self_evaluation is not None:
+        decision["_manager_self_evaluation"] = self_evaluation
+    db.insert_task_result(
+        task_id=task_id, agent=agent, session_id=session_id,
+        status="completed", confidence_score=90, output_summary="escalate",
+        decision_json=json.dumps(decision),
+    )
+    fingerprint = db.get_latest_task_result(task_id, agent, session_id)
+    mock_orch = MagicMock()
+    mock_orch._db = db
+
+    with patch(
+        "runtime.orchestrator.run_step._consume_completion_report"
+    ) as consume:
+        _consume_zombie_fingerprint(
+            db, task_id, fingerprint, db.get_task(task_id), mock_orch,
+        )
+
+    assert consume.call_args.args[2].manager_self_evaluation == self_evaluation
+
+
 def _fresh_hb() -> datetime:
     """A heartbeat that is definitely fresh (just now)."""
     return _now()
