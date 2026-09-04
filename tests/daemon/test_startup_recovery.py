@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+import json
 
 import pytest
 
@@ -16,42 +16,167 @@ from runtime.orchestrator.teams import TeamsRegistry
 from runtime.runtime import RuntimeDir
 
 
-@pytest.mark.parametrize("self_evaluation", [
-    {"disposition": "CONTINUE_SAME_ROOT", "policy_release_id": "REL-A"},
-    None,
-    {"_error_code": "manager_self_evaluation_malformed"},
-    {"disposition": "CONTINUE_SAME_ROOT", "policy_release_id": "REL-STALE"},
-])
-def test_sweep_orphaned_result_preserves_manager_self_evaluation(
-    tmp_path, self_evaluation,
-):
-    """Startup recovery carries evidence into active-policy validation."""
-    import json
+def _seed_manager_recovery_result(tmp_path, *, self_evaluation="valid"):
+    from runtime.orchestrator.active_authority_policy import (
+        SELF_EVALUATION_CONTRACT_DIGEST,
+        SELF_EVALUATION_CONTRACT_ID,
+        SELF_EVALUATION_CONTRACT_VERSION,
+        ActivePolicySnapshot,
+        persist_session_policy_binding,
+    )
+    from runtime.orchestrator.authority_policy import CONTINUE_ROUTINE_PHRASE
+    from runtime.orchestrator.teams import TeamManager
+    from tests.authority_policy_test_factory import activate_test_policy
 
     db, orch, queue = _seed_org_with_orch(tmp_path)
+    orch._teams._teams["engineering"] = TeamManager(
+        name="engineering_manager", team="engineering", workers=("dev_agent",),
+    )
     task_id = "TASK-ORPH-SELF-EVAL"
     session_id = "sess-orph-self-eval"
+    manager = "engineering_manager"
+    db.insert_thread(ThreadRecord(id="THR-RECOVERY", subject="recovery"))
     db.insert_task(TaskRecord(
-        id=task_id, brief="x", team="engineering",
-        assigned_agent="engineering_head", status=TaskStatus.IN_PROGRESS,
-        task_type="task",
+        id=task_id, brief="x", team="engineering", assigned_agent=manager,
+        status=TaskStatus.IN_PROGRESS, task_type="task",
+        dispatched_from_thread_id="THR-RECOVERY",
     ))
-    db.update_task(task_id, current_session_id=session_id)
-    decision = {"action": "escalate", "reason": "routine ambiguity"}
-    if self_evaluation is not None:
-        decision["_manager_self_evaluation"] = self_evaluation
+    from runtime.infrastructure.audit_logger import AuditLogger
+    AuditLogger(db).log_thread_dispatch(
+        "THR-RECOVERY", task_id=task_id, dispatcher=manager,
+        target_agent=manager, team="engineering",
+    )
+    db.update_task(
+        task_id, current_session_id=session_id, orchestration_step_count=1,
+    )
+    release, activation = activate_test_policy(db)
+    persist_session_policy_binding(
+        db=db, task_id=task_id, session_id=session_id, agent_name=manager,
+        snapshot=ActivePolicySnapshot(release, activation),
+        provider_id="openai", executor_kind="codex", model_id="gpt-5",
+    )
+    evaluation = {
+        "contract_id": SELF_EVALUATION_CONTRACT_ID,
+        "contract_version": SELF_EVALUATION_CONTRACT_VERSION,
+        "contract_digest": SELF_EVALUATION_CONTRACT_DIGEST,
+        "root_task_id": task_id, "manager_session_id": session_id,
+        "release_id": release.id, "policy_version": str(release.version),
+        "policy_digest": release.policy_digest,
+        "activation_id": activation.id, "activation_epoch": activation.epoch,
+        "provider_id": "openai", "executor_kind": "codex", "model_id": "gpt-5",
+        "disposition": "continue_same_root",
+        "clause_id": "cont-routine-same-root", "action": "continue_same_root",
+        "confidence": 1.0, "uncertainty_codes": [],
+    }
+    if self_evaluation == "mismatch":
+        evaluation["manager_session_id"] = "sess-stale"
+    decision = {"action": "escalate", "reason": CONTINUE_ROUTINE_PHRASE}
+    if self_evaluation == "valid" or self_evaluation == "mismatch":
+        decision["_manager_self_evaluation"] = evaluation
+    elif self_evaluation == "malformed":
+        decision["_manager_self_evaluation"] = {"unexpected": True}
     db.insert_task_result(
-        task_id=task_id, agent="engineering_head", session_id=session_id,
+        task_id=task_id, agent=manager, session_id=session_id,
         status="completed", confidence_score=90, output_summary="escalate",
         decision_json=json.dumps(decision),
     )
+    row = db.get_latest_task_result(task_id, manager, session_id)
+    assert row is not None and row["task_id"] == task_id
+    return db, orch, queue, task_id, row
 
-    with patch(
-        "runtime.orchestrator.run_step._consume_completion_report"
-    ) as consume:
-        _sweep_on_startup(db, queue, "test", orch)
 
-    assert consume.call_args.args[2].manager_self_evaluation == self_evaluation
+def _assert_authority_denominator(db, task_id, *, continued):
+    candidates = db.list_authority_candidates_for_root(task_id)
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.causal_event_id == f"result:{db.get_latest_task_result(task_id, 'engineering_manager', 'sess-orph-self-eval')['id']}"
+    evaluation = db.get_authority_evaluation(candidate.id)
+    assert evaluation is not None
+    assert evaluation.disposition.value == (
+        "continue_same_root" if continued else "escalate"
+    )
+    outcomes = [
+        row for row in db.get_audit_logs(task_id)
+        if row["action"] == "authority_hook"
+    ]
+    assert len(outcomes) == 1
+    assert outcomes[0]["payload"]["outcome"] == (
+        "continued_same_root" if continued else "escalated"
+    )
+    if not continued:
+        assert outcomes[0]["payload"]["error"]
+    return candidate
+
+
+def test_sweep_orphaned_result_runs_real_authority_path(tmp_path):
+    db, orch, queue, task_id, row = _seed_manager_recovery_result(tmp_path)
+
+    _sweep_on_startup(db, queue, "test", orch)
+
+    assert db.get_task(task_id).status is TaskStatus.PENDING
+    assert queue._queue.get_nowait() == ("test", task_id, None)
+    candidate = _assert_authority_denominator(db, task_id, continued=True)
+    assert candidate.lifecycle_state.value == "consumed"
+    assert [event.event_type for event in db.list_authority_audit(candidate.id)] == [
+        "candidate_claimed", "evaluation_recorded", "candidate_consumed",
+    ]
+    assert row["id"] == db.get_latest_task_result(
+        task_id, "engineering_manager", "sess-orph-self-eval"
+    )["id"]
+    assert not db.list_thread_messages("THR-RECOVERY")
+
+
+@pytest.mark.parametrize("self_evaluation", ["absent", "malformed", "mismatch"])
+def test_sweep_orphaned_result_invalid_evidence_fails_closed(
+    tmp_path, self_evaluation,
+):
+    db, orch, queue, task_id, _ = _seed_manager_recovery_result(
+        tmp_path, self_evaluation=self_evaluation,
+    )
+
+    _sweep_on_startup(db, queue, "test", orch)
+
+    assert db.get_task(task_id).status is TaskStatus.ESCALATED
+    assert queue._queue.empty()
+    _assert_authority_denominator(db, task_id, continued=False)
+    messages = db.list_thread_messages("THR-RECOVERY")
+    assert len(messages) == 1
+    assert messages[0].system_payload["kind_tag"] == "task_escalated"
+
+
+def test_sweep_orphaned_result_replay_cannot_continue_twice(tmp_path):
+    db, orch, queue, task_id, _ = _seed_manager_recovery_result(tmp_path)
+    _sweep_on_startup(db, queue, "test", orch)
+    assert queue._queue.get_nowait() == ("test", task_id, None)
+    db.update_task(task_id, status=TaskStatus.IN_PROGRESS, block_kind=None)
+
+    _sweep_on_startup(db, queue, "test", orch)
+
+    assert db.get_task(task_id).status is TaskStatus.ESCALATED
+    assert queue._queue.empty()
+    assert len(db.list_authority_candidates_for_root(task_id)) == 1
+    assert db.execute("SELECT COUNT(*) FROM authority_evaluations").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("agent", ["dev_agent", "engineering_manager"])
+def test_sweep_orphaned_result_worker_and_legacy_compatibility(tmp_path, agent):
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    task_id = f"TASK-COMPAT-{agent}"
+    session_id = f"sess-{agent}"
+    db.insert_task(TaskRecord(
+        id=task_id, brief="x", team="engineering", assigned_agent=agent,
+        status=TaskStatus.IN_PROGRESS, task_type="subtask",
+    ))
+    db.update_task(task_id, current_session_id=session_id)
+    db.insert_task_result(
+        task_id=task_id, agent=agent, session_id=session_id,
+        status="completed", confidence_score=90, output_summary="done",
+    )
+
+    _sweep_on_startup(db, queue, "test", orch)
+
+    assert db.get_task(task_id).status is TaskStatus.COMPLETED
+    assert db.list_authority_candidates_for_root(task_id) == []
 
 
 def _seed_org(tmp_path: Path, slug: str = "test") -> Database:
