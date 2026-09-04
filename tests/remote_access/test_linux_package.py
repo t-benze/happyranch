@@ -135,8 +135,9 @@ def test_real_systemd_harness_quiesces_failed_staging_before_first_enrollment() 
         "stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service"
     )
     reset = harness.index(
-        "reset-failed happyranch-tsnet-sidecar.service happyranch-connector.service happyranch-managed.target"
+        "reset-failed happyranch-tsnet-sidecar.service happyranch-connector.service"
     )
+    assert "reset-failed happyranch-tsnet-sidecar.service happyranch-connector.service happyranch-managed.target" not in harness
     staged_cleanup = harness.index('failed credential staging cleanup', reset)
     assert "sudo test ! -e /run/credentials/happyranch-tsnet-sidecar.service" in harness
     restore = harness.index(
