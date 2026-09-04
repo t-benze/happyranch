@@ -217,7 +217,7 @@ evidence "startup" "tsnet_admission_absent"
 # transaction completely before restoring the one-use source, otherwise a
 # queued restart can race the first real enrollment and consume its staging.
 sudo systemctl reset-failed happyranch-tsnet-sidecar.service happyranch-connector.service happyranch-managed.target
-wait_for "failed credential staging cleanup" bash -c '! test -e /run/credentials/happyranch-tsnet-sidecar.service'
+wait_for "failed credential staging cleanup" sudo test ! -e /run/credentials/happyranch-tsnet-sidecar.service
 sudo mv /etc/happyranch/enrollment.key.held /etc/happyranch/enrollment.key
 
 sudo systemctl start happyranch-managed.target
