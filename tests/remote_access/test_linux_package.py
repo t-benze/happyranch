@@ -129,6 +129,19 @@ def test_real_systemd_harness_uses_headscale_025_policy_schema() -> None:
     assert '"proto"' not in harness
 
 
+def test_real_systemd_harness_quiesces_failed_staging_before_first_enrollment() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    reset = harness.index(
+        "reset-failed happyranch-tsnet-sidecar.service happyranch-connector.service happyranch-managed.target"
+    )
+    staged_cleanup = harness.index('failed credential staging cleanup', reset)
+    restore = harness.index(
+        "mv /etc/happyranch/enrollment.key.held /etc/happyranch/enrollment.key",
+        staged_cleanup,
+    )
+    assert reset < staged_cleanup < restore
+
+
 def test_real_systemd_harness_keeps_headscale_control_socket_in_task_root() -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
     assert "unix_socket: $work/hs/headscale.sock" in harness

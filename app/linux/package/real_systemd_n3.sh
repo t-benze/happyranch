@@ -213,6 +213,11 @@ absent /var/lib/happyranch-tsnet-sidecar/credential.consumed
 sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json | python -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(any(p.get("HostName")=="home-sidecar-ci" for p in (d.get("Peer") or {}).values()))' || fail "failed-start TSNet identity remained visible"
 evidence "startup" "process_absent"
 evidence "startup" "tsnet_admission_absent"
+# The unit has Restart=on-failure.  End the deliberately failed credential
+# transaction completely before restoring the one-use source, otherwise a
+# queued restart can race the first real enrollment and consume its staging.
+sudo systemctl reset-failed happyranch-tsnet-sidecar.service happyranch-connector.service happyranch-managed.target
+wait_for "failed credential staging cleanup" bash -c '! test -e /run/credentials/happyranch-tsnet-sidecar.service'
 sudo mv /etc/happyranch/enrollment.key.held /etc/happyranch/enrollment.key
 
 sudo systemctl start happyranch-managed.target
