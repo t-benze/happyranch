@@ -238,8 +238,9 @@ export const MOCK_MESSAGES: Record<string, ThreadMessage[]> = Object.fromEntries
  * ReplyDeliveryProjection). Populated threads exercise every live state the
  * UI must render honestly: queued (one unstarted coalesced wake — NOT a
  * subprocess) and running (one claimed in-flight reply with an immutable
- * inclusive range). retry_required appears on THR-003 as a diagnostic with a
- * last terminal reason. Threads absent from this map have no live obligation
+ * inclusive range). retry_required appears on THR-003 with the same bounded
+ * current failure category emitted by production. Raw terminal detail is not
+ * compact UI copy. Threads absent from this map have no live obligation
  * — the projection is empty and the UI must render no fabricated rows.
  */
 
@@ -254,6 +255,7 @@ export const MOCK_REPLY_DELIVERY: Record<string, ReplyDeliveryEntry[]> = {
       started_at: null,
       updated_at: '2026-05-13T17:42:00Z',
       last_terminal_reason: null,
+      current_failure_category: null,
     },
     {
       agent_name: 'ops_lead',
@@ -264,6 +266,7 @@ export const MOCK_REPLY_DELIVERY: Record<string, ReplyDeliveryEntry[]> = {
       started_at: '2026-08-23T12:30:00Z',
       updated_at: '2026-08-23T12:30:00Z',
       last_terminal_reason: null,
+      current_failure_category: null,
     },
   ],
   'THR-003': [
@@ -276,6 +279,7 @@ export const MOCK_REPLY_DELIVERY: Record<string, ReplyDeliveryEntry[]> = {
       started_at: null,
       updated_at: '2026-05-14T08:09:00Z',
       last_terminal_reason: null,
+      current_failure_category: null,
     },
     {
       agent_name: 'support_lead',
@@ -286,6 +290,7 @@ export const MOCK_REPLY_DELIVERY: Record<string, ReplyDeliveryEntry[]> = {
       started_at: null,
       updated_at: '2026-05-14T08:10:00Z',
       last_terminal_reason: 'timeout',
+      current_failure_category: 'infra_fail',
     },
   ],
 };

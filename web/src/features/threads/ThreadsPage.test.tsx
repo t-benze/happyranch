@@ -1497,6 +1497,7 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
       coalesced_message_count: number;
       started_at?: string | null;
       last_terminal_reason?: string | null;
+      current_failure_category?: 'no_callback' | 'no_callback_after_reprompt' | 'infra_fail' | null;
     }>,
     responders: Array<{ agent_name: string; status: string; purpose?: string }> = [],
     // Extra transcript rows beyond the default MESSAGE row — used to hang
@@ -1522,6 +1523,7 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
       started_at: d.started_at ?? null,
       updated_at: '2026-05-14T00:00:00Z',
       last_terminal_reason: d.last_terminal_reason ?? null,
+      current_failure_category: d.current_failure_category ?? null,
     }));
     const msg = {
       seq: 1,
@@ -1657,7 +1659,7 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
     expect(rail.queryByText(/replying/)).not.toBeInTheDocument();
   });
 
-  test('retry_required renders as a rail diagnostic with the last terminal reason', async () => {
+  test('retry_required renders as a rail diagnostic with the bounded category', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     mountThreadWithReplyDelivery([
       {
@@ -1667,12 +1669,13 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
         through_seq: 5,
         coalesced_message_count: 4,
         last_terminal_reason: 'timeout',
+        current_failure_category: 'infra_fail',
       },
     ]);
 
     expect(await screen.findByText('Reply delivery')).toBeInTheDocument();
     expect(
-      screen.getByText('retry required · messages 2–5 · last: timeout'),
+      screen.getByText('retry required · messages 2–5 · infra fail'),
     ).toBeInTheDocument();
     // retry_required never renders as typing / a subprocess.
     expect(screen.queryByLabelText('support_lead is replying')).not.toBeInTheDocument();
@@ -1691,10 +1694,11 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
         agent_name: 'engineering_manager', state: 'retry_required', from_seq: 247,
         through_seq: 249, coalesced_message_count: 3,
         last_terminal_reason: 'timeout',
+        current_failure_category: 'infra_fail',
       },
     ]);
     expect(await screen.findByText('waiting for current exchange · messages 247–249')).toBeInTheDocument();
-    expect(screen.getByText('retry required · messages 247–249 · last: timeout')).toBeInTheDocument();
+    expect(screen.getByText('retry required · messages 247–249 · infra fail')).toBeInTheDocument();
     expect(screen.queryByLabelText('consultant_head is replying')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('consultant_head is queued')).not.toBeInTheDocument();
   });

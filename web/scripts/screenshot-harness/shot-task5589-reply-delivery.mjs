@@ -1,10 +1,10 @@
-/** TASK-6200: held/retry ThreadsPage evidence and adversarial probes. */
+/** TASK-6380: bounded retry-caption ThreadsPage evidence and adversarial probes. */
 import { spawn } from 'node:child_process';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createServer, defaultApiRoutes, findDist, WEB_ROOT } from './harness.mjs';
 
-const OUT = join(WEB_ROOT, 'scripts', 'screenshot-harness', 'out', 'task-6200');
+const OUT = join(WEB_ROOT, 'scripts', 'screenshot-harness', 'out', 'task-6380');
 const SLUG = 'demo'; const THREAD = 'THR-5593';
 const ROUTE = `/orgs/${SLUG}/threads/${THREAD}`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -19,8 +19,11 @@ const baseThread = {
 const entry = (agent_name, state, from_seq, through_seq, count, extra = {}) => ({ agent_name, state, from_seq, through_seq,
   coalesced_message_count: count, started_at: state === 'running' ? '2026-08-24T13:00:00Z' : null,
   updated_at: '2026-08-24T13:01:00Z', last_terminal_reason: null, ...extra });
+const rawRc1 = 'no_callback: rc=1; Running as unit: happyranch-session-TASK-6331-496f9d86.scope; invocation ID: 62fd4173e2434aabaf1d1caddcda070e; stderr tail: '
+  + 'provider startup failed before callback; '.repeat(12);
+if (rawRc1.length < 448) throw new Error('production fixture must be at least 448 characters');
 const populated = [entry('consultant_head','held',247,249,3),
-  entry('support_lead','retry_required',5,7,3,{ last_terminal_reason:'timeout' })];
+  entry('a_realistically_long_agent_name_for_the_244px_rail','retry_required',5,7,3,{ last_terminal_reason:rawRc1,current_failure_category:'infra_fail' })];
 const concurrent = [entry('frontend_engineer_primary','running',8,10,3),
   entry('frontend_engineer_secondary','running',11,11,1,{ started_at:'2026-08-24T13:00:20Z' }),
   entry('qa_engineer','queued',12,14,3), entry('support_engineer','queued',15,15,1)];
@@ -69,6 +72,7 @@ function assertState(result,testCase){if((testCase.expectAside??true)!==result.a
   if(result.sectionPresent&&(!result.sectionInViewport||result.sectionClipped))throw new Error(`${testCase.name}: section clipped/outside viewport`);
   for(const control of result.controls)if(!control.accessibleName||!control.inViewport||control.clippingAncestors.some((a)=>a.clips))throw new Error(`${testCase.name}: control failed ${JSON.stringify(control)}`);
   for(const expected of testCase.identities??[])if(!result.identities.some((parts)=>parts.join(' ').includes(expected)))throw new Error(`${testCase.name}: missing ${expected}`);
+  if(result.bodyText.includes(rawRc1)||result.bodyText.includes('invocation ID:')||result.bodyText.includes('stderr tail:'))throw new Error(`${testCase.name}: raw terminal detail escaped into compact UI`);
   if(testCase.assertMarkerColors){const transparent=new Set([null,'transparent','rgba(0, 0, 0, 0)']);if(transparent.has(result.markerColors.held)||transparent.has(result.markerColors.retry))throw new Error(`${testCase.name}: transparent marker ${JSON.stringify(result.markerColors)}`);if(result.markerColors.held!==result.markerColors.feedbackSuccess)throw new Error(`${testCase.name}: held marker does not resolve to feedback success ${JSON.stringify(result.markerColors)}`);if(result.markerColors.held===result.markerColors.retry)throw new Error(`${testCase.name}: held marker is not distinct from amber retry ${JSON.stringify(result.markerColors)}`);}}
 
 const activeElementExpression = `(() => { const el=document.activeElement; const details=el?.closest?.('details');
@@ -98,7 +102,7 @@ const cases=[
   {name:'loading-production',viewport:[1440,720],detail:'loading',expectAside:false,expectSection:false,expectText:'Loading messages…'},
   {name:'empty-production',viewport:[1440,720],expectSection:false,expectText:'Reply delivery production seam'},
   {name:'error-production',viewport:[1440,720],detail:'error',expectAside:false,expectSection:false,expectText:'Failed to load thread.',errorControl:true},
-  {name:'populated-production-closed',viewport:[1440,720],replyDelivery:populated,expectSection:true,assertMarkerColors:true,identities:['consultant_head waiting for current exchange','messages 247–249','support_lead retry required','messages 5–7']},
+  {name:'populated-production-closed',viewport:[1440,720],replyDelivery:populated,expectSection:true,assertMarkerColors:true,identities:['consultant_head waiting for current exchange','messages 247–249','a_realistically_long_agent_name_for_the_244px_rail retry required','infra fail']},
   {name:'multi-agent-narrow-closed',viewport:[1048,720],replyDelivery:concurrent,expectSection:true,identities:['frontend_engineer_primary replying','frontend_engineer_secondary replying','messages 8–10']},
   {name:'multi-agent-wide-open',viewport:[1910,720],replyDelivery:concurrent,open:true,expectSection:true,identities:['frontend_engineer_primary replying','frontend_engineer_secondary replying','messages 8–10','qa_engineer 3 messages coalesced','support_engineer 1 message coalesced']},
 ];

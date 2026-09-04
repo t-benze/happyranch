@@ -123,8 +123,11 @@ result — never full single-use tokens. The web UI projects the same
 healthy-neutral held waiting proved by both an OPEN exchange and matching HELD
 participant deferral, or retry_required diagnostic) without fabricating
 subprocesses. Precedence is running > queued > held > retry_required > settled
-omission. Terminal reasons are historical metadata, shown only for a genuine
-current retry and never used to classify or fault-style held waiting.
+omission. A genuine current retry also carries a bounded failure category
+(``no_callback``, ``no_callback_after_reprompt``, or ``infra_fail``) derived by
+the same server classifier as responder history. Compact captions use only
+that category; raw terminal reasons remain historical detail metadata and are
+never used as compact copy or to fault-style held waiting.
 Per-message ``responder_status`` entries additionally carry the authoritative
 invocation ``purpose`` (``reply`` | ``task_followup``; BOOTSTRAP stays
 excluded) so the web classifies/dedups in-flight responders by purpose —

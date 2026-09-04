@@ -3609,6 +3609,36 @@ def test_thread_and_messages_project_authoritative_held_pair(
     assert detail[0]["from_seq"] == 247
     assert detail[0]["through_seq"] == 249
     assert detail[0]["last_terminal_reason"] is None
+    assert detail[0]["current_failure_category"] is None
+
+
+@pytest.mark.parametrize(("reason", "category"), [
+    ("no_callback: rc=0", "no_callback"),
+    ("no_callback_after_reprompt: rc=0", "no_callback_after_reprompt"),
+    ("timeout", "infra_fail"),
+])
+def test_reply_delivery_projects_current_bounded_failure_category(
+    tmp_home, app, org_state, auth_headers, reason, category,
+):
+    client = TestClient(app)
+    agent = "a_realistically_long_agent_name_for_the_244px_rail"
+    _seed_agent(org_state, agent)
+    result = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": [agent], "body_markdown": "m1"},
+        headers=auth_headers,
+    ).json()
+    tid = result["thread_id"]
+    org_state.db._conn.execute(
+        "UPDATE thread_reply_delivery_state SET queued_invocation_token = NULL, "
+        "last_terminal_reason = ? WHERE thread_id = ?", (reason, tid),
+    )
+    org_state.db._conn.commit()
+    projected = client.get(
+        f"/api/v1/orgs/alpha/threads/{tid}", headers=auth_headers,
+    ).json()["reply_delivery"][0]
+    assert projected["state"] == "retry_required"
+    assert projected["current_failure_category"] == category
 
 
 def test_reply_route_settles_claimed_range_and_schedules_followon(
