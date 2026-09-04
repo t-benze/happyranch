@@ -265,6 +265,17 @@
   --spacing-7: 3rem;
   --spacing-8: 4rem;
 
+  /* Pasture §4.14 Button values that intentionally sit off the 4/8pt grid. */
+  --spacing-button-gap:       7px;
+  --spacing-button-inline:    14px;
+  --spacing-button-block:     8px;
+  --spacing-button-sm-inline: 10px;
+  --spacing-button-sm-block:  5px;
+  --spacing-button-lg-inline: 20px;
+  --spacing-button-lg-block:  11px;
+  --spacing-button-icon-padding: 7px;
+  --spacing-button-icon-size: 32px;
+
   /* ====================================================================== */
   /* RADIUS — Pasture 8 / 12 / 18 / pill                                     */
   /* ====================================================================== */
