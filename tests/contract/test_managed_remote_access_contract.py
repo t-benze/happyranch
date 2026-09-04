@@ -1394,6 +1394,7 @@ def _assert_n3_lifecycle_evidence(matrix: list[dict]) -> None:
             "credential_source_retired",
             "credential_dropin_retired",
             "composite_ready_after_sidecar",
+            "missing_consumed_state_failed_closed",
         },
         "admission": {"tsnet_admission_reachable"},
         "active_flow": {"production_process_active", "watchdog_composite_current", "watchdog_ceased_on_sidecar_loss"},
@@ -1402,7 +1403,7 @@ def _assert_n3_lifecycle_evidence(matrix: list[dict]) -> None:
         "shutdown": {"same_instance_stop_twice", "no_double_close", "no_residue"},
         "partial_failure": {"fresh_pid", "fresh_composite_gates"},
         "concurrency_reentry": {"start_then_stop_barrier", "stop_then_start_barrier", "stop_wins"},
-        "recovery": {"fresh_install_rollback_reentry_each_checkpoint", "upgrade_rollback", "retained_payload_units", "fresh_composite_gates", "no_transaction_residue"},
+        "recovery": {"fresh_install_rollback_reentry_each_checkpoint", "upgrade_rollback", "retained_payload_units", "fresh_composite_gates", "no_transaction_residue", "credential_free_stopped_restart", "interrupted_retirement_reentry", "explicit_fresh_reenrollment"},
     }
     for row in matrix:
         assert all(test_id.startswith("app/linux/package/real_systemd_n3.sh#") for test_id in row["shipping_tests"]), row

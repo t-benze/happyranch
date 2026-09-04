@@ -242,6 +242,41 @@ evidence "startup" "sidecar_staged_credential_service_readable_non_writable"
 evidence "startup" "credential_source_retired"
 evidence "startup" "credential_dropin_retired"
 evidence "startup" "composite_ready_after_sidecar"
+sudo systemctl stop happyranch-managed.target
+sudo mv /var/lib/happyranch-tsnet-sidecar/credential.consumed "$work/credential.consumed.held"
+sudo systemctl start happyranch-managed.target || true
+sleep 2
+! active happyranch-tsnet-sidecar.service || fail "missing consumed state started sidecar"
+evidence "startup" "missing_consumed_state_failed_closed"
+sudo mv "$work/credential.consumed.held" /var/lib/happyranch-tsnet-sidecar/credential.consumed
+sudo systemctl reset-failed happyranch-tsnet-sidecar.service happyranch-connector.service
+sudo systemctl start happyranch-managed.target
+wait_for "credential-free stopped-service restart" active happyranch-tsnet-sidecar.service
+absent /etc/happyranch/enrollment.key
+absent /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf
+evidence "recovery" "credential_free_stopped_restart"
+
+# Re-enter after interruption between drop-in reload and source unlink.
+sudo systemctl stop happyranch-managed.target
+printf '%s\n' interrupted-retirement >"$work/enrollment.key"
+sudo install -m 0600 -o root -g root "$work/enrollment.key" /etc/happyranch/enrollment.key
+sudo systemctl start happyranch-managed.target
+wait_for "interrupted retirement re-entry" active happyranch-tsnet-sidecar.service
+absent /etc/happyranch/enrollment.key
+evidence "recovery" "interrupted_retirement_reentry"
+
+# A fresh enrollment is explicit and service-stopped; ordinary restarts never
+# recreate this root-custodied source or transient LoadCredential drop-in.
+sudo systemctl stop happyranch-managed.target
+fresh_sidecar_key="$("$work/headscale" preauthkeys create --user ci --reusable=false --expiration 10m --config "$work/hs/config.yaml")"
+printf '%s\n' "$fresh_sidecar_key" >"$work/enrollment.key"
+sudo install -m 0600 -o root -g root "$work/enrollment.key" /etc/happyranch/enrollment.key
+sudo /opt/happyranch/bin/happyranch-connector prepare-fresh-enrollment --source /etc/happyranch/enrollment.key --marker /var/lib/happyranch-tsnet-sidecar/credential.consumed --dropin /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf
+sudo systemctl start happyranch-managed.target
+wait_for "explicit fresh re-enrollment" active happyranch-tsnet-sidecar.service
+absent /etc/happyranch/enrollment.key
+absent /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf
+evidence "recovery" "explicit_fresh_reenrollment"
 sidecar_ip="$(sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json | python -c 'import json,sys; d=json.load(sys.stdin); print(next(ip for p in d.get("Peer",{}).values() if p.get("HostName")=="home-sidecar-ci" for ip in p.get("TailscaleIPs",[]) if ":" not in ip))')"
 wait_for "virtual TSNet listener" tsnet_open
 evidence "admission" "tsnet_admission_reachable"

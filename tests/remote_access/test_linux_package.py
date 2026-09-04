@@ -14,7 +14,12 @@ import zipfile
 import pytest
 
 from app.linux.package.build_connector import build_connector
-from runtime.remote_access.cli import _retire_enrollment_source, main as connector_cli_main
+from runtime.remote_access.cli import (
+    _prepare_fresh_enrollment,
+    _reconcile_enrollment_retirement,
+    _retire_enrollment_source,
+    main as connector_cli_main,
+)
 from runtime.remote_access.linux_package import (
     CompositeServiceManager,
     PackageError,
@@ -95,6 +100,7 @@ def test_composite_units_start_services_concurrently_without_readiness_cycle() -
     assert "BindsTo=happyranch-connector.service" in sidecar
     assert "Type=notify" in sidecar
     assert "NotifyAccess=main" in sidecar
+    assert "ExecStartPre=+/opt/happyranch/bin/happyranch-connector reconcile-enrollment-retirement" in sidecar
     assert "ExecStartPre=/opt/happyranch/bin/happyranch-connector credential-capability --name enrollment.key --unit happyranch-tsnet-sidecar.service --consumed-marker /var/lib/happyranch-tsnet-sidecar/credential.consumed" in sidecar
     assert "ExecStart=/opt/happyranch/bin/happyranch-tsnet-sidecar --config /etc/happyranch/sidecar.json" in sidecar
     for directive in ("User=happyranch", "CapabilityBoundingSet=", "PrivateDevices=yes"):
@@ -525,6 +531,66 @@ def test_enrollment_source_retirement_removes_transient_dropin_after_marker(tmp_
     assert not dropin.exists()
     _retire_enrollment_source(source, marker, dropin=dropin, reload_manager=lambda: reloads.append("reload"))
     assert reloads == ["reload"]
+
+
+def test_retirement_removes_and_reloads_dropin_before_source(tmp_path: Path) -> None:
+    source = tmp_path / "enrollment.key"
+    marker = tmp_path / "state" / "credential.consumed"
+    dropin = tmp_path / "unit.d" / "10-enrollment-credential.conf"
+    marker.parent.mkdir(); dropin.parent.mkdir()
+    source.write_text("one-use\n"); source.chmod(0o600)
+    marker.write_text("durable\n"); marker.chmod(0o600)
+    dropin.write_text("[Service]\nLoadCredential=enrollment.key:/source\n"); dropin.chmod(0o600)
+    observed: list[tuple[bool, bool]] = []
+    _retire_enrollment_source(
+        source, marker, dropin=dropin,
+        reload_manager=lambda: observed.append((dropin.exists(), source.exists())),
+    )
+    assert observed == [(False, True)]
+    assert not source.exists() and not dropin.exists()
+
+
+def test_interrupted_retirement_reentry_finishes_source_after_dropin_reload(tmp_path: Path) -> None:
+    source = tmp_path / "enrollment.key"
+    marker = tmp_path / "state" / "credential.consumed"
+    dropin = tmp_path / "unit.d" / "10-enrollment-credential.conf"
+    marker.parent.mkdir(); dropin.parent.mkdir()
+    source.write_text("one-use\n"); source.chmod(0o600)
+    marker.write_text("durable\n"); marker.chmod(0o600)
+    _reconcile_enrollment_retirement(source, marker, dropin=dropin)
+    assert not source.exists()
+
+
+def test_explicit_fresh_enrollment_replaces_consumed_state(tmp_path: Path) -> None:
+    source = tmp_path / "enrollment.key"
+    marker = tmp_path / "state" / "credential.consumed"
+    dropin = tmp_path / "unit.d" / "10-enrollment-credential.conf"
+    marker.parent.mkdir(); dropin.parent.mkdir()
+    source.write_text("fresh-one-use\n"); source.chmod(0o600)
+    marker.write_text("durable\n"); marker.chmod(0o600)
+    reloads: list[str] = []
+    _prepare_fresh_enrollment(
+        source, marker, dropin=dropin, reload_manager=lambda: reloads.append("reload"),
+        service_is_active=lambda: False,
+    )
+    assert not marker.exists()
+    assert source.read_text() == "fresh-one-use\n"
+    assert dropin.read_text() == "[Service]\nLoadCredential=enrollment.key:/etc/happyranch/enrollment.key\n"
+    assert reloads == ["reload"]
+
+
+def test_explicit_fresh_enrollment_refuses_running_service(tmp_path: Path) -> None:
+    source = tmp_path / "enrollment.key"
+    marker = tmp_path / "state" / "credential.consumed"
+    dropin = tmp_path / "unit.d" / "10-enrollment-credential.conf"
+    marker.parent.mkdir(); dropin.parent.mkdir()
+    source.write_text("fresh-one-use\n"); source.chmod(0o600)
+    marker.write_text("durable\n"); marker.chmod(0o600)
+    with pytest.raises(OSError, match="service must be stopped"):
+        _prepare_fresh_enrollment(
+            source, marker, dropin=dropin, service_is_active=lambda: True
+        )
+    assert marker.exists() and not dropin.exists()
 
 
 def test_system_install_stages_credential_only_in_transient_dropin(tmp_path: Path) -> None:

@@ -141,10 +141,12 @@ def test_parser_exposes_all_commands() -> None:
         "revoke",
         "remove-device",
         "pairing-status",
-            "recovery",
-            "retire-enrollment-source",
-            "credential-capability",
-        }
+        "recovery",
+        "retire-enrollment-source",
+        "reconcile-enrollment-retirement",
+        "prepare-fresh-enrollment",
+        "credential-capability",
+    }
 
 
 def test_missing_config_returns_1(tmp_path, capsys) -> None:

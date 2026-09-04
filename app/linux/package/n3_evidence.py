@@ -13,7 +13,7 @@ from pathlib import Path
 SCHEMA = "happyranch.managed-n3.execution-evidence"
 VERSION = 1
 PHASES = {
-    "startup": ("process_absent", "tsnet_admission_absent", "connector_staged_credential_service_readable_non_writable", "sidecar_staged_credential_service_readable_non_writable", "credential_source_retired", "credential_dropin_retired", "composite_ready_after_sidecar"),
+    "startup": ("process_absent", "tsnet_admission_absent", "connector_staged_credential_service_readable_non_writable", "sidecar_staged_credential_service_readable_non_writable", "credential_source_retired", "credential_dropin_retired", "composite_ready_after_sidecar", "missing_consumed_state_failed_closed"),
     "admission": ("tsnet_admission_reachable",),
     "active_flow": ("production_process_active", "watchdog_composite_current", "watchdog_ceased_on_sidecar_loss"),
     "readiness_loss": ("tsnet_admission_removed_before_connector",),
@@ -24,6 +24,8 @@ PHASES = {
     "recovery": (
         "fresh_install_rollback_reentry_each_checkpoint", "upgrade_rollback",
         "retained_payload_units", "fresh_composite_gates", "no_transaction_residue",
+        "credential_free_stopped_restart", "interrupted_retirement_reentry",
+        "explicit_fresh_reenrollment",
     ),
     "cleanup": ("virtual_admission_removed_while_peer_alive", "all_residue_absent", "task_work_removed"),
 }

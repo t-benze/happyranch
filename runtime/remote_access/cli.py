@@ -38,7 +38,10 @@ from pathlib import Path
 from typing import Callable
 
 from runtime.remote_access.lab_provider import LAB_ONLY_BANNER
-from runtime.remote_access.linux_package import credential_capability
+from runtime.remote_access.linux_package import (
+    credential_capability,
+    require_credential_capability,
+)
 from runtime.remote_access.pairing import PairingError, PairingManager
 from runtime.remote_access.state_store import CorruptTrustStateError, StateStoreError
 from runtime.remote_access.supervisor import (
@@ -86,6 +89,14 @@ def build_parser() -> argparse.ArgumentParser:
     retire.add_argument("--source", required=True)
     retire.add_argument("--marker", required=True)
     retire.add_argument("--dropin")
+    reconcile = sub.add_parser("reconcile-enrollment-retirement", help=argparse.SUPPRESS)
+    reconcile.add_argument("--source", required=True)
+    reconcile.add_argument("--marker", required=True)
+    reconcile.add_argument("--dropin", required=True)
+    fresh = sub.add_parser("prepare-fresh-enrollment", help=argparse.SUPPRESS)
+    fresh.add_argument("--source", required=True)
+    fresh.add_argument("--marker", required=True)
+    fresh.add_argument("--dropin", required=True)
     capability = sub.add_parser("credential-capability", help=argparse.SUPPRESS)
     capability.add_argument("--name", choices=("daemon.token", "enrollment.key"), required=True)
     capability.add_argument(
@@ -133,6 +144,24 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except OSError:
             print("error: enrollment_source_retirement_failed", file=sys.stderr)
+            return 1
+    if args.command == "reconcile-enrollment-retirement":
+        try:
+            _reconcile_enrollment_retirement(
+                Path(args.source), Path(args.marker), dropin=Path(args.dropin)
+            )
+            return 0
+        except OSError:
+            print("error: enrollment_source_retirement_failed", file=sys.stderr)
+            return 1
+    if args.command == "prepare-fresh-enrollment":
+        try:
+            _prepare_fresh_enrollment(
+                Path(args.source), Path(args.marker), dropin=Path(args.dropin)
+            )
+            return 0
+        except OSError:
+            print("error: fresh_enrollment_transition_failed", file=sys.stderr)
             return 1
     if args.command == "credential-capability":
         expected_unit = {
@@ -314,16 +343,77 @@ def _retire_enrollment_source(
     st = source.lstat()
     if source.is_symlink() or not source.is_file() or st.st_mode & 0o777 != 0o600 or st.st_uid != os.geteuid():
         raise OSError("invalid enrollment source")
-    source.replace(retiring)
-    _fsync_dir(source.parent)
-    retiring.unlink()
-    _fsync_dir(source.parent)
     if dropin is not None and dropin.exists():
         if dropin.is_symlink() or not dropin.is_file():
             raise OSError("invalid credential dropin")
         dropin.unlink()
         _fsync_dir(dropin.parent)
         (reload_manager or _reload_systemd)()
+    source.replace(retiring)
+    _fsync_dir(source.parent)
+    retiring.unlink()
+    _fsync_dir(source.parent)
+
+
+def _reconcile_enrollment_retirement(
+    source: Path, marker: Path, *, dropin: Path
+) -> None:
+    """Finish only the safe post-reload half of an interrupted retirement."""
+    if dropin.exists() or not source.exists():
+        return
+    _retire_enrollment_source(source, marker, dropin=None)
+
+
+def _prepare_fresh_enrollment(
+    source: Path,
+    marker: Path,
+    *,
+    dropin: Path,
+    reload_manager: Callable[[], None] | None = None,
+    service_is_active: Callable[[], bool] | None = None,
+) -> None:
+    """Explicitly replace consumed state after an operator installs a fresh source."""
+    if (
+        not source.is_absolute()
+        or source.name != "enrollment.key"
+        or not marker.is_absolute()
+        or marker.name != "credential.consumed"
+        or not dropin.is_absolute()
+        or dropin.name != "10-enrollment-credential.conf"
+    ):
+        raise OSError("invalid fresh enrollment path")
+    if (service_is_active or _sidecar_is_active)():
+        raise OSError("service must be stopped")
+    require_credential_capability(source, expected_uid=os.geteuid())
+    if marker.exists():
+        if marker.is_symlink() or not marker.is_file() or marker.stat().st_mode & 0o777 != 0o600:
+            raise OSError("invalid consumed marker")
+        marker.unlink()
+        _fsync_dir(marker.parent)
+    dropin.parent.mkdir(mode=0o755, exist_ok=True)
+    temporary = dropin.with_name(dropin.name + ".new")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(descriptor, b"[Service]\nLoadCredential=enrollment.key:/etc/happyranch/enrollment.key\n")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    temporary.replace(dropin)
+    _fsync_dir(dropin.parent)
+    (reload_manager or _reload_systemd)()
+
+
+def _sidecar_is_active() -> bool:
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "happyranch-tsnet-sidecar.service"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise OSError("service state unavailable") from exc
+    return result.returncode == 0
 
 
 def _reload_systemd() -> None:
