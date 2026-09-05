@@ -1716,10 +1716,16 @@ the first schema/data operation at `Database()` open. Before completion the
 guard accepts only (a) the exact merged-S2 `remote_runners` parent, and only
 with every runner-graph/identity table empty, or (b) the exact amended parent;
 after completion only the amended parent plus exact challenge table/index is
-accepted. The empty-S2 parent replacement is atomic, never invents certificate
-expiry, validates foreign-key targets/checks, and leaves no temporary parent.
-Exact historical, interruption, repeat-open, constraint, and conflict fixtures
-preserve all unrelated objects/values and the existing jobs/audit overloads.
+accepted. The empty-S2 parent replacement is atomic, exposes inert test-only
+interruption hooks immediately before the drop and after the rename inside
+that transaction, never invents certificate expiry, validates foreign-key
+targets/checks, and leaves no temporary parent. The historical fixture executes
+an archive of immutable merged-S2 commit
+`1be72fe71a779eb3393b9c10dcfeae8a487d3f78` rather than downgrading a current
+store. Full-schema/all-row snapshots, two further reopens, systematic
+per-column/constraint/FK/index mutations, every marker/object mismatch, and
+executable bidirectional TASK-6611 traceability preserve unrelated values and
+the existing jobs/audit overloads.
 
 There is deliberately still no shipping producer or consumer yet. The new
 table, index, expiry field, and marker have no challenge lifecycle service or

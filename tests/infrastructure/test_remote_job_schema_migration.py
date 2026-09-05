@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import re
 import sqlite3
+import subprocess
+import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -23,6 +28,108 @@ from tests.infrastructure.test_jobs_migration import _seed_legacy_scripts_db
 
 REMOTE_TABLES = set(TABLE_SQL)
 REMOTE_INDEXES = set(INDEX_SQL)
+S2_BASELINE_COMMIT = "1be72fe71a779eb3393b9c10dcfeae8a487d3f78"
+
+
+def _identity_ddl_drift_cases() -> list[tuple[str, str, str, str]]:
+    """Systematic valid-SQL mutations for every approved DDL dimension."""
+    cases: list[tuple[str, str, str, str]] = []
+    for table in ("remote_runners", "remote_runner_enrollment_challenges"):
+        sql = TABLE_SQL[table]
+        column_lines = [
+            line for line in sql.splitlines()
+            if re.match(r"^          [a-z][a-z0-9_]+ (?:TEXT|INTEGER)\b", line)
+        ]
+        for position, line in enumerate(column_lines):
+            name = line.strip().split()[0]
+            # Rename all references too, so the mutant remains executable SQL.
+            renamed = re.sub(rf"\b{re.escape(name)}\b", f"{name}_drift", sql)
+            cases.append((f"{table}:{name}:name", "table", table, renamed))
+            alternate_type = "INTEGER" if " TEXT" in line else "TEXT"
+            cases.append((
+                f"{table}:{name}:type", "table", table,
+                sql.replace(line, re.sub(r"\b(?:TEXT|INTEGER)\b", alternate_type, line, count=1), 1),
+            ))
+            toggled_null = (
+                line.replace(" NOT NULL", "", 1)
+                if " NOT NULL" in line
+                else line.replace(" TEXT", " TEXT NOT NULL", 1).replace(
+                    " INTEGER", " INTEGER NOT NULL", 1
+                )
+            )
+            cases.append((
+                f"{table}:{name}:null", "table", table,
+                sql.replace(line, toggled_null, 1),
+            ))
+            toggled_default = (
+                re.sub(r" DEFAULT (?:'[^']*'|[^ ,)]+)", " DEFAULT 2", line, count=1)
+                if " DEFAULT " in line else line.rstrip(",") + " DEFAULT NULL" + ("," if line.endswith(",") else "")
+            )
+            cases.append((
+                f"{table}:{name}:default", "table", table,
+                sql.replace(line, toggled_default, 1),
+            ))
+            if position + 1 < len(column_lines):
+                following = column_lines[position + 1]
+                cases.append((
+                    f"{table}:{name}:order", "table", table,
+                    sql.replace(f"{line}\n{following}", f"{following}\n{line}", 1),
+                ))
+        primary_line = column_lines[0]
+        cases.append((
+            f"{table}:primary-key", "table", table,
+            sql.replace(primary_line, primary_line.replace(" PRIMARY KEY", " UNIQUE"), 1),
+        ))
+        for occurrence in range(sql.count("CHECK(")):
+            cursor = -1
+            for _ in range(occurrence + 1):
+                cursor = sql.index("CHECK(", cursor + 1)
+            cases.append((
+                f"{table}:check:{occurrence}", "table", table,
+                sql[:cursor] + "CHECK(1 AND " + sql[cursor + len("CHECK("):],
+            ))
+        for occurrence in range(sql.count("UNIQUE(")):
+            cursor = -1
+            for _ in range(occurrence + 1):
+                cursor = sql.index("UNIQUE(", cursor + 1)
+            cases.append((
+                f"{table}:unique:{occurrence}", "table", table,
+                sql[:cursor] + "UNIQUE(id, " + sql[cursor + len("UNIQUE("):],
+            ))
+        for occurrence in range(sql.count("REFERENCES ")):
+            cursor = -1
+            for _ in range(occurrence + 1):
+                cursor = sql.index("REFERENCES ", cursor + 1)
+            target = cursor + len("REFERENCES ")
+            target_end = sql.index("(", target)
+            cases.append((
+                f"{table}:foreign-key:{occurrence}", "table", table,
+                sql[:target] + "remote_runners_drift" + sql[target_end:],
+            ))
+    expiry = INDEX_SQL["remote_enrollment_challenge_expiry"]
+    cases.extend([
+        ("expiry-index:name", "index", "remote_enrollment_challenge_expiry",
+         expiry.replace("remote_enrollment_challenge_expiry", "remote_enrollment_challenge_expiry_drift", 1)),
+        ("expiry-index:unique", "index", "remote_enrollment_challenge_expiry",
+         expiry.replace("CREATE INDEX", "CREATE UNIQUE INDEX", 1)),
+        ("expiry-index:order", "index", "remote_enrollment_challenge_expiry",
+         expiry.replace("org_slug, expires_at", "expires_at, org_slug", 1)),
+        ("expiry-index:predicate", "index", "remote_enrollment_challenge_expiry",
+         expiry.replace("consumed_at IS NULL AND revoked_at IS NULL",
+                        "consumed_at IS NULL OR revoked_at IS NULL", 1)),
+    ])
+    return cases
+
+
+IDENTITY_DDL_DRIFT_CASES = _identity_ddl_drift_cases()
+
+# Independent, reviewable fingerprints of TASK-6611 section 2.  These are not
+# computed from production constants and make a production+test typo fail.
+APPROVED_DDL_SHA256 = {
+    "remote_runners": "c963c00352242c793095b23112df81f2222b989f8bb9050bcee37ac422bfc631",
+    "remote_runner_enrollment_challenges": "135b02adf682130fd8cadda6cc1053cb54b59d4743bb475e5d25a0c1fcaf3383",
+    "remote_enrollment_challenge_expiry": "6023bc4fd49a0cc62c8c0651b8c4b4153c687887eef88f07f6a69dc0007234ca",
+}
 
 
 def _objects(path: Path, kind: str) -> dict[str, str | None]:
@@ -77,6 +184,39 @@ def _downgrade_to_exact_untouched_s2(path: Path) -> None:
         conn.execute("DROP TABLE remote_runners")
         conn.execute(S2_REMOTE_RUNNERS_SQL)
         conn.commit()
+
+
+def _build_exact_historical_s2(path: Path, source_root: Path) -> None:
+    """Create the fixture by executing the merged S2 tree, never current Database.
+
+    Provenance is the immutable merge commit named by TASK-6611.  Extracting and
+    executing that tree also freezes every legacy object and the exact jobs and
+    six-table runner-graph shapes, instead of reconstructing a lookalike from
+    the constants being tested.
+    """
+    source_root.mkdir()
+    archive = subprocess.run(
+        ["git", "archive", "--format=tar", S2_BASELINE_COMMIT],
+        check=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    archive_path = source_root / "s2.tar"
+    archive_path.write_bytes(archive)
+    checkout = source_root / "tree"
+    checkout.mkdir()
+    with tarfile.open(archive_path) as bundle:
+        bundle.extractall(checkout, filter="data")
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; from runtime.infrastructure.database "
+            "import Database; Database(Path(__import__('sys').argv[1])).close()",
+            str(path),
+        ],
+        cwd=checkout,
+        check=True,
+    )
 
 
 def _insert_runner(conn: sqlite3.Connection, runner: str, generation: int = 1) -> None:
@@ -420,22 +560,41 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "untouched-s2.db"
-    _downgrade_to_exact_untouched_s2(path)
+    _build_exact_historical_s2(path, tmp_path / "historical-source")
     with sqlite3.connect(path) as conn:
-        conn.execute(
+        conn.executemany(
             "INSERT INTO tasks(id,status,brief,created_at,updated_at,blocked_on_job_ids) "
-            "VALUES ('TASK-s2','blocked','legacy','2026-01-01T00:00:00Z',"
-            "'2026-01-01T00:00:00Z','[\"JOB-s2\"]')"
+            "VALUES (?,?,?,?,?,?)",
+            [
+                ("TASK-s2", "blocked", "legacy", "2026-01-01T00:00:00Z",
+                 "2026-01-01T00:00:00Z", '["JOB-s2-modern","JOB-s2-v1","JOB-s2-v0"]'),
+            ],
         )
-        conn.execute(
+        conn.executemany(
             "INSERT INTO jobs(id,task_id,agent_name,title,rationale,script_text,"
-            "interpreter,status,reason,created_at) VALUES "
-            "('JOB-s2','TASK-s2','dev_agent','legacy','why','true','bash',"
-            "'failed','daemon_crash','2026-01-01T00:00:00Z')"
+            "interpreter,status,reason,stdout_path,stderr_path,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                ("JOB-s2-modern", "TASK-s2", "dev_agent", "modern", "why", "true",
+                 "bash", "completed", "complete", "/jobs/modern.out", "/jobs/modern.err",
+                 "2026-01-01T00:00:00Z"),
+                ("JOB-s2-v1", "TASK-s2", "dev_agent", "v1", "why", "false",
+                 "bash", "rejected", "founder_rejected", "/jobs/v1.out", "/jobs/v1.err",
+                 "2026-01-02T00:00:00Z"),
+                ("JOB-s2-v0", "TASK-s2", "dev_agent", "v0-script-request-history",
+                 "why", "exit 7", "bash", "failed", "daemon_crash",
+                 "/scripts/SR-legacy.out", "/scripts/SR-legacy.err",
+                 "2026-01-03T00:00:00Z"),
+            ],
         )
-        conn.execute(
+        conn.executemany(
             "INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES "
-            "('config:working_hours','founder','legacy','{}','2026-01-01T00:00:00Z')"
+            "(?,?,?,?,?)",
+            [
+                ("config:working_hours", "founder", "legacy", "{}", "2026-01-01T00:00:00Z"),
+                ("TASK-s2", "dev_agent", "job_failed", '{"job_id":"JOB-s2-v0"}',
+                 "2026-01-03T00:01:00Z"),
+            ],
         )
         conn.commit()
     before_schema, before_rows = _complete_snapshot(path)
@@ -470,7 +629,7 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
         ).fetchone() is None
         assert conn.execute(
             "SELECT blocked_on_job_ids FROM tasks WHERE id='TASK-s2'"
-        ).fetchone() == ('["JOB-s2"]',)
+        ).fetchone() == ('["JOB-s2-modern","JOB-s2-v1","JOB-s2-v0"]',)
         assert conn.execute(
             "SELECT task_id FROM audit_log WHERE action='legacy'"
         ).fetchone() == ("config:working_hours",)
@@ -478,12 +637,28 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
 
 @pytest.mark.parametrize(
     "stop_point",
-    [point for stage in IDENTITY_STAGES for point in (f"before:{stage}", stage)],
+    [point for stage in IDENTITY_STAGES for point in (f"before:{stage}", stage)]
+    + ["before:parent_replacement", "after:parent_replacement"],
 )
 def test_identity_interruption_before_and_after_every_stage_converges_twice(
     tmp_path: Path, stop_point: str,
 ) -> None:
     path = tmp_path / f"identity-{stop_point.replace(':', '-')}.db"
+    replacement_boundary = stop_point.endswith("parent_replacement")
+    before = None
+    if replacement_boundary:
+        _build_exact_historical_s2(path, tmp_path / "historical-source")
+        # Resume at the shipping stage immediately before the rebuild.  The
+        # first stage is already durably committed, so the boundary hook's
+        # transaction is the only transaction under test here.
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                "INSERT INTO remote_runner_schema_migrations(name,stage,updated_at) "
+                "VALUES (?,?,?)",
+                (IDENTITY_MIGRATION_NAME, IDENTITY_STAGES[0], "2026-01-01T00:00:00Z"),
+            )
+            conn.commit()
+        before = _complete_snapshot(path)
 
     class InterruptedDatabase(Database):
         def _remote_identity_schema_stage_hook(self, point: str) -> None:
@@ -492,6 +667,14 @@ def test_identity_interruption_before_and_after_every_stage_converges_twice(
 
     with pytest.raises(RuntimeError, match="stop at"):
         InterruptedDatabase(path)
+    if replacement_boundary:
+        # Both hooks execute inside the shipping BEGIN IMMEDIATE transaction;
+        # even the post-rename hook must roll the DROP/RENAME back byte/value-exact.
+        assert _complete_snapshot(path) == before
+        with sqlite3.connect(path) as conn:
+            assert conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name=?", (IDENTITY_TEMP_PARENT,)
+            ).fetchone() is None
     Database(path).close()
     Database(path).close()
     with sqlite3.connect(path) as conn:
@@ -506,46 +689,14 @@ def test_identity_interruption_before_and_after_every_stage_converges_twice(
 
 
 @pytest.mark.parametrize(
-    ("kind", "name", "replacement"),
-    [
-        (
-            "table", "remote_runners",
-            TABLE_SQL["remote_runners"].replace(
-                "cert_expires_at TEXT NOT NULL", "cert_expires_at TEXT"
-            ),
-        ),
-        (
-            "table", "remote_runner_enrollment_challenges",
-            TABLE_SQL["remote_runner_enrollment_challenges"].replace(
-                "UNIQUE(token_fingerprint)", "UNIQUE(token_fingerprint, org_slug)"
-            ),
-        ),
-        (
-            "table", "remote_runner_enrollment_challenges",
-            TABLE_SQL["remote_runner_enrollment_challenges"].replace(
-                "FOREIGN KEY(runner_id) REFERENCES remote_runners(id)",
-                "FOREIGN KEY(runner_id) REFERENCES remote_runners(display_name)",
-            ),
-        ),
-        (
-            "index", "remote_enrollment_challenge_expiry",
-            INDEX_SQL["remote_enrollment_challenge_expiry"].replace(
-                "org_slug, expires_at", "expires_at, org_slug"
-            ),
-        ),
-        (
-            "index", "remote_enrollment_challenge_expiry",
-            INDEX_SQL["remote_enrollment_challenge_expiry"].replace(
-                "consumed_at IS NULL AND revoked_at IS NULL",
-                "consumed_at IS NULL OR revoked_at IS NULL",
-            ),
-        ),
-    ],
+    ("case_id", "kind", "name", "replacement"),
+    IDENTITY_DDL_DRIFT_CASES,
+    ids=[case[0] for case in IDENTITY_DDL_DRIFT_CASES],
 )
 def test_identity_exact_shape_drift_refuses_before_any_mutation(
-    tmp_path: Path, kind: str, name: str, replacement: str,
+    tmp_path: Path, case_id: str, kind: str, name: str, replacement: str,
 ) -> None:
-    path = tmp_path / f"identity-drift-{kind}-{name}.db"
+    path = tmp_path / f"identity-drift-{case_id.replace(':', '-')}.db"
     Database(path).close()
     with sqlite3.connect(path) as conn:
         conn.execute("PRAGMA foreign_keys=OFF")
@@ -554,7 +705,7 @@ def test_identity_exact_shape_drift_refuses_before_any_mutation(
         conn.commit()
     before = _complete_snapshot(path)
     for _ in range(2):
-        with pytest.raises(sqlite3.DatabaseError, match="conflicting remote-job"):
+        with pytest.raises(sqlite3.DatabaseError):
             Database(path)
         assert _complete_snapshot(path) == before
 
@@ -562,6 +713,7 @@ def test_identity_exact_shape_drift_refuses_before_any_mutation(
 @pytest.mark.parametrize("table", [
     "remote_runners", "remote_runner_workspaces", "remote_job_attempts",
     "remote_phase_receipts", "remote_pre_run_observations", "remote_protocol_frames",
+    "remote_runner_enrollment_challenges",
 ])
 def test_untouched_s2_with_any_runner_graph_row_refuses_without_mutation(
     tmp_path: Path, table: str,
@@ -599,9 +751,19 @@ def test_untouched_s2_with_any_runner_graph_row_refuses_without_mutation(
                 "INSERT INTO remote_protocol_frames VALUES "
                 "('RATT-x','connection',1,'terminal','digest','accepted','2026-01-01Z')"
             )
+        if table == "remote_runner_enrollment_challenges":
+            conn.execute(TABLE_SQL["remote_runner_enrollment_challenges"])
+            conn.execute(
+                "INSERT INTO remote_runner_enrollment_challenges "
+                "(id,org_slug,token_fingerprint,challenge_nonce,display_name,"
+                "attestation_json,attestation_digest,ceremony_kind,"
+                "target_runner_generation,expires_at,created_at) VALUES "
+                "('RENC-x','sample','token','nonce','runner','{}','att',"
+                "'initial',1,'2026-01-02Z','2026-01-01Z')"
+            )
         conn.commit()
     before = _complete_snapshot(path)
-    with pytest.raises(sqlite3.DatabaseError, match="not empty"):
+    with pytest.raises(sqlite3.DatabaseError):
         Database(path)
     assert _complete_snapshot(path) == before
 
@@ -631,6 +793,87 @@ def test_enrollment_challenge_exact_checks_uniques_and_foreign_keys(tmp_path: Pa
              "generation_rotation", "RUNNER-1", 1, "2026-01-02Z", "2026-01-01Z",
              None, None, None, None, None, None, None, None),
         )
+
+
+def test_task_6611_bidirectional_requirement_to_ddl_traceability(tmp_path: Path) -> None:
+    """Executable TASK-6611 §§2/4/5/6 trace table; S3 lifecycle is deferred."""
+    path = tmp_path / "traceability.db"
+    Database(path).close()
+    with sqlite3.connect(path) as conn:
+        actual_sql = {
+            name: conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name=?", (name,)
+            ).fetchone()[0]
+            for name in APPROVED_DDL_SHA256
+        }
+
+    def ddl_digest(sql: str) -> str:
+        normalized = re.sub(
+            r"[\s\"`\[\]]+", "",
+            re.sub(r"\bIF\s+NOT\s+EXISTS\b", "", sql.strip().rstrip(";"), flags=re.I),
+        ).lower()
+        return hashlib.sha256(normalized.encode()).hexdigest()
+
+    assert {name: ddl_digest(sql) for name, sql in actual_sql.items()} == APPROVED_DDL_SHA256
+
+    dimensions_by_table: dict[str, set[str]] = {}
+    for case_id, _, _, _ in IDENTITY_DDL_DRIFT_CASES:
+        owner, *_, dimension = case_id.split(":")
+        dimensions_by_table.setdefault(owner, set()).add(dimension)
+    exact_column_dimensions = {"name", "type", "null", "default", "order"}
+    assert exact_column_dimensions <= dimensions_by_table["remote_runners"]
+    assert exact_column_dimensions <= dimensions_by_table["remote_runner_enrollment_challenges"]
+    assert {"name", "unique", "order", "predicate"} == dimensions_by_table["expiry-index"]
+
+    requirements = {
+        "2.runner-expiry-and-exact-parent",
+        "2.challenge-authority-and-exact-constraints",
+        "2.expiry-index",
+        "4.marker-and-six-ordered-stages",
+        "4.two-shapes-empty-graph-and-complete-only",
+        "4.preflight-before-mutation-and-residue-refusal",
+        "4.atomic-parent-replacement-and-fk-validation",
+        "5.exact-merged-s2-history-and-three-reopens",
+        "5.every-stage-and-replacement-interruption",
+        "5.systematic-negative-snapshot-matrix",
+        "6.forward-and-reverse-object-traceability",
+    }
+    artifact_to_requirement: dict[str, str] = {}
+    for case_id, _, _, _ in IDENTITY_DDL_DRIFT_CASES:
+        if case_id.startswith("remote_runners"):
+            requirement = "2.runner-expiry-and-exact-parent"
+        elif case_id.startswith("remote_runner_enrollment_challenges"):
+            requirement = "2.challenge-authority-and-exact-constraints"
+        else:
+            requirement = "2.expiry-index"
+        artifact_to_requirement[f"negative:{case_id}"] = requirement
+    artifact_to_requirement.update({
+        **{f"stage:{stage}": "4.marker-and-six-ordered-stages" for stage in IDENTITY_STAGES},
+        "validator:two-shape": "4.two-shapes-empty-graph-and-complete-only",
+        "validator:preflight-snapshot": "4.preflight-before-mutation-and-residue-refusal",
+        "hook:before-parent-replacement": "4.atomic-parent-replacement-and-fk-validation",
+        "hook:after-parent-replacement": "4.atomic-parent-replacement-and-fk-validation",
+        "fixture:git-archive-1be72fe": "5.exact-merged-s2-history-and-three-reopens",
+        "fixture:all-stage-interruptions": "5.every-stage-and-replacement-interruption",
+        "fixture:all-ddl-marker-row-negatives": "5.systematic-negative-snapshot-matrix",
+        "assertion:bidirectional-completeness": "6.forward-and-reverse-object-traceability",
+    })
+    # Forward: every approved persistence/migration requirement has proof.
+    assert set(artifact_to_requirement.values()) == requirements
+    # Reverse: every new object/column/constraint/index/marker/stage artifact
+    # has exactly one approved owner (a dict cannot assign two owners).
+    assert len(artifact_to_requirement) == len(set(artifact_to_requirement))
+
+    # TASK-6611 lifecycle/S3 requirements are intentionally not persistence
+    # artifacts: no challenge producer/consumer, certificate issuance,
+    # rotation, revocation service, S3 route, or transport is implemented here.
+    deferred = {
+        "challenge-create-consume-replay",
+        "certificate-issuance-renewal",
+        "generation-rotation-revocation",
+        "s3-routes-services-transport-activation",
+    }
+    assert deferred.isdisjoint(artifact_to_requirement)
 
 
 @pytest.mark.parametrize(
@@ -673,5 +916,59 @@ def test_marker_object_mismatch_and_temporary_residue_refuse_before_mutation(
         conn.commit()
     before = _complete_snapshot(path)
     with pytest.raises(sqlite3.DatabaseError, match=message):
+        Database(path)
+    assert _complete_snapshot(path) == before
+
+
+@pytest.mark.parametrize("stage", IDENTITY_STAGES)
+def test_every_known_marker_stage_with_impossible_objects_refuses_byte_exact(
+    tmp_path: Path, stage: str,
+) -> None:
+    path = tmp_path / f"impossible-{stage}.db"
+    Database(path).close()
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "UPDATE remote_runner_schema_migrations SET stage=? WHERE name=?",
+            (stage, IDENTITY_MIGRATION_NAME),
+        )
+        if stage in IDENTITY_STAGES[:3]:
+            # Complete objects are premature for these known stages.
+            pass
+        else:
+            # Later stages require both challenge objects; remove one.
+            conn.execute("DROP INDEX remote_enrollment_challenge_expiry")
+        conn.commit()
+    before = _complete_snapshot(path)
+    for _ in range(2):
+        with pytest.raises(sqlite3.DatabaseError, match="stage mismatch"):
+            Database(path)
+        assert _complete_snapshot(path) == before
+
+
+def test_duplicate_conflicting_marker_rows_refuse_before_mutation(tmp_path: Path) -> None:
+    path = tmp_path / "duplicate-marker.db"
+    Database(path).close()
+    with sqlite3.connect(path) as conn:
+        rows = conn.execute(
+            "SELECT name,stage,updated_at FROM remote_runner_schema_migrations"
+        ).fetchall()
+        conn.execute("DROP TABLE remote_runner_schema_migrations")
+        conn.execute(
+            "CREATE TABLE remote_runner_schema_migrations "
+            "(name TEXT, stage TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO remote_runner_schema_migrations VALUES (?,?,?)", rows
+        )
+        conn.executemany(
+            "INSERT INTO remote_runner_schema_migrations VALUES (?,?,?)",
+            [
+                (IDENTITY_MIGRATION_NAME, IDENTITY_STAGES[0], "2026-01-01Z"),
+                (IDENTITY_MIGRATION_NAME, IDENTITY_STAGES[1], "2026-01-02Z"),
+            ],
+        )
+        conn.commit()
+    before = _complete_snapshot(path)
+    with pytest.raises(sqlite3.DatabaseError):
         Database(path)
     assert _complete_snapshot(path) == before

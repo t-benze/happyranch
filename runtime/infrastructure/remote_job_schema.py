@@ -478,10 +478,14 @@ def migrate_identity_enrollment_schema(
                         raise sqlite3.DatabaseError(
                             "identity/enrollment temporary parent validation failed"
                         )
+                    if stage_hook is not None:
+                        stage_hook("before:parent_replacement")
                     conn.execute("DROP TABLE remote_runners")
                     conn.execute(
                         f"ALTER TABLE {IDENTITY_TEMP_PARENT} RENAME TO remote_runners"
                     )
+                    if stage_hook is not None:
+                        stage_hook("after:parent_replacement")
                 elif _normalized(actual) != _normalized(TABLE_SQL["remote_runners"]):
                     raise sqlite3.DatabaseError("conflicting remote-job table: remote_runners")
             elif stage == "create_enrollment_challenges":

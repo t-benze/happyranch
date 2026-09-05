@@ -79,8 +79,13 @@ shape regardless of rows. Once complete, only the amended parent and exact
 challenge objects are valid. Every other partial, nullable, reordered,
 constraint/index/FK-drifted, marker-mismatched, or temporary-parent state is
 refused before mutation. Empty-S2 replacement and each marker advance are
-atomic; no certificate expiry is guessed or backfilled. Repeat-open and exact
-snapshot fixtures preserve existing jobs linkage, `audit_log.task_id`,
+atomic; deterministic inert test hooks immediately before parent replacement
+and after rename execute inside the same rebuild transaction, and no certificate
+expiry is guessed or backfilled. The compatibility fixture executes the exact
+archived merged-S2 commit instead of synthesizing it from current code. Full
+schema/all-row snapshots, two further reopens, systematic per-column/CHECK/
+UNIQUE/FK/index and marker/object mutations, and executable two-way requirement
+traceability preserve existing jobs linkage, `audit_log.task_id`,
 `tasks.blocked_on_job_ids`, and every unrelated object/value.
 
 Challenge creation/consumption/replay and runner authentication/enrollment,
