@@ -35,6 +35,40 @@ tsnet_open() {
   [[ -n "${sidecar_ip:-}" ]] || return 1
   printf 'GET / HTTP/1.0\r\n\r\n' | timeout 5 sudo "$ts_dir/tailscale" --socket="$work/peer.sock" nc "$sidecar_ip" 443 >/dev/null 2>&1
 }
+current_journal_cursor() {
+  local output cursors
+  output="$(sudo journalctl -n 0 --show-cursor --no-pager)" || return 1
+  cursors="$(sed -n 's/^-- cursor: //p' <<<"$output")"
+  [[ "$(wc -l <<<"$cursors" | xargs)" == 1 && -n "$cursors" ]] || return 1
+  printf '%s\n' "$cursors"
+}
+current_control_terminal_receipt() {
+  local cursor="$1" invocation_id="$2"
+  sudo journalctl --after-cursor="$cursor" -o json --output-fields=MESSAGE,_SYSTEMD_INVOCATION_ID --no-pager | python -c '
+import json, sys
+invocation = sys.argv[1]
+expected = {
+    "category": "engine_start", "phase": "engine_initialization",
+    "actor": "tsnet-sidecar", "unit": "happyranch-tsnet-sidecar.service",
+    "outcome": "failed", "terminal": True, "assertion": {"status": "completed"},
+}
+matches = []
+for line in sys.stdin:
+    entry = json.loads(line)
+    message = entry.get("MESSAGE")
+    if entry.get("_SYSTEMD_INVOCATION_ID") != invocation or not isinstance(message, str):
+        continue
+    if message.startswith("diagnostic_receipt="):
+        receipt = json.loads(message.split("=", 1)[1])
+        if receipt == expected:
+            matches.append(receipt)
+        elif receipt.get("category") == "engine_start":
+            raise SystemExit(1)
+if len(matches) != 1:
+    raise SystemExit(1)
+print(json.dumps(matches[0], sort_keys=True, separators=(",", ":")))
+' "$invocation_id"
+}
 systemctl_absent_value() {
   local unit="$1" property="$2" expected="$3" value status
   set +e
@@ -356,8 +390,7 @@ PY
 for arm_spec in "${acceptance_arms[@]}"; do
   IFS=: read -r arm_id ordering variant <<<"$arm_spec"
   arm_reset "$arm_id" "$variant"
-  arm_journal_cursor="$(sudo journalctl -u happyranch-tsnet-sidecar.service -n 0 --show-cursor --no-pager | sed -n 's/^-- cursor: //p')"
-  [[ -n "$arm_journal_cursor" ]] || fail "current arm journal cursor unavailable"
+  arm_journal_cursor="$(current_journal_cursor)" || fail "current arm journal cursor unavailable"
   production_expected_peer_visible=0
   sudo test ! -e /var/lib/happyranch-tsnet-sidecar/credential.consumed || fail "current arm ExpectedPeers marker was not fresh"
   if [[ "$ordering" == A ]]; then
@@ -372,16 +405,11 @@ for arm_spec in "${acceptance_arms[@]}"; do
     ! active happyranch-tsnet-sidecar.service || fail "shipping control unexpectedly READY"
     arm_invocation_id="$(systemctl show happyranch-tsnet-sidecar.service -p InvocationID --value)"
     [[ "$arm_invocation_id" =~ ^[0-9a-f]{32}$ ]] || fail "shipping control invocation identity unavailable"
-    current_arm_receipt_count="$(sudo journalctl -u happyranch-tsnet-sidecar.service _SYSTEMD_INVOCATION_ID="$arm_invocation_id" --after-cursor="$arm_journal_cursor" -o cat --no-pager | python -c '
-import json, sys
-matches=[]
-for line in sys.stdin:
-    if line.startswith("diagnostic_receipt="):
-        value=json.loads(line.split("=",1)[1])
-        if value.get("category")=="engine_start" and value.get("phase")=="engine_initialization": matches.append(value)
-print(len(matches))
-')"
-    [[ "$current_arm_receipt_count" == 1 ]] || fail "shipping control current arm coarse receipt cardinality mismatch"
+    if ! redacted_control_receipt="$(current_control_terminal_receipt "$arm_journal_cursor" "$arm_invocation_id")"; then
+      fail "shipping control current arm coarse receipt cardinality mismatch"
+    fi
+    printf '{"arm_id":"%s","invocation_binding":"current","receipt":%s}\n' "$arm_id" "$redacted_control_receipt" >>"$diagnostics/control-terminal-receipts.jsonl"
+    python "$evidence_driver" diagnose "$evidence_artifact" --id "$run_id:$arm_id:engine_start" --category engine_start --phase engine_initialization --actor tsnet-sidecar --unit happyranch-tsnet-sidecar.service
     arm_result_args=(--control-category engine_start --control-phase engine_initialization)
   else
     if ! wait_for_candidate active happyranch-tsnet-sidecar.service; then

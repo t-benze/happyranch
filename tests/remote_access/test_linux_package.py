@@ -231,13 +231,91 @@ def test_real_systemd_candidate_expected_peer_is_production_observed() -> None:
 
 def test_real_systemd_control_receipts_are_current_arm_exactly_once() -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    assert 'journalctl -u happyranch-tsnet-sidecar.service -n 0 --show-cursor' in harness
-    assert '--after-cursor="$arm_journal_cursor"' in harness
-    assert '_SYSTEMD_INVOCATION_ID="$arm_invocation_id"' in harness
+    assert 'journalctl -n 0 --show-cursor' in harness
+    assert 'journalctl -u happyranch-tsnet-sidecar.service -n 0 --show-cursor' not in harness
+    assert '--after-cursor="$cursor"' in harness
+    assert '--output-fields=MESSAGE,_SYSTEMD_INVOCATION_ID' in harness
     assert 'InvocationID --value' in harness
-    assert 'print(len(matches))' in harness
-    assert '[[ "$current_arm_receipt_count" == 1 ]]' in harness
-    assert 'current_arm_receipt_count' in harness
+    assert 'current_control_terminal_receipt' in harness
+    assert '"$run_id:$arm_id:engine_start"' in harness
+
+
+def _run_control_terminal_receipt(tmp_path: Path, journal: str, *, invocation: str = "a" * 32) -> subprocess.CompletedProcess[str]:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    helper = "current_control_terminal_receipt() {" + harness.split("current_control_terminal_receipt() {", 1)[1].split("\nsystemctl_absent_value() {", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    (fake_bin / "sudo").write_text("#!/bin/bash\nexec \"$@\"\n")
+    (fake_bin / "journalctl").write_text("""#!/bin/bash
+[[ " $* " == *" --after-cursor=cursor-1 "* ]] || exit 9
+[[ " $* " != *" -u "* ]] || exit 9
+printf '%s\n' "$FAKE_JOURNAL"
+""")
+    for executable in fake_bin.iterdir(): executable.chmod(0o700)
+    script = f'''set -euo pipefail
+{helper}
+current_control_terminal_receipt cursor-1 {invocation}
+'''
+    return subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, check=False,
+        env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "FAKE_JOURNAL": journal},
+    )
+
+
+def _journal_entry(invocation: str, receipt: dict[str, object]) -> str:
+    return json.dumps({"_SYSTEMD_INVOCATION_ID": invocation, "MESSAGE": "diagnostic_receipt=" + json.dumps(receipt)})
+
+
+def _control_receipt(**changes: object) -> dict[str, object]:
+    receipt: dict[str, object] = {
+        "category": "engine_start", "phase": "engine_initialization",
+        "actor": "tsnet-sidecar", "unit": "happyranch-tsnet-sidecar.service",
+        "outcome": "failed", "terminal": True, "assertion": {"status": "completed"},
+    }
+    receipt.update(changes)
+    return receipt
+
+
+def test_real_systemd_control_receipt_accepts_one_current_arm_and_redacts_output(tmp_path: Path) -> None:
+    invocation = "a" * 32
+    result = _run_control_terminal_receipt(tmp_path, _journal_entry(invocation, _control_receipt()), invocation=invocation)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == _control_receipt()
+
+
+@pytest.mark.parametrize("cursor_output,expected_rc", [
+    ("-- cursor: current-arm-cursor", 0),
+    ("", 1),
+    ("-- cursor: stale\n-- cursor: current", 1),
+])
+def test_real_systemd_current_arm_cursor_is_unfiltered_and_exactly_one(tmp_path: Path, cursor_output: str, expected_rc: int) -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    helper = "current_journal_cursor() {" + harness.split("current_journal_cursor() {", 1)[1].split("\ncurrent_control_terminal_receipt() {", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    (fake_bin / "sudo").write_text("#!/bin/bash\nexec \"$@\"\n")
+    (fake_bin / "journalctl").write_text("""#!/bin/bash
+[[ " $* " == *" -n 0 "* && " $* " == *" --show-cursor "* ]] || exit 9
+[[ " $* " != *" -u "* ]] || exit 9
+printf '%s\n' "$FAKE_CURSOR"
+""")
+    for executable in fake_bin.iterdir(): executable.chmod(0o700)
+    result = subprocess.run(
+        ["bash", "-c", f"set -euo pipefail\n{helper}\ncurrent_journal_cursor"],
+        capture_output=True, text=True, check=False,
+        env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "FAKE_CURSOR": cursor_output},
+    )
+    assert (result.returncode == 0) == (expected_rc == 0)
+
+
+@pytest.mark.parametrize("journal", [
+    "",
+    _journal_entry("b" * 32, _control_receipt()),
+    "\n".join([_journal_entry("a" * 32, _control_receipt())] * 2),
+    _journal_entry("a" * 32, _control_receipt(secret="credential=do-not-emit")),
+])
+def test_real_systemd_control_receipt_rejects_missing_wrong_multiple_or_secret_bearing(tmp_path: Path, journal: str) -> None:
+    result = _run_control_terminal_receipt(tmp_path, journal)
+    assert result.returncode != 0
+    assert "do-not-emit" not in result.stdout + result.stderr
 
 
 def test_real_systemd_denial_matrix_executes_every_bounded_probe() -> None:
