@@ -251,42 +251,69 @@ def test_real_systemd_denial_matrix_executes_every_bounded_probe() -> None:
         assert sandbox_property in harness
 
 
-def test_real_systemd_arm_cleanup_is_idempotent_but_still_verifies_residue() -> None:
+def _run_real_systemd_arm_cleanup(tmp_path: Path, **env: str) -> subprocess.CompletedProcess[str]:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    unit_helpers = "systemctl_absent_value() {" + harness.split("systemctl_absent_value() {", 1)[1].split("\ndiagnostics=", 1)[0]
     cleanup = harness.split("arm_cleanup() {", 1)[1].split("\n}\narm_reset()", 1)[0]
-    assert "systemctl stop" in cleanup
-    assert "systemctl disable" in cleanup
-    assert "systemctl reset-failed" in cleanup
-    assert "systemctl stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || cleanup_complete=1" not in cleanup
-    assert "systemctl disable happyranch-managed.target || cleanup_complete=1" not in cleanup
-    assert "systemctl reset-failed happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || cleanup_complete=1" not in cleanup
-    assert "for unit in happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service" in cleanup
-    assert 'unit_absent "$unit" || cleanup_complete=1' in cleanup
-    assert "LoadState --value" in cleanup
-    assert '[[ -z "$main_pid" || "$main_pid" == 0 ]]' in cleanup
-    assert "list-unit-files" in cleanup
-    assert "pgrep -f" in cleanup
-    assert "! port_open 18443" in cleanup
-    assert "! tsnet_open" in cleanup
-    assert "acceptance arm cleanup incomplete" in cleanup
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    (fake_bin / "systemctl").write_text("""#!/bin/bash
+if [[ $1 == show ]]; then p=$4; case $p in LoadState) v=${LOAD_STATE-not-found}; s=${LOAD_RC:-4};; ActiveState) v=${ACTIVE_STATE-inactive}; s=${ACTIVE_RC:-4};; SubState) v=${SUB_STATE-dead}; s=${SUB_RC:-4};; MainPID) v=${MAIN_PID-0}; s=${PID_RC:-4};; esac; printf '%s\\n' "$v"; exit "$s"; fi
+[[ $1 == list-unit-files && ${UNIT_LIST_RESIDUE:-0} == 1 ]] && echo loaded
+exit 0
+""")
+    (fake_bin / "sudo").write_text("""#!/bin/bash
+[[ $1 == rm ]] && exit 0
+exec "$@"
+""")
+    (fake_bin / "pgrep").write_text("#!/bin/bash\n[[ ${PROCESS_RESIDUE:-0} == 1 ]]\n")
+    for executable in fake_bin.iterdir(): executable.chmod(0o700)
+    work = tmp_path / "work"; (work / "hs").mkdir(parents=True)
+    (work / "headscale").write_text("#!/bin/bash\n[[ ${FIXTURE_RESIDUE:-0} == 1 ]] && echo '[{\"id\":1,\"name\":\"home-sidecar-ci\"}]' || echo '[]'\n")
+    (work / "headscale").chmod(0o700)
+    script = f"""set -euo pipefail
+fail() {{ echo "$1" >&2; exit 1; }}
+port_open() {{ [[ ${{PORT_RESIDUE:-0}} == 1 ]]; }}
+tsnet_open() {{ [[ ${{LISTENER_RESIDUE:-0}} == 1 ]]; }}
+{unit_helpers}
+work={work!s}; diagnostics={tmp_path!s}
+arm_cleanup() {{
+{cleanup}
+}}
+arm_cleanup
+"""
+    run_env = os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "N3_RESIDUE_ROOT": str(tmp_path), "N3_UNIT_ROOT": str(tmp_path)} | env
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=run_env, check=False)
 
 
-def test_real_systemd_arm_cleanup_rejects_loaded_units_and_real_residue() -> None:
-    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    cleanup = harness.split("arm_cleanup() {", 1)[1].split("\n}\narm_reset()", 1)[0]
-    assert '[[ "$load_state" == not-found ]]' in cleanup
-    assert '/etc/systemd/system/$unit' in cleanup
-    assert '/run/systemd/system/$unit' in cleanup
-    assert '/etc/systemd/system/$unit.d' in cleanup
-    assert '/run/systemd/system/$unit.d' in cleanup
-    for residue in (
-        "/var/lib/happyranch-connector",
-        "/run/happyranch-connector",
-        "/run/happyranch-tsnet-sidecar",
-        "/var/log/happyranch-connector",
-        "/var/log/happyranch-tsnet-sidecar",
-    ):
-        assert residue in cleanup
+@pytest.mark.parametrize("exit_codes", [(0, 0, 0, 0), (1, 1, 1, 1), (4, 0, 1, 4)])
+def test_real_systemd_arm_cleanup_accepts_recognized_absent_exit_orderings(tmp_path: Path, exit_codes: tuple[int, int, int, int]) -> None:
+    result = _run_real_systemd_arm_cleanup(tmp_path, **dict(zip(("LOAD_RC", "ACTIVE_RC", "SUB_RC", "PID_RC"), map(str, exit_codes), strict=True)))
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("env", [
+    {"LOAD_STATE": "", "LOAD_RC": "4"}, {"LOAD_STATE": "not-found", "LOAD_RC": "2"},
+    {"LOAD_STATE": "loaded", "LOAD_RC": "0"},
+    {"ACTIVE_STATE": "active", "ACTIVE_RC": "0"}, {"MAIN_PID": "42", "PID_RC": "0"},
+    {"UNIT_LIST_RESIDUE": "1"}, {"PROCESS_RESIDUE": "1"}, {"PORT_RESIDUE": "1"},
+    {"LISTENER_RESIDUE": "1"}, {"FIXTURE_RESIDUE": "1"},
+])
+def test_real_systemd_arm_cleanup_rejects_query_and_probe_residue(tmp_path: Path, env: dict[str, str]) -> None:
+    assert _run_real_systemd_arm_cleanup(tmp_path, **env).returncode != 0
+
+
+@pytest.mark.parametrize("residue", [
+    "etc/systemd/system/happyranch-managed.target", "run/systemd/system/happyranch-managed.target.d",
+    "etc/happyranch/enrollment.key", ".happyranch-install-transaction.json", ".happyranch-backup",
+    ".happyranch-units-backup", "opt/happyranch", "var/lib/happyranch-connector",
+    "run/happyranch-tsnet-sidecar", "var/log/happyranch-connector", ".happyranch-stage-leftover",
+    ".happyranch-tmp-leftover",
+])
+def test_real_systemd_arm_cleanup_rejects_every_filesystem_residue_class(tmp_path: Path, residue: str) -> None:
+    path = tmp_path / residue
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.mkdir() if "." not in path.name else path.write_text("residue")
+    assert _run_real_systemd_arm_cleanup(tmp_path).returncode != 0
 
 
 def test_composite_service_manager_executes_start_ready_stop_crash_restart() -> None:

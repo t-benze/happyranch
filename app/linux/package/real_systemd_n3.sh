@@ -35,6 +35,35 @@ tsnet_open() {
   [[ -n "${sidecar_ip:-}" ]] || return 1
   printf 'GET / HTTP/1.0\r\n\r\n' | timeout 5 sudo "$ts_dir/tailscale" --socket="$work/peer.sock" nc "$sidecar_ip" 443 >/dev/null 2>&1
 }
+systemctl_absent_value() {
+  local unit="$1" property="$2" expected="$3" value status
+  set +e
+  value="$(systemctl show "$unit" -p "$property" --value 2>/dev/null)"
+  status=$?
+  set -e
+  [[ "$value" == "$expected" ]] || return 1
+  # systemctl returns nonzero for a unit which is genuinely not loaded.  The
+  # exact absent value is evidence for that exit only; empty/prose output and
+  # every other query failure remain fatal.
+  (( status == 0 || status == 1 || status == 4 )) || return 1
+  (( status == 0 )) || [[ "$value" == not-found || "$value" == inactive || "$value" == dead || "$value" == 0 ]]
+}
+unit_absent() {
+  local unit="$1" unit_root="${N3_UNIT_ROOT:-}"
+  systemctl_absent_value "$unit" LoadState not-found || return 1
+  systemctl_absent_value "$unit" ActiveState inactive || return 1
+  systemctl_absent_value "$unit" SubState dead || return 1
+  local main_pid status
+  set +e
+  main_pid="$(systemctl show "$unit" -p MainPID --value 2>/dev/null)"
+  status=$?
+  set -e
+  [[ -z "$main_pid" || "$main_pid" == 0 ]] || return 1
+  (( status == 0 || status == 1 || status == 4 )) || return 1
+  (( status == 0 )) || [[ "$main_pid" == 0 ]] || return 1
+  [[ ! -e "$unit_root/etc/systemd/system/$unit" && ! -e "$unit_root/run/systemd/system/$unit" ]] || return 1
+  [[ ! -e "$unit_root/etc/systemd/system/$unit.d" && ! -e "$unit_root/run/systemd/system/$unit.d" ]] || return 1
+}
 diagnostics="${N3_DIAGNOSTICS_DIR:-$(mktemp -d)}"
 mkdir -p "$diagnostics"
 printf 'subject=%s\n' "${PROOF_SUBJECT_SHA:-missing}" >"$diagnostics/bootstrap.txt"
@@ -270,20 +299,7 @@ PY
   python "$evidence_driver" validate-denial-matrix "$diagnostics/$arm_id-denial-matrix.json" --expected-arm "$arm_id"
 }
 arm_cleanup() {
-  local cleanup_complete=0
-  unit_absent() {
-    local unit="$1" load_state active_state sub_state main_pid
-    load_state="$(systemctl show "$unit" -p LoadState --value 2>/dev/null)" || return 1
-    active_state="$(systemctl show "$unit" -p ActiveState --value 2>/dev/null)" || return 1
-    sub_state="$(systemctl show "$unit" -p SubState --value 2>/dev/null)" || return 1
-    main_pid="$(systemctl show "$unit" -p MainPID --value 2>/dev/null)" || return 1
-    [[ "$load_state" == not-found ]] || return 1
-    [[ "$active_state" == inactive ]] || return 1
-    [[ "$sub_state" == dead ]] || return 1
-    [[ -z "$main_pid" || "$main_pid" == 0 ]] || return 1
-    [[ ! -e "/etc/systemd/system/$unit" && ! -e "/run/systemd/system/$unit" ]] || return 1
-    [[ ! -e "/etc/systemd/system/$unit.d" && ! -e "/run/systemd/system/$unit.d" ]] || return 1
-  }
+  local cleanup_complete=0 residue_root="${N3_RESIDUE_ROOT:-}"
   # These requests are deliberately idempotent: the pre-arm reset also runs
   # after a prior cleanup has removed the units.  The explicit process, port,
   # fixture, credential, transaction, and path checks below decide success.
@@ -297,19 +313,19 @@ arm_cleanup() {
   while read -r fixture_id; do
     [[ -z "$fixture_id" ]] || "$work/headscale" nodes delete --identifier "$fixture_id" --force --config "$work/hs/config.yaml" >/dev/null || cleanup_complete=1
   done < <("$work/headscale" nodes list --output json --config "$work/hs/config.yaml" | python -c 'import json,sys; print("\n".join(str(n["id"]) for n in json.load(sys.stdin) if n.get("givenName")=="home-sidecar-ci" or n.get("name")=="home-sidecar-ci"))')
-  ! "$work/headscale" nodes list --output json --config "$work/hs/config.yaml" | python -c 'import json,sys; raise SystemExit(any(n.get("givenName")=="home-sidecar-ci" or n.get("name")=="home-sidecar-ci" for n in json.load(sys.stdin)))' || cleanup_complete=1
+  "$work/headscale" nodes list --output json --config "$work/hs/config.yaml" | python -c 'import json,sys; raise SystemExit(any(n.get("givenName")=="home-sidecar-ci" or n.get("name")=="home-sidecar-ci" for n in json.load(sys.stdin)))' || cleanup_complete=1
   for unit in happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service; do
     unit_absent "$unit" || cleanup_complete=1
   done
   ! systemctl list-unit-files happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service --no-legend 2>/dev/null | grep -q . || cleanup_complete=1
   ! port_open 18443 || cleanup_complete=1
   ! tsnet_open || cleanup_complete=1
-  [[ ! -e /etc/happyranch/enrollment.key && ! -e /etc/systemd/system/happyranch-tsnet-sidecar.service.d ]] || cleanup_complete=1
-  [[ ! -e /.happyranch-install-transaction.json && ! -e /.happyranch-backup && ! -e /.happyranch-units-backup ]] || cleanup_complete=1
-  [[ ! -e /opt/happyranch && ! -e /etc/happyranch && ! -e /var/lib/happyranch-connector && ! -e /var/lib/happyranch-tsnet-sidecar ]] || cleanup_complete=1
-  [[ ! -e /run/happyranch-connector && ! -e /run/happyranch-tsnet-sidecar && ! -e /var/log/happyranch-connector && ! -e /var/log/happyranch-tsnet-sidecar ]] || cleanup_complete=1
+  [[ ! -e "$residue_root/etc/happyranch/enrollment.key" && ! -e "$residue_root/etc/systemd/system/happyranch-tsnet-sidecar.service.d" ]] || cleanup_complete=1
+  [[ ! -e "$residue_root/.happyranch-install-transaction.json" && ! -e "$residue_root/.happyranch-backup" && ! -e "$residue_root/.happyranch-units-backup" ]] || cleanup_complete=1
+  [[ ! -e "$residue_root/opt/happyranch" && ! -e "$residue_root/etc/happyranch" && ! -e "$residue_root/var/lib/happyranch-connector" && ! -e "$residue_root/var/lib/happyranch-tsnet-sidecar" ]] || cleanup_complete=1
+  [[ ! -e "$residue_root/run/happyranch-connector" && ! -e "$residue_root/run/happyranch-tsnet-sidecar" && ! -e "$residue_root/var/log/happyranch-connector" && ! -e "$residue_root/var/log/happyranch-tsnet-sidecar" ]] || cleanup_complete=1
   ! pgrep -f '(^|/)(happyranch-connector|happyranch-tsnet-sidecar)( |$)' >/dev/null || cleanup_complete=1
-  [[ -z "$(sudo find / -maxdepth 1 \( -name '.happyranch-stage-*' -o -name '.happyranch-tmp-*' \) -print -quit)" ]] || cleanup_complete=1
+  [[ -z "$(sudo find "${residue_root:-/}" -maxdepth 1 \( -name '.happyranch-stage-*' -o -name '.happyranch-tmp-*' \) -print -quit)" ]] || cleanup_complete=1
   (( cleanup_complete == 0 )) || fail "acceptance arm cleanup incomplete"
 }
 arm_reset() {
