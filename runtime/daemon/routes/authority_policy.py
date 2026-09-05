@@ -242,13 +242,12 @@ def _outcome_receipts_complete(org: OrgDep, row: dict) -> tuple[bool, str | None
     if not (
         row["root_task_id"] == task["id"]
         and row["manager_agent"] == task["assigned_agent"]
-        and row["manager_session_id"] == task["current_session_id"]
         and result["task_id"] == task["id"]
         and result["agent"] == row["manager_agent"]
         and result["session_id"] == row["manager_session_id"]
         and row["causal_event_id"] == expected_causal_id
         and row["causal_event_digest"] == expected_causal_digest
-        and thread is not None and thread["id"] == thread_id
+        and (thread_id is None or (thread is not None and thread["id"] == thread_id))
     ):
         return False, thread_id
     release = org.db.execute("SELECT * FROM authority_policy_releases WHERE id=?", (row["release_id"],)).fetchone()

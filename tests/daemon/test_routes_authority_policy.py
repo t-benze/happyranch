@@ -52,12 +52,13 @@ def _seed_active(org):
     return release, store.activate(activation)
 
 
-def _seed_complete_outcome(org):
+def _seed_complete_outcome(org, *, thread_id="THR-proof"):
     release, activation = _seed_active(org)
-    org.db.insert_thread(ThreadRecord(id="THR-proof", subject="proof"))
+    if thread_id is not None:
+        org.db.insert_thread(ThreadRecord(id=thread_id, subject="proof"))
     org.db.insert_task(TaskRecord(
         id="TASK-proof", brief="proof", assigned_agent="engineering_manager",
-        dispatched_from_thread_id="THR-proof",
+        dispatched_from_thread_id=thread_id,
     ))
     org.db.update_task("TASK-proof", status=TaskStatus.IN_PROGRESS,
                        current_session_id="sess-proof", orchestration_step_count=1)
@@ -563,6 +564,37 @@ def test_outcome_projection_authenticates_complete_causal_join(client_with_runti
         assert forbidden not in response.text.lower()
 
 
+def test_outcome_projection_keeps_historical_receipt_complete_after_follow_up_session(
+    client_with_runtime,
+):
+    client, org = client_with_runtime
+    _seed_agent(org)
+    candidate_id = _seed_complete_outcome(org)
+    org.db.update_task("TASK-proof", current_session_id="sess-follow-up")
+
+    item = client.get(
+        "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy/outcomes"
+    ).json()["items"][0]
+
+    assert item["candidate_id"] == candidate_id
+    assert item["manager_session_id"] == "sess-proof"
+    assert item["receipt_state"] == "complete"
+
+
+def test_outcome_projection_accepts_complete_ordinary_non_thread_root(client_with_runtime):
+    client, org = client_with_runtime
+    _seed_agent(org)
+    candidate_id = _seed_complete_outcome(org, thread_id=None)
+
+    item = client.get(
+        "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy/outcomes"
+    ).json()["items"][0]
+
+    assert item["candidate_id"] == candidate_id
+    assert item["thread_id"] is None
+    assert item["receipt_state"] == "complete"
+
+
 @pytest.mark.parametrize("corruption", [
     "task", "result", "session", "release", "activation", "candidate",
     "evaluation", "authority_audit", "terminal_hook", "thread", "envelope",
@@ -580,7 +612,7 @@ def test_outcome_projection_marks_each_independent_join_corruption_incomplete(
     elif corruption == "result":
         org.db.execute("UPDATE task_results SET agent='other' WHERE task_id='TASK-proof'")
     elif corruption == "session":
-        org.db.execute("UPDATE tasks SET current_session_id='other' WHERE id='TASK-proof'")
+        org.db.execute("UPDATE task_results SET session_id='other' WHERE task_id='TASK-proof'")
     elif corruption == "release":
         org.db.execute("DROP TRIGGER authority_policy_releases_no_update")
         org.db.execute("UPDATE authority_policy_releases SET policy_digest=?", ("0" * 64,))

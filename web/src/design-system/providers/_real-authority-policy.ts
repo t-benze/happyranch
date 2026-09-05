@@ -31,8 +31,15 @@ export const realAuthorityPolicyApi: AuthorityPolicyApi = {
   },
   useCreateTeamEscalationPolicyRelease: () => {
     const { slug = '' } = useParams<{ slug: string }>();
+    const qc = useQueryClient();
     return useMutation({
       mutationFn: ({ agentName, body }) => authorityPolicyApi.createTeamEscalationPolicyRelease(slug, agentName, body),
+      onSuccess: async (_data, { agentName }) => {
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: ['team-escalation-policy', slug, agentName] }),
+          qc.invalidateQueries({ queryKey: ['team-escalation-policy-history', slug, agentName] }),
+        ]);
+      },
     });
   },
   useActivateTeamEscalationPolicyRelease: () => {
@@ -40,7 +47,12 @@ export const realAuthorityPolicyApi: AuthorityPolicyApi = {
     const qc = useQueryClient();
     return useMutation({
       mutationFn: ({ agentName, body }) => authorityPolicyApi.activateTeamEscalationPolicyRelease(slug, agentName, body),
-      onSuccess: (_data, { agentName }) => qc.invalidateQueries({ queryKey: ['team-escalation-policy', slug, agentName] }),
+      onSuccess: async (_data, { agentName }) => {
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: ['team-escalation-policy', slug, agentName] }),
+          qc.invalidateQueries({ queryKey: ['team-escalation-policy-history', slug, agentName] }),
+        ]);
+      },
     });
   },
   useTeamEscalationPolicyHistory: (agent) => {
