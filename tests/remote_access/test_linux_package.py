@@ -260,10 +260,33 @@ def test_real_systemd_arm_cleanup_is_idempotent_but_still_verifies_residue() -> 
     assert "systemctl stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || cleanup_complete=1" not in cleanup
     assert "systemctl disable happyranch-managed.target || cleanup_complete=1" not in cleanup
     assert "systemctl reset-failed happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || cleanup_complete=1" not in cleanup
-    assert "MainPID --value" in cleanup
+    assert "for unit in happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service" in cleanup
+    assert 'unit_absent "$unit" || cleanup_complete=1' in cleanup
+    assert "LoadState --value" in cleanup
+    assert '[[ -z "$main_pid" || "$main_pid" == 0 ]]' in cleanup
+    assert "list-unit-files" in cleanup
+    assert "pgrep -f" in cleanup
     assert "! port_open 18443" in cleanup
     assert "! tsnet_open" in cleanup
     assert "acceptance arm cleanup incomplete" in cleanup
+
+
+def test_real_systemd_arm_cleanup_rejects_loaded_units_and_real_residue() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    cleanup = harness.split("arm_cleanup() {", 1)[1].split("\n}\narm_reset()", 1)[0]
+    assert '[[ "$load_state" == not-found ]]' in cleanup
+    assert '/etc/systemd/system/$unit' in cleanup
+    assert '/run/systemd/system/$unit' in cleanup
+    assert '/etc/systemd/system/$unit.d' in cleanup
+    assert '/run/systemd/system/$unit.d' in cleanup
+    for residue in (
+        "/var/lib/happyranch-connector",
+        "/run/happyranch-connector",
+        "/run/happyranch-tsnet-sidecar",
+        "/var/log/happyranch-connector",
+        "/var/log/happyranch-tsnet-sidecar",
+    ):
+        assert residue in cleanup
 
 
 def test_composite_service_manager_executes_start_ready_stop_crash_restart() -> None:

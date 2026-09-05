@@ -271,6 +271,19 @@ PY
 }
 arm_cleanup() {
   local cleanup_complete=0
+  unit_absent() {
+    local unit="$1" load_state active_state sub_state main_pid
+    load_state="$(systemctl show "$unit" -p LoadState --value 2>/dev/null)" || return 1
+    active_state="$(systemctl show "$unit" -p ActiveState --value 2>/dev/null)" || return 1
+    sub_state="$(systemctl show "$unit" -p SubState --value 2>/dev/null)" || return 1
+    main_pid="$(systemctl show "$unit" -p MainPID --value 2>/dev/null)" || return 1
+    [[ "$load_state" == not-found ]] || return 1
+    [[ "$active_state" == inactive ]] || return 1
+    [[ "$sub_state" == dead ]] || return 1
+    [[ -z "$main_pid" || "$main_pid" == 0 ]] || return 1
+    [[ ! -e "/etc/systemd/system/$unit" && ! -e "/run/systemd/system/$unit" ]] || return 1
+    [[ ! -e "/etc/systemd/system/$unit.d" && ! -e "/run/systemd/system/$unit.d" ]] || return 1
+  }
   # These requests are deliberately idempotent: the pre-arm reset also runs
   # after a prior cleanup has removed the units.  The explicit process, port,
   # fixture, credential, transaction, and path checks below decide success.
@@ -285,14 +298,17 @@ arm_cleanup() {
     [[ -z "$fixture_id" ]] || "$work/headscale" nodes delete --identifier "$fixture_id" --force --config "$work/hs/config.yaml" >/dev/null || cleanup_complete=1
   done < <("$work/headscale" nodes list --output json --config "$work/hs/config.yaml" | python -c 'import json,sys; print("\n".join(str(n["id"]) for n in json.load(sys.stdin) if n.get("givenName")=="home-sidecar-ci" or n.get("name")=="home-sidecar-ci"))')
   ! "$work/headscale" nodes list --output json --config "$work/hs/config.yaml" | python -c 'import json,sys; raise SystemExit(any(n.get("givenName")=="home-sidecar-ci" or n.get("name")=="home-sidecar-ci" for n in json.load(sys.stdin)))' || cleanup_complete=1
-  for unit in happyranch-connector.service happyranch-tsnet-sidecar.service; do
-    [[ "$(systemctl show "$unit" -p MainPID --value 2>/dev/null || echo 0)" == 0 ]] || cleanup_complete=1
+  for unit in happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service; do
+    unit_absent "$unit" || cleanup_complete=1
   done
+  ! systemctl list-unit-files happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service --no-legend 2>/dev/null | grep -q . || cleanup_complete=1
   ! port_open 18443 || cleanup_complete=1
   ! tsnet_open || cleanup_complete=1
   [[ ! -e /etc/happyranch/enrollment.key && ! -e /etc/systemd/system/happyranch-tsnet-sidecar.service.d ]] || cleanup_complete=1
   [[ ! -e /.happyranch-install-transaction.json && ! -e /.happyranch-backup && ! -e /.happyranch-units-backup ]] || cleanup_complete=1
-  [[ ! -e /opt/happyranch && ! -e /etc/happyranch && ! -e /var/lib/happyranch-tsnet-sidecar ]] || cleanup_complete=1
+  [[ ! -e /opt/happyranch && ! -e /etc/happyranch && ! -e /var/lib/happyranch-connector && ! -e /var/lib/happyranch-tsnet-sidecar ]] || cleanup_complete=1
+  [[ ! -e /run/happyranch-connector && ! -e /run/happyranch-tsnet-sidecar && ! -e /var/log/happyranch-connector && ! -e /var/log/happyranch-tsnet-sidecar ]] || cleanup_complete=1
+  ! pgrep -f '(^|/)(happyranch-connector|happyranch-tsnet-sidecar)( |$)' >/dev/null || cleanup_complete=1
   [[ -z "$(sudo find / -maxdepth 1 \( -name '.happyranch-stage-*' -o -name '.happyranch-tmp-*' \) -print -quit)" ]] || cleanup_complete=1
   (( cleanup_complete == 0 )) || fail "acceptance arm cleanup incomplete"
 }
