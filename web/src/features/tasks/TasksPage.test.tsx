@@ -179,6 +179,74 @@ describe('TasksPage — read path (roots endpoint)', () => {
     expect(requestedBefore).toEqual(['first', 'first', 'page-2']);
   });
 
+  test('retains the first page when fetching the next page fails and retries that page only', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let intersect: IntersectionObserverCallback | undefined;
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: IntersectionObserverCallback) { intersect = callback; }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+      takeRecords() { return []; }
+      root = null;
+      rootMargin = '';
+      thresholds = [];
+    });
+    const requestedBefore: string[] = [];
+    let nextAttempts = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+        const before = new URL(request.url).searchParams.get('before') ?? 'first';
+        requestedBefore.push(before);
+        if (before === 'first') {
+          return HttpResponse.json({ tasks: [TASK], next_cursor: 'page-2' });
+        }
+        nextAttempts += 1;
+        return nextAttempts === 1
+          ? new HttpResponse(null, { status: 500 })
+          : HttpResponse.json({
+              tasks: [rootTask({ task_id: 'TASK-0092', brief: 'Recovered next page' })],
+              next_cursor: null,
+            });
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+    expect(await screen.findByText(/Draft Hong Kong visa guide/)).toBeInTheDocument();
+    await act(async () => intersect?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+
+    expect(await screen.findByText('Could not load more tasks')).toBeInTheDocument();
+    expect(screen.getByText(/Draft Hong Kong visa guide/)).toBeInTheDocument();
+    expect(screen.queryByText('End of list')).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading more…')).not.toBeInTheDocument();
+
+    const retry = screen.getByRole('button', { name: 'Retry loading more tasks' });
+    retry.focus();
+    expect(retry).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+
+    expect(await screen.findByText('Recovered next page')).toBeInTheDocument();
+    expect(screen.queryByText('Could not load more tasks')).not.toBeInTheDocument();
+    expect(await screen.findByText('End of list')).toBeInTheDocument();
+    expect(requestedBefore).toEqual(['first', 'page-2', 'page-2']);
+  });
+
+  test('provides a bounded mobile layout while retaining the desktop table', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [TASK], next_cursor: null }),
+      ),
+    );
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+    expect(await screen.findByText(/Draft Hong Kong visa guide/)).toBeInTheDocument();
+    expect(screen.getByTestId('tasks-responsive-list')).toHaveAttribute('data-tasks-responsive-list');
+    expect(screen.getByTestId('tasks-page-header')).toHaveClass('flex-col', 'sm:flex-row');
+    expect(screen.getByText('Draft Hong Kong visa guide v2')).toBeInTheDocument();
+    expect(document.querySelector('style')?.textContent).toContain('@media (max-width: 767px)');
+  });
+
   test('fetches from /tasks/roots and renders fixture tasks', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
