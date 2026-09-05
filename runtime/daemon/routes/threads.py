@@ -1541,7 +1541,12 @@ async def dispatch_from_thread_endpoint(
         ],
     )
     if inv.dispatched_task_id is not None:
-        raise HTTPException(status_code=409, detail={"code": "dispatch_already_used"})
+        code = (
+            "task_followup_dispatch_already_used"
+            if inv.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP
+            else "dispatch_already_used"
+        )
+        raise HTTPException(status_code=409, detail={"code": code})
 
     if not org.db.is_thread_participant(thread_id, body.dispatcher):
         raise HTTPException(status_code=403, detail={"code": "not_participant"})

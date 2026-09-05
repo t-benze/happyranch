@@ -2176,6 +2176,15 @@ def test_manager_task_followup_dispatch_creates_one_replacement_root(
     assert len(event) == 1
     assert event[0]["payload"]["original_root_task_id"] == "TASK-ORIGINAL"
 
+    replay = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head", "brief": "corrected replacement"},
+        headers=auth_headers,
+    )
+    assert replay.status_code == 409
+    assert replay.json()["detail"]["code"] == "task_followup_dispatch_already_used"
+
 
 def test_task_followup_replacement_lineage_cannot_dispatch_again(
     tmp_home, app, org_state, auth_headers,
