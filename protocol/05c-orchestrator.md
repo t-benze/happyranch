@@ -390,17 +390,21 @@ explicitly `engineering/engineering_manager`; the role/team seam is reusable
 but enables no other manager. Code landing, redeploy, readiness, and separate
 production activation are distinct gates.
 
-The readiness result is not derived from the corpus declaration. A checked-in
-proof artifact records the observed positive launch/completion path and every
-individual negative result with run/observation receipts, carries its own
-deterministic seal plus a separate exact release-controlled digest pin, and pins the
-exact shipping launch/consumer source digests plus evaluator contract and test
-release/activation/version/digest. Runtime verification rejects absent,
+The readiness result is not derived from the corpus declaration. The separate
+release harness executes one positive shipping launch/completion test and one
+production-seam test for each named negative, where those tests assert the
+actual durable, audit, envelope, queue, and recovery effects owned by their
+seam. It publishes canonical receipts binding each case to its exact test
+node/source bytes, process result digests, generator bytes, and shipping
+launch/recovery source digests. The checked-in artifact has a deterministic
+seal plus a separate exact release-controlled digest pin. Runtime verification
+independently re-hashes those sources and rejects absent,
 malformed, extra, stale-source, version/digest-mismatched, duplicate,
 incomplete, ambiguous, or less-than-14/14 evidence before activation lookup or
 mutation. The pin is release provenance within the existing shared-local trust
-boundary, not cryptographic signer authentication; recomputing the public seal
-alone cannot make a different artifact admissible. Landing the artifact is not deployment, verification by a deployed
+boundary, not cryptographic signer or same-UID tamper resistance; recomputing
+the public seal alone without the release pin cannot make a different artifact
+admissible. Landing the artifact is not deployment, verification by a deployed
 binary is not production activation, and activation remains a separate
 authorized operator act.
 

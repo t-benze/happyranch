@@ -20,12 +20,14 @@ and secrets are never projected.
 
 Save creates an immutable inactive release. Save & activate is offered only
 when the deployed binary verifies the release-controlled S7 proof artifact:
-one production-shaped newly-launched-manager delivery/evaluation/receipt path
-plus 14/14 observed must-escalate controls. The artifact carries per-run and
-per-case observation receipts, is pinned by an exact release-controlled digest,
-and is bound to the exact launch/consumer source digests. This is reviewed
-release provenance under the existing shared-local trust boundary, not a claim
-of cryptographic signer authenticity. Public checksum recomputation cannot
+one production-shaped newly-launched-manager delivery/evaluation/receipt test
+plus 14/14 production-seam negative tests. A separate release harness executes
+the tests, which assert the actual durable/audit/queue/envelope effects at their
+owning seams, and publishes receipts bound to the exact test nodes/source bytes,
+process results, generator, and launch/recovery sources. The artifact is pinned
+by an exact release-controlled digest. This is reviewed release provenance under
+the existing shared-local trust boundary, not cryptographic signer or same-UID
+tamper resistance. Public checksum recomputation cannot
 replace the release pin; absent, malformed, stale,
 mismatched, ambiguous, incomplete, or sub-100% evidence closes the guard. The
 activation route independently consumes only that verified result and performs

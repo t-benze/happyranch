@@ -459,31 +459,10 @@ def test_manager_policy_shipping_seam_consumes_authenticated_self_evaluation(
         "SELECT disposition FROM authority_evaluations"
     ).fetchall()
     assert [row["disposition"] for row in evaluations] == ["continue_same_root"]
-    # The release-controlled artifact is a serialization of this observed
-    # production-shaped path.  It may not substitute declared constants for
-    # the launch/result/evaluation receipts exercised above.
-    import json as _json
-    from pathlib import Path as _Path
-    proof = _json.loads((_Path(__file__).parents[1] / (
-        "runtime/orchestrator/authority_activation_readiness_proof.json"
-    )).read_text())
-    expected_observation = {
-        "release_id": release.id, "activation_id": activation.id,
-        "policy_version": str(release.version), "policy_digest": release.policy_digest,
-        "contract_id": SELF_EVALUATION_CONTRACT_ID,
-        "contract_version": SELF_EVALUATION_CONTRACT_VERSION,
-        "contract_digest": SELF_EVALUATION_CONTRACT_DIGEST,
-        "provider_id": binding["provider_id"], "executor_kind": binding["executor_kind"],
-        "model_id": binding["model_id"], "evaluation_count": len(evaluations),
-        "strict_parseable": True, "receipts_complete": True,
-        "disposition": "continue_same_root",
-    }
-    assert {key: proof["positive_observation"][key] for key in expected_observation} == expected_observation
     produced = orchestrator._db.execute("SELECT * FROM authority_candidates").fetchone()
-    assert proof["positive_observation"]["task_id"] == task_id
-    assert proof["positive_observation"]["session_id"] == "sess-s6a"
-    assert proof["positive_observation"]["result_id"] == str(result_row["id"])
-    assert proof["positive_observation"]["candidate_id"] == produced["id"]
+    assert produced["root_task_id"] == task_id
+    assert produced["manager_session_id"] == "sess-s6a"
+    assert produced["causal_event_id"] == f"result:{result_row['id']}"
     from runtime.daemon.routes.authority_policy import _outcome_receipts_complete
     projected = AuthorityPolicyStore(orchestrator._db).list_outcomes(
         "engineering", cursor=0, limit=10,
