@@ -350,9 +350,9 @@ seal, and full-history validators; missing/corrupt/incoherent state is the
 sanitized `policy_store_unavailable` failure. The S2 read itself neither
 creates nor activates policy. S3 exposes immutable release creation and thus
 truthfully reports `can_mutate=true` in both empty and active responses; that
-capability never implies activation. Its activation guard remains not ready with
-`TASK-6335 production verification required`; runtime injection and candidate
-pin production integration remain later slices.
+capability never implies activation. S4/S6a shipped runtime injection,
+candidate pins, and manager self-evaluation; S7 adds the bounded operator
+projection and explicit founder-authorized activation described below.
 
 **Dark policy mutation API (S3).** `POST .../releases` server-owns the exact
 Engineering team/policy identity and next version, validates the closed typed
@@ -366,13 +366,31 @@ attribution, with that closed receipt derived and verified at the transaction
 owner rather than accepted from a caller. The transaction resolves a request
 id's exact request-digest replay before validating the mutable active base; a
 new request still validates that base and a changed digest still conflicts.
-`POST .../activations` accepts the CAS/reactivation contract but, while the
-stable production-verification guard is closed, returns `412
-activation_guard_not_ready` before any release lookup or write, leaving zero
-activation/audit residue and no guessed-release oracle. The S1 store owns the
-separately testable sealed CAS, exact replay, stale epoch, same-team linkage,
-and older-version rollback transaction for the later guard opening; no route
-SQL, runtime injection, or production activation is added.
+`POST .../activations` accepts the CAS/reactivation contract as an explicit
+founder-authorized action. The authenticated route enforces the exact
+Engineering-manager allowlist and closed request model before proceeding
+through the S1 store's sealed CAS, exact replay, stale-epoch, same-team, audit,
+and older-version rollback checks without exposing guessed release existence
+as a distinct oracle. Shipping the route is not production activation.
+
+**S6b/S7 projection and activation.** The authenticated Engineering
+Manager surface exposes bounded stable snapshot/keyset pagination, with opaque
+independent cursors and deterministic tie-breakers, for immutable release and
+activation receipts plus secret-free self-evaluation outcomes. Concurrent
+newer inserts are outside the initial traversal snapshot and cannot shift,
+duplicate, or omit its older rows. It projects
+only durable release/activation/policy, prompt, provider, executor, model,
+task/result/session/thread/hook/envelope pins and emits `receipt_incomplete`
+when a causal join is absent or corrupt; raw evaluator output, rationale,
+prompts, policy prose, and secrets are prohibited. Workers and ineligible
+managers receive the same surface-unavailable 404 and omit the surface in the
+Agent payload and DOM. Rollback creates a new monotonic epoch pointing at an
+older immutable release. Eligibility remains explicitly
+`engineering/engineering_manager`; the role/team seam is reusable but enables
+no other manager. Activation is an explicit founder-authorized operator act
+subject to the ordinary daemon authentication, allowlist, closed request,
+immutable release linkage, exact replay/idempotency, audit, and CAS fences.
+Code landing or redeploy is not production activation.
 
 Release identity is derived at the typed store boundary, never supplied as a
 second caller-controlled authority. Its canonical JSON and SHA-256 cover

@@ -11,6 +11,7 @@ from runtime.infrastructure.database import Database
 from runtime.models import (
     TaskRecord,
     TaskStatus,
+    ThreadRecord,
 )
 from runtime.orchestrator.executors import ExecutorResult
 from runtime.orchestrator.orchestrator import Orchestrator, AgentUnavailableError
@@ -389,6 +390,7 @@ def test_manager_policy_shipping_seam_consumes_authenticated_self_evaluation(
     )
     from runtime.orchestrator.authority import run_authority_hook
     from runtime.orchestrator.authority_policy import CONTINUE_ROUTINE_PHRASE
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
     from runtime.orchestrator.teams import TeamManager
     from tests.authority_policy_test_factory import activate_test_policy
     from tests.conftest import seed_test_agents
@@ -404,7 +406,13 @@ def test_manager_policy_shipping_seam_consumes_authenticated_self_evaluation(
         success=True, duration_seconds=1, session_id="provider-session",
     )
     task_id = orchestrator.create_task("manager work")
-    orchestrator._db.update_task(task_id, assigned_agent="engineering_manager")
+    orchestrator._db.insert_thread(ThreadRecord(id="THR-s6a", subject="S6a proof"))
+    orchestrator._db.update_task(
+        task_id, assigned_agent="engineering_manager",
+    )
+    orchestrator._db.execute(
+        "UPDATE tasks SET dispatched_from_thread_id=? WHERE id=?", ("THR-s6a", task_id),
+    )
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-s6a")
     with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
         orchestrator._run_agent(task_id, "engineering_manager", "decide")
@@ -451,6 +459,23 @@ def test_manager_policy_shipping_seam_consumes_authenticated_self_evaluation(
         "SELECT disposition FROM authority_evaluations"
     ).fetchall()
     assert [row["disposition"] for row in evaluations] == ["continue_same_root"]
+    produced = orchestrator._db.execute("SELECT * FROM authority_candidates").fetchone()
+    assert produced["root_task_id"] == task_id
+    assert produced["manager_session_id"] == "sess-s6a"
+    assert produced["causal_event_id"] == f"result:{result_row['id']}"
+    from runtime.daemon.routes.authority_policy import _outcome_receipts_complete
+    projected = AuthorityPolicyStore(orchestrator._db).list_outcomes(
+        "engineering", cursor=None, limit=10,
+    )[0]
+    assert len(projected) == 1
+    complete, _ = _outcome_receipts_complete(
+        type("Org", (), {"db": orchestrator._db})(), projected[0]
+    )
+    assert complete, {
+        "projected": projected[0],
+        "task": dict(orchestrator._db.get_task(task_id).__dict__),
+        "audit": orchestrator._db.get_audit_logs(task_id),
+    }
 
 
 @pytest.mark.parametrize("marker", [

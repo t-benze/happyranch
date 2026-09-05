@@ -11353,6 +11353,92 @@ class Database:
         return 1 if row is None or row["version"] is None else int(row["version"]) + 1
 
     @_synchronized
+    def list_authority_policy_history(
+        self,
+        team: str,
+        *,
+        snapshot_version: int,
+        snapshot_epoch: int,
+        after_version: int | None,
+        after_epoch: int | None,
+        after_release_id: str | None,
+        after_activation_id: str | None,
+        limit: int,
+    ) -> list[dict]:
+        """Read immutable release/activation receipts without policy prose."""
+        rows = self._conn.execute(
+            """SELECT r.id AS release_id,r.policy_id,r.version,r.policy_digest,
+                      r.created_at AS release_created_at,r.actor_kind,
+                      a.id AS activation_id,a.epoch,a.action,
+                      a.created_at AS activation_created_at,a.activation_digest
+               FROM authority_policy_releases r
+               LEFT JOIN authority_policy_activations a
+                 ON a.release_id=r.id AND a.epoch<=?
+               WHERE r.team=? AND r.version<=?
+                 AND (? IS NULL OR (r.version,COALESCE(a.epoch,0),r.id,
+                                      COALESCE(a.id,'')) < (?,?,?,?))
+               ORDER BY r.version DESC,COALESCE(a.epoch,0) DESC,r.id DESC,
+                        COALESCE(a.id,'') DESC LIMIT ?""",
+            (
+                snapshot_epoch, team, snapshot_version, after_version,
+                after_version, after_epoch, after_release_id, after_activation_id,
+                limit,
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @_synchronized
+    def get_authority_policy_history_snapshot(self, team: str) -> tuple[int, int]:
+        row = self._conn.execute(
+            """SELECT COALESCE(MAX(r.version),0) AS version,
+                      COALESCE((SELECT MAX(epoch) FROM authority_policy_activations
+                                WHERE team=?),0) AS epoch
+               FROM authority_policy_releases r WHERE r.team=?""",
+            (team, team),
+        ).fetchone()
+        return int(row["version"]), int(row["epoch"])
+
+    @_synchronized
+    def list_authority_policy_outcomes(
+        self,
+        team: str,
+        *,
+        snapshot_created_at: str,
+        snapshot_id: str,
+        after_created_at: str | None,
+        after_id: str | None,
+        limit: int,
+    ) -> list[dict]:
+        """Read the joined immutable evaluation identity; projection authenticates completeness."""
+        rows = self._conn.execute(
+            """SELECT c.*,p.release_id,p.activation_id,p.activation_epoch,
+                      p.provider_id,p.executor_kind,e.id AS evaluation_id,
+                      e.disposition AS evaluation_disposition,e.disposition_code,
+                      e.response_digest,e.created_at AS evaluation_created_at,
+                      env.id AS envelope_id,env.state AS envelope_state,
+                      env.consumed_at AS envelope_consumed_at
+               FROM authority_candidates c
+               LEFT JOIN authority_candidate_policy_pins p ON p.candidate_id=c.id
+               LEFT JOIN authority_evaluations e ON e.candidate_id=c.id
+               LEFT JOIN authority_continue_envelopes env ON env.candidate_id=c.id
+               WHERE c.team=? AND (c.created_at,c.id) <= (?,?)
+                 AND (? IS NULL OR (c.created_at,c.id) < (?,?))
+               ORDER BY c.created_at DESC,c.id DESC LIMIT ?""",
+            (team, snapshot_created_at, snapshot_id, after_created_at,
+             after_created_at, after_id, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @_synchronized
+    def get_authority_policy_outcomes_snapshot(self, team: str) -> tuple[str, str] | None:
+        row = self._conn.execute(
+            "SELECT created_at,id FROM authority_candidates WHERE team=? "
+            "ORDER BY created_at DESC,id DESC LIMIT 1",
+            (team,),
+        ).fetchone()
+        return None if row is None else (str(row["created_at"]), str(row["id"]))
+
+    @_synchronized
     def activate_authority_policy(
         self, activation: AuthorityPolicyActivation
     ) -> AuthorityPolicyActivation:
@@ -11469,9 +11555,14 @@ class Database:
                 "ORDER BY epoch DESC LIMIT 1",
                 (team,),
             ).fetchone()
-            if previous is None or previous["epoch"] != expected_previous_epoch:
+            if previous is None:
+                if expected_previous_epoch != 0 or action != "bootstrap":
+                    raise sqlite3.IntegrityError("authority activation bootstrap CAS conflict")
+                epoch = 1
+            elif previous["epoch"] != expected_previous_epoch or action == "bootstrap":
                 raise sqlite3.IntegrityError("authority activation CAS conflict")
-            epoch = previous["epoch"] + 1
+            else:
+                epoch = previous["epoch"] + 1
             created_at = _now()
             activation_id = "APA-" + hashlib.sha256(
                 f"{team}:{request_id}:{request_digest}".encode("utf-8")
@@ -11481,7 +11572,7 @@ class Database:
                 team=team,
                 epoch=epoch,
                 release_id=release_id,
-                previous_activation_id=previous["id"],
+                previous_activation_id=None if previous is None else previous["id"],
                 expected_previous_epoch=expected_previous_epoch,
                 action=action,
                 actor_kind="shared_local_operator_credential",
@@ -11524,7 +11615,7 @@ class Database:
             )
             audit_action = (
                 "authority_policy_activated"
-                if action == "activate"
+                if action in ("activate", "bootstrap")
                 else "authority_policy_reactivated"
             )
             payload = {
