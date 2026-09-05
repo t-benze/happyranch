@@ -43,4 +43,26 @@ export const realAuthorityPolicyApi: AuthorityPolicyApi = {
       onSuccess: (_data, { agentName }) => qc.invalidateQueries({ queryKey: ['team-escalation-policy', slug, agentName] }),
     });
   },
+  useTeamEscalationPolicyHistory: (agent) => {
+    const { slug = '' } = useParams<{ slug: string }>();
+    const enabled = !!slug && authorityPolicyApi.isEligiblePolicyManager(agent);
+    const queryOptions: Array<{ queryKey: string[]; queryFn: () => Promise<authorityPolicyApi.AuthorityPolicyHistoryResponse>; retry: false }> = enabled ? [{
+      queryKey: ['team-escalation-policy-history', slug, agent!.name],
+      queryFn: () => authorityPolicyApi.getTeamEscalationPolicyHistory(slug, agent!.name),
+      retry: false,
+    }] : [];
+    const queries = useQueries({ queries: queryOptions });
+    return queries[0] ?? { data: undefined, isLoading: false, isError: false, error: null };
+  },
+  useTeamEscalationPolicyOutcomes: (agent) => {
+    const { slug = '' } = useParams<{ slug: string }>();
+    const enabled = !!slug && authorityPolicyApi.isEligiblePolicyManager(agent);
+    const queryOptions: Array<{ queryKey: string[]; queryFn: () => Promise<authorityPolicyApi.AuthorityPolicyOutcomesResponse>; retry: false }> = enabled ? [{
+      queryKey: ['team-escalation-policy-outcomes', slug, agent!.name],
+      queryFn: () => authorityPolicyApi.getTeamEscalationPolicyOutcomes(slug, agent!.name),
+      retry: false,
+    }] : [];
+    const queries = useQueries({ queries: queryOptions });
+    return queries[0] ?? { data: undefined, isLoading: false, isError: false, error: null };
+  },
 };

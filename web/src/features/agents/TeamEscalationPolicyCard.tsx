@@ -7,16 +7,20 @@ import {
   useActivateTeamEscalationPolicyRelease,
   useCreateTeamEscalationPolicyRelease,
   useTeamEscalationPolicy,
+  useTeamEscalationPolicyHistory,
+  useTeamEscalationPolicyOutcomes,
 } from '@/hooks/authorityPolicy';
 
 export function TeamEscalationPolicyCard({ agent }: { agent: { name: string; team: string; role: string } }): JSX.Element {
   const query = useTeamEscalationPolicy(agent);
   const createRelease = useCreateTeamEscalationPolicyRelease();
   const activateRelease = useActivateTeamEscalationPolicyRelease();
+  const history = useTeamEscalationPolicyHistory(agent);
+  const outcomes = useTeamEscalationPolicyOutcomes(agent);
   const [draft, setDraft] = useState<AuthorityPolicyTemplate | null>(null);
   const [baseline, setBaseline] = useState('');
   const [message, setMessage] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState<'activate' | null>(null);
+  const [confirm, setConfirm] = useState<'activate' | { releaseId: string; version: number } | null>(null);
   const [savedInactive, setSavedInactive] = useState<{ id: string; version: number } | null>(null);
 
   const source = useMemo(() => query.data?.active?.release ?? query.data?.bootstrap_template, [query.data]);
@@ -91,6 +95,23 @@ export function TeamEscalationPolicyCard({ agent }: { agent: { name: string; tea
     }
   };
 
+  const rollback = async (target: { releaseId: string; version: number }) => {
+    setConfirm(null); setMessage(null);
+    try {
+      await activateRelease.mutateAsync({ agentName: agent.name, body: {
+        release_id: target.releaseId, expected_previous_epoch: active?.epoch ?? 0,
+        request_id: crypto.randomUUID(), action: 'reactivate_rollback',
+        acknowledge_shared_credential_attribution: true,
+      } });
+      setMessage(`Older immutable version ${target.version} reactivated as a new epoch.`);
+    } catch (error) {
+      const api = error instanceof ApiError ? error : null;
+      setMessage(api?.status === 409
+        ? 'Rollback conflicted with a newer activation. Reload history and try again.'
+        : 'Rollback failed without changing the active policy.');
+    }
+  };
+
   return (
     <PolicyShell>
       <div className="flex items-start justify-between gap-3">
@@ -124,13 +145,20 @@ export function TeamEscalationPolicyCard({ agent }: { agent: { name: string; tea
       </label>
       {(validationError || message) && <p role="status" className={`mt-3 text-xs ${validationError ? 'text-tier-red' : 'text-text-secondary'}`}>{validationError ?? message}</p>}
       {!guard.ready && <div className="text-tier-amber mt-3 flex items-center gap-2 text-xs"><ShieldCheck size={14} />Activation unavailable: {guard.reason}</div>}
-      {confirm && <div role="dialog" aria-label="activate policy confirmation" className="border-border-default mt-3 rounded-md border p-3 text-sm"><p>Save a new immutable version and activate it?</p><div className="mt-2 flex gap-2"><Button size="sm" onClick={() => { setConfirm(null); void save(true); }}>Confirm</Button><Button size="sm" variant="ghost" onClick={() => setConfirm(null)}>Cancel</Button></div></div>}
+      {confirm && <div role="dialog" aria-modal="true" aria-label="activate policy confirmation" className="border-border-default mt-3 rounded-md border p-3 text-sm"><p>{confirm === 'activate' ? 'Save a new immutable version and activate it?' : `Reactivate immutable version ${confirm.version} as a new epoch?`}</p><div className="mt-2 flex gap-2"><Button size="sm" onClick={() => { if (confirm === 'activate') { setConfirm(null); void save(true); } else { void rollback(confirm); } }}>Confirm</Button><Button size="sm" variant="ghost" onClick={() => setConfirm(null)}>Cancel</Button></div></div>}
       <div className="mt-4 flex flex-wrap gap-2">
         <Button size="sm" disabled={!dirty || !!validationError || createRelease.isPending} onClick={() => void save(false)}>Save immutable version</Button>
         <Button size="sm" disabled={!dirty || !!validationError || !guard.ready || createRelease.isPending} onClick={() => setConfirm('activate')}>Save &amp; activate</Button>
-        {active && <Button size="sm" variant="ghost" disabled title="Rollback selection and history arrive in S6">Reactivate older version</Button>}
         {message?.includes('base changed') && <Button size="sm" variant="ghost" onClick={() => window.location.reload()}>Reload base</Button>}
       </div>
+      <section aria-labelledby="policy-history-heading" className="border-border-subtle mt-5 border-t pt-4">
+        <h4 id="policy-history-heading" className="text-text-primary text-sm font-medium">Immutable release history</h4>
+        {history.isLoading ? <p className="text-text-muted mt-2 text-xs">Loading history…</p> : history.isError ? <p role="alert" className="text-tier-red mt-2 text-xs">Could not load policy history.</p> : !history.data?.items.length ? <p className="text-text-muted mt-2 text-xs">No immutable releases yet.</p> : <ul className="mt-2 space-y-2">{history.data.items.map((item) => <li key={`${item.release_id}-${item.activation?.id ?? 'inactive'}`} className="bg-surface-sunken rounded p-2 text-xs"><div>v{item.version} · {item.release_id} · {item.policy_digest.slice(0, 12)}</div><div className="text-text-muted">{item.activation ? `epoch ${item.activation.epoch} · ${item.activation.action}` : 'saved inactive'} · {item.actor_attribution}</div>{active && item.activation && item.release_id !== active.release.id && item.version < active.release.version && <Button size="sm" variant="ghost" onClick={() => setConfirm({ releaseId: item.release_id, version: item.version })}>Reactivate v{item.version}</Button>}</li>)}</ul>}
+      </section>
+      <section aria-labelledby="policy-outcomes-heading" className="border-border-subtle mt-5 border-t pt-4">
+        <h4 id="policy-outcomes-heading" className="text-text-primary text-sm font-medium">Manager self-evaluation outcomes</h4>
+        {outcomes.isLoading ? <p className="text-text-muted mt-2 text-xs">Loading outcomes…</p> : outcomes.isError ? <p role="alert" className="text-tier-red mt-2 text-xs">Could not load outcomes.</p> : !outcomes.data?.items.length ? <p className="text-text-muted mt-2 text-xs">No manager self-evaluation outcomes yet.</p> : <ul className="mt-2 space-y-2">{outcomes.data.items.map((item) => <li key={item.candidate_id} className="bg-surface-sunken rounded p-2 font-mono text-xs"><div>{item.disposition ?? 'pending'} · {item.disposition_code ?? 'no durable evaluation'}</div><div className="text-text-muted">task {item.root_task_id} · session {item.manager_session_id} · release {item.release_id ?? 'missing'}</div><div className={item.receipt_state === 'complete' ? 'text-tier-green' : 'text-tier-amber'}>{item.receipt_state}</div></li>)}</ul>}
+      </section>
     </PolicyShell>
   );
 }

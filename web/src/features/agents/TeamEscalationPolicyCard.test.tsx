@@ -32,11 +32,15 @@ const active = {
 const query = { data: empty as typeof empty | typeof active | undefined, isLoading: false, isError: false, error: null, refetch: vi.fn() };
 const create = { mutateAsync: vi.fn(), isPending: false };
 const activate = { mutateAsync: vi.fn(), isPending: false };
+const history = { data: { items: [] as Array<Record<string, unknown>>, next_cursor: null }, isLoading: false, isError: false, error: null };
+const outcomes = { data: { items: [] as Array<Record<string, unknown>>, next_cursor: null }, isLoading: false, isError: false, error: null };
 
 vi.mock('@/hooks/authorityPolicy', () => ({
   useTeamEscalationPolicy: () => query,
   useCreateTeamEscalationPolicyRelease: () => create,
   useActivateTeamEscalationPolicyRelease: () => activate,
+  useTeamEscalationPolicyHistory: () => history,
+  useTeamEscalationPolicyOutcomes: () => outcomes,
 }));
 
 const agent = { name: 'engineering_manager', team: 'engineering', role: 'manager' };
@@ -46,6 +50,8 @@ describe('TeamEscalationPolicyCard', () => {
     query.data = empty; query.isLoading = false; query.isError = false; query.error = null;
     query.refetch.mockReset();
     create.mutateAsync.mockReset(); activate.mutateAsync.mockReset();
+    history.data.items = []; history.isLoading = false; history.isError = false;
+    outcomes.data.items = []; outcomes.isLoading = false; outcomes.isError = false;
   });
 
   it('retries a load error and recovers through loading to loaded data on the same mount', async () => {
@@ -110,9 +116,30 @@ describe('TeamEscalationPolicyCard', () => {
     expect(save).toBeDisabled(); expect(saveAndActivate).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Edited policy' } });
     expect(save).toBeEnabled(); expect(saveAndActivate).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Reactivate older version' })).toHaveAttribute(
-      'title', 'Rollback selection and history arrive in S6',
-    );
+    expect(screen.getByText('No immutable releases yet.')).toBeInTheDocument();
+  });
+
+  it('renders immutable history, receipt-incomplete outcomes, and confirms rollback', async () => {
+    query.data = active;
+    history.data.items = [{ release_id: 'APR-old', policy_id: 'p', version: 2,
+      policy_digest: 'abcdef1234567890', release_created_at: '2026-09-01',
+      actor_attribution: 'shared local operator credential', activation: {
+        id: 'APA-old', epoch: 2, action: 'activate', digest: 'd', created_at: '2026-09-01',
+      } }];
+    outcomes.data.items = [{ candidate_id: 'AUTH-1', disposition: null,
+      disposition_code: null, root_task_id: 'TASK-1', manager_session_id: 'sess-1',
+      release_id: null, receipt_state: 'receipt_incomplete' }];
+    activate.mutateAsync.mockResolvedValueOnce({});
+    render(<TeamEscalationPolicyCard agent={agent} />);
+    expect(await screen.findByText(/v2 · APR-old/)).toBeInTheDocument();
+    expect(screen.getByText('receipt_incomplete')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Reactivate v2' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('Reactivate immutable version 2');
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(activate.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({ release_id: 'APR-old', expected_previous_epoch: 7,
+        action: 'reactivate_rollback' }),
+    })));
   });
 
   it.each([

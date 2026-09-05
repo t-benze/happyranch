@@ -10,10 +10,11 @@ export interface AuthorityPolicyClause {
 export interface TeamEscalationPolicyResponse {
   team: 'engineering';
   target_manager: 'engineering_manager';
-  /** Immutable release creation is exposed; activation remains guard-closed. */
+  /** Server authorization remains authoritative for both mutations. */
   can_mutate: true;
   bootstrap_required?: true;
-  activation_guard: { ready: boolean; reason: string };
+  activation_guard: { ready: boolean; reason: string; contract_id?: string;
+    contract_version?: string; contract_digest?: string; must_escalate_recall?: number };
   bootstrap_template: AuthorityPolicyTemplate;
   active?: {
     activation_id: string;
@@ -34,6 +35,28 @@ export interface TeamEscalationPolicyResponse {
       actor_attribution: 'shared local operator credential';
     };
   };
+}
+
+export interface AuthorityPolicyHistoryResponse {
+  items: Array<{ release_id: string; policy_id: string; version: number;
+    policy_digest: string; release_created_at: string;
+    activation: null | { id: string; epoch: number; action: string; digest: string; created_at: string };
+    actor_attribution: 'shared local operator credential' }>;
+  next_cursor: number | null;
+}
+
+export interface AuthorityPolicyOutcomesResponse {
+  items: Array<{ candidate_id: string; root_task_id: string; manager_session_id: string;
+    causal_event_id: string; release_id: string | null; activation_id: string | null;
+    activation_epoch: number | null; policy_version: string; policy_digest: string;
+    prompt_id: string; prompt_version: string; prompt_digest: string;
+    provider_id: string | null; executor_kind: string | null; model_id: string;
+    model_version: string; model_digest: string; disposition: string | null;
+    disposition_code: string | null; evaluation_created_at: string | null;
+    terminal_hook_outcome: string | null; thread_id: string | null;
+    envelope: null | { id: string; state: string; consumed_at: string | null };
+    receipt_state: 'complete' | 'receipt_incomplete' }>;
+  next_cursor: number | null;
 }
 
 export interface AuthorityPolicyTemplate {
@@ -103,11 +126,18 @@ export const activateTeamEscalationPolicyRelease = (
   { method: 'POST', body },
 );
 
+export const getTeamEscalationPolicyHistory = (slug: string, agentName: string, cursor = 0) =>
+  request<AuthorityPolicyHistoryResponse>(`/orgs/${slug}/agents/${agentName}/team-escalation-policy/history?cursor=${cursor}&limit=20`);
+
+export const getTeamEscalationPolicyOutcomes = (slug: string, agentName: string, cursor = 0) =>
+  request<AuthorityPolicyOutcomesResponse>(`/orgs/${slug}/agents/${agentName}/team-escalation-policy/outcomes?cursor=${cursor}&limit=20`);
+
 export const isEligiblePolicyManager = (agent: {
   name: string;
   team: string;
   role: string;
 } | undefined): boolean =>
+  // Structurally reusable seam; the current Engineering allowlist remains explicit.
   agent?.name === 'engineering_manager' &&
   agent.team === 'engineering' &&
   agent.role === 'manager';

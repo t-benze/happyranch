@@ -115,9 +115,9 @@ def test_eligible_active_projection(client_with_runtime):
     assert body["active"]["release"]["actor_attribution"] == (
         "shared local operator credential"
     )
-    assert body["activation_guard"] == {
-        "ready": False, "reason": "TASK-6335 production verification required"
-    }
+    assert body["activation_guard"]["ready"] is True
+    assert body["activation_guard"]["must_escalate_recall"] == 1.0
+    assert body["activation_guard"]["must_escalate_observed"] == body["activation_guard"]["must_escalate_expected"]
     assert body["bootstrap_template"]["clauses"][0]["id"] == (
         ENGINEERING_PRE_ESCALATION_POLICY.clauses[0].id
     )
@@ -325,7 +325,7 @@ def test_create_release_audit_failure_rolls_back_release(client_with_runtime, mo
     assert org.db._conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == audit_count
 
 
-def test_activation_guard_is_stable_and_leaves_zero_residue(client_with_runtime):
+def test_activation_readiness_does_not_turn_guessed_release_into_oracle(client_with_runtime):
     client, org = client_with_runtime
     _seed_agent(org)
     audit_count = org.db._conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
@@ -337,12 +337,67 @@ def test_activation_guard_is_stable_and_leaves_zero_residue(client_with_runtime)
             "acknowledge_shared_credential_attribution": True,
         },
     )
-    assert response.status_code == 412
-    assert response.json() == {"detail": {
-        "code": "activation_guard_not_ready", "ready": False,
-        "reason": "TASK-6335 production verification required",
-    }}
+    assert response.status_code == 409
+    assert response.json() == {"detail": {"code": "activation_conflict"}}
     assert org.db._conn.execute(
         "SELECT COUNT(*) FROM authority_policy_activations"
     ).fetchone()[0] == 0
     assert org.db._conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == audit_count
+
+
+def test_history_is_bounded_paginated_secret_free_and_activation_bootstraps(client_with_runtime):
+    client, org = client_with_runtime
+    _seed_agent(org)
+    base = "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy"
+    created = client.post(f"{base}/releases", json=_release_body()).json()["release"]
+    activated = client.post(f"{base}/activations", json={
+        "release_id": created["id"], "expected_previous_epoch": 0,
+        "request_id": "REQ-activate-first", "action": "activate",
+        "acknowledge_shared_credential_attribution": True,
+    })
+    assert activated.status_code == 200
+    assert activated.json()["activation"]["action"] == "bootstrap"
+    history = client.get(f"{base}/history?cursor=0&limit=1")
+    assert history.status_code == 200
+    item = history.json()["items"][0]
+    assert item["release_id"] == created["id"]
+    assert item["activation"]["epoch"] == 1
+    assert "normative_text" not in history.text
+    assert "continuation_phrase" not in history.text
+    assert client.get(f"{base}/history?cursor=-1&limit=1").status_code == 422
+    assert client.get(f"{base}/history?cursor=0&limit=51").status_code == 422
+
+
+def test_outcomes_empty_and_ineligible_surfaces_are_identical(client_with_runtime):
+    client, org = client_with_runtime
+    _seed_agent(org)
+    base = "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy"
+    assert client.get(f"{base}/outcomes").json() == {"items": [], "next_cursor": None}
+    expected = {"detail": {"code": "policy_surface_not_available"}}
+    assert client.get("/api/v1/orgs/alpha/agents/missing/team-escalation-policy/history").json() == expected
+    assert client.get("/api/v1/orgs/alpha/agents/missing/team-escalation-policy/outcomes").json() == expected
+
+
+def test_outcome_projection_marks_missing_durable_linkage_incomplete(client_with_runtime):
+    client, org = client_with_runtime
+    _seed_agent(org)
+    digest = "a" * 64
+    candidate_id, won = org.db.claim_authority_candidate(
+        root_task_id="TASK-missing", team="engineering",
+        manager_agent="engineering_manager", manager_session_id="sess-missing",
+        causal_event_id="result:1", causal_event_digest=digest,
+        causal_result_id=None, policy_id="engineering/pre-escalation-authority",
+        policy_version="1", policy_digest=digest, prompt_id="prompt",
+        prompt_version="1", prompt_digest=digest, model_id="model",
+        model_version="1", model_digest=digest, snapshot_digest=digest,
+    )
+    assert won is True
+    response = client.get(
+        "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy/outcomes"
+    )
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["candidate_id"] == candidate_id
+    assert item["receipt_state"] == "receipt_incomplete"
+    assert item["disposition"] is None
+    assert "reason" not in response.text and "rationale" not in response.text

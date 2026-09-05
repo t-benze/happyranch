@@ -76,6 +76,16 @@ class AuthorityPolicyStore:
     def get_current_activation(self, team: str) -> AuthorityPolicyActivation | None:
         return self._db.get_current_authority_policy_activation(team)
 
+    def list_history(self, team: str, *, cursor: int, limit: int) -> tuple[list[dict], int | None]:
+        """Return a stable newest-first release/activation projection page."""
+        rows = self._db.list_authority_policy_history(team, offset=cursor, limit=limit + 1)
+        return rows[:limit], (cursor + limit if len(rows) > limit else None)
+
+    def list_outcomes(self, team: str, *, cursor: int, limit: int) -> tuple[list[dict], int | None]:
+        """Return secret-free manager self-evaluation receipt pages."""
+        rows = self._db.list_authority_policy_outcomes(team, offset=cursor, limit=limit + 1)
+        return rows[:limit], (cursor + limit if len(rows) > limit else None)
+
     def get_candidate_pin(self, candidate_id: str) -> AuthorityCandidatePolicyPin | None:
         return self._db.get_authority_candidate_policy_pin(candidate_id)
 

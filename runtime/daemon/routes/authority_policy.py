@@ -8,7 +8,7 @@ import re
 import sqlite3
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from runtime.daemon.auth import require_token
@@ -16,6 +16,7 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+from runtime.orchestrator.authority_activation_readiness import activation_readiness
 from runtime.models import AuthorityPolicyRelease
 from runtime.orchestrator.authority_policy import (
     CONTINUE_ROUTINE_PHRASE,
@@ -29,10 +30,6 @@ _ELIGIBLE_AGENT = "engineering_manager"
 _ELIGIBLE_TEAM = "engineering"
 _SURFACE_UNAVAILABLE = {"code": "policy_surface_not_available"}
 _STORE_UNAVAILABLE = {"code": "policy_store_unavailable"}
-_ACTIVATION_GUARD = {
-    "ready": False,
-    "reason": "TASK-6335 production verification required",
-}
 _POLICY = POLICY_BY_TEAM[_ELIGIBLE_TEAM]
 _KNOWN_CLAUSES = {clause.id: clause for clause in _POLICY.clauses}
 _CANONICAL_CLAUSE_IDS = tuple(clause.id for clause in _POLICY.clauses)
@@ -131,17 +128,23 @@ def _require_eligible_manager(org: OrgDep, agent_name: str) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_SURFACE_UNAVAILABLE)
 
 
+def _manager_surface(org: OrgDep, agent_name: str) -> tuple[str, str]:
+    """Reusable role seam with an explicit current Engineering allowlist."""
+    _require_eligible_manager(org, agent_name)
+    return _ELIGIBLE_TEAM, _ELIGIBLE_AGENT
+
+
 @router.get("/agents/{agent_name}/team-escalation-policy")
 def get_team_escalation_policy(slug: str, agent_name: str, org: OrgDep) -> dict:
-    _require_eligible_manager(org, agent_name)
+    team, target_manager = _manager_surface(org, agent_name)
     try:
         store = AuthorityPolicyStore(org.db)
-        activation = store.get_current_activation(_ELIGIBLE_TEAM)
+        activation = store.get_current_activation(team)
         result = {
-            "team": _ELIGIBLE_TEAM,
-            "target_manager": _ELIGIBLE_AGENT,
+            "team": team,
+            "target_manager": target_manager,
             "can_mutate": True,
-            "activation_guard": _ACTIVATION_GUARD,
+            "activation_guard": activation_readiness(),
             "bootstrap_template": _bootstrap_template(),
         }
         if activation is None:
@@ -180,6 +183,79 @@ def get_team_escalation_policy(slug: str, agent_name: str, org: OrgDep) -> dict:
         ) from None
 
 
+@router.get("/agents/{agent_name}/team-escalation-policy/history")
+def get_team_escalation_policy_history(
+    slug: str, agent_name: str, org: OrgDep,
+    cursor: int = Query(default=0, ge=0), limit: int = Query(default=20, ge=1, le=50),
+) -> dict:
+    team, _ = _manager_surface(org, agent_name)
+    try:
+        items, next_cursor = AuthorityPolicyStore(org.db).list_history(
+            team, cursor=cursor, limit=limit,
+        )
+        return {"items": [{
+            "release_id": row["release_id"], "policy_id": row["policy_id"],
+            "version": row["version"], "policy_digest": row["policy_digest"],
+            "release_created_at": row["release_created_at"],
+            "activation": None if row["activation_id"] is None else {
+                "id": row["activation_id"], "epoch": row["epoch"],
+                "action": row["action"], "digest": row["activation_digest"],
+                "created_at": row["activation_created_at"],
+            },
+            "actor_attribution": "shared local operator credential",
+        } for row in items], "next_cursor": next_cursor}
+    except Exception:
+        _logger.exception("authority policy history unavailable for org=%s", slug)
+        raise HTTPException(status_code=500, detail=_STORE_UNAVAILABLE) from None
+
+
+@router.get("/agents/{agent_name}/team-escalation-policy/outcomes")
+def get_team_escalation_policy_outcomes(
+    slug: str, agent_name: str, org: OrgDep,
+    cursor: int = Query(default=0, ge=0), limit: int = Query(default=20, ge=1, le=50),
+) -> dict:
+    team, _ = _manager_surface(org, agent_name)
+    try:
+        items, next_cursor = AuthorityPolicyStore(org.db).list_outcomes(
+            team, cursor=cursor, limit=limit,
+        )
+        projected = []
+        for row in items:
+            authority_audit = org.db.list_authority_audit(row["id"])
+            hook_rows = [item for item in org.db.get_audit_logs(row["root_task_id"])
+                         if item["action"] == "authority_hook"
+                         and (item.get("payload") or {}).get("candidate_id") == row["id"]]
+            task = org.db.get_task(row["root_task_id"])
+            complete = bool(row["release_id"] and row["activation_id"]
+                            and row["evaluation_id"] and authority_audit and hook_rows)
+            projected.append({
+                "candidate_id": row["id"], "root_task_id": row["root_task_id"],
+                "manager_session_id": row["manager_session_id"],
+                "causal_event_id": row["causal_event_id"],
+                "release_id": row["release_id"], "activation_id": row["activation_id"],
+                "activation_epoch": row["activation_epoch"],
+                "policy_version": row["policy_version"], "policy_digest": row["policy_digest"],
+                "prompt_id": row["prompt_id"], "prompt_version": row["prompt_version"],
+                "prompt_digest": row["prompt_digest"], "provider_id": row["provider_id"],
+                "executor_kind": row["executor_kind"], "model_id": row["model_id"],
+                "model_version": row["model_version"], "model_digest": row["model_digest"],
+                "disposition": row["evaluation_disposition"],
+                "disposition_code": row["disposition_code"],
+                "evaluation_created_at": row["evaluation_created_at"],
+                "terminal_hook_outcome": None if not hook_rows else hook_rows[-1]["payload"].get("outcome"),
+                "thread_id": None if task is None else task.dispatched_from_thread_id,
+                "envelope": None if row["envelope_id"] is None else {
+                    "id": row["envelope_id"], "state": row["envelope_state"],
+                    "consumed_at": row["envelope_consumed_at"],
+                },
+                "receipt_state": "complete" if complete else "receipt_incomplete",
+            })
+        return {"items": projected, "next_cursor": next_cursor}
+    except Exception:
+        _logger.exception("authority policy outcomes unavailable for org=%s", slug)
+        raise HTTPException(status_code=500, detail=_STORE_UNAVAILABLE) from None
+
+
 @router.post(
     "/agents/{agent_name}/team-escalation-policy/releases",
     status_code=status.HTTP_201_CREATED,
@@ -197,7 +273,7 @@ def create_team_escalation_policy_release(
     response: Response,
     org: OrgDep,
 ) -> dict:
-    _require_eligible_manager(org, agent_name)
+    _manager_surface(org, agent_name)
     try:
         store = AuthorityPolicyStore(org.db)
         clauses = [clause.model_dump(mode="json") for clause in body.clauses]
@@ -268,13 +344,38 @@ def activate_team_escalation_policy(
     body: ActivatePolicyRequest,
     org: OrgDep,
 ) -> dict:
-    _require_eligible_manager(org, agent_name)
-    # S3 deliberately returns before any store read/write so a guessed release
-    # cannot become an oracle and no activation/audit residue is possible.
-    raise HTTPException(
-        status_code=status.HTTP_412_PRECONDITION_FAILED,
-        detail={"code": "activation_guard_not_ready", **_ACTIVATION_GUARD},
-    )
+    team, _ = _manager_surface(org, agent_name)
+    readiness = activation_readiness()
+    if not readiness["ready"]:
+        raise HTTPException(status_code=412, detail={"code": "activation_guard_not_ready", **readiness})
+    try:
+        request_json = json.dumps(body.model_dump(mode="json"), sort_keys=True,
+                                  separators=(",", ":"), ensure_ascii=False)
+        request_digest = hashlib.sha256(request_json.encode()).hexdigest()
+        store = AuthorityPolicyStore(org.db)
+        current = store.get_current_activation(team)
+        effective_action = "bootstrap" if current is None else body.action
+        activation = store.activate_with_audit(
+            team=team, release_id=body.release_id,
+            expected_previous_epoch=body.expected_previous_epoch,
+            action=effective_action, request_id=body.request_id,
+            request_digest=request_digest,
+        )
+        return {"activation": {
+            "id": activation.id, "epoch": activation.epoch,
+            "release_id": activation.release_id, "action": activation.action,
+            "digest": activation.activation_digest,
+            "created_at": activation.created_at.isoformat(),
+            "actor_attribution": "shared local operator credential",
+        }}
+    except sqlite3.IntegrityError as exc:
+        code = "idempotency_conflict" if "idempotency" in str(exc) else "activation_conflict"
+        raise HTTPException(status_code=409, detail={"code": code}) from None
+    except LookupError:
+        raise HTTPException(status_code=409, detail={"code": "activation_conflict"}) from None
+    except Exception:
+        _logger.exception("authority policy activation unavailable for org=%s", slug)
+        raise HTTPException(status_code=500, detail=_STORE_UNAVAILABLE) from None
 
 
 def _project_release(release: AuthorityPolicyRelease) -> dict:

@@ -466,6 +466,15 @@ convention and send it in the manifest body.
 The signed architecture is at
 ``docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md``.
 
+**THR-181 S6b/S7 manager runtime visibility.** A newly launched eligible
+Engineering Manager remains the semantic evaluator for its own proposed
+decision; no separate production evaluator process is launched. The manager
+Agent page may read only bounded secret-free immutable history and durable
+outcome receipts, with missing causal linkage explicitly marked
+`receipt_incomplete`. Workers and other managers receive no API or DOM surface.
+Activation readiness, code landing/redeploy, and production activation are
+separate server/operator gates.
+
 Each agent's configuration specifies context and workspace:
 
 ```
