@@ -6,6 +6,10 @@ Feature compositions keep using the stable `@/design-system/...` import paths.
 ## Tokens and boundaries
 
 - `src/design-system/tokens/tokens.css` is the source of new raw colors.
+- `brand-foreground` is the single semantic foreground for the HappyRanch
+  lockup. Its explicit light/dark values are held to at least 4.5:1 against
+  the live Sidebar (`bg-bg-subtle`) and Onboarding (`bg-surface-canvas`)
+  backgrounds; it is intentionally distinct from the generic UI accent.
   Components and stories consume semantic utilities; the branch-aware check in
   `scripts/verify-design-system.sh` rejects newly added CSS-like hex values
   elsewhere without confusing issue references such as `#302` for colors.

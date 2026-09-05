@@ -152,7 +152,7 @@ export function Sidebar(): JSX.Element {
                   combobox keeps its "Active org" label. */}
               <span className="min-w-0 flex-1 flex-col max-md:hidden md:flex">
                 <span className="font-['Baloo_2',sans-serif] text-[1rem] leading-tight font-extrabold tracking-[-0.03em]">
-                  <span className="text-[#4ade80]">Happy</span>
+                  <span className="text-brand-foreground">Happy</span>
                   <span className="text-fg">Ranch</span>
                 </span>
                 {/* Context line — "Day N · <team>" (BUG-08). Day-N is the real
@@ -280,7 +280,7 @@ function Brandmark(): JSX.Element {
       width="22"
       height="22"
       aria-hidden="true"
-      className="shrink-0 text-[#4ade80]"
+      className="text-brand-foreground shrink-0"
     >
       <g transform="rotate(-7 50 44)">
         <path
