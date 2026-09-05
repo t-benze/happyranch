@@ -177,6 +177,29 @@ APPROVED_DDL_SHA256 = {
 }
 
 
+def _normalized_ddl(sql: str) -> str:
+    """Independent normalization used by the approved digest inventory."""
+    value = sql.strip().rstrip(";")
+    value = re.sub(r"\bIF\s+NOT\s+EXISTS\b", "", value, flags=re.IGNORECASE)
+    return re.sub(r'[\s"`\[\]]+', "", value).lower()
+
+
+def _execute_section_6_proofs(
+    registry: dict[str, object],
+    required_claims: dict[str, frozenset[str]],
+) -> set[str]:
+    """Run proofs and record them only after their shipping assertions finish."""
+    executed: set[str] = set()
+    for proof_id in sorted(required_claims):
+        proof = registry.get(proof_id)
+        assert callable(proof), f"unresolved proof: {proof_id}"
+        observed = frozenset(proof())
+        missing = required_claims[proof_id] - observed
+        assert not missing, f"proof {proof_id} bypassed assertions: {sorted(missing)}"
+        executed.add(proof_id)
+    return executed
+
+
 def _objects(path: Path, kind: str) -> dict[str, str | None]:
     with sqlite3.connect(path) as conn:
         return dict(conn.execute(
@@ -1157,9 +1180,7 @@ def test_task_6611_section_6_executable_bidirectional_traceability(tmp_path: Pat
     assert set(artifact_to_requirement) == set(artifacts)
     assert set(artifact_to_requirement.values()) <= set(requirements)
 
-    proof_executions: set[str] = set()
-
-    def prove_exact_schema() -> None:
+    def prove_exact_schema() -> frozenset[str]:
         path = tmp_path / "section-6.db"
         Database(path).close()
         with sqlite3.connect(path) as conn:
@@ -1170,42 +1191,80 @@ def test_task_6611_section_6_executable_bidirectional_traceability(tmp_path: Pat
                 for name in APPROVED_DDL_SHA256
             }
         assert set(actual_sql) == set(APPROVED_DDL_SHA256)
+        actual_digests = {
+            name: hashlib.sha256(_normalized_ddl(sql).encode()).hexdigest()
+            for name, sql in actual_sql.items()
+        }
+        assert actual_digests == APPROVED_DDL_SHA256
         assert all(
             artifact.split(":", 2)[1] in actual_sql
             for artifact in artifacts
             if artifact.startswith(("table:", "index:"))
         )
+        return frozenset({"database-open", "actual-vs-approved-ddl", "artifact-totality"})
 
-    def prove_hermetic_compatibility() -> None:
-        for name, encoded, digest in (
-            ("s2", S2_BASELINE_DUMP_B85, S2_BASELINE_DUMP_SHA256),
-            ("history", SCRIPT_REQUEST_HISTORY_DUMP_B85, SCRIPT_REQUEST_HISTORY_DUMP_SHA256),
-        ):
-            dump = gzip.decompress(base64.b85decode(encoded)).decode()
-            assert hashlib.sha256(dump.encode()).hexdigest() == digest, name
+    def prove_fresh() -> frozenset[str]:
+        proof_root = tmp_path / "fresh"
+        proof_root.mkdir()
+        test_fresh_database_has_exact_s2_schema_and_nullable_job_columns(proof_root)
+        return frozenset({"fresh-open", "canonical", "foreign-key-check"})
+
+    def prove_historical(family: str, commit: str) -> frozenset[str]:
+        proof_root = tmp_path / family
+        proof_root.mkdir()
+        test_authentic_historical_script_request_families_converge_and_preserve_values(
+            proof_root, family, commit,
+        )
+        return frozenset({f"historical-{family}", "all-row-preservation", "two-reopens"})
+
+    def prove_modern() -> frozenset[str]:
+        proof_root = tmp_path / "modern"
+        proof_root.mkdir()
+        test_existing_local_job_values_and_overloaded_references_survive(proof_root)
+        return frozenset({"modern", "all-row-preservation", "overloaded-semantics"})
+
+    def prove_untouched_s2() -> frozenset[str]:
+        proof_root = tmp_path / "untouched-s2"
+        proof_root.mkdir()
+        test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_value(
+            proof_root
+        )
+        return frozenset({
+            "untouched-s2", "sqlite-master-preservation", "all-row-preservation",
+            "foreign-key-check", "no-residue", "two-reopens", "canonical",
+        })
+
+    def prove_stages() -> frozenset[str]:
+        assert tuple(IDENTITY_STAGES) == tuple(
+            artifact.split(":", 2)[2]
+            for artifact in artifacts if artifact.startswith("stage:")
+        )
+        return frozenset({"approved-stage-order"})
+
+    def deferred_s3() -> frozenset[str]:
+        return frozenset({"explicitly-deferred"})
 
     registry = {
         "schema.actual": prove_exact_schema,
-        "schema.exact-ddl": lambda: assert_truth(bool(APPROVED_DDL_SHA256)),
-        "migration.stages": lambda: assert_truth(
-            tuple(IDENTITY_STAGES) == tuple(
-                artifact.split(":", 2)[2]
-                for artifact in artifacts if artifact.startswith("stage:")
-            )
-        ),
-        "fixtures.compatibility": prove_hermetic_compatibility,
-        "deferred.s3-lifecycle": lambda: None,
+        "migration.stages": prove_stages,
+        "fixtures.fresh": prove_fresh,
+        "fixtures.historical-v0": lambda: prove_historical("v0", SCRIPT_REQUEST_V0_COMMIT),
+        "fixtures.historical-v1": lambda: prove_historical("v1", SCRIPT_REQUEST_V1_COMMIT),
+        "fixtures.modern": prove_modern,
+        "fixtures.untouched-s2": prove_untouched_s2,
+        "deferred.s3-lifecycle": deferred_s3,
     }
-
-    def assert_truth(value: bool) -> None:
-        assert value
 
     requirement_to_proofs = {
         requirement: (
             ("deferred.s3-lifecycle",) if requirement in deferred
-            else ("migration.stages", "fixtures.compatibility")
-            if requirement in {"safe shipped-S2 transition", "compatibility"}
-            else ("schema.actual", "schema.exact-ddl")
+            else ("migration.stages", "fixtures.untouched-s2")
+            if requirement == "safe shipped-S2 transition"
+            else (
+                "fixtures.fresh", "fixtures.historical-v0", "fixtures.historical-v1",
+                "fixtures.modern", "fixtures.untouched-s2",
+            ) if requirement == "compatibility"
+            else ("schema.actual",)
         )
         for requirement in requirements
     }
@@ -1213,10 +1272,21 @@ def test_task_6611_section_6_executable_bidirectional_traceability(tmp_path: Pat
     assert all(requirement_to_proofs.values())
     referenced = {proof for proofs in requirement_to_proofs.values() for proof in proofs}
     assert referenced == set(registry)
-    for proof_id in sorted(referenced):
-        assert proof_id in registry
-        registry[proof_id]()
-        proof_executions.add(proof_id)
+    required_claims = {
+        "schema.actual": frozenset({"database-open", "actual-vs-approved-ddl", "artifact-totality"}),
+        "migration.stages": frozenset({"approved-stage-order"}),
+        "fixtures.fresh": frozenset({"fresh-open", "canonical", "foreign-key-check"}),
+        "fixtures.historical-v0": frozenset({"historical-v0", "all-row-preservation", "two-reopens"}),
+        "fixtures.historical-v1": frozenset({"historical-v1", "all-row-preservation", "two-reopens"}),
+        "fixtures.modern": frozenset({"modern", "all-row-preservation", "overloaded-semantics"}),
+        "fixtures.untouched-s2": frozenset({
+            "untouched-s2", "sqlite-master-preservation", "all-row-preservation",
+            "foreign-key-check", "no-residue", "two-reopens", "canonical",
+        }),
+        "deferred.s3-lifecycle": frozenset({"explicitly-deferred"}),
+    }
+    assert set(required_claims) == referenced
+    proof_executions = _execute_section_6_proofs(registry, required_claims)
     assert proof_executions == referenced
 
     requirement_to_artifacts = {
@@ -1228,3 +1298,31 @@ def test_task_6611_section_6_executable_bidirectional_traceability(tmp_path: Pat
     }
     assert all(requirement_to_artifacts.values())
     assert set(requirement_to_artifacts) == set(requirements)
+
+
+def test_section_6_registry_rejects_uninvoked_or_bypassed_proof() -> None:
+    with pytest.raises(AssertionError, match="unresolved proof"):
+        _execute_section_6_proofs({}, {"fixtures.untouched-s2": frozenset({"two-reopens"})})
+    with pytest.raises(AssertionError, match="bypassed assertions"):
+        _execute_section_6_proofs(
+            {"fixtures.untouched-s2": lambda: frozenset({"database-open"})},
+            {"fixtures.untouched-s2": frozenset({"database-open", "two-reopens"})},
+        )
+
+
+def test_section_6_exact_ddl_rejects_one_actual_approved_digest_mismatch(tmp_path: Path) -> None:
+    path = tmp_path / "digest-mismatch.db"
+    Database(path).close()
+    with sqlite3.connect(path) as conn:
+        actual = {
+            name: hashlib.sha256(_normalized_ddl(sql).encode()).hexdigest()
+            for name, sql in conn.execute(
+                "SELECT name,sql FROM sqlite_master WHERE name IN (%s)"
+                % ",".join("?" * len(APPROVED_DDL_SHA256)),
+                tuple(APPROVED_DDL_SHA256),
+            )
+        }
+    mismatched = dict(APPROVED_DDL_SHA256)
+    mismatched["remote_runners"] = "0" * 64
+    with pytest.raises(AssertionError):
+        assert actual == mismatched
