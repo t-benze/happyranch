@@ -82,7 +82,7 @@ and retry is local state, so Storybook remains daemon-isolated.
 
 ## Coverage ledger
 
-**44 reusable components: 40 story-covered, 4 justified exclusions.** Stories
+**44 reusable components: 41 story-covered, 3 justified exclusions.** Stories
 preserve the former catalogue's descriptions, examples, variants, and token
 visibility through titles, docs, controls, and representative renders.
 
@@ -127,7 +127,7 @@ visibility through titles, docs, controls, and representative renders.
 | `TypingBubble` | [source:patterns/TypingBubble.tsx#TypingBubble] [story:patterns/TypingBubble.coverage.stories.tsx#Coverage] Patterns / Typing Bubble States | working, queued | info/muted |
 | `AppBar` | [excluded:AppBar] Reads live shell/org/navigation contexts and hosts product commands; AppShell/route tests cover it. | shell context in tests | topbar/grid |
 | `ErrorBoundary` | [excluded:ErrorBoundary] Lifecycle capture/reset is not a static catalogue unit; component and route tests cover error/recovery. | normal/error/reset in tests | feedback |
-| `Sidebar` | [excluded:Sidebar] Reads org/route/responsive/navigation contexts; `Sidebar.test.tsx` and AppShell tests cover it without misleading canned permissions. | desktop/mobile/navigation in tests | sidebar/grid |
+| `Sidebar` | [source:layouts/AppShell/Sidebar.tsx#Sidebar] [story:layouts/AppShell/Sidebar.coverage.stories.tsx#Coverage] Layouts / Sidebar Branches | disabled navigation and footer account; focused enabled-navigation story | sidebar/grid |
 | `TopBar` | [excluded:TopBar] Reads prototype/org route state; prototype/AppShell tests cover its complete shell contract. | shell context in tests | topbar/grid |
 | `ContentWrap` | [source:layouts/ContentWrap/ContentWrap.tsx#ContentWrap] [story:layouts/ContentWrap/ContentWrap.coverage.stories.tsx#Coverage] Layouts / Content Wrap Responsive | bounded responsive content | layout content/wrap |
 | `DashboardLayout` | [source:layouts/DashboardLayout.tsx#DashboardLayout] [story:layouts/DashboardLayout.coverage.stories.tsx#Coverage] Layouts / Dashboard Layout Populated | four populated slots | layout grid |

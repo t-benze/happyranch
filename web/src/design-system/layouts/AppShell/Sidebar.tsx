@@ -253,7 +253,7 @@ export function Sidebar(): JSX.Element {
         <div
           tabIndex={0}
           aria-label="Account: You, Founder"
-          className="focus-visible:ring-accent flex items-center gap-2.5 rounded px-2 py-1.5 focus-visible:ring-2 focus-visible:outline-none"
+          className="focus-visible:ring-accent flex items-center gap-2.5 rounded-sm px-2 py-1.5 focus-visible:ring-2 focus-visible:outline-none"
         >
           <span
             aria-hidden="true"
@@ -305,7 +305,7 @@ function Brandmark(): JSX.Element {
   );
 }
 
-function SidebarNavItem({
+export function SidebarNavItem({
   to,
   enabled,
   children,
@@ -321,7 +321,7 @@ function SidebarNavItem({
   if (!enabled) {
     const span = (
       <span
-        className="text-fg-subtle flex cursor-not-allowed items-center justify-center gap-2.5 rounded px-2 py-1.5 text-sm md:justify-start"
+        className="text-fg-subtle flex cursor-not-allowed items-center justify-center gap-2.5 rounded-sm px-2 py-1.5 text-sm md:justify-start"
         aria-disabled="true"
       >
         <Icon size={16} aria-hidden="true" className="shrink-0" />
@@ -340,7 +340,7 @@ function SidebarNavItem({
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `flex items-center gap-2.5 rounded border-l-2 border-l-transparent px-2 py-1.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent justify-center md:justify-start ${
+        `flex items-center gap-2.5 rounded-sm border-l-2 border-l-transparent px-2 py-1.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-accent justify-center md:justify-start ${
           isActive
             ? 'border-l-accent bg-bg-raised text-fg font-medium'
             : 'text-fg-muted hover:bg-bg-raised hover:text-fg'
