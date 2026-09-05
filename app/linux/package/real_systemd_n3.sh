@@ -42,32 +42,81 @@ current_journal_cursor() {
   [[ "$(wc -l <<<"$cursors" | xargs)" == 1 && -n "$cursors" ]] || return 1
   printf '%s\n' "$cursors"
 }
-current_control_terminal_receipt() {
-  local cursor="$1" invocation_id="$2"
+systemctl_property() {
+  local unit="$1" property="$2" value status
+  set +e
+  value="$(systemctl show "$unit" -p "$property" --value 2>/dev/null)"
+  status=$?
+  set -e
+  (( status == 0 )) && [[ -n "$value" && "$value" != *$'\n'* ]] || return 1
+  printf '%s\n' "$value"
+}
+settle_control_terminal_invocation() {
+  local unit=happyranch-tsnet-sidecar.service invocation result exec_main_status
+  sudo systemctl stop "$unit" || return 1
+  sudo systemctl reset-failed "$unit" || return 1
+  invocation="$(systemctl_property "$unit" InvocationID)" || return 1
+  result="$(systemctl_property "$unit" Result)" || return 1
+  exec_main_status="$(systemctl_property "$unit" ExecMainStatus)" || return 1
+  [[ "$invocation" =~ ^[0-9a-f]{32}$ && "$result" =~ ^[a-z][a-z-]*$ && "$exec_main_status" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\t%s\t%s\n' "$invocation" "$result" "$exec_main_status"
+}
+current_control_terminal_evidence() {
+  local cursor="$1" invocation_id="$2" result="$3" exec_main_status="$4"
   sudo journalctl --after-cursor="$cursor" -o json --output-fields=MESSAGE,_SYSTEMD_INVOCATION_ID --no-pager | python -c '
 import json, sys
-invocation = sys.argv[1]
-expected = {
-    "category": "engine_start", "phase": "engine_initialization",
-    "actor": "tsnet-sidecar", "unit": "happyranch-tsnet-sidecar.service",
-    "outcome": "failed", "terminal": True, "assertion": {"status": "completed"},
+invocation, result, exec_main_status = sys.argv[1:]
+if len(invocation) != 32 or any(c not in "0123456789abcdef" for c in invocation):
+    raise SystemExit(1)
+if result not in {"success", "resources", "timeout", "exit-code", "signal", "core-dump", "watchdog", "start-limit-hit", "protocol"}:
+    raise SystemExit(1)
+if not exec_main_status.isascii() or not exec_main_status.isdigit() or int(exec_main_status) > 255:
+    raise SystemExit(1)
+phases = {
+    "credential_input": "input_acquisition",
+    "engine_start": "engine_initialization",
+    "network_join": "peer_establishment",
+    "durable_commit": "receipt_commit",
 }
-matches = []
+counts = {scope: {category: 0 for category in phases} for scope in ("pinned", "window")}
 for line in sys.stdin:
+    if not line.strip():
+        continue
     entry = json.loads(line)
     message = entry.get("MESSAGE")
-    if entry.get("_SYSTEMD_INVOCATION_ID") != invocation or not isinstance(message, str):
+    if not isinstance(message, str) or not message.startswith("diagnostic_receipt="):
         continue
-    if message.startswith("diagnostic_receipt="):
-        receipt = json.loads(message.split("=", 1)[1])
-        if receipt == expected:
-            matches.append(receipt)
-        elif receipt.get("category") == "engine_start":
-            raise SystemExit(1)
-if len(matches) != 1:
-    raise SystemExit(1)
-print(json.dumps(matches[0], sort_keys=True, separators=(",", ":")))
-' "$invocation_id"
+    receipt = json.loads(message.split("=", 1)[1])
+    category = receipt.get("category") if isinstance(receipt, dict) else None
+    expected = {
+        "category": category, "phase": phases.get(category),
+        "actor": "tsnet-sidecar", "unit": "happyranch-tsnet-sidecar.service",
+        "outcome": "failed", "terminal": True, "assertion": {"status": "completed"},
+    }
+    if category not in phases or receipt != expected:
+        raise SystemExit(1)
+    counts["window"][category] += 1
+    if entry.get("_SYSTEMD_INVOCATION_ID") == invocation:
+        counts["pinned"][category] += 1
+def summary(scope):
+    values = counts[scope]
+    return {
+        "categories": sorted(category for category, count in values.items() if count),
+        "category_counts": values,
+        "receipt_count": sum(values.values()),
+    }
+pinned = summary("pinned")
+pinned["qualifying_receipt_count"] = counts["pinned"]["engine_start"]
+output = {
+    "pinned_invocation": pinned,
+    "systemd": {"result": result, "exec_main_status": int(exec_main_status)},
+    "window": summary("window"),
+}
+print(json.dumps(output, sort_keys=True, separators=(",", ":")))
+' "$invocation_id" "$result" "$exec_main_status"
+}
+control_terminal_evidence_qualifies() {
+  python -c 'import json,sys; d=json.load(sys.stdin); p=d["pinned_invocation"]; assert p["qualifying_receipt_count"] == p["receipt_count"] == 1; assert p["categories"] == ["engine_start"]'
 }
 systemctl_absent_value() {
   local unit="$1" property="$2" expected="$3" value status
@@ -403,12 +452,10 @@ for arm_spec in "${acceptance_arms[@]}"; do
   if [[ "$variant" == control ]]; then
     sleep 2
     ! active happyranch-tsnet-sidecar.service || fail "shipping control unexpectedly READY"
-    arm_invocation_id="$(systemctl show happyranch-tsnet-sidecar.service -p InvocationID --value)"
-    [[ "$arm_invocation_id" =~ ^[0-9a-f]{32}$ ]] || fail "shipping control invocation identity unavailable"
-    if ! redacted_control_receipt="$(current_control_terminal_receipt "$arm_journal_cursor" "$arm_invocation_id")"; then
-      fail "shipping control current arm coarse receipt cardinality mismatch"
-    fi
-    printf '{"arm_id":"%s","invocation_binding":"current","receipt":%s}\n' "$arm_id" "$redacted_control_receipt" >>"$diagnostics/control-terminal-receipts.jsonl"
+    IFS=$'\t' read -r arm_invocation_id arm_systemd_result arm_exec_main_status < <(settle_control_terminal_invocation) || fail "shipping control terminal invocation unavailable after stop/reset-failed"
+    redacted_control_evidence="$(current_control_terminal_evidence "$arm_journal_cursor" "$arm_invocation_id" "$arm_systemd_result" "$arm_exec_main_status")" || fail "shipping control terminal evidence unsafe or unavailable"
+    printf '{"arm_id":"%s","invocation_binding":"current","terminal_evidence":%s}\n' "$arm_id" "$redacted_control_evidence" >>"$diagnostics/control-terminal-receipts.jsonl"
+    control_terminal_evidence_qualifies <<<"$redacted_control_evidence" || fail "shipping control current arm coarse receipt cardinality mismatch"
     python "$evidence_driver" diagnose "$evidence_artifact" --id "$run_id:$arm_id:engine_start" --category engine_start --phase engine_initialization --actor tsnet-sidecar --unit happyranch-tsnet-sidecar.service
     arm_result_args=(--control-category engine_start --control-phase engine_initialization)
   else
