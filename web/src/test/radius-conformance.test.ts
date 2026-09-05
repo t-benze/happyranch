@@ -326,10 +326,7 @@ const NON_DENOMINATOR_SOURCE_LINES = new Map<string, readonly RegExp[]>([
   ],
 ]);
 /** Exact pre-correction debt. This map must strictly shrink. */
-const KNOWN_MISMATCHES = new Map<string, RadiusClass>([
-  ["composer", "rounded-3xl"],
-  ["inbox-row", "rounded-lg"],
-]);
+const KNOWN_MISMATCHES = new Map<string, RadiusClass>();
 /** No remaining exclusion is allowed to make a production-radius claim. */
 const NON_DENOMINATOR_EXCLUSIONS = new Map<string, string>();
 
@@ -540,7 +537,7 @@ describe("Pasture radius conformance contract", () => {
   });
   test("pins the complete denominator and shrinking baseline", () => {
     expect(RADIUS_CONTRACT).toHaveLength(EXPECTED_DENOMINATOR);
-    expect(KNOWN_MISMATCHES).toHaveLength(2);
+    expect(KNOWN_MISMATCHES).toHaveLength(0);
     expect(NON_DENOMINATOR_EXCLUSIONS.size).toBe(0);
     expect(KNOWN_MISMATCHES.has("button")).toBe(false);
     expect(() =>
@@ -587,19 +584,22 @@ describe("Pasture radius conformance contract", () => {
       assertRadiusContract(RADIUS_CONTRACT, KNOWN_MISMATCHES, drifted),
     ).toThrow(new RegExp(`${id}: current mismatch omitted`));
   });
-  test("rejects Composer and InboxRow target or baseline drift", () => {
-    const composerCorrected = withObservedRadius(
+  test.each([
+    ["message-bubble", "rounded-sm"],
+    ["typing-bubble", "rounded-sm"],
+    ["composer", "rounded-3xl"],
+    ["inbox-row", "rounded-lg"],
+  ] as const)("protects the independent final mapping for %s", (id, wrongRadius) => {
+    const drifted = withObservedRadius(
       productionObservations,
-      "composer",
-      "rounded-lg",
+      id,
+      wrongRadius,
     );
     expect(() =>
-      assertRadiusContract(
-        RADIUS_CONTRACT,
-        KNOWN_MISMATCHES,
-        composerCorrected,
-      ),
-    ).toThrow(/composer: stale mismatch baseline/);
+      assertRadiusContract(RADIUS_CONTRACT, KNOWN_MISMATCHES, drifted),
+    ).toThrow(new RegExp(`${id}: current mismatch omitted`));
+  });
+  test("rejects Composer and InboxRow wrong values or reintroduced baselines", () => {
     const inboxWrong = withObservedRadius(
       productionObservations,
       "inbox-row",
@@ -607,12 +607,12 @@ describe("Pasture radius conformance contract", () => {
     );
     expect(() =>
       assertRadiusContract(RADIUS_CONTRACT, KNOWN_MISMATCHES, inboxWrong),
-    ).toThrow(/inbox-row: observed mismatch drifted/);
-    const omitted = new Map(KNOWN_MISMATCHES);
-    omitted.delete("inbox-row");
-    expect(() =>
-      assertRadiusContract(RADIUS_CONTRACT, omitted, productionObservations),
     ).toThrow(/inbox-row: current mismatch omitted/);
+    const stale = new Map(KNOWN_MISMATCHES);
+    stale.set("composer", "rounded-3xl");
+    expect(() =>
+      assertRadiusContract(RADIUS_CONTRACT, stale, productionObservations),
+    ).toThrow(/composer: stale mismatch baseline/);
   });
   test("fails closed on provenance, observation, and denominator changes", () => {
     const remapped = new Map(productionObservations);
