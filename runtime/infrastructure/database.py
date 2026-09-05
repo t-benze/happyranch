@@ -4635,6 +4635,14 @@ class Database:
                     _local_ci = LocalCiEvidence(**_parsed)
             except Exception:
                 pass
+        manager_self_evaluation = None
+        raw_decision = row["decision_json"] if "decision_json" in keys else None
+        if raw_decision:
+            parsed_decision = json.loads(raw_decision)
+            if isinstance(parsed_decision, dict):
+                manager_self_evaluation = parsed_decision.get(
+                    "_manager_self_evaluation"
+                )
         return CompletionReport(
             task_id=task_id,
             agent=row["agent"],
@@ -4642,6 +4650,7 @@ class Database:
             confidence=row["confidence_score"] or 0,
             output_summary=row["output_summary"] or "",
             verdict=row["verdict"] if "verdict" in keys else None,
+            manager_self_evaluation=manager_self_evaluation,
             output_dir=row["output_dir"] if "output_dir" in keys else None,
             risks_flagged=(
                 json.loads(row["risks_flagged"])
