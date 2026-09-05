@@ -327,11 +327,6 @@ const NON_DENOMINATOR_SOURCE_LINES = new Map<string, readonly RegExp[]>([
 ]);
 /** Exact pre-correction debt. This map must strictly shrink. */
 const KNOWN_MISMATCHES = new Map<string, RadiusClass>([
-  ["input", "rounded-md"],
-  ["textarea", "rounded-md"],
-  ["select-trigger", "rounded-md"],
-  ["tooltip-content", "rounded-md"],
-  ["mention-textarea", "rounded-md"],
   ["sidebar-footer-account", "rounded"],
   ["sidebar-nav-disabled", "rounded"],
   ["sidebar-nav-enabled", "rounded"],
@@ -548,7 +543,7 @@ describe("Pasture radius conformance contract", () => {
   });
   test("pins the complete denominator and shrinking baseline", () => {
     expect(RADIUS_CONTRACT).toHaveLength(EXPECTED_DENOMINATOR);
-    expect(KNOWN_MISMATCHES).toHaveLength(10);
+    expect(KNOWN_MISMATCHES).toHaveLength(5);
     expect(NON_DENOMINATOR_EXCLUSIONS.size).toBe(0);
     expect(KNOWN_MISMATCHES.has("button")).toBe(false);
     expect(() =>
@@ -562,14 +557,14 @@ describe("Pasture radius conformance contract", () => {
   test("requires strict baseline shrink after a correction", () => {
     const corrected = withObservedRadius(
       productionObservations,
-      "input",
+      "sidebar-footer-account",
       "rounded-sm",
     );
     expect(() =>
       assertRadiusContract(RADIUS_CONTRACT, KNOWN_MISMATCHES, corrected),
     ).toThrow(/stale mismatch baseline/);
     const shrunken = new Map(KNOWN_MISMATCHES);
-    shrunken.delete("input");
+    shrunken.delete("sidebar-footer-account");
     expect(() =>
       assertRadiusContract(RADIUS_CONTRACT, shrunken, corrected),
     ).not.toThrow();
