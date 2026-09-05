@@ -31,7 +31,11 @@ extensions = {".css", ".js", ".jsx", ".ts", ".tsx"}
 excluded_directories = {"__snapshots__", "__tests__", "reports", "screenshots", "test"}
 
 hex_value = r"#[0-9a-fA-F]{3}(?:[0-9a-fA-F](?:[0-9a-fA-F]{2}){0,2})?"
-tailwind = re.compile(rf"(?:^|[^\w-])(?:bg|text|border|fill|stroke|ring|shadow|outline|decoration|accent|caret)-\[({hex_value})\](?![0-9a-fA-F])")
+# Any Tailwind utility (including variants and negative/important forms) whose
+# arbitrary value is itself a hex color. Keeping the utility name structural
+# covers the full color-capable vocabulary without treating issue references
+# or HTML numeric entities as classes.
+tailwind = re.compile(rf"(?<![\w-])(?:[a-z][\w-]*:)*!?-?[a-z][\w-]*-\[({hex_value})\](?![0-9a-fA-F])", re.IGNORECASE)
 css_or_object = re.compile(rf"(?:^|[;{{,])\s*(?:--[\w-]+|[\w-]*(?:color|background|border|fill|stroke|shadow|outline|decoration|accent|caret)[\w-]*)\s*:\s*['\"]?({hex_value})(?![0-9a-fA-F])", re.IGNORECASE)
 jsx_attribute = re.compile(rf"\b(?:color|fill|stroke)\s*=\s*(?:['\"]|{{\s*['\"])({hex_value})(?![0-9a-fA-F])", re.IGNORECASE)
 
@@ -48,40 +52,56 @@ def is_production_file(path: Path) -> bool:
     return True
 
 files = sorted(path for path in source_root.rglob("*") if path.is_file() and is_production_file(path))
-hits: list[tuple[str, str]] = []
+hits: list[tuple[str, int, int, str]] = []
 for path in files:
     relative = path.relative_to(source_root).as_posix()
     contents = path.read_text(encoding="utf-8")
     matches: list[tuple[int, str]] = []
     for pattern in (tailwind, css_or_object, jsx_attribute):
         matches.extend((match.start(1), match.group(1).lower()) for match in pattern.finditer(contents))
-    for _, value in sorted(set(matches)):
-        hits.append((relative, value))
+    for offset, value in sorted(set(matches)):
+        line = contents.count("\n", 0, offset) + 1
+        previous_newline = contents.rfind("\n", 0, offset)
+        column = offset - previous_newline
+        hits.append((relative, line, column, value))
 hits.sort()
 
-allowed: list[tuple[str, str]] = []
+allowed: list[tuple[str, int, int, str, str]] = []
 errors: list[str] = []
 for number, raw in enumerate(allowlist_path.read_text(encoding="utf-8").splitlines(), 1):
     if not raw or raw.startswith("# path"):
         continue
     fields = raw.split("\t")
-    if len(fields) != 3 or not all(fields):
-        errors.append(f"invalid allowlist row {number}: expected path, value, and specific reason")
+    if len(fields) != 5 or not all(fields):
+        errors.append(f"invalid allowlist row {number}: expected path, line, column, value, and specific reason")
         continue
-    path, value, _reason = fields
+    path, raw_line, raw_column, value, reason = fields
+    try:
+        line, column = int(raw_line), int(raw_column)
+    except ValueError:
+        errors.append(f"invalid allowlist row {number}: line and column must be positive integers")
+        continue
+    if line < 1 or column < 1:
+        errors.append(f"invalid allowlist row {number}: line and column must be positive integers")
+        continue
     if value != value.lower() or not re.fullmatch(hex_value, value):
         errors.append(f"invalid allowlist row {number}: color must be normalized lowercase hex")
         continue
-    allowed.append((path, value))
+    allowed.append((path, line, column, value, reason))
 
-unexpected = Counter(hits) - Counter(allowed)
-stale = Counter(allowed) - Counter(hits)
-for (path, value), count in sorted(unexpected.items()):
-    errors.extend([f"unlisted hit: {path}\t{value}"] * count)
-for (path, value), count in sorted(stale.items()):
-    errors.extend([f"stale allowlist entry: {path}\t{value}"] * count)
+allowed_locations = [(path, line, column, value) for path, line, column, value, _reason in allowed]
+unexpected = Counter(hits) - Counter(allowed_locations)
+stale = Counter(allowed_locations) - Counter(hits)
+reasons = {(path, line, column, value): reason for path, line, column, value, reason in allowed}
+if len(reasons) != len(allowed):
+    errors.append("invalid allowlist: duplicate source identity; each occurrence requires exactly one reason")
+for (path, line, column, value), count in sorted(unexpected.items()):
+    errors.extend([f"unlisted hit: {path}:{line}:{column}\t{value}"] * count)
+for (path, line, column, value), count in sorted(stale.items()):
+    reason = reasons[(path, line, column, value)]
+    errors.extend([f"stale allowlist entry: {path}:{line}:{column}\t{value}\t{reason}"] * count)
 
-hit_files = sorted({path for path, _value in hits})
+hit_files = sorted({path for path, _line, _column, _value in hits})
 print(f"Hex scan receipt: denominator={len(files)} production files; hits={len(hits)}; files={len(hit_files)}")
 print("Hex scan files: " + (", ".join(hit_files) if hit_files else "(none)"))
 if errors:
