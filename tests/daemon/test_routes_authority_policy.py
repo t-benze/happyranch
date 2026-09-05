@@ -193,9 +193,6 @@ def test_eligible_active_projection(client_with_runtime):
     assert body["active"]["release"]["actor_attribution"] == (
         "shared local operator credential"
     )
-    assert body["activation_guard"]["ready"] is True
-    assert body["activation_guard"]["must_escalate_recall"] == 1.0
-    assert body["activation_guard"]["must_escalate_observed"] == body["activation_guard"]["must_escalate_expected"]
     assert body["bootstrap_template"]["clauses"][0]["id"] == (
         ENGINEERING_PRE_ESCALATION_POLICY.clauses[0].id
     )
@@ -403,7 +400,7 @@ def test_create_release_audit_failure_rolls_back_release(client_with_runtime, mo
     assert org.db._conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == audit_count
 
 
-def test_activation_readiness_does_not_turn_guessed_release_into_oracle(client_with_runtime):
+def test_activation_does_not_turn_guessed_release_into_oracle(client_with_runtime):
     client, org = client_with_runtime
     _seed_agent(org)
     audit_count = org.db._conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]

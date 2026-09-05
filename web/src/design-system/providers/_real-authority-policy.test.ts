@@ -25,7 +25,6 @@ const empty = {
   target_manager: 'engineering_manager' as const,
   can_mutate: true as const,
   bootstrap_required: true as const,
-  activation_guard: { ready: false as const, reason: 'TASK-6335 production verification required' },
   bootstrap_template: bootstrapTemplate,
 };
 const active = {

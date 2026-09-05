@@ -351,8 +351,8 @@ sanitized `policy_store_unavailable` failure. The S2 read itself neither
 creates nor activates policy. S3 exposes immutable release creation and thus
 truthfully reports `can_mutate=true` in both empty and active responses; that
 capability never implies activation. S4/S6a shipped runtime injection,
-candidate pins, and manager self-evaluation; S7 replaces the static guard with
-the release-controlled readiness contract below.
+candidate pins, and manager self-evaluation; S7 adds the bounded operator
+projection and explicit founder-authorized activation described below.
 
 **Dark policy mutation API (S3).** `POST .../releases` server-owns the exact
 Engineering team/policy identity and next version, validates the closed typed
@@ -366,14 +366,14 @@ attribution, with that closed receipt derived and verified at the transaction
 owner rather than accepted from a caller. The transaction resolves a request
 id's exact request-digest replay before validating the mutable active base; a
 new request still validates that base and a changed digest still conflicts.
-`POST .../activations` accepts the CAS/reactivation contract and enforces the
-release-controlled S7 readiness contract before store mutation. A closed
-contract returns `412 activation_guard_not_ready`; a ready contract proceeds
-through the S1 store's sealed CAS, exact replay, stale-epoch, same-team, and
-older-version rollback checks without exposing guessed release existence as a
-distinct oracle. Shipping the route is not production activation.
+`POST .../activations` accepts the CAS/reactivation contract as an explicit
+founder-authorized action. The authenticated route enforces the exact
+Engineering-manager allowlist and closed request model before proceeding
+through the S1 store's sealed CAS, exact replay, stale-epoch, same-team, audit,
+and older-version rollback checks without exposing guessed release existence
+as a distinct oracle. Shipping the route is not production activation.
 
-**S6b/S7 projection and activation readiness.** The authenticated Engineering
+**S6b/S7 projection and activation.** The authenticated Engineering
 Manager surface exposes bounded stable pagination for immutable release and
 activation receipts plus secret-free self-evaluation outcomes. It projects
 only durable release/activation/policy, prompt, provider, executor, model,
@@ -381,32 +381,13 @@ task/result/session/thread/hook/envelope pins and emits `receipt_incomplete`
 when a causal join is absent or corrupt; raw evaluator output, rationale,
 prompts, policy prose, and secrets are prohibited. Workers and ineligible
 managers receive the same surface-unavailable 404 and omit the surface in the
-Agent payload and DOM. The closed executable readiness corpus covers absent,
-malformed, extra-field, stale, mismatched, replay, ambiguous, low-confidence,
-cancellation, budget, protected/mechanical fence, startup, and zombie paths;
-activation requires exact 100% must-escalate recall. Rollback creates a new
-monotonic epoch pointing at an older immutable release. Eligibility remains
-explicitly `engineering/engineering_manager`; the role/team seam is reusable
-but enables no other manager. Code landing, redeploy, readiness, and separate
-production activation are distinct gates.
-
-The readiness result is not derived from the corpus declaration. The separate
-release harness executes one positive shipping launch/completion test and one
-production-seam test for each named negative, where those tests assert the
-actual durable, audit, envelope, queue, and recovery effects owned by their
-seam. It publishes canonical receipts binding each case to its exact test
-node/source bytes, process result digests, generator bytes, and shipping
-launch/recovery source digests. The checked-in artifact has a deterministic
-seal plus a separate exact release-controlled digest pin. Runtime verification
-independently re-hashes those sources and rejects absent,
-malformed, extra, stale-source, version/digest-mismatched, duplicate,
-incomplete, ambiguous, or less-than-14/14 evidence before activation lookup or
-mutation. The pin is release provenance within the existing shared-local trust
-boundary, not cryptographic signer or same-UID tamper resistance; recomputing
-the public seal alone without the release pin cannot make a different artifact
-admissible. Landing the artifact is not deployment, verification by a deployed
-binary is not production activation, and activation remains a separate
-authorized operator act.
+Agent payload and DOM. Rollback creates a new monotonic epoch pointing at an
+older immutable release. Eligibility remains explicitly
+`engineering/engineering_manager`; the role/team seam is reusable but enables
+no other manager. Activation is an explicit founder-authorized operator act
+subject to the ordinary daemon authentication, allowlist, closed request,
+immutable release linkage, exact replay/idempotency, audit, and CAS fences.
+Code landing or redeploy is not production activation.
 
 Release identity is derived at the typed store boundary, never supplied as a
 second caller-controlled authority. Its canonical JSON and SHA-256 cover

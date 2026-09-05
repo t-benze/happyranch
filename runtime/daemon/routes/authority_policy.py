@@ -16,7 +16,6 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
-from runtime.orchestrator.authority_activation_readiness import activation_readiness
 from runtime.orchestrator.active_authority_policy import (
     SELF_EVALUATION_CONTRACT_DIGEST,
     SELF_EVALUATION_CONTRACT_ID,
@@ -153,7 +152,6 @@ def get_team_escalation_policy(slug: str, agent_name: str, org: OrgDep) -> dict:
             "team": team,
             "target_manager": target_manager,
             "can_mutate": True,
-            "activation_guard": activation_readiness(),
             "bootstrap_template": _bootstrap_template(),
         }
         if activation is None:
@@ -464,7 +462,6 @@ def create_team_escalation_policy_release(
     responses={
         404: {"description": "Policy surface unavailable"},
         409: {"description": "CAS or idempotency conflict"},
-        412: {"description": "Production verification guard is closed"},
         422: {"description": "Activation request validation failed"},
         500: {"description": "Sanitized policy store failure"},
     },
@@ -476,9 +473,6 @@ def activate_team_escalation_policy(
     org: OrgDep,
 ) -> dict:
     team, _ = _manager_surface(org, agent_name)
-    readiness = activation_readiness()
-    if not readiness["ready"]:
-        raise HTTPException(status_code=412, detail={"code": "activation_guard_not_ready", **readiness})
     try:
         request_json = json.dumps(body.model_dump(mode="json"), sort_keys=True,
                                   separators=(",", ":"), ensure_ascii=False)

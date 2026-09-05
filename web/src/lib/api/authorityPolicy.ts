@@ -13,8 +13,6 @@ export interface TeamEscalationPolicyResponse {
   /** Server authorization remains authoritative for both mutations. */
   can_mutate: true;
   bootstrap_required?: true;
-  activation_guard: { ready: boolean; reason: string; contract_id?: string;
-    contract_version?: string; contract_digest?: string; must_escalate_recall?: number };
   bootstrap_template: AuthorityPolicyTemplate;
   active?: {
     activation_id: string;

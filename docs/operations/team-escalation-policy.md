@@ -18,25 +18,16 @@ corrupt joins are `receipt_incomplete`, never inferred success. Raw evaluator
 responses, rationale, proposed reason, prompts, policy content, credentials,
 and secrets are never projected.
 
-Save creates an immutable inactive release. Save & activate is offered only
-when the deployed binary verifies the release-controlled S7 proof artifact:
-one production-shaped newly-launched-manager delivery/evaluation/receipt test
-plus 14/14 production-seam negative tests. A separate release harness executes
-the tests, which assert the actual durable/audit/queue/envelope effects at their
-owning seams, and publishes receipts bound to the exact test nodes/source bytes,
-process results, generator, and launch/recovery sources. The artifact is pinned
-by an exact release-controlled digest. This is reviewed release provenance under
-the existing shared-local trust boundary, not cryptographic signer or same-UID
-tamper resistance. Public checksum recomputation cannot
-replace the release pin; absent, malformed, stale,
-mismatched, ambiguous, incomplete, or sub-100% evidence closes the guard. The
-activation route independently consumes only that verified result and performs
-CAS. A first activation becomes epoch 1
+Save creates an immutable inactive release. Save & activate remains an explicit
+founder-authorized action. The authenticated route independently revalidates
+the exact Engineering-manager allowlist and closed request contract, then uses
+the transaction-owning store's immutable release/team linkage, request replay,
+idempotency, audit, and expected-previous-epoch CAS fences. A first activation becomes epoch 1
 `bootstrap`; a rollback creates a new `reactivate_rollback` epoch pointing to
 an older immutable release. Conflicts leave the saved release inactive and
 require a refresh. All mutations truthfully attribute only the `shared local
 operator credential`.
 
-Landing this code, redeploying it, satisfying the readiness contract, and
-creating/activating a production policy are distinct gates. This delivery does
+Landing this code, redeploying it, and creating/activating a production policy
+are distinct events. This delivery does
 not create or activate a production policy and does not deploy anything.

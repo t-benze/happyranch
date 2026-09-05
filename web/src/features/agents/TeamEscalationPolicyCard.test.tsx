@@ -12,13 +12,11 @@ const template = {
 const empty = {
   team: 'engineering' as const, target_manager: 'engineering_manager' as const,
   can_mutate: true as const, bootstrap_required: true as const,
-  activation_guard: { ready: false, reason: 'production verification required' },
   bootstrap_template: template,
 };
 const active = {
   ...empty,
   bootstrap_required: undefined,
-  activation_guard: { ready: true, reason: '' },
   active: {
     activation_id: 'APA-active', epoch: 7, action: 'activate' as const,
     created_at: '2026-09-02T00:00:00Z', actor_attribution: 'shared local operator credential' as const,
@@ -78,7 +76,6 @@ describe('TeamEscalationPolicyCard', () => {
     expect(screen.getByText(/shared local operator credential/i)).toBeInTheDocument();
     expect(screen.getByText(/No active release/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save & activate' })).toBeDisabled();
-    expect(screen.getByText(/Activation unavailable/)).toHaveTextContent('production verification required');
   });
 
   it('preserves dirty draft on conflict and saves an immutable inactive version', async () => {

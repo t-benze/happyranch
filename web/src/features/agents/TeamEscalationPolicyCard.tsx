@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { AlertCircle, ShieldCheck } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import { ApiError } from '@/lib/api';
 import {
@@ -48,7 +48,6 @@ export function TeamEscalationPolicyCard({ agent }: { agent: { name: string; tea
   const expected = query.data.bootstrap_template;
   const validationError = validateDraft(draft, expected);
   const active = query.data.active;
-  const guard = query.data.activation_guard;
   const historyItems = history.data?.pages.flatMap((page) => page.items) ?? [];
   const outcomeItems = outcomes.data?.pages.flatMap((page) => page.items) ?? [];
 
@@ -67,7 +66,7 @@ export function TeamEscalationPolicyCard({ agent }: { agent: { name: string; tea
       setBaseline(JSON.stringify(draft));
       setSavedInactive({ id: saved.release.id, version: saved.release.version });
       setMessage(`Immutable version ${saved.release.version} saved inactive.`);
-      if (andActivate && guard.ready) {
+      if (andActivate) {
         try {
           await activateRelease.mutateAsync({
             agentName: agent.name,
@@ -146,11 +145,10 @@ export function TeamEscalationPolicyCard({ agent }: { agent: { name: string; tea
         <input readOnly className="border-border-subtle bg-surface-sunken mt-1 w-full rounded-md border px-3 py-2 font-mono text-xs" value={draft.continuation_phrase} />
       </label>
       {(validationError || message) && <p role="status" className={`mt-3 text-xs ${validationError ? 'text-tier-red' : 'text-text-secondary'}`}>{validationError ?? message}</p>}
-      {!guard.ready && <div className="text-tier-amber mt-3 flex items-center gap-2 text-xs"><ShieldCheck size={14} />Activation unavailable: {guard.reason}</div>}
       {confirm && <div role="dialog" aria-modal="true" aria-label="activate policy confirmation" className="border-border-default mt-3 rounded-md border p-3 text-sm"><p>{confirm === 'activate' ? 'Save a new immutable version and activate it?' : `Reactivate immutable version ${confirm.version} as a new epoch?`}</p><div className="mt-2 flex gap-2"><Button size="sm" onClick={() => { if (confirm === 'activate') { setConfirm(null); void save(true); } else { void rollback(confirm); } }}>Confirm</Button><Button size="sm" variant="ghost" onClick={() => setConfirm(null)}>Cancel</Button></div></div>}
       <div className="mt-4 flex flex-wrap gap-2">
         <Button size="sm" disabled={!dirty || !!validationError || createRelease.isPending} onClick={() => void save(false)}>Save immutable version</Button>
-        <Button size="sm" disabled={!dirty || !!validationError || !guard.ready || createRelease.isPending} onClick={() => setConfirm('activate')}>Save &amp; activate</Button>
+        <Button size="sm" disabled={!dirty || !!validationError || createRelease.isPending} onClick={() => setConfirm('activate')}>Save &amp; activate</Button>
         {message?.includes('base changed') && <Button size="sm" variant="ghost" onClick={() => window.location.reload()}>Reload base</Button>}
       </div>
       <section aria-labelledby="policy-history-heading" className="border-border-subtle mt-5 border-t pt-4">
