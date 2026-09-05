@@ -17,6 +17,12 @@ from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from runtime.orchestrator.authority_activation_readiness import activation_readiness
+from runtime.orchestrator.active_authority_policy import (
+    SELF_EVALUATION_CONTRACT_DIGEST,
+    SELF_EVALUATION_CONTRACT_ID,
+    SELF_EVALUATION_CONTRACT_VERSION,
+    SESSION_POLICY_BINDING_ACTION,
+)
 from runtime.models import AuthorityPolicyRelease
 from runtime.orchestrator.authority_policy import (
     CONTINUE_ROUTINE_PHRASE,
@@ -209,6 +215,93 @@ def get_team_escalation_policy_history(
         raise HTTPException(status_code=500, detail=_STORE_UNAVAILABLE) from None
 
 
+def _outcome_receipts_complete(org: OrgDep, row: dict) -> tuple[bool, str | None]:
+    """Authenticate every causal receipt promised by the S6b projection."""
+    candidate_id = row["id"]
+    result_id = row["causal_result_id"]
+    if not isinstance(result_id, str) or not result_id.isdigit():
+        return False, None
+    result = org.db.execute("SELECT * FROM task_results WHERE id=?", (int(result_id),)).fetchone()
+    task = org.db.execute("SELECT * FROM tasks WHERE id=?", (row["root_task_id"],)).fetchone()
+    if result is None or task is None:
+        return False, None
+    thread_id = task["dispatched_from_thread_id"]
+    thread = None if thread_id is None else org.db.execute(
+        "SELECT id FROM threads WHERE id=?", (thread_id,),
+    ).fetchone()
+    expected_causal_id = f"result:{result_id}"
+    expected_causal_digest = hashlib.sha256(f"task-result:{result_id}".encode()).hexdigest()
+    if not (
+        row["root_task_id"] == task["id"]
+        and row["manager_agent"] == task["assigned_agent"]
+        and row["manager_session_id"] == task["current_session_id"]
+        and result["task_id"] == task["id"]
+        and result["agent"] == row["manager_agent"]
+        and result["session_id"] == row["manager_session_id"]
+        and row["causal_event_id"] == expected_causal_id
+        and row["causal_event_digest"] == expected_causal_digest
+        and thread is not None and thread["id"] == thread_id
+    ):
+        return False, thread_id
+    release = org.db.execute("SELECT * FROM authority_policy_releases WHERE id=?", (row["release_id"],)).fetchone()
+    activation = org.db.execute("SELECT * FROM authority_policy_activations WHERE id=?", (row["activation_id"],)).fetchone()
+    evaluation = org.db.execute("SELECT * FROM authority_evaluations WHERE candidate_id=?", (candidate_id,)).fetchone()
+    envelope = org.db.execute("SELECT * FROM authority_continue_envelopes WHERE candidate_id=?", (candidate_id,)).fetchone()
+    if any(item is None for item in (release, activation, evaluation, envelope)):
+        return False, thread_id
+    if not (
+        release["team"] == row["team"] and release["policy_id"] == row["policy_id"]
+        and str(release["version"]) == row["policy_version"]
+        and release["policy_digest"] == row["policy_digest"]
+        and activation["team"] == row["team"] and activation["release_id"] == release["id"]
+        and activation["epoch"] == row["activation_epoch"]
+        and evaluation["candidate_id"] == candidate_id
+        and evaluation["disposition"] == row["disposition"] == "continue_same_root"
+        and envelope["candidate_id"] == candidate_id
+        and envelope["root_task_id"] == row["root_task_id"]
+        and envelope["team"] == row["team"]
+        and envelope["manager_agent"] == row["manager_agent"]
+        and envelope["manager_session_id"] == row["manager_session_id"]
+        and envelope["causal_event_id"] == row["causal_event_id"]
+        and envelope["causal_event_digest"] == row["causal_event_digest"]
+        and envelope["policy_id"] == row["policy_id"]
+        and envelope["policy_version"] == row["policy_version"]
+        and envelope["policy_digest"] == row["policy_digest"]
+        and envelope["action"] == "continue_same_root"
+    ):
+        return False, thread_id
+    bindings = [item for item in org.db.get_audit_logs(row["root_task_id"])
+                if item["action"] == SESSION_POLICY_BINDING_ACTION
+                and item["agent"] == row["manager_agent"]
+                and (item.get("payload") or {}).get("session_id") == row["manager_session_id"]]
+    hooks = [item for item in org.db.get_audit_logs(row["root_task_id"])
+             if item["action"] == "authority_hook"
+             and (item.get("payload") or {}).get("candidate_id") == candidate_id]
+    authority_events = org.db.list_authority_audit(candidate_id)
+    if len(bindings) != 1 or len(hooks) != 1:
+        return False, thread_id
+    binding = bindings[0].get("payload") or {}
+    if not (
+        binding.get("mode") == "db_release"
+        and binding.get("release_id") == row["release_id"]
+        and binding.get("activation_id") == row["activation_id"]
+        and binding.get("activation_epoch") == row["activation_epoch"]
+        and binding.get("policy_digest") == row["policy_digest"]
+        and binding.get("provider_id") == row["provider_id"]
+        and binding.get("executor_kind") == row["executor_kind"]
+        and binding.get("model_id") == row["model_id"]
+        and binding.get("self_evaluation_contract_id") == SELF_EVALUATION_CONTRACT_ID
+        and binding.get("self_evaluation_contract_version") == SELF_EVALUATION_CONTRACT_VERSION
+        and binding.get("self_evaluation_contract_digest") == SELF_EVALUATION_CONTRACT_DIGEST
+        and hooks[0]["agent"] == row["manager_agent"]
+        and (hooks[0].get("payload") or {}).get("outcome") == "continued_same_root"
+        and [event.event_type.value for event in authority_events] == [
+            "candidate_claimed", "evaluation_recorded", "candidate_consumed"]
+    ):
+        return False, thread_id
+    return True, thread_id
+
+
 @router.get("/agents/{agent_name}/team-escalation-policy/outcomes")
 def get_team_escalation_policy_outcomes(
     slug: str, agent_name: str, org: OrgDep,
@@ -221,17 +314,15 @@ def get_team_escalation_policy_outcomes(
         )
         projected = []
         for row in items:
-            authority_audit = org.db.list_authority_audit(row["id"])
             hook_rows = [item for item in org.db.get_audit_logs(row["root_task_id"])
                          if item["action"] == "authority_hook"
                          and (item.get("payload") or {}).get("candidate_id") == row["id"]]
-            task = org.db.get_task(row["root_task_id"])
-            complete = bool(row["release_id"] and row["activation_id"]
-                            and row["evaluation_id"] and authority_audit and hook_rows)
+            complete, thread_id = _outcome_receipts_complete(org, row)
             projected.append({
                 "candidate_id": row["id"], "root_task_id": row["root_task_id"],
                 "manager_session_id": row["manager_session_id"],
                 "causal_event_id": row["causal_event_id"],
+                "causal_result_id": row["causal_result_id"],
                 "release_id": row["release_id"], "activation_id": row["activation_id"],
                 "activation_epoch": row["activation_epoch"],
                 "policy_version": row["policy_version"], "policy_digest": row["policy_digest"],
@@ -242,8 +333,13 @@ def get_team_escalation_policy_outcomes(
                 "disposition": row["evaluation_disposition"],
                 "disposition_code": row["disposition_code"],
                 "evaluation_created_at": row["evaluation_created_at"],
+                "evaluator_contract": {
+                    "id": SELF_EVALUATION_CONTRACT_ID,
+                    "version": SELF_EVALUATION_CONTRACT_VERSION,
+                    "digest": SELF_EVALUATION_CONTRACT_DIGEST,
+                },
                 "terminal_hook_outcome": None if not hook_rows else hook_rows[-1]["payload"].get("outcome"),
-                "thread_id": None if task is None else task.dispatched_from_thread_id,
+                "thread_id": thread_id,
                 "envelope": None if row["envelope_id"] is None else {
                     "id": row["envelope_id"], "state": row["envelope_state"],
                     "consumed_at": row["envelope_consumed_at"],

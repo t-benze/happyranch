@@ -451,6 +451,25 @@ def test_manager_policy_shipping_seam_consumes_authenticated_self_evaluation(
         "SELECT disposition FROM authority_evaluations"
     ).fetchall()
     assert [row["disposition"] for row in evaluations] == ["continue_same_root"]
+    # The release-controlled artifact is a serialization of this observed
+    # production-shaped path.  It may not substitute declared constants for
+    # the launch/result/evaluation receipts exercised above.
+    import json as _json
+    from pathlib import Path as _Path
+    proof = _json.loads((_Path(__file__).parents[1] / (
+        "runtime/orchestrator/authority_activation_readiness_proof.json"
+    )).read_text())
+    assert proof["positive_observation"] == {
+        "release_id": release.id, "activation_id": activation.id,
+        "policy_version": str(release.version), "policy_digest": release.policy_digest,
+        "contract_id": SELF_EVALUATION_CONTRACT_ID,
+        "contract_version": SELF_EVALUATION_CONTRACT_VERSION,
+        "contract_digest": SELF_EVALUATION_CONTRACT_DIGEST,
+        "provider_id": binding["provider_id"], "executor_kind": binding["executor_kind"],
+        "model_id": binding["model_id"], "evaluation_count": len(evaluations),
+        "strict_parseable": True, "receipts_complete": True,
+        "disposition": "continue_same_root",
+    }
 
 
 @pytest.mark.parametrize("marker", [

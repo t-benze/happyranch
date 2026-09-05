@@ -1,4 +1,4 @@
-import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import * as authorityPolicyApi from '@/lib/api/authorityPolicy';
 import type { AuthorityPolicyApi } from './DataContext';
@@ -46,23 +46,27 @@ export const realAuthorityPolicyApi: AuthorityPolicyApi = {
   useTeamEscalationPolicyHistory: (agent) => {
     const { slug = '' } = useParams<{ slug: string }>();
     const enabled = !!slug && authorityPolicyApi.isEligiblePolicyManager(agent);
-    const queryOptions: Array<{ queryKey: string[]; queryFn: () => Promise<authorityPolicyApi.AuthorityPolicyHistoryResponse>; retry: false }> = enabled ? [{
-      queryKey: ['team-escalation-policy-history', slug, agent!.name],
-      queryFn: () => authorityPolicyApi.getTeamEscalationPolicyHistory(slug, agent!.name),
-      retry: false,
-    }] : [];
-    const queries = useQueries({ queries: queryOptions });
-    return queries[0] ?? { data: undefined, isLoading: false, isError: false, error: null };
+    const q = useInfiniteQuery({
+      queryKey: ['team-escalation-policy-history', slug, agent?.name], initialPageParam: 0,
+      queryFn: ({ pageParam }) => authorityPolicyApi.getTeamEscalationPolicyHistory(slug, agent!.name, pageParam),
+      getNextPageParam: (last) => last.next_cursor ?? undefined, enabled, retry: false,
+    });
+    return { data: q.data ? { pages: q.data.pages } : undefined, isLoading: q.isLoading,
+      isError: q.isError, error: (q.error as Error | null) ?? null,
+      fetchNextPage: () => q.fetchNextPage(), hasNextPage: !!q.hasNextPage,
+      isFetchingNextPage: q.isFetchingNextPage };
   },
   useTeamEscalationPolicyOutcomes: (agent) => {
     const { slug = '' } = useParams<{ slug: string }>();
     const enabled = !!slug && authorityPolicyApi.isEligiblePolicyManager(agent);
-    const queryOptions: Array<{ queryKey: string[]; queryFn: () => Promise<authorityPolicyApi.AuthorityPolicyOutcomesResponse>; retry: false }> = enabled ? [{
-      queryKey: ['team-escalation-policy-outcomes', slug, agent!.name],
-      queryFn: () => authorityPolicyApi.getTeamEscalationPolicyOutcomes(slug, agent!.name),
-      retry: false,
-    }] : [];
-    const queries = useQueries({ queries: queryOptions });
-    return queries[0] ?? { data: undefined, isLoading: false, isError: false, error: null };
+    const q = useInfiniteQuery({
+      queryKey: ['team-escalation-policy-outcomes', slug, agent?.name], initialPageParam: 0,
+      queryFn: ({ pageParam }) => authorityPolicyApi.getTeamEscalationPolicyOutcomes(slug, agent!.name, pageParam),
+      getNextPageParam: (last) => last.next_cursor ?? undefined, enabled, retry: false,
+    });
+    return { data: q.data ? { pages: q.data.pages } : undefined, isLoading: q.isLoading,
+      isError: q.isError, error: (q.error as Error | null) ?? null,
+      fetchNextPage: () => q.fetchNextPage(), hasNextPage: !!q.hasNextPage,
+      isFetchingNextPage: q.isFetchingNextPage };
   },
 };

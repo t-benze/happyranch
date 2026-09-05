@@ -401,9 +401,9 @@ export interface AuthorityPolicyApi {
     unknown
   >;
   useTeamEscalationPolicyHistory: (agent: { name: string; team: string; role: string } | undefined) =>
-    QueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyHistoryResponse>;
+    InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyHistoryResponse>;
   useTeamEscalationPolicyOutcomes: (agent: { name: string; team: string; role: string } | undefined) =>
-    QueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyOutcomesResponse>;
+    InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyOutcomesResponse>;
 }
 
 export interface AgentsRoutes {

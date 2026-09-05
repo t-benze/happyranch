@@ -6,7 +6,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from runtime.models import AuthorityPolicyActivation, AuthorityPolicyRelease
+from runtime.models import AuthorityPolicyActivation, AuthorityPolicyRelease, TaskRecord, ThreadRecord, TaskStatus
+from runtime.orchestrator.active_authority_policy import (
+    SELF_EVALUATION_CONTRACT_DIGEST, SELF_EVALUATION_CONTRACT_ID,
+    SELF_EVALUATION_CONTRACT_VERSION, SESSION_POLICY_BINDING_ACTION,
+)
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
@@ -43,6 +47,66 @@ def _seed_active(org):
         request_id="REQ-1", request_digest=hashlib.sha256(b"request").hexdigest(),
     )
     return release, store.activate(activation)
+
+
+def _seed_complete_outcome(org):
+    release, activation = _seed_active(org)
+    org.db.insert_thread(ThreadRecord(id="THR-proof", subject="proof"))
+    org.db.insert_task(TaskRecord(
+        id="TASK-proof", brief="proof", assigned_agent="engineering_manager",
+        dispatched_from_thread_id="THR-proof",
+    ))
+    org.db.update_task("TASK-proof", status=TaskStatus.IN_PROGRESS,
+                       current_session_id="sess-proof", orchestration_step_count=1)
+    org.db.insert_audit_log("TASK-proof", "engineering_manager", SESSION_POLICY_BINDING_ACTION, {
+        "session_id": "sess-proof", "mode": "db_release", "release_id": release.id,
+        "policy_digest": release.policy_digest, "activation_id": activation.id,
+        "activation_epoch": activation.epoch,
+        "self_evaluation_contract_id": SELF_EVALUATION_CONTRACT_ID,
+        "self_evaluation_contract_version": SELF_EVALUATION_CONTRACT_VERSION,
+        "self_evaluation_contract_digest": SELF_EVALUATION_CONTRACT_DIGEST,
+        "provider_id": "claude", "executor_kind": "claude", "model_id": "default",
+    })
+    org.db.insert_task_result(task_id="TASK-proof", agent="engineering_manager",
+                              session_id="sess-proof", output_summary="done",
+                              confidence_score=100)
+    result = org.db.get_latest_task_result("TASK-proof", "engineering_manager", "sess-proof")
+    result_id = str(result["id"])
+    causal_digest = hashlib.sha256(f"task-result:{result_id}".encode()).hexdigest()
+    candidate, _ = org.db.claim_authority_candidate_with_policy_pin(
+        release_id=release.id, activation_id=activation.id,
+        activation_epoch=activation.epoch, provider_id="claude", executor_kind="claude",
+        root_task_id="TASK-proof", team="engineering", manager_agent="engineering_manager",
+        manager_session_id="sess-proof", causal_event_id=f"result:{result_id}",
+        causal_event_digest=causal_digest, causal_result_id=result_id,
+        policy_id=release.policy_id, policy_version=str(release.version),
+        policy_digest=release.policy_digest, prompt_id="manager-authority-self-evaluation",
+        prompt_version="v1", prompt_digest=SELF_EVALUATION_CONTRACT_DIGEST,
+        model_id="default", model_version="1", model_digest="b" * 64,
+        snapshot_digest="c" * 64,
+    )
+    org.db.record_authority_audit(candidate_id=candidate.id, event_type="candidate_claimed")
+    org.db.record_authority_evaluation(candidate_id=candidate.id,
+        disposition="continue_same_root", disposition_code="continue_same_root",
+        response_digest="d" * 64)
+    org.db.record_authority_audit(candidate_id=candidate.id, event_type="evaluation_recorded")
+    assert org.db.consume_authority_candidate(candidate.id)
+    org.db.record_authority_audit(candidate_id=candidate.id, event_type="candidate_consumed")
+    now = datetime.now(timezone.utc).isoformat()
+    org.db.execute("""INSERT INTO authority_continue_envelopes
+        (id,candidate_id,root_task_id,team,manager_agent,manager_session_id,
+         causal_event_id,causal_event_digest,policy_id,policy_version,policy_digest,
+         clause_id,action,state,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?,?)""", (
+        f"CONT-{candidate.id}", candidate.id, "TASK-proof", "engineering",
+        "engineering_manager", "sess-proof", f"result:{result_id}", causal_digest,
+        release.policy_id, str(release.version), release.policy_digest,
+        "cont-routine-same-root", "continue_same_root", now, now,
+    ))
+    org.db.insert_audit_log("TASK-proof", "engineering_manager", "authority_hook", {
+        "candidate_id": candidate.id, "outcome": "continued_same_root",
+    })
+    return candidate.id
 
 
 def _release_body(**updates):
@@ -401,3 +465,78 @@ def test_outcome_projection_marks_missing_durable_linkage_incomplete(client_with
     assert item["receipt_state"] == "receipt_incomplete"
     assert item["disposition"] is None
     assert "reason" not in response.text and "rationale" not in response.text
+
+
+def test_outcome_projection_authenticates_complete_causal_join(client_with_runtime):
+    client, org = client_with_runtime
+    _seed_agent(org)
+    candidate_id = _seed_complete_outcome(org)
+    response = client.get(
+        "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy/outcomes"
+    )
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["candidate_id"] == candidate_id
+    assert item["receipt_state"] == "complete"
+    assert item["causal_result_id"].isdigit()
+    assert item["thread_id"] == "THR-proof"
+    assert item["evaluator_contract"] == {
+        "id": SELF_EVALUATION_CONTRACT_ID, "version": SELF_EVALUATION_CONTRACT_VERSION,
+        "digest": SELF_EVALUATION_CONTRACT_DIGEST,
+    }
+    for forbidden in ("prompt\"", "response", "rationale", "reason", "secret"):
+        assert forbidden not in response.text.lower()
+
+
+@pytest.mark.parametrize("corruption", [
+    "task", "result", "session", "release", "activation", "candidate",
+    "evaluation", "authority_audit", "terminal_hook", "thread", "envelope",
+    "contract", "provider", "executor", "model",
+])
+def test_outcome_projection_marks_each_independent_join_corruption_incomplete(
+    client_with_runtime, corruption,
+):
+    client, org = client_with_runtime
+    _seed_agent(org)
+    candidate_id = _seed_complete_outcome(org)
+    if corruption == "task":
+        org.db.execute("UPDATE tasks SET assigned_agent='other' WHERE id='TASK-proof'")
+    elif corruption == "result":
+        org.db.execute("UPDATE task_results SET agent='other' WHERE task_id='TASK-proof'")
+    elif corruption == "session":
+        org.db.execute("UPDATE tasks SET current_session_id='other' WHERE id='TASK-proof'")
+    elif corruption == "release":
+        org.db.execute("DROP TRIGGER authority_policy_releases_no_update")
+        org.db.execute("UPDATE authority_policy_releases SET policy_digest=?", ("0" * 64,))
+    elif corruption == "activation":
+        org.db.execute("DROP TRIGGER authority_candidate_policy_pins_no_update")
+        org.db.execute("UPDATE authority_candidate_policy_pins SET activation_epoch=99 WHERE candidate_id=?", (candidate_id,))
+    elif corruption == "candidate":
+        org.db.execute("DROP TRIGGER authority_candidates_identity_immutable")
+        org.db.execute("UPDATE authority_candidates SET root_task_id='TASK-other' WHERE id=?", (candidate_id,))
+    elif corruption == "evaluation":
+        org.db.execute("DROP TRIGGER authority_evaluations_no_update")
+        org.db.execute("UPDATE authority_evaluations SET disposition='escalate' WHERE candidate_id=?", (candidate_id,))
+    elif corruption == "authority_audit":
+        org.db.execute("DROP TRIGGER authority_audit_no_delete")
+        org.db.execute("DELETE FROM authority_audit WHERE candidate_id=? AND event_type='candidate_consumed'", (candidate_id,))
+    elif corruption == "terminal_hook":
+        org.db.execute("DELETE FROM audit_log WHERE task_id='TASK-proof' AND action='authority_hook'")
+    elif corruption == "thread":
+        org.db.execute("DELETE FROM threads WHERE id='THR-proof'")
+    elif corruption == "envelope":
+        org.db.execute("DROP TRIGGER authority_continue_envelopes_no_delete")
+        org.db.execute("DELETE FROM authority_continue_envelopes WHERE candidate_id=?", (candidate_id,))
+    else:
+        rows = [row for row in org.db.get_audit_logs("TASK-proof")
+                if row["action"] == SESSION_POLICY_BINDING_ACTION]
+        payload = rows[0]["payload"]
+        key = {"contract": "self_evaluation_contract_digest", "provider": "provider_id",
+               "executor": "executor_kind", "model": "model_id"}[corruption]
+        payload[key] = "corrupt"
+        org.db.execute("UPDATE audit_log SET payload=? WHERE id=?", (json.dumps(payload), rows[0]["id"]))
+    response = client.get(
+        "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy/outcomes"
+    )
+    assert response.status_code == 200
+    assert response.json()["items"][0]["receipt_state"] == "receipt_incomplete"

@@ -390,6 +390,17 @@ explicitly `engineering/engineering_manager`; the role/team seam is reusable
 but enables no other manager. Code landing, redeploy, readiness, and separate
 production activation are distinct gates.
 
+The readiness result is not derived from the corpus declaration. A checked-in
+proof artifact records the observed positive launch/completion path and every
+individual negative result, carries its own deterministic seal, and pins the
+exact shipping launch/consumer source digests plus evaluator contract and test
+release/activation/version/digest. Runtime verification rejects absent,
+malformed, extra, stale-source, version/digest-mismatched, duplicate,
+incomplete, ambiguous, or less-than-14/14 evidence before activation lookup or
+mutation. Landing the artifact is not deployment, verification by a deployed
+binary is not production activation, and activation remains a separate
+authorized operator act.
+
 Release identity is derived at the typed store boundary, never supplied as a
 second caller-controlled authority. Its canonical JSON and SHA-256 cover
 exactly `policy_id`, `version`, `team`, `title`, `normative_text`, the closed

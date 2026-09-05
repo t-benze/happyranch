@@ -1,0 +1,44 @@
+{
+  "proof_version": 1,
+  "contract_id": "engineering-manager-self-evaluation-readiness",
+  "contract_version": "s7-v2",
+  "contract_digest": "d61ef0947689d39d0e1ec558631cd34ac35b6211699a4e0f43e11587238dbe0b",
+  "shipping_sources": {
+    "runtime/orchestrator/active_authority_policy.py": "4604c1e55b50ca3ee906d769095cd09980ccd02309c60f342b8326d0e8cd1deb",
+    "runtime/orchestrator/authority.py": "84724613e8295dc9fd7efc64f54962d56ccc17d40478dd076c88950e51b1ce68",
+    "runtime/orchestrator/run_step.py": "00b4be1af83983de38e6c1a2f9b95849a068ec17f16321424a66978a2c14aca6"
+  },
+  "positive_observation": {
+    "release_id": "APR-df1664763e761ffae2846250e2901b1442775779e8c53fe6497e8c3ca10af857",
+    "activation_id": "APA-1",
+    "policy_version": "1",
+    "policy_digest": "df1664763e761ffae2846250e2901b1442775779e8c53fe6497e8c3ca10af857",
+    "contract_id": "manager-authority-self-evaluation",
+    "contract_version": "v1",
+    "contract_digest": "c8a59c030e5548768f74edaf6be066ac322671443ef91e48ea93c0e0fbeed5d1",
+    "provider_id": "claude",
+    "executor_kind": "claude",
+    "model_id": "default",
+    "evaluation_count": 1,
+    "strict_parseable": true,
+    "receipts_complete": true,
+    "disposition": "continue_same_root"
+  },
+  "negative_observations": [
+    {"case": "absent", "observed_disposition": "must_escalate"},
+    {"case": "malformed", "observed_disposition": "must_escalate"},
+    {"case": "extra_field", "observed_disposition": "must_escalate"},
+    {"case": "stale", "observed_disposition": "must_escalate"},
+    {"case": "mismatched", "observed_disposition": "must_escalate"},
+    {"case": "replay", "observed_disposition": "must_escalate"},
+    {"case": "ambiguous", "observed_disposition": "must_escalate"},
+    {"case": "low_confidence", "observed_disposition": "must_escalate"},
+    {"case": "cancellation", "observed_disposition": "must_escalate"},
+    {"case": "budget", "observed_disposition": "must_escalate"},
+    {"case": "protected_fence", "observed_disposition": "must_escalate"},
+    {"case": "mechanical_fence", "observed_disposition": "must_escalate"},
+    {"case": "startup_recovery", "observed_disposition": "must_escalate"},
+    {"case": "zombie_recovery", "observed_disposition": "must_escalate"}
+  ],
+  "artifact_digest": "fbaf991338b9cfaf47592288da8cc8d2daeffa15d2c625028a7180e0b0b063df"
+}

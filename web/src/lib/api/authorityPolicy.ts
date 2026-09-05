@@ -47,12 +47,13 @@ export interface AuthorityPolicyHistoryResponse {
 
 export interface AuthorityPolicyOutcomesResponse {
   items: Array<{ candidate_id: string; root_task_id: string; manager_session_id: string;
-    causal_event_id: string; release_id: string | null; activation_id: string | null;
+    causal_event_id: string; causal_result_id: string | null; release_id: string | null; activation_id: string | null;
     activation_epoch: number | null; policy_version: string; policy_digest: string;
     prompt_id: string; prompt_version: string; prompt_digest: string;
     provider_id: string | null; executor_kind: string | null; model_id: string;
     model_version: string; model_digest: string; disposition: string | null;
     disposition_code: string | null; evaluation_created_at: string | null;
+    evaluator_contract: { id: string; version: string; digest: string };
     terminal_hook_outcome: string | null; thread_id: string | null;
     envelope: null | { id: string; state: string; consumed_at: string | null };
     receipt_state: 'complete' | 'receipt_incomplete' }>;
