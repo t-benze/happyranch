@@ -29,12 +29,23 @@ from tests.infrastructure.test_jobs_migration import _seed_legacy_scripts_db
 REMOTE_TABLES = set(TABLE_SQL)
 REMOTE_INDEXES = set(INDEX_SQL)
 S2_BASELINE_COMMIT = "1be72fe71a779eb3393b9c10dcfeae8a487d3f78"
+SCRIPT_REQUEST_V0_COMMIT = "da539c3a219ebe547fe8a1b2b5ba0390c3e8889f"
+SCRIPT_REQUEST_V1_COMMIT = "4b73416a6f723845fe0cb790bd7246b80f27d2db"
 
 
 def _identity_ddl_drift_cases() -> list[tuple[str, str, str, str]]:
     """Systematic valid-SQL mutations for every approved DDL dimension."""
     cases: list[tuple[str, str, str, str]] = []
-    for table in ("remote_runners", "remote_runner_enrollment_challenges"):
+    for table in (
+        "remote_runner_schema_migrations",
+        "remote_runners",
+        "remote_runner_workspaces",
+        "remote_job_attempts",
+        "remote_phase_receipts",
+        "remote_pre_run_observations",
+        "remote_protocol_frames",
+        "remote_runner_enrollment_challenges",
+    ):
         sql = TABLE_SQL[table]
         column_lines = [
             line for line in sql.splitlines()
@@ -75,11 +86,18 @@ def _identity_ddl_drift_cases() -> list[tuple[str, str, str, str]]:
                     f"{table}:{name}:order", "table", table,
                     sql.replace(f"{line}\n{following}", f"{following}\n{line}", 1),
                 ))
-        primary_line = column_lines[0]
-        cases.append((
-            f"{table}:primary-key", "table", table,
-            sql.replace(primary_line, primary_line.replace(" PRIMARY KEY", " UNIQUE"), 1),
-        ))
+        primary_lines = [line for line in column_lines if " PRIMARY KEY" in line]
+        if primary_lines:
+            primary_line = primary_lines[0]
+            cases.append((
+                f"{table}:primary-key", "table", table,
+                sql.replace(primary_line, primary_line.replace(" PRIMARY KEY", " UNIQUE"), 1),
+            ))
+        elif "PRIMARY KEY(" in sql:
+            cases.append((
+                f"{table}:primary-key", "table", table,
+                sql.replace("PRIMARY KEY(", "UNIQUE(", 1),
+            ))
         for occurrence in range(sql.count("CHECK(")):
             cursor = -1
             for _ in range(occurrence + 1):
@@ -106,18 +124,27 @@ def _identity_ddl_drift_cases() -> list[tuple[str, str, str, str]]:
                 f"{table}:foreign-key:{occurrence}", "table", table,
                 sql[:target] + "remote_runners_drift" + sql[target_end:],
             ))
-    expiry = INDEX_SQL["remote_enrollment_challenge_expiry"]
-    cases.extend([
-        ("expiry-index:name", "index", "remote_enrollment_challenge_expiry",
-         expiry.replace("remote_enrollment_challenge_expiry", "remote_enrollment_challenge_expiry_drift", 1)),
-        ("expiry-index:unique", "index", "remote_enrollment_challenge_expiry",
-         expiry.replace("CREATE INDEX", "CREATE UNIQUE INDEX", 1)),
-        ("expiry-index:order", "index", "remote_enrollment_challenge_expiry",
-         expiry.replace("org_slug, expires_at", "expires_at, org_slug", 1)),
-        ("expiry-index:predicate", "index", "remote_enrollment_challenge_expiry",
-         expiry.replace("consumed_at IS NULL AND revoked_at IS NULL",
-                        "consumed_at IS NULL OR revoked_at IS NULL", 1)),
-    ])
+    for name, sql in INDEX_SQL.items():
+        cases.append((
+            f"index:{name}:unique", "index", name,
+            sql.replace("CREATE UNIQUE INDEX", "CREATE INDEX", 1)
+            if "CREATE UNIQUE INDEX" in sql
+            else sql.replace("CREATE INDEX", "CREATE UNIQUE INDEX", 1),
+        ))
+        match = re.search(r"ON\s+\w+\((.*?)\)", sql, re.S)
+        assert match is not None
+        columns = [part.strip() for part in match.group(1).split(",")]
+        if len(columns) > 1:
+            reordered = ", ".join([columns[1], columns[0], *columns[2:]])
+            cases.append((
+                f"index:{name}:order", "index", name,
+                sql[:match.start(1)] + reordered + sql[match.end(1):],
+            ))
+        if " WHERE " in " ".join(sql.split()):
+            cases.append((
+                f"index:{name}:predicate", "index", name,
+                sql.replace("WHERE ", "WHERE 1 AND ", 1),
+            ))
     return cases
 
 
@@ -126,8 +153,18 @@ IDENTITY_DDL_DRIFT_CASES = _identity_ddl_drift_cases()
 # Independent, reviewable fingerprints of TASK-6611 section 2.  These are not
 # computed from production constants and make a production+test typo fail.
 APPROVED_DDL_SHA256 = {
+    "remote_runner_schema_migrations": "a187858364813e7932ea893dd1314146add2ff5e182346e6e1c16aa0fe446920",
     "remote_runners": "c963c00352242c793095b23112df81f2222b989f8bb9050bcee37ac422bfc631",
+    "remote_runner_workspaces": "be68e272c89d4a266466c450377f51e3655604ebff8c92661b2b59d616831e95",
+    "remote_job_attempts": "47ef06091451151f1ac3812fa3f189bb509558a0f3eb0cafde52ad1ca42f4862",
+    "remote_phase_receipts": "c0866b572bb587b59c092da317d37bb695816b6a221147fbaea878096f3f2262",
+    "remote_pre_run_observations": "ab1f2c64fdba8c0e3cc2fbb910e814b4a698a48445b9fb513ea3e0290469c73b",
+    "remote_protocol_frames": "a8927c90de9442b21e18600c94af3d9ff1d027437334446d4b602b1ed1cdb316",
     "remote_runner_enrollment_challenges": "135b02adf682130fd8cadda6cc1053cb54b59d4743bb475e5d25a0c1fcaf3383",
+    "remote_one_live_workspace": "4b5e413b33f1de2464725cf67bd3bfa3cab8854756035f23b33bf03147259be9",
+    "remote_one_live_attempt_per_job": "eeaf830bf26a4f44987a953776695ffdd20f7d9a98d53bc5886148e24dcb0af3",
+    "remote_one_live_attempt_per_runner": "7d197c2343bbb923614b80b03684b5d29a18bab78e09ac48a8b290ffc1dd3deb",
+    "remote_reuse_lookup": "9a3ce6f4c824eed67835ca285146b7a5cac2efced30e1e5f266a4fc3c258b5ce",
     "remote_enrollment_challenge_expiry": "6023bc4fd49a0cc62c8c0651b8c4b4153c687887eef88f07f6a69dc0007234ca",
 }
 
@@ -217,6 +254,48 @@ def _build_exact_historical_s2(path: Path, source_root: Path) -> None:
         cwd=checkout,
         check=True,
     )
+
+
+def _build_authentic_script_request_store(
+    path: Path, source_root: Path, commit: str,
+) -> None:
+    """Execute the exact historical Database tree, then add a real-shape row."""
+    source_root.mkdir()
+    archive = subprocess.run(
+        ["git", "archive", "--format=tar", commit], check=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    archive_path = source_root / "history.tar"
+    archive_path.write_bytes(archive)
+    checkout = source_root / "tree"
+    checkout.mkdir()
+    with tarfile.open(archive_path) as bundle:
+        bundle.extractall(checkout, filter="data")
+    subprocess.run(
+        [sys.executable, "-c",
+         "from pathlib import Path; from src.infrastructure.database import Database; "
+         "Database(Path(__import__('sys').argv[1])).close()", str(path)],
+        cwd=checkout, check=True,
+    )
+    row = (
+        "SR-901", "TASK-901", "dev_agent", "historical", "provenance",
+        "printf historical", "bash", None, "completed", 0, "out", "err",
+        "/runtime/orgs/sample/scripts/SR-901.out",
+        "/runtime/orgs/sample/scripts/SR-901.err", 17,
+        "2026-05-20T00:00:00Z", "2026-05-20T00:00:01Z",
+        "2026-05-19T23:59:00Z", "founder", None, None, 300,
+        "2026-05-19T23:58:00Z",
+    )
+    with sqlite3.connect(path) as conn:
+        assert [r[1] for r in conn.execute("PRAGMA table_info(script_requests)")] == [
+            "id", "task_id", "agent_name", "title", "rationale", "script_text",
+            "interpreter", "cwd_hint", "status", "exit_code", "stdout_head",
+            "stderr_head", "stdout_path", "stderr_path", "duration_ms", "started_at",
+            "finished_at", "reviewed_at", "reviewed_by", "reject_reason",
+            "cwd_resolved", "timeout_seconds", "created_at",
+        ]
+        conn.execute("INSERT INTO script_requests VALUES (" + ",".join("?" * 23) + ")", row)
+        conn.commit()
 
 
 def _insert_runner(conn: sqlite3.Connection, runner: str, generation: int = 1) -> None:
@@ -556,6 +635,43 @@ def test_existing_local_job_values_and_overloaded_references_survive(tmp_path: P
         assert remote_values == (None, None, None, None, None)
 
 
+@pytest.mark.parametrize(
+    ("family", "commit"),
+    [("v0", SCRIPT_REQUEST_V0_COMMIT), ("v1", SCRIPT_REQUEST_V1_COMMIT)],
+)
+def test_authentic_historical_script_request_families_converge_and_preserve_values(
+    tmp_path: Path, family: str, commit: str,
+) -> None:
+    """Provenance: v0 initial DDL commit; v1 exact pre-jobs parent tree."""
+    path = tmp_path / f"script-{family}.db"
+    _build_authentic_script_request_store(path, tmp_path / f"source-{family}", commit)
+    before = sqlite3.connect(path).execute(
+        "SELECT * FROM script_requests WHERE id='SR-901'"
+    ).fetchone()
+
+    Database(path).close()
+    Database(path).close()
+    Database(path).close()
+
+    with sqlite3.connect(path) as conn:
+        assert conn.execute(
+            "SELECT id,task_id,agent_name,title,rationale,script_text,interpreter,"
+            "cwd_hint,status,exit_code,stdout_head,stderr_head,stdout_path,stderr_path,"
+            "duration_ms,started_at,finished_at,reviewed_at,reviewed_by,reject_reason,"
+            "cwd_resolved,max_runtime_seconds,created_at FROM jobs WHERE id='JOB-901'"
+        ).fetchone() == (
+            "JOB-901", *before[1:12],
+            "/runtime/orgs/sample/jobs/JOB-901.out",
+            "/runtime/orgs/sample/jobs/JOB-901.err",
+            *before[14:21], before[21], before[22],
+        )
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute(
+            "SELECT stage FROM remote_runner_schema_migrations WHERE name=?",
+            (IDENTITY_MIGRATION_NAME,),
+        ).fetchone() == (COMPLETE_STAGE,)
+
+
 def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_value(
     tmp_path: Path,
 ) -> None:
@@ -686,6 +802,49 @@ def test_identity_interruption_before_and_after_every_stage_converges_twice(
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE name=?", (IDENTITY_TEMP_PARENT,)
         ).fetchone() is None
+
+
+def test_complete_validation_and_marker_publication_share_one_locked_transaction(
+    tmp_path: Path,
+) -> None:
+    """Production-open proof: no writer can enter between proof and marker."""
+    path = tmp_path / "atomic-complete.db"
+
+    class StopAfterValidation(Database):
+        def _remote_identity_schema_stage_hook(self, point: str) -> None:
+            if point != "after:complete_validation":
+                return
+            assert self._conn.in_transaction
+            contender = sqlite3.connect(path, timeout=0)
+            try:
+                with pytest.raises(sqlite3.OperationalError, match="locked"):
+                    contender.execute(
+                        "UPDATE remote_runner_schema_migrations SET updated_at='raced'"
+                    )
+            finally:
+                contender.close()
+            raise RuntimeError("stop after complete validation")
+
+    with pytest.raises(RuntimeError, match="stop after complete validation"):
+        StopAfterValidation(path)
+    with sqlite3.connect(path) as conn:
+        assert conn.execute(
+            "SELECT stage FROM remote_runner_schema_migrations WHERE name=?",
+            (IDENTITY_MIGRATION_NAME,),
+        ).fetchone() == ("validate_identity_enrollment_schema",)
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name=?", (IDENTITY_TEMP_PARENT,)
+        ).fetchone() is None
+
+    Database(path).close()
+    Database(path).close()
+    with sqlite3.connect(path) as conn:
+        assert conn.execute(
+            "SELECT stage FROM remote_runner_schema_migrations WHERE name=?",
+            (IDENTITY_MIGRATION_NAME,),
+        ).fetchone() == (COMPLETE_STAGE,)
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 @pytest.mark.parametrize(
@@ -823,7 +982,11 @@ def test_task_6611_bidirectional_requirement_to_ddl_traceability(tmp_path: Path)
     exact_column_dimensions = {"name", "type", "null", "default", "order"}
     assert exact_column_dimensions <= dimensions_by_table["remote_runners"]
     assert exact_column_dimensions <= dimensions_by_table["remote_runner_enrollment_challenges"]
-    assert {"name", "unique", "order", "predicate"} == dimensions_by_table["expiry-index"]
+    for index_name in APPROVED_DDL_SHA256.keys() & REMOTE_INDEXES:
+        dimensions = dimensions_by_table["index"]
+        assert {"unique", "order"} <= dimensions
+        if "WHERE" in INDEX_SQL[index_name]:
+            assert "predicate" in dimensions
 
     requirements = {
         "2.runner-expiry-and-exact-parent",
@@ -838,14 +1001,31 @@ def test_task_6611_bidirectional_requirement_to_ddl_traceability(tmp_path: Path)
         "5.systematic-negative-snapshot-matrix",
         "6.forward-and-reverse-object-traceability",
     }
-    artifact_to_requirement: dict[str, str] = {}
+    artifact_to_requirement: dict[str, str] = {
+        **{
+            f"ddl-object:{name}": (
+                "2.challenge-authority-and-exact-constraints"
+                if name == "remote_runner_enrollment_challenges"
+                else "2.expiry-index"
+                if name == "remote_enrollment_challenge_expiry"
+                else "4.marker-and-six-ordered-stages"
+                if name == "remote_runner_schema_migrations"
+                else "2.runner-expiry-and-exact-parent"
+                if name == "remote_runners"
+                else "5.systematic-negative-snapshot-matrix"
+            )
+            for name in APPROVED_DDL_SHA256
+        },
+    }
     for case_id, _, _, _ in IDENTITY_DDL_DRIFT_CASES:
         if case_id.startswith("remote_runners"):
             requirement = "2.runner-expiry-and-exact-parent"
         elif case_id.startswith("remote_runner_enrollment_challenges"):
             requirement = "2.challenge-authority-and-exact-constraints"
-        else:
+        elif case_id.startswith("index:remote_enrollment_challenge_expiry"):
             requirement = "2.expiry-index"
+        else:
+            requirement = "5.systematic-negative-snapshot-matrix"
         artifact_to_requirement[f"negative:{case_id}"] = requirement
     artifact_to_requirement.update({
         **{f"stage:{stage}": "4.marker-and-six-ordered-stages" for stage in IDENTITY_STAGES},
@@ -856,7 +1036,7 @@ def test_task_6611_bidirectional_requirement_to_ddl_traceability(tmp_path: Path)
         "fixture:git-archive-1be72fe": "5.exact-merged-s2-history-and-three-reopens",
         "fixture:all-stage-interruptions": "5.every-stage-and-replacement-interruption",
         "fixture:all-ddl-marker-row-negatives": "5.systematic-negative-snapshot-matrix",
-        "assertion:bidirectional-completeness": "6.forward-and-reverse-object-traceability",
+        "assertion:test_task_6611_bidirectional_requirement_to_ddl_traceability": "6.forward-and-reverse-object-traceability",
     })
     # Forward: every approved persistence/migration requirement has proof.
     assert set(artifact_to_requirement.values()) == requirements

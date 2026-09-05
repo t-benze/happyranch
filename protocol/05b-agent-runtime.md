@@ -1719,13 +1719,17 @@ after completion only the amended parent plus exact challenge table/index is
 accepted. The empty-S2 parent replacement is atomic, exposes inert test-only
 interruption hooks immediately before the drop and after the rename inside
 that transaction, never invents certificate expiry, validates foreign-key
-targets/checks, and leaves no temporary parent. The historical fixture executes
-an archive of immutable merged-S2 commit
-`1be72fe71a779eb3393b9c10dcfeae8a487d3f78` rather than downgrading a current
-store. Full-schema/all-row snapshots, two further reopens, systematic
-per-column/constraint/FK/index mutations, every marker/object mismatch, and
-executable bidirectional TASK-6611 traceability preserve unrelated values and
-the existing jobs/audit overloads.
+targets/checks, and leaves no temporary parent. Immediately before publishing
+`complete`, canonical-shape validation and `PRAGMA foreign_key_check` run in
+the same `BEGIN IMMEDIATE` transaction as the marker write; the post-commit
+open check is defense in depth. Historical fixtures execute the authentic
+initial-script-request commit `da539c3a…`, exact pre-jobs parent `4b73416a…`,
+and immutable merged-S2 commit `1be72fe…`, rather than relabeling current rows.
+Full-schema/all-row snapshots, two further reopens, systematic mutation of the
+marker, all runner-graph tables, every inherited/new index and their columns,
+constraints, FKs and predicates, marker/object constellations, and executable
+bidirectional TASK-6611 requirement/assertion traceability preserve unrelated
+values and the existing jobs/audit overloads.
 
 There is deliberately still no shipping producer or consumer yet. The new
 table, index, expiry field, and marker have no challenge lifecycle service or

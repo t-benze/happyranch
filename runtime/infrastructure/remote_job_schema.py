@@ -498,6 +498,18 @@ def migrate_identity_enrollment_schema(
                     raise sqlite3.IntegrityError(
                         "identity/enrollment schema foreign-key validation failed"
                     )
+            elif stage == COMPLETE_STAGE:
+                # The complete marker is authoritative.  Re-prove the entire
+                # canonical object graph and its data FKs while this stage's
+                # BEGIN IMMEDIATE lock is held, immediately before publication.
+                # The validation after commit remains defense in depth only.
+                _validate_identity_enrollment_shapes(conn)
+                if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                    raise sqlite3.IntegrityError(
+                        "identity/enrollment schema foreign-key validation failed"
+                    )
+                if stage_hook is not None:
+                    stage_hook("after:complete_validation")
 
         _run_identity_stage(conn, stage, operation, stage_hook)
         _validate_identity_enrollment_shapes(conn)

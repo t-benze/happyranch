@@ -81,10 +81,15 @@ constraint/index/FK-drifted, marker-mismatched, or temporary-parent state is
 refused before mutation. Empty-S2 replacement and each marker advance are
 atomic; deterministic inert test hooks immediately before parent replacement
 and after rename execute inside the same rebuild transaction, and no certificate
-expiry is guessed or backfilled. The compatibility fixture executes the exact
-archived merged-S2 commit instead of synthesizing it from current code. Full
-schema/all-row snapshots, two further reopens, systematic per-column/CHECK/
-UNIQUE/FK/index and marker/object mutations, and executable two-way requirement
+expiry is guessed or backfilled. The compatibility fixtures execute authentic
+`script_requests` stores from initial DDL commit `da539c3a…` and exact pre-jobs
+parent `4b73416a…`, plus the archived merged-S2 commit, instead of synthesizing
+or relabeling current jobs. Canonical/FK validation immediately before
+`complete` and the marker write share one `BEGIN IMMEDIATE` transaction;
+post-commit validation is defense in depth. Full schema/all-row snapshots, two
+further reopens, systematic mutations spanning the marker, all inherited and
+new tables/indexes/columns/CHECKs/UNIQUEs/FKs/orders/predicates and marker/object
+constellations, and executable two-way requirement-to-validator/test
 traceability preserve existing jobs linkage, `audit_log.task_id`,
 `tasks.blocked_on_job_ids`, and every unrelated object/value.
 
