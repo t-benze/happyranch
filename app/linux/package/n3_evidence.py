@@ -11,7 +11,13 @@ import sys
 from pathlib import Path
 
 SCHEMA = "happyranch.managed-n3.execution-evidence"
-VERSION = 2
+VERSION = 3
+ARM_SPECS = (
+    ("ordering-a-control", "A", "control"),
+    ("ordering-a-candidate", "A", "candidate"),
+    ("ordering-b-candidate", "B", "candidate"),
+    ("ordering-b-control", "B", "control"),
+)
 DIAGNOSTIC_PHASES = {
     "credential_input": "input_acquisition",
     "engine_start": "engine_initialization",
@@ -65,6 +71,36 @@ def validate(doc: dict, *, expected_subject: str | None = None, expected_run: st
         assert subject["git_head"] == expected_subject
     if expected_run is not None:
         assert run["id"] == expected_run
+    arms = doc.get("acceptance")
+    assert isinstance(arms, list) and len(arms) == len(ARM_SPECS)
+    input_id: str | None = None
+    for sequence, (arm, spec) in enumerate(zip(arms, ARM_SPECS, strict=True), 1):
+        arm_id, ordering, variant = spec
+        assert set(arm) == {
+            "id", "sequence", "ordering", "variant", "subject_git_head",
+            "package_sha256", "input_sha256", "zero_skip", "fake_count",
+            "skip_count", "ready", "expected_peer_visible",
+            "virtual_listener_reachable", "control_category", "control_phase",
+            "cleanup_complete", "assertion",
+        }
+        assert (arm["id"], arm["ordering"], arm["variant"]) == (arm_id, ordering, variant)
+        assert arm["sequence"] == sequence
+        assert arm["subject_git_head"] == subject["git_head"]
+        assert arm["package_sha256"] == subject["package_sha256"]
+        assert isinstance(arm["input_sha256"], str) and len(arm["input_sha256"]) == 64
+        assert all(c in "0123456789abcdef" for c in arm["input_sha256"])
+        input_id = input_id or arm["input_sha256"]
+        assert arm["input_sha256"] == input_id
+        assert arm["zero_skip"] is True and arm["fake_count"] == arm["skip_count"] == 0
+        assert arm["cleanup_complete"] is True
+        assert arm["assertion"] == {"status": "completed"}
+        gates = (arm["ready"], arm["expected_peer_visible"], arm["virtual_listener_reachable"])
+        if variant == "candidate":
+            assert gates == (True, True, True)
+            assert arm["control_category"] is arm["control_phase"] is None
+        else:
+            assert gates == (False, False, False)
+            assert (arm["control_category"], arm["control_phase"]) == ("engine_start", "engine_initialization")
     records = doc.get("records")
     assert isinstance(records, list)
     expected = {(phase, observation) for phase, values in PHASES.items() for observation in values}
@@ -107,6 +143,13 @@ def main() -> None:
     init = sub.add_parser("init")
     init.add_argument("path", type=Path); init.add_argument("--git-head", required=True)
     init.add_argument("--package-sha256", required=True); init.add_argument("--run-id", required=True)
+    arm = sub.add_parser("arm")
+    arm.add_argument("path", type=Path); arm.add_argument("--id", required=True)
+    arm.add_argument("--ordering", required=True); arm.add_argument("--variant", required=True)
+    arm.add_argument("--input-sha256", required=True)
+    arm.add_argument("--ready", action="store_true"); arm.add_argument("--expected-peer-visible", action="store_true")
+    arm.add_argument("--virtual-listener-reachable", action="store_true")
+    arm.add_argument("--control-category"); arm.add_argument("--control-phase")
     observe = sub.add_parser("observe")
     observe.add_argument("path", type=Path); observe.add_argument("--phase", required=True)
     observe.add_argument("--observation", required=True); observe.add_argument("--assertion-id", required=True)
@@ -122,8 +165,24 @@ def main() -> None:
         doc = {"schema": SCHEMA, "version": VERSION,
                "subject": {"git_head": args.git_head, "package_sha256": args.package_sha256},
                "run": {"id": args.run_id, "zero_skip": True, "fake_count": 0, "skip_count": 0},
-               "records": [], "diagnostics": [], "terminal": None}
+               "acceptance": [], "records": [], "diagnostics": [], "terminal": None}
         args.path.parent.mkdir(parents=True, exist_ok=True)
+        args.path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    elif args.command == "arm":
+        doc = _load(args.path)
+        assert doc.get("terminal") is None
+        doc["acceptance"].append({
+            "id": args.id, "sequence": len(doc["acceptance"]) + 1,
+            "ordering": args.ordering, "variant": args.variant,
+            "subject_git_head": doc["subject"]["git_head"],
+            "package_sha256": doc["subject"]["package_sha256"],
+            "input_sha256": args.input_sha256, "zero_skip": True,
+            "fake_count": 0, "skip_count": 0, "ready": args.ready,
+            "expected_peer_visible": args.expected_peer_visible,
+            "virtual_listener_reachable": args.virtual_listener_reachable,
+            "control_category": args.control_category, "control_phase": args.control_phase,
+            "cleanup_complete": True, "assertion": {"status": "completed"},
+        })
         args.path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     elif args.command == "observe":
         doc = _load(args.path)

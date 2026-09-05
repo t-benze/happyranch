@@ -181,16 +181,41 @@ def test_real_systemd_harness_keeps_load_credential_source_root_custodied() -> N
     ) in harness
 
 
-def test_real_systemd_early_failure_cleanup_does_not_treat_exited_fixture_as_residue() -> None:
+def test_real_systemd_early_failure_cleanup_is_bounded_and_redacted() -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
     assert "wait_status" not in harness
-    assert 'cp "$work/$log.log" "$diagnostics/$log.log"' in harness
-    assert harness.index('cp "$work/$log.log" "$diagnostics/$log.log"') < harness.index('rm -rf "$work"')
+    assert 'cp "$work/$log.log" "$diagnostics/$log.log"' not in harness
+    assert 'journalctl -u happyranch-connector.service -u happyranch-tsnet-sidecar.service' not in harness
+    assert 'cleanup-status.txt' in harness
 
 
 def test_real_systemd_missing_credential_accepts_null_peer_map_as_no_identity() -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
     assert '(d.get("Peer") or {}).values()' in harness
+
+
+def test_real_systemd_af_netlink_acceptance_is_four_arm_fail_closed() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    arms = [
+        "ordering-a-control:A:control", "ordering-a-candidate:A:candidate",
+        "ordering-b-candidate:B:candidate", "ordering-b-control:B:control",
+    ]
+    assert 'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK' in harness
+    assert '90-ci-af-netlink.conf' in harness
+    assert "acceptance_arms=(" in harness
+    assert all(arm in harness for arm in arms)
+    assert 'preauthkeys create --user ci --reusable=false' in harness
+    assert '--control-category engine_start --control-phase engine_initialization' in harness
+    assert '--ready --expected-peer-visible --virtual-listener-reachable' in harness
+    assert 'capture_denial_matrix' in harness
+    assert 'address_family_netlink' in harness
+    assert 'linux_capabilities' in harness
+    assert 'device_access' in harness
+    assert 'writable_paths' in harness
+    assert 'control_plane_operations' in harness
+    assert 'sudo systemctl daemon-reload' in harness
+    assert 'cleanup_complete' in harness
+    assert 'host port 443' not in harness.lower()
 
 
 def test_composite_service_manager_executes_start_ready_stop_crash_restart() -> None:

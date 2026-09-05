@@ -26,6 +26,18 @@ def valid_artifact():
            "diagnostics": [{"id": "diagnostic-1", "category": "credential_input", "phase": "input_acquisition",
                             "actor": "systemd", "unit": "happyranch-tsnet-sidecar.service", "outcome": "failed",
                             "terminal": True, "assertion": {"status": "completed"}}],
+           "acceptance": [
+               {"id": arm_id, "sequence": sequence, "ordering": ordering, "variant": variant,
+                "subject_git_head": "a" * 40, "package_sha256": "b" * 64,
+                "input_sha256": "c" * 64, "zero_skip": True, "fake_count": 0,
+                "skip_count": 0, "ready": variant == "candidate",
+                "expected_peer_visible": variant == "candidate",
+                "virtual_listener_reachable": variant == "candidate",
+                "control_category": "engine_start" if variant == "control" else None,
+                "control_phase": "engine_initialization" if variant == "control" else None,
+                "cleanup_complete": True, "assertion": {"status": "completed"}}
+               for sequence, (arm_id, ordering, variant) in enumerate(evidence.ARM_SPECS, 1)
+           ],
            "records": records,
            "terminal": {"status": "complete", "record_count": len(records), "last_sequence": len(records)}}
     doc["digest"] = evidence._digest(doc)
@@ -65,6 +77,15 @@ def test_cli_finalization_publishes_only_complete_artifact(tmp_path, monkeypatch
                                      "--package-sha256", "b" * 64, "--run-id", "run-unique"])
     evidence.main()
     assert json.loads(path.read_text())["terminal"] is None
+    for arm_id, ordering, variant in evidence.ARM_SPECS:
+        argv = [str(MODULE_PATH), "arm", str(path), "--id", arm_id, "--ordering", ordering,
+                "--variant", variant, "--input-sha256", "c" * 64]
+        if variant == "candidate":
+            argv += ["--ready", "--expected-peer-visible", "--virtual-listener-reachable"]
+        else:
+            argv += ["--control-category", "engine_start", "--control-phase", "engine_initialization"]
+        monkeypatch.setattr("sys.argv", argv)
+        evidence.main()
     monkeypatch.setattr("sys.argv", [str(MODULE_PATH), "diagnose", str(path), "--id", "diagnostic-1",
                                      "--category", "credential_input", "--phase", "input_acquisition",
                                      "--actor", "systemd", "--unit", "happyranch-tsnet-sidecar.service"])
@@ -100,4 +121,38 @@ def test_validator_rejects_invalid_diagnostic_receipts(mutation):
     elif mutation == "incomplete": receipt["assertion"]["status"] = "pending"
     doc["digest"] = evidence._digest(doc)
     with pytest.raises((AssertionError, KeyError)):
+        evidence.validate(doc)
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing", "duplicate", "reordered", "package", "input", "partial_candidate",
+    "skip", "fake", "cleanup", "order_bias", "fine_reason", "pre_assertion",
+    "noop", "prose", "source_name", "tamper", "secret",
+])
+def test_validator_rejects_invalid_acceptance_arms(mutation):
+    doc = valid_artifact()
+    arms = doc["acceptance"]
+    if mutation == "missing": arms.pop()
+    elif mutation == "duplicate": arms[-1] = copy.deepcopy(arms[0])
+    elif mutation == "reordered": arms[0], arms[1] = arms[1], arms[0]
+    elif mutation == "package": arms[2]["package_sha256"] = "d" * 64
+    elif mutation == "input": arms[2]["input_sha256"] = "d" * 64
+    elif mutation == "partial_candidate": arms[1]["expected_peer_visible"] = False
+    elif mutation == "skip": arms[0]["skip_count"] = 1
+    elif mutation == "fake": arms[0]["fake_count"] = 1
+    elif mutation == "cleanup": arms[0]["cleanup_complete"] = False
+    elif mutation == "order_bias": arms[2]["ready"] = False
+    elif mutation == "fine_reason": arms[0]["reason"] = "netlink denied"
+    elif mutation == "pre_assertion": arms[0]["assertion"]["status"] = "pending"
+    elif mutation == "noop": arms[0]["assertion"] = {"status": "completed", "kind": "noop"}
+    elif mutation == "prose": arms[0]["proof"] = "looks correct"
+    elif mutation == "source_name": arms[0]["proof"] = "real_systemd_n3.sh"
+    elif mutation == "tamper":
+        arms[0]["cleanup_complete"] = False
+        with pytest.raises(AssertionError):
+            evidence.validate(doc)
+        return
+    elif mutation == "secret": arms[0]["input_sha256"] = "token=/etc/happyranch/key"
+    doc["digest"] = evidence._digest(doc)
+    with pytest.raises(AssertionError):
         evidence.validate(doc)

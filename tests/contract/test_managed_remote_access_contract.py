@@ -43,7 +43,7 @@ FIXTURE_FILES = {
 # Extra required top-level keys beyond the common (version/name/status/description)
 # set, per fixture.
 _TOP_LEVEL_EXTRA = {
-    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "connector_ingress", "readiness", "secrets", "visibility", "fallbacks", "n2_lifecycle_matrix", "n3_lifecycle_matrix", "acceptance_matrix", "delivery_status"],
+    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "connector_ingress", "readiness", "secrets", "visibility", "fallbacks", "n2_lifecycle_matrix", "n3_lifecycle_matrix", "n3_acceptance_harness", "acceptance_matrix", "delivery_status"],
     "route_policy": [
         "decision_order",
         "default_behavior",
@@ -445,7 +445,7 @@ def test_managed_delivery_status_preserves_diy_and_gates_future_units() -> None:
 
 
 _TOP_LEVEL_EXTRA = {
-    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "connector_ingress", "readiness", "secrets", "visibility", "fallbacks", "n2_lifecycle_matrix", "n3_lifecycle_matrix", "acceptance_matrix", "delivery_status"],
+    "managed_topology": ["transport", "endpoints", "sidecar_boundary", "connector_ingress", "readiness", "secrets", "visibility", "fallbacks", "n2_lifecycle_matrix", "n3_lifecycle_matrix", "n3_acceptance_harness", "acceptance_matrix", "delivery_status"],
     "route_policy": [
         "decision_order",
         "default_behavior",
@@ -1416,6 +1416,14 @@ def test_n3_lifecycle_matrix_covers_shipping_package_boundaries() -> None:
     topology = _load("managed_topology")
     _assert_n3_lifecycle_evidence(topology["n3_lifecycle_matrix"])
     assert topology["delivery_status"]["n3"].startswith("linux_package")
+    assert topology["n3_acceptance_harness"] == {
+        "status": "evidence_only_no_production_authority",
+        "candidate_delta": "transient_sidecar_AF_NETLINK_dropin",
+        "arms": ["ordering-a-control", "ordering-a-candidate", "ordering-b-candidate", "ordering-b-control"],
+        "candidate_required_gates": ["systemd_composite_ready", "production_expected_peer_visible", "virtual_tsnet_listener_reachable"],
+        "control_result": "engine_start/engine_initialization",
+        "per_arm_full_reset": True, "per_arm_cleanup_complete": True, "order_bias_fails_proof": True,
+    }
 
 
 def test_n3_lifecycle_validator_rejects_prose_or_tautological_evidence() -> None:

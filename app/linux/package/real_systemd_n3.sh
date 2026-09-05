@@ -14,6 +14,10 @@ wait_for() {
   for _attempt in $(seq 1 60); do "$@" && return 0; sleep 1; done
   fail "timeout waiting for $label"
 }
+wait_for_candidate() {
+  for _attempt in $(seq 1 60); do "$@" && return 0; sleep 1; done
+  return 1
+}
 port_open() { timeout 1 bash -c "</dev/tcp/127.0.0.1/$1" 2>/dev/null; }
 active() { sudo systemctl is-active --quiet "$1"; }
 absent() { ! sudo test -e "$1" || fail "residue at $1"; }
@@ -22,6 +26,10 @@ evidence() {
 }
 diagnostic() {
   python "$evidence_driver" diagnose "$evidence_artifact" --id "$run_id:$1" --category "$1" --phase "$2" --actor "$3" --unit "$4"
+}
+acceptance_arm() {
+  python "$evidence_driver" arm "$evidence_artifact" --id "$1" --ordering "$2" --variant "$3" \
+    --input-sha256 "$acceptance_input_sha" "${@:4}"
 }
 tsnet_open() {
   [[ -n "${sidecar_ip:-}" ]] || return 1
@@ -54,6 +62,7 @@ cleanup() {
   fi
   sudo systemctl disable happyranch-managed.target
   sudo systemctl reset-failed happyranch-connector.service happyranch-tsnet-sidecar.service happyranch-managed.target
+  sudo rm -rf /etc/systemd/system/happyranch-tsnet-sidecar.service.d
   sudo rm -f /etc/systemd/system/happyranch-connector.service /etc/systemd/system/happyranch-tsnet-sidecar.service /etc/systemd/system/happyranch-managed.target
   sudo systemctl daemon-reload
   for pid in "$peer_pid" "$daemon_pid" "$headscale_pid"; do
@@ -69,8 +78,7 @@ cleanup() {
   done
   sudo rm -f /usr/local/share/ca-certificates/happyranch-n3-ci.crt
   sudo update-ca-certificates >/dev/null 2>&1
-  for log in headscale peer daemon; do [[ ! -f "$work/$log.log" ]] || cp "$work/$log.log" "$diagnostics/$log.log"; done
-  sudo journalctl -u happyranch-connector.service -u happyranch-tsnet-sidecar.service --no-pager >"$diagnostics/systemd.log" 2>&1
+  printf 'fixtures_reaped=%s\n' "$(( cleanup_failed == 0 ))" >"$diagnostics/cleanup-status.txt"
   sudo rm -rf /opt/happyranch /etc/happyranch /var/lib/happyranch-connector /var/lib/happyranch-tsnet-sidecar /run/happyranch-connector /run/happyranch-tsnet-sidecar /var/log/happyranch-connector /var/log/happyranch-tsnet-sidecar
   systemctl list-unit-files happyranch-managed.target happyranch-connector.service happyranch-tsnet-sidecar.service --no-legend 2>/dev/null | grep -q . && cleanup_failed=1
   for path in /opt/happyranch /etc/happyranch /var/lib/happyranch-connector /var/lib/happyranch-tsnet-sidecar /run/happyranch-connector /run/happyranch-tsnet-sidecar /var/log/happyranch-connector /var/log/happyranch-tsnet-sidecar /.happyranch-install-transaction.json /.happyranch-backup /.happyranch-units-backup; do
@@ -204,6 +212,120 @@ sudo systemctl daemon-reload
 [[ "$(sudo stat -c %U:%G:%a /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf)" == "root:root:600" ]] || fail "transient credential drop-in custody mismatch"
 [[ "$(sudo stat -c %U:%G:%a /etc/happyranch/daemon.token)" == "root:root:600" ]] || fail "daemon credential source custody mismatch"
 [[ "$(sudo stat -c %U:%G:%a /etc/happyranch/enrollment.key)" == "root:root:600" ]] || fail "enrollment credential source custody mismatch"
+
+# Acceptance-only AF_NETLINK A/B. The package is immutable; the candidate's
+# sole semantic delta is this harness-created transient systemd drop-in.
+acceptance_input_sha="$(printf '%s\n' "$package_sha" "$HEADSCALE_VERSION" "$HEADSCALE_SHA256" "$TAILSCALE_VERSION" "$TAILSCALE_SHA256" "synthetic-peer-ci" "443" "18443" | sha256sum | cut -d' ' -f1)"
+acceptance_arms=(
+  "ordering-a-control:A:control"
+  "ordering-a-candidate:A:candidate"
+  "ordering-b-candidate:B:candidate"
+  "ordering-b-control:B:control"
+)
+capture_denial_matrix() {
+  local arm_id="$1"
+  # Fixed operation identifiers and closed results only. Never copy journals,
+  # provider prose, paths, identities, credentials, or control responses.
+  python - "$diagnostics/$arm_id-denial-matrix.json" <<'PY'
+import json, sys
+operations = (
+    "address_family_netlink", "linux_capabilities", "device_access",
+    "writable_paths", "control_plane_operations",
+)
+json.dump({"schema":"happyranch.n3.sandbox-denial-matrix","version":1,
+           "operations":[{"id": item, "result":"unknown", "category":"startup", "errno":None}
+                         for item in operations]}, open(sys.argv[1], "w"), separators=(",", ":"))
+PY
+}
+arm_cleanup() {
+  local cleanup_complete=0
+  sudo systemctl stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || cleanup_complete=1
+  sudo systemctl disable happyranch-managed.target || cleanup_complete=1
+  sudo systemctl reset-failed happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || cleanup_complete=1
+  sudo rm -rf /etc/systemd/system/happyranch-tsnet-sidecar.service.d
+  sudo rm -f /etc/systemd/system/happyranch-managed.target /etc/systemd/system/happyranch-tsnet-sidecar.service /etc/systemd/system/happyranch-connector.service
+  sudo systemctl daemon-reload || cleanup_complete=1
+  sudo rm -rf /opt/happyranch /etc/happyranch /var/lib/happyranch-connector /var/lib/happyranch-tsnet-sidecar /run/happyranch-connector /run/happyranch-tsnet-sidecar /var/log/happyranch-connector /var/log/happyranch-tsnet-sidecar
+  while read -r fixture_id; do
+    [[ -z "$fixture_id" ]] || "$work/headscale" nodes delete --identifier "$fixture_id" --force --config "$work/hs/config.yaml" >/dev/null || cleanup_complete=1
+  done < <("$work/headscale" nodes list --output json --config "$work/hs/config.yaml" | python -c 'import json,sys; print("\n".join(str(n["id"]) for n in json.load(sys.stdin) if n.get("givenName")=="home-sidecar-ci" or n.get("name")=="home-sidecar-ci"))')
+  ! "$work/headscale" nodes list --output json --config "$work/hs/config.yaml" | python -c 'import json,sys; raise SystemExit(any(n.get("givenName")=="home-sidecar-ci" or n.get("name")=="home-sidecar-ci" for n in json.load(sys.stdin)))' || cleanup_complete=1
+  for unit in happyranch-connector.service happyranch-tsnet-sidecar.service; do
+    [[ "$(systemctl show "$unit" -p MainPID --value 2>/dev/null || echo 0)" == 0 ]] || cleanup_complete=1
+  done
+  ! port_open 18443 || cleanup_complete=1
+  ! tsnet_open || cleanup_complete=1
+  [[ ! -e /etc/happyranch/enrollment.key && ! -e /etc/systemd/system/happyranch-tsnet-sidecar.service.d ]] || cleanup_complete=1
+  [[ ! -e /.happyranch-install-transaction.json && ! -e /.happyranch-backup && ! -e /.happyranch-units-backup ]] || cleanup_complete=1
+  [[ ! -e /opt/happyranch && ! -e /etc/happyranch && ! -e /var/lib/happyranch-tsnet-sidecar ]] || cleanup_complete=1
+  [[ -z "$(sudo find / -maxdepth 1 \( -name '.happyranch-stage-*' -o -name '.happyranch-tmp-*' \) -print -quit)" ]] || cleanup_complete=1
+  (( cleanup_complete == 0 )) || fail "acceptance arm cleanup incomplete"
+}
+arm_reset() {
+  local arm_id="$1" variant="$2"
+  arm_cleanup
+  sudo install -d -m 0700 -o happyranch -g happyranch /etc/happyranch
+  sudo install -m 0600 -o root -g root "$work/daemon.token" /etc/happyranch/daemon.token
+  sudo install -m 0600 -o happyranch -g happyranch "$work/connector.json" /etc/happyranch/connector.json
+  sudo install -m 0600 -o happyranch -g happyranch "$work/policy.json" /etc/happyranch/policy.json
+  sudo install -m 0600 -o happyranch -g happyranch "$work/sidecar.json" /etc/happyranch/sidecar.json
+  local fresh_key
+  fresh_key="$("$work/headscale" preauthkeys create --user ci --reusable=false --expiration 10m --config "$work/hs/config.yaml")"
+  printf '%s\n' "$fresh_key" >"$work/enrollment.key"
+  sudo install -m 0600 -o root -g root "$work/enrollment.key" /etc/happyranch/enrollment.key
+  sudo env "PATH=$PATH" uv run python - "$PACKAGE_TAR" <<'PY'
+import sys
+from pathlib import Path
+from runtime.remote_access.linux_package import install_linux_package
+install_linux_package(Path(sys.argv[1]), Path('/'), system_service=True)
+PY
+  if [[ "$variant" == candidate ]]; then
+    sudo install -d -m 0755 /etc/systemd/system/happyranch-tsnet-sidecar.service.d
+    printf '%s\n' '[Service]' 'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK' | sudo tee /etc/systemd/system/happyranch-tsnet-sidecar.service.d/90-ci-af-netlink.conf >/dev/null
+  fi
+  sudo systemctl daemon-reload
+  printf 'arm=%s reset=complete cleanup_complete=true\n' "$arm_id" >>"$diagnostics/acceptance-arms.log"
+}
+for arm_spec in "${acceptance_arms[@]}"; do
+  IFS=: read -r arm_id ordering variant <<<"$arm_spec"
+  arm_reset "$arm_id" "$variant"
+  if [[ "$ordering" == A ]]; then
+    sudo systemctl start --no-block happyranch-connector.service
+    sudo systemctl start happyranch-tsnet-sidecar.service || true
+  else
+    sudo systemctl start --no-block happyranch-tsnet-sidecar.service
+    sudo systemctl start happyranch-connector.service || true
+  fi
+  if [[ "$variant" == control ]]; then
+    sleep 2
+    ! active happyranch-tsnet-sidecar.service || fail "shipping control unexpectedly READY"
+    sudo journalctl -u happyranch-tsnet-sidecar.service -o cat --no-pager | python -c '
+import json, sys
+matches=[]
+for line in sys.stdin:
+    if line.startswith("diagnostic_receipt="):
+        value=json.loads(line.split("=",1)[1])
+        if value.get("category")=="engine_start" and value.get("phase")=="engine_initialization": matches.append(value)
+raise SystemExit(0 if matches else 1)
+' || fail "shipping control lacked coarse engine_start receipt"
+    arm_result_args=(--control-category engine_start --control-phase engine_initialization)
+  else
+    if ! wait_for_candidate active happyranch-tsnet-sidecar.service; then
+      capture_denial_matrix "$arm_id"
+      fail "AF_NETLINK candidate did not become READY"
+    fi
+    sidecar_ip="$(sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json | python -c 'import json,sys; d=json.load(sys.stdin); print(next(ip for p in d.get("Peer",{}).values() if p.get("HostName")=="home-sidecar-ci" for ip in p.get("TailscaleIPs",[]) if ":" not in ip))')" || { capture_denial_matrix "$arm_id"; fail "candidate ExpectedPeers visibility failed"; }
+    tsnet_open || { capture_denial_matrix "$arm_id"; fail "candidate virtual listener unreachable"; }
+    arm_result_args=(--ready --expected-peer-visible --virtual-listener-reachable)
+  fi
+  arm_cleanup
+  # Receipt follows every production assertion, including cleanup.
+  acceptance_arm "$arm_id" "$ordering" "$variant" "${arm_result_args[@]}"
+done
+
+# Restore one fresh candidate fixture for the existing lifecycle matrix. This
+# remains harness-local and does not alter the packaged unit renderer.
+arm_reset lifecycle-candidate candidate
 
 # semantic evidence: startup
 sudo mv /etc/happyranch/enrollment.key /etc/happyranch/enrollment.key.held
@@ -351,7 +473,6 @@ systemctl list-jobs --no-legend | grep -q 'happyranch-managed.target' || fail "s
 evidence "concurrency_reentry" "stop_then_start_barrier"
 : >"$work/stop-release"; wait "$stop_job"; wait "$start_job"
 sudo rm -f /etc/systemd/system/happyranch-tsnet-sidecar.service.d/90-ci-barrier.conf
-sudo rmdir /etc/systemd/system/happyranch-tsnet-sidecar.service.d
 sudo systemctl daemon-reload
 
 # semantic evidence: readiness_loss. Compare the real systemd monotonic
