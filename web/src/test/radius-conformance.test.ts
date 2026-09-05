@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const designSystemRoot = join(here, '../design-system');
+const tokenSource = join(designSystemRoot, 'tokens/tokens.css');
 
 const REFERENCE_SHA256 = '87e23c25c95b22bdd46570314f6c649667d787ef89128504dbb52905cd52045a';
 const EXPECTED_RADIUS = 'rounded-sm';
@@ -69,6 +70,14 @@ const NON_DENOMINATOR_EXCLUSIONS = {
   'inbox-row': 'InboxRow is a later interactive mapping to 8px.',
 } as const;
 
+function readRadiusToken(property: string): string {
+  const source = readFileSync(tokenSource, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const definitions = [...source.matchAll(/(?:^|\n)\s*(--[a-z0-9-]+)\s*:\s*([^;]+?)\s*;/g)]
+    .filter((match) => match[1] === property);
+  if (definitions.length !== 1) throw new Error(`${property}: expected exactly one token definition`);
+  return definitions[0][2].trim();
+}
+
 function observedRadius(row: RadiusRow): string {
   const source = readFileSync(join(designSystemRoot, row.source), 'utf8');
   const startMatch = new RegExp(row.startPattern).exec(source);
@@ -117,6 +126,11 @@ function assertRadiusContract(
 const productionObservations = new Map(RADIUS_CONTRACT.map((row) => [row.id, observedRadius(row)]));
 
 describe('Pasture radius conformance contract', () => {
+  test('pins the semantic radius token independently from its utility spelling', () => {
+    expect(readRadiusToken('--radius-sm')).toBe('8px');
+    expect(EXPECTED_RADIUS).toBe('rounded-sm');
+  });
+
   test('pins the independently verified founder reference and the closed denominator', () => {
     expect(REFERENCE_SHA256).toBe('87e23c25c95b22bdd46570314f6c649667d787ef89128504dbb52905cd52045a');
     expect(RADIUS_CONTRACT).toHaveLength(9);
@@ -148,6 +162,18 @@ describe('Pasture radius conformance contract', () => {
     expect(() => assertRadiusContract(RADIUS_CONTRACT, omitted, productionObservations)).toThrow(/mismatch omitted/);
 
     expect(() => assertRadiusContract([...RADIUS_CONTRACT.slice(0, -1), RADIUS_CONTRACT[0]], KNOWN_MISMATCHES, productionObservations)).toThrow(/9 unique rows/);
+  });
+
+  test('fails closed on new mismatch, baseline growth, and denominator removal', () => {
+    const newMismatch = new Map(productionObservations);
+    newMismatch.set('button', 'rounded-md');
+    expect(() => assertRadiusContract(RADIUS_CONTRACT, KNOWN_MISMATCHES, newMismatch)).toThrow(/button: current mismatch omitted/);
+
+    const grownBaseline = new Map(KNOWN_MISMATCHES);
+    grownBaseline.set('button', 'rounded-md');
+    expect(() => assertRadiusContract(RADIUS_CONTRACT, grownBaseline, productionObservations)).toThrow(/button: stale mismatch baseline/);
+
+    expect(() => assertRadiusContract(RADIUS_CONTRACT.slice(0, -1), KNOWN_MISMATCHES, productionObservations)).toThrow(/exactly 9 unique rows/);
   });
 
   test('keeps exclusions closed, documented, and outside the conformance denominator', () => {
