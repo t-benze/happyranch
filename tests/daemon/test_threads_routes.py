@@ -2119,28 +2119,145 @@ def test_reply_admits_task_followup_purpose(tmp_home, app, org_state, auth_heade
     assert resp.json()["kind"] == "message"
 
 
-def test_dispatch_rejects_task_followup_purpose(tmp_home, app, org_state, auth_headers):
-    """Spec §6.4: a TASK_FOLLOWUP turn may NOT be used to dispatch new tasks.
+def _manager_followup_for_root(client, org_state, auth_headers, root_id: str):
+    _seed_agent(org_state, "engineering_head", role="manager")
+    tid = _seed_open_thread(org_state, participants=["engineering_head"])
+    root = org_state.db.get_task(root_id)
+    if root is None:
+        org_state.db.insert_task(TaskRecord(
+            id=root_id, brief="original", assigned_agent="engineering_head",
+            team="engineering", status=TaskStatus.FAILED,
+            dispatched_from_thread_id=tid,
+        ))
+        from runtime.infrastructure.audit_logger import AuditLogger
+        AuditLogger(org_state.db).log_thread_dispatch(
+            tid, task_id=root_id, dispatcher="engineering_head",
+            target_agent="engineering_head", team="engineering",
+        )
+    seq = org_state.db.append_thread_message(
+        thread_id=tid, speaker="engineering_head", kind=ThreadMessageKind.SYSTEM,
+        system_payload={
+            "kind_tag": "task_failed", "task_id": root_id,
+            "original_task_id": root_id, "root_task_id": root_id,
+            "status": "failed",
+        },
+    )
+    token = org_state.db.mint_thread_invocation(
+        thread_id=tid, agent_name="engineering_head", triggering_seq=seq,
+        purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+    ).invocation_token
+    return tid, token
 
-    Dispatch stays restricted to {REPLY, BOOTSTRAP} only.
-    _validate_invocation_token raises 400 with code "wrong_invocation_purpose"
-    when the purpose is not in require_purposes.
-    """
+
+def test_manager_task_followup_dispatch_creates_one_replacement_root(
+    tmp_home, app, org_state, auth_headers,
+):
     client = TestClient(app)
-    tid, token, _seq = _open_thread_with_followup_token(client, org_state, auth_headers)
+    tid, token = _manager_followup_for_root(
+        client, org_state, auth_headers, "TASK-ORIGINAL",
+    )
 
     resp = client.post(
         f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
         json={
             "thread_id": tid,
             "invocation_token": token,
-            "dispatcher": "dev_agent",
-            "brief": "do something else",
+            "dispatcher": "engineering_head",
+            "brief": "corrected replacement",
         },
         headers=auth_headers,
     )
-    assert resp.status_code == 400, resp.text
-    assert resp.json()["detail"]["code"] == "wrong_invocation_purpose"
+    assert resp.status_code == 200, resp.text
+    replacement = org_state.db.get_task(resp.json()["task_id"])
+    assert replacement.parent_task_id is None
+    assert replacement.dispatched_from_thread_id == tid
+    rows = org_state.db.get_audit_logs(replacement.id)
+    event = [r for r in rows if r["action"] == "thread_task_followup_replacement_dispatched"]
+    assert len(event) == 1
+    assert event[0]["payload"]["original_root_task_id"] == "TASK-ORIGINAL"
+
+
+def test_task_followup_replacement_lineage_cannot_dispatch_again(
+    tmp_home, app, org_state, auth_headers,
+):
+    client = TestClient(app)
+    tid, first_token = _manager_followup_for_root(
+        client, org_state, auth_headers, "TASK-ORIGINAL",
+    )
+    first = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": first_token,
+              "dispatcher": "engineering_head", "brief": "replacement"},
+        headers=auth_headers,
+    )
+    assert first.status_code == 200, first.text
+    replacement_id = first.json()["task_id"]
+    org_state.db.update_task(replacement_id, status=TaskStatus.FAILED)
+    seq = org_state.db.append_thread_message(
+        thread_id=tid, speaker="engineering_head", kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "task_failed", "task_id": replacement_id,
+                        "original_task_id": replacement_id,
+                        "root_task_id": replacement_id, "status": "failed"},
+    )
+    second_token = org_state.db.mint_thread_invocation(
+        thread_id=tid, agent_name="engineering_head", triggering_seq=seq,
+        purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+    ).invocation_token
+
+    second = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": second_token,
+              "dispatcher": "engineering_head", "brief": "must not run"},
+        headers=auth_headers,
+    )
+    assert second.status_code == 409, second.text
+    assert second.json()["detail"]["code"] == "task_followup_dispatch_already_used"
+    assert org_state.db.get_invocation_any_status(second_token).dispatched_task_id is None
+
+
+def test_worker_task_followup_dispatch_is_forbidden(
+    tmp_home, app, org_state, auth_headers,
+):
+    client = TestClient(app)
+    tid, token, _seq = _open_thread_with_followup_token(
+        client, org_state, auth_headers, recipient="dev_agent",
+    )
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "dev_agent", "brief": "no"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "task_followup_dispatch_manager_required"
+
+
+def test_task_followup_dispatch_rejects_noncausal_payload_without_residue(
+    tmp_home, app, org_state, auth_headers,
+):
+    client = TestClient(app)
+    _seed_agent(org_state, "engineering_head", role="manager")
+    tid = _seed_open_thread(org_state, participants=["engineering_head"])
+    seq = org_state.db.append_thread_message(
+        thread_id=tid, speaker="engineering_head", kind=ThreadMessageKind.SYSTEM,
+        system_payload={"kind_tag": "task_failed", "task_id": "TASK-MISSING",
+                        "original_task_id": "TASK-MISSING"},
+    )
+    token = org_state.db.mint_thread_invocation(
+        thread_id=tid, agent_name="engineering_head", triggering_seq=seq,
+        purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
+    ).invocation_token
+    before = len(org_state.db.list_tasks(limit=1000))
+    resp = client.post(
+        f"/api/v1/orgs/alpha/threads/{tid}/dispatch",
+        json={"thread_id": tid, "invocation_token": token,
+              "dispatcher": "engineering_head", "brief": "no"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "task_followup_dispatch_cause_invalid"
+    assert len(org_state.db.list_tasks(limit=1000)) == before
+    assert org_state.db.get_invocation_any_status(token).dispatched_task_id is None
 
 
 # ---------------------------------------------------------------------------

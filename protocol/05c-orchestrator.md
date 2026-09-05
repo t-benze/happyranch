@@ -445,6 +445,28 @@ same record, root, owner, thread, invocation, escalation, lineage, and
 freshness server-side. Later descendants, unrelated terminal records, prose,
 brief text, KB text, and quotes are audit context only, never authority.
 
+### THR-225 task-followup replacement root
+
+An authoritative pending `TASK_FOLLOWUP` invocation owned by the dispatching
+team manager may dispatch one corrected replacement root for its causal
+thread-dispatched root. The one-replacement budget and permanent lineage fence
+come only from existing persisted invocation, system-message, task-link, thread,
+and audit state. A single `BEGIN IMMEDIATE` transaction revalidates pending
+token identity/purpose, manager authority held by the route's teams-registry
+lock, open thread, causal root, and unspent budget, then creates a true root
+(`parent_task_id IS NULL`) with its thread link, invocation marker, system
+message, and audits. Queue notification is post-commit.
+
+The replacement root and all persisted descendants, retry/revisit ancestry,
+chain/fanout legs, supersession/recovery successors, and terminal followups are
+forever ineligible. Replay/concurrent losers return
+`task_followup_dispatch_already_used` without mutation. Malformed/noncausal or
+stale tokens fail closed; archive/cancellation ordering is decided by the final
+transactional revalidation. No migration/backfill or column reinterpretation is
+involved, so historical v0 DB-backed and v1 flat/single-org stores retain their
+existing behavior; absence of the required persisted evidence fails closed for
+this new edge only.
+
 Absolute human blockers remain escalated: schema/migration or overloaded
 meaning; permission/sandbox/allow-rule changes; auth, credentials, security,
 privacy, or data access; spend/budget; destructive/irreversible action;

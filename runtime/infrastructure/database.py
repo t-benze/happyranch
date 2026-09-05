@@ -7086,6 +7086,191 @@ class Database:
         return cursor.rowcount == 1
 
     @_synchronized
+    def dispatch_task_followup_replacement(
+        self,
+        *,
+        token: str,
+        thread_id: str,
+        dispatcher: str,
+        task: TaskRecord,
+        team: str,
+    ) -> dict:
+        """Atomically admit the single replacement allowed to a task follow-up.
+
+        The triggering SYSTEM message and the dedicated audit row are the
+        existing persisted authority for the causal-root/replacement relation.
+        No task column is repurposed.  The caller must hold the teams registry
+        lock after establishing that ``dispatcher`` is the team's manager.
+        """
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                """SELECT i.triggering_seq, i.dispatched_task_id,
+                          m.system_payload_json
+                     FROM thread_invocations i
+                     JOIN threads t ON t.id = i.thread_id
+                     LEFT JOIN thread_messages m
+                       ON m.thread_id = i.thread_id AND m.seq = i.triggering_seq
+                    WHERE i.invocation_token = ? AND i.thread_id = ?
+                      AND i.agent_name = ? AND i.purpose = 'task_followup'
+                      AND i.status = 'pending' AND t.status = 'open'""",
+                (token, thread_id, dispatcher),
+            ).fetchone()
+            if row is None:
+                self._conn.rollback()
+                return {"ok": False, "code": "task_followup_dispatch_stale"}
+            if row["dispatched_task_id"] is not None:
+                self._conn.rollback()
+                return {"ok": False, "code": "task_followup_dispatch_already_used"}
+            try:
+                payload = json.loads(row["system_payload_json"] or "null")
+            except (TypeError, json.JSONDecodeError):
+                payload = None
+            if not isinstance(payload, dict):
+                self._conn.rollback()
+                return {"ok": False, "code": "task_followup_dispatch_cause_invalid"}
+            original_id = payload.get("original_task_id")
+            source_id = payload.get("task_id")
+            if (
+                payload.get("kind_tag") not in {"task_completed", "task_failed", "task_escalated"}
+                or not isinstance(original_id, str) or not original_id
+                or not isinstance(source_id, str) or not source_id
+            ):
+                self._conn.rollback()
+                return {"ok": False, "code": "task_followup_dispatch_cause_invalid"}
+            source = self._conn.execute(
+                "SELECT status FROM tasks WHERE id = ?", (source_id,),
+            ).fetchone()
+            expected_status = payload.get("status")
+            if (
+                source is None
+                or expected_status != source["status"]
+                or source["status"] not in {
+                    "completed", "failed", "cancelled", "superseded", "escalated",
+                }
+            ):
+                self._conn.rollback()
+                return {"ok": False, "code": "task_followup_dispatch_cause_invalid"}
+            in_lineage = self._conn.execute(
+                """WITH RECURSIVE lineage(id, parent_task_id, revisit_of_task_id, depth) AS (
+                       SELECT id, parent_task_id, revisit_of_task_id, 0
+                         FROM tasks WHERE id = ?
+                       UNION
+                       SELECT t.id, t.parent_task_id, t.revisit_of_task_id, l.depth + 1
+                         FROM lineage l JOIN tasks t
+                           ON t.id = l.parent_task_id OR t.id = l.revisit_of_task_id
+                        WHERE l.depth < 399
+                   ) SELECT 1 FROM lineage WHERE id = ?""",
+                (source_id, original_id),
+            ).fetchone()
+            if in_lineage is None:
+                self._conn.rollback()
+                return {"ok": False, "code": "task_followup_dispatch_cause_invalid"}
+
+            # The causal root must either be the original root dispatched from
+            # this thread, or a root previously created by this exact contract.
+            causal = self._conn.execute(
+                "SELECT dispatched_from_thread_id FROM tasks WHERE id = ? AND parent_task_id IS NULL",
+                (original_id,),
+            ).fetchone()
+            prior_replacement = self._conn.execute(
+                """SELECT 1 FROM audit_log
+                    WHERE task_id = ?
+                      AND action = 'thread_task_followup_replacement_dispatched'""",
+                (original_id,),
+            ).fetchone()
+            original_dispatch = self._conn.execute(
+                """SELECT 1 FROM audit_log
+                    WHERE task_id = ? AND action = 'thread_dispatch'
+                      AND json_extract(payload, '$.task_id') = ?
+                      AND json_extract(payload, '$.dispatcher') = ?""",
+                (thread_id, original_id, dispatcher),
+            ).fetchone()
+            if causal is None or (
+                causal["dispatched_from_thread_id"] != thread_id
+                and prior_replacement is None
+            ) or (prior_replacement is None and original_dispatch is None):
+                self._conn.rollback()
+                return {"ok": False, "code": "task_followup_dispatch_cause_invalid"}
+
+            spent = prior_replacement is not None or self._conn.execute(
+                """SELECT 1 FROM audit_log
+                    WHERE action = 'thread_task_followup_replacement_dispatched'
+                      AND json_extract(payload, '$.original_root_task_id') = ?""",
+                (original_id,),
+            ).fetchone() is not None
+            if spent:
+                self._conn.rollback()
+                return {"ok": False, "code": "task_followup_dispatch_already_used"}
+
+            params = (
+                task.id, task.status.value, task.assigned_agent, task.team,
+                task.brief, task.revision_count, task.created_at.isoformat(),
+                task.updated_at.isoformat(), None, None, None,
+                task.dispatched_from_thread_id, None, task.note,
+                task.orchestration_step_count, task.session_timeout_seconds,
+                task.task_type, task.active_fanout, task.current_session_id, None,
+            )
+            self._conn.execute(
+                """INSERT INTO tasks (id, status, assigned_agent, team, brief,
+                   revision_count, created_at, updated_at, completed_at, parent_task_id,
+                   revisit_of_task_id, dispatched_from_thread_id, block_kind, note,
+                   orchestration_step_count, session_timeout_seconds, task_type,
+                   active_fanout, current_session_id, zombie_flagged_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                params,
+            )
+            sys_seq = self._append_thread_message_uncommitted(
+                thread_id=thread_id, speaker=dispatcher,
+                kind=ThreadMessageKind.SYSTEM,
+                system_payload={
+                    "kind_tag": "task_dispatched", "task_id": task.id,
+                    "dispatcher": dispatcher, "target_agent": dispatcher,
+                    "team": team, "brief_preview": task.brief[:160],
+                    "replacement_for_task_id": original_id,
+                },
+            )
+            changed = self._conn.execute(
+                """UPDATE thread_invocations SET dispatched_task_id = ?
+                     WHERE invocation_token = ? AND status = 'pending'
+                       AND dispatched_task_id IS NULL""",
+                (task.id, token),
+            )
+            if changed.rowcount != 1:
+                self._conn.rollback()
+                return {"ok": False, "code": "task_followup_dispatch_already_used"}
+            audit_payload = {
+                "thread_id": thread_id,
+                "original_root_task_id": original_id,
+                "replacement_root_task_id": task.id,
+                "invocation_token_prefix": token[:8],
+                "dispatcher": dispatcher,
+                "team": team,
+                "rule_version": "thr-225-v1",
+            }
+            self._conn.execute(
+                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) VALUES (?, ?, ?, ?, ?)",
+                (task.id, dispatcher,
+                 "thread_task_followup_replacement_dispatched",
+                 json.dumps(audit_payload), now),
+            )
+            self._conn.execute(
+                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) VALUES (?, ?, ?, ?, ?)",
+                (thread_id, dispatcher, "thread_dispatch", json.dumps({
+                    "task_id": task.id, "dispatcher": dispatcher,
+                    "target_agent": dispatcher, "team": team,
+                    "replacement_for_task_id": original_id,
+                }), now),
+            )
+            self._conn.commit()
+            return {"ok": True, "system_message_seq": sys_seq,
+                    "original_root_task_id": original_id}
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
     def fail_invocation(
         self, token: str, *, status: ThreadInvocationStatus, decline_reason: str
     ) -> bool:
