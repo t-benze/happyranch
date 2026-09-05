@@ -17,16 +17,16 @@ func NewTSNetEngine() *TSNetEngine { return &TSNetEngine{} }
 func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []byte) (RedemptionReceipt, error) {
 	e.server = &tsnet.Server{Dir: c.StateDir, Hostname: c.RoleIdentity, ControlURL: c.ControlURL, AuthKey: string(credential), Ephemeral: false}
 	if err := e.server.Start(); err != nil {
-		return RedemptionReceipt{}, ErrEngine
+		return RedemptionReceipt{}, ErrEngineStart
 	}
 	e.server.AuthKey = ""
 	lc, err := e.server.LocalClient()
 	if err != nil {
-		return RedemptionReceipt{}, ErrEngine
+		return RedemptionReceipt{}, ErrNetworkJoin
 	}
 	status, err := lc.Status(ctx)
 	if err != nil || status.BackendState != "Running" {
-		return RedemptionReceipt{}, ErrEngine
+		return RedemptionReceipt{}, ErrNetworkJoin
 	}
 	visible := false
 	for _, peer := range status.Peer {

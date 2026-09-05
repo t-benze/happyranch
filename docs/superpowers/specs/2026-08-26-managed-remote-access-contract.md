@@ -1,5 +1,7 @@
 # Managed Remote Access — Normative Contract
 
+> **N3 diagnostic amendment (THR-097 seq566):** Packaged-sidecar startup diagnosis is limited to `credential_input`, `engine_start`, `network_join`, and `durable_commit`. Structured evidence binds mapped phase, actor/unit, failed terminal outcome, and completed assertion while rejecting missing, duplicate, prose-only, unmapped, inconsistent, incomplete, or secret-bearing receipts. This changes no credential, identity, readiness, admission, retry, revocation, or rollback semantics; the credential-delivery redesign remains future work.
+
 > **Status:** current
 > **Date:** 2026-08-26
 > **Merge unit:** A — normative contracts and threat fixtures only (TASK-5771)

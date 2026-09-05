@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -54,7 +55,7 @@ func main() {
 	engine := sidecar.NewTSNetEngine()
 	svc := sidecar.New(cfg, engine, &netDialer{})
 	if err := svc.Start(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, diagnosticReceipt(err))
 		os.Exit(1)
 	}
 	notifier, err := sdnotify.New()
@@ -79,6 +80,23 @@ func main() {
 		os.Exit(1)
 	default:
 	}
+}
+
+func diagnosticReceipt(err error) string {
+	category, phase := "unknown", "unknown"
+	switch {
+	case errors.Is(err, sidecar.ErrCredentialInput):
+		category, phase = "credential_input", "input_acquisition"
+	case errors.Is(err, sidecar.ErrEngineStart):
+		category, phase = "engine_start", "engine_initialization"
+	case errors.Is(err, sidecar.ErrNetworkJoin):
+		category, phase = "network_join", "peer_establishment"
+	case errors.Is(err, sidecar.ErrDurableCommit):
+		category, phase = "durable_commit", "receipt_commit"
+	}
+	receipt := map[string]any{"category": category, "phase": phase, "actor": "tsnet-sidecar", "unit": "happyranch-tsnet-sidecar.service", "outcome": "failed", "terminal": true, "assertion": map[string]string{"status": "completed"}}
+	raw, _ := json.Marshal(receipt)
+	return "diagnostic_receipt=" + string(raw)
 }
 
 type stoppable interface {

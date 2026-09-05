@@ -20,6 +20,9 @@ absent() { ! sudo test -e "$1" || fail "residue at $1"; }
 evidence() {
   python "$evidence_driver" observe "$evidence_artifact" --phase "$1" --observation "$2" --assertion-id "$run_id:$1:$2"
 }
+diagnostic() {
+  python "$evidence_driver" diagnose "$evidence_artifact" --id "$run_id:$1" --category "$1" --phase "$2" --actor "$3" --unit "$4"
+}
 tsnet_open() {
   [[ -n "${sidecar_ip:-}" ]] || return 1
   printf 'GET / HTTP/1.0\r\n\r\n' | timeout 5 sudo "$ts_dir/tailscale" --socket="$work/peer.sock" nc "$sidecar_ip" 443 >/dev/null 2>&1
@@ -213,6 +216,7 @@ absent /var/lib/happyranch-tsnet-sidecar/credential.consumed
 sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json | python -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(any(p.get("HostName")=="home-sidecar-ci" for p in (d.get("Peer") or {}).values()))' || fail "failed-start TSNet identity remained visible"
 evidence "startup" "process_absent"
 evidence "startup" "tsnet_admission_absent"
+diagnostic credential_input input_acquisition systemd happyranch-tsnet-sidecar.service
 # The unit has Restart=on-failure.  End the deliberately failed credential
 # transaction completely before restoring the one-use source, otherwise a
 # queued restart can race the first real enrollment and consume its staging.

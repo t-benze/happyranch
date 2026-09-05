@@ -23,6 +23,9 @@ def valid_artifact():
     doc = {"schema": evidence.SCHEMA, "version": evidence.VERSION,
            "subject": {"git_head": "a" * 40, "package_sha256": "b" * 64},
            "run": {"id": "run-unique", "zero_skip": True, "fake_count": 0, "skip_count": 0},
+           "diagnostics": [{"id": "diagnostic-1", "category": "credential_input", "phase": "input_acquisition",
+                            "actor": "systemd", "unit": "happyranch-tsnet-sidecar.service", "outcome": "failed",
+                            "terminal": True, "assertion": {"status": "completed"}}],
            "records": records,
            "terminal": {"status": "complete", "record_count": len(records), "last_sequence": len(records)}}
     doc["digest"] = evidence._digest(doc)
@@ -62,6 +65,10 @@ def test_cli_finalization_publishes_only_complete_artifact(tmp_path, monkeypatch
                                      "--package-sha256", "b" * 64, "--run-id", "run-unique"])
     evidence.main()
     assert json.loads(path.read_text())["terminal"] is None
+    monkeypatch.setattr("sys.argv", [str(MODULE_PATH), "diagnose", str(path), "--id", "diagnostic-1",
+                                     "--category", "credential_input", "--phase", "input_acquisition",
+                                     "--actor", "systemd", "--unit", "happyranch-tsnet-sidecar.service"])
+    evidence.main()
     for phase, observations in evidence.PHASES.items():
         for observation in observations:
             monkeypatch.setattr("sys.argv", [str(MODULE_PATH), "observe", str(path), "--phase", phase,
@@ -70,3 +77,27 @@ def test_cli_finalization_publishes_only_complete_artifact(tmp_path, monkeypatch
     monkeypatch.setattr("sys.argv", [str(MODULE_PATH), "finalize", str(path)])
     evidence.main()
     evidence.validate(json.loads(path.read_text()))
+
+
+@pytest.mark.parametrize("category,phase", list(evidence.DIAGNOSTIC_PHASES.items()))
+def test_validator_accepts_each_mapped_diagnostic_category(category, phase):
+    doc = valid_artifact()
+    doc["diagnostics"][0].update(category=category, phase=phase)
+    doc["digest"] = evidence._digest(doc)
+    evidence.validate(doc)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "prose", "unmapped", "secret", "inconsistent", "incomplete"])
+def test_validator_rejects_invalid_diagnostic_receipts(mutation):
+    doc = valid_artifact()
+    receipt = doc["diagnostics"][0]
+    if mutation == "missing": doc.pop("diagnostics")
+    elif mutation == "duplicate": doc["diagnostics"].append(copy.deepcopy(receipt))
+    elif mutation == "prose": receipt["category"] = "credential problem"
+    elif mutation == "unmapped": receipt["category"] = "unknown"
+    elif mutation == "secret": receipt["id"] = "token=/etc/happyranch/enrollment.key"
+    elif mutation == "inconsistent": receipt["phase"] = "peer_establishment"
+    elif mutation == "incomplete": receipt["assertion"]["status"] = "pending"
+    doc["digest"] = evidence._digest(doc)
+    with pytest.raises((AssertionError, KeyError)):
+        evidence.validate(doc)

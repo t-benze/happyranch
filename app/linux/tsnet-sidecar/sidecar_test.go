@@ -114,7 +114,7 @@ func TestCredentialPathWithSymlinkedParentFailsClosed(t *testing.T) {
 	cfg.CredentialFile = filepath.Join(alias, filepath.Base(cfg.CredentialFile))
 	events := []string{}
 	err := New(cfg, &fakeEngine{events: &events}, &net.Dialer{}).Start(context.Background())
-	if !errors.Is(err, ErrCredential) || len(events) != 0 {
+	if !errors.Is(err, ErrCredentialInput) || len(events) != 0 {
 		t.Fatalf("err=%v events=%v", err, events)
 	}
 }
@@ -124,7 +124,11 @@ func TestRedemptionAndDeletionMustBeDurableBeforeListen(t *testing.T) {
 		cfg := validConfig(t)
 		events := []string{}
 		e := &fakeEngine{receipt: receipt, events: &events}
-		if err := New(cfg, e, &net.Dialer{}).Start(context.Background()); !errors.Is(err, ErrCredential) {
+		want := ErrDurableCommit
+		if receipt.Redeemed && receipt.Durable {
+			want = ErrNetworkJoin
+		}
+		if err := New(cfg, e, &net.Dialer{}).Start(context.Background()); !errors.Is(err, want) {
 			t.Fatalf("%v", err)
 		}
 		if contains(events, "listen") {
@@ -359,7 +363,7 @@ func TestShippingFailureMatrixUsesStableCategories(t *testing.T) {
 	}{
 		{"engine-start", func(e *[]string, l net.Listener) *fakeEngine {
 			return &fakeEngine{startErr: errors.New("secret"), events: e}
-		}, func(net.Conn) Dialer { return &net.Dialer{} }, ErrCredential},
+		}, func(net.Conn) Dialer { return &net.Dialer{} }, ErrEngineStart},
 		{"listen", func(e *[]string, l net.Listener) *fakeEngine {
 			return &fakeEngine{receipt: RedemptionReceipt{true, true, true}, listenErr: errors.New("secret"), events: e}
 		}, func(c net.Conn) Dialer {

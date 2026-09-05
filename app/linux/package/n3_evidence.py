@@ -11,7 +11,16 @@ import sys
 from pathlib import Path
 
 SCHEMA = "happyranch.managed-n3.execution-evidence"
-VERSION = 1
+VERSION = 2
+DIAGNOSTIC_PHASES = {
+    "credential_input": "input_acquisition",
+    "engine_start": "engine_initialization",
+    "network_join": "peer_establishment",
+    "durable_commit": "receipt_commit",
+}
+DIAGNOSTIC_ACTORS = {"systemd", "tsnet-sidecar"}
+DIAGNOSTIC_UNITS = {"happyranch-tsnet-sidecar.service"}
+SECRET_MARKERS = ("token", "authkey", "nodekey", "credential=", "/run/credentials/", "/etc/happyranch/", "provider error")
 PHASES = {
     "startup": ("process_absent", "tsnet_admission_absent", "connector_staged_credential_service_readable_non_writable", "sidecar_staged_credential_service_readable_non_writable", "credential_source_retired", "credential_dropin_retired", "composite_ready_after_sidecar", "missing_consumed_state_failed_closed"),
     "admission": ("tsnet_admission_reachable",),
@@ -73,6 +82,20 @@ def validate(doc: dict, *, expected_subject: str | None = None, expected_run: st
         assert assertion["status"] == "completed" and assertion["completed_sequence"] == sequence
         seen.add(key); assertion_ids.add(assertion["id"])
     assert seen == expected
+    diagnostics = doc.get("diagnostics")
+    assert isinstance(diagnostics, list) and diagnostics
+    diagnostic_ids: set[str] = set()
+    for receipt in diagnostics:
+        assert set(receipt) == {"id", "category", "phase", "actor", "unit", "outcome", "terminal", "assertion"}
+        assert receipt["id"] and receipt["id"] not in diagnostic_ids
+        assert receipt["category"] in DIAGNOSTIC_PHASES
+        assert receipt["phase"] == DIAGNOSTIC_PHASES[receipt["category"]]
+        assert receipt["actor"] in DIAGNOSTIC_ACTORS and receipt["unit"] in DIAGNOSTIC_UNITS
+        assert receipt["outcome"] == "failed" and receipt["terminal"] is True
+        assert receipt["assertion"] == {"status": "completed"}
+        rendered = json.dumps(receipt, sort_keys=True).lower()
+        assert not any(marker in rendered for marker in SECRET_MARKERS)
+        diagnostic_ids.add(receipt["id"])
     terminal = doc.get("terminal")
     assert terminal == {"status": "complete", "record_count": len(records), "last_sequence": len(records)}
     assert doc.get("digest") == _digest(doc)
@@ -87,6 +110,10 @@ def main() -> None:
     observe = sub.add_parser("observe")
     observe.add_argument("path", type=Path); observe.add_argument("--phase", required=True)
     observe.add_argument("--observation", required=True); observe.add_argument("--assertion-id", required=True)
+    diagnose = sub.add_parser("diagnose")
+    diagnose.add_argument("path", type=Path); diagnose.add_argument("--id", required=True)
+    diagnose.add_argument("--category", required=True); diagnose.add_argument("--phase", required=True)
+    diagnose.add_argument("--actor", required=True); diagnose.add_argument("--unit", required=True)
     finish = sub.add_parser("finalize"); finish.add_argument("path", type=Path)
     check = sub.add_parser("validate"); check.add_argument("path", type=Path)
     check.add_argument("--expected-subject"); check.add_argument("--expected-run")
@@ -95,7 +122,7 @@ def main() -> None:
         doc = {"schema": SCHEMA, "version": VERSION,
                "subject": {"git_head": args.git_head, "package_sha256": args.package_sha256},
                "run": {"id": args.run_id, "zero_skip": True, "fake_count": 0, "skip_count": 0},
-               "records": [], "terminal": None}
+               "records": [], "diagnostics": [], "terminal": None}
         args.path.parent.mkdir(parents=True, exist_ok=True)
         args.path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     elif args.command == "observe":
@@ -106,6 +133,12 @@ def main() -> None:
         doc["records"].append({"sequence": sequence, "phase": args.phase, "observation": args.observation,
                                "assertion": {"id": args.assertion_id, "kind": args.observation,
                                              "status": "completed", "completed_sequence": sequence}})
+        args.path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    elif args.command == "diagnose":
+        doc = _load(args.path)
+        doc["diagnostics"].append({"id": args.id, "category": args.category, "phase": args.phase,
+                                   "actor": args.actor, "unit": args.unit, "outcome": "failed",
+                                   "terminal": True, "assertion": {"status": "completed"}})
         args.path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     elif args.command == "finalize":
         doc = _load(args.path)

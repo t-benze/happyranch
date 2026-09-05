@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	sidecar "happyranch/linux-tsnet-sidecar"
 )
 
 func TestConnectorHealthChild(t *testing.T) {
@@ -47,7 +51,12 @@ func runCompositeOrdering(t *testing.T, initiallyActive bool) []string {
 	done := make(chan int, 1)
 	go func() {
 		done <- superviseConnector(ctx, []string{os.Args[0], "-test.run=TestConnectorHealthChild"}, n, time.Second, 50*time.Millisecond, nil,
-			func(context.Context) sidecarObservation { if active.Load() { return sidecarPresentHealthy }; return sidecarAbsent },
+			func(context.Context) sidecarObservation {
+				if active.Load() {
+					return sidecarPresentHealthy
+				}
+				return sidecarAbsent
+			},
 			func(context.Context) bool { active.Store(false); return true })
 	}()
 	if !initiallyActive {
@@ -127,14 +136,24 @@ func TestSystemdSidecarHealthRequiresCompleteAuthoritativeState(t *testing.T) {
 	if systemdSidecarState(context.Background()) != sidecarPresentUnhealthy {
 		t.Fatal("partial sidecar readiness was accepted")
 	}
-	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'garbage\\n'\n"), 0700); err != nil { t.Fatal(err) }
-	if systemdSidecarState(context.Background()) != sidecarUnknown { t.Fatal("malformed state was not unknown") }
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'garbage\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if systemdSidecarState(context.Background()) != sidecarUnknown {
+		t.Fatal("malformed state was not unknown")
+	}
 }
 
 func TestAdmissionRemovalWaitsForSidecarBeforeConnectorCleanup(t *testing.T) {
 	active := true
 	events := []string{}
-	healthy := func(context.Context) sidecarObservation { events = append(events, "probe"); if active { return sidecarPresentHealthy }; return sidecarAbsent }
+	healthy := func(context.Context) sidecarObservation {
+		events = append(events, "probe")
+		if active {
+			return sidecarPresentHealthy
+		}
+		return sidecarAbsent
+	}
 	stop := func(context.Context) bool { events = append(events, "sidecar-stop"); active = false; return true }
 	if !removeSidecarAdmission(context.Background(), healthy, stop) {
 		t.Fatal("admission removal failed")
@@ -159,7 +178,9 @@ func TestAdmissionRemovalUnknownFailsClosedWithoutCleanup(t *testing.T) {
 	if removeSidecarAdmission(context.Background(), func(context.Context) sidecarObservation { return sidecarUnknown }, func(context.Context) bool { called = true; return true }) {
 		t.Fatal("unknown state claimed admission removed")
 	}
-	if called { t.Fatal("unknown state triggered stop") }
+	if called {
+		t.Fatal("unknown state triggered stop")
+	}
 }
 
 func TestStructuredChildHealthAcceptsExactRecords(t *testing.T) {
@@ -224,6 +245,31 @@ func TestStopTwiceUsesSameProductionInstanceAndReceiptsEachInvocation(t *testing
 	want := "lifecycle_stop_complete run=4242 invocation=1\nlifecycle_stop_complete run=4242 invocation=2\n"
 	if string(raw) != want {
 		t.Fatalf("receipt = %q, want %q", raw, want)
+	}
+}
+
+func TestDiagnosticReceiptHasStableRedactedCategories(t *testing.T) {
+	for _, tc := range []struct {
+		err             error
+		category, phase string
+	}{
+		{fmt.Errorf("wrapped: %w", sidecar.ErrCredentialInput), "credential_input", "input_acquisition"},
+		{sidecar.ErrEngineStart, "engine_start", "engine_initialization"},
+		{sidecar.ErrNetworkJoin, "network_join", "peer_establishment"},
+		{sidecar.ErrDurableCommit, "durable_commit", "receipt_commit"},
+		{errors.New("provider token=/secret/path"), "unknown", "unknown"},
+	} {
+		raw := strings.TrimPrefix(diagnosticReceipt(tc.err), "diagnostic_receipt=")
+		var got map[string]any
+		if err := json.Unmarshal([]byte(raw), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got["category"] != tc.category || got["phase"] != tc.phase {
+			t.Fatalf("receipt=%v", got)
+		}
+		if strings.Contains(raw, "token") || strings.Contains(raw, "/secret") || strings.Contains(raw, "provider") {
+			t.Fatalf("secret-bearing receipt %q", raw)
+		}
 	}
 }
 
