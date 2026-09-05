@@ -1,0 +1,6 @@
+# path<TAB>value<TAB>specific temporary reason
+App.tsx	#010203	fixture JSX color attribute
+App.tsx	#123456	fixture arbitrary Tailwind background
+App.tsx	#aabbcc	fixture JavaScript style object color
+App.tsx	#abc	fixture arbitrary Tailwind text color
+theme.css	#c0ffee	fixture ordinary CSS color declaration
