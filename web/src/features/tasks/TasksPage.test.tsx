@@ -79,6 +79,106 @@ const JOB: JobRecord = {
 };
 
 describe('TasksPage — read path (roots endpoint)', () => {
+  test('keeps initial loading distinct from empty', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, async () => {
+        await new Promise(() => undefined);
+        return HttpResponse.json({ tasks: [] });
+      }),
+    );
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    expect(screen.getByText('Loading…')).toBeInTheDocument();
+    expect(screen.queryByText('No tasks')).not.toBeInTheDocument();
+  });
+
+  test('renders an initial request failure with a keyboard-actionable Retry, never empty', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let requests = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () => {
+        requests += 1;
+        return requests === 1
+          ? new HttpResponse(null, { status: 500 })
+          : HttpResponse.json({ tasks: [TASK], next_cursor: null });
+      }),
+    );
+    const user = userEvent.setup();
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    expect(await screen.findByText('Could not load tasks')).toBeInTheDocument();
+    expect(screen.queryByText('No tasks')).not.toBeInTheDocument();
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    retry.focus();
+    expect(retry).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByText(/Draft Hong Kong visa guide/)).toBeInTheDocument();
+    expect(requests).toBe(2);
+  });
+
+  test('reserves the empty state for a successful zero-row response', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, () =>
+        HttpResponse.json({ tasks: [], next_cursor: null }),
+      ),
+    );
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    expect(await screen.findByText('No tasks')).toBeInTheDocument();
+    expect(screen.queryByText('Could not load tasks')).not.toBeInTheDocument();
+  });
+
+  test('retains populated cached rows when a stale refetch fails and retries all loaded pages', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const queryClient = makeQueryClient();
+    queryClient.setQueryData(['tasks-roots-infinite', SLUG, undefined], {
+      pages: [
+        { tasks: [TASK], next_cursor: 'page-2' },
+        { tasks: [rootTask({ task_id: 'TASK-0092', brief: 'Cached second page' })], next_cursor: null },
+      ],
+      pageParams: [undefined, 'page-2'],
+    });
+    let shouldFail = true;
+    const requestedBefore: string[] = [];
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+        const before = new URL(request.url).searchParams.get('before') ?? 'first';
+        requestedBefore.push(before);
+        if (shouldFail) return new HttpResponse(null, { status: 500 });
+        return HttpResponse.json(
+          before === 'first'
+            ? { tasks: [TASK], next_cursor: 'page-2' }
+            : { tasks: [rootTask({ task_id: 'TASK-0092', brief: 'Recovered second page' })], next_cursor: null },
+        );
+      }),
+    );
+    render(
+      <MemoryRouter initialEntries={[`/orgs/${SLUG}/tasks`]}>
+        <AppProvider client={queryClient}><AppRoutes /></AppProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/Draft Hong Kong visa guide/)).toBeInTheDocument();
+    await act(() => queryClient.invalidateQueries({
+      queryKey: ['tasks-roots-infinite', SLUG, undefined],
+      exact: true,
+    }));
+    expect(await screen.findByText('Tasks may be out of date')).toBeInTheDocument();
+    expect(screen.getByText('Cached second page')).toBeInTheDocument();
+    expect(screen.queryByText('End of list')).not.toBeInTheDocument();
+
+    shouldFail = false;
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Recovered second page')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Tasks may be out of date')).not.toBeInTheDocument());
+    expect(requestedBefore).toEqual(['first', 'first', 'page-2']);
+  });
+
   test('fetches from /tasks/roots and renders fixture tasks', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(

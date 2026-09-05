@@ -17,7 +17,10 @@
  * right-aligned group-by segmented control.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { AlertCircle, RefreshCw } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
+import { Button } from '@/design-system/primitives/Button';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import {
@@ -27,6 +30,7 @@ import {
 } from './TaskListRow';
 import { useTasksRootsInfinite, useTasksRoutes } from '@/hooks/tasks';
 import type { TaskRecord } from '@/lib/api/types';
+import { useOrgSlugOptional } from '@/lib/orgSlug';
 
 type GroupBy = 'status' | 'agent' | 'thread';
 
@@ -170,7 +174,10 @@ const GROUP_ORDER_STATUS: Record<string, number> = {
 
 export function TasksPage(): JSX.Element {
   const [groupBy, setGroupBy] = useState<GroupBy>('status');
+  const [isRetrying, setIsRetrying] = useState(false);
   const routes = useTasksRoutes();
+  const orgSlug = useOrgSlugOptional();
+  const queryClient = useQueryClient();
   const tasksQuery = useTasksRootsInfinite();
 
   const allTasks = useMemo(
@@ -247,6 +254,18 @@ export function TasksPage(): JSX.Element {
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
   const isLoading = tasksQuery.isLoading;
+  const hasUsableTasks = allTasks.length > 0;
+  const retry = async () => {
+    setIsRetrying(true);
+    try {
+      await queryClient.refetchQueries({
+        queryKey: ['tasks-roots-infinite', orgSlug, undefined],
+        exact: true,
+      });
+    } finally {
+      setIsRetrying(false);
+    }
+  };
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
@@ -303,10 +322,35 @@ export function TasksPage(): JSX.Element {
         <ContentWrap>
         {isLoading ? (
           <p className="text-text-muted py-6 text-center text-sm">Loading…</p>
+        ) : tasksQuery.isError && !hasUsableTasks ? (
+          <EmptyState
+            icon={<AlertCircle size={32} className="text-feedback-danger" />}
+            title="Could not load tasks"
+            body="The server returned an error. You can try again."
+            cta={{ label: isRetrying ? 'Retrying…' : 'Retry', onClick: retry }}
+          />
         ) : allTasks.length === 0 ? (
           <EmptyState title="No tasks" body="No tasks match the current filters." />
         ) : (
           <div className="space-y-6">
+            {tasksQuery.isError && (
+              <div
+                role="alert"
+                className="border-feedback-danger bg-danger-soft flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <AlertCircle className="text-feedback-danger shrink-0" size={18} aria-hidden />
+                  <div>
+                    <p className="text-text-primary text-sm font-medium">Tasks may be out of date</p>
+                    <p className="text-text-secondary text-xs">Some task updates could not be loaded.</p>
+                  </div>
+                </div>
+                <Button size="sm" variant="outline" onClick={retry} loading={isRetrying}>
+                  <RefreshCw size={14} aria-hidden />
+                  Retry
+                </Button>
+              </div>
+            )}
             <TaskListColumnHeader />
             {groups.map(([key, tasks]) => {
               const dimmed = isResolvedGroup(key, groupBy);
@@ -340,7 +384,7 @@ export function TasksPage(): JSX.Element {
                 Loading more…
               </p>
             )}
-            {!hasNextPage && allTasks.length > 0 && (
+            {!tasksQuery.isError && !hasNextPage && allTasks.length > 0 && (
               <p className="text-text-muted py-4 text-center text-xs">
                 End of list
               </p>
