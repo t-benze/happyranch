@@ -27,6 +27,13 @@ DIAGNOSTIC_PHASES = {
 DIAGNOSTIC_ACTORS = {"systemd", "tsnet-sidecar"}
 DIAGNOSTIC_UNITS = {"happyranch-tsnet-sidecar.service"}
 SECRET_MARKERS = ("token", "authkey", "nodekey", "credential=", "/run/credentials/", "/etc/happyranch/", "provider error")
+DENIAL_OPERATIONS = (
+    "address_family_netlink", "linux_capabilities", "device_access",
+    "writable_paths", "control_plane_operations",
+)
+DENIAL_RESULTS = {"allow", "deny", "unknown"}
+DENIAL_CATEGORIES = {"none", "permission_denied", "unavailable", "timeout", "operational_error"}
+DENIAL_ERRNOS = {None, "EACCES", "EPERM", "ENOENT", "ENODEV", "EAFNOSUPPORT", "ETIMEDOUT", "ECONNREFUSED", "EIO", "OTHER"}
 PHASES = {
     "startup": ("process_absent", "tsnet_admission_absent", "connector_staged_credential_service_readable_non_writable", "sidecar_staged_credential_service_readable_non_writable", "credential_source_retired", "credential_dropin_retired", "composite_ready_after_sidecar", "missing_consumed_state_failed_closed"),
     "admission": ("tsnet_admission_reachable",),
@@ -137,6 +144,23 @@ def validate(doc: dict, *, expected_subject: str | None = None, expected_run: st
     assert doc.get("digest") == _digest(doc)
 
 
+def validate_denial_matrix(doc: dict, *, expected_arm: str | None = None) -> None:
+    assert set(doc) == {"schema", "version", "arm_id", "operations"}
+    assert doc["schema"] == "happyranch.n3.sandbox-denial-matrix" and doc["version"] == 1
+    assert doc["arm_id"] in {item[0] for item in ARM_SPECS if item[2] == "candidate"}
+    if expected_arm is not None:
+        assert doc["arm_id"] == expected_arm
+    operations = doc["operations"]
+    assert isinstance(operations, list) and [row.get("id") for row in operations] == list(DENIAL_OPERATIONS)
+    for row in operations:
+        assert set(row) == {"id", "measured", "result", "category", "errno"}
+        assert row["measured"] is True
+        assert row["result"] in DENIAL_RESULTS and row["category"] in DENIAL_CATEGORIES
+        assert row["errno"] in DENIAL_ERRNOS
+        rendered = json.dumps(row, sort_keys=True).lower()
+        assert not any(marker in rendered for marker in SECRET_MARKERS)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -160,6 +184,8 @@ def main() -> None:
     finish = sub.add_parser("finalize"); finish.add_argument("path", type=Path)
     check = sub.add_parser("validate"); check.add_argument("path", type=Path)
     check.add_argument("--expected-subject"); check.add_argument("--expected-run")
+    denial = sub.add_parser("validate-denial-matrix"); denial.add_argument("path", type=Path)
+    denial.add_argument("--expected-arm", required=True)
     args = parser.parse_args()
     if args.command == "init":
         doc = {"schema": SCHEMA, "version": VERSION,
@@ -205,8 +231,10 @@ def main() -> None:
         doc["digest"] = _digest(doc)
         validate(doc)
         args.path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    else:
+    elif args.command == "validate":
         validate(_load(args.path), expected_subject=args.expected_subject, expected_run=args.expected_run)
+    else:
+        validate_denial_matrix(_load(args.path), expected_arm=args.expected_arm)
 
 
 if __name__ == "__main__":

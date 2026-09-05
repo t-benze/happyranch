@@ -206,7 +206,9 @@ def test_real_systemd_af_netlink_acceptance_is_four_arm_fail_closed() -> None:
     assert all(arm in harness for arm in arms)
     assert 'preauthkeys create --user ci --reusable=false' in harness
     assert '--control-category engine_start --control-phase engine_initialization' in harness
-    assert '--ready --expected-peer-visible --virtual-listener-reachable' in harness
+    assert 'arm_result_args=(--ready)' in harness
+    assert 'arm_result_args+=(--expected-peer-visible)' in harness
+    assert 'arm_result_args+=(--virtual-listener-reachable)' in harness
     assert 'capture_denial_matrix' in harness
     assert 'address_family_netlink' in harness
     assert 'linux_capabilities' in harness
@@ -216,6 +218,37 @@ def test_real_systemd_af_netlink_acceptance_is_four_arm_fail_closed() -> None:
     assert 'sudo systemctl daemon-reload' in harness
     assert 'cleanup_complete' in harness
     assert 'host port 443' not in harness.lower()
+
+
+def test_real_systemd_candidate_expected_peer_is_production_observed() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    assert 'production_expected_peer_visible=0' in harness
+    assert 'test ! -e /var/lib/happyranch-tsnet-sidecar/credential.consumed' in harness
+    assert 'test -f /var/lib/happyranch-tsnet-sidecar/credential.consumed' in harness
+    assert '(( production_expected_peer_visible == 1 ))' in harness
+    assert 'arm_result_args=(--ready --expected-peer-visible' not in harness
+
+
+def test_real_systemd_control_receipts_are_current_arm_exactly_once() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    assert 'journalctl -u happyranch-tsnet-sidecar.service -n 0 --show-cursor' in harness
+    assert '--after-cursor="$arm_journal_cursor"' in harness
+    assert '_SYSTEMD_INVOCATION_ID="$arm_invocation_id"' in harness
+    assert 'InvocationID --value' in harness
+    assert 'print(len(matches))' in harness
+    assert '[[ "$current_arm_receipt_count" == 1 ]]' in harness
+    assert 'current_arm_receipt_count' in harness
+
+
+def test_real_systemd_denial_matrix_executes_every_bounded_probe() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    for probe in ("socket.AF_NETLINK", "socket.SOCK_RAW", "/dev/net/tun", "probe-write", "create_connection"):
+        assert probe in harness
+    assert 'validate-denial-matrix' in harness
+    assert '"measured":True' in harness
+    assert 'systemd-run --quiet --wait --collect --pipe' in harness
+    for sandbox_property in ("PrivateDevices=yes", "ProtectSystem=strict", "ProtectHome=yes", "CapabilityBoundingSet="):
+        assert sandbox_property in harness
 
 
 def test_composite_service_manager_executes_start_ready_stop_crash_restart() -> None:

@@ -224,18 +224,50 @@ acceptance_arms=(
 )
 capture_denial_matrix() {
   local arm_id="$1"
-  # Fixed operation identifiers and closed results only. Never copy journals,
-  # provider prose, paths, identities, credentials, or control responses.
-  python - "$diagnostics/$arm_id-denial-matrix.json" <<'PY'
-import json, sys
-operations = (
-    "address_family_netlink", "linux_capabilities", "device_access",
-    "writable_paths", "control_plane_operations",
-)
+  # Execute bounded probes as the shipping service user before teardown. Only
+  # fixed identifiers/classifications leave this process; exception prose,
+  # paths, identities, credentials, and control responses are discarded.
+  sudo timeout 15 systemd-run --quiet --wait --collect --pipe \
+    --unit="happyranch-n3-denial-${arm_id}" \
+    --property=User=happyranch --property=Group=happyranch \
+    --property=NoNewPrivileges=yes --property=PrivateDevices=yes \
+    --property=ProtectSystem=strict --property=ProtectHome=yes \
+    --property=ReadWritePaths=/var/lib/happyranch-tsnet-sidecar \
+    --property='RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK' \
+    --property='CapabilityBoundingSet=' \
+    /usr/bin/python3 - "$arm_id" >"$diagnostics/$arm_id-denial-matrix.json" <<'PY'
+import errno, json, os, socket, sys
+
+ERRNOS = {errno.EACCES:"EACCES", errno.EPERM:"EPERM", errno.ENOENT:"ENOENT",
+          errno.ENODEV:"ENODEV", errno.EAFNOSUPPORT:"EAFNOSUPPORT",
+          errno.ETIMEDOUT:"ETIMEDOUT", errno.ECONNREFUSED:"ECONNREFUSED", errno.EIO:"EIO"}
+def measured(operation, probe):
+    try:
+        value = probe()
+        if hasattr(value, "close"): value.close()
+        return {"id":operation,"measured":True,"result":"allow","category":"none","errno":None}
+    except OSError as exc:
+        code = ERRNOS.get(exc.errno, "OTHER")
+        category = "permission_denied" if exc.errno in (errno.EACCES, errno.EPERM) else "unavailable"
+        if exc.errno == errno.ETIMEDOUT: category = "timeout"
+        return {"id":operation,"measured":True,"result":"deny" if category == "permission_denied" else "unknown","category":category,"errno":code}
+    except Exception:
+        return {"id":operation,"measured":True,"result":"unknown","category":"operational_error","errno":"OTHER"}
+def writable():
+    path = "/var/lib/happyranch-tsnet-sidecar/probe-write"
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    os.close(fd); os.unlink(path)
+operations = [
+    measured("address_family_netlink", lambda: socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 0)),
+    measured("linux_capabilities", lambda: socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)),
+    measured("device_access", lambda: open("/dev/net/tun", "rb", buffering=0)),
+    measured("writable_paths", writable),
+    measured("control_plane_operations", lambda: socket.create_connection(("127.0.0.1", 18080), timeout=2)),
+]
 json.dump({"schema":"happyranch.n3.sandbox-denial-matrix","version":1,
-           "operations":[{"id": item, "result":"unknown", "category":"startup", "errno":None}
-                         for item in operations]}, open(sys.argv[1], "w"), separators=(",", ":"))
+           "arm_id":sys.argv[1],"operations":operations}, sys.stdout, separators=(",", ":"))
 PY
+  python "$evidence_driver" validate-denial-matrix "$diagnostics/$arm_id-denial-matrix.json" --expected-arm "$arm_id"
 }
 arm_cleanup() {
   local cleanup_complete=0
@@ -289,6 +321,10 @@ PY
 for arm_spec in "${acceptance_arms[@]}"; do
   IFS=: read -r arm_id ordering variant <<<"$arm_spec"
   arm_reset "$arm_id" "$variant"
+  arm_journal_cursor="$(sudo journalctl -u happyranch-tsnet-sidecar.service -n 0 --show-cursor --no-pager | sed -n 's/^-- cursor: //p')"
+  [[ -n "$arm_journal_cursor" ]] || fail "current arm journal cursor unavailable"
+  production_expected_peer_visible=0
+  sudo test ! -e /var/lib/happyranch-tsnet-sidecar/credential.consumed || fail "current arm ExpectedPeers marker was not fresh"
   if [[ "$ordering" == A ]]; then
     sudo systemctl start --no-block happyranch-connector.service
     sudo systemctl start happyranch-tsnet-sidecar.service || true
@@ -299,24 +335,36 @@ for arm_spec in "${acceptance_arms[@]}"; do
   if [[ "$variant" == control ]]; then
     sleep 2
     ! active happyranch-tsnet-sidecar.service || fail "shipping control unexpectedly READY"
-    sudo journalctl -u happyranch-tsnet-sidecar.service -o cat --no-pager | python -c '
+    arm_invocation_id="$(systemctl show happyranch-tsnet-sidecar.service -p InvocationID --value)"
+    [[ "$arm_invocation_id" =~ ^[0-9a-f]{32}$ ]] || fail "shipping control invocation identity unavailable"
+    current_arm_receipt_count="$(sudo journalctl -u happyranch-tsnet-sidecar.service _SYSTEMD_INVOCATION_ID="$arm_invocation_id" --after-cursor="$arm_journal_cursor" -o cat --no-pager | python -c '
 import json, sys
 matches=[]
 for line in sys.stdin:
     if line.startswith("diagnostic_receipt="):
         value=json.loads(line.split("=",1)[1])
         if value.get("category")=="engine_start" and value.get("phase")=="engine_initialization": matches.append(value)
-raise SystemExit(0 if matches else 1)
-' || fail "shipping control lacked coarse engine_start receipt"
+print(len(matches))
+')"
+    [[ "$current_arm_receipt_count" == 1 ]] || fail "shipping control current arm coarse receipt cardinality mismatch"
     arm_result_args=(--control-category engine_start --control-phase engine_initialization)
   else
     if ! wait_for_candidate active happyranch-tsnet-sidecar.service; then
       capture_denial_matrix "$arm_id"
       fail "AF_NETLINK candidate did not become READY"
     fi
+    # This arm-fresh production marker is committed only after TSNetEngine has
+    # observed the sole configured ExpectedPeer. It precedes listener READY
+    # and is independent of the synthetic peer's reverse status query below.
+    if sudo test -f /var/lib/happyranch-tsnet-sidecar/credential.consumed; then
+      production_expected_peer_visible=1
+    fi
     sidecar_ip="$(sudo "$ts_dir/tailscale" --socket="$work/peer.sock" status --json | python -c 'import json,sys; d=json.load(sys.stdin); print(next(ip for p in d.get("Peer",{}).values() if p.get("HostName")=="home-sidecar-ci" for ip in p.get("TailscaleIPs",[]) if ":" not in ip))')" || { capture_denial_matrix "$arm_id"; fail "candidate ExpectedPeers visibility failed"; }
     tsnet_open || { capture_denial_matrix "$arm_id"; fail "candidate virtual listener unreachable"; }
-    arm_result_args=(--ready --expected-peer-visible --virtual-listener-reachable)
+    (( production_expected_peer_visible == 1 )) || { capture_denial_matrix "$arm_id"; fail "candidate production ExpectedPeers observation missing"; }
+    arm_result_args=(--ready)
+    (( production_expected_peer_visible == 1 )) && arm_result_args+=(--expected-peer-visible)
+    arm_result_args+=(--virtual-listener-reachable)
   fi
   arm_cleanup
   # Receipt follows every production assertion, including cleanup.

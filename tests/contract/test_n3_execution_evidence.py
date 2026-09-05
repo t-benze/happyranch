@@ -156,3 +156,34 @@ def test_validator_rejects_invalid_acceptance_arms(mutation):
     doc["digest"] = evidence._digest(doc)
     with pytest.raises(AssertionError):
         evidence.validate(doc)
+
+
+def _valid_denial_matrix():
+    return {
+        "schema": "happyranch.n3.sandbox-denial-matrix",
+        "version": 1,
+        "arm_id": "ordering-a-candidate",
+        "operations": [
+            {"id": operation, "measured": True, "result": "allow", "category": "none", "errno": None}
+            for operation in evidence.DENIAL_OPERATIONS
+        ],
+    }
+
+
+@pytest.mark.parametrize("mutation", ["default", "unmeasured", "missing", "secret", "prose", "bad_errno"])
+def test_denial_matrix_requires_real_bounded_secret_safe_measurements(mutation):
+    matrix = _valid_denial_matrix()
+    if mutation == "default":
+        for row in matrix["operations"]:
+            row.update(measured=False, result="unknown", category="unmeasured")
+    elif mutation == "unmeasured": matrix["operations"][1]["measured"] = False
+    elif mutation == "missing": matrix["operations"].pop()
+    elif mutation == "secret": matrix["operations"][0]["category"] = "token=/etc/happyranch/key"
+    elif mutation == "prose": matrix["operations"][0]["category"] = "provider said denied"
+    elif mutation == "bad_errno": matrix["operations"][0]["errno"] = "arbitrary-error"
+    with pytest.raises(AssertionError):
+        evidence.validate_denial_matrix(matrix, expected_arm="ordering-a-candidate")
+
+
+def test_denial_matrix_accepts_each_required_measured_dimension():
+    evidence.validate_denial_matrix(_valid_denial_matrix(), expected_arm="ordering-a-candidate")
