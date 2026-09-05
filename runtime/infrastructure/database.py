@@ -549,13 +549,21 @@ class Database:
         self._lock_warn_threshold_seconds = 1.0
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         from runtime.infrastructure.remote_job_schema import (
-            validate_remote_job_schema_preflight,
+            migrate_identity_enrollment_schema,
+            validate_identity_enrollment_schema_preflight,
         )
 
-        validate_remote_job_schema_preflight(self._conn)
+        # TASK-6611: this fail-closed guard and six-stage convergence are the
+        # first database-open schema/data operation.  In particular they run
+        # before WAL selection and every legacy/jobs/S2/open-path mutator.
+        validate_identity_enrollment_schema_preflight(self._conn)
+        migrate_identity_enrollment_schema(
+            self._conn,
+            stage_hook=getattr(self, "_remote_identity_schema_stage_hook", None),
+        )
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._migrate_jobs_table_if_needed()
         self._migrate_drop_talk_surface_if_needed()
         self._retire_skill_lifecycle_if_present()

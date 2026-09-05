@@ -8,10 +8,14 @@ import pytest
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.remote_job_schema import (
     COMPLETE_STAGE,
+    IDENTITY_MIGRATION_NAME,
+    IDENTITY_STAGES,
+    IDENTITY_TEMP_PARENT,
     INDEX_SQL,
     JOB_COLUMNS,
     MIGRATION_NAME,
     STAGES,
+    S2_REMOTE_RUNNERS_SQL,
     TABLE_SQL,
 )
 from tests.infrastructure.test_jobs_migration import _seed_legacy_scripts_db
@@ -60,16 +64,44 @@ def _complete_snapshot(path: Path) -> tuple[list[tuple], dict[str, list[tuple]]]
         return schema, rows
 
 
+def _downgrade_to_exact_untouched_s2(path: Path) -> None:
+    """Turn a fresh current store into the byte/exact merged-S2 boundary."""
+    Database(path).close()
+    with sqlite3.connect(path) as conn:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("DROP INDEX remote_enrollment_challenge_expiry")
+        conn.execute("DROP TABLE remote_runner_enrollment_challenges")
+        conn.execute("DELETE FROM remote_runner_schema_migrations WHERE name=?", (
+            IDENTITY_MIGRATION_NAME,
+        ))
+        conn.execute("DROP TABLE remote_runners")
+        conn.execute(S2_REMOTE_RUNNERS_SQL)
+        conn.commit()
+
+
 def _insert_runner(conn: sqlite3.Connection, runner: str, generation: int = 1) -> None:
     conn.execute(
         "INSERT INTO remote_runners VALUES "
-        "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             runner, "sample", runner, generation, "available", 1, 1, 1,
             "{}", "{}", f"att-{runner}", "2026-01-01T00:00:00Z",
             "2027-01-01T00:00:00Z", f"serial-{runner}-{generation}",
-            f"spki-{runner}-{generation}", 0, None, None, None,
+            f"spki-{runner}-{generation}", "2027-01-01T00:00:00Z",
+            0, None, None, None,
             "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", None, None,
+        ),
+    )
+
+
+def _insert_runner_s2(conn: sqlite3.Connection, runner: str) -> None:
+    conn.execute(
+        "INSERT INTO remote_runners VALUES (" + ",".join("?" * 23) + ")",
+        (
+            runner, "sample", runner, 1, "available", 1, 1, 1, "{}", "{}",
+            f"att-{runner}", "2026-01-01Z", "2027-01-01Z", f"serial-{runner}",
+            f"spki-{runner}", 0, None, None, None, "2026-01-01Z",
+            "2026-01-01Z", None, None,
         ),
     )
 
@@ -246,7 +278,10 @@ def test_conflicting_nullable_job_column_fails_without_other_remote_writes(tmp_p
     with sqlite3.connect(path) as conn:
         conn.execute("ALTER TABLE jobs RENAME COLUMN execution_backend TO old_execution_backend")
         conn.execute("ALTER TABLE jobs ADD COLUMN execution_backend INTEGER NOT NULL DEFAULT 1")
-        conn.execute("DELETE FROM remote_runner_schema_migrations")
+        conn.execute(
+            "DELETE FROM remote_runner_schema_migrations WHERE name=?",
+            (MIGRATION_NAME,),
+        )
         conn.commit()
     before = _snapshot(path)
     with pytest.raises(sqlite3.DatabaseError, match="conflicting jobs column"):
@@ -379,3 +414,264 @@ def test_existing_local_job_values_and_overloaded_references_survive(tmp_path: P
             "FROM jobs WHERE id='JOB-1'"
         ).fetchone()
         assert remote_values == (None, None, None, None, None)
+
+
+def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_value(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "untouched-s2.db"
+    _downgrade_to_exact_untouched_s2(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO tasks(id,status,brief,created_at,updated_at,blocked_on_job_ids) "
+            "VALUES ('TASK-s2','blocked','legacy','2026-01-01T00:00:00Z',"
+            "'2026-01-01T00:00:00Z','[\"JOB-s2\"]')"
+        )
+        conn.execute(
+            "INSERT INTO jobs(id,task_id,agent_name,title,rationale,script_text,"
+            "interpreter,status,reason,created_at) VALUES "
+            "('JOB-s2','TASK-s2','dev_agent','legacy','why','true','bash',"
+            "'failed','daemon_crash','2026-01-01T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES "
+            "('config:working_hours','founder','legacy','{}','2026-01-01T00:00:00Z')"
+        )
+        conn.commit()
+    before_schema, before_rows = _complete_snapshot(path)
+
+    Database(path).close()
+    Database(path).close()
+    Database(path).close()
+
+    after_schema, after_rows = _complete_snapshot(path)
+    added = {
+        "remote_runner_enrollment_challenges",
+        "remote_enrollment_challenge_expiry",
+    }
+    def unrelated(schema: list[tuple]) -> list[tuple]:
+        return [
+            row for row in schema
+            if row[1] not in added | {"remote_runners"}
+            and row[2] not in {"remote_runners", "remote_runner_enrollment_challenges"}
+        ]
+    assert unrelated(after_schema) == unrelated(before_schema)
+    for table, rows in before_rows.items():
+        if table not in {"remote_runners", "remote_runner_schema_migrations"}:
+            assert after_rows[table] == rows
+    with sqlite3.connect(path) as conn:
+        assert conn.execute(
+            "SELECT name,stage FROM remote_runner_schema_migrations WHERE name=?",
+            (IDENTITY_MIGRATION_NAME,),
+        ).fetchall() == [(IDENTITY_MIGRATION_NAME, COMPLETE_STAGE)]
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name=?", (IDENTITY_TEMP_PARENT,)
+        ).fetchone() is None
+        assert conn.execute(
+            "SELECT blocked_on_job_ids FROM tasks WHERE id='TASK-s2'"
+        ).fetchone() == ('["JOB-s2"]',)
+        assert conn.execute(
+            "SELECT task_id FROM audit_log WHERE action='legacy'"
+        ).fetchone() == ("config:working_hours",)
+
+
+@pytest.mark.parametrize(
+    "stop_point",
+    [point for stage in IDENTITY_STAGES for point in (f"before:{stage}", stage)],
+)
+def test_identity_interruption_before_and_after_every_stage_converges_twice(
+    tmp_path: Path, stop_point: str,
+) -> None:
+    path = tmp_path / f"identity-{stop_point.replace(':', '-')}.db"
+
+    class InterruptedDatabase(Database):
+        def _remote_identity_schema_stage_hook(self, point: str) -> None:
+            if point == stop_point:
+                raise RuntimeError(f"stop at {point}")
+
+    with pytest.raises(RuntimeError, match="stop at"):
+        InterruptedDatabase(path)
+    Database(path).close()
+    Database(path).close()
+    with sqlite3.connect(path) as conn:
+        assert conn.execute(
+            "SELECT stage FROM remote_runner_schema_migrations WHERE name=?",
+            (IDENTITY_MIGRATION_NAME,),
+        ).fetchone() == (COMPLETE_STAGE,)
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name=?", (IDENTITY_TEMP_PARENT,)
+        ).fetchone() is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "name", "replacement"),
+    [
+        (
+            "table", "remote_runners",
+            TABLE_SQL["remote_runners"].replace(
+                "cert_expires_at TEXT NOT NULL", "cert_expires_at TEXT"
+            ),
+        ),
+        (
+            "table", "remote_runner_enrollment_challenges",
+            TABLE_SQL["remote_runner_enrollment_challenges"].replace(
+                "UNIQUE(token_fingerprint)", "UNIQUE(token_fingerprint, org_slug)"
+            ),
+        ),
+        (
+            "table", "remote_runner_enrollment_challenges",
+            TABLE_SQL["remote_runner_enrollment_challenges"].replace(
+                "FOREIGN KEY(runner_id) REFERENCES remote_runners(id)",
+                "FOREIGN KEY(runner_id) REFERENCES remote_runners(display_name)",
+            ),
+        ),
+        (
+            "index", "remote_enrollment_challenge_expiry",
+            INDEX_SQL["remote_enrollment_challenge_expiry"].replace(
+                "org_slug, expires_at", "expires_at, org_slug"
+            ),
+        ),
+        (
+            "index", "remote_enrollment_challenge_expiry",
+            INDEX_SQL["remote_enrollment_challenge_expiry"].replace(
+                "consumed_at IS NULL AND revoked_at IS NULL",
+                "consumed_at IS NULL OR revoked_at IS NULL",
+            ),
+        ),
+    ],
+)
+def test_identity_exact_shape_drift_refuses_before_any_mutation(
+    tmp_path: Path, kind: str, name: str, replacement: str,
+) -> None:
+    path = tmp_path / f"identity-drift-{kind}-{name}.db"
+    Database(path).close()
+    with sqlite3.connect(path) as conn:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute(f"DROP {kind.upper()} {name}")
+        conn.execute(replacement)
+        conn.commit()
+    before = _complete_snapshot(path)
+    for _ in range(2):
+        with pytest.raises(sqlite3.DatabaseError, match="conflicting remote-job"):
+            Database(path)
+        assert _complete_snapshot(path) == before
+
+
+@pytest.mark.parametrize("table", [
+    "remote_runners", "remote_runner_workspaces", "remote_job_attempts",
+    "remote_phase_receipts", "remote_pre_run_observations", "remote_protocol_frames",
+])
+def test_untouched_s2_with_any_runner_graph_row_refuses_without_mutation(
+    tmp_path: Path, table: str,
+) -> None:
+    path = tmp_path / f"nonempty-{table}.db"
+    _downgrade_to_exact_untouched_s2(path)
+    with sqlite3.connect(path) as conn:
+        _insert_runner_s2(conn, "RUNNER-x")
+        if table != "remote_runners":
+            _insert_workspace(conn, "RWS-x", "RUNNER-x")
+        if table in {
+            "remote_job_attempts", "remote_phase_receipts",
+            "remote_pre_run_observations", "remote_protocol_frames",
+        }:
+            conn.execute(
+                "INSERT INTO jobs(id,task_id,agent_name,title,rationale,script_text,"
+                "interpreter,created_at) VALUES "
+                "('JOB-x','TASK-x','dev_agent','x','x','true','bash','2026-01-01Z')"
+            )
+            _insert_attempt(conn, "RATT-x", "JOB-x", "RUNNER-x", "RWS-x")
+        if table in {"remote_phase_receipts", "remote_pre_run_observations"}:
+            conn.execute(
+                "INSERT INTO remote_phase_receipts "
+                "(id,attempt_id,phase,ordinal,outcome,receipt_json,receipt_digest,accepted_frame_seq) "
+                "VALUES ('RPR-x','RATT-x','workspace_observation',1,'succeeded','{}','digest',1)"
+            )
+        if table == "remote_pre_run_observations":
+            conn.execute(
+                "INSERT INTO remote_pre_run_observations VALUES "
+                "('RPO-x','RATT-x','RPR-x','RUNNER-x',1,'RWS-x',1,'pre',1,'policy',"
+                "'[]','[]','{}','observation',1,1,'2026-01-01Z')"
+            )
+        if table == "remote_protocol_frames":
+            conn.execute(
+                "INSERT INTO remote_protocol_frames VALUES "
+                "('RATT-x','connection',1,'terminal','digest','accepted','2026-01-01Z')"
+            )
+        conn.commit()
+    before = _complete_snapshot(path)
+    with pytest.raises(sqlite3.DatabaseError, match="not empty"):
+        Database(path)
+    assert _complete_snapshot(path) == before
+
+
+def test_enrollment_challenge_exact_checks_uniques_and_foreign_keys(tmp_path: Path) -> None:
+    db = Database(tmp_path / "challenge-ddl.db")
+    _insert_runner(db._conn, "RUNNER-1")
+    base = (
+        "RENC-1", "sample", "token-1", "nonce-1", "runner", "{}", "att",
+        "initial", None, 1, "2026-01-02Z", "2026-01-01Z", None, None,
+        None, None, None, None, None, None,
+    )
+    db._conn.execute(
+        "INSERT INTO remote_runner_enrollment_challenges VALUES (" + ",".join("?" * 20) + ")",
+        base,
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        db._conn.execute(
+            "INSERT INTO remote_runner_enrollment_challenges VALUES (" + ",".join("?" * 20) + ")",
+            ("RENC-2", *base[1:2], "token-1", *base[3:]),
+        )
+    db._conn.rollback()
+    with pytest.raises(sqlite3.IntegrityError):
+        db._conn.execute(
+            "INSERT INTO remote_runner_enrollment_challenges VALUES (" + ",".join("?" * 20) + ")",
+            ("RENC-bad", "sample", "token-bad", "nonce-bad", "runner", "{}", "att",
+             "generation_rotation", "RUNNER-1", 1, "2026-01-02Z", "2026-01-01Z",
+             None, None, None, None, None, None, None, None),
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("unknown_stage", "conflicting identity/enrollment migration stage"),
+        ("missing_challenge", "challenge object-stage mismatch"),
+        ("premature_challenge", "challenge object-stage mismatch"),
+        ("temporary_parent", "reserved identity/enrollment temporary parent exists"),
+    ],
+)
+def test_marker_object_mismatch_and_temporary_residue_refuse_before_mutation(
+    tmp_path: Path, mutation: str, message: str,
+) -> None:
+    path = tmp_path / f"marker-{mutation}.db"
+    Database(path).close()
+    with sqlite3.connect(path) as conn:
+        if mutation == "unknown_stage":
+            conn.execute(
+                "UPDATE remote_runner_schema_migrations SET stage='unknown' WHERE name=?",
+                (IDENTITY_MIGRATION_NAME,),
+            )
+        elif mutation == "missing_challenge":
+            conn.execute("DROP INDEX remote_enrollment_challenge_expiry")
+            conn.execute("DROP TABLE remote_runner_enrollment_challenges")
+        elif mutation == "premature_challenge":
+            conn.execute(
+                "UPDATE remote_runner_schema_migrations "
+                "SET stage='rebuild_remote_runners_with_cert_expiry' WHERE name=?",
+                (IDENTITY_MIGRATION_NAME,),
+            )
+        else:
+            conn.execute(
+                TABLE_SQL["remote_runners"].replace(
+                    "CREATE TABLE remote_runners",
+                    f"CREATE TABLE {IDENTITY_TEMP_PARENT}",
+                    1,
+                )
+            )
+        conn.commit()
+    before = _complete_snapshot(path)
+    with pytest.raises(sqlite3.DatabaseError, match=message):
+        Database(path)
+    assert _complete_snapshot(path) == before
