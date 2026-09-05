@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 CONTRACT_ID = "engineering-manager-self-evaluation-readiness"
 CONTRACT_VERSION = "s7-v2"
 PROOF_VERSION = 1
+PINNED_ARTIFACT_DIGEST = "a23e1f25e0b16f08429a5708d2a481cf79593fff4ace6104c34d1ff4a572e167"
 NEGATIVE_CONTROLS = (
     "absent", "malformed", "extra_field", "stale", "mismatched", "replay",
     "ambiguous", "low_confidence", "cancellation", "budget",
@@ -49,7 +51,7 @@ def verify_readiness_artifact(artifact: object, *, source_root: Path) -> dict[st
     required = {
         "proof_version", "contract_id", "contract_version", "contract_digest",
         "shipping_sources", "positive_observation", "negative_observations",
-        "artifact_digest",
+        "evidence_run", "artifact_digest",
     }
     if set(artifact) != required:
         return _closed("readiness proof malformed")
@@ -58,6 +60,8 @@ def verify_readiness_artifact(artifact: object, *, source_root: Path) -> dict[st
         _canonical(unsigned)
     ).hexdigest() != artifact["artifact_digest"]:
         return _closed("readiness proof digest mismatch")
+    if artifact["artifact_digest"] != PINNED_ARTIFACT_DIGEST:
+        return _closed("readiness proof is not the release-pinned artifact")
     if (artifact["proof_version"], artifact["contract_id"], artifact["contract_version"],
             artifact["contract_digest"]) != (
                 PROOF_VERSION, CONTRACT_ID, CONTRACT_VERSION, CONTRACT_DIGEST):
@@ -72,12 +76,34 @@ def verify_readiness_artifact(artifact: object, *, source_root: Path) -> dict[st
             return _closed("readiness proof source unavailable")
         if sources.get(relative) != observed:
             return _closed("readiness proof stale for shipping implementation")
+    run = artifact["evidence_run"]
+    if not isinstance(run, dict) or set(run) != {
+        "run_id", "producer", "observed_at", "source_tree_digest",
+    }:
+        return _closed("readiness proof provenance malformed")
+    try:
+        observed_at = datetime.fromisoformat(run["observed_at"].replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError):
+        return _closed("readiness proof provenance malformed")
+    if observed_at.tzinfo is None or datetime.now(timezone.utc) - observed_at > timedelta(days=30):
+        return _closed("readiness proof stale")
+    source_tree_digest = hashlib.sha256("".join(
+        sources[name] for name in _SOURCE_FILES
+    ).encode()).hexdigest()
+    if (
+        not isinstance(run["run_id"], str) or not run["run_id"]
+        or run["producer"] != "tests.test_orchestrator:real-launch-hook-observation"
+        or run["source_tree_digest"] != source_tree_digest
+    ):
+        return _closed("readiness proof provenance mismatch")
     positive = artifact["positive_observation"]
     positive_keys = {
         "release_id", "activation_id", "policy_version", "policy_digest",
         "contract_id", "contract_version", "contract_digest", "provider_id",
         "executor_kind", "model_id", "evaluation_count", "strict_parseable",
         "receipts_complete", "disposition",
+        "run_id", "task_id", "session_id", "result_id", "candidate_id",
+        "observation_digest",
     }
     if not isinstance(positive, dict) or set(positive) != positive_keys:
         return _closed("readiness proof positive observation malformed")
@@ -93,6 +119,12 @@ def verify_readiness_artifact(artifact: object, *, source_root: Path) -> dict[st
         or positive["strict_parseable"] is not True
         or positive["receipts_complete"] is not True
         or positive["disposition"] != "continue_same_root"
+        or positive["run_id"] != run["run_id"]
+        or not all(isinstance(positive[key], str) and positive[key] for key in (
+            "task_id", "session_id", "result_id", "candidate_id"))
+        or positive["observation_digest"] != hashlib.sha256(_canonical({
+            key: value for key, value in positive.items() if key != "observation_digest"
+        })).hexdigest()
     ):
         return _closed("readiness proof positive observation incomplete")
     negatives = artifact["negative_observations"]
@@ -100,9 +132,15 @@ def verify_readiness_artifact(artifact: object, *, source_root: Path) -> dict[st
         return _closed("readiness proof negative observations incomplete")
     observed_names: list[str] = []
     for item in negatives:
-        if (not isinstance(item, dict) or set(item) != {"case", "observed_disposition"}
+        if (not isinstance(item, dict) or set(item) != {
+                "case", "observed_disposition", "run_id", "input_digest", "result_digest"}
                 or item.get("observed_disposition") != "must_escalate"
-                or not isinstance(item.get("case"), str)):
+                or not isinstance(item.get("case"), str)
+                or item.get("run_id") != run["run_id"]
+                or item.get("input_digest") != hashlib.sha256(
+                    f"{run['run_id']}:{item.get('case')}:input".encode()).hexdigest()
+                or item.get("result_digest") != hashlib.sha256(
+                    f"{run['run_id']}:{item.get('case')}:must_escalate".encode()).hexdigest()):
             return _closed("readiness proof negative observation malformed")
         observed_names.append(item["case"])
     if tuple(observed_names) != NEGATIVE_CONTROLS or len(set(observed_names)) != len(observed_names):

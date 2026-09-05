@@ -26,6 +26,9 @@ from runtime.orchestrator.active_authority_policy import (
 from runtime.models import AuthorityPolicyRelease
 from runtime.orchestrator.authority_policy import (
     CONTINUE_ROUTINE_PHRASE,
+    PROMPT_DIGEST,
+    PROMPT_ID,
+    PROMPT_VERSION,
     POLICY_BY_TEAM,
 )
 
@@ -281,6 +284,16 @@ def _outcome_receipts_complete(org: OrgDep, row: dict) -> tuple[bool, str | None
     if len(bindings) != 1 or len(hooks) != 1:
         return False, thread_id
     binding = bindings[0].get("payload") or {}
+    expected_model_id = (
+        f"manager/{binding.get('provider_id')}/{binding.get('executor_kind')}/"
+        f"{binding.get('model_id')}"
+    )
+    expected_model_version = SELF_EVALUATION_CONTRACT_VERSION
+    expected_model_digest = hashlib.sha256(
+        f"{expected_model_id}:{expected_model_version}:"
+        f"{SELF_EVALUATION_CONTRACT_DIGEST}".encode()
+    ).hexdigest()
+    hook = hooks[0].get("payload") or {}
     if not (
         binding.get("mode") == "db_release"
         and binding.get("release_id") == row["release_id"]
@@ -289,12 +302,30 @@ def _outcome_receipts_complete(org: OrgDep, row: dict) -> tuple[bool, str | None
         and binding.get("policy_digest") == row["policy_digest"]
         and binding.get("provider_id") == row["provider_id"]
         and binding.get("executor_kind") == row["executor_kind"]
-        and binding.get("model_id") == row["model_id"]
+        and row["prompt_id"] == PROMPT_ID
+        and row["prompt_version"] == PROMPT_VERSION
+        and row["prompt_digest"] == PROMPT_DIGEST
+        and row["model_id"] == expected_model_id
+        and row["model_version"] == expected_model_version
+        and row["model_digest"] == expected_model_digest
         and binding.get("self_evaluation_contract_id") == SELF_EVALUATION_CONTRACT_ID
         and binding.get("self_evaluation_contract_version") == SELF_EVALUATION_CONTRACT_VERSION
         and binding.get("self_evaluation_contract_digest") == SELF_EVALUATION_CONTRACT_DIGEST
         and hooks[0]["agent"] == row["manager_agent"]
-        and (hooks[0].get("payload") or {}).get("outcome") == "continued_same_root"
+        and hook.get("outcome") == "continued_same_root"
+        and hook.get("candidate_id") == candidate_id
+        and hook.get("causal_event_id") == row["causal_event_id"]
+        and hook.get("causal_event_digest") == row["causal_event_digest"]
+        and str(hook.get("causal_result_id")) == result_id
+        and hook.get("policy_id") == row["policy_id"]
+        and str(hook.get("policy_version")) == row["policy_version"]
+        and hook.get("policy_digest") == row["policy_digest"]
+        and hook.get("prompt_id") == row["prompt_id"]
+        and hook.get("prompt_version") == row["prompt_version"]
+        and hook.get("prompt_digest") == row["prompt_digest"]
+        and hook.get("model_id") == row["model_id"]
+        and hook.get("model_version") == row["model_version"]
+        and hook.get("model_digest") == row["model_digest"]
         and [event.event_type.value for event in authority_events] == [
             "candidate_claimed", "evaluation_recorded", "candidate_consumed"]
     ):

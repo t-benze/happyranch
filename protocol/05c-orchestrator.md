@@ -392,12 +392,15 @@ production activation are distinct gates.
 
 The readiness result is not derived from the corpus declaration. A checked-in
 proof artifact records the observed positive launch/completion path and every
-individual negative result, carries its own deterministic seal, and pins the
+individual negative result with run/observation receipts, carries its own
+deterministic seal plus a separate exact release-controlled digest pin, and pins the
 exact shipping launch/consumer source digests plus evaluator contract and test
 release/activation/version/digest. Runtime verification rejects absent,
 malformed, extra, stale-source, version/digest-mismatched, duplicate,
 incomplete, ambiguous, or less-than-14/14 evidence before activation lookup or
-mutation. Landing the artifact is not deployment, verification by a deployed
+mutation. The pin is release provenance within the existing shared-local trust
+boundary, not cryptographic signer authentication; recomputing the public seal
+alone cannot make a different artifact admissible. Landing the artifact is not deployment, verification by a deployed
 binary is not production activation, and activation remains a separate
 authorized operator act.
 

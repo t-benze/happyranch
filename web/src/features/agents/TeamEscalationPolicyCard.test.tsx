@@ -160,6 +160,22 @@ describe('TeamEscalationPolicyCard', () => {
     expect(screen.getByRole('button', { name: 'Load more policy history' })).toBeDisabled();
   });
 
+  it('preserves each stream and retries its failed cursor independently', async () => {
+    query.data = active;
+    history.data.pages = [{ items: [{ release_id: 'APR-2', policy_id: 'p', version: 2, policy_digest: '2'.repeat(64), release_created_at: 'x', actor_attribution: 'shared local operator credential', activation: null }], next_cursor: 1 }];
+    outcomes.data.pages = [{ items: [{ candidate_id: 'AUTH-2', disposition: 'continue_same_root', disposition_code: 'continue_same_root', root_task_id: 'TASK-2', manager_session_id: 'sess-2', release_id: 'APR-2', receipt_state: 'complete' }], next_cursor: 1 }];
+    history.hasNextPage = true; outcomes.hasNextPage = true;
+    history.isError = true; outcomes.isError = true;
+    render(<TeamEscalationPolicyCard agent={agent} />);
+    expect(screen.getByText(/v2 · APR-2/)).toBeInTheDocument();
+    expect(screen.getByText(/task TASK-2/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry loading policy history' }));
+    expect(history.fetchNextPage).toHaveBeenCalledOnce();
+    expect(outcomes.fetchNextPage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry loading evaluation outcomes' }));
+    expect(outcomes.fetchNextPage).toHaveBeenCalledOnce();
+  });
+
   it.each([
     [new ApiError(422, 'invalid_policy', {}), /server rejected this policy contract/i],
     [new ApiError(500, 'internal_error', {}), /policy could not be saved/i],

@@ -17,6 +17,9 @@ from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from runtime.orchestrator.authority_policy import (
     CONTINUE_ROUTINE_PHRASE,
     ENGINEERING_PRE_ESCALATION_POLICY,
+    PROMPT_DIGEST,
+    PROMPT_ID,
+    PROMPT_VERSION,
 )
 
 
@@ -73,6 +76,11 @@ def _seed_complete_outcome(org):
     result = org.db.get_latest_task_result("TASK-proof", "engineering_manager", "sess-proof")
     result_id = str(result["id"])
     causal_digest = hashlib.sha256(f"task-result:{result_id}".encode()).hexdigest()
+    model_id = "manager/claude/claude/default"
+    model_version = SELF_EVALUATION_CONTRACT_VERSION
+    model_digest = hashlib.sha256(
+        f"{model_id}:{model_version}:{SELF_EVALUATION_CONTRACT_DIGEST}".encode()
+    ).hexdigest()
     candidate, _ = org.db.claim_authority_candidate_with_policy_pin(
         release_id=release.id, activation_id=activation.id,
         activation_epoch=activation.epoch, provider_id="claude", executor_kind="claude",
@@ -80,9 +88,9 @@ def _seed_complete_outcome(org):
         manager_session_id="sess-proof", causal_event_id=f"result:{result_id}",
         causal_event_digest=causal_digest, causal_result_id=result_id,
         policy_id=release.policy_id, policy_version=str(release.version),
-        policy_digest=release.policy_digest, prompt_id="manager-authority-self-evaluation",
-        prompt_version="v1", prompt_digest=SELF_EVALUATION_CONTRACT_DIGEST,
-        model_id="default", model_version="1", model_digest="b" * 64,
+        policy_digest=release.policy_digest, prompt_id=PROMPT_ID,
+        prompt_version=PROMPT_VERSION, prompt_digest=PROMPT_DIGEST,
+        model_id=model_id, model_version=model_version, model_digest=model_digest,
         snapshot_digest="c" * 64,
     )
     org.db.record_authority_audit(candidate_id=candidate.id, event_type="candidate_claimed")
@@ -105,6 +113,12 @@ def _seed_complete_outcome(org):
     ))
     org.db.insert_audit_log("TASK-proof", "engineering_manager", "authority_hook", {
         "candidate_id": candidate.id, "outcome": "continued_same_root",
+        "causal_event_id": f"result:{result_id}", "causal_event_digest": causal_digest,
+        "causal_result_id": result_id, "policy_id": release.policy_id,
+        "policy_version": str(release.version), "policy_digest": release.policy_digest,
+        "prompt_id": PROMPT_ID, "prompt_version": PROMPT_VERSION,
+        "prompt_digest": PROMPT_DIGEST, "model_id": model_id,
+        "model_version": model_version, "model_digest": model_digest,
     })
     return candidate.id
 
@@ -491,7 +505,8 @@ def test_outcome_projection_authenticates_complete_causal_join(client_with_runti
 @pytest.mark.parametrize("corruption", [
     "task", "result", "session", "release", "activation", "candidate",
     "evaluation", "authority_audit", "terminal_hook", "thread", "envelope",
-    "contract", "provider", "executor", "model",
+    "contract", "provider", "executor", "model", "prompt_version",
+    "prompt_digest", "model_version", "model_digest", "hook_prompt",
 ])
 def test_outcome_projection_marks_each_independent_join_corruption_incomplete(
     client_with_runtime, corruption,
@@ -527,7 +542,7 @@ def test_outcome_projection_marks_each_independent_join_corruption_incomplete(
     elif corruption == "envelope":
         org.db.execute("DROP TRIGGER authority_continue_envelopes_no_delete")
         org.db.execute("DELETE FROM authority_continue_envelopes WHERE candidate_id=?", (candidate_id,))
-    else:
+    elif corruption in {"contract", "provider", "executor", "model"}:
         rows = [row for row in org.db.get_audit_logs("TASK-proof")
                 if row["action"] == SESSION_POLICY_BINDING_ACTION]
         payload = rows[0]["payload"]
@@ -535,6 +550,15 @@ def test_outcome_projection_marks_each_independent_join_corruption_incomplete(
                "executor": "executor_kind", "model": "model_id"}[corruption]
         payload[key] = "corrupt"
         org.db.execute("UPDATE audit_log SET payload=? WHERE id=?", (json.dumps(payload), rows[0]["id"]))
+    elif corruption in {"prompt_version", "prompt_digest", "model_version", "model_digest"}:
+        org.db.execute("DROP TRIGGER authority_candidates_identity_immutable")
+        key = corruption
+        org.db.execute(f"UPDATE authority_candidates SET {key}='corrupt' WHERE id=?", (candidate_id,))
+    else:
+        hooks = [row for row in org.db.get_audit_logs("TASK-proof") if row["action"] == "authority_hook"]
+        payload = hooks[0]["payload"]
+        payload["prompt_digest"] = "corrupt"
+        org.db.execute("UPDATE audit_log SET payload=? WHERE id=?", (json.dumps(payload), hooks[0]["id"]))
     response = client.get(
         "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy/outcomes"
     )
