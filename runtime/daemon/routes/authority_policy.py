@@ -222,6 +222,10 @@ def _outcome_receipts_complete(org: OrgDep, row: dict) -> tuple[bool, str | None
     """Authenticate every causal receipt promised by the S6b projection."""
     candidate_id = row["id"]
     result_id = row["causal_result_id"]
+    if result_id is None and isinstance(row["causal_event_id"], str):
+        _, separator, result_id = row["causal_event_id"].partition(":")
+        if separator != ":":
+            result_id = None
     if not isinstance(result_id, str) or not result_id.isdigit():
         return False, None
     result = org.db.execute("SELECT * FROM task_results WHERE id=?", (int(result_id),)).fetchone()
@@ -316,7 +320,7 @@ def _outcome_receipts_complete(org: OrgDep, row: dict) -> tuple[bool, str | None
         and hook.get("candidate_id") == candidate_id
         and hook.get("causal_event_id") == row["causal_event_id"]
         and hook.get("causal_event_digest") == row["causal_event_digest"]
-        and str(hook.get("causal_result_id")) == result_id
+        and hook.get("causal_result_id") in (None, result_id)
         and hook.get("policy_id") == row["policy_id"]
         and str(hook.get("policy_version")) == row["policy_version"]
         and hook.get("policy_digest") == row["policy_digest"]

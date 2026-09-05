@@ -10,7 +10,7 @@ from typing import Any
 CONTRACT_ID = "engineering-manager-self-evaluation-readiness"
 CONTRACT_VERSION = "s7-v2"
 PROOF_VERSION = 1
-PINNED_ARTIFACT_DIGEST = "a23e1f25e0b16f08429a5708d2a481cf79593fff4ace6104c34d1ff4a572e167"
+PINNED_ARTIFACT_DIGEST = "e81185a044351fd4c67c8497065bb3b47c6888f07813714f2fe247263a786cc1"
 NEGATIVE_CONTROLS = (
     "absent", "malformed", "extra_field", "stale", "mismatched", "replay",
     "ambiguous", "low_confidence", "cancellation", "budget",

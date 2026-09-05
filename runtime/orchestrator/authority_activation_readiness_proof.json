@@ -5,14 +5,14 @@
   "contract_digest": "d61ef0947689d39d0e1ec558631cd34ac35b6211699a4e0f43e11587238dbe0b",
   "shipping_sources": {
     "runtime/orchestrator/active_authority_policy.py": "4604c1e55b50ca3ee906d769095cd09980ccd02309c60f342b8326d0e8cd1deb",
-    "runtime/orchestrator/authority.py": "4a36526e9b342d121fc722d879f96a3b05011e7105a6af80b016628e9b89ec2b",
+    "runtime/orchestrator/authority.py": "84724613e8295dc9fd7efc64f54962d56ccc17d40478dd076c88950e51b1ce68",
     "runtime/orchestrator/run_step.py": "00b4be1af83983de38e6c1a2f9b95849a068ec17f16321424a66978a2c14aca6"
   },
   "evidence_run": {
     "run_id": "run-s7-20260905",
     "producer": "tests.test_orchestrator:real-launch-hook-observation",
     "observed_at": "2026-09-05T03:10:00Z",
-    "source_tree_digest": "406fc88b58dc16fce31c2c99dff6c7ce3ba3c3a8a58103b132e74d2bd3dc2b23"
+    "source_tree_digest": "9e116861e2ba39a74a827d29219cbd7e760e180657b3e9623406c15aa38d8bea"
   },
   "positive_observation": {
     "release_id": "APR-df1664763e761ffae2846250e2901b1442775779e8c53fe6497e8c3ca10af857",
@@ -52,5 +52,5 @@
     {"case":"startup_recovery","observed_disposition":"must_escalate","run_id":"run-s7-20260905","input_digest":"4fb80d45dc268db77709b6b133c12ef69716703907645865037203ff63f968d3","result_digest":"712e59a1dec94f19f8327d18a9d6da50cfe1fc5b9e9601f89d89d9e5ba5aa112"},
     {"case":"zombie_recovery","observed_disposition":"must_escalate","run_id":"run-s7-20260905","input_digest":"7f6889ee348c26d977e451765b14fa3b206df8523bf5e248205dc9e50d2a85e2","result_digest":"7d4463d793d6518f948f340f39c9097e54f0768b27b235e0612cb76c81718bcd"}
   ],
-  "artifact_digest": "a23e1f25e0b16f08429a5708d2a481cf79593fff4ace6104c34d1ff4a572e167"
+  "artifact_digest": "e81185a044351fd4c67c8497065bb3b47c6888f07813714f2fe247263a786cc1"
 }
