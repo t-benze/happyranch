@@ -251,6 +251,21 @@ def test_real_systemd_denial_matrix_executes_every_bounded_probe() -> None:
         assert sandbox_property in harness
 
 
+def test_real_systemd_arm_cleanup_is_idempotent_but_still_verifies_residue() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    cleanup = harness.split("arm_cleanup() {", 1)[1].split("\n}\narm_reset()", 1)[0]
+    assert "systemctl stop" in cleanup
+    assert "systemctl disable" in cleanup
+    assert "systemctl reset-failed" in cleanup
+    assert "systemctl stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || cleanup_complete=1" not in cleanup
+    assert "systemctl disable happyranch-managed.target || cleanup_complete=1" not in cleanup
+    assert "systemctl reset-failed happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || cleanup_complete=1" not in cleanup
+    assert "MainPID --value" in cleanup
+    assert "! port_open 18443" in cleanup
+    assert "! tsnet_open" in cleanup
+    assert "acceptance arm cleanup incomplete" in cleanup
+
+
 def test_composite_service_manager_executes_start_ready_stop_crash_restart() -> None:
     events: list[tuple[str, ...]] = []
     active = {"happyranch-connector.service": False, "happyranch-tsnet-sidecar.service": False}

@@ -271,9 +271,12 @@ PY
 }
 arm_cleanup() {
   local cleanup_complete=0
-  sudo systemctl stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || cleanup_complete=1
-  sudo systemctl disable happyranch-managed.target || cleanup_complete=1
-  sudo systemctl reset-failed happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || cleanup_complete=1
+  # These requests are deliberately idempotent: the pre-arm reset also runs
+  # after a prior cleanup has removed the units.  The explicit process, port,
+  # fixture, credential, transaction, and path checks below decide success.
+  sudo systemctl stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || true
+  sudo systemctl disable happyranch-managed.target || true
+  sudo systemctl reset-failed happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || true
   sudo rm -rf /etc/systemd/system/happyranch-tsnet-sidecar.service.d
   sudo rm -f /etc/systemd/system/happyranch-managed.target /etc/systemd/system/happyranch-tsnet-sidecar.service /etc/systemd/system/happyranch-connector.service
   sudo systemctl daemon-reload || cleanup_complete=1
