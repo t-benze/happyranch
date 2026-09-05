@@ -87,8 +87,10 @@ Detailed contracts: `protocol/05b-agent-runtime.md` § "Canonical skill store + 
   `TASK_FOLLOWUP` owned by the dispatching team manager may transactionally
   create one true replacement root for its causal thread-dispatched root. The
   budget is persisted per lineage, never prompt-derived or per-turn; the
-  replacement root and every descendant/revisit/chain/fanout/successor
-  followup are permanently fenced. Ordinary reply/bootstrap dispatch is
+  replacement root and every supported descendant/revisit/chain/fanout
+  followup are permanently fenced. Manager supersession is a separate path
+  that rejects thread-originated roots and is not a THR-225 lineage shape.
+  Ordinary reply/bootstrap dispatch is
   unchanged; queue notification occurs only after the atomic task + invocation
   marker + system-message + audit commit. No task column changes meaning.
 - **THR-207 capacity:** restart-required daemon defaults are 6 task workers and a healthy enforcement-capable global admission cap of 13 (6 task + 4 thread + dream + wake + schedule); macOS/no-enforcement remains conservatively capped at 4. The paired rollback is 4/11 plus restart.

@@ -457,9 +457,11 @@ lock, open thread, causal root, and unspent budget, then creates a true root
 (`parent_task_id IS NULL`) with its thread link, invocation marker, system
 message, and audits. Queue notification is post-commit.
 
-The replacement root and all persisted descendants, retry/revisit ancestry,
-chain/fanout legs, supersession/recovery successors, and terminal followups are
-forever ineligible. Replay/concurrent losers return
+The replacement root and all supported persisted descendants, retry/revisit
+ancestry, chain/fanout legs, and terminal followups are forever ineligible.
+Manager supersession is a separate product path that rejects every
+thread-originated root, so it cannot create a successor of a THR-225
+replacement and is not part of this acceptance matrix. Replay/concurrent losers return
 `task_followup_dispatch_already_used` without mutation. Malformed/noncausal or
 stale tokens fail closed; archive/cancellation ordering is decided by the final
 transactional revalidation. No migration/backfill or column reinterpretation is

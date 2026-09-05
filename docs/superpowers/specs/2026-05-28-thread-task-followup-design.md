@@ -201,8 +201,9 @@ A re-invoked manager may dispatch one corrected replacement root, but the
 budget belongs to the persisted causal lineage, not to each turn. The
 replacement root is marked by
 `thread_task_followup_replacement_dispatched`; its descendants, revisit/retry
-family, chain/fanout legs, supersession/recovery successors, and terminal
-followups are permanently ineligible. Replays and concurrent attempts reject
+family, chain/fanout legs, and terminal followups are permanently ineligible.
+Manager supersession independently rejects thread-originated roots and cannot
+produce a successor of this replacement; it is outside THR-225. Replays and concurrent attempts reject
 with `task_followup_dispatch_already_used` without residue. Thus recursion
 depth is structurally bounded at one replacement.
 
