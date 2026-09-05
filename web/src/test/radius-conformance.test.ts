@@ -28,6 +28,10 @@ type RadiusRow = {
   startPattern: string;
   endPattern: string;
 };
+type ProductionObservation = {
+  radius: RadiusClass;
+  sourceProvenance: string;
+};
 
 /**
  * Concrete component/region denominator from the verified founder HTML and
@@ -148,7 +152,7 @@ const RADIUS_CONTRACT: readonly RadiusRow[] = [
     id: "agent-chip",
     component: "AgentChip",
     region: "role indicator",
-    referenceSelector: ".tag .led",
+    referenceSelector: ".chip-agent",
     expected: "rounded-full",
     token: "--radius-pill",
     source: "patterns/AgentChip.tsx",
@@ -290,177 +294,35 @@ const RADIUS_CONTRACT: readonly RadiusRow[] = [
   },
 ] as const;
 
-const AUTHORITATIVE_ROWS = new Map<
-  string,
-  Pick<RadiusRow, "referenceSelector" | "expected" | "token">
->([
+/**
+ * Radius-bearing source lines in the approved files that are nested decoration,
+ * native controls, or other independently mapped components. They are inventory
+ * evidence, not visual failures and never enlarge the seq. 76 denominator.
+ */
+const NON_DENOMINATOR_SOURCE_LINES = new Map<string, readonly RegExp[]>([
+  ["primitives/Select.tsx", [/max-h-96.*rounded-md/, /w-full.*rounded-sm/]],
+  ["layouts/AppShell/Sidebar.tsx", [/h-6 w-6.*rounded-full/]],
+  ["patterns/StatusBadge.tsx", [/h-1\.5 w-1\.5.*rounded-full/]],
+  ["primitives/Tabs.tsx", [/data-\[state=active\].*rounded-md/]],
+  ["primitives/Dialog.tsx", [/absolute top-3 right-3 rounded/]],
   [
-    "button",
-    { referenceSelector: ".btn", expected: "rounded-sm", token: "--radius-sm" },
+    "patterns/MessageBubble.tsx",
+    [/mx-auto.*rounded-full/, /max-w-full.*rounded-md/],
+  ],
+  ["patterns/TypingBubble.tsx", [/h-2 w-2 rounded-full/]],
+  [
+    "patterns/Composer.tsx",
+    [/max-w-full.*rounded-md/, /h-9 w-9.*rounded-full/, /h-9 w-9.*rounded-lg/],
   ],
   [
-    "input",
-    { referenceSelector: ".inp", expected: "rounded-sm", token: "--radius-sm" },
-  ],
-  [
-    "textarea",
-    { referenceSelector: ".ta", expected: "rounded-sm", token: "--radius-sm" },
-  ],
-  [
-    "select-trigger",
-    {
-      referenceSelector: "select.inp",
-      expected: "rounded-sm",
-      token: "--radius-sm",
-    },
-  ],
-  [
-    "tooltip-content",
-    {
-      referenceSelector: ".tip::after",
-      expected: "rounded-sm",
-      token: "--radius-sm",
-    },
-  ],
-  [
-    "mention-textarea",
-    { referenceSelector: ".ta", expected: "rounded-sm", token: "--radius-sm" },
-  ],
-  [
-    "sidebar-footer-account",
-    {
-      referenceSelector: ".nav-item",
-      expected: "rounded-sm",
-      token: "--radius-sm",
-    },
-  ],
-  [
-    "sidebar-nav-disabled",
-    {
-      referenceSelector: ".nav-item",
-      expected: "rounded-sm",
-      token: "--radius-sm",
-    },
-  ],
-  [
-    "sidebar-nav-enabled",
-    {
-      referenceSelector: ".nav-item",
-      expected: "rounded-sm",
-      token: "--radius-sm",
-    },
-  ],
-  [
-    "status-badge",
-    {
-      referenceSelector: ".tag",
-      expected: "rounded-full",
-      token: "--radius-pill",
-    },
-  ],
-  [
-    "agent-chip",
-    {
-      referenceSelector: ".tag .led",
-      expected: "rounded-full",
-      token: "--radius-pill",
-    },
-  ],
-  [
-    "tabs-segmented-shell",
-    {
-      referenceSelector: ".seg",
-      expected: "rounded-full",
-      token: "--radius-pill",
-    },
-  ],
-  [
-    "tabs-segmented-trigger",
-    {
-      referenceSelector: ".seg button",
-      expected: "rounded-full",
-      token: "--radius-pill",
-    },
-  ],
-  [
-    "dialog-content",
-    {
-      referenceSelector: ".modal",
-      expected: "rounded-lg",
-      token: "--radius-lg",
-    },
-  ],
-  [
-    "dropdown-subcontent-shell",
-    {
-      referenceSelector: ".popover",
-      expected: "rounded-md",
-      token: "--radius",
-    },
-  ],
-  [
-    "dropdown-content-shell",
-    {
-      referenceSelector: ".popover",
-      expected: "rounded-md",
-      token: "--radius",
-    },
-  ],
-  [
-    "dropdown-subtrigger",
-    {
-      referenceSelector: ".popover .opt",
-      expected: "rounded-sm",
-      token: "--radius-sm",
-    },
-  ],
-  [
-    "dropdown-item",
-    {
-      referenceSelector: ".popover .opt",
-      expected: "rounded-sm",
-      token: "--radius-sm",
-    },
-  ],
-  [
-    "dropdown-checkbox-item",
-    {
-      referenceSelector: ".popover .opt",
-      expected: "rounded-sm",
-      token: "--radius-sm",
-    },
-  ],
-  [
-    "message-bubble",
-    {
-      referenceSelector: ".hr-bubble",
-      expected: "rounded-lg",
-      token: "--radius-lg",
-    },
-  ],
-  [
-    "typing-bubble",
-    {
-      referenceSelector: ".reply-bubble, .typing",
-      expected: "rounded-lg",
-      token: "--radius-lg",
-    },
-  ],
-  [
-    "composer",
-    {
-      referenceSelector: ".composer (seq. 61 local extension)",
-      expected: "rounded-lg",
-      token: "--radius-lg",
-    },
-  ],
-  [
-    "inbox-row",
-    {
-      referenceSelector: ".thread (seq. 61 interactive mapping)",
-      expected: "rounded-sm",
-      token: "--radius-sm",
-    },
+    "patterns/InboxRow.tsx",
+    [
+      /bg-accent-soft.*rounded-full/,
+      /w-0\.5 rounded-full/,
+      /h-2 w-2.*rounded-full/,
+      /items-center rounded-full/,
+      /h-1\.5 w-1\.5.*rounded-full/,
+    ],
   ],
 ]);
 /** Exact pre-correction debt. This map must strictly shrink. */
@@ -494,8 +356,10 @@ function readRadiusToken(property: RadiusToken): string {
   return alias ? readRadiusToken(alias as RadiusToken) : value;
 }
 
-function observedRadius(row: RadiusRow): RadiusClass {
-  const source = readFileSync(join(designSystemRoot, row.source), "utf8");
+function regionBounds(
+  row: RadiusRow,
+  source: string,
+): readonly [number, number] {
   const startMatch = new RegExp(row.startPattern).exec(source);
   if (!startMatch)
     throw new Error(`${row.id}: missing start anchor in ${row.source}`);
@@ -506,6 +370,11 @@ function observedRadius(row: RadiusRow): RadiusClass {
   if (!endMatch)
     throw new Error(`${row.id}: missing end anchor in ${row.source}`);
   const end = start + startMatch[0].length + endMatch.index;
+  return [start, end];
+}
+
+function observeRadiusInSource(row: RadiusRow, source: string): RadiusClass {
+  const [start, end] = regionBounds(row, source);
   const tokens =
     source.slice(start, end).match(/\brounded(?:-[a-z0-9[\].]+)?\b/g) ?? [];
   const unique = [...new Set(tokens)];
@@ -516,10 +385,81 @@ function observedRadius(row: RadiusRow): RadiusClass {
   return unique[0] as RadiusClass;
 }
 
+function withoutComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, (comment) => " ".repeat(comment.length))
+    .replace(/(^|\n)\s*\/\/[^\n]*/g, (comment) => " ".repeat(comment.length));
+}
+
+function discoverProductionObservations(
+  sourceOverrides: ReadonlyMap<string, string> = new Map(),
+): Map<string, ProductionObservation> {
+  const rowsBySource = new Map<string, RadiusRow[]>();
+  for (const row of RADIUS_CONTRACT) {
+    const rows = rowsBySource.get(row.source) ?? [];
+    rows.push(row);
+    rowsBySource.set(row.source, rows);
+  }
+  const observations = new Map<string, ProductionObservation>();
+  for (const [sourcePath, rows] of rowsBySource) {
+    const source =
+      sourceOverrides.get(sourcePath) ??
+      readFileSync(join(designSystemRoot, sourcePath), "utf8");
+    const searchable = withoutComments(source);
+    const bounds = rows.map((row) => ({
+      row,
+      bounds: regionBounds(row, source),
+    }));
+    for (const match of searchable.matchAll(
+      /\brounded(?:-[a-z0-9[\].]+)?\b/g,
+    )) {
+      const index = match.index;
+      const owners = bounds.filter(
+        ({ bounds: [start, end] }) => index >= start && index < end,
+      );
+      if (owners.length > 1)
+        throw new Error(
+          `${sourcePath}: ambiguous radius region at byte ${index}: ${owners.map(({ row }) => row.id).join(", ")}`,
+        );
+      if (owners.length === 1) continue;
+      const lineStart = source.lastIndexOf("\n", index) + 1;
+      const nextNewline = source.indexOf("\n", index);
+      const line = source.slice(
+        lineStart,
+        nextNewline < 0 ? source.length : nextNewline,
+      );
+      const excluded = (
+        NON_DENOMINATOR_SOURCE_LINES.get(sourcePath) ?? []
+      ).filter((pattern) => pattern.test(line));
+      if (excluded.length > 1)
+        throw new Error(
+          `${sourcePath}: ambiguous non-denominator radius at byte ${index}`,
+        );
+      if (excluded.length === 0) {
+        const lineNumber = source.slice(0, index).split("\n").length;
+        const identity = `unmapped:${sourcePath}:${lineNumber}`;
+        if (observations.has(identity))
+          throw new Error(`${identity}: duplicate discovered radius region`);
+        observations.set(identity, {
+          radius: match[0] as RadiusClass,
+          sourceProvenance: `${sourcePath}:${lineNumber}:${line.trim()}`,
+        });
+      }
+    }
+    for (const row of rows) {
+      observations.set(row.id, {
+        radius: observeRadiusInSource(row, source),
+        sourceProvenance: `${row.source} / ${row.startPattern} .. ${row.endPattern}`,
+      });
+    }
+  }
+  return observations;
+}
+
 function assertRadiusContract(
   rows: readonly RadiusRow[],
   baseline: ReadonlyMap<string, RadiusClass>,
-  observations: ReadonlyMap<string, RadiusClass>,
+  observations: ReadonlyMap<string, ProductionObservation>,
 ): void {
   const ids = rows.map(({ id }) => id);
   if (
@@ -529,23 +469,18 @@ function assertRadiusContract(
     throw new Error(
       `radius denominator must contain exactly ${EXPECTED_DENOMINATOR} unique rows`,
     );
-  if (
-    AUTHORITATIVE_ROWS.size !== ids.length ||
-    ids.some((id) => !AUTHORITATIVE_ROWS.has(id))
-  )
-    throw new Error("radius denominator has a missing or additional identity");
-  if ([...observations.keys()].some((id) => !ids.includes(id)))
-    throw new Error("production observation has no denominator row");
+  const unmapped = [...observations.keys()].filter((id) => !ids.includes(id));
+  if (unmapped.length)
+    throw new Error(
+      `production observation has no denominator row: ${unmapped.join(", ")}`,
+    );
   for (const row of rows) {
-    const authority = AUTHORITATIVE_ROWS.get(row.id);
-    if (!authority || authority.referenceSelector !== row.referenceSelector)
-      throw new Error(
-        `${row.id}: authoritative reference selector mapping changed`,
-      );
-    if (authority.expected !== row.expected || authority.token !== row.token)
-      throw new Error(`${row.id}: authoritative expected radius changed`);
-    const observed = observations.get(row.id);
-    if (!observed) throw new Error(`${row.id}: production observation missing`);
+    const observation = observations.get(row.id);
+    if (!observation)
+      throw new Error(`${row.id}: production observation missing`);
+    if (!observation.sourceProvenance.startsWith(`${row.source} / `))
+      throw new Error(`${row.id}: production source provenance changed`);
+    const observed = observation.radius;
     const frozen = baseline.get(row.id);
     if (observed === row.expected) {
       if (frozen)
@@ -564,9 +499,19 @@ function assertRadiusContract(
       throw new Error(`${id}: baseline entry has no denominator row`);
 }
 
-const productionObservations = new Map(
-  RADIUS_CONTRACT.map((row) => [row.id, observedRadius(row)]),
-);
+const productionObservations = new Map(discoverProductionObservations());
+
+function withObservedRadius(
+  observations: ReadonlyMap<string, ProductionObservation>,
+  id: string,
+  radius: RadiusClass,
+): Map<string, ProductionObservation> {
+  const changed = new Map(observations);
+  const current = changed.get(id);
+  if (!current) throw new Error(`${id}: cannot mutate absent observation`);
+  changed.set(id, { ...current, radius });
+  return changed;
+}
 
 describe("Pasture radius conformance contract", () => {
   test("pins authoritative token resolution per concrete row", () => {
@@ -588,6 +533,19 @@ describe("Pasture radius conformance contract", () => {
       ),
     ).toEqual(expected);
   });
+  test("pins approved-pill provenance to the verified standalone selectors", () => {
+    expect(
+      RADIUS_CONTRACT.find(({ id }) => id === "status-badge")
+        ?.referenceSelector,
+    ).toBe(".tag");
+    expect(
+      RADIUS_CONTRACT.find(({ id }) => id === "agent-chip")?.referenceSelector,
+    ).toBe(".chip-agent");
+    expect(
+      RADIUS_CONTRACT.find(({ id }) => id === "tabs-segmented-shell")
+        ?.referenceSelector,
+    ).toBe(".seg");
+  });
   test("pins the complete denominator and shrinking baseline", () => {
     expect(RADIUS_CONTRACT).toHaveLength(EXPECTED_DENOMINATOR);
     expect(KNOWN_MISMATCHES).toHaveLength(10);
@@ -602,8 +560,11 @@ describe("Pasture radius conformance contract", () => {
     ).not.toThrow();
   });
   test("requires strict baseline shrink after a correction", () => {
-    const corrected = new Map(productionObservations);
-    corrected.set("input", "rounded-sm");
+    const corrected = withObservedRadius(
+      productionObservations,
+      "input",
+      "rounded-sm",
+    );
     expect(() =>
       assertRadiusContract(RADIUS_CONTRACT, KNOWN_MISMATCHES, corrected),
     ).toThrow(/stale mismatch baseline/);
@@ -628,15 +589,21 @@ describe("Pasture radius conformance contract", () => {
     "typing-bubble",
     "button",
   ])("rejects protected-region drift for %s", (id) => {
-    const drifted = new Map(productionObservations);
-    drifted.set(id, "rounded-3xl");
+    const drifted = withObservedRadius(
+      productionObservations,
+      id,
+      "rounded-3xl",
+    );
     expect(() =>
       assertRadiusContract(RADIUS_CONTRACT, KNOWN_MISMATCHES, drifted),
     ).toThrow(new RegExp(`${id}: current mismatch omitted`));
   });
   test("rejects Composer and InboxRow target or baseline drift", () => {
-    const composerCorrected = new Map(productionObservations);
-    composerCorrected.set("composer", "rounded-lg");
+    const composerCorrected = withObservedRadius(
+      productionObservations,
+      "composer",
+      "rounded-lg",
+    );
     expect(() =>
       assertRadiusContract(
         RADIUS_CONTRACT,
@@ -644,8 +611,11 @@ describe("Pasture radius conformance contract", () => {
         composerCorrected,
       ),
     ).toThrow(/composer: stale mismatch baseline/);
-    const inboxWrong = new Map(productionObservations);
-    inboxWrong.set("inbox-row", "rounded-md");
+    const inboxWrong = withObservedRadius(
+      productionObservations,
+      "inbox-row",
+      "rounded-md",
+    );
     expect(() =>
       assertRadiusContract(RADIUS_CONTRACT, KNOWN_MISMATCHES, inboxWrong),
     ).toThrow(/inbox-row: observed mismatch drifted/);
@@ -655,33 +625,18 @@ describe("Pasture radius conformance contract", () => {
       assertRadiusContract(RADIUS_CONTRACT, omitted, productionObservations),
     ).toThrow(/inbox-row: current mismatch omitted/);
   });
-  test("fails closed on selector, expectation, observation, and denominator changes", () => {
-    const remapped = RADIUS_CONTRACT.map((row) =>
-      row.id === "input" ? { ...row, referenceSelector: ".not-inp" } : row,
-    );
+  test("fails closed on provenance, observation, and denominator changes", () => {
+    const remapped = new Map(productionObservations);
+    const input = remapped.get("input")!;
+    remapped.set("input", { ...input, sourceProvenance: "wrong/source" });
     expect(() =>
-      assertRadiusContract(remapped, KNOWN_MISMATCHES, productionObservations),
-    ).toThrow(/selector mapping changed/);
-    const normalized = RADIUS_CONTRACT.map((row) =>
-      row.id === "input" ? { ...row, expected: "rounded-md" as const } : row,
-    );
-    expect(() =>
-      assertRadiusContract(
-        normalized,
-        KNOWN_MISMATCHES,
-        productionObservations,
-      ),
-    ).toThrow(/expected radius changed/);
+      assertRadiusContract(RADIUS_CONTRACT, KNOWN_MISMATCHES, remapped),
+    ).toThrow(/source provenance changed/);
     const missing = new Map(productionObservations);
     missing.delete("button");
     expect(() =>
       assertRadiusContract(RADIUS_CONTRACT, KNOWN_MISMATCHES, missing),
     ).toThrow(/production observation missing/);
-    const unmapped = new Map(productionObservations);
-    unmapped.set("new-radius-region", "rounded-sm");
-    expect(() =>
-      assertRadiusContract(RADIUS_CONTRACT, KNOWN_MISMATCHES, unmapped),
-    ).toThrow(/observation has no denominator row/);
     expect(() =>
       assertRadiusContract(
         [...RADIUS_CONTRACT.slice(0, -1), RADIUS_CONTRACT[0]],
@@ -696,6 +651,34 @@ describe("Pasture radius conformance contract", () => {
         productionObservations,
       ),
     ).toThrow(/23 unique rows/);
+  });
+  test("discovers an unmapped radius added to an actual approved production source", () => {
+    const sourcePath = "patterns/AgentChip.tsx";
+    const productionSource = readFileSync(
+      join(designSystemRoot, sourcePath),
+      "utf8",
+    );
+    const changedSource = `${productionSource}\nexport const RadiusDiscoveryFixture = () => (\n  <div className="rounded-sm">new visual region</div>\n);\n`;
+    const discovered = discoverProductionObservations(
+      new Map([[sourcePath, changedSource]]),
+    );
+    expect([...discovered.keys()]).toContain(
+      `unmapped:${sourcePath}:${changedSource.split("\n").length - 2}`,
+    );
+    expect(() =>
+      assertRadiusContract(RADIUS_CONTRACT, KNOWN_MISMATCHES, discovered),
+    ).toThrow(/production observation has no denominator row/);
+  });
+  test("fails when an approved production source region disappears", () => {
+    const sourcePath = "patterns/AgentChip.tsx";
+    const productionSource = readFileSync(
+      join(designSystemRoot, sourcePath),
+      "utf8",
+    );
+    const changedSource = productionSource.replace("rounded-full", "");
+    expect(() =>
+      discoverProductionObservations(new Map([[sourcePath, changedSource]])),
+    ).toThrow(/agent-chip: expected one authoritative radius.*none/);
   });
   test("rejects silent mismatch-baseline growth", () => {
     const grown = new Map(KNOWN_MISMATCHES);
