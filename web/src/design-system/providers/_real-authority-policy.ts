@@ -1,4 +1,4 @@
-import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import * as authorityPolicyApi from '@/lib/api/authorityPolicy';
 import type { AuthorityPolicyApi } from './DataContext';
@@ -42,5 +42,31 @@ export const realAuthorityPolicyApi: AuthorityPolicyApi = {
       mutationFn: ({ agentName, body }) => authorityPolicyApi.activateTeamEscalationPolicyRelease(slug, agentName, body),
       onSuccess: (_data, { agentName }) => qc.invalidateQueries({ queryKey: ['team-escalation-policy', slug, agentName] }),
     });
+  },
+  useTeamEscalationPolicyHistory: (agent) => {
+    const { slug = '' } = useParams<{ slug: string }>();
+    const enabled = !!slug && authorityPolicyApi.isEligiblePolicyManager(agent);
+    const q = useInfiniteQuery({
+      queryKey: ['team-escalation-policy-history', slug, agent?.name], initialPageParam: undefined as string | undefined,
+      queryFn: ({ pageParam }) => authorityPolicyApi.getTeamEscalationPolicyHistory(slug, agent!.name, pageParam),
+      getNextPageParam: (last) => last.next_cursor ?? undefined, enabled, retry: false,
+    });
+    return { data: q.data ? { pages: q.data.pages } : undefined, isLoading: q.isLoading,
+      isError: q.isError, error: (q.error as Error | null) ?? null,
+      fetchNextPage: () => q.fetchNextPage(), hasNextPage: !!q.hasNextPage,
+      isFetchingNextPage: q.isFetchingNextPage };
+  },
+  useTeamEscalationPolicyOutcomes: (agent) => {
+    const { slug = '' } = useParams<{ slug: string }>();
+    const enabled = !!slug && authorityPolicyApi.isEligiblePolicyManager(agent);
+    const q = useInfiniteQuery({
+      queryKey: ['team-escalation-policy-outcomes', slug, agent?.name], initialPageParam: undefined as string | undefined,
+      queryFn: ({ pageParam }) => authorityPolicyApi.getTeamEscalationPolicyOutcomes(slug, agent!.name, pageParam),
+      getNextPageParam: (last) => last.next_cursor ?? undefined, enabled, retry: false,
+    });
+    return { data: q.data ? { pages: q.data.pages } : undefined, isLoading: q.isLoading,
+      isError: q.isError, error: (q.error as Error | null) ?? null,
+      fetchNextPage: () => q.fetchNextPage(), hasNextPage: !!q.hasNextPage,
+      isFetchingNextPage: q.isFetchingNextPage };
   },
 };

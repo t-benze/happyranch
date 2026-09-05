@@ -8,7 +8,8 @@ vi.mock('@/lib/api/authorityPolicy', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/authorityPolicy')>(
     '@/lib/api/authorityPolicy',
   );
-  return { ...actual, getTeamEscalationPolicy: vi.fn() };
+  return { ...actual, getTeamEscalationPolicy: vi.fn(),
+    getTeamEscalationPolicyHistory: vi.fn(), getTeamEscalationPolicyOutcomes: vi.fn() };
 });
 
 import * as api from '@/lib/api/authorityPolicy';
@@ -24,7 +25,6 @@ const empty = {
   target_manager: 'engineering_manager' as const,
   can_mutate: true as const,
   bootstrap_required: true as const,
-  activation_guard: { ready: false as const, reason: 'TASK-6335 production verification required' },
   bootstrap_template: bootstrapTemplate,
 };
 const active = {
@@ -49,6 +49,20 @@ function setup(agent = manager) {
   const wrapper = ({ children }: { children: React.ReactNode }) =>
     React.createElement(QueryClientProvider, { client }, children);
   return { client, hook: renderHook(() => realAuthorityPolicyApi.useTeamEscalationPolicy(agent), { wrapper }) };
+}
+
+function setupHistory() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: React.ReactNode }) =>
+    React.createElement(QueryClientProvider, { client }, children);
+  return renderHook(() => realAuthorityPolicyApi.useTeamEscalationPolicyHistory(manager), { wrapper });
+}
+
+function setupOutcomes() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: React.ReactNode }) =>
+    React.createElement(QueryClientProvider, { client }, children);
+  return renderHook(() => realAuthorityPolicyApi.useTeamEscalationPolicyOutcomes(manager), { wrapper });
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -89,5 +103,55 @@ describe('team escalation policy query gate', () => {
     const { hook } = setup();
     await waitFor(() => expect(hook.result.current.isError).toBe(true));
     expect(hook.result.current.error).toBeInstanceOf(Error);
+  });
+
+  it('uses the server cursor to reach page two exactly once', async () => {
+    vi.mocked(api.getTeamEscalationPolicyHistory)
+      .mockResolvedValueOnce({ items: [{ release_id: 'APR-2' }] as never, next_cursor: 'history-cursor' })
+      .mockResolvedValueOnce({ items: [{ release_id: 'APR-1' }] as never, next_cursor: null });
+    const hook = setupHistory();
+    await waitFor(() => expect(hook.result.current.data?.pages).toHaveLength(1));
+    await hook.result.current.fetchNextPage();
+    await waitFor(() => expect(hook.result.current.data?.pages).toHaveLength(2));
+    expect(api.getTeamEscalationPolicyHistory).toHaveBeenNthCalledWith(1, 'alpha', 'engineering_manager', undefined);
+    expect(api.getTeamEscalationPolicyHistory).toHaveBeenNthCalledWith(2, 'alpha', 'engineering_manager', 'history-cursor');
+    expect(hook.result.current.data?.pages.flatMap((page) => page.items).map((row) => row.release_id)).toEqual(['APR-2', 'APR-1']);
+    expect(hook.result.current.hasNextPage).toBe(false);
+  });
+
+  it('preserves history page one across cursor failure and native retry appends page two once', async () => {
+    vi.mocked(api.getTeamEscalationPolicyHistory)
+      .mockResolvedValueOnce({ items: [{ release_id: 'APR-2' }] as never, next_cursor: 'history-cursor' })
+      .mockRejectedValueOnce(new Error('page two unavailable'))
+      .mockResolvedValueOnce({ items: [{ release_id: 'APR-1' }] as never, next_cursor: null });
+    const hook = setupHistory();
+    await waitFor(() => expect(hook.result.current.data?.pages).toHaveLength(1));
+    await hook.result.current.fetchNextPage();
+    await waitFor(() => expect(hook.result.current.isError).toBe(true));
+    expect(hook.result.current.data?.pages.flatMap((page) => page.items).map((row) => row.release_id)).toEqual(['APR-2']);
+    await hook.result.current.fetchNextPage();
+    await waitFor(() => expect(hook.result.current.data?.pages).toHaveLength(2));
+    expect(hook.result.current.data?.pages.flatMap((page) => page.items).map((row) => row.release_id)).toEqual(['APR-2', 'APR-1']);
+    expect(api.getTeamEscalationPolicyHistory).toHaveBeenNthCalledWith(2, 'alpha', 'engineering_manager', 'history-cursor');
+    expect(api.getTeamEscalationPolicyHistory).toHaveBeenNthCalledWith(3, 'alpha', 'engineering_manager', 'history-cursor');
+    expect(hook.result.current.hasNextPage).toBe(false);
+  });
+
+  it('preserves outcomes page one across cursor failure and native retry appends page two once', async () => {
+    vi.mocked(api.getTeamEscalationPolicyOutcomes)
+      .mockResolvedValueOnce({ items: [{ candidate_id: 'AUTH-2' }] as never, next_cursor: 'outcome-cursor' })
+      .mockRejectedValueOnce(new Error('page two unavailable'))
+      .mockResolvedValueOnce({ items: [{ candidate_id: 'AUTH-1' }] as never, next_cursor: null });
+    const hook = setupOutcomes();
+    await waitFor(() => expect(hook.result.current.data?.pages).toHaveLength(1));
+    await hook.result.current.fetchNextPage();
+    await waitFor(() => expect(hook.result.current.isError).toBe(true));
+    expect(hook.result.current.data?.pages.flatMap((page) => page.items).map((row) => row.candidate_id)).toEqual(['AUTH-2']);
+    await hook.result.current.fetchNextPage();
+    await waitFor(() => expect(hook.result.current.data?.pages).toHaveLength(2));
+    expect(hook.result.current.data?.pages.flatMap((page) => page.items).map((row) => row.candidate_id)).toEqual(['AUTH-2', 'AUTH-1']);
+    expect(api.getTeamEscalationPolicyOutcomes).toHaveBeenNthCalledWith(2, 'alpha', 'engineering_manager', 'outcome-cursor');
+    expect(api.getTeamEscalationPolicyOutcomes).toHaveBeenNthCalledWith(3, 'alpha', 'engineering_manager', 'outcome-cursor');
+    expect(hook.result.current.hasNextPage).toBe(false);
   });
 });
