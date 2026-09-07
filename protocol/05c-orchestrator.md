@@ -1350,8 +1350,12 @@ legacy-backlog eligibility.
 
 THR-195 B2a is only a dormant evidence producer: it has no orchestrator caller,
 does not seal a ledger or authorize coverage, and cannot exclude future writers.
-It fail-closes on changing durable/session/process observations; B2b recollects
-before any later action and B3 owns current-boot coverage.
+It makes a finite shared-deadline observation from complete durable task/job/result
+rows, advisory sessions, and Linux boot/PID/root/cwd/fd identity. It fails closed
+on changed, missing, capped, timed-out, partial, or unavailable observations; an
+unavailable measurement is not a measured zero, and blocking source reads cannot
+be forcibly interrupted. B2b recollects before any later action and B3 owns
+current-boot coverage.
 
 1. **Measures** the OWNING AGENT's workspace with an explicit bounded,
    fail-open budget: one true wall-clock deadline shared across all

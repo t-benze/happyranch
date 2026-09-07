@@ -56,6 +56,19 @@ def test_missing_boot_and_proc_are_unavailable_not_zero(tmp_path: Path) -> None:
     assert evidence.process_roots is evidence.process_cwds is evidence.open_fds is None
 
 
+def test_blank_boot_and_malformed_pid_identity_are_unavailable_not_zero(tmp_path: Path) -> None:
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    (proc / "sys/kernel/random/boot_id").write_text(" \n")
+    blank = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "boot_id_unavailable" in blank.reasons
+    assert blank.process_roots is blank.process_cwds is blank.open_fds is None
+    (proc / "sys/kernel/random/boot_id").write_text("boot\n")
+    (proc / "42/stat").write_text("42 (agent) S malformed")
+    malformed = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "process_identity_unavailable" in malformed.reasons
+    assert malformed.process_roots is malformed.process_cwds is malformed.open_fds is None
+
+
 def test_durable_and_process_changes_during_observation_fail_closed(tmp_path: Path, monkeypatch) -> None:
     db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED)); root = tmp_path / "root"; root.mkdir()
     import runtime.daemon.task_scratch_evidence as subject
@@ -79,3 +92,27 @@ def test_active_chain_fanout_and_deep_or_unrelated_lineage(tmp_path: Path) -> No
     assert "lineage_cycle" not in evidence.reasons
     db.update_task("TASK-0", status=TaskStatus.PENDING)
     assert "nonterminal_or_unresolved_lineage" in collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-0", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).reasons
+
+
+def test_full_get_task_row_and_retained_completion_are_authoritative(tmp_path: Path) -> None:
+    db, proc = _sources(tmp_path)
+    db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    db.insert_task_result("TASK-1", "dev_agent", "session", "done", 100)
+    good = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert good.eligible
+    db.update_task_active_chain("TASK-1", "{\"state\": \"pending\"}")
+    chained = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "nonterminal_or_unresolved_lineage" in chained.reasons
+    db.update_task_active_chain("TASK-1", None); db.update_task_active_fanout("TASK-1", "{\"state\": \"pending\"}")
+    fanout = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "nonterminal_or_unresolved_lineage" in fanout.reasons
+
+
+def test_active_session_and_unresolved_recovery_are_not_safe(tmp_path: Path) -> None:
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    sessions = SessionTracker(); sessions.set_active("TASK-1", "dev_agent", "session")
+    active = collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "active_session" in active.reasons
+    sessions.clear("TASK-1", "dev_agent"); db.insert_task_result("TASK-1", "dev_agent", "session", "working", 10, status="in_progress")
+    unresolved = collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "recovery_fingerprint_unresolved" in unresolved.reasons

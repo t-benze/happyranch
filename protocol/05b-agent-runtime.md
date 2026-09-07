@@ -503,6 +503,11 @@ The orchestrator assembles each agent's context into an executor-specific bootst
 
 Claude workspaces have a `.claude/settings.json` that configures Claude Code's auto-allowed tools. Codex, opencode, and Pi workspaces do not use that file. Across executors, agents call back through the same single-line `happyranch ... --from-file` contract. Agents can read, write, and execute freely within their workspace and the cloned codebase, subject to the executor's sandbox mode and the orchestrator's workflow rules. Pi has no HappyRanch-managed sandbox or permission file in this integration.
 
+The THR-195 B2a task-scratch collector is not an executor permission or action
+surface: it is a dormant, production-unreferenced finite observation. It reports
+full durable lifecycle/recovery rows plus bounded Linux process references, and
+never converts missing, partial, capped, or timed-out reads into safe zeroes.
+
 ### Skill materialization at session spawn
 
 Skills — structured guidance packages that tell an agent how to perform specific

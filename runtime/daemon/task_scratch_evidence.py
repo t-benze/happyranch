@@ -39,16 +39,20 @@ def _pid_start(entry: Path) -> str:
     """Use precisely one stat sample for a PID identity."""
     try:
         stat = (entry / "stat").read_text()
-        return stat[stat.rindex(")") + 1:].split()[19]
+        token = stat[stat.rindex(")") + 1:].split()[19]
+        if not token.isdecimal():
+            raise ValueError("malformed PID start identity")
+        return token
     except (OSError, ValueError, IndexError) as exc: raise RuntimeError("process_identity_unavailable") from exc
 
 
 def _population(proc: Path, deadline: int) -> list[Path] | None:
     try:
         rows: list[Path] = []
-        for entry in proc.iterdir():
-            if _expired(deadline) or len(rows) > MAX_PROCESSES: return None
-            if entry.name.isdecimal(): rows.append(entry)
+        with os.scandir(proc) as entries:
+            for entry in entries:
+                if _expired(deadline) or len(rows) >= MAX_PROCESSES: return None
+                if entry.name.isdecimal(): rows.append(Path(entry.path))
         return sorted(rows)
     except OSError: return None
 
@@ -66,11 +70,12 @@ def _scan(proc: Path, root: Path, deadline: int) -> tuple[int | None, int | None
                 if _under(os.readlink(entry / name), root):
                     roots += name == "root"; cwds += name == "cwd"; reasons.add(reason)
             count = 0
-            for fd in (entry / "fd").iterdir():
-                count += 1
-                if _expired(deadline): raise RuntimeError("process_scan_timeout")
-                if count > MAX_FDS_PER_PROCESS: raise RuntimeError("open_fd_scan_capped")
-                if _under(os.readlink(fd), root): fds += 1; reasons.add("open_fd_reference")
+            with os.scandir(entry / "fd") as fd_entries:
+                for fd in fd_entries:
+                    count += 1
+                    if _expired(deadline): raise RuntimeError("process_scan_timeout")
+                    if count > MAX_FDS_PER_PROCESS: raise RuntimeError("open_fd_scan_capped")
+                    if _under(os.readlink(fd.path), root): fds += 1; reasons.add("open_fd_reference")
     except (OSError, RuntimeError) as exc:
         return None, None, None, {str(exc) or "process_reference_unavailable"}, None
     return roots, cwds, fds, reasons, tuple(identities)
@@ -107,47 +112,62 @@ def _component(tasks: list[object], task_id: str, reasons: set[str]) -> set[str]
     return found
 
 
-def _shape(task: object) -> tuple[object, ...]:
-    return tuple(getattr(task, name, None) for name in ("id", "status", "assigned_agent", "parent_task_id", "revisit_of_task_id", "active_chain", "active_fanout", "executor_pid", "current_session_id", "zombie_flagged_at", "last_heartbeat", "updated_at", "completed_at"))
+def _shape(task: object) -> tuple[tuple[str, str], ...]:
+    """Include every persisted record member, not the list projection subset."""
+    return tuple(sorted((name, repr(value)) for name, value in vars(task).items()))
 
 
-def _snapshot(db: Database, task_id: str, reasons: set[str]) -> tuple[tuple[object, ...], ...] | None:
+def _snapshot(db: Database, task_id: str, reasons: set[str], deadline: int) -> tuple[tuple[object, ...], ...] | None:
+    if _expired(deadline): reasons.add("observation_timeout"); return None
     try: tasks = db.list_tasks(limit=MAX_TASKS + 1)
     except Exception: reasons.add("task_scan_unavailable"); return None
     if len(tasks) > MAX_TASKS: reasons.add("task_scan_capped"); return None
     members = _component(tasks, task_id, reasons)
     if not members: reasons.add("task_missing"); return None
     out: list[tuple[object, ...]] = []
-    for task in tasks:
-        if task.id not in members: continue
-        out.append(_shape(task))
+    for listed in tasks:
+        if listed.id not in members: continue
+        if _expired(deadline): reasons.add("observation_timeout"); return None
+        try: task = db.get_task(listed.id)
+        except Exception: reasons.add("task_authority_unavailable"); return None
+        if task is None or task.id != listed.id: reasons.add("task_authority_unavailable"); return None
+        out.append(("task", task.id, _shape(task)))
         if task.status not in TERMINAL or task.zombie_flagged_at or task.active_chain or task.active_fanout: reasons.add("nonterminal_or_unresolved_lineage")
         if not task.assigned_agent or not task.current_session_id: reasons.add("recovery_authority_unavailable")
         else:
-            try: out.append(("result", task.id, repr(db.get_latest_task_result(task.id, task.assigned_agent, task.current_session_id))))
+            try:
+                result = db.get_latest_task_result(task.id, task.assigned_agent, task.current_session_id)
+                out.append(("result", task.id, repr(result)))
+                if result is not None and result.get("status") not in {"completed", "failed", "cancelled", "superseded"}: reasons.add("recovery_fingerprint_unresolved")
             except Exception: reasons.add("recovery_fingerprint_unavailable")
         try: jobs = db.list_jobs_db(task_id=task.id, limit=MAX_JOBS + 1)
         except Exception: reasons.add("job_scan_unavailable"); continue
         if len(jobs) > MAX_JOBS: reasons.add("job_scan_capped"); continue
         for job in jobs:
-            out.append(("job", task.id, job.id, job.status, getattr(job, "updated_at", None)))
+            out.append(("job", task.id, job.id, _shape(job)))
             if job.status not in TERMINAL_JOBS: reasons.add("active_job")
     return tuple(sorted(out, key=repr))
 
 
 def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, task_id: str, root: Path, proc_root: Path = Path("/proc"), monotonic_now: float | None = None, daemon_started_monotonic: float | None = None) -> TaskScratchEvidence:
-    """Read durable and OS sources around a bounded scan; every ambiguity fails closed."""
+    """Finite shared-deadline observation; blocking OS/DB calls are not preemptible."""
     reasons: set[str] = set(); now = time.monotonic() if monotonic_now is None else monotonic_now
     if daemon_started_monotonic is None or now - daemon_started_monotonic < WARMUP_SECONDS: reasons.add("zombie_warmup")
     deadline = time.monotonic_ns() + SCAN_NS
     def boot() -> str | None:
-        try: return (proc_root / "sys/kernel/random/boot_id").read_text().strip() or None
+        if _expired(deadline): reasons.add("observation_timeout"); return None
+        try:
+            value = (proc_root / "sys/kernel/random/boot_id").read_text().strip()
+            if not value:
+                reasons.add("boot_id_unavailable")
+                return None
+            return value
         except OSError: reasons.add("boot_id_unavailable"); return None
-    old_boot = boot(); before = _snapshot(db, task_id, reasons); sessions_before = tuple(sorted(sessions.iter_active()))
-    member_ids = {item[0] for item in before or () if item and item[0] not in {"result", "job"}}
+    old_boot = boot(); before = _snapshot(db, task_id, reasons, deadline); sessions_before = tuple(sorted(sessions.iter_active()))
+    member_ids = {item[1] for item in before or () if item and item[0] == "task"}
     if any(row[0] in member_ids for row in sessions_before): reasons.add("active_session")
     roots, cwds, fds, scan_reasons, identities = _scan(proc_root, root, deadline); reasons.update(scan_reasons)
-    new_boot = boot(); after = _snapshot(db, task_id, reasons)
+    before_scan_boot = boot(); after = _snapshot(db, task_id, reasons, deadline)
     if before != after: reasons.add("durable_state_changed_during_collection")
     if sessions_before != tuple(sorted(sessions.iter_active())): reasons.add("sessions_changed_during_collection")
     population = _population(proc_root, deadline)
@@ -156,6 +176,9 @@ def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, tas
         try:
             if tuple((entry.name, _pid_start(entry)) for entry in population) != identities: reasons.add("process_population_changed_during_collection")
         except RuntimeError: reasons.add("process_identity_unavailable")
-    if old_boot != new_boot: reasons.add("boot_id_changed_during_collection")
-    if _expired(deadline): reasons.add("process_scan_timeout")
-    return TaskScratchEvidence(task_id, not reasons, tuple(sorted(reasons)), new_boot, time.time_ns(), roots, cwds, fds)
+    final_boot = boot()
+    if old_boot != before_scan_boot or before_scan_boot != final_boot: reasons.add("boot_id_changed_during_collection")
+    if _expired(deadline): reasons.add("observation_timeout")
+    if roots is None or cwds is None or fds is None or old_boot is None or before_scan_boot is None or final_boot is None:
+        roots = cwds = fds = None
+    return TaskScratchEvidence(task_id, not reasons, tuple(sorted(reasons)), final_boot, time.time_ns(), roots, cwds, fds)
