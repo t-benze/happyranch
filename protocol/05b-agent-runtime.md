@@ -1341,6 +1341,12 @@ contract excludes a deliberately hostile same-UID replacement in the final
 identity-check-to-pathname-syscall window and does not promise its preservation.
 No production path imports it; teardown/scheduler wiring, activation, live
 deletion, deployment, and legacy backlog eligibility remain absent.
+THR-195 B2a separately supplies a dormant, short-lived evidence collector from
+current durable task/revisit/job/result records, advisory session state, and
+fresh Linux boot/PID root/cwd/open-fd reads. Ambiguous, missing, capped,
+changing, warm-up, recovery, permission, or live-reference evidence is
+ineligible. It has no production caller or engine/ledger import; B2b must
+recollect at action time and B3 remains coverage authority.
 Runtime-launched task-agent and job subprocesses instead receive one canonical
 mode-0700 root at
 ``<workspace>/.happyranch/task-tmp/<canonical TASK-N>`` through ``TMPDIR``,
