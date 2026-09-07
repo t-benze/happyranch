@@ -53,3 +53,29 @@ def test_missing_boot_and_proc_are_unavailable_not_zero(tmp_path: Path) -> None:
     db = Database(tmp_path / "state.db"); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
     evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=tmp_path / "missing", monotonic_now=31, daemon_started_monotonic=0)
     assert not evidence.eligible and {"boot_id_unavailable", "process_scan_unavailable"} <= set(evidence.reasons)
+    assert evidence.process_roots is evidence.process_cwds is evidence.open_fds is None
+
+
+def test_durable_and_process_changes_during_observation_fail_closed(tmp_path: Path, monkeypatch) -> None:
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED)); root = tmp_path / "root"; root.mkdir()
+    import runtime.daemon.task_scratch_evidence as subject
+    original = subject._scan
+    def changed(*args, **kwargs):
+        db.insert_job(JobRecord(id="JOB-1", task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING, created_at=datetime.now(timezone.utc).isoformat()))
+        result = original(*args, **kwargs)
+        _proc(proc, 43, cwd=str(root)); (proc / "sys/kernel/random/boot_id").write_text("new\n")
+        return result
+    monkeypatch.setattr(subject, "_scan", changed)
+    evidence = subject.collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert {"active_job", "durable_state_changed_during_collection", "process_population_changed_during_collection", "boot_id_changed_during_collection"} <= set(evidence.reasons)
+
+
+def test_active_chain_fanout_and_deep_or_unrelated_lineage(tmp_path: Path) -> None:
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-0", TaskStatus.COMPLETED))
+    for index in range(1, 1501): db.insert_task(_task(f"TASK-{index}", TaskStatus.COMPLETED, parent=f"TASK-{index - 1}"))
+    # An unrelated cycle is not a target-lineage defect.
+    db.insert_task(_task("OTHER-A", TaskStatus.COMPLETED, revisit="OTHER-B")); db.insert_task(_task("OTHER-B", TaskStatus.COMPLETED, revisit="OTHER-A"))
+    evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-0", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "lineage_cycle" not in evidence.reasons
+    db.update_task("TASK-0", status=TaskStatus.PENDING)
+    assert "nonterminal_or_unresolved_lineage" in collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-0", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).reasons

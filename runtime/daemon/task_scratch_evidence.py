@@ -1,4 +1,4 @@
-"""Dormant, fail-closed observations for later scratch reconciliation."""
+"""Dormant bounded observations for later scratch reconciliation, never a permit."""
 from __future__ import annotations
 
 import os
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from runtime.infrastructure.database import Database
 
 MAX_TASKS = MAX_JOBS = MAX_PROCESSES = MAX_FDS_PER_PROCESS = 10_000
+SCAN_NS = 5_000_000_000
 WARMUP_SECONDS = 30.0
 TERMINAL = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.SUPERSEDED}
 TERMINAL_JOBS = {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.REJECTED}
@@ -21,119 +22,140 @@ TERMINAL_JOBS = {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.REJECTED}
 
 @dataclass(frozen=True)
 class TaskScratchEvidence:
-    """A deliberately short-lived observation, never an action permit."""
-    task_id: str
-    eligible: bool
-    reasons: tuple[str, ...]
-    boot_id: str | None
-    observed_at_ns: int
-    process_roots: int
-    process_cwds: int
-    open_fds: int
+    task_id: str; eligible: bool; reasons: tuple[str, ...]; boot_id: str | None
+    observed_at_ns: int; process_roots: int | None; process_cwds: int | None; open_fds: int | None
     freshness_limited: bool = True
 
 
 def _under(value: str, root: Path) -> bool:
-    value = os.path.normpath(value.removesuffix(" (deleted)"))
-    root_text = os.path.normpath(str(root))
-    return value == root_text or value.startswith(root_text + os.sep)
+    value = os.path.normpath(value.removesuffix(" (deleted)")); base = os.path.normpath(str(root))
+    return value == base or value.startswith(base + os.sep)
+
+
+def _expired(deadline: int) -> bool: return time.monotonic_ns() > deadline
 
 
 def _pid_start(entry: Path) -> str:
+    """Use precisely one stat sample for a PID identity."""
     try:
-        return (entry / "stat").read_text()[((entry / "stat").read_text()).rindex(")") + 1:].split()[19]
-    except (OSError, ValueError, IndexError) as exc:
-        raise RuntimeError("process_identity_unavailable") from exc
+        stat = (entry / "stat").read_text()
+        return stat[stat.rindex(")") + 1:].split()[19]
+    except (OSError, ValueError, IndexError) as exc: raise RuntimeError("process_identity_unavailable") from exc
 
 
-def _scan(proc_root: Path, root: Path) -> tuple[int, int, int, set[str]]:
-    reasons: set[str] = set(); roots = cwds = fds = 0
-    started = time.monotonic_ns()
-    try: entries = sorted(p for p in proc_root.iterdir() if p.name.isdecimal())
-    except OSError: return roots, cwds, fds, {"process_scan_unavailable"}
-    if len(entries) > MAX_PROCESSES: return roots, cwds, fds, {"process_scan_capped"}
-    identities: dict[Path, str] = {}
-    for entry in entries:
-        try:
-            identities[entry] = _pid_start(entry)
-            for name, marker in (("root", "process_root_reference"), ("cwd", "process_cwd_reference")):
+def _population(proc: Path, deadline: int) -> list[Path] | None:
+    try:
+        rows: list[Path] = []
+        for entry in proc.iterdir():
+            if _expired(deadline) or len(rows) > MAX_PROCESSES: return None
+            if entry.name.isdecimal(): rows.append(entry)
+        return sorted(rows)
+    except OSError: return None
+
+
+def _scan(proc: Path, root: Path, deadline: int) -> tuple[int | None, int | None, int | None, set[str], tuple[tuple[str, str], ...] | None]:
+    entries = _population(proc, deadline)
+    if entries is None: return None, None, None, {"process_scan_unavailable"}, None
+    roots = cwds = fds = 0; reasons: set[str] = set(); identities: list[tuple[str, str]] = []
+    try:
+        for entry in entries:
+            if _expired(deadline): raise RuntimeError("process_scan_timeout")
+            identities.append((entry.name, _pid_start(entry)))
+            for name, reason in (("root", "process_root_reference"), ("cwd", "process_cwd_reference")):
+                if _expired(deadline): raise RuntimeError("process_scan_timeout")
                 if _under(os.readlink(entry / name), root):
-                    roots += name == "root"; cwds += name == "cwd"; reasons.add(marker)
-            fd_entries = list((entry / "fd").iterdir())
-            if len(fd_entries) > MAX_FDS_PER_PROCESS: reasons.add("open_fd_scan_capped"); continue
-            for fd in fd_entries:
+                    roots += name == "root"; cwds += name == "cwd"; reasons.add(reason)
+            count = 0
+            for fd in (entry / "fd").iterdir():
+                count += 1
+                if _expired(deadline): raise RuntimeError("process_scan_timeout")
+                if count > MAX_FDS_PER_PROCESS: raise RuntimeError("open_fd_scan_capped")
                 if _under(os.readlink(fd), root): fds += 1; reasons.add("open_fd_reference")
-        except (OSError, RuntimeError): reasons.add("process_reference_unavailable")
-    for entry, identity in identities.items():
-        try:
-            if _pid_start(entry) != identity: reasons.add("process_identity_changed")
-        except RuntimeError: reasons.add("process_identity_unavailable")
-    if time.monotonic_ns() - started > 5_000_000_000: reasons.add("process_scan_timeout")
-    return roots, cwds, fds, reasons
+    except (OSError, RuntimeError) as exc:
+        return None, None, None, {str(exc) or "process_reference_unavailable"}, None
+    return roots, cwds, fds, reasons, tuple(identities)
 
 
 def _component(tasks: list[object], task_id: str, reasons: set[str]) -> set[str]:
     by_id = {task.id: task for task in tasks}
     if task_id not in by_id: return set()
-    adjacent: dict[str, set[str]] = {key: set() for key in by_id}
-    directed: dict[str, tuple[str, ...]] = {}
+    adj = {key: set() for key in by_id}
     for task in tasks:
-        edges = tuple(edge for edge in (task.parent_task_id, task.revisit_of_task_id) if edge)
-        directed[task.id] = edges
-        for edge in edges:
-            if edge not in by_id: reasons.add("lineage_missing")
-            else: adjacent[task.id].add(edge); adjacent[edge].add(task.id)
-    # Directed DFS distinguishes ordinary undirected parent traversal from cycles.
-    visiting: set[str] = set(); visited: set[str] = set()
-    def visit(node: str) -> None:
-        if node in visiting: reasons.add("lineage_cycle"); return
-        if node in visited: return
-        visiting.add(node)
-        for edge in directed.get(node, ()):
-            if edge in by_id: visit(edge)
-        visiting.remove(node); visited.add(node)
-    for node in by_id: visit(node)
-    result: set[str] = set(); pending = [task_id]
+        for edge in (task.parent_task_id, task.revisit_of_task_id):
+            if edge in by_id: adj[task.id].add(edge); adj[edge].add(task.id)
+    found: set[str] = set(); pending = [task_id]
     while pending:
         node = pending.pop()
-        if node in result: continue
-        result.add(node)
-        if len(result) > MAX_TASKS: reasons.add("lineage_capped"); break
-        pending.extend(adjacent[node] - result)
-    return result
+        if node in found: continue
+        found.add(node)
+        if len(found) > MAX_TASKS: reasons.add("lineage_capped"); return found
+        pending.extend(adj[node] - found)
+    # Directed, iterative cycle detection only in the relevant component.
+    color: dict[str, int] = {}
+    for start in found:
+        if color.get(start): continue
+        stack = [(start, False)]
+        while stack:
+            node, leaving = stack.pop()
+            if leaving: color[node] = 2; continue
+            if color.get(node) == 1: reasons.add("lineage_cycle"); continue
+            if color.get(node) == 2: continue
+            color[node] = 1; stack.append((node, True))
+            for edge in (by_id[node].parent_task_id, by_id[node].revisit_of_task_id):
+                if edge and edge in found: stack.append((edge, False))
+                elif edge: reasons.add("lineage_missing")
+    return found
+
+
+def _shape(task: object) -> tuple[object, ...]:
+    return tuple(getattr(task, name, None) for name in ("id", "status", "assigned_agent", "parent_task_id", "revisit_of_task_id", "active_chain", "active_fanout", "executor_pid", "current_session_id", "zombie_flagged_at", "last_heartbeat", "updated_at", "completed_at"))
+
+
+def _snapshot(db: Database, task_id: str, reasons: set[str]) -> tuple[tuple[object, ...], ...] | None:
+    try: tasks = db.list_tasks(limit=MAX_TASKS + 1)
+    except Exception: reasons.add("task_scan_unavailable"); return None
+    if len(tasks) > MAX_TASKS: reasons.add("task_scan_capped"); return None
+    members = _component(tasks, task_id, reasons)
+    if not members: reasons.add("task_missing"); return None
+    out: list[tuple[object, ...]] = []
+    for task in tasks:
+        if task.id not in members: continue
+        out.append(_shape(task))
+        if task.status not in TERMINAL or task.zombie_flagged_at or task.active_chain or task.active_fanout: reasons.add("nonterminal_or_unresolved_lineage")
+        if not task.assigned_agent or not task.current_session_id: reasons.add("recovery_authority_unavailable")
+        else:
+            try: out.append(("result", task.id, repr(db.get_latest_task_result(task.id, task.assigned_agent, task.current_session_id))))
+            except Exception: reasons.add("recovery_fingerprint_unavailable")
+        try: jobs = db.list_jobs_db(task_id=task.id, limit=MAX_JOBS + 1)
+        except Exception: reasons.add("job_scan_unavailable"); continue
+        if len(jobs) > MAX_JOBS: reasons.add("job_scan_capped"); continue
+        for job in jobs:
+            out.append(("job", task.id, job.id, job.status, getattr(job, "updated_at", None)))
+            if job.status not in TERMINAL_JOBS: reasons.add("active_job")
+    return tuple(sorted(out, key=repr))
 
 
 def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, task_id: str, root: Path, proc_root: Path = Path("/proc"), monotonic_now: float | None = None, daemon_started_monotonic: float | None = None) -> TaskScratchEvidence:
-    """Read actual sources twice; any ambiguity remains ineligible for B2b."""
+    """Read durable and OS sources around a bounded scan; every ambiguity fails closed."""
     reasons: set[str] = set(); now = time.monotonic() if monotonic_now is None else monotonic_now
     if daemon_started_monotonic is None or now - daemon_started_monotonic < WARMUP_SECONDS: reasons.add("zombie_warmup")
-    try: boot_id = (proc_root / "sys/kernel/random/boot_id").read_text().strip() or None
-    except OSError: boot_id = None
-    if boot_id is None: reasons.add("boot_id_unavailable")
-    try: before = db.list_tasks(limit=MAX_TASKS + 1)
-    except Exception: before = []; reasons.add("task_scan_unavailable")
-    if len(before) > MAX_TASKS: reasons.add("task_scan_capped")
-    members = _component(before, task_id, reasons)
-    if not members: reasons.add("task_missing")
-    for task in before:
-        if task.id in members and (task.status not in TERMINAL or task.zombie_flagged_at is not None): reasons.add("nonterminal_or_flagged_lineage")
-    sessions_before = tuple(sorted(sessions.iter_active()))
-    if any(row[0] in members for row in sessions_before): reasons.add("active_session")
-    for task in members:
-        try: jobs = db.list_jobs_db(task_id=task, limit=MAX_JOBS + 1)
-        except Exception: reasons.add("job_scan_unavailable"); continue
-        if len(jobs) > MAX_JOBS: reasons.add("job_scan_capped")
-        if any(job.status not in TERMINAL_JOBS for job in jobs): reasons.add("active_job")
-        record = next((item for item in before if item.id == task), None)
-        if record is None or not record.current_session_id:
-            reasons.add("recovery_fingerprint_unavailable")
-        else:
-            try:
-                if db.get_latest_task_result(task, record.assigned_agent, record.current_session_id) is not None: reasons.add("recovery_fingerprint_present")
-            except Exception: reasons.add("recovery_fingerprint_unavailable")
-    roots, cwds, fds, process_reasons = _scan(proc_root, root); reasons.update(process_reasons)
-    try: after = db.list_tasks(limit=MAX_TASKS + 1)
-    except Exception: after = []; reasons.add("task_revalidation_unavailable")
-    if [(t.id, t.status, t.revisit_of_task_id, t.current_session_id, t.zombie_flagged_at) for t in before] != [(t.id, t.status, t.revisit_of_task_id, t.current_session_id, t.zombie_flagged_at) for t in after]: reasons.add("durable_state_changed_during_collection")
+    deadline = time.monotonic_ns() + SCAN_NS
+    def boot() -> str | None:
+        try: return (proc_root / "sys/kernel/random/boot_id").read_text().strip() or None
+        except OSError: reasons.add("boot_id_unavailable"); return None
+    old_boot = boot(); before = _snapshot(db, task_id, reasons); sessions_before = tuple(sorted(sessions.iter_active()))
+    member_ids = {item[0] for item in before or () if item and item[0] not in {"result", "job"}}
+    if any(row[0] in member_ids for row in sessions_before): reasons.add("active_session")
+    roots, cwds, fds, scan_reasons, identities = _scan(proc_root, root, deadline); reasons.update(scan_reasons)
+    new_boot = boot(); after = _snapshot(db, task_id, reasons)
+    if before != after: reasons.add("durable_state_changed_during_collection")
     if sessions_before != tuple(sorted(sessions.iter_active())): reasons.add("sessions_changed_during_collection")
-    return TaskScratchEvidence(task_id, not reasons, tuple(sorted(reasons)), boot_id, time.time_ns(), roots, cwds, fds)
+    population = _population(proc_root, deadline)
+    if identities is None or population is None: reasons.add("process_population_unavailable")
+    else:
+        try:
+            if tuple((entry.name, _pid_start(entry)) for entry in population) != identities: reasons.add("process_population_changed_during_collection")
+        except RuntimeError: reasons.add("process_identity_unavailable")
+    if old_boot != new_boot: reasons.add("boot_id_changed_during_collection")
+    if _expired(deadline): reasons.add("process_scan_timeout")
+    return TaskScratchEvidence(task_id, not reasons, tuple(sorted(reasons)), new_boot, time.time_ns(), roots, cwds, fds)
