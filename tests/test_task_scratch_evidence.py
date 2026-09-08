@@ -6,16 +6,19 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from runtime.daemon.sessions import SessionTracker
 from runtime.daemon.task_scratch_evidence import collect_task_scratch_evidence
 from runtime.daemon.routes.tasks import CancelBody, cancel_task
 from runtime.daemon.zombie_reaper import _consume_zombie_fingerprint, _sweep_org_zombies
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
-from runtime.models import BlockKind, JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
+from runtime.models import BlockKind, CompletionReport, JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
 from runtime.config import Settings
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+from runtime.orchestrator.executors import ExecutorResult
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.run_step import _maybe_resume_blocked_task, run_step_impl
 from runtime.orchestrator.teams import TeamsRegistry
@@ -212,7 +215,7 @@ class _Queue:
         self.items.append((slug, task_id, metadata))
 
 
-def _recovery_fixture(tmp_path: Path) -> tuple[Database, Orchestrator, _Queue, Path]:
+def _recovery_fixture(tmp_path: Path, request: pytest.FixtureRequest) -> tuple[Database, Orchestrator, _Queue, Path]:
     """Build an isolated org with actual persistence and dispatch writers."""
     runtime = RuntimeDir.init(tmp_path / "runtime")
     paths = OrgPaths(root=runtime.orgs_dir / "test")
@@ -229,6 +232,7 @@ def _recovery_fixture(tmp_path: Path) -> tuple[Database, Orchestrator, _Queue, P
         (paths.agents_dir / f"{name}.md").write_text(render_agent_text(definition))
         (paths.workspaces_dir / name).mkdir(parents=True, exist_ok=True)
     db = Database(paths.db_path)
+    request.addfinalizer(db.close)
     orch = Orchestrator(db=db, settings=Settings(), paths=paths, slug="test", teams=TeamsRegistry.load(paths.root))
     queue = _Queue()
     orch._queue = queue
@@ -319,50 +323,81 @@ def test_real_zombie_consumer_blocked_with_owned_job_remains_ineligible(tmp_path
     assert {"active_job", "nonterminal_or_unresolved_lineage"} <= set(evidence.reasons)
 
 
-def test_blocked_job_resume_enqueues_then_shipping_cas_and_completion_run(tmp_path: Path, monkeypatch) -> None:
-    """L3: enqueue is read-only; the shipping CAS is the later state change."""
-    db, orch, queue, proc = _recovery_fixture(tmp_path)
+@pytest.mark.parametrize("terminal_status", [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.REJECTED])
+def test_recovered_blocked_job_resumes_through_shipping_cas_and_typed_completion(
+    tmp_path: Path, monkeypatch, request: pytest.FixtureRequest, terminal_status: JobStatus,
+) -> None:
+    """L3: real recovery and terminal writers precede the resume CAS/completion."""
+    db, orch, queue, proc = _recovery_fixture(tmp_path, request)
     db.insert_task(TaskRecord(id="TASK-JOB", brief="resume", status=TaskStatus.IN_PROGRESS,
-                              assigned_agent="dev_agent", current_session_id="resume-session"))
-    db.update_task("TASK-JOB", block_kind=BlockKind.BLOCKED_ON_JOB,
-                   blocked_on_job_ids=json.dumps(["JOB-TERM"]))
+                              task_type="subtask", assigned_agent="dev_agent", current_session_id="resume-session"))
     db.insert_job(JobRecord(id="JOB-TERM", task_id="TASK-JOB", agent_name="dev_agent",
                             title="x", rationale="x", script_text="true",
-                            interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING,
+                            interpreter=JobInterpreter.BASH,
+                            status=JobStatus.PENDING if terminal_status is JobStatus.REJECTED else JobStatus.RUNNING,
                             created_at=datetime.now(timezone.utc).isoformat()))
+    db.insert_task_result("TASK-JOB", "dev_agent", "resume-session", "waiting", 0,
+                          status="blocked", waiting_on_job_ids=["JOB-TERM"])
+    fingerprint = db.get_latest_task_result("TASK-JOB", "dev_agent", "resume-session")
+    assert fingerprint is not None
+    _consume_zombie_fingerprint(db, "TASK-JOB", fingerprint, db.get_task("TASK-JOB"), orch)
+    parked = db.get_task("TASK-JOB")
+    assert parked is not None and parked.block_kind is BlockKind.BLOCKED_ON_JOB
+    assert parked.blocked_on_job_ids == '["JOB-TERM"]'
+    assert db.get_latest_task_result("TASK-JOB", "dev_agent", "resume-session")["id"] == fingerprint["id"]
 
     assert not _maybe_resume_blocked_task(orch, "TASK-JOB", trigger="job_terminal",
                                           triggering_job_id="JOB-TERM")
     assert queue.items == []
-    # The job runner's durable job row is the authority consumed by the resume
-    # predicate; this test changes only its temporary fixture row.
-    db._conn.execute("UPDATE jobs SET status = 'completed' WHERE id = ?", ("JOB-TERM",))
-    db._conn.commit()
+    if terminal_status is JobStatus.REJECTED:
+        db.transition_job_to_rejected("JOB-TERM", reviewer="qa_engineer", reason="test", reviewed_at="2026-01-01T00:00:00+00:00")
+    else:
+        db.transition_job_to_terminal("JOB-TERM", status=terminal_status, exit_code=0 if terminal_status is JobStatus.COMPLETED else 1,
+                                      finished_at="2026-01-01T00:00:00+00:00", duration_ms=1,
+                                      stdout_head="test", stderr_head="" if terminal_status is JobStatus.COMPLETED else "failed")
     assert _maybe_resume_blocked_task(orch, "TASK-JOB", trigger="job_terminal",
                                       triggering_job_id="JOB-TERM")
     assert queue.items == [("test", "TASK-JOB", {"trigger": "job_terminal", "triggering_job_id": "JOB-TERM"})]
-    parked = db.get_task("TASK-JOB")
     assert parked is not None and parked.status is TaskStatus.IN_PROGRESS and parked.block_kind is BlockKind.BLOCKED_ON_JOB
 
-    # Only the external agent execution is isolated.  Admission, CAS, resume
-    # audit and terminal writer execute through the shipping implementation.
-    monkeypatch.setattr(orch, "_run_agent", lambda *args: (_ for _ in ()).throw(RuntimeError("test-owned executor stub")))
+    observed: list[tuple[TaskStatus, BlockKind | None, str | None]] = []
+    def _successful_external_executor(*_args):
+        active = db.get_task("TASK-JOB")
+        assert active is not None
+        observed.append((active.status, active.block_kind, active.blocked_on_job_ids))
+        return (
+            ExecutorResult(success=True, duration_seconds=1, session_id="resumed-session", returncode=0),
+            CompletionReport(task_id="TASK-JOB", agent="dev_agent", status="completed", confidence=100,
+                             output_summary="typed normal completion"),
+        )
+    # Only external execution is stubbed; admission, CAS, audit, result and
+    # completion consumer remain the shipping seams.
+    monkeypatch.setattr(orch, "_run_agent", _successful_external_executor)
     run_step_impl(orch, "TASK-JOB", metadata=queue.items[-1][2])
     after = db.get_task("TASK-JOB")
-    assert after is not None and after.status is TaskStatus.FAILED and after.block_kind is None
+    # The CAS clears the parked discriminator; the historical linked-job
+    # field is retained by the shipping writer for resume provenance.
+    assert observed == [(TaskStatus.IN_PROGRESS, None, '["JOB-TERM"]')]
+    assert after is not None and after.status is TaskStatus.COMPLETED and after.block_kind is None
+    assert after.blocked_on_job_ids == '["JOB-TERM"]'
     resumed = [row for row in db.get_audit_logs("TASK-JOB") if row["action"] == "task_resumed_from_jobs"]
-    assert len(resumed) == 1 and resumed[0]["payload"]["job_outcomes"] == {"JOB-TERM": "completed"}
-    assert db.get_job_status("JOB-TERM") == "completed"
-    assert "nonterminal_or_unresolved_lineage" not in collect_task_scratch_evidence(
+    assert len(resumed) == 1 and resumed[0]["payload"]["job_outcomes"] == {"JOB-TERM": terminal_status.value}
+    assert db.get_job_status("JOB-TERM") == terminal_status.value
+    retained = db.get_latest_task_result("TASK-JOB", "dev_agent", "resume-session")
+    assert retained is not None and retained["id"] == fingerprint["id"]
+    # The external executor return is not a transport-persistence claim: this
+    # seam retains the recovered blocked result and proves the consumer's
+    # terminal task transition, not a newly fabricated task-result row.
+    evidence = collect_task_scratch_evidence(
         db=db, sessions=SessionTracker(), task_id="TASK-JOB", root=tmp_path / "root",
         proc_root=proc, monotonic_now=31, daemon_started_monotonic=0,
-    ).reasons
-    db.close()
+    )
+    assert evidence.eligible
 
 
-def test_sweep_selection_warmup_and_flagged_fingerprint_use_shipping_path(tmp_path: Path, monkeypatch) -> None:
+def test_sweep_selection_warmup_and_flagged_fingerprint_use_shipping_path(tmp_path: Path, monkeypatch, request: pytest.FixtureRequest) -> None:
     """L4: selection belongs to the sweep, including warm-up and flag phases."""
-    db, orch, queue, _ = _recovery_fixture(tmp_path)
+    db, orch, queue, _ = _recovery_fixture(tmp_path, request)
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     db.insert_task(TaskRecord(id="TASK-SWEEP", brief="x", status=TaskStatus.IN_PROGRESS,
                               assigned_agent="engineering_head", current_session_id="sweep-session",
@@ -382,16 +417,15 @@ def test_sweep_selection_warmup_and_flagged_fingerprint_use_shipping_path(tmp_pa
     actions = [row["action"] for row in db.get_audit_logs("TASK-SWEEP")]
     assert actions.count("zombie_flagged") == 1 and actions.count("zombie_cleared") == 1
     assert queue.items == []
-    db.close()
 
 
-def test_recovery_delegate_and_then_persist_real_lineage_effects(tmp_path: Path) -> None:
+def test_recovery_delegate_and_then_persist_real_lineage_effects(tmp_path: Path, request: pytest.FixtureRequest) -> None:
     for decision, requires_chain in (
         ({"action": "delegate", "agent": "dev_agent", "prompt": "implement"}, False),
         ({"action": "delegate", "agent": "dev_agent", "prompt": "implement",
           "then": [{"agent": "qa_engineer", "prompt": "verify"}]}, True),
     ):
-        db, orch, queue, proc = _recovery_fixture(tmp_path / ("chain" if requires_chain else "plain"))
+        db, orch, queue, proc = _recovery_fixture(tmp_path / ("chain" if requires_chain else "plain"), request)
         fingerprint = _recover_decision(db, orch, decision)
         parent = db.get_task("TASK-ROOT")
         children = db.get_children("TASK-ROOT")
@@ -409,11 +443,10 @@ def test_recovery_delegate_and_then_persist_real_lineage_effects(tmp_path: Path)
                                                      root=tmp_path / "root", proc_root=proc,
                                                      monotonic_now=31, daemon_started_monotonic=0)
             assert not evidence.eligible
-        db.close()
 
 
-def test_recovery_fanout_persists_children_audit_queue_and_ineligible_lineage(tmp_path: Path) -> None:
-    db, orch, queue, proc = _recovery_fixture(tmp_path)
+def test_recovery_fanout_persists_children_audit_queue_and_ineligible_lineage(tmp_path: Path, request: pytest.FixtureRequest) -> None:
+    db, orch, queue, proc = _recovery_fixture(tmp_path, request)
     fingerprint = _recover_decision(db, orch, {
         "action": "fanout", "children": [
             {"agent": "dev_agent", "prompt": "one"}, {"agent": "qa_engineer", "prompt": "two"},
@@ -433,11 +466,10 @@ def test_recovery_fanout_persists_children_audit_queue_and_ineligible_lineage(tm
         assert not collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id=task_id,
                                                  root=tmp_path / "root", proc_root=proc,
                                                  monotonic_now=31, daemon_started_monotonic=0).eligible
-    db.close()
 
 
-def test_recovery_delegated_child_failure_wakes_parent_once_and_stays_ineligible(tmp_path: Path) -> None:
-    db, orch, queue, proc = _recovery_fixture(tmp_path)
+def test_recovery_delegated_child_failure_wakes_parent_once_and_stays_ineligible(tmp_path: Path, request: pytest.FixtureRequest) -> None:
+    db, orch, queue, proc = _recovery_fixture(tmp_path, request)
     _recover_decision(db, orch, {"action": "delegate", "agent": "dev_agent", "prompt": "implement"})
     child_id = db.get_children("TASK-ROOT")[0]
     queue.items.clear()
@@ -454,22 +486,20 @@ def test_recovery_delegated_child_failure_wakes_parent_once_and_stays_ineligible
         assert not collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id=task_id,
                                                  root=tmp_path / "root", proc_root=proc,
                                                  monotonic_now=31, daemon_started_monotonic=0).eligible
-    db.close()
 
 
-def test_recovery_sweep_replay_guard_has_no_second_effect(tmp_path: Path) -> None:
-    db, orch, queue, _ = _recovery_fixture(tmp_path)
+def test_recovery_sweep_replay_guard_has_no_second_effect(tmp_path: Path, request: pytest.FixtureRequest) -> None:
+    db, orch, queue, _ = _recovery_fixture(tmp_path, request)
     _recover_decision(db, orch, {"action": "delegate", "agent": "dev_agent", "prompt": "implement"})
     before = (list(db.get_children("TASK-ROOT")), list(queue.items), list(db.get_audit_logs("TASK-ROOT")))
     _sweep_org_zombies(db, now=datetime.now(timezone.utc), uptime=999, warm_up_seconds=0, orchestrator=orch)
     after = (list(db.get_children("TASK-ROOT")), list(queue.items), list(db.get_audit_logs("TASK-ROOT")))
     assert after == before  # parked IN_PROGRESS(DELEGATED) is outside the shipping sweep allowlist.
-    db.close()
 
 
-def test_cancel_route_cascades_real_recovered_tree_and_preserves_conservative_evidence(tmp_path: Path) -> None:
+def test_cancel_route_cascades_real_recovered_tree_and_preserves_conservative_evidence(tmp_path: Path, request: pytest.FixtureRequest) -> None:
     for cascade in (True, False):
-        db, orch, queue, proc = _recovery_fixture(tmp_path / str(cascade))
+        db, orch, queue, proc = _recovery_fixture(tmp_path / str(cascade), request)
         _recover_decision(db, orch, {"action": "delegate", "agent": "dev_agent", "prompt": "implement"})
         child_id = db.get_children("TASK-ROOT")[0]
         org = MagicMock(db=db, orchestrator=orch, sessions=SessionTracker(), db_lock=asyncio.Lock())
@@ -483,4 +513,3 @@ def test_cancel_route_cascades_real_recovered_tree_and_preserves_conservative_ev
         assert not collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-ROOT",
                                                  root=tmp_path / "root", proc_root=proc,
                                                  monotonic_now=31, daemon_started_monotonic=0).eligible
-        db.close()
