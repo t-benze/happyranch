@@ -277,7 +277,11 @@ Failed thread turns persist additive, capped ``stdout_tail`` and ``stderr_tail``
 audit diagnostics. The displayed reason may prefer a structured Claude terminal
 failure only when stderr consists solely of known workspace-trust warning lines;
 task failure notes also name the proven Claude API-error/session-limit result
-shape while retaining bounded raw diagnostics. The raw tails still drive exact
+shape while retaining bounded credential-redacted diagnostics on existing
+task/thread/dream surfaces. Meaningful stderr, including trust-warning
+lookalikes, remains the human cause; the structured reason/reset notice is
+supplementary when stderr is absent or exclusively exact known-benign lines.
+The raw tails still drive exact
 eviction and other classifiers. Session-limit terminal output is not a
 short-backoff automatic retry signal.
 

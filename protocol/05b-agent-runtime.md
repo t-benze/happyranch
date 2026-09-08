@@ -163,7 +163,10 @@ payload fields without changing the audit scope identity. Human-facing Claude
 failure detail prefers a parsed structured terminal result only when all raw
 stderr lines are the known workspace-trust warning shape; task failure notes
 also name the proven Claude API-error/session-limit result shape while retaining
-bounded raw diagnostics. Classifier inputs, exact eviction detection, retry
+bounded credential-redacted diagnostics on existing task/thread/dream surfaces.
+Meaningful stderr (including trust-warning lookalikes) remains the human cause;
+the structured reason and reset notice are supplementary when stderr is absent
+or exclusively exact known-benign lines. Classifier inputs, exact eviction detection, retry
 ownership, and breaker qualification continue to consume the unchanged executor
 result fields. A session-limit notice is not an automatic short-backoff
 rate-limit retry signal.

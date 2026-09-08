@@ -33,6 +33,7 @@ from runtime.models import (
 from runtime.orchestrator.executors import (
     ExecutorResult,
     _meaningful_stderr,
+    reporting_detail,
 )
 from runtime.orchestrator.executor_registry import build_executor, get_registry
 from runtime.orchestrator.host_supervisor import (
@@ -78,15 +79,14 @@ def _executor_error_detail(result, rc) -> str:
         terminal_error
         and not _meaningful_stderr(stderr)
     ):
-        return terminal_error[:_REASON_DETAIL_CAP]
+        return reporting_detail(terminal_error, cap=_REASON_DETAIL_CAP)
 
     raw = (str(getattr(result, "error", "") or "")
            or str(getattr(result, "stderr_tail", "") or "")).strip()
     prefix = f"Command exited with code {rc}"
     if raw.startswith(prefix):
         raw = raw[len(prefix):].lstrip(": ").strip()
-    raw = " ".join(raw.split())  # collapse newlines → single-line reason
-    return raw[:_REASON_DETAIL_CAP]
+    return reporting_detail(raw, cap=_REASON_DETAIL_CAP)
 
 
 @dataclass(frozen=True)

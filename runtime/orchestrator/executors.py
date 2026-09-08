@@ -907,6 +907,23 @@ _BENIGN_LAUNCHER_STDERR_LINES = (
     re.compile(r"^Set hasTrustDialogAccepted to true to trust this workspace\.?$"),
 )
 
+# Durable failure reporting is a bounded preview, never a second raw provider
+# transcript. Classification, eviction, retry, and throttling keep using the
+# original streams.
+_REPORTING_DETAIL_CAP = 1200
+_REPORTING_SECRET = re.compile(
+    r"(?i)\b(?:authorization|api[_-]?key|token|secret)\s*[:=]\s*[^\s,;]+"
+)
+_REPORTING_BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+")
+
+
+def reporting_detail(text: str, *, cap: int = _REPORTING_DETAIL_CAP) -> str:
+    """Return a single-line, credential-redacted reporting preview."""
+    detail = " ".join(str(text or "").split())
+    detail = _REPORTING_SECRET.sub("[REDACTED]", detail)
+    detail = _REPORTING_BEARER.sub("Bearer [REDACTED]", detail)
+    return detail[-cap:]
+
 
 def _meaningful_stderr(text: str) -> str:
     """Remove only complete, known-benign launcher/Claude warning lines."""

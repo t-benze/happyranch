@@ -1272,10 +1272,20 @@ def test_parse_claude_terminal_error_observed_session_limit_success_envelope():
     assert _parse_claude_terminal_error(stdout, "") == "session_limit"
 
 
+def test_parse_claude_terminal_error_loads_complete_observed_sanitized_fixture():
+    """The checked-in production-note fixture, not a reconstructed surrogate."""
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    fixture = Path(__file__).parent / "fixtures" / "claude-task6941-result.sanitized.json"
+    assert _parse_claude_terminal_error(fixture.read_text(), "") == "session_limit"
+
+
 @pytest.mark.parametrize("field,value", [
-    ("is_error", False),
-    ("terminal_reason", "other_error"),
-    ("api_error_status", "429"),
+    ("type", None), ("type", 1), ("subtype", None), ("subtype", 1),
+    ("is_error", None), ("is_error", 1), ("is_error", False),
+    ("terminal_reason", None), ("terminal_reason", 1), ("terminal_reason", "other_error"),
+    ("api_error_status", None), ("api_error_status", True), ("api_error_status", "429"),
+    ("result", None), ("result", 1), ("result", "API Error: 429 Too Many Requests"),
 ])
 def test_parse_claude_terminal_error_observed_success_shape_requires_typed_discriminators(
     field, value,

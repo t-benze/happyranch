@@ -926,8 +926,43 @@ def test_run_step_persists_observed_claude_session_limit_reason(
     note = db.get_task("T-1").note or ""
     assert "session_limit" in note
     assert notice in note
-    assert "this workspace has not been trusted" in note
+    assert "this workspace has not been trusted" not in note
     assert result.rate_limited is False
+
+
+def test_run_step_meaningful_stderr_keeps_structured_reset_notice(
+    runtime, db, monkeypatch, tmp_path,
+):
+    """Human stderr wins, while stdout retains the session reset notice."""
+    from unittest.mock import MagicMock
+
+    from runtime.orchestrator.executors import _parse_claude_terminal_error, _run_command
+    from runtime.orchestrator.orchestrator import Orchestrator
+    import runtime.orchestrator.executors as executors
+
+    db.insert_task(TaskRecord(id="T-1", brief="x", assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+    proc = MagicMock(pid=4242, returncode=1)
+    notice = "You've hit your session limit · resets 12:20am (Asia/Shanghai)"
+    proc.communicate.return_value = (
+        '{"type":"result","subtype":"success","is_error":true,'
+        '"terminal_reason":"api_error","api_error_status":429,'
+        f'"result":"{notice}"}}',
+        "API Error: 529 Overloaded\\n",
+    )
+    monkeypatch.setattr(executors.subprocess, "Popen", lambda *a, **k: proc)
+    result = _run_command(
+        ["claude", "-p", "x"], tmp_path, "sess-limit", 30,
+        error_parser=_parse_claude_terminal_error,
+    )
+    monkeypatch.setattr(orch, "_run_agent", lambda *a, **k: (result, None))
+
+    orch.run_step("T-1")
+
+    note = db.get_task("T-1").note or ""
+    assert note.index("API Error: 529 Overloaded") < note.index("terminal_error: session_limit")
+    assert notice in note
 
 
 def test_run_step_opaque_failure_no_auto_revisit(
