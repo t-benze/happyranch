@@ -3,9 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from runtime.daemon.sessions import SessionTracker
 from runtime.daemon.task_scratch_evidence import collect_task_scratch_evidence
+from runtime.daemon.zombie_reaper import _consume_zombie_fingerprint
+from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
 from runtime.models import JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
 
@@ -170,3 +173,86 @@ def test_cleared_session_with_live_executor_pid_is_ineligible(tmp_path: Path) ->
     assert "executor_pid_live_or_ambiguous" in evidence.reasons
     db.update_task("TASK-1", executor_pid=-1)
     assert "executor_pid_unavailable" in collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).reasons
+
+
+def _recovery_orchestrator(db: Database) -> MagicMock:
+    """Minimal adapter: only external notification/execution remains stubbed.
+
+    The recovery consumer, task/result writes and audit writer are the shipping
+    implementations.  These tests intentionally do not pre-seed a terminal
+    task and call it a consumed recovery result.
+    """
+    orch = MagicMock()
+    orch._db = db
+    orch._audit = AuditLogger(db)
+    orch._update_task_history = MagicMock()
+    return orch
+
+
+def test_real_zombie_consumer_done_retains_result_and_becomes_observable_safe(tmp_path: Path) -> None:
+    db, proc = _sources(tmp_path)
+    db.insert_task(TaskRecord(
+        id="TASK-DONE", status=TaskStatus.IN_PROGRESS, task_type="subtask",
+        brief="x", assigned_agent="dev_agent", current_session_id="session",
+    ))
+    db.insert_task_result("TASK-DONE", "dev_agent", "session", "done", 100, status="completed")
+    fingerprint = db.get_latest_task_result("TASK-DONE", "dev_agent", "session")
+    assert fingerprint is not None
+
+    _consume_zombie_fingerprint(db, "TASK-DONE", fingerprint, db.get_task("TASK-DONE"), _recovery_orchestrator(db))
+
+    after = db.get_task("TASK-DONE")
+    assert after.status is TaskStatus.COMPLETED
+    assert after.block_kind is None
+    assert db.get_latest_task_result("TASK-DONE", "dev_agent", "session")["id"] == fingerprint["id"]
+    evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-DONE", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert evidence.eligible
+
+
+def test_real_zombie_consumer_blocked_without_jobs_fails_but_retains_result(tmp_path: Path) -> None:
+    db, proc = _sources(tmp_path)
+    db.insert_task(TaskRecord(
+        id="TASK-BLOCKED", status=TaskStatus.IN_PROGRESS, task_type="subtask",
+        brief="x", assigned_agent="dev_agent", current_session_id="session",
+    ))
+    db.insert_task_result("TASK-BLOCKED", "dev_agent", "session", "waiting", 0, status="blocked")
+    fingerprint = db.get_latest_task_result("TASK-BLOCKED", "dev_agent", "session")
+    assert fingerprint is not None
+
+    _consume_zombie_fingerprint(db, "TASK-BLOCKED", fingerprint, db.get_task("TASK-BLOCKED"), _recovery_orchestrator(db))
+
+    after = db.get_task("TASK-BLOCKED")
+    assert after.status is TaskStatus.FAILED
+    assert after.block_kind is None
+    assert db.get_latest_task_result("TASK-BLOCKED", "dev_agent", "session")["id"] == fingerprint["id"]
+    evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-BLOCKED", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert evidence.eligible
+
+
+def test_real_zombie_consumer_blocked_with_owned_job_remains_ineligible(tmp_path: Path) -> None:
+    db, proc = _sources(tmp_path)
+    db.insert_task(TaskRecord(
+        id="TASK-WAIT", status=TaskStatus.IN_PROGRESS, task_type="subtask",
+        brief="x", assigned_agent="dev_agent", current_session_id="session",
+    ))
+    db.insert_job(JobRecord(
+        id="JOB-WAIT", task_id="TASK-WAIT", agent_name="dev_agent", title="x",
+        rationale="x", script_text="true", interpreter=JobInterpreter.BASH,
+        status=JobStatus.RUNNING, created_at=datetime.now(timezone.utc).isoformat(),
+    ))
+    db.insert_task_result(
+        "TASK-WAIT", "dev_agent", "session", "waiting", 0, status="blocked",
+        waiting_on_job_ids=["JOB-WAIT"],
+    )
+    fingerprint = db.get_latest_task_result("TASK-WAIT", "dev_agent", "session")
+    assert fingerprint is not None
+
+    _consume_zombie_fingerprint(db, "TASK-WAIT", fingerprint, db.get_task("TASK-WAIT"), _recovery_orchestrator(db))
+
+    after = db.get_task("TASK-WAIT")
+    assert after.status is TaskStatus.IN_PROGRESS
+    assert after.blocked_on_job_ids == '["JOB-WAIT"]'
+    assert any(row["action"] == "task_blocked_on_jobs" for row in db.get_audit_logs("TASK-WAIT"))
+    evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-WAIT", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert not evidence.eligible
+    assert {"active_job", "nonterminal_or_unresolved_lineage"} <= set(evidence.reasons)
