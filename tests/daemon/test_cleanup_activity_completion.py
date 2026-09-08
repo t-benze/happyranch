@@ -1,10 +1,11 @@
 import asyncio
 import copy
+from datetime import datetime, timezone
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from runtime.models import TaskStatus
+from runtime.models import JobInterpreter, JobRecord, JobStatus, TaskStatus
 from runtime.infrastructure.database import Database
 
 
@@ -40,6 +41,23 @@ def _new_cleanup_task(client: TestClient, org_state, auth_headers) -> tuple[str,
         "session_id": "sess-cleanup", "agent": "dev_agent", "status": "completed",
         "confidence": 80, "output_summary": "ok", "cleanup_activity": _receipt(),
     }
+
+
+def _new_owned_job(org_state, task_id: str) -> str:
+    """Create the real isolated job-row shape used by the route guard."""
+    job_id = org_state.db.next_job_id()
+    org_state.db.insert_job(JobRecord(
+        id=job_id,
+        task_id=task_id,
+        agent_name="dev_agent",
+        title="receipt guard fixture",
+        rationale="exercise callback ownership validation",
+        script_text="true",
+        interpreter=JobInterpreter.BASH,
+        status=JobStatus.PENDING,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    ))
+    return job_id
 
 
 def test_cleanup_completion_absent_field_legacy_compatible(app, org_state, auth_headers) -> None:
@@ -112,6 +130,81 @@ def test_cleanup_completion_nonmanager_self_evaluation_rejects_before_pair(app, 
     assert org_state.db.get_task_results(task_id) == []
     assert [row for row in org_state.db.get_audit_logs(task_id) if row["action"] == "workspace_cleanup_completed"] == []
     assert org_state.sessions.get_active(task_id, "dev_agent") == "sess-cleanup"
+
+
+@pytest.mark.parametrize(
+    ("waiting_on_job_ids", "status", "expected_status", "expected_code"),
+    [
+        ([], "blocked", 400, "empty_waiting_on_job_ids"),
+        (["JOB-any"], "completed", 400, "waiting_on_job_ids_requires_blocked"),
+        (["JOB-missing"], "blocked", 404, "job_not_found"),
+    ],
+)
+def test_cleanup_completion_waiting_job_guard_rejects_before_pair_or_volatile_effects(
+    app, org_state, auth_headers, waiting_on_job_ids, status, expected_status, expected_code,
+) -> None:
+    """G-wait negatives use a valid receipt and reach the shipping job guard."""
+    client = TestClient(app)
+    task_id, payload = _new_cleanup_task(client, org_state, auth_headers)
+    payload.update({
+        "status": status,
+        "cleanup_activity": {**_receipt(), "outcome": "blocked" if status == "blocked" else "completed"},
+        "waiting_on_job_ids": waiting_on_job_ids,
+    })
+    response = client.post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers,
+    )
+    assert response.status_code == expected_status
+    assert response.json()["detail"]["code"] == expected_code
+    assert org_state.db.get_task_results(task_id) == []
+    assert [row for row in org_state.db.get_audit_logs(task_id) if row["action"] == "workspace_cleanup_completed"] == []
+    assert org_state.sessions.get_active(task_id, "dev_agent") == "sess-cleanup"
+
+
+def test_cleanup_completion_waiting_job_guard_rejects_foreign_job_without_effects(app, org_state, auth_headers) -> None:
+    """G-wait ownership is derived from the real job row, not receipt input."""
+    client = TestClient(app)
+    owner_task, _ = _new_cleanup_task(client, org_state, auth_headers)
+    foreign_job = _new_owned_job(org_state, owner_task)
+    task_id, payload = _new_cleanup_task(client, org_state, auth_headers)
+    payload.update({
+        "status": "blocked",
+        "cleanup_activity": {**_receipt(), "outcome": "blocked"},
+        "waiting_on_job_ids": [foreign_job],
+    })
+    response = client.post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers,
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == {
+        "code": "job_not_owned_by_task", "job_id": foreign_job, "owner_task_id": owner_task,
+    }
+    assert org_state.db.get_task_results(task_id) == []
+    assert [row for row in org_state.db.get_audit_logs(task_id) if row["action"] == "workspace_cleanup_completed"] == []
+    assert org_state.sessions.get_active(task_id, "dev_agent") == "sess-cleanup"
+
+
+def test_cleanup_completion_waiting_job_guard_dedupes_owned_jobs_into_complete_pair(app, org_state, auth_headers) -> None:
+    """G-wait positive persists sorted deduped real owned jobs with one immutable pair."""
+    client = TestClient(app)
+    task_id, payload = _new_cleanup_task(client, org_state, auth_headers)
+    first = _new_owned_job(org_state, task_id)
+    second = _new_owned_job(org_state, task_id)
+    payload.update({
+        "status": "blocked",
+        "cleanup_activity": {**_receipt(), "outcome": "blocked"},
+        "waiting_on_job_ids": [second, first, second, first],
+    })
+    response = client.post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers,
+    )
+    assert response.status_code == 200
+    results = org_state.db.get_task_results(task_id)
+    audits = [row for row in org_state.db.get_audit_logs(task_id) if row["action"] == "workspace_cleanup_completed"]
+    assert len(results) == len(audits) == 1
+    assert results[0]["waiting_on_job_ids"] == [first, second]
+    assert audits[0]["payload"]["task_result_id"] == results[0]["id"]
+    assert org_state.sessions.get_active(task_id, "dev_agent") is None
 
 
 def test_cleanup_completion_persists_correlated_nullable_receipt_and_legacy_absence(app, org_state, auth_headers) -> None:
