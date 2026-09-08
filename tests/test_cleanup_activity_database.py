@@ -112,9 +112,12 @@ def test_actual_write_fault_rolls_back_reopens_and_retries(db, monkeypatch, writ
     monkeypatch.setattr(db, method, write_then_fail)
     with pytest.raises(RuntimeError, match=f"injected {writer} write failure"):
         _write(db, context)
-    reopened = Database(db.db_path)
-    assert reopened.get_task_results("TASK-001") == [] and _completed(reopened) == []
-    assert _write(reopened, reopened.get_cleanup_trigger_context("TASK-001", "dev_agent")) is True
+    # This is an operation-boundary injection, not a disk-failure simulation:
+    # restore the original seam and retry on the *same* Database/connection.
+    monkeypatch.setattr(db, method, original)
+    observer = Database(db.db_path)
+    assert observer.get_task_results("TASK-001") == [] and _completed(observer) == []
+    assert _write(db, db.get_cleanup_trigger_context("TASK-001", "dev_agent")) is True
     _assert_pair(Database(db.db_path), "receipt", "sess-cleanup")
 
 
@@ -124,9 +127,11 @@ def test_actual_commit_fault_rolls_back_reopens_and_retries(db) -> None:
     with pytest.raises(RuntimeError, match="injected commit failure"):
         _write(db, context)
     db._conn = original
-    reopened = Database(db.db_path)
-    assert reopened.get_task_results("TASK-001") == [] and _completed(reopened) == []
-    assert _write(reopened, reopened.get_cleanup_trigger_context("TASK-001", "dev_agent")) is True
+    observer = Database(db.db_path)
+    assert observer.get_task_results("TASK-001") == [] and _completed(observer) == []
+    # The original connection, rather than a reopen substitute, must remain
+    # usable after the rollback boundary.
+    assert _write(db, db.get_cleanup_trigger_context("TASK-001", "dev_agent")) is True
     _assert_pair(Database(db.db_path), "receipt", "sess-cleanup")
 
 
@@ -209,7 +214,12 @@ def test_rlock_excludes_contender_at_actual_lock_acquisition(db, monkeypatch) ->
     # The named contender is blocked in the real RLock acquire: it has not
     # entered the protected writer or produced a result before release.
     assert outcomes == []
-    release.set(); first.join(2); second.join(2)
+    try:
+        # Broken-exclusion control: the same observed signal is insufficient
+        # unless the contender is still outside the compound writer.
+        assert outcomes == []
+    finally:
+        release.set(); first.join(2); second.join(2)
     assert not first.is_alive() and not second.is_alive()
     assert sorted(outcomes, key=lambda item: item[0]) == [("loser", False), ("winner", True)]
     _assert_pair(Database(db.db_path), "winner", "sess-cleanup")

@@ -2,6 +2,7 @@ import asyncio
 import copy
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 from runtime.models import TaskStatus
 from runtime.infrastructure.database import Database
@@ -64,6 +65,53 @@ def test_cleanup_completion_explicit_invalid_receipt_no_result_no_audit(app, org
     assert response.json()["detail"]["code"] == "invalid_reclaimed_bytes"
     assert org_state.db.get_task_results(task_id) == []
     assert [row for row in org_state.db.get_audit_logs(task_id) if row["action"] == "workspace_cleanup_completed"] == []
+
+
+@pytest.mark.parametrize(
+    ("local_ci", "code"),
+    [
+        ([], "local_ci_not_object"),
+        ({"command": "scripts/local_ci.sh all", "exit_code": True}, "local_ci_invalid"),
+        ({"command": "scripts/local_ci.sh python", "exit_code": 0}, "local_ci_invalid"),
+        ({"command": "scripts/local_ci.sh all", "exit_code": 1}, "local_ci_invalid"),
+    ],
+)
+def test_cleanup_completion_local_ci_guard_rejects_before_pair_or_volatile_effects(app, org_state, auth_headers, local_ci, code) -> None:
+    """G-ci: receipt-bearing callbacks use the shipping validator unchanged."""
+    client = TestClient(app)
+    task_id, payload = _new_cleanup_task(client, org_state, auth_headers)
+    payload["local_ci"] = local_ci
+    response = client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers)
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == code
+    assert org_state.db.get_task_results(task_id) == []
+    assert [row for row in org_state.db.get_audit_logs(task_id) if row["action"] == "workspace_cleanup_completed"] == []
+    assert org_state.sessions.get_active(task_id, "dev_agent") == "sess-cleanup"
+
+
+def test_cleanup_completion_valid_local_ci_is_stored_verbatim_with_complete_pair(app, org_state, auth_headers) -> None:
+    """G-ci positive: a supported evidence object reaches the compound writer."""
+    client = TestClient(app)
+    task_id, payload = _new_cleanup_task(client, org_state, auth_headers)
+    payload["local_ci"] = {"command": "scripts/local_ci.sh all", "exit_code": 0}
+    response = client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers)
+    assert response.status_code == 200
+    rows = org_state.db.get_task_results(task_id)
+    assert len(rows) == 1 and rows[0]["local_ci"] == '{"command": "scripts/local_ci.sh all", "exit_code": 0}'
+    assert len([row for row in org_state.db.get_audit_logs(task_id) if row["action"] == "workspace_cleanup_completed"]) == 1
+
+
+def test_cleanup_completion_nonmanager_self_evaluation_rejects_before_pair(app, org_state, auth_headers) -> None:
+    """G-manager: nonmanager receipt callbacks fail at the existing availability guard."""
+    client = TestClient(app)
+    task_id, payload = _new_cleanup_task(client, org_state, auth_headers)
+    payload["manager_self_evaluation"] = {"outcome": "continue_same_root"}
+    response = client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers)
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "manager_self_evaluation_not_available"
+    assert org_state.db.get_task_results(task_id) == []
+    assert [row for row in org_state.db.get_audit_logs(task_id) if row["action"] == "workspace_cleanup_completed"] == []
+    assert org_state.sessions.get_active(task_id, "dev_agent") == "sess-cleanup"
 
 
 def test_cleanup_completion_persists_correlated_nullable_receipt_and_legacy_absence(app, org_state, auth_headers) -> None:
@@ -215,6 +263,7 @@ class _ObservedLock:
         self.entered: list[asyncio.Event] = []
         self.entries = 0
         self.request_ids: list[int] = []
+        self.callback_owns_lock = False
 
     async def __aenter__(self) -> "_ObservedLock":
         position = self.entries
@@ -224,9 +273,12 @@ class _ObservedLock:
         # No test barrier may intervene here: observed callbacks are queued
         # on the original lock, rather than merely staged before it.
         await self._lock.acquire()
+        self.callback_owns_lock = True
         return self
 
     async def __aexit__(self, *_args: object) -> None:
+        assert self.callback_owns_lock
+        self.callback_owns_lock = False
         self._lock.release()
 
 
@@ -262,6 +314,7 @@ def test_cleanup_locked_revalidation_rejects_mutated_authority(app, org_state, a
         monkeypatch.setattr(org_state.sessions, "clear", clear)
         monkeypatch.setattr(org_state.event_bus, "publish", publish)
         await actual_lock.acquire()
+        fixture_owns_lock = True
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             request = asyncio.create_task(
                 client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers),
@@ -270,18 +323,27 @@ def test_cleanup_locked_revalidation_rejects_mutated_authority(app, org_state, a
             try:
                 await asyncio.wait_for(observed.entered[0].wait(), timeout=2)
                 mutate(task_id)
+                expected_task = org_state.db.get_task(task_id)
+                expected_session = org_state.sessions.get_active(task_id, "dev_agent")
                 _assert_no_cleanup_effects(org_state, task_id, effects)
                 actual_lock.release()
+                fixture_owns_lock = False
                 response = await asyncio.wait_for(request, timeout=2)
             finally:
-                if actual_lock.locked() and not request.done():
+                if fixture_owns_lock:
                     actual_lock.release()
+                    fixture_owns_lock = False
                 if not request.done():
                     request.cancel()
                     await asyncio.wait_for(asyncio.gather(request, return_exceptions=True), timeout=2)
         assert response.status_code == expected_status
         assert response.json()["detail"]["code"] == expected_code
         _assert_no_cleanup_effects(org_state, task_id, effects)
+        after = org_state.db.get_task(task_id)
+        assert after.status == expected_task.status
+        assert after.assigned_agent == expected_task.assigned_agent
+        assert org_state.sessions.get_active(task_id, "dev_agent") == expected_session
+        assert not observed.callback_owns_lock
 
     def cancelled(task_id: str) -> None:
         org_state.db.update_task(task_id, status=TaskStatus.CANCELLED)
@@ -327,6 +389,7 @@ def test_cleanup_concurrent_callbacks_keep_complete_immutable_first_winner(app, 
         monkeypatch.setattr(org_state.sessions, "clear", clear)
         monkeypatch.setattr(org_state.event_bus, "publish", publish)
         await actual_lock.acquire()
+        fixture_owns_lock = True
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             first = asyncio.create_task(client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=winner, headers=auth_headers), name="winner")
             second: asyncio.Task[httpx.Response] | None = None
@@ -338,10 +401,12 @@ def test_cleanup_concurrent_callbacks_keep_complete_immutable_first_winner(app, 
                 # asyncio.Lock FIFO admits the first actual acquire attempt
                 # after this fixture releases its held original lock.
                 actual_lock.release()
+                fixture_owns_lock = False
                 winner_response, loser_response = await asyncio.wait_for(asyncio.gather(first, second), timeout=2)
             finally:
-                if actual_lock.locked() and not first.done():
+                if fixture_owns_lock:
                     actual_lock.release()
+                    fixture_owns_lock = False
                 for request in (first, second):
                     if request is None:
                         continue
@@ -365,5 +430,6 @@ def test_cleanup_concurrent_callbacks_keep_complete_immutable_first_winner(app, 
         }
         assert audits[0]["payload"] == expected
         assert effects == ["clear", "publish", "clear", "publish"]
+        assert not observed.callback_owns_lock
 
     asyncio.run(exercise())
