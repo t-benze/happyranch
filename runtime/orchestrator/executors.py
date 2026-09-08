@@ -74,6 +74,10 @@ class ExecutorResult:
     # Reporting-only metadata selected from complete producer streams before
     # diagnostic tails are truncated. It never drives classification or retry.
     human_error: str | None = None
+    # ``True`` distinguishes a complete stderr inspection that found no human
+    # cause from legacy/external results that provide no selection metadata.
+    # Reporting consumers must not re-classify a truncated tail in the former.
+    human_error_inspected: bool = False
     terminal_error_notice: str | None = None
     # Closed, structured THR-200 outcome seam. Breaker consumers use only
     # these values and ``provider_launched``; error/stdout/stderr remain
@@ -531,7 +535,10 @@ def _parse_claude_session_limit_notice(stdout: str, stderr: str) -> str | None:
     except json.JSONDecodeError:
         return None
     result = obj.get("result") if isinstance(obj, dict) else None
-    return result if isinstance(result, str) else None
+    if not isinstance(result, str):
+        return None
+    normalized = result.casefold()
+    return result if "session limit" in normalized and "reset" in normalized else None
 
 
 def _parse_pi_session_id(stdout: str) -> str | None:
@@ -1135,6 +1142,7 @@ def _run_command(
                 rate_limited=rate_limited,
                 terminal_error=terminal_error,
                 human_error=_selected_human_error(full_stderr) or None,
+                human_error_inspected=True,
                 terminal_error_notice=terminal_error_notice,
                 failure_category="provider_nonzero",
                 provider_launched=True,

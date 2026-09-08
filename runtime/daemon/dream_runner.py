@@ -482,8 +482,11 @@ async def run_dream(
     # stderr-based error summary so dream failures carry a deterministic
     # reason instead of incidental noise.
     terminal_error = str(getattr(result, "terminal_error", "") or "").strip()
-    stderr = str(getattr(result, "human_error", "") or "") or _meaningful_stderr(
-        str(getattr(result, "stderr_tail", "") or "")
+    human_error = str(getattr(result, "human_error", "") or "")
+    stderr = human_error or (
+        "" if getattr(result, "human_error_inspected", False) else _meaningful_stderr(
+            str(getattr(result, "stderr_tail", "") or "")
+        )
     )
     notice = str(getattr(result, "terminal_error_notice", "") or "").strip()
     # Dreams have no diagnostic-tail columns.  Preserve the classified cause,
@@ -505,10 +508,10 @@ async def run_dream(
             dream_id,
             status=DreamStatus.TIMEOUT,
             ended_at=datetime.now(timezone.utc),
-            error=error[:1000],
+            error=error,
         )
         AuditLogger(org_state.db).log_dream_timeout(
-            dream_id, dream.agent_name, reason=error[:1000],
+            dream_id, dream.agent_name, reason=error,
         )
         return
     org_state.db.update_dream(

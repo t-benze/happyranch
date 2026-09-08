@@ -3273,8 +3273,11 @@ def _session_failed_note(result, report) -> str:
     bits: list[str] = []
     rc = getattr(result, "returncode", None)
     bits.append(f"rc={rc}" if rc is not None else "rc=?")
-    err = str(getattr(result, "human_error", "") or "") or _meaningful_stderr(
-        getattr(result, "stderr_tail", "") or ""
+    human_error = str(getattr(result, "human_error", "") or "")
+    err = human_error or (
+        "" if getattr(result, "human_error_inspected", False) else _meaningful_stderr(
+            getattr(result, "stderr_tail", "") or ""
+        )
     )
     out = (getattr(result, "stdout_tail", "") or "").strip()
     preview_src, label = (err, "stderr") if err else (out, "stdout") if out else ("", "")

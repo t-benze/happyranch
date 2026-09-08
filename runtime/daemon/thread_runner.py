@@ -72,8 +72,11 @@ def _executor_error_detail(result, rc) -> str:
     (e.g. an ``API Error: 529 Overloaded`` raised inside the claude CLI), which
     was previously only recoverable by digging into the claude session JSONL.
     """
-    stderr = str(getattr(result, "human_error", "") or "") or str(
-        getattr(result, "stderr_tail", "") or ""
+    human_error = str(getattr(result, "human_error", "") or "")
+    stderr = human_error or (
+        "" if getattr(result, "human_error_inspected", False) else str(
+            getattr(result, "stderr_tail", "") or ""
+        )
     )
     terminal_error = str(getattr(result, "terminal_error", "") or "").strip()
     notice = str(getattr(result, "terminal_error_notice", "") or "").strip()

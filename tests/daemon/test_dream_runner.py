@@ -205,7 +205,7 @@ async def test_run_dream_timeout_sets_timeout_status_and_audit(org_state):
     assert actions[-1]["payload"]["reason"] == dream.error
     action_names = [r["action"] for r in actions]
     assert "dream_timeout" in action_names
-    assert "dream_failed" not in actions
+    assert "dream_failed" not in action_names
     # A timeout must NOT advance the successful-dream window.
     assert org_state.db.get_last_successful_dream("dev_agent") is None
 
@@ -475,6 +475,24 @@ async def test_run_dream_real_chain_session_limit(
     actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
     assert actions[-1]["action"] == "dream_failed"
     assert actions[-1]["payload"]["reason"] == dream.error
+
+
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_run_dream_real_chain_all_benign_stderr_uses_validated_notice(
+    mock_subprocess, _mock_resolve_binary, org_state,
+):
+    """Complete stderr selection prevents a truncated benign tail reaching persistence."""
+    _insert_pending_dream(org_state)
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout="{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"terminal_reason\":\"api_error\",\"api_error_status\":429,\"result\":\"You've hit your session limit · resets tomorrow\"}",
+        stderr="Set hasTrustDialogAccepted to true to trust this workspace.\n" * 50,
+    )
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=lambda _n, _s, paths: ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), paths=paths))
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.error == "session_limit; notice: You've hit your session limit · resets tomorrow"
+    assert org_state.db.get_audit_logs("DREAM-001")[-1]["payload"]["reason"] == dream.error
 
 
 @patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")

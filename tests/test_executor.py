@@ -1280,6 +1280,17 @@ def test_parse_claude_terminal_error_loads_complete_observed_sanitized_fixture()
     assert _parse_claude_terminal_error(fixture.read_text(), "") == "session_limit"
 
 
+def test_parse_claude_session_limit_notice_rejects_unrelated_legacy_result():
+    """Legacy classification must not promote arbitrary result text to a notice."""
+    from runtime.orchestrator.executors import _parse_claude_session_limit_notice
+
+    stdout = json.dumps({
+        "type": "result", "subtype": "error_during_execution", "is_error": True,
+        "errors": ["session limit reached"], "result": "unrelated raw diagnostic marker",
+    })
+    assert _parse_claude_session_limit_notice(stdout, "") is None
+
+
 @pytest.mark.parametrize("field,value", [
     ("type", None), ("type", 1), ("subtype", None), ("subtype", 1),
     ("is_error", None), ("is_error", 1), ("is_error", False),

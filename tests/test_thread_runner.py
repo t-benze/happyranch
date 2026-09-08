@@ -425,7 +425,7 @@ async def test_no_callback_failure_surfaces_executor_error(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_no_callback_failure_keeps_selected_cause_separate_from_audit_tails(
+async def test_no_callback_failure_keeps_inspected_empty_stderr_separate_from_audit_tails(
     tmp_path, monkeypatch,
 ):
     db = Database(tmp_path / "happyranch.db")
@@ -457,6 +457,10 @@ async def test_no_callback_failure_keeps_selected_cause_separate_from_audit_tail
             result.returncode = 1
             result.stdout_tail = "structured stdout"
             result.stderr_tail = "raw stderr warning"
+            result.human_error = None
+            result.human_error_inspected = True
+            result.terminal_error = "session_limit"
+            result.terminal_error_notice = "You've hit your session limit · resets tomorrow"
             return result
 
     monkeypatch.setattr(
@@ -473,7 +477,8 @@ async def test_no_callback_failure_keeps_selected_cause_separate_from_audit_tail
 
     inv_after = db.get_invocation_any_status(inv.invocation_token)
     assert inv_after.decline_reason is not None
-    assert inv_after.decline_reason.endswith("raw stderr warning")
+    assert inv_after.decline_reason.endswith("session_limit; notice: You've hit your session limit · resets tomorrow")
+    assert "raw stderr warning" not in inv_after.decline_reason
     assert '"api_error_status":429' not in inv_after.decline_reason
 
     audit_row = next(

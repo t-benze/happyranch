@@ -980,6 +980,36 @@ def test_run_step_meaningful_stderr_keeps_structured_reset_notice(
     assert result.human_error == "API Error: 529 Overloaded"
 
 
+def test_run_step_all_benign_full_stderr_uses_terminal_reason_not_tail(
+    runtime, db, monkeypatch, tmp_path,
+):
+    """A cap-boundary benign tail cannot replace selected empty stderr."""
+    from unittest.mock import MagicMock
+    from runtime.orchestrator.executors import (
+        _parse_claude_session_limit_notice, _parse_claude_terminal_error, _run_command,
+    )
+    from runtime.orchestrator.orchestrator import Orchestrator
+    import runtime.orchestrator.executors as executors
+
+    db.insert_task(TaskRecord(id="T-1", brief="x", assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+    fixture = Path(__file__).parent / "fixtures" / "claude-task6941-result.sanitized.json"
+    proc = MagicMock(pid=4242, returncode=1)
+    proc.communicate.return_value = (fixture.read_text(), "Set hasTrustDialogAccepted to true to trust this workspace.\n" * 50)
+    monkeypatch.setattr(executors.subprocess, "Popen", lambda *a, **k: proc)
+    result = _run_command(["claude", "-p", "x"], tmp_path, "sess-limit", 30,
+        error_parser=_parse_claude_terminal_error,
+        terminal_error_notice_parser=_parse_claude_session_limit_notice)
+    monkeypatch.setattr(orch, "_run_agent", lambda *a, **k: (result, None))
+    orch.run_step("T-1")
+    note = db.get_task("T-1").note or ""
+    assert result.human_error is None and result.human_error_inspected is True
+    assert "stderr:" not in note
+    assert "terminal_error: session_limit" in note
+    assert "resets 12:20am" in note
+
+
 def test_run_step_opaque_failure_no_auto_revisit(
     runtime, db, monkeypatch,
 ):
