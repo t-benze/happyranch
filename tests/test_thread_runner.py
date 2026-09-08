@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -449,9 +450,12 @@ async def test_no_callback_failure_keeps_inspected_empty_stderr_separate_from_au
     import runtime.daemon.thread_runner as runner_mod
 
     fixture = Path(__file__).parent / "fixtures" / "claude-task6941-result.sanitized.json"
+    payload = json.loads(fixture.read_text())
+    # The reset appears before this long later property, beyond stdout_tail.
+    payload["later_diagnostic"] = "x" * 3000
     proc = MagicMock(pid=4242, returncode=1)
     proc.communicate.return_value = (
-        fixture.read_text(),
+        json.dumps(payload),
         "Set hasTrustDialogAccepted to true to trust this workspace.\n" * 50,
     )
     mock_subprocess.Popen.return_value = proc
@@ -484,7 +488,9 @@ async def test_no_callback_failure_keeps_inspected_empty_stderr_separate_from_au
         if row["action"] == "thread_invocation_failed"
     )
     assert audit_row["payload"]["reason"] == inv_after.decline_reason
-    assert '"terminal_reason": "api_error"' in audit_row["payload"]["stdout_tail"]
+    # The later property evicts the structured result from the raw tail; the
+    # persisted reason above still has the separately selected validated notice.
+    assert '"terminal_reason": "api_error"' not in audit_row["payload"]["stdout_tail"]
     assert audit_row["payload"]["stderr_tail"].startswith("ust this workspace.")
     assert "Set hasTrustDialogAccepted" in audit_row["payload"]["stderr_tail"]
 

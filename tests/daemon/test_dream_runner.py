@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -484,14 +485,22 @@ async def test_run_dream_real_chain_all_benign_stderr_uses_validated_notice(
 ):
     """Complete stderr selection prevents a truncated benign tail reaching persistence."""
     _insert_pending_dream(org_state)
+    fixture = Path(__file__).parents[1] / "fixtures" / "claude-task6941-result.sanitized.json"
+    payload = json.loads(fixture.read_text())
+    # The validated notice must survive even after a later property evicts it
+    # from the capped raw stdout tail.
+    payload["later_diagnostic"] = "x" * 3000
     mock_subprocess.Popen.return_value = _popen_mock(
         returncode=1,
-        stdout="{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"terminal_reason\":\"api_error\",\"api_error_status\":429,\"result\":\"You've hit your session limit · resets tomorrow\"}",
+        stdout=json.dumps(payload),
         stderr="Set hasTrustDialogAccepted to true to trust this workspace.\n" * 50,
     )
     await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=lambda _n, _s, paths: ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), paths=paths))
     dream = org_state.db.get_dream("DREAM-001")
-    assert dream.error == "session_limit; notice: You've hit your session limit · resets tomorrow"
+    assert dream.error == (
+        "session_limit; notice: You've hit your session limit · "
+        "resets 12:20am (Asia/Shanghai)"
+    )
     assert org_state.db.get_audit_logs("DREAM-001")[-1]["payload"]["reason"] == dream.error
 
 

@@ -995,8 +995,11 @@ def test_run_step_all_benign_full_stderr_uses_terminal_reason_not_tail(
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
     orch._queue = _SlugQueue()
     fixture = Path(__file__).parent / "fixtures" / "claude-task6941-result.sanitized.json"
+    payload = json.loads(fixture.read_text())
+    # Ensure the notice is selected from the complete result before tailing.
+    payload["later_diagnostic"] = "x" * 3000
     proc = MagicMock(pid=4242, returncode=1)
-    proc.communicate.return_value = (fixture.read_text(), "Set hasTrustDialogAccepted to true to trust this workspace.\n" * 50)
+    proc.communicate.return_value = (json.dumps(payload), "Set hasTrustDialogAccepted to true to trust this workspace.\n" * 50)
     monkeypatch.setattr(executors.subprocess, "Popen", lambda *a, **k: proc)
     result = _run_command(["claude", "-p", "x"], tmp_path, "sess-limit", 30,
         error_parser=_parse_claude_terminal_error,
