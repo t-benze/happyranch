@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -45,6 +48,16 @@ def _proc(proc: Path, pid: int, root: str = "/", cwd: str = "/", fd: str | None 
 def _sources(tmp_path: Path) -> tuple[Database, Path]:
     proc = tmp_path / "proc"; (proc / "sys/kernel/random").mkdir(parents=True); (proc / "sys/kernel/random/boot_id").write_text("123e4567-e89b-42d3-a456-426614174000\n"); _proc(proc, 42)
     return Database(tmp_path / "state.db"), proc
+
+
+@pytest.fixture
+def evidence_sources(tmp_path: Path):
+    """New observation rows own their database lifetime even on assertion failure."""
+    db, proc = _sources(tmp_path)
+    try:
+        yield db, proc
+    finally:
+        db.close()
 
 
 def test_actual_db_and_independent_proc_probes_are_fail_closed(tmp_path: Path) -> None:
@@ -279,37 +292,37 @@ def test_exported_collector_charges_unsuccessful_linked_lookups_before_read(tmp_
     ("list_jobs_db", 1), ("list_jobs_db", 2), ("get_job", 1),
 ])
 def test_exported_collector_stops_all_source_reads_after_db_return(
-    tmp_path: Path, monkeypatch, reader: str, call: int,
+    tmp_path: Path, monkeypatch, evidence_sources, reader: str, call: int,
 ) -> None:
     """A1p: each admitted DB return is a shared-deadline admission boundary."""
-    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
     if reader == "get_job":
         db.insert_job(JobRecord(id="JOB-1", task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED, created_at=datetime.now(timezone.utc).isoformat()))
         db.update_task("TASK-1", blocked_on_job_ids='["JOB-1"]')
     import runtime.daemon.task_scratch_evidence as subject
-    expired = False; events: list[tuple[str, str, bool]] = []; seen = 0
+    clock = [0]; events: list[tuple[str, str, bool]] = []; seen = 0
     for name in ("get_task", "get_latest_task_result", "list_jobs_db", "get_job"):
         original = getattr(db, name)
         def wrapped(*args, _name=name, _original=original, **kwargs):
-            nonlocal expired, seen
-            events.append(("start", _name, expired))
+            nonlocal seen
+            events.append(("start", _name, clock[0] > subject.SCAN_NS))
             value = _original(*args, **kwargs)
-            events.append(("return", _name, expired))
+            events.append(("return", _name, clock[0] > subject.SCAN_NS))
             if _name == reader:
                 seen += 1
-                if seen == call: expired = True
+                if seen == call: clock[0] = subject.SCAN_NS + 1
             return value
         monkeypatch.setattr(db, name, wrapped)
-    monkeypatch.setattr(subject, "_expired", lambda _deadline: expired)
+    monkeypatch.setattr(subject.time, "monotonic_ns", lambda: clock[0])
     evidence = subject.collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
-    assert expired and "observation_timeout" in evidence.reasons
+    assert clock[0] > subject.SCAN_NS and "observation_timeout" in evidence.reasons
     assert not [event for event in events if event[0] == "start" and event[2]], events
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
 
 
-def test_exported_collector_expiry_boundaries_do_not_start_dependent_proc_reads(tmp_path: Path, monkeypatch) -> None:
+def test_exported_collector_expiry_boundaries_do_not_start_dependent_proc_reads(tmp_path: Path, monkeypatch, evidence_sources) -> None:
     """A2p: source opens/advances are admitted; an in-flight call is not cancelled."""
-    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
     root = tmp_path / "root"; root.mkdir(); _proc(proc, 43, root=str(root), cwd=str(root), fd=str(root / "held"))
     import runtime.daemon.task_scratch_evidence as subject
     original_readlink, original_scandir, original_boot = subject.os.readlink, subject.os.scandir, Path.read_text
@@ -318,7 +331,7 @@ def test_exported_collector_expiry_boundaries_do_not_start_dependent_proc_reads(
     for trigger, fds in (("cwd", 1), ("fd-next", 1), ("fd-readlink", 2),
                          ("initial-population-open", 0), ("final-population-open", 0),
                          ("population-next", 0), ("final-pid-stat", 0), ("boot", 0), ("sessions", 0)):
-        expired = False; events: list[tuple[str, str, bool]] = []; advances = {"proc": 0, "fd": 0}; proc_scans = 0; stats = 0
+        clock = [0]; events: list[tuple[str, str, bool]] = []; advances = {"proc": 0, "fd": 0}; proc_scans = 0; stats = 0
         if trigger == "final-population-open":
             # No process rows means the second proc scan is the final population.
             for item in (proc / "42",):
@@ -328,52 +341,54 @@ def test_exported_collector_expiry_boundaries_do_not_start_dependent_proc_reads(
         if fds == 2:
             (proc / "43" / "fd" / "4").symlink_to(root / "held2")
         def readlink(path, *, _trigger=trigger):
-            nonlocal expired
-            events.append(("start", f"readlink:{Path(path).name}", expired))
+            events.append(("start", f"readlink:{Path(path).name}", clock[0] > subject.SCAN_NS))
             value = original_readlink(path)
-            events.append(("return", f"readlink:{Path(path).name}", expired))
+            events.append(("return", f"readlink:{Path(path).name}", clock[0] > subject.SCAN_NS))
             if (_trigger == "cwd" and str(path).endswith("/cwd")) or (_trigger == "fd-readlink" and "/fd/" in str(path)):
-                expired = True
+                clock[0] = subject.SCAN_NS + 1
             return value
         def scandir(path, *, _trigger=trigger):
-            nonlocal expired, proc_scans
+            nonlocal proc_scans
             if str(path) == str(proc): proc_scans += 1
-            events.append(("start", f"scandir:{Path(path).name}", expired))
+            events.append(("start", f"scandir:{Path(path).name}", clock[0] > subject.SCAN_NS))
             value = original_scandir(path)
-            events.append(("return", f"scandir:{Path(path).name}", expired))
-            if _trigger == "initial-population-open" and str(path) == str(proc) and proc_scans == 1: expired = True
-            if _trigger == "final-population-open" and str(path) == str(proc) and proc_scans == 2: expired = True
+            events.append(("return", f"scandir:{Path(path).name}", clock[0] > subject.SCAN_NS))
+            if _trigger == "initial-population-open" and str(path) == str(proc) and proc_scans == 1: clock[0] = subject.SCAN_NS + 1
+            if _trigger == "final-population-open" and str(path) == str(proc) and proc_scans == 2: clock[0] = subject.SCAN_NS + 1
             class LoggedIterator:
                 def __enter__(self): value.__enter__(); return self
                 def __exit__(self, *args): return value.__exit__(*args)
                 def __iter__(self): return self
                 def __next__(self):
-                    nonlocal expired
-                    item = next(value); kind = "fd" if str(path).endswith("/fd") else "proc"; advances[kind] += 1
-                    events.append(("start", f"next:{kind}", expired)); events.append(("return", f"next:{kind}", expired))
-                    if (_trigger == "fd-next" and kind == "fd" and advances[kind] == 1) or (_trigger == "population-next" and kind == "proc" and advances[kind] == 1): expired = True
+                    kind = "fd" if str(path).endswith("/fd") else "proc"
+                    events.append(("start", f"next:{kind}", clock[0] > subject.SCAN_NS))
+                    try:
+                        item = next(value)
+                    except StopIteration:
+                        events.append(("exhausted", f"next:{kind}", clock[0] > subject.SCAN_NS)); raise
+                    advances[kind] += 1; events.append(("return", f"next:{kind}", clock[0] > subject.SCAN_NS))
+                    if (_trigger == "fd-next" and kind == "fd" and advances[kind] == 1) or (_trigger == "population-next" and kind == "proc" and advances[kind] == 1): clock[0] = subject.SCAN_NS + 1
                     return item
             return LoggedIterator()
         def read_text(path, *args, _trigger=trigger, **kwargs):
-            nonlocal expired, stats
+            nonlocal stats
             src = "boot" if str(path).endswith("boot_id") else "stat"
-            events.append(("start", src, expired))
+            events.append(("start", src, clock[0] > subject.SCAN_NS))
             value = original_boot(path, *args, **kwargs)
-            events.append(("return", src, expired))
+            events.append(("return", src, clock[0] > subject.SCAN_NS))
             if src == "stat": stats += 1
-            if (_trigger == "boot" and src == "boot") or (_trigger == "final-pid-stat" and src == "stat" and stats == 2): expired = True
+            if (_trigger == "boot" and src == "boot") or (_trigger == "final-pid-stat" and src == "stat" and stats == 2): clock[0] = subject.SCAN_NS + 1
             return value
         monkeypatch.setattr(subject.os, "readlink", readlink); monkeypatch.setattr(subject.os, "scandir", scandir); monkeypatch.setattr(Path, "read_text", read_text)
         sessions = SessionTracker()
         if trigger == "sessions":
             original_iter = sessions.iter_active
             def iter_active():
-                nonlocal expired
-                events.append(("start", "sessions", expired)); result = original_iter(); events.append(("return", "sessions", expired)); expired = True; return result
+                events.append(("start", "sessions", clock[0] > subject.SCAN_NS)); result = original_iter(); events.append(("return", "sessions", clock[0] > subject.SCAN_NS)); clock[0] = subject.SCAN_NS + 1; return result
             monkeypatch.setattr(sessions, "iter_active", iter_active)
-        monkeypatch.setattr(subject, "_expired", lambda _deadline: expired)
+        monkeypatch.setattr(subject.time, "monotonic_ns", lambda: clock[0])
         evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
-        assert expired, (trigger, events)
+        assert clock[0] > subject.SCAN_NS, (trigger, events)
         assert not evidence.eligible
         assert not [event for event in events if event[0] == "start" and event[2]], (trigger, events)
         assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
@@ -385,10 +400,10 @@ def test_exported_collector_expiry_boundaries_do_not_start_dependent_proc_reads(
     ("terminal", 0, "job_scan_capped"), ("duplicate", 0, "linked_job_authority_unavailable"),
 ])
 def test_exported_collector_linked_job_cap_is_per_snapshot_and_pre_read(
-    tmp_path: Path, monkeypatch, kind: str, expected_calls: int, reason: str,
+    tmp_path: Path, monkeypatch, evidence_sources, kind: str, expected_calls: int, reason: str,
 ) -> None:
     """A3p: listed rows and every linked attempt consume the same per-snapshot cap."""
-    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
     linked = "JOB-X" if kind != "duplicate" else "JOB-X"
     db.update_task("TASK-1", blocked_on_job_ids=json.dumps([linked, linked] if kind == "duplicate" else [linked]))
     if kind != "foreign":
@@ -403,9 +418,9 @@ def test_exported_collector_linked_job_cap_is_per_snapshot_and_pre_read(
     assert calls == [linked] * expected_calls and reason in evidence.reasons
 
 
-def test_exported_collector_terminal_link_has_default_cap_positive(tmp_path: Path, monkeypatch) -> None:
+def test_exported_collector_terminal_link_has_default_cap_positive(tmp_path: Path, monkeypatch, evidence_sources) -> None:
     """A3p: each snapshot admits the same owned terminal link at the real cap."""
-    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
     db.insert_job(JobRecord(id="JOB-T", task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED, created_at=datetime.now(timezone.utc).isoformat()))
     db.update_task("TASK-1", blocked_on_job_ids='["JOB-T"]')
     calls: list[str] = []; original = db.get_job
@@ -417,9 +432,9 @@ def test_exported_collector_terminal_link_has_default_cap_positive(tmp_path: Pat
 @pytest.mark.parametrize("case,reason", [
     ("warmup", "zombie_warmup"), ("session", "active_session"), ("job", "active_job"), ("missing", "recovery_authority_unavailable"), ("pid", "executor_pid_live_or_ambiguous"),
 ])
-def test_exported_collector_retains_complete_zero_counts_for_independent_rejection(tmp_path: Path, case: str, reason: str) -> None:
+def test_exported_collector_retains_complete_zero_counts_for_independent_rejection(tmp_path: Path, evidence_sources, case: str, reason: str) -> None:
     """B1p: independent authority rejection never turns a complete zero into unavailable."""
-    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED));
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED));
     if case == "pid": db.update_task("TASK-1", executor_pid=42)
     sessions = SessionTracker(); now = 0 if case == "warmup" else 31
     if case == "session": sessions.set_active("TASK-1", "dev_agent", "session")
@@ -430,9 +445,9 @@ def test_exported_collector_retains_complete_zero_counts_for_independent_rejecti
 
 
 @pytest.mark.parametrize("reader", ["list_tasks", "get_job"])
-def test_exported_collector_retains_complete_measurements_on_real_durable_reader_failure(tmp_path: Path, monkeypatch, reader: str) -> None:
+def test_exported_collector_retains_complete_measurements_on_real_durable_reader_failure(tmp_path: Path, monkeypatch, evidence_sources, reader: str) -> None:
     """B1p: a real durable-reader failure rejects authority but not a complete scan."""
-    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
     if reader == "get_job": db.update_task("TASK-1", blocked_on_job_ids='["JOB-BOOM"]')
     def boom(*_args, **_kwargs): raise RuntimeError("reader failure")
     monkeypatch.setattr(db, reader, boom)
@@ -442,15 +457,79 @@ def test_exported_collector_retains_complete_measurements_on_real_durable_reader
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (0, 0, 0)
 
 
-def test_exported_collector_open_fd_cap_is_unavailable_not_complete_zero(tmp_path: Path, monkeypatch) -> None:
+def test_exported_collector_open_fd_cap_is_unavailable_not_complete_zero(tmp_path: Path, monkeypatch, evidence_sources) -> None:
     """B1p: a capped fd scan is a measurement failure, never a zero count."""
-    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
     root = tmp_path / "root"; root.mkdir(); _proc(proc, 43, fd=str(root / "one")); (proc / "43" / "fd" / "4").symlink_to(root / "two")
     import runtime.daemon.task_scratch_evidence as subject
     monkeypatch.setattr(subject, "MAX_FDS_PER_PROCESS", 1)
     evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert "open_fd_scan_capped" in evidence.reasons
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
+
+
+@pytest.mark.parametrize("probe,relation,expected_reason", [
+    ("root", "exact", "process_root_reference"), ("root", "descendant", "process_root_reference"), ("root", "prefix", None),
+    ("cwd", "exact", "process_cwd_reference"), ("cwd", "descendant", "process_cwd_reference"), ("cwd", "prefix", None),
+    ("fd", "exact", "open_fd_reference"), ("fd", "descendant", "open_fd_reference"), ("fd", "prefix", None),
+])
+def test_exported_collector_isolated_containment_counts(tmp_path: Path, evidence_sources, probe: str, relation: str, expected_reason: str) -> None:
+    """C3 #62-70: each source and containment relation is measured independently."""
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    root = tmp_path / "root"; root.mkdir(); descendant = root / "child"; descendant.mkdir(); sibling = tmp_path / "root-sibling"; sibling.mkdir()
+    target = {"exact": root, "descendant": descendant, "prefix": sibling}[relation]
+    values = {"root": "/", "cwd": "/", "fd": None}; values[probe] = str(target)
+    _proc(proc, 43, root=values["root"], cwd=values["cwd"], fd=values["fd"])
+    evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    expected = (0, 0, 0) if expected_reason is None else {"root": (1, 0, 0), "cwd": (0, 1, 0), "fd": (0, 0, 1)}[probe]
+    assert (evidence.eligible if expected_reason is None else not evidence.eligible)
+    assert expected_reason is None or expected_reason in evidence.reasons
+    assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == expected
+
+
+def test_exported_collector_complete_zero_is_eligible(tmp_path: Path, evidence_sources) -> None:
+    """B1p/C3 #71: a complete independent zero is a truthful eligible observation."""
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert evidence.eligible and evidence.reasons == ()
+    assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (0, 0, 0)
+
+
+def test_exported_collector_unreadable_fd_is_unavailable(tmp_path: Path, monkeypatch, evidence_sources) -> None:
+    """C3 #73: test-owned permission ambiguity is unavailable, never a zero."""
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED)); root = tmp_path / "root"; root.mkdir(); _proc(proc, 43)
+    import runtime.daemon.task_scratch_evidence as subject
+    original_scandir = subject.os.scandir
+    def denied(path):
+        if str(path).endswith("/43/fd"): raise PermissionError("test-owned fd denial")
+        return original_scandir(path)
+    monkeypatch.setattr(subject.os, "scandir", denied)
+    evidence = subject.collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert not evidence.eligible and "test-owned fd denial" in evidence.reasons
+    assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
+
+
+@pytest.mark.skipif(os.name != "posix" or not Path("/proc").is_dir(), reason="requires Linux-style procfs for the bounded child observation")
+def test_exported_collector_observes_only_test_owned_child_cwd_and_fd(tmp_path: Path, evidence_sources) -> None:
+    """C3 #34: one owned child is projected into a synthetic proc root and reaped."""
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    root = tmp_path / "root"; root.mkdir(); held = root / "held"; held.write_text("x")
+    child = subprocess.Popen([sys.executable, "-c", "import time; f=open('held'); print('ready', flush=True); time.sleep(30)"], cwd=root, stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout is not None and child.stdout.readline() == "ready\n"
+        (proc / str(child.pid)).symlink_to(Path("/proc") / str(child.pid), target_is_directory=True)
+        evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+        assert not evidence.eligible
+        assert "process_cwd_reference" in evidence.reasons and "open_fd_reference" in evidence.reasons
+        assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (0, 1, 1)
+    finally:
+        child.terminate()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            child.kill(); child.wait(timeout=5)
+        if child.stdout is not None:
+            child.stdout.close()
 
 
 def test_cleared_session_with_live_executor_pid_is_ineligible(tmp_path: Path) -> None:
