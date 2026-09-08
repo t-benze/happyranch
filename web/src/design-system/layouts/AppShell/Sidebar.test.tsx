@@ -512,8 +512,8 @@ describe('THR-230: the sidebar owns its own vertical overflow', () => {
    * unshrinkable so their controls are never squeezed or clipped. The live
    * geometry (aside inside the viewport, document scrollHeight == clientHeight,
    * scrolled/keyboard reachability of the last link and the footer controls) is
-   * proven in the browser by
-   * `web/scripts/screenshot-harness/shot-thr230-sidebar-viewport.mjs`.
+   * verified separately in browser evidence using the real routed app; see
+   * the sidebar guidance in `docs/agent-guides/web-and-cli.md`.
    */
   test('nav landmark is the shrinkable internal scroll region', async () => {
     seedSidebarShell();

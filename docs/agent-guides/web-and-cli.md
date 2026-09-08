@@ -9,132 +9,29 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 - Python: `tests/contract/test_openapi_snapshot.py` pins OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
 - TypeScript: `web/src/test/openapi-coverage.test.ts` asserts every documented path is either included with a TS mirror or excluded with justification.
 
-### App shell rail height and scroll contract (THR-230)
+### Sidebar height and scrolling
 
-`AppShell` (`web/src/routes.tsx`) is a `h-full` flex row: the `Sidebar`
-(`web/src/design-system/layouts/AppShell/Sidebar.tsx`) plus a content column
-holding the `AppBar` and a `flex-1 overflow-hidden` `<main>`. `html`, `body`,
-and `#root` are all `height: 100%`, so **nothing in the shell may grow the
-document scroller** — a window scrollbar would scroll the AppBar and the rail
-out of view together.
+The AppShell keeps the sidebar within the window height. Its organization
+switcher and Settings/account footer do not shrink; the primary navigation
+uses the remaining space and scrolls internally when needed. Navigation items
+and typography retain their existing sizes, order and destinations. The rail
+remains 244px wide on desktop and collapses to 56px below the `md` breakpoint.
 
-The rail therefore owns its own vertical overflow:
+The navigation container uses `min-h-0` to permit flex shrinking and `relative`
+to contain the collapsed rail's absolutely positioned accessible labels.
+Internal padding and scroll padding reserve room for keyboard focus rings.
+Routed page content scrolls separately in its own container (for example,
+`ContentWrap`), inside the shell's `overflow-hidden` main area.
 
-- The `<aside>` stays exactly viewport-tall (`h-full`) at the viewport sizes
-  the shell supports and that the harness exercises (1280x800, 1280x600,
-  390x844, 390x600); it is not a claim about untested sizes.
-- The org-switcher header (`section[aria-label="Organization switcher"]`) and
-  the footer (Settings + the account row) are `shrink-0`: they are never
-  squeezed, and the footer keeps `mt-auto` so it pins to the bottom of the rail
-  at tall viewports.
-- The primary-navigation `<nav>` is the single internal scroll region —
-  `flex-1 min-h-0 overflow-y-auto`. `min-h-0` is required: without it the flex
-  `min-height: auto` floor stops the column shrinking and the content spills
-  past the rail into the document scroller.
-- That `<nav>` is also `relative`, so the `sr-only` labels of the collapsed
-  icon rail (absolutely positioned below `md`) resolve against it instead of
-  escaping to the initial containing block and re-growing the document.
-- The rail's leading/trailing space lives INSIDE that scroller (`pt-3` / `pb-1`,
-  replacing the former outer `mt-3`) and `scroll-py-1` reserves the matching
-  scroll padding, so the focus ring on the first and last items is not clipped
-  when Tab scrolls them flush against a scrollport edge. `pt-3` reproduces the
-  old `mt-3` offset exactly, so no item moves at rest.
-
-Overflow is always carried by that internal scroller — never by clipping,
-dropping, or shrinking navigation items, and never by reducing typography. The
-rail widths (`w-rail` 244px, `w-rail-narrow` 56px below `md`) and the flat
-14-item navigation order are unchanged by this contract.
-
-Evidence harness:
-`web/scripts/screenshot-harness/shot-thr230-sidebar-viewport.mjs` reproduces the
-geometry at 1280x800 / 1280x600 / 390x844 / 390x600 in both themes, with
-keyboard, internal-scroll, resize-cycle, org-switch, shell-data-state, and
-adversarial displacement/ancestor-clip probes. Long routed content is proven
-with a real, genuinely long dashboard payload (the `long-content` mock shell
-state) scrolled inside its real `ContentWrap` scroller — the last row must
-start off-screen and become visible after a positive scroll — not with a
-synthetic block appended to the `overflow-hidden` `<main>`. Run it twice
-(`--label=before` against a pre-fix dist, `--label=after`).
-
-Both runs are adjudicated by one function, `classifyRun`, against a **fixed,
-hand-declared inventory of every check id the script emits**
-(`EXPECTED_CHECK_IDS`). Categories are never derived from whichever checks
-happened to execute, because a derived category cannot notice a check that
-stopped running. A run is accepted only when all of the following hold:
-
-- every id in the inventory ran, exactly once, and no id outside it appeared;
-- the failed set equals the label's expected-failure set exactly — the
-  enumerated `EXPECTED_BASELINE_FAILURES` for `--label=before`, and the empty
-  set for `--label=after`. Every remaining id is a preservation assertion that
-  must pass, by construction rather than by hand-picking, so an unrelated
-  regression can never coexist with a "reproduced" verdict;
-- infrastructure is healthy: no fatal scenario error, no swallowed cleanup
-  error, no fail-closed mock-route violation, no stale artifact, and no request
-  that escaped the pinned local origin.
-
-`EXPECTED_BASELINE_FAILURES` is written from **measured** baseline geometry, not
-from prose: at 1280x600 the pre-fix rail rect is already correct (0..600) and
-Settings is still above the fold — the defect is that the rail's *content*
-spills, grows the document to 654px, and takes the account row out of reach. So
-`aside-inside-viewport:*` and `footer-settings-reachable:laptop-1280x600/*` are
-must-pass on the baseline; demanding that they fail would demand a defect the
-code does not have.
-
-**Browser-default refusals are recorded, not scored.** The fail-closed mock
-serves only the pinned `dist` tree, and Chromium asks for `/favicon.ico` on its
-own even though the app declares `/happyranch-favicon.svg`. That request is
-404'd and counted in `browser_default_refusals`, but it is deliberately outside
-the health predicate: it is a closed set of exactly one path
-(`BROWSER_DEFAULT_PATHS = {favicon.ico}`), it is browser-originated rather than
-app-originated, and folding it in previously made every run — including a fully
-green `after` run — report itself unhealthy. Anything the app originates that
-is not on the allowlist is still a violation and still fails the run.
-
-**Network isolation is browser-wide, not server-local.** Counting requests that
-arrive at the local Node server says nothing about requests sent elsewhere, and
-`web/index.html` links `fonts.googleapis.com` (stylesheet) and preconnects to
-`fonts.gstatic.com`. Before any navigation the harness installs a
-**context-level fail-closed route**: only the exact pinned
-`http://127.0.0.1:<port>` origin continues; every other URL is aborted with
-`blockedbyclient`. Attempts stay visible in the ledger, so the evidence records
-what the page tried to reach, not only what it reached.
-
-**Font provenance and its limit.** Three families are self-hosted in the pinned
-build via `@font-face` in `web/src/design-system/tokens/tokens.css`
-(`/fonts/HankenGrotesk-latin.woff2`, `/fonts/Newsreader-normal-latin.woff2`,
-`/fonts/Newsreader-italic-latin.woff2`); they are same-origin and load
-normally, and the ledger pins every dist file's `sha256`. The wordmark family
-`Baloo 2` is **remote-only** — it is fetched from Google Fonts at runtime — so
-the egress guard blocks it and the sidebar wordmark renders in its declared
-`sans-serif` fallback. The harness measures and records that substitution
-rather than hiding it: **no production visual-fidelity claim is made for the
-wordmark glyphs.** Geometry and reachability evidence is unaffected — the
-org-switcher header is `shrink-0` and its measured height is in the ledger.
-
-Presence is decided by the registered `FontFaceSet` plus a canvas width
-measurement — **not** by `FontFaceSet.check()`, which answers "is anything still
-pending for this list" and therefore returns `true` for a family that is
-entirely absent. The check ids are `self-hosted-fonts-loaded:1280x600` (the two
-self-hosted families are registered and loaded),
-`font-measurement-method-discriminates:1280x600` (a positive control: a family
-that IS registered must measure differently from the bare fallback, so
-"identical widths" cannot just mean the technique is blind), and
-`fallback-font-substitution-declared:1280x600` (`Baloo 2` is not registered and
-the wordmark's declared stack measures identically to `sans-serif` alone). The
-raw `check()` values stay in the ledger as provenance, under a field name that
-says what they are not.
-
-`--selftest` runs `classifyRun` alone against synthetic runs and writes
-`thr230-gate-selftest.json`: positive controls plus negative receipts for a
-clean run submitted as a baseline, an unrelated preservation failure, an absent
-required or must-pass check, an unknown or duplicated check id, a mock-route
-violation, a stale artifact, a fatal error, a cleanup failure, and successful
-external egress. It needs no browser.
-
-Structural regression coverage lives in
-`web/src/design-system/layouts/AppShell/Sidebar.test.tsx`
-(`THR-230: the sidebar owns its own vertical overflow`) — class-level, so it
-supplements rather than replaces the browser geometry evidence.
+`Sidebar.test.tsx` covers navigation/footer behavior and the overflow structure;
+jsdom does not verify layout. For browser verification, use the supported
+workflow in `web/scripts/screenshot-harness/README.md` with the real routed app
+and valid local fixtures. Compare a short-window baseline with the correction;
+check internal navigation scrolling, reachable footer controls, keyboard focus,
+org switching, page scrolling, resizing, mobile collapse and both themes.
+Record the source/build, viewport, screenshots, geometry and observed errors
+in task evidence. Keep any font substitutions explicit when reporting visual
+fidelity.
 
 ### Settings
 
