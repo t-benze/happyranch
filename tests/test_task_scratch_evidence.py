@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from runtime.daemon.sessions import SessionTracker
 from runtime.daemon.task_scratch_evidence import collect_task_scratch_evidence
-from runtime.daemon.zombie_reaper import _consume_zombie_fingerprint
+from runtime.daemon.routes.tasks import CancelBody, cancel_task
+from runtime.daemon.zombie_reaper import _consume_zombie_fingerprint, _sweep_org_zombies
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
-from runtime.models import JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
+from runtime.models import BlockKind, JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
+from runtime.config import Settings
+from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+from runtime.orchestrator.orchestrator import Orchestrator
+from runtime.orchestrator.teams import TeamsRegistry
+from runtime.runtime import RuntimeDir
 
 
 def _task(task_id: str, status: TaskStatus, parent: str | None = None, revisit: str | None = None, executor_pid: int | None = None) -> TaskRecord:
@@ -189,6 +197,54 @@ def _recovery_orchestrator(db: Database) -> MagicMock:
     return orch
 
 
+class _Queue:
+    """Minimal real put/get queue seam used by the production dispatcher."""
+
+    def __init__(self) -> None:
+        self.items: list[tuple[str, str]] = []
+
+    def put_nowait(self, slug: str, task_id: str) -> None:
+        self.items.append((slug, task_id))
+
+
+def _recovery_fixture(tmp_path: Path) -> tuple[Database, Orchestrator, _Queue, Path]:
+    """Build an isolated org with actual persistence and dispatch writers."""
+    runtime = RuntimeDir.init(tmp_path / "runtime")
+    paths = OrgPaths(root=runtime.orgs_dir / "test")
+    paths.teams_config_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.teams_config_path.write_text(
+        "teams:\n  engineering:\n    manager: engineering_head\n"
+        "    workers: [dev_agent, qa_engineer]\n"
+    )
+    paths.agents_dir.mkdir(parents=True, exist_ok=True)
+    for name, role in (("engineering_head", "manager"), ("dev_agent", "worker"), ("qa_engineer", "worker")):
+        definition = AgentDef(name=name, team="engineering", role=role, executor="claude",
+                              allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None,
+                              enrolled_at=None, system_prompt=name, description="", model=None)
+        (paths.agents_dir / f"{name}.md").write_text(render_agent_text(definition))
+        (paths.workspaces_dir / name).mkdir(parents=True, exist_ok=True)
+    db = Database(paths.db_path)
+    orch = Orchestrator(db=db, settings=Settings(), paths=paths, slug="test", teams=TeamsRegistry.load(paths.root))
+    queue = _Queue()
+    orch._queue = queue
+    _, proc = _sources(tmp_path / "evidence")
+    return db, orch, queue, proc
+
+
+def _recover_decision(db: Database, orch: Orchestrator, decision: dict) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    db.insert_task(TaskRecord(id="TASK-ROOT", brief="root", status=TaskStatus.IN_PROGRESS,
+                              assigned_agent="engineering_head", current_session_id="root-session",
+                              task_type="task", zombie_flagged_at=now, last_heartbeat=now))
+    db.insert_task_result("TASK-ROOT", "engineering_head", "root-session", "decision", 1,
+                          status="completed", decision_json=json.dumps(decision))
+    fingerprint = db.get_latest_task_result("TASK-ROOT", "engineering_head", "root-session")
+    assert fingerprint is not None
+    _consume_zombie_fingerprint(db, "TASK-ROOT", fingerprint, db.get_task("TASK-ROOT"), orch)
+    db.update_task("TASK-ROOT", zombie_flagged_at=None)
+    return fingerprint
+
+
 def test_real_zombie_consumer_done_retains_result_and_becomes_observable_safe(tmp_path: Path) -> None:
     db, proc = _sources(tmp_path)
     db.insert_task(TaskRecord(
@@ -256,3 +312,104 @@ def test_real_zombie_consumer_blocked_with_owned_job_remains_ineligible(tmp_path
     evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-WAIT", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert not evidence.eligible
     assert {"active_job", "nonterminal_or_unresolved_lineage"} <= set(evidence.reasons)
+
+
+def test_recovery_delegate_and_then_persist_real_lineage_effects(tmp_path: Path) -> None:
+    for decision, requires_chain in (
+        ({"action": "delegate", "agent": "dev_agent", "prompt": "implement"}, False),
+        ({"action": "delegate", "agent": "dev_agent", "prompt": "implement",
+          "then": [{"agent": "qa_engineer", "prompt": "verify"}]}, True),
+    ):
+        db, orch, queue, proc = _recovery_fixture(tmp_path / ("chain" if requires_chain else "plain"))
+        fingerprint = _recover_decision(db, orch, decision)
+        parent = db.get_task("TASK-ROOT")
+        children = db.get_children("TASK-ROOT")
+        assert parent is not None and len(children) == 1
+        child = db.get_task(children[0])
+        assert child is not None
+        assert (parent.status, parent.block_kind) == (TaskStatus.IN_PROGRESS, BlockKind.DELEGATED)
+        assert (child.status, child.parent_task_id, child.assigned_agent, child.brief) == (TaskStatus.PENDING, "TASK-ROOT", "dev_agent", "implement")
+        assert (parent.active_chain is not None) is requires_chain
+        assert queue.items == [("test", child.id)]
+        assert db.get_latest_task_result("TASK-ROOT", "engineering_head", "root-session")["id"] == fingerprint["id"]
+        assert "orchestration_step" in [row["action"] for row in db.get_audit_logs("TASK-ROOT")]
+        for task_id in ("TASK-ROOT", child.id):
+            evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id=task_id,
+                                                     root=tmp_path / "root", proc_root=proc,
+                                                     monotonic_now=31, daemon_started_monotonic=0)
+            assert not evidence.eligible
+        db.close()
+
+
+def test_recovery_fanout_persists_children_audit_queue_and_ineligible_lineage(tmp_path: Path) -> None:
+    db, orch, queue, proc = _recovery_fixture(tmp_path)
+    fingerprint = _recover_decision(db, orch, {
+        "action": "fanout", "children": [
+            {"agent": "dev_agent", "prompt": "one"}, {"agent": "qa_engineer", "prompt": "two"},
+        ], "width_cap_ack": 2,
+    })
+    parent = db.get_task("TASK-ROOT")
+    children = [db.get_task(child_id) for child_id in db.get_children("TASK-ROOT")]
+    assert parent is not None and len(children) == 2 and parent.active_fanout is not None
+    assert (parent.status, parent.block_kind) == (TaskStatus.IN_PROGRESS, BlockKind.DELEGATED)
+    assert {(child.parent_task_id, child.assigned_agent, child.status) for child in children if child} == {
+        ("TASK-ROOT", "dev_agent", TaskStatus.PENDING), ("TASK-ROOT", "qa_engineer", TaskStatus.PENDING),
+    }
+    assert {task_id for _, task_id in queue.items} == {child.id for child in children if child}
+    assert {"orchestration_step", "fanout_spawned"} <= {row["action"] for row in db.get_audit_logs("TASK-ROOT")}
+    assert db.get_latest_task_result("TASK-ROOT", "engineering_head", "root-session")["id"] == fingerprint["id"]
+    for task_id in ["TASK-ROOT", *[child.id for child in children if child]]:
+        assert not collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id=task_id,
+                                                 root=tmp_path / "root", proc_root=proc,
+                                                 monotonic_now=31, daemon_started_monotonic=0).eligible
+    db.close()
+
+
+def test_recovery_delegated_child_failure_wakes_parent_once_and_stays_ineligible(tmp_path: Path) -> None:
+    db, orch, queue, proc = _recovery_fixture(tmp_path)
+    _recover_decision(db, orch, {"action": "delegate", "agent": "dev_agent", "prompt": "implement"})
+    child_id = db.get_children("TASK-ROOT")[0]
+    queue.items.clear()
+    db.update_task(child_id, status=TaskStatus.IN_PROGRESS, current_session_id="child-session")
+    db.insert_task_result(child_id, "dev_agent", "child-session", "blocked", 1, status="blocked")
+    fingerprint = db.get_latest_task_result(child_id, "dev_agent", "child-session")
+    assert fingerprint is not None
+    _consume_zombie_fingerprint(db, child_id, fingerprint, db.get_task(child_id), orch)
+    child = db.get_task(child_id)
+    assert child is not None and child.status is TaskStatus.FAILED and child.block_kind is None
+    assert db.get_latest_task_result(child_id, "dev_agent", "child-session")["id"] == fingerprint["id"]
+    assert queue.items == [("test", "TASK-ROOT")]
+    for task_id in ("TASK-ROOT", child_id):
+        assert not collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id=task_id,
+                                                 root=tmp_path / "root", proc_root=proc,
+                                                 monotonic_now=31, daemon_started_monotonic=0).eligible
+    db.close()
+
+
+def test_recovery_sweep_replay_guard_has_no_second_effect(tmp_path: Path) -> None:
+    db, orch, queue, _ = _recovery_fixture(tmp_path)
+    _recover_decision(db, orch, {"action": "delegate", "agent": "dev_agent", "prompt": "implement"})
+    before = (list(db.get_children("TASK-ROOT")), list(queue.items), list(db.get_audit_logs("TASK-ROOT")))
+    _sweep_org_zombies(db, now=datetime.now(timezone.utc), uptime=999, warm_up_seconds=0, orchestrator=orch)
+    after = (list(db.get_children("TASK-ROOT")), list(queue.items), list(db.get_audit_logs("TASK-ROOT")))
+    assert after == before  # parked IN_PROGRESS(DELEGATED) is outside the shipping sweep allowlist.
+    db.close()
+
+
+def test_cancel_route_cascades_real_recovered_tree_and_preserves_conservative_evidence(tmp_path: Path) -> None:
+    for cascade in (True, False):
+        db, orch, queue, proc = _recovery_fixture(tmp_path / str(cascade))
+        _recover_decision(db, orch, {"action": "delegate", "agent": "dev_agent", "prompt": "implement"})
+        child_id = db.get_children("TASK-ROOT")[0]
+        org = MagicMock(db=db, orchestrator=orch, sessions=SessionTracker(), db_lock=asyncio.Lock())
+        org.event_bus.publish = AsyncMock()
+        result = asyncio.run(cancel_task("TASK-ROOT", CancelBody(rationale="test", cascade=cascade), org))
+        parent, child = db.get_task("TASK-ROOT"), db.get_task(child_id)
+        assert result["cancelled"] == (["TASK-ROOT", child_id] if cascade else ["TASK-ROOT"])
+        assert parent is not None and parent.status is TaskStatus.CANCELLED and parent.cancelled_at
+        assert child is not None and child.status is (TaskStatus.CANCELLED if cascade else TaskStatus.PENDING)
+        assert {"task_cancelled"} <= {row["action"] for row in db.get_audit_logs("TASK-ROOT")}
+        assert not collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-ROOT",
+                                                 root=tmp_path / "root", proc_root=proc,
+                                                 monotonic_now=31, daemon_started_monotonic=0).eligible
+        db.close()
