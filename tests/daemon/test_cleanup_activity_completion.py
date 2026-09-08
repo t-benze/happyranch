@@ -274,7 +274,7 @@ def test_cleanup_locked_revalidation_rejects_mutated_authority(app, org_state, a
                 actual_lock.release()
                 response = await asyncio.wait_for(request, timeout=2)
             finally:
-                if actual_lock.locked():
+                if actual_lock.locked() and not request.done():
                     actual_lock.release()
                 if not request.done():
                     request.cancel()
@@ -295,6 +295,7 @@ def test_cleanup_locked_revalidation_rejects_mutated_authority(app, org_state, a
     def cleared(task_id: str) -> None:
         base_clear(task_id, "dev_agent")
 
+    # The callback must never roll back the concurrently-mutated authority.
     asyncio.run(exercise(cancelled, 409, "task_not_active"))
     asyncio.run(exercise(reassigned, 400, "cleanup_context_unavailable"))
     asyncio.run(exercise(replaced, 409, "session_mismatch"))
@@ -305,6 +306,7 @@ def test_cleanup_concurrent_callbacks_keep_complete_immutable_first_winner(app, 
     """H5: two actual HTTP callbacks contend at the real lock; only the ordered winner persists."""
     async def exercise() -> None:
         task_id, winner = _new_cleanup_task(TestClient(app), org_state, auth_headers)
+        trigger_audit_id = next(row["id"] for row in org_state.db.get_audit_logs(task_id) if row["action"] == "workspace_cleanup_triggered")
         loser = {**winner, "output_summary": "loser", "cleanup_activity": {**_receipt(), "ambiguity_summary": "different"}}
         actual_lock = asyncio.Lock()
         observed = _ObservedLock(actual_lock)
@@ -338,7 +340,7 @@ def test_cleanup_concurrent_callbacks_keep_complete_immutable_first_winner(app, 
                 actual_lock.release()
                 winner_response, loser_response = await asyncio.wait_for(asyncio.gather(first, second), timeout=2)
             finally:
-                if actual_lock.locked():
+                if actual_lock.locked() and not first.done():
                     actual_lock.release()
                 for request in (first, second):
                     if request is None:
@@ -356,7 +358,7 @@ def test_cleanup_concurrent_callbacks_keep_complete_immutable_first_winner(app, 
         expected = {
             "receipt_version": 1, "task_id": task_id, "agent": "dev_agent",
             "session_id": "sess-cleanup", "task_result_id": result[0]["id"],
-            "trigger_audit_id": audits[0]["payload"]["trigger_audit_id"],
+            "trigger_audit_id": trigger_audit_id,
             "run_number": 1,
             **{key: value for key, value in winner_payload["cleanup_activity"].items() if key != "version"},
             "manifest_digest": None, "ledger_digest": None,

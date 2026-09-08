@@ -29,14 +29,31 @@ def _completed(db: Database) -> list[dict]:
     return [row for row in db.get_audit_logs("TASK-001") if row["action"] == "workspace_cleanup_completed"]
 
 
-def _assert_pair(db: Database, summary: str, session: str) -> None:
+def _assert_pair(db: Database, summary: str, session: str, trigger_audit_id: int = 1) -> tuple[dict, dict]:
     results, completed = db.get_task_results("TASK-001"), _completed(db)
     assert len(results) == len(completed) == 1
-    assert results[0]["output_summary"] == summary and results[0]["session_id"] == session
+    result = results[0]
+    assert result["output_summary"] == summary and result["session_id"] == session
+    assert result["task_id"] == "TASK-001" and result["agent"] == "dev_agent"
+    assert result["status"] == "completed" and result["confidence_score"] == 80
+    assert result["decision_json"] is None and result["risks_flagged"] is None
+    assert result["learnings"] is None and result["duration_seconds"] is None
+    assert result["token_count"] is None and result["estimated_cost"] is None
+    assert result["output_dir"] is None and result["waiting_on_job_ids"] is None
+    assert result["verdict"] is None and result["local_ci"] is None
+    assert isinstance(result["id"], int) and result["id"] > 0
+    assert isinstance(result["created_at"], str) and result["created_at"]
     payload = completed[0]["payload"]
-    assert payload["task_result_id"] == results[0]["id"]
+    assert payload["task_result_id"] == result["id"]
     assert (payload["task_id"], payload["agent"], payload["session_id"]) == ("TASK-001", "dev_agent", session)
-    assert (payload["trigger_audit_id"] > 0, payload["run_number"], payload["mode"], payload["outcome"]) == (True, 1, "report_only", "completed")
+    assert payload == {"receipt_version": 1, "task_id": "TASK-001", "agent": "dev_agent", "session_id": session,
+                       "task_result_id": result["id"], "trigger_audit_id": trigger_audit_id, "run_number": 1,
+                       "mode": "report_only", "outcome": "completed",
+                       "measured_before": {"available": False, "bytes": None, "inodes": None, "reason": "not_measured"},
+                       "measured_after": {"available": False, "bytes": None, "inodes": None, "reason": "not_measured"},
+                       "reclaimed_bytes": 0, "reclaimed_inodes": 0, "removal_count": 0, "skip_count": None,
+                       "error_summary": None, "ambiguity_summary": "ledger_unavailable", "manifest_digest": None, "ledger_digest": None}
+    return result, completed[0]
 
 
 class _ConnectionWrapper:
@@ -62,7 +79,9 @@ class _ObservedLock:
         self._lock, self._attempted = lock, attempted
 
     def acquire(self, *args, **kwargs):
-        self._attempted.set()
+        # This is immediately before the real acquire, not a pre-lock barrier.
+        if threading.current_thread().name == "contender":
+            self._attempted.set()
         return self._lock.acquire(*args, **kwargs)
 
     def release(self) -> None:
@@ -70,8 +89,9 @@ class _ObservedLock:
 
 
 def test_cleanup_completion_commits_result_and_audit_together(db) -> None:
-    assert _write(db, _trigger(db)) is True
-    _assert_pair(Database(db.db_path), "receipt", "sess-cleanup")
+    context = _trigger(db)
+    assert _write(db, context) is True
+    _assert_pair(Database(db.db_path), "receipt", "sess-cleanup", context["trigger_audit_id"])
 
 
 def test_legacy_insert_task_result_still_commits_from_independent_connection(db) -> None:
@@ -116,6 +136,17 @@ def test_orphan_receipt_is_not_grafted(db) -> None:
     with pytest.raises(RuntimeError, match="cleanup_receipt_already_present"):
         _write(db, context)
     assert db.get_task_results("TASK-001") == []
+
+
+def test_ordinary_same_session_result_cannot_receive_a_grafted_receipt(db) -> None:
+    """D-no-graft: the real ordinary writer remains an immutable predecessor."""
+    context = _trigger(db)
+    db.insert_task_result(task_id="TASK-001", agent="dev_agent", session_id="sess-cleanup", output_summary="ordinary", confidence_score=80)
+    before = Database(db.db_path).get_task_results("TASK-001")
+    assert _write(db, context, summary="replacement") is False
+    reopened = Database(db.db_path)
+    assert reopened.get_task_results("TASK-001") == before
+    assert _completed(reopened) == []
 
 
 @pytest.mark.parametrize("mutation", ["changed", "missing", "duplicate", "foreign"])
@@ -172,8 +203,12 @@ def test_rlock_excludes_contender_at_actual_lock_acquisition(db, monkeypatch) ->
         try: outcomes.append((label, _write(db, context, summary=label)))
         except BaseException as exc: outcomes.append((label, exc))
 
-    first, second = threading.Thread(target=invoke, args=("winner",)), threading.Thread(target=invoke, args=("loser",))
+    first = threading.Thread(target=invoke, args=("winner",), name="winner")
+    second = threading.Thread(target=invoke, args=("loser",), name="contender")
     first.start(); assert entered.wait(2); second.start(); assert attempted.wait(2)
+    # The named contender is blocked in the real RLock acquire: it has not
+    # entered the protected writer or produced a result before release.
+    assert outcomes == []
     release.set(); first.join(2); second.join(2)
     assert not first.is_alive() and not second.is_alive()
     assert sorted(outcomes, key=lambda item: item[0]) == [("loser", False), ("winner", True)]
