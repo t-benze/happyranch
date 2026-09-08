@@ -4584,19 +4584,33 @@ class Database:
         return self._get_cleanup_trigger_context_uncommitted(task_id, agent)
 
     def _get_cleanup_trigger_context_uncommitted(self, task_id: str, agent: str) -> dict | None:
+        # Read all candidate owners before selecting one.  Filtering by agent
+        # first hides a conflicting foreign trigger and would make server
+        # authority depend on which row happened to be selected.
         rows = self._conn.execute(
-            "SELECT id, payload FROM audit_log WHERE task_id = ? AND agent = ? AND action = 'workspace_cleanup_triggered' ORDER BY id DESC LIMIT 2",
-            (task_id, agent),
+            "SELECT id, agent, payload FROM audit_log WHERE task_id = ? AND action = 'workspace_cleanup_triggered' ORDER BY id DESC LIMIT 2",
+            (task_id,),
         ).fetchall()
-        if len(rows) != 1:
+        if len(rows) != 1 or rows[0]["agent"] != agent:
             return None
         try:
             payload = json.loads(rows[0]["payload"])
         except (TypeError, json.JSONDecodeError):
             return None
-        if payload.get("brief_kind") not in {"report_only", "cleanup"}:
+        if not isinstance(payload, dict):
             return None
-        return {"trigger_audit_id": rows[0]["id"], "brief_kind": payload["brief_kind"], "run_number": payload.get("run_number")}
+        brief_kind = payload.get("brief_kind")
+        run_number = payload.get("run_number")
+        if type(brief_kind) is not str or brief_kind not in {"report_only", "cleanup"}:
+            return None
+        if type(run_number) is not int or run_number <= 0:
+            return None
+        # The scheduler's first two runs are report-only; later runs are the
+        # cleanup mode.  This only validates its emitted context, never
+        # recalculates cadence or writes scheduler state.
+        if (run_number <= 2) != (brief_kind == "report_only"):
+            return None
+        return {"trigger_audit_id": rows[0]["id"], "brief_kind": brief_kind, "run_number": run_number}
 
     @_synchronized
     def insert_cleanup_completion(self, *, cleanup_activity, trigger_context: dict, **kwargs) -> bool:

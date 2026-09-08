@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from runtime.daemon.auth import require_token
@@ -493,6 +493,42 @@ def recall_task(
     return node
 
 
+_CLEANUP_MEASUREMENT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["available", "bytes", "inodes", "reason"],
+    "properties": {
+        "available": {"type": "boolean"},
+        "bytes": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, {"type": "null"}]},
+        "inodes": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, {"type": "null"}]},
+        "reason": {"anyOf": [{"type": "string", "enum": ["not_measured", "measurement_unavailable", "truncated", "timeout", "permission_denied", "unsupported_platform", "changed_during_measurement", "receipt_missing", "context_unavailable", "ledger_unavailable", "invalid_record"]}, {"type": "null"}]},
+    },
+    "allOf": [
+        {"if": {"properties": {"available": {"const": True}}}, "then": {"properties": {"bytes": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, "inodes": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, "reason": {"type": "null"}}}},
+        {"if": {"properties": {"available": {"const": False}}}, "then": {"properties": {"bytes": {"type": "null"}, "inodes": {"type": "null"}, "reason": {"type": "string", "enum": ["not_measured", "measurement_unavailable", "truncated", "timeout", "permission_denied", "unsupported_platform", "changed_during_measurement", "receipt_missing", "context_unavailable", "ledger_unavailable", "invalid_record"]}}}},
+    ],
+}
+
+_CLEANUP_ACTIVITY_PRESENT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["version", "mode", "outcome", "measured_before", "measured_after", "reclaimed_bytes", "reclaimed_inodes", "removal_count", "skip_count", "error_summary", "ambiguity_summary"],
+    "properties": {
+        "version": {"type": "integer", "const": 1},
+        "mode": {"type": "string", "enum": ["report_only", "cleanup"]},
+        "outcome": {"type": "string", "enum": ["completed", "partial", "failed", "blocked"]},
+        "measured_before": _CLEANUP_MEASUREMENT_SCHEMA,
+        "measured_after": _CLEANUP_MEASUREMENT_SCHEMA,
+        "reclaimed_bytes": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, {"type": "null"}]},
+        "reclaimed_inodes": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, {"type": "null"}]},
+        "removal_count": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, {"type": "null"}]},
+        "skip_count": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, {"type": "null"}]},
+        "error_summary": {"anyOf": [{"type": "string", "maxLength": 240}, {"type": "null"}]},
+        "ambiguity_summary": {"anyOf": [{"type": "string", "maxLength": 240}, {"type": "null"}]},
+    },
+}
+
+
 class CompletionBody(BaseModel):
     session_id: str
     agent: str
@@ -522,7 +558,13 @@ class CompletionBody(BaseModel):
     # "exit_code": 0} if present — validated server-side before durable persistence.
     local_ci: object | None = None
     # Raw on purpose: duplicate acknowledgement remains before receipt parsing.
-    cleanup_activity: object | None = None
+    # The vendor extension documents the strict non-null v1 shape while the
+    # Python boundary keeps explicit null available to the legacy duplicate path.
+    cleanup_activity: object | None = Field(
+        default=None,
+        description="Optional raw receipt; when present and non-null, it must satisfy the strict v1 cleanup activity schema.",
+        json_schema_extra={"x-happyranch-present-schema": _CLEANUP_ACTIVITY_PRESENT_SCHEMA},
+    )
 
 
 @router.get("/tasks/{task_id}/events")
@@ -685,6 +727,17 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
         decision_payload["_manager_self_evaluation"] = sanitized
     decision_json = _json.dumps(decision_payload) if decision_payload is not None else None
     async with org.db_lock:
+        # The pre-lock gates are deliberately retained for ordinary callback
+        # ordering.  A cleanup receipt also rechecks the mutable authority
+        # after waiting for this lock, before its compound database write.
+        if has_cleanup_activity:
+            _require_task_active(task_id, org.db.get_task(task_id))
+            locked_task = org.db.get_task(task_id)
+            if (locked_task is None or locked_task.assigned_agent != body.agent
+                    or "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)" not in locked_task.brief):
+                raise HTTPException(status_code=400, detail={"code": "cleanup_context_unavailable"})
+            if org.sessions.get_active(task_id, body.agent) != body.session_id:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "session_mismatch"})
         result_kwargs = dict(
             task_id=task_id,
             agent=body.agent,

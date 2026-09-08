@@ -81,6 +81,34 @@ def test_openapi_snapshot_matches() -> None:
         raise AssertionError("\n".join(msg_lines))
 
 
+def test_completion_cleanup_activity_schema_is_strict_when_present() -> None:
+    """C1a advertises the strict v1 receipt without changing raw route ordering."""
+    full = create_app(DaemonState.idle(Settings())).openapi()
+    schema = full["components"]["schemas"]["CompletionBody"]
+    receipt = schema["properties"]["cleanup_activity"]
+    strict = receipt["x-happyranch-present-schema"]
+    assert receipt["description"].startswith("Optional raw receipt")
+    assert strict["type"] == "object"
+    assert strict["additionalProperties"] is False
+    assert strict["required"] == [
+        "version", "mode", "outcome", "measured_before", "measured_after",
+        "reclaimed_bytes", "reclaimed_inodes", "removal_count", "skip_count",
+        "error_summary", "ambiguity_summary",
+    ]
+    assert strict["properties"]["version"] == {"type": "integer", "const": 1}
+    assert strict["properties"]["mode"]["enum"] == ["report_only", "cleanup"]
+    assert strict["properties"]["outcome"]["enum"] == ["completed", "partial", "failed", "blocked"]
+    measurement = strict["properties"]["measured_before"]
+    assert measurement["additionalProperties"] is False
+    assert measurement["required"] == ["available", "bytes", "inodes", "reason"]
+    assert measurement["properties"]["available"]["type"] == "boolean"
+    assert measurement["allOf"], "availability truth table must be represented"
+    for name in ("reclaimed_bytes", "reclaimed_inodes", "removal_count", "skip_count"):
+        assert strict["properties"][name]["anyOf"][0] == {
+            "type": "integer", "minimum": 0, "maximum": 2**63 - 1,
+        }
+
+
 # ── AdapterEntryResponse eligibility semantic test (TASK-3836 fix-forward) ─
 
 

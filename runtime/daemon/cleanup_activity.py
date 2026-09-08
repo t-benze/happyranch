@@ -65,7 +65,7 @@ class CleanupActivityInput:
 def _summary(value: Any, field: str) -> str | None:
     if value is None:
         return None
-    if not isinstance(value, str) or len(value) > 240 or "\n" in value or "\r" in value or any(ord(c) < 32 for c in value):
+    if not isinstance(value, str) or len(value) > 240 or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in value):
         raise CleanupActivityError(f"invalid_{field}")
     return value
 
@@ -77,6 +77,9 @@ def validate_cleanup_activity(value: Any, *, callback_status: str, trigger_mode:
     if type(value["version"]) is not int or value["version"] != 1:
         raise CleanupActivityError("invalid_cleanup_version")
     mode, outcome = value["mode"], value["outcome"]
+    # Membership checks must not leak TypeError for JSON arrays/objects.
+    if not isinstance(mode, str) or not isinstance(outcome, str):
+        raise CleanupActivityError("invalid_cleanup_enum")
     if mode not in {"report_only", "cleanup"} or mode != trigger_mode:
         raise CleanupActivityError("cleanup_mode_mismatch")
     if outcome not in {"completed", "partial", "failed", "blocked"} or (callback_status in {"failed", "blocked"} and outcome == "completed"):

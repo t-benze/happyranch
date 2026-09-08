@@ -82,3 +82,20 @@ def test_cleanup_completion_refuses_orphan_receipt_without_grafting(db) -> None:
             cleanup_activity=_receipt(), trigger_context=context,
         )
     assert db.get_task_results("TASK-001") == []
+
+
+@pytest.mark.parametrize("payload", [
+    {"brief_kind": "report_only", "run_number": False},
+    {"brief_kind": "report_only", "run_number": 3},
+    {"brief_kind": "cleanup", "run_number": 2},
+    {"brief_kind": [], "run_number": 1},
+])
+def test_cleanup_trigger_context_rejects_malformed_payload(db, payload) -> None:
+    db.insert_audit_log("TASK-001", "dev_agent", "workspace_cleanup_triggered", payload)
+    assert db.get_cleanup_trigger_context("TASK-001", "dev_agent") is None
+
+
+def test_cleanup_trigger_context_rejects_foreign_duplicate(db) -> None:
+    db.insert_audit_log("TASK-001", "dev_agent", "workspace_cleanup_triggered", {"brief_kind": "report_only", "run_number": 1})
+    db.insert_audit_log("TASK-001", "other", "workspace_cleanup_triggered", {"brief_kind": "report_only", "run_number": 1})
+    assert db.get_cleanup_trigger_context("TASK-001", "dev_agent") is None

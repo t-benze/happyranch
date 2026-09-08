@@ -53,3 +53,16 @@ def test_unverified_reclaimed_totals_rejected() -> None:
     receipt = _receipt(mode="cleanup", reclaimed_bytes=0, reclaimed_inodes=None, removal_count=None, ambiguity_summary="ledger_unavailable")
     with pytest.raises(CleanupActivityError, match="cleanup_ledger_unavailable"):
         validate_cleanup_activity(receipt, callback_status="completed", trigger_mode="cleanup")
+
+
+@pytest.mark.parametrize("field", ["mode", "outcome"])
+@pytest.mark.parametrize("value", [[], {}, None, True])
+def test_cleanup_enum_objects_are_bounded_validation_errors(field, value) -> None:
+    with pytest.raises(CleanupActivityError, match="invalid_cleanup_enum"):
+        validate_cleanup_activity(_receipt(**{field: value}), callback_status="completed", trigger_mode="report_only")
+
+
+@pytest.mark.parametrize("character", ["\x7f", "\x85"])
+def test_cleanup_summary_rejects_del_and_c1_controls(character) -> None:
+    with pytest.raises(CleanupActivityError, match="invalid_error_summary"):
+        validate_cleanup_activity(_receipt(error_summary=f"bad{character}"), callback_status="completed", trigger_mode="report_only")
