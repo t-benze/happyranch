@@ -671,6 +671,10 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     # so the server can validate it before persistence.
     if data.get("local_ci") is not None:
         body["local_ci"] = data["local_ci"]
+    # Keep explicit null/false/empty values intact: receipt validation is
+    # server-owned and must not be bypassed by truthiness filtering.
+    if "cleanup_activity" in data:
+        body["cleanup_activity"] = data["cleanup_activity"]
     return data["task_id"], body
 
 

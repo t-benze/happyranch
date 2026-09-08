@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from runtime.daemon.auth import require_token
@@ -493,6 +493,46 @@ def recall_task(
     return node
 
 
+_CLEANUP_MEASUREMENT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["available", "bytes", "inodes", "reason"],
+    "properties": {
+        "available": {"type": "boolean"},
+        "bytes": {"anyOf": [{"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, {"type": "null"}]},
+        "inodes": {"anyOf": [{"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, {"type": "null"}]},
+        "reason": {"anyOf": [{"type": "string", "enum": ["not_measured", "measurement_unavailable", "truncated", "timeout", "permission_denied", "unsupported_platform", "changed_during_measurement", "receipt_missing", "context_unavailable", "ledger_unavailable", "invalid_record"]}, {"type": "null"}]},
+    },
+    "allOf": [
+        {"if": {"properties": {"available": {"const": True}}}, "then": {"properties": {"bytes": {"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, "inodes": {"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, "reason": {"type": "null"}}}},
+        {"if": {"properties": {"available": {"const": False}}}, "then": {"properties": {"bytes": {"type": "null"}, "inodes": {"type": "null"}, "reason": {"type": "string", "enum": ["not_measured", "measurement_unavailable", "truncated", "timeout", "permission_denied", "unsupported_platform", "changed_during_measurement", "receipt_missing", "context_unavailable", "ledger_unavailable", "invalid_record"]}}}},
+    ],
+}
+
+_CLEANUP_ACTIVITY_PRESENT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["version", "mode", "outcome", "measured_before", "measured_after", "reclaimed_bytes", "reclaimed_inodes", "removal_count", "skip_count", "error_summary", "ambiguity_summary"],
+    "properties": {
+        "version": {"type": "integer", "const": 1},
+        "mode": {"type": "string", "enum": ["report_only", "cleanup"]},
+        "outcome": {"type": "string", "enum": ["completed", "partial", "failed", "blocked"]},
+        "measured_before": _CLEANUP_MEASUREMENT_SCHEMA,
+        "measured_after": _CLEANUP_MEASUREMENT_SCHEMA,
+        "reclaimed_bytes": {"anyOf": [{"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, {"type": "null"}]},
+        "reclaimed_inodes": {"anyOf": [{"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, {"type": "null"}]},
+        "removal_count": {"anyOf": [{"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, {"type": "null"}]},
+        "skip_count": {"anyOf": [{"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, {"type": "null"}]},
+        "error_summary": {"anyOf": [{"type": "string", "maxLength": 240, "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"}, {"type": "null"}]},
+        "ambiguity_summary": {"anyOf": [{"type": "string", "maxLength": 240, "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"}, {"type": "null"}]},
+    },
+    "allOf": [
+        {"if": {"properties": {"mode": {"const": "report_only"}}}, "then": {"properties": {"reclaimed_bytes": {"const": 0}, "reclaimed_inodes": {"const": 0}, "removal_count": {"const": 0}}}},
+        {"if": {"properties": {"mode": {"const": "cleanup"}}}, "then": {"properties": {"reclaimed_bytes": {"type": "null"}, "reclaimed_inodes": {"type": "null"}, "removal_count": {"type": "null"}, "ambiguity_summary": {"type": "string", "minLength": 1, "maxLength": 240, "pattern": "ledger_unavailable"}}}},
+    ],
+}
+
+
 class CompletionBody(BaseModel):
     session_id: str
     agent: str
@@ -521,6 +561,14 @@ class CompletionBody(BaseModel):
     # pushed-PR reports. Must be a dict with exactly {"command": "scripts/local_ci.sh all",
     # "exit_code": 0} if present — validated server-side before durable persistence.
     local_ci: object | None = None
+    # Raw on purpose: duplicate acknowledgement remains before receipt parsing.
+    # The generated request contract describes a first receipt; an invalid
+    # replacement can still receive the pre-existing duplicate acknowledgement.
+    cleanup_activity: object = Field(
+        default=None,
+        description="Optional-by-absence strict v1 cleanup receipt. First submitted receipts must match this object; persisted duplicate callbacks retain ordinary acknowledgement ordering.",
+        json_schema_extra=_CLEANUP_ACTIVITY_PRESENT_SCHEMA,
+    )
 
 
 @router.get("/tasks/{task_id}/events")
@@ -565,6 +613,21 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
         )
+    has_cleanup_activity = "cleanup_activity" in body.model_fields_set
+    cleanup_activity = None
+    context = None
+    if has_cleanup_activity:
+        from runtime.daemon.cleanup_activity import CleanupActivityError, validate_cleanup_activity
+        task = org.db.get_task(task_id)
+        context = org.db.get_cleanup_trigger_context(task_id, body.agent)
+        if task is None or task.assigned_agent != body.agent or "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)" not in task.brief or context is None:
+            raise HTTPException(status_code=400, detail={"code": "cleanup_context_unavailable"})
+        try:
+            cleanup_activity = validate_cleanup_activity(
+                body.cleanup_activity, callback_status=body.status, trigger_mode=context["brief_kind"],
+            )
+        except CleanupActivityError as exc:
+            raise HTTPException(status_code=400, detail={"code": str(exc)})
     # Spec §6.2: validate waiting_on_job_ids if EXPLICITLY present. We check
     # model_fields_set rather than truthiness so we can distinguish "client
     # omitted the field" (legacy escalate path, no validation) from "client
@@ -668,7 +731,28 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
         decision_payload["_manager_self_evaluation"] = sanitized
     decision_json = _json.dumps(decision_payload) if decision_payload is not None else None
     async with org.db_lock:
-        org.db.insert_task_result(
+        # The pre-lock gates are deliberately retained for ordinary callback
+        # ordering.  A cleanup receipt also rechecks the mutable authority
+        # after waiting for this lock, before its compound database write.
+        if has_cleanup_activity:
+            _require_task_active(task_id, org.db.get_task(task_id))
+            locked_task = org.db.get_task(task_id)
+            if (locked_task is None or locked_task.assigned_agent != body.agent
+                    or "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)" not in locked_task.brief):
+                raise HTTPException(status_code=400, detail={"code": "cleanup_context_unavailable"})
+            locked_session = org.sessions.get_active(task_id, body.agent)
+            if locked_session != body.session_id:
+                # A concurrent cleanup callback can commit the immutable pair
+                # and clear the volatile tracker while this callback waits for
+                # the same org lock.  Treat only that persisted same-session
+                # receipt path as the compatible duplicate; a replacement
+                # session remains an ownership mismatch.
+                if not (
+                    locked_session is None
+                    and org.db.get_latest_task_result(task_id, body.agent, body.session_id) is not None
+                ):
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "session_mismatch"})
+        result_kwargs = dict(
             task_id=task_id,
             agent=body.agent,
             session_id=body.session_id,
@@ -682,6 +766,19 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             verdict=body.verdict,
             local_ci_json=local_ci_json,
         )
+        if not has_cleanup_activity:
+            org.db.insert_task_result(**result_kwargs)
+        else:
+            inserted = org.db.insert_cleanup_completion(
+                **result_kwargs, cleanup_activity=cleanup_activity, trigger_context=context,
+            )
+            if not inserted:
+                # A second writer won between the route's tracker read and
+                # the database writer lock, or a prior request committed just
+                # before its volatile completion steps were interrupted.
+                # Preserve the immutable pair and finish the idempotent
+                # tracker/event completion below; never graft a receipt.
+                pass
     # Clear the tracker so a duplicate POST for the same session is rejected as
     # unknown_session rather than silently persisting a second row.
     org.sessions.clear(task_id, body.agent)

@@ -81,6 +81,41 @@ def test_openapi_snapshot_matches() -> None:
         raise AssertionError("\n".join(msg_lines))
 
 
+def test_completion_cleanup_activity_schema_is_strict_when_present() -> None:
+    """C1a advertises the strict v1 receipt without changing raw route ordering."""
+    full = create_app(DaemonState.idle(Settings())).openapi()
+    schema = full["components"]["schemas"]["CompletionBody"]
+    receipt = schema["properties"]["cleanup_activity"]
+    assert receipt["description"].startswith("Optional-by-absence")
+    assert receipt["type"] == "object"
+    assert receipt["additionalProperties"] is False
+    assert receipt["required"] == [
+        "version", "mode", "outcome", "measured_before", "measured_after",
+        "reclaimed_bytes", "reclaimed_inodes", "removal_count", "skip_count",
+        "error_summary", "ambiguity_summary",
+    ]
+    assert receipt["properties"]["version"] == {"type": "integer", "const": 1}
+    assert receipt["properties"]["mode"]["enum"] == ["report_only", "cleanup"]
+    assert receipt["properties"]["outcome"]["enum"] == ["completed", "partial", "failed", "blocked"]
+    measurement = receipt["properties"]["measured_before"]
+    assert measurement["additionalProperties"] is False
+    assert measurement["required"] == ["available", "bytes", "inodes", "reason"]
+    assert measurement["properties"]["available"]["type"] == "boolean"
+    assert measurement["allOf"], "availability truth table must be represented"
+    for name in ("reclaimed_bytes", "reclaimed_inodes", "removal_count", "skip_count"):
+        bounded = receipt["properties"][name]["anyOf"][0]
+        assert bounded["type"] == "integer"
+        assert bounded["minimum"] == 0
+        assert bounded["exclusiveMaximum"] == 2**63
+    assert "anyOf" not in receipt
+    assert receipt["properties"]["error_summary"]["anyOf"][0]["pattern"]
+    assert len(receipt["allOf"]) == 2
+    report_only, cleanup = receipt["allOf"]
+    assert report_only["then"]["properties"]["removal_count"] == {"const": 0}
+    assert cleanup["then"]["properties"]["removal_count"] == {"type": "null"}
+    assert cleanup["then"]["properties"]["ambiguity_summary"]["pattern"] == "ledger_unavailable"
+
+
 # ── AdapterEntryResponse eligibility semantic test (TASK-3836 fix-forward) ─
 
 

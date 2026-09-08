@@ -4533,6 +4533,27 @@ class Database:
 
     # --- Task Results ---
 
+    def _insert_task_result_uncommitted(
+        self, task_id: str, agent: str, session_id: str, output_summary: str,
+        confidence_score: int, status: str = "completed", risks_flagged: list[str] | None = None,
+        learnings: str | None = None, duration_seconds: int | None = None,
+        token_count: int | None = None, estimated_cost: float | None = None,
+        output_dir: str | None = None, decision_json: str | None = None,
+        waiting_on_job_ids: list[str] | None = None, verdict: str | None = None,
+        local_ci_json: str | None = None,
+    ) -> int:
+        cur = self._conn.execute(
+            """INSERT INTO task_results (task_id, agent, session_id, status, output_summary, decision_json,
+               confidence_score, learnings, risks_flagged, duration_seconds, token_count, estimated_cost,
+               output_dir, waiting_on_job_ids, verdict, local_ci, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (task_id, agent, session_id, status, output_summary, decision_json, confidence_score, learnings,
+             json.dumps(risks_flagged) if risks_flagged is not None else None, duration_seconds, token_count,
+             estimated_cost, output_dir, json.dumps(waiting_on_job_ids) if waiting_on_job_ids is not None else None,
+             verdict, local_ci_json, datetime.now(timezone.utc).isoformat()),
+        )
+        return int(cur.lastrowid)
+
     @_synchronized
     def insert_task_result(
         self,
@@ -4553,34 +4574,93 @@ class Database:
         verdict: str | None = None,
         local_ci_json: str | None = None,
     ) -> None:
-        self._conn.execute(
-            """INSERT INTO task_results
-               (task_id, agent, session_id, status, output_summary, decision_json,
-                confidence_score, learnings, risks_flagged, duration_seconds,
-                token_count, estimated_cost, output_dir, waiting_on_job_ids,
-                verdict, local_ci, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                task_id,
-                agent,
-                session_id,
-                status,
-                output_summary,
-                decision_json,
-                confidence_score,
-                learnings,
-                json.dumps(risks_flagged) if risks_flagged is not None else None,
-                duration_seconds,
-                token_count,
-                estimated_cost,
-                output_dir,
-                json.dumps(waiting_on_job_ids) if waiting_on_job_ids is not None else None,
-                verdict,
-                local_ci_json,
-                datetime.now(timezone.utc).isoformat(),
-            ),
-        )
+        self._insert_task_result_uncommitted(task_id, agent, session_id, output_summary, confidence_score, status,
+            risks_flagged, learnings, duration_seconds, token_count, estimated_cost, output_dir, decision_json,
+            waiting_on_job_ids, verdict, local_ci_json)
         self._conn.commit()
+
+    @_synchronized
+    def get_cleanup_trigger_context(self, task_id: str, agent: str) -> dict | None:
+        return self._get_cleanup_trigger_context_uncommitted(task_id, agent)
+
+    def _get_cleanup_trigger_context_uncommitted(self, task_id: str, agent: str) -> dict | None:
+        # Read all candidate owners before selecting one.  Filtering by agent
+        # first hides a conflicting foreign trigger and would make server
+        # authority depend on which row happened to be selected.
+        rows = self._conn.execute(
+            "SELECT id, agent, payload FROM audit_log WHERE task_id = ? AND action = 'workspace_cleanup_triggered' ORDER BY id DESC LIMIT 2",
+            (task_id,),
+        ).fetchall()
+        if len(rows) != 1 or rows[0]["agent"] != agent:
+            return None
+        try:
+            payload = json.loads(rows[0]["payload"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        brief_kind = payload.get("brief_kind")
+        run_number = payload.get("run_number")
+        if type(brief_kind) is not str or brief_kind not in {"report_only", "cleanup"}:
+            return None
+        if type(run_number) is not int or run_number <= 0:
+            return None
+        # The scheduler's first two runs are report-only; later runs are the
+        # cleanup mode.  This only validates its emitted context, never
+        # recalculates cadence or writes scheduler state.
+        if (run_number <= 2) != (brief_kind == "report_only"):
+            return None
+        return {"trigger_audit_id": rows[0]["id"], "brief_kind": brief_kind, "run_number": run_number}
+
+    @_synchronized
+    def insert_cleanup_completion(self, *, cleanup_activity, trigger_context: dict, **kwargs) -> bool:
+        if self._conn.in_transaction:
+            raise RuntimeError("cleanup_completion_unrelated_transaction")
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            # The route's pre-lock lookup is only a validation aid.  Re-read
+            # the server-owned trigger after acquiring the SQLite writer lock
+            # so an intervening duplicate/corrupt trigger cannot be paired.
+            current_context = self._get_cleanup_trigger_context_uncommitted(
+                kwargs["task_id"], kwargs["agent"],
+            )
+            if current_context != trigger_context:
+                raise RuntimeError("cleanup_context_changed")
+            existing = self._conn.execute(
+                "SELECT 1 FROM task_results WHERE task_id = ? AND agent = ? AND session_id = ? LIMIT 1",
+                (kwargs["task_id"], kwargs["agent"], kwargs["session_id"]),
+            ).fetchone()
+            if existing is not None:
+                self._conn.rollback()
+                return False
+            # A receipt is an immutable companion fact, never an independently
+            # retryable side effect.  A malformed/pre-existing receipt without
+            # its result is corruption, not permission to graft a new result.
+            receipt_rows = self._conn.execute(
+                "SELECT id FROM audit_log WHERE task_id = ? AND agent = ? "
+                "AND action = 'workspace_cleanup_completed' ORDER BY id DESC LIMIT 2",
+                (kwargs["task_id"], kwargs["agent"]),
+            ).fetchall()
+            if receipt_rows:
+                raise RuntimeError("cleanup_receipt_already_present")
+            result_id = self._insert_task_result_uncommitted(**kwargs)
+            payload = {
+                "receipt_version": cleanup_activity.version, "task_id": kwargs["task_id"], "agent": kwargs["agent"],
+                "session_id": kwargs["session_id"], "task_result_id": result_id,
+                "trigger_audit_id": trigger_context["trigger_audit_id"], "run_number": trigger_context["run_number"],
+                "mode": cleanup_activity.mode, "outcome": cleanup_activity.outcome,
+                "measured_before": cleanup_activity.measured_before.__dict__, "measured_after": cleanup_activity.measured_after.__dict__,
+                "reclaimed_bytes": cleanup_activity.reclaimed_bytes, "reclaimed_inodes": cleanup_activity.reclaimed_inodes,
+                "removal_count": cleanup_activity.removal_count, "skip_count": cleanup_activity.skip_count,
+                "error_summary": cleanup_activity.error_summary, "ambiguity_summary": cleanup_activity.ambiguity_summary,
+                "manifest_digest": None, "ledger_digest": None,
+            }
+            self.insert_audit_log_uncommitted(kwargs["task_id"], kwargs["agent"], "workspace_cleanup_completed", payload)
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def get_task_results(self, task_id: str) -> list[dict]:

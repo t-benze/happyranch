@@ -438,6 +438,12 @@ Cross-agent reference material — SOPs, partner-API quirks, founder rulings —
 
 ## Other agent-side callbacks
 
+### Optional workspace-cleanup receipt
+
+`report-completion` may carry an optional raw `cleanup_activity` field. The daemon validates it only after the ordinary active-task, authenticated-session, and persisted-duplicate gates. It is accepted solely for the daemon-marked owning cleanup task with exactly one server trigger, and commits the normal task result plus one immutable `workspace_cleanup_completed` audit row in one SQLite transaction. Receipt values report activity; they neither prove reclamation nor change task lifecycle. An omitted field preserves historical callback behavior. Read APIs, UI, and any future cleanup cutover are not part of this receipt contract.
+
+The strict v1 first-receipt object has exactly `version`, `mode`, `outcome`, `measured_before`, `measured_after`, `reclaimed_bytes`, `reclaimed_inodes`, `removal_count`, `skip_count`, `error_summary`, and `ambiguity_summary`. Version is integer `1`; mode is `report_only` or `cleanup`; outcome is `completed`, `partial`, `failed`, or `blocked` (failed/blocked callbacks cannot report completed). Each measurement has exactly `available`, `bytes`, `inodes`, and `reason`: available measurements have nonnegative bounded integers and null reason, while unavailable measurements have null counts and one allowed reason. Counters are bounded nonnegative integers (or null only where documented); report-only requires all three operation counts to be zero, while cleanup keeps them null and names `ledger_unavailable`. Summaries are null or at most 240 non-control characters. Trigger/run authority is server-owned; the trigger is not a successful cleanup result. A duplicate callback retains its ordinary immutable acknowledgement even when its replacement receipt would not validate. Result and audit persistence are compound, but task lifecycle is unchanged. This receipt-only contract does not add API/TS/UI/cutover behavior.
+
 | Command | Purpose |
 |---|---|
 | `happyranch report-completion --from-file ...` | End-of-task callback (mandatory). |

@@ -457,6 +457,7 @@ def test_cmd_report_completion_from_file_posts_loaded_body(tmp_path):
         "risks": ["refund flow untested"],
         "dependencies": ["ALIPAY_APP_ID env var"],
         "reviewer_focus": ["signature canonicalization"],
+        "cleanup_activity": False,
     }
     completion_file = tmp_path / "completion.json"
     completion_file.write_text(json.dumps(payload))
@@ -483,6 +484,8 @@ def test_cmd_report_completion_from_file_posts_loaded_body(tmp_path):
     assert body["output_summary"] == "Wired Alipay happy path"
     assert body["risks_flagged"] == ["refund flow untested"]
     assert body["dependencies"] == ["ALIPAY_APP_ID env var"]
+    # This reaches the HTTP client through the actual --from-file command path.
+    assert body["cleanup_activity"] is False
     assert body["suggested_reviewer_focus"] == ["signature canonicalization"]
 
 
@@ -663,6 +666,46 @@ def test_completion_payload_from_file_omits_local_ci_when_absent(tmp_path):
     }))
     _, body = _completion_payload_from_file(str(path))
     assert "local_ci" not in body
+
+
+@pytest.mark.parametrize("value", [None, False, {}])
+def test_completion_payload_from_file_preserves_cleanup_activity_presence(tmp_path, value):
+    """The actual --from-file transport must not truth-test receipt values."""
+    import json as _json
+    from cli.main import _completion_payload_from_file
+
+    path = tmp_path / "completion.json"
+    path.write_text(_json.dumps({
+        "task_id": "TASK-001", "session_id": "sess-1", "agent": "dev_agent",
+        "status": "completed", "summary": "done", "cleanup_activity": value,
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert "cleanup_activity" in body
+    assert body["cleanup_activity"] == value
+
+
+def test_completion_payload_from_file_omits_cleanup_activity_when_absent(tmp_path):
+    import json as _json
+    from cli.main import _completion_payload_from_file
+
+    path = tmp_path / "completion.json"
+    path.write_text(_json.dumps({
+        "task_id": "TASK-001", "session_id": "sess-1", "agent": "dev_agent",
+        "status": "completed", "summary": "done",
+    }))
+    _, body = _completion_payload_from_file(str(path))
+    assert "cleanup_activity" not in body
+
+
+def test_completion_payload_from_file_forwards_complete_cleanup_receipt_verbatim(tmp_path):
+    import json as _json
+    from cli.main import _completion_payload_from_file
+
+    receipt = {"version": 1, "mode": "report_only", "outcome": "completed", "measured_before": {"available": True, "bytes": 0, "inodes": 0, "reason": None}, "measured_after": {"available": False, "bytes": None, "inodes": None, "reason": "not_measured"}, "reclaimed_bytes": 0, "reclaimed_inodes": 0, "removal_count": 0, "skip_count": None, "error_summary": None, "ambiguity_summary": "ledger unavailable"}
+    path = tmp_path / "completion.json"
+    path.write_text(_json.dumps({"task_id": "TASK-001", "session_id": "sess-1", "agent": "dev_agent", "status": "completed", "summary": "done", "cleanup_activity": receipt}))
+    _, body = _completion_payload_from_file(str(path))
+    assert body["cleanup_activity"] == receipt
 
 
 def test_report_completion_parser_accepts_from_file_alone():
