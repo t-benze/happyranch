@@ -2,6 +2,7 @@
 a task one subprocess call at a time under the new async execution model."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -909,11 +910,15 @@ def test_run_step_persists_observed_claude_session_limit_reason(
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
     orch._queue = _SlugQueue()
     proc = MagicMock(pid=4242, returncode=1)
-    notice = "You've hit your session limit · resets 12:20am (Asia/Shanghai)"
+    fixture = Path(__file__).parent / "fixtures" / "claude-task6941-result.sanitized.json"
+    envelope = json.loads(fixture.read_text())
+    # The full checked-in fixture supplies the observed shape.  Place a long
+    # later property after its result to prove the selected notice is not an
+    # incidental stdout-tail substring.
+    envelope["later_diagnostic"] = "x" * 3_000
+    notice = envelope["result"]
     proc.communicate.return_value = (
-        '{"type":"result","subtype":"success","is_error":true,'
-        '"terminal_reason":"api_error","api_error_status":429,'
-        f'"result":"{notice}"}}',
+        json.dumps(envelope, ensure_ascii=False),
         "Ignoring 1 permissions.allow entry from .claude/settings.json: this workspace has not been trusted.\n",
     )
     monkeypatch.setattr(executors.subprocess, "Popen", lambda *a, **k: proc)

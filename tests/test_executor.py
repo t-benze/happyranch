@@ -1285,6 +1285,7 @@ def test_parse_claude_terminal_error_loads_complete_observed_sanitized_fixture()
     ("is_error", None), ("is_error", 1), ("is_error", False),
     ("terminal_reason", None), ("terminal_reason", 1), ("terminal_reason", "other_error"),
     ("api_error_status", None), ("api_error_status", True), ("api_error_status", "429"),
+    ("api_error_status", 428), ("api_error_status", 430),
     ("result", None), ("result", 1), ("result", "API Error: 429 Too Many Requests"),
 ])
 def test_parse_claude_terminal_error_observed_success_shape_requires_typed_discriminators(
@@ -1298,6 +1299,22 @@ def test_parse_claude_terminal_error_observed_success_shape_requires_typed_discr
         "result": "You've hit your session limit · resets 12:20am (Asia/Shanghai)",
     }
     envelope[field] = value
+    assert _parse_claude_terminal_error(json.dumps(envelope), "") is None
+
+
+@pytest.mark.parametrize("field", [
+    "type", "subtype", "is_error", "terminal_reason", "api_error_status", "result",
+])
+def test_parse_claude_terminal_error_observed_success_shape_requires_present_discriminators(field):
+    """Each observed-envelope discriminator must be physically present."""
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    envelope = {
+        "type": "result", "subtype": "success", "is_error": True,
+        "terminal_reason": "api_error", "api_error_status": 429,
+        "result": "You've hit your session limit · resets 12:20am (Asia/Shanghai)",
+    }
+    del envelope[field]
     assert _parse_claude_terminal_error(json.dumps(envelope), "") is None
 
 

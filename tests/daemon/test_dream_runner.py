@@ -439,7 +439,7 @@ async def test_run_dream_real_chain_session_limit(
     mock_subprocess, _mock_resolve_binary, org_state,
 ):
     """Real-chain (session-limit): mocked subprocess produces
-    {type:result, subtype:error_during_execution} + a trust-warning lookalike stderr →
+    the observed success-subtype API-error envelope + a trust-warning lookalike stderr →
     ClaudeExecutor.run() with production parser → run_dream →
     dream.error/audit retain the meaningful stderr before the supplementary
     terminal classification.  A lookalike is not the exact benign warning
@@ -448,8 +448,9 @@ async def test_run_dream_real_chain_session_limit(
 
     mock_subprocess.Popen.return_value = _popen_mock(
         returncode=1,
-        stdout='{"type":"result","subtype":"error_during_execution","is_error":true,'
-               '"result":"Session limit reached"}',
+        stdout='{"type":"result","subtype":"success","is_error":true,'
+               '"terminal_reason":"api_error","api_error_status":429,'
+               '"result":"You\'ve hit your session limit · resets tomorrow"}',
         stderr="Workspace trust warning: untrusted directory\n",
     )
 
@@ -469,7 +470,7 @@ async def test_run_dream_real_chain_session_limit(
     assert dream.status == DreamStatus.FAILED
     assert dream.error == (
         "Workspace trust warning: untrusted directory "
-        "(terminal_error: session_limit); notice: Session limit reached"
+        "(terminal_error: session_limit); notice: You've hit your session limit · resets tomorrow"
     )
     actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
     assert actions[-1]["action"] == "dream_failed"
