@@ -1,8 +1,10 @@
 import asyncio
+import copy
 
 import httpx
 from fastapi.testclient import TestClient
 from runtime.models import TaskStatus
+from runtime.infrastructure.database import Database
 
 
 def _receipt() -> dict:
@@ -88,6 +90,29 @@ def test_cleanup_active_gate_precedes_session_and_duplicate(app, org_state, auth
     assert org_state.db.get_task_results(task_id) == []
 
 
+def test_cleanup_negative_active_and_session_gates_have_no_effects(app, org_state, auth_headers) -> None:
+    """H2: active state wins; valid receipt context cannot cause side effects."""
+    client = TestClient(app)
+    for mutation, expected_status, expected in (("missing", 404, "unknown_task"), ("terminal", 409, "task_not_active"), ("cancelled", 409, "task_not_active"), ("unknown", 409, "unknown_session"), ("mismatch", 409, "session_mismatch")):
+        task_id, payload = _new_cleanup_task(client, org_state, auth_headers)
+        if mutation == "missing":
+            response = client.post(f"/api/v1/orgs/alpha/tasks/TASK-missing-{task_id}/completion", json=payload, headers=auth_headers)
+        else:
+            if mutation == "terminal":
+                org_state.db.update_task(task_id, status=TaskStatus.COMPLETED)
+            elif mutation == "cancelled":
+                org_state.db.update_task(task_id, status=TaskStatus.CANCELLED)
+            elif mutation == "unknown":
+                org_state.sessions.clear(task_id, "dev_agent")
+            else:
+                payload["session_id"] = "sess-wrong"
+            response = client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers)
+        assert response.status_code == expected_status
+        assert response.json()["detail"]["code"] == expected
+        assert org_state.db.get_task_results(task_id) == []
+        assert [row for row in org_state.db.get_audit_logs(task_id) if row["action"] == "workspace_cleanup_completed"] == []
+
+
 def test_cleanup_persisted_duplicate_bypasses_changed_receipt_after_tracker_clear(app, org_state, auth_headers) -> None:
     client = TestClient(app)
     task_id, payload = _new_cleanup_task(client, org_state, auth_headers)
@@ -97,6 +122,17 @@ def test_cleanup_persisted_duplicate_bypasses_changed_receipt_after_tracker_clea
     assert duplicate.status_code == 200
     assert len(org_state.db.get_task_results(task_id)) == 1
     assert len([row for row in org_state.db.get_audit_logs(task_id) if row["action"] == "workspace_cleanup_completed"]) == 1
+
+
+def test_cleanup_receipt_cannot_graft_onto_prior_ordinary_result(app, org_state, auth_headers) -> None:
+    """H3: a receipt-less existing result remains receipt-less."""
+    client = TestClient(app, raise_server_exceptions=False)
+    task_id, payload = _new_cleanup_task(client, org_state, auth_headers)
+    org_state.db.insert_task_result(task_id=task_id, agent="dev_agent", session_id="sess-cleanup", output_summary="ordinary", confidence_score=80)
+    response = client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers)
+    assert response.status_code == 200
+    assert [row["output_summary"] for row in org_state.db.get_task_results(task_id)] == ["ordinary"]
+    assert [row for row in org_state.db.get_audit_logs(task_id) if row["action"] == "workspace_cleanup_completed"] == []
 
 
 def test_cleanup_compound_failure_has_no_volatile_effects(app, org_state, auth_headers, monkeypatch) -> None:
@@ -114,15 +150,20 @@ def test_cleanup_compound_failure_has_no_volatile_effects(app, org_state, auth_h
         effects.append("publish")
         return await original_publish(*args, **kwargs)
 
-    def fail_writer(**kwargs):
-        raise RuntimeError("injected compound persistence failure")
+    original_result_insert = org_state.db._insert_task_result_uncommitted
+
+    def write_then_fail(*args, **kwargs):
+        original_result_insert(*args, **kwargs)
+        raise RuntimeError("injected compound persistence failure after real result write")
 
     monkeypatch.setattr(org_state.sessions, "clear", observe_clear)
     monkeypatch.setattr(org_state.event_bus, "publish", observe_publish)
-    monkeypatch.setattr(org_state.db, "insert_cleanup_completion", fail_writer)
+    monkeypatch.setattr(org_state.db, "_insert_task_result_uncommitted", write_then_fail)
     response = client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers)
     assert response.status_code == 500
-    assert org_state.db.get_task_results(task_id) == []
+    reopened = Database(org_state.db.db_path)
+    assert reopened.get_task_results(task_id) == []
+    assert [row for row in reopened.get_audit_logs(task_id) if row["action"] == "workspace_cleanup_completed"] == []
     assert effects == []
     assert org_state.sessions.get_active(task_id, "dev_agent") == "sess-cleanup"
 
@@ -143,6 +184,10 @@ def test_cleanup_retry_after_post_commit_interruption_clears_and_publishes(app, 
     assert len(org_state.db.get_task_results(task_id)) == 1
     assert len([r for r in org_state.db.get_audit_logs(task_id) if r["action"] == "workspace_cleanup_completed"]) == 1
     assert org_state.sessions.get_active(task_id, "dev_agent") == "sess-cleanup"
+    committed_pair = (
+        copy.deepcopy(org_state.db.get_task_results(task_id)),
+        copy.deepcopy([r for r in org_state.db.get_audit_logs(task_id) if r["action"] == "workspace_cleanup_completed"]),
+    )
 
     monkeypatch.setattr(org_state.db, "insert_cleanup_completion", original)
     published: list[dict] = []
@@ -159,22 +204,25 @@ def test_cleanup_retry_after_post_commit_interruption_clears_and_publishes(app, 
     assert published == [{"task_id": task_id, "type": "completion_reported", "agent": "dev_agent", "session_id": "sess-cleanup", "status": "completed"}]
     assert len(org_state.db.get_task_results(task_id)) == 1
     assert len([r for r in org_state.db.get_audit_logs(task_id) if r["action"] == "workspace_cleanup_completed"]) == 1
+    assert (org_state.db.get_task_results(task_id), [r for r in org_state.db.get_audit_logs(task_id) if r["action"] == "workspace_cleanup_completed"]) == committed_pair
 
 
 class _ObservedLock:
-    """Test-only transparent async-lock wrapper with bounded acquire probes."""
+    """Test-only transparent wrapper that records real lock-acquire attempts."""
 
     def __init__(self, lock: asyncio.Lock) -> None:
         self._lock = lock
         self.entered: list[asyncio.Event] = []
         self.entries = 0
-        self.permit: list[asyncio.Event] = []
+        self.request_ids: list[int] = []
 
     async def __aenter__(self) -> "_ObservedLock":
         position = self.entries
         self.entries += 1
+        self.request_ids.append(id(asyncio.current_task()))
         self.entered[position].set()
-        await self.permit[position].wait()
+        # No test barrier may intervene here: observed callbacks are queued
+        # on the original lock, rather than merely staged before it.
         await self._lock.acquire()
         return self
 
@@ -190,19 +238,17 @@ def _assert_no_cleanup_effects(org_state, task_id: str, effects: list[str]) -> N
 
 def test_cleanup_locked_revalidation_rejects_mutated_authority(app, org_state, auth_headers, monkeypatch) -> None:
     """H4a-d: every mutable cleanup authority is rechecked after the real lock."""
-    real_db_lock = org_state.db_lock
     base_clear = org_state.sessions.clear
     base_publish = org_state.event_bus.publish
 
     async def exercise(mutate, expected_status: int, expected_code: str) -> None:
-        org_state.db_lock = real_db_lock
+        actual_lock = asyncio.Lock()
+        org_state.db_lock = actual_lock
         org_state.sessions.clear = base_clear
         org_state.event_bus.publish = base_publish
         task_id, payload = _new_cleanup_task(TestClient(app), org_state, auth_headers)
-        observed = _ObservedLock(real_db_lock)
-        permitted = asyncio.Event()
+        observed = _ObservedLock(actual_lock)
         observed.entered.append(asyncio.Event())
-        observed.permit.append(permitted)
         monkeypatch.setattr(org_state, "db_lock", observed)
         effects: list[str] = []
         def clear(*args, **kwargs):
@@ -215,6 +261,7 @@ def test_cleanup_locked_revalidation_rejects_mutated_authority(app, org_state, a
 
         monkeypatch.setattr(org_state.sessions, "clear", clear)
         monkeypatch.setattr(org_state.event_bus, "publish", publish)
+        await actual_lock.acquire()
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             request = asyncio.create_task(
                 client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers),
@@ -223,13 +270,15 @@ def test_cleanup_locked_revalidation_rejects_mutated_authority(app, org_state, a
             try:
                 await asyncio.wait_for(observed.entered[0].wait(), timeout=2)
                 mutate(task_id)
-                permitted.set()
+                _assert_no_cleanup_effects(org_state, task_id, effects)
+                actual_lock.release()
                 response = await asyncio.wait_for(request, timeout=2)
             finally:
-                permitted.set()
+                if actual_lock.locked():
+                    actual_lock.release()
                 if not request.done():
                     request.cancel()
-                    await asyncio.gather(request, return_exceptions=True)
+                    await asyncio.wait_for(asyncio.gather(request, return_exceptions=True), timeout=2)
         assert response.status_code == expected_status
         assert response.json()["detail"]["code"] == expected_code
         _assert_no_cleanup_effects(org_state, task_id, effects)
@@ -257,10 +306,9 @@ def test_cleanup_concurrent_callbacks_keep_complete_immutable_first_winner(app, 
     async def exercise() -> None:
         task_id, winner = _new_cleanup_task(TestClient(app), org_state, auth_headers)
         loser = {**winner, "output_summary": "loser", "cleanup_activity": {**_receipt(), "ambiguity_summary": "different"}}
-        actual_lock = org_state.db_lock
+        actual_lock = asyncio.Lock()
         observed = _ObservedLock(actual_lock)
         observed.entered.extend((asyncio.Event(), asyncio.Event()))
-        observed.permit.extend((asyncio.Event(), asyncio.Event()))
         monkeypatch.setattr(org_state, "db_lock", observed)
         effects: list[str] = []
         real_clear = org_state.sessions.clear
@@ -279,32 +327,31 @@ def test_cleanup_concurrent_callbacks_keep_complete_immutable_first_winner(app, 
         await actual_lock.acquire()
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             first = asyncio.create_task(client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=winner, headers=auth_headers), name="winner")
-            second = asyncio.create_task(client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=loser, headers=auth_headers), name="loser")
+            second: asyncio.Task[httpx.Response] | None = None
             try:
-                await asyncio.wait_for(asyncio.gather(*(event.wait() for event in observed.entered)), timeout=2)
+                await asyncio.wait_for(observed.entered[0].wait(), timeout=2)
+                second = asyncio.create_task(client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=loser, headers=auth_headers), name="loser")
+                await asyncio.wait_for(observed.entered[1].wait(), timeout=2)
                 _assert_no_cleanup_effects(org_state, task_id, effects)
-                # The first acquire entry is deterministically admitted first;
-                # whichever request occupied that entry becomes the immutable winner.
-                observed.permit[0].set()
+                # asyncio.Lock FIFO admits the first actual acquire attempt
+                # after this fixture releases its held original lock.
                 actual_lock.release()
-                done, pending = await asyncio.wait({first, second}, timeout=2, return_when=asyncio.FIRST_COMPLETED)
-                assert len(done) == 1
-                winner_request = done.pop()
-                winner_response = winner_request.result()
-                observed.permit[1].set()
-                loser_request = pending.pop()
-                loser_response = await asyncio.wait_for(loser_request, timeout=2)
+                winner_response, loser_response = await asyncio.wait_for(asyncio.gather(first, second), timeout=2)
             finally:
-                for gate in observed.permit:
-                    gate.set()
                 if actual_lock.locked():
                     actual_lock.release()
-                await asyncio.gather(first, second, return_exceptions=True)
+                for request in (first, second):
+                    if request is None:
+                        continue
+                    if not request.done():
+                        request.cancel()
+                await asyncio.wait_for(asyncio.gather(first, *(request for request in (second,) if request is not None), return_exceptions=True), timeout=2)
         assert winner_response.status_code == loser_response.status_code == 200
         result = org_state.db.get_task_results(task_id)
         audits = [row for row in org_state.db.get_audit_logs(task_id) if row["action"] == "workspace_cleanup_completed"]
         assert len(result) == len(audits) == 1
-        winner_payload = winner if winner_request is first else loser
+        assert len(set(observed.request_ids)) == 2
+        winner_payload = winner
         assert result[0]["output_summary"] == winner_payload["output_summary"]
         expected = {
             "receipt_version": 1, "task_id": task_id, "agent": "dev_agent",
