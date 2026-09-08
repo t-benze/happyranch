@@ -213,6 +213,28 @@ def test_linked_jobs_require_owned_terminal_records_and_fresh_snapshot(tmp_path:
     assert "linked_job_authority_unavailable" in collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).reasons
 
 
+def test_exported_collector_charges_unsuccessful_linked_lookups_before_read(tmp_path: Path, monkeypatch) -> None:
+    """Each snapshot admits at most MAX_JOBS linked reads, regardless of row validity."""
+    db, proc = _sources(tmp_path)
+    for task_id, linked in (("TASK-1", "MISSING-1"), ("TASK-2", "MISSING-2")):
+        db.insert_task(_task(task_id, TaskStatus.COMPLETED, parent="TASK-1" if task_id == "TASK-2" else None))
+        db.update_task(task_id, blocked_on_job_ids=json.dumps([linked]))
+    import runtime.daemon.task_scratch_evidence as subject
+    calls: list[str] = []
+    original = db.get_job
+    def observed(job_id: str):
+        calls.append(job_id)
+        return original(job_id)
+    monkeypatch.setattr(subject, "MAX_JOBS", 1)
+    monkeypatch.setattr(db, "get_job", observed)
+    evidence = subject.collect_task_scratch_evidence(
+        db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root",
+        proc_root=proc, monotonic_now=31, daemon_started_monotonic=0,
+    )
+    assert "job_scan_capped" in evidence.reasons
+    assert calls == ["MISSING-2", "MISSING-2"]
+
+
 def test_cleared_session_with_live_executor_pid_is_ineligible(tmp_path: Path) -> None:
     db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED)); db.update_task("TASK-1", executor_pid=42)
     sessions = SessionTracker(); sessions.set_active("TASK-1", "dev_agent", "session"); sessions.clear("TASK-1", "dev_agent")

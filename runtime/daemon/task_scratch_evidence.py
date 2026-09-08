@@ -56,8 +56,11 @@ def _population(proc: Path, deadline: int) -> list[Path] | None:
     try:
         rows: list[Path] = []
         with os.scandir(proc) as entries:
-            for entry in entries:
+            iterator = iter(entries)
+            while True:
                 if _expired(deadline): return None
+                try: entry = next(iterator)
+                except StopIteration: break
                 if not entry.name.isdecimal(): continue
                 if len(rows) >= MAX_PROCESSES: return None
                 rows.append(Path(entry.path))
@@ -78,10 +81,14 @@ def _scan(proc: Path, root: Path, deadline: int) -> tuple[int | None, int | None
                 if _under(os.readlink(entry / name), root):
                     roots += name == "root"; cwds += name == "cwd"; reasons.add(reason)
             count = 0
+            if _expired(deadline): raise RuntimeError("process_scan_timeout")
             with os.scandir(entry / "fd") as fd_entries:
-                for fd in fd_entries:
-                    count += 1
+                iterator = iter(fd_entries)
+                while True:
                     if _expired(deadline): raise RuntimeError("process_scan_timeout")
+                    try: fd = next(iterator)
+                    except StopIteration: break
+                    count += 1
                     if count > MAX_FDS_PER_PROCESS: raise RuntimeError("open_fd_scan_capped")
                     if _under(os.readlink(fd.path), root): fds += 1; reasons.add("open_fd_reference")
     except (OSError, RuntimeError) as exc:
@@ -189,6 +196,9 @@ def _snapshot(db: Database, task_id: str, reasons: set[str], deadline: int) -> t
                 if _expired(deadline): reasons.add("observation_timeout"); return None
                 if job_observations >= MAX_JOBS:
                     reasons.add("job_scan_capped"); return None
+                # Every admitted lookup consumes the shared snapshot budget,
+                # including missing, foreign, or nonterminal records.
+                job_observations += 1
                 try:
                     linked = db.get_job(linked_id)
                 except Exception:
@@ -196,7 +206,6 @@ def _snapshot(db: Database, task_id: str, reasons: set[str], deadline: int) -> t
                 if linked is None or linked.task_id != task.id or linked.status not in TERMINAL_JOBS:
                     reasons.add("linked_job_authority_unavailable")
                 else:
-                    job_observations += 1
                     out.append(("linked_job", task.id, linked.id, linked.status.value))
     return tuple(sorted(out, key=repr))
 

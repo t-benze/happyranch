@@ -1355,7 +1355,7 @@ deletion, deployment, and legacy backlog eligibility remain absent.
 THR-195 B2a separately supplies a dormant, short-lived evidence collector from
 current durable task/revisit/job/result records, advisory session state, and
 fresh Linux boot/PID root/cwd/open-fd reads. It admits each bounded read or
-enumeration against one shared deadline (without pretending to preempt an
+enumeration, source open, and iterator advance against one shared deadline (without pretending to preempt an
 already-started read), including aggregate linked-job reads. Ambiguous,
 missing, capped, changing, warm-up, recovery, permission, or live-reference
 evidence is ineligible. A complete fresh root/cwd/fd measurement remains
