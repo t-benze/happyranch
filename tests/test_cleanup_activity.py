@@ -66,3 +66,20 @@ def test_cleanup_enum_objects_are_bounded_validation_errors(field, value) -> Non
 def test_cleanup_summary_rejects_del_and_c1_controls(character) -> None:
     with pytest.raises(CleanupActivityError, match="invalid_error_summary"):
         validate_cleanup_activity(_receipt(error_summary=f"bad{character}"), callback_status="completed", trigger_mode="report_only")
+
+
+@pytest.mark.parametrize("field", ["measured_before", "measured_after"])
+@pytest.mark.parametrize("value", [None, False, [], 1])
+def test_cleanup_measurements_require_exact_objects(field, value) -> None:
+    with pytest.raises(CleanupActivityError, match=f"invalid_{field}"):
+        validate_cleanup_activity(_receipt(**{field: value}), callback_status="completed", trigger_mode="report_only")
+
+
+@pytest.mark.parametrize("status,outcome,valid", [("failed", "completed", False), ("blocked", "completed", False), ("completed", "partial", True), ("completed", "failed", True)])
+def test_cleanup_callback_status_outcome_contract(status, outcome, valid) -> None:
+    receipt = _receipt(outcome=outcome)
+    if valid:
+        assert validate_cleanup_activity(receipt, callback_status=status, trigger_mode="report_only").outcome == outcome
+    else:
+        with pytest.raises(CleanupActivityError, match="cleanup_outcome_mismatch"):
+            validate_cleanup_activity(receipt, callback_status=status, trigger_mode="report_only")

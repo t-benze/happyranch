@@ -697,6 +697,17 @@ def test_completion_payload_from_file_omits_cleanup_activity_when_absent(tmp_pat
     assert "cleanup_activity" not in body
 
 
+def test_completion_payload_from_file_forwards_complete_cleanup_receipt_verbatim(tmp_path):
+    import json as _json
+    from cli.main import _completion_payload_from_file
+
+    receipt = {"version": 1, "mode": "report_only", "outcome": "completed", "measured_before": {"available": True, "bytes": 0, "inodes": 0, "reason": None}, "measured_after": {"available": False, "bytes": None, "inodes": None, "reason": "not_measured"}, "reclaimed_bytes": 0, "reclaimed_inodes": 0, "removal_count": 0, "skip_count": None, "error_summary": None, "ambiguity_summary": "ledger unavailable"}
+    path = tmp_path / "completion.json"
+    path.write_text(_json.dumps({"task_id": "TASK-001", "session_id": "sess-1", "agent": "dev_agent", "status": "completed", "summary": "done", "cleanup_activity": receipt}))
+    _, body = _completion_payload_from_file(str(path))
+    assert body["cleanup_activity"] == receipt
+
+
 def test_report_completion_parser_accepts_from_file_alone():
     """With --from-file, none of --task-id/--session-id/... are required.
     --org IS required for agent callbacks (see test_report_completion_parser_requires_org)."""

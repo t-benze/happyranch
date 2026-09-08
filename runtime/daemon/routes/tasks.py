@@ -499,12 +499,12 @@ _CLEANUP_MEASUREMENT_SCHEMA = {
     "required": ["available", "bytes", "inodes", "reason"],
     "properties": {
         "available": {"type": "boolean"},
-        "bytes": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, {"type": "null"}]},
-        "inodes": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, {"type": "null"}]},
+        "bytes": {"anyOf": [{"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, {"type": "null"}]},
+        "inodes": {"anyOf": [{"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, {"type": "null"}]},
         "reason": {"anyOf": [{"type": "string", "enum": ["not_measured", "measurement_unavailable", "truncated", "timeout", "permission_denied", "unsupported_platform", "changed_during_measurement", "receipt_missing", "context_unavailable", "ledger_unavailable", "invalid_record"]}, {"type": "null"}]},
     },
     "allOf": [
-        {"if": {"properties": {"available": {"const": True}}}, "then": {"properties": {"bytes": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, "inodes": {"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, "reason": {"type": "null"}}}},
+        {"if": {"properties": {"available": {"const": True}}}, "then": {"properties": {"bytes": {"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, "inodes": {"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, "reason": {"type": "null"}}}},
         {"if": {"properties": {"available": {"const": False}}}, "then": {"properties": {"bytes": {"type": "null"}, "inodes": {"type": "null"}, "reason": {"type": "string", "enum": ["not_measured", "measurement_unavailable", "truncated", "timeout", "permission_denied", "unsupported_platform", "changed_during_measurement", "receipt_missing", "context_unavailable", "ledger_unavailable", "invalid_record"]}}}},
     ],
 }
@@ -519,13 +519,17 @@ _CLEANUP_ACTIVITY_PRESENT_SCHEMA = {
         "outcome": {"type": "string", "enum": ["completed", "partial", "failed", "blocked"]},
         "measured_before": _CLEANUP_MEASUREMENT_SCHEMA,
         "measured_after": _CLEANUP_MEASUREMENT_SCHEMA,
-        "reclaimed_bytes": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, {"type": "null"}]},
-        "reclaimed_inodes": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, {"type": "null"}]},
-        "removal_count": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, {"type": "null"}]},
-        "skip_count": {"anyOf": [{"type": "integer", "minimum": 0, "maximum": 2**63 - 1}, {"type": "null"}]},
-        "error_summary": {"anyOf": [{"type": "string", "maxLength": 240}, {"type": "null"}]},
-        "ambiguity_summary": {"anyOf": [{"type": "string", "maxLength": 240}, {"type": "null"}]},
+        "reclaimed_bytes": {"anyOf": [{"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, {"type": "null"}]},
+        "reclaimed_inodes": {"anyOf": [{"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, {"type": "null"}]},
+        "removal_count": {"anyOf": [{"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, {"type": "null"}]},
+        "skip_count": {"anyOf": [{"type": "integer", "minimum": 0, "exclusiveMaximum": 2**63}, {"type": "null"}]},
+        "error_summary": {"anyOf": [{"type": "string", "maxLength": 240, "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"}, {"type": "null"}]},
+        "ambiguity_summary": {"anyOf": [{"type": "string", "maxLength": 240, "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$"}, {"type": "null"}]},
     },
+    "allOf": [
+        {"if": {"properties": {"mode": {"const": "report_only"}}}, "then": {"properties": {"reclaimed_bytes": {"const": 0}, "reclaimed_inodes": {"const": 0}, "removal_count": {"const": 0}}}},
+        {"if": {"properties": {"mode": {"const": "cleanup"}}}, "then": {"properties": {"reclaimed_bytes": {"type": "null"}, "reclaimed_inodes": {"type": "null"}, "removal_count": {"type": "null"}, "ambiguity_summary": {"type": "string", "minLength": 1, "maxLength": 240, "pattern": "ledger_unavailable"}}}},
+    ],
 }
 
 
@@ -558,12 +562,12 @@ class CompletionBody(BaseModel):
     # "exit_code": 0} if present — validated server-side before durable persistence.
     local_ci: object | None = None
     # Raw on purpose: duplicate acknowledgement remains before receipt parsing.
-    # The vendor extension documents the strict non-null v1 shape while the
-    # Python boundary keeps explicit null available to the legacy duplicate path.
-    cleanup_activity: object | None = Field(
+    # The generated request contract describes a first receipt; an invalid
+    # replacement can still receive the pre-existing duplicate acknowledgement.
+    cleanup_activity: object = Field(
         default=None,
-        description="Optional raw receipt; when present and non-null, it must satisfy the strict v1 cleanup activity schema.",
-        json_schema_extra={"x-happyranch-present-schema": _CLEANUP_ACTIVITY_PRESENT_SCHEMA},
+        description="Optional-by-absence strict v1 cleanup receipt. First submitted receipts must match this object; persisted duplicate callbacks retain ordinary acknowledgement ordering.",
+        json_schema_extra=_CLEANUP_ACTIVITY_PRESENT_SCHEMA,
     )
 
 

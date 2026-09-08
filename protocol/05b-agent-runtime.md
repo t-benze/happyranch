@@ -1779,3 +1779,6 @@ jobs or `JobStatus`, is claimed here.
 ## Workspace-cleanup completion receipt boundary
 
 Cleanup tasks may report an optional strict v1 receipt through their normal completion callback. The server, not the worker, binds the receipt to the authenticated session, assigned cleanup task, and one daemon trigger. Result and receipt audit persistence is atomic. The receipt is not process-exit evidence, a cleanup ledger, or authority to delete; unavailable measurements remain unavailable and no numeric cleanup reclamation is trusted before a server-linked ledger exists. Existing receipt-less callbacks remain compatible.
+# Workspace-cleanup receipt
+
+The optional C1a `cleanup_activity` callback receipt is strict report-only accounting, validated after ordinary callback gates and atomically paired with result/audit persistence; it neither proves reclamation nor changes lifecycle. Its detailed v1 input contract, duplicate exception, and deferred API/UI/cutover posture are normative in `protocol/00-completion-contract.md`.
