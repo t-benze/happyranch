@@ -370,8 +370,10 @@ def test_claude_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
     # Lists at least the canonical signals
     assert "npm run dev" in content
     assert "tail -f" in content
-    # Points at the jobs skill (the actual remediation path)
-    assert "runtime/skills/bundled/jobs/SKILL.md" in content
+    # Points at the jobs skill (the actual remediation path) without
+    # advertising a retired release-internal source path to agents.
+    assert "**jobs** skill" in content
+    assert "workspace's skills directory" in content
     # Mentions the flags so the agent knows what to fill on the submit form
     assert "persistent" in content
     assert "review_required" in content
@@ -395,7 +397,8 @@ def test_codex_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
     adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "AGENTS.md").read_text()
     assert "## Long-running and non-stop commands" in content
-    assert "runtime/skills/bundled/jobs/SKILL.md" in content
+    assert "**jobs** skill" in content
+    assert "workspace's skills directory" in content
     # TASK-3604: no auto-revisit in generated instruction
     assert "auto-revisit" not in content.lower()
     assert "FAILED" in content
@@ -412,7 +415,8 @@ def test_opencode_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> Non
     adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "AGENTS.md").read_text()
     assert "## Long-running and non-stop commands" in content
-    assert "runtime/skills/bundled/jobs/SKILL.md" in content
+    assert "**jobs** skill" in content
+    assert "workspace's skills directory" in content
     # TASK-3604: no auto-revisit in generated instruction
     assert "auto-revisit" not in content.lower()
     assert "FAILED" in content
@@ -444,8 +448,10 @@ def test_non_stop_command_warning_section_contract(tmp_path: Path) -> None:
     assert "auto_revisit" not in text.lower(), (
         "non-stop command warning must not reference auto-revisit mechanism"
     )
-    # Still recommends jobs as the remedy
-    assert "runtime/skills/bundled/jobs/SKILL.md" in text
+    # Still recommends the delivered jobs skill without referring to a
+    # retired release-internal source location.
+    assert "**jobs** skill" in text
+    assert "workspace's skills directory" in text
     # Mentions explicit recovery paths
     assert ("happyranch revisit" in text or "FAILED" in text), (
         "non-stop command warning must reference terminal failure or explicit recovery"

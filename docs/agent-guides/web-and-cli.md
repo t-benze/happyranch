@@ -27,6 +27,30 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 - Python: `tests/contract/test_openapi_snapshot.py` pins OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
 - TypeScript: `web/src/test/openapi-coverage.test.ts` asserts every documented path is either included with a TS mirror or excluded with justification.
 
+### Sidebar height and scrolling
+
+The AppShell keeps the sidebar within the window height. Its organization
+switcher and Settings/account footer do not shrink; the primary navigation
+uses the remaining space and scrolls internally when needed. Navigation items
+and typography retain their existing sizes, order and destinations. The rail
+remains 244px wide on desktop and collapses to 56px below the `md` breakpoint.
+
+The navigation container uses `min-h-0` to permit flex shrinking and `relative`
+to contain the collapsed rail's absolutely positioned accessible labels.
+Internal padding and scroll padding reserve room for keyboard focus rings.
+Routed page content scrolls separately in its own container (for example,
+`ContentWrap`), inside the shell's `overflow-hidden` main area.
+
+`Sidebar.test.tsx` covers navigation/footer behavior and the overflow structure;
+jsdom does not verify layout. For browser verification, use the supported
+workflow in `web/scripts/screenshot-harness/README.md` with the real routed app
+and valid local fixtures. Compare a short-window baseline with the correction;
+check internal navigation scrolling, reachable footer controls, keyboard focus,
+org switching, page scrolling, resizing, mobile collapse and both themes.
+Record the source/build, viewport, screenshots, geometry and observed errors
+in task evidence. Keep any font substitutions explicit when reporting visual
+fidelity.
+
 ### Settings
 
 The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with exactly three left sub-nav panels: Assistant · Organization · Executors. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (The TopBar gear button and `SettingsDialog` are prototype/design-preview surfaces only — not production entry points.) It shows:

@@ -11,6 +11,7 @@ from typing import Awaitable, Callable
 from runtime.config import Settings, settings as global_settings
 from runtime.daemon.thread_runner import _build_executor_for_provider
 from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.orchestrator.executors import _meaningful_stderr
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.models import DreamRecord, DreamStatus
 from runtime.orchestrator.host_supervisor import (
@@ -476,7 +477,25 @@ async def run_dream(
     # executor output (e.g. Claude's JSON result envelope) over the raw
     # stderr-based error summary so dream failures carry a deterministic
     # reason instead of incidental noise.
-    reason = (getattr(result, "terminal_error", None) or error)
+    terminal_error = str(getattr(result, "terminal_error", "") or "").strip()
+    human_error = str(getattr(result, "human_error", "") or "")
+    stderr = human_error or (
+        "" if getattr(result, "human_error_inspected", False) else _meaningful_stderr(
+            str(getattr(result, "stderr_tail", "") or "")
+        )
+    )
+    notice = str(getattr(result, "terminal_error_notice", "") or "").strip()
+    # Dreams have no diagnostic-tail columns.  Preserve the classified cause,
+    # reset notice, and any meaningful stderr together on their existing
+    # error/reason surfaces; do not replace a real provider error with a token.
+    if terminal_error:
+        reason = stderr[:1000] if stderr else terminal_error
+        if stderr:
+            reason = f"{reason} (terminal_error: {terminal_error})"
+        if notice:
+            reason = f"{reason}; notice: {notice[:1000]}"
+    else:
+        reason = error[:1000]
     if _is_timeout(result):
         # Spec "Failure Handling": timeout is a distinct terminal status; the
         # successful-dream window is not advanced (get_last_successful_dream
@@ -487,7 +506,9 @@ async def run_dream(
             ended_at=datetime.now(timezone.utc),
             error=error,
         )
-        AuditLogger(org_state.db).log_dream_timeout(dream_id, dream.agent_name, reason=error)
+        AuditLogger(org_state.db).log_dream_timeout(
+            dream_id, dream.agent_name, reason=error,
+        )
         return
     org_state.db.update_dream(
         dream_id,

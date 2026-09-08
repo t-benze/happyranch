@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator.org_config import load_org_config
+from runtime.orchestrator.executors import _meaningful_stderr
 
 if TYPE_CHECKING:
     from runtime.models import TaskRecord
@@ -3272,15 +3273,35 @@ def _session_failed_note(result, report) -> str:
     bits: list[str] = []
     rc = getattr(result, "returncode", None)
     bits.append(f"rc={rc}" if rc is not None else "rc=?")
-    err = (getattr(result, "stderr_tail", "") or "").strip()
+    human_error = str(getattr(result, "human_error", "") or "")
+    err = human_error or (
+        "" if getattr(result, "human_error_inspected", False) else _meaningful_stderr(
+            getattr(result, "stderr_tail", "") or ""
+        )
+    )
     out = (getattr(result, "stdout_tail", "") or "").strip()
-    preview_src, label = (err, "stderr") if err else (out, "stdout") if out else ("", "")
-    if label:
-        preview = preview_src.replace("\n", " ")[-300:]
-        bits.append(f"{label}: {preview}")
-    error_str = getattr(result, "error", None)
-    if error_str:
-        bits.append(error_str)
+    if err:
+        preview = err.replace("\n", " ")[:300]
+        bits.append(f"stderr: {preview}")
+    terminal_error = str(getattr(result, "terminal_error", "") or "").strip()
+    # Raw stderr remains the human cause.  A structured classification is
+    # supplementary evidence, never a reason to conceal that cause.
+    if terminal_error:
+        bits.append(f"terminal_error: {terminal_error[:120]}")
+    notice = str(getattr(result, "terminal_error_notice", "") or "").strip()
+    if notice:
+        bits.append(f"notice: {notice[:300]}")
+    # A selected human cause or recognized terminal notice must lead any raw
+    # stdout diagnostic fragment.  Complete stderr inspection can validly
+    # select no cause, while stdout still contains the JSON envelope.
+    if not err and out:
+        bits.append(f"stdout: {out.replace(chr(10), ' ')[:300]}")
+    # ``error`` is built from full provider output, so it must never be copied
+    # wholesale into durable task state.  Tails above already preserve it.
+    if not err and not out:
+        error_str = str(getattr(result, "error", "") or "").replace("\n", " ").strip()
+        if error_str:
+            bits.append(error_str[:300])
     if report is None and getattr(result, "success", False):
         bits.append("no completion callback")
     return f"agent session failed ({'; '.join(bits)})"
