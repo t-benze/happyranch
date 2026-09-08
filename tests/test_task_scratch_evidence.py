@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 from runtime.daemon.sessions import SessionTracker
@@ -9,8 +10,8 @@ from runtime.infrastructure.database import Database
 from runtime.models import JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
 
 
-def _task(task_id: str, status: TaskStatus, parent: str | None = None, revisit: str | None = None) -> TaskRecord:
-    return TaskRecord(id=task_id, status=status, brief="x", assigned_agent="dev_agent", current_session_id="session", parent_task_id=parent, revisit_of_task_id=revisit, completed_at=datetime.now(timezone.utc) if status == TaskStatus.COMPLETED else None)
+def _task(task_id: str, status: TaskStatus, parent: str | None = None, revisit: str | None = None, executor_pid: int | None = None) -> TaskRecord:
+    return TaskRecord(id=task_id, status=status, brief="x", assigned_agent="dev_agent", current_session_id="session", parent_task_id=parent, revisit_of_task_id=revisit, executor_pid=executor_pid, completed_at=datetime.now(timezone.utc) if status == TaskStatus.COMPLETED else None)
 
 
 def _proc(proc: Path, pid: int, root: str = "/", cwd: str = "/", fd: str | None = None) -> None:
@@ -21,7 +22,7 @@ def _proc(proc: Path, pid: int, root: str = "/", cwd: str = "/", fd: str | None 
 
 
 def _sources(tmp_path: Path) -> tuple[Database, Path]:
-    proc = tmp_path / "proc"; (proc / "sys/kernel/random").mkdir(parents=True); (proc / "sys/kernel/random/boot_id").write_text("boot\n"); _proc(proc, 42)
+    proc = tmp_path / "proc"; (proc / "sys/kernel/random").mkdir(parents=True); (proc / "sys/kernel/random/boot_id").write_text("123e4567-e89b-42d3-a456-426614174000\n"); _proc(proc, 42)
     return Database(tmp_path / "state.db"), proc
 
 
@@ -62,7 +63,7 @@ def test_blank_boot_and_malformed_pid_identity_are_unavailable_not_zero(tmp_path
     blank = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert "boot_id_unavailable" in blank.reasons
     assert blank.process_roots is blank.process_cwds is blank.open_fds is None
-    (proc / "sys/kernel/random/boot_id").write_text("boot\n")
+    (proc / "sys/kernel/random/boot_id").write_text("123e4567-e89b-42d3-a456-426614174000\n")
     (proc / "42/stat").write_text("42 (agent) S malformed")
     malformed = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert "process_identity_unavailable" in malformed.reasons
@@ -76,11 +77,27 @@ def test_durable_and_process_changes_during_observation_fail_closed(tmp_path: Pa
     def changed(*args, **kwargs):
         db.insert_job(JobRecord(id="JOB-1", task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING, created_at=datetime.now(timezone.utc).isoformat()))
         result = original(*args, **kwargs)
-        _proc(proc, 43, cwd=str(root)); (proc / "sys/kernel/random/boot_id").write_text("new\n")
+        _proc(proc, 43, cwd=str(root)); (proc / "sys/kernel/random/boot_id").write_text("123e4567-e89b-42d3-a456-426614174001\n")
         return result
     monkeypatch.setattr(subject, "_scan", changed)
     evidence = subject.collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert {"active_job", "durable_state_changed_during_collection", "process_population_changed_during_collection", "boot_id_changed_during_collection"} <= set(evidence.reasons)
+    assert evidence.process_roots is evidence.process_cwds is evidence.open_fds is None
+
+
+def test_non_numeric_proc_entries_do_not_consume_population_budget(tmp_path: Path, monkeypatch) -> None:
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    import runtime.daemon.task_scratch_evidence as subject
+    monkeypatch.setattr(subject, "MAX_PROCESSES", 1)
+    (proc / "sys").mkdir(exist_ok=True)
+    assert collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).eligible
+
+
+def test_retained_blocked_result_after_terminal_failure_is_not_pending(tmp_path: Path) -> None:
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.FAILED))
+    db.insert_task_result("TASK-1", "dev_agent", "session", "blocked", 10, status="blocked")
+    evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert evidence.eligible
 
 
 def test_active_chain_fanout_and_deep_or_unrelated_lineage(tmp_path: Path) -> None:
@@ -116,3 +133,40 @@ def test_active_session_and_unresolved_recovery_are_not_safe(tmp_path: Path) -> 
     sessions.clear("TASK-1", "dev_agent"); db.insert_task_result("TASK-1", "dev_agent", "session", "working", 10, status="in_progress")
     unresolved = collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert "recovery_fingerprint_unresolved" in unresolved.reasons
+
+
+def test_boot_is_uuid_and_final_change_is_rejected(tmp_path: Path, monkeypatch) -> None:
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    (proc / "sys/kernel/random/boot_id").write_text("not-a-uuid\n")
+    assert "boot_id_unavailable" in collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).reasons
+    (proc / "sys/kernel/random/boot_id").write_text("123e4567-e89b-42d3-a456-426614174000\n")
+    import runtime.daemon.task_scratch_evidence as subject
+    original = subject._snapshot
+    calls = 0
+    def changing(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        result = original(*args, **kwargs)
+        if calls == 2: (proc / "sys/kernel/random/boot_id").write_text("123e4567-e89b-42d3-a456-426614174001\n")
+        return result
+    monkeypatch.setattr(subject, "_snapshot", changing)
+    assert "boot_id_changed_during_collection" in subject.collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).reasons
+
+
+def test_linked_jobs_require_owned_terminal_records_and_fresh_snapshot(tmp_path: Path, monkeypatch) -> None:
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED)); db.update_task("TASK-1", blocked_on_job_ids=json.dumps(["JOB-1"]))
+    bad = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "linked_job_authority_unavailable" in bad.reasons
+    db.insert_job(JobRecord(id="JOB-1", task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED, created_at=datetime.now(timezone.utc).isoformat()))
+    assert collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).eligible
+    db.update_task("TASK-1", blocked_on_job_ids="[]")
+    assert "linked_job_authority_unavailable" in collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).reasons
+
+
+def test_cleared_session_with_live_executor_pid_is_ineligible(tmp_path: Path) -> None:
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED)); db.update_task("TASK-1", executor_pid=42)
+    sessions = SessionTracker(); sessions.set_active("TASK-1", "dev_agent", "session"); sessions.clear("TASK-1", "dev_agent")
+    evidence = collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "executor_pid_live_or_ambiguous" in evidence.reasons
+    db.update_task("TASK-1", executor_pid=-1)
+    assert "executor_pid_unavailable" in collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).reasons
