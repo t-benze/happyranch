@@ -438,6 +438,10 @@ Cross-agent reference material — SOPs, partner-API quirks, founder rulings —
 
 ## Other agent-side callbacks
 
+### Optional workspace-cleanup receipt
+
+`report-completion` may carry an optional raw `cleanup_activity` field. The daemon validates it only after the ordinary active-task, authenticated-session, and persisted-duplicate gates. It is accepted solely for the daemon-marked owning cleanup task with exactly one server trigger, and commits the normal task result plus one immutable `workspace_cleanup_completed` audit row in one SQLite transaction. Receipt values report activity; they neither prove reclamation nor change task lifecycle. An omitted field preserves historical callback behavior. Read APIs, UI, and any future cleanup cutover are not part of this receipt contract.
+
 | Command | Purpose |
 |---|---|
 | `happyranch report-completion --from-file ...` | End-of-task callback (mandatory). |

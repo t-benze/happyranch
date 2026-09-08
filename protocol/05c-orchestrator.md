@@ -1965,3 +1965,7 @@ documented unpinned compatibility behavior and are never backfilled.
 > aliases/default, parser and launch path are retired without read compatibility
 > or automatic migration. Recovery uses a built-in reassignment or ordinary
 > registration of a valid approved custom-adapter profile.
+
+## Workspace-cleanup completion receipts
+
+The completion route may persist a validated optional cleanup receipt only after its active-task, session, and immutable duplicate checks. It requires server-owned cleanup trigger context and writes the existing completion result together with one typed receipt audit row under the database lock and transaction. It does not alter scheduler cadence, lifecycle/recovery semantics, session consumption, task status, or cleanup activation. API/UI projection and future-thread cutover remain separate work.
