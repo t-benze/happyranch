@@ -17,6 +17,7 @@ from runtime.config import Settings
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 from runtime.orchestrator.orchestrator import Orchestrator
+from runtime.orchestrator.run_step import _maybe_resume_blocked_task, run_step_impl
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.runtime import RuntimeDir
 
@@ -206,6 +207,10 @@ class _Queue:
     def put_nowait(self, slug: str, task_id: str) -> None:
         self.items.append((slug, task_id))
 
+    def enqueue(self, slug: str, task_id: str, *, metadata: dict) -> None:
+        """Record the shipping resume queue shape as well as child dispatch."""
+        self.items.append((slug, task_id, metadata))
+
 
 def _recovery_fixture(tmp_path: Path) -> tuple[Database, Orchestrator, _Queue, Path]:
     """Build an isolated org with actual persistence and dispatch writers."""
@@ -312,6 +317,72 @@ def test_real_zombie_consumer_blocked_with_owned_job_remains_ineligible(tmp_path
     evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-WAIT", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert not evidence.eligible
     assert {"active_job", "nonterminal_or_unresolved_lineage"} <= set(evidence.reasons)
+
+
+def test_blocked_job_resume_enqueues_then_shipping_cas_and_completion_run(tmp_path: Path, monkeypatch) -> None:
+    """L3: enqueue is read-only; the shipping CAS is the later state change."""
+    db, orch, queue, proc = _recovery_fixture(tmp_path)
+    db.insert_task(TaskRecord(id="TASK-JOB", brief="resume", status=TaskStatus.IN_PROGRESS,
+                              assigned_agent="dev_agent", current_session_id="resume-session"))
+    db.update_task("TASK-JOB", block_kind=BlockKind.BLOCKED_ON_JOB,
+                   blocked_on_job_ids=json.dumps(["JOB-TERM"]))
+    db.insert_job(JobRecord(id="JOB-TERM", task_id="TASK-JOB", agent_name="dev_agent",
+                            title="x", rationale="x", script_text="true",
+                            interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING,
+                            created_at=datetime.now(timezone.utc).isoformat()))
+
+    assert not _maybe_resume_blocked_task(orch, "TASK-JOB", trigger="job_terminal",
+                                          triggering_job_id="JOB-TERM")
+    assert queue.items == []
+    # The job runner's durable job row is the authority consumed by the resume
+    # predicate; this test changes only its temporary fixture row.
+    db._conn.execute("UPDATE jobs SET status = 'completed' WHERE id = ?", ("JOB-TERM",))
+    db._conn.commit()
+    assert _maybe_resume_blocked_task(orch, "TASK-JOB", trigger="job_terminal",
+                                      triggering_job_id="JOB-TERM")
+    assert queue.items == [("test", "TASK-JOB", {"trigger": "job_terminal", "triggering_job_id": "JOB-TERM"})]
+    parked = db.get_task("TASK-JOB")
+    assert parked is not None and parked.status is TaskStatus.IN_PROGRESS and parked.block_kind is BlockKind.BLOCKED_ON_JOB
+
+    # Only the external agent execution is isolated.  Admission, CAS, resume
+    # audit and terminal writer execute through the shipping implementation.
+    monkeypatch.setattr(orch, "_run_agent", lambda *args: (_ for _ in ()).throw(RuntimeError("test-owned executor stub")))
+    run_step_impl(orch, "TASK-JOB", metadata=queue.items[-1][2])
+    after = db.get_task("TASK-JOB")
+    assert after is not None and after.status is TaskStatus.FAILED and after.block_kind is None
+    resumed = [row for row in db.get_audit_logs("TASK-JOB") if row["action"] == "task_resumed_from_jobs"]
+    assert len(resumed) == 1 and resumed[0]["payload"]["job_outcomes"] == {"JOB-TERM": "completed"}
+    assert db.get_job_status("JOB-TERM") == "completed"
+    assert "nonterminal_or_unresolved_lineage" not in collect_task_scratch_evidence(
+        db=db, sessions=SessionTracker(), task_id="TASK-JOB", root=tmp_path / "root",
+        proc_root=proc, monotonic_now=31, daemon_started_monotonic=0,
+    ).reasons
+    db.close()
+
+
+def test_sweep_selection_warmup_and_flagged_fingerprint_use_shipping_path(tmp_path: Path, monkeypatch) -> None:
+    """L4: selection belongs to the sweep, including warm-up and flag phases."""
+    db, orch, queue, _ = _recovery_fixture(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    db.insert_task(TaskRecord(id="TASK-SWEEP", brief="x", status=TaskStatus.IN_PROGRESS,
+                              assigned_agent="engineering_head", current_session_id="sweep-session",
+                              last_heartbeat=(now.replace(year=2025)).isoformat(), executor_pid=123))
+    db.update_task("TASK-SWEEP", last_heartbeat=(now.replace(year=2025)).isoformat(), executor_pid=123)
+    db.insert_task_result("TASK-SWEEP", "engineering_head", "sweep-session", "done", 100, status="completed")
+    monkeypatch.setattr("runtime.daemon.zombie_reaper._pid_is_dead", lambda pid: True)
+    _sweep_org_zombies(db, now=now, uptime=0, warm_up_seconds=30, orchestrator=orch)
+    assert db.get_task("TASK-SWEEP").zombie_flagged_at is None
+    _sweep_org_zombies(db, now=now, uptime=999, warm_up_seconds=30, orchestrator=orch)
+    assert db.get_task("TASK-SWEEP").zombie_flagged_at is not None
+    _sweep_org_zombies(db, now=now, uptime=999, warm_up_seconds=30, orchestrator=orch)
+    after = db.get_task("TASK-SWEEP")
+    # A root result with no decision follows the shipping conservative escalation
+    # branch; the assertion is selection/consumption, not an invented success.
+    assert after is not None and after.status is TaskStatus.ESCALATED and after.zombie_flagged_at is None
+    actions = [row["action"] for row in db.get_audit_logs("TASK-SWEEP")]
+    assert actions.count("zombie_flagged") == 1 and actions.count("zombie_cleared") == 1
+    assert queue.items == []
+    db.close()
 
 
 def test_recovery_delegate_and_then_persist_real_lineage_effects(tmp_path: Path) -> None:
