@@ -161,10 +161,12 @@ PR B adds no API/OpenAPI/TypeScript/web projection or manual action.
 Failed thread-invocation audits add capped ``stdout_tail`` and ``stderr_tail``
 payload fields without changing the audit scope identity. Human-facing Claude
 failure detail prefers a parsed structured terminal result only when all raw
-stderr lines are the known workspace-trust warning shape. Classifier inputs,
-exact eviction detection, retry ownership, and breaker qualification continue
-to consume the unchanged executor result fields. A session-limit notice is not
-an automatic short-backoff rate-limit retry signal.
+stderr lines are the known workspace-trust warning shape; task failure notes
+also name the proven Claude API-error/session-limit result shape while retaining
+bounded raw diagnostics. Classifier inputs, exact eviction detection, retry
+ownership, and breaker qualification continue to consume the unchanged executor
+result fields. A session-limit notice is not an automatic short-backoff
+rate-limit retry signal.
 
 The envelope schema maps 1:1 to
 the ``TokenUsage`` model (``runtime/models.py:302``) with identical key names.

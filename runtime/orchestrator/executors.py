@@ -585,11 +585,13 @@ def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
     the structured reason so dream-runner failures carry a classified reason
     instead of incidental stderr noise.
 
-    Only the single documented in-repo terminal failure envelope shape is
-    validated: ``{"type": "result", "subtype": "error_during_execution",
-    "is_error": true, ...}`` (tests/test_headless_assistant.py
-    CLAUDE_RESULT_ERROR fixture).  Every other shape — ``subtype:
-    success``, non-``result`` event types, ``error_max_turns``,
+    Two proven terminal failure shapes are validated: the documented
+    ``{"type": "result", "subtype": "error_during_execution",
+    "is_error": true, ...}`` envelope and the observed Claude API session
+    limit envelope, whose ``subtype`` is ``success`` but which has exact
+    typed API-error discriminators and the specific session-limit notice.
+    Every other shape — other ``subtype: success`` envelopes, non-``result``
+    event types, ``error_max_turns``,
     ``error_lookalike``, ``error_unknown``, ``error/errors`` outside a
     terminal result envelope, arbitrary ``error_*`` subtypes, missing
     ``is_error: true``, malformed/non-dict JSON, and no-structured-output —
@@ -614,24 +616,31 @@ def _parse_claude_terminal_error(stdout: str, stderr: str) -> str | None:
     if obj.get("type") != "result":
         return None
 
-    # Only parse the single documented terminal failure subtype —
-    # {type: result, subtype: success, ...} and every other error_*
-    # subtype (error_max_turns, error_lookalike, error_unknown, ...)
-    # must NOT produce a classified terminal error; they return None
-    # so the existing stderr-first raw error fallback wins.
+    # Preserve the narrow original failure subtype. The only exception is the
+    # observed Claude result envelope below: it reports subtype=success while
+    # explicitly declaring an API error and the account session cap.
     subtype = obj.get("subtype")
-    if not isinstance(subtype, str) or subtype != "error_during_execution":
+    if not isinstance(subtype, str) or obj.get("is_error") is not True:
         return None
 
-    # Require is_error: true — the documented terminal failure envelope
-    # (CLAUDE_RESULT_ERROR in test_headless_assistant.py) carries this
-    # marker.  Envelopes without it are incomplete and fall back to the
-    # raw error.
-    if obj.get("is_error") is not True:
+    result = obj.get("result")
+    if subtype == "success":
+        # This is intentionally not a generic 429/success parser. TASK-6941
+        # captured this complete shape on the normal JSON-result path.
+        if (
+            obj.get("terminal_reason") == "api_error"
+            and type(obj.get("api_error_status")) is int
+            and obj["api_error_status"] == 429
+            and isinstance(result, str)
+            and "you've hit your session limit" in result.lower()
+            and "resets" in result.lower()
+        ):
+            return "session_limit"
+        return None
+    if subtype != "error_during_execution":
         return None
 
     # ── Inspect result / errors for known terminal classifications ──
-    result = obj.get("result")
     if isinstance(result, str) and result:
         result_lower = result.lower()
         if "certificate" in result_lower:

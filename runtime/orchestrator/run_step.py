@@ -3272,6 +3272,9 @@ def _session_failed_note(result, report) -> str:
     bits: list[str] = []
     rc = getattr(result, "returncode", None)
     bits.append(f"rc={rc}" if rc is not None else "rc=?")
+    terminal_error = str(getattr(result, "terminal_error", "") or "").strip()
+    if terminal_error:
+        bits.append(f"terminal_error: {terminal_error}")
     err = (getattr(result, "stderr_tail", "") or "").strip()
     out = (getattr(result, "stdout_tail", "") or "").strip()
     preview_src, label = (err, "stderr") if err else (out, "stdout") if out else ("", "")

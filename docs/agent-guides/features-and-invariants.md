@@ -276,8 +276,10 @@ Traps:
 Failed thread turns persist additive, capped ``stdout_tail`` and ``stderr_tail``
 audit diagnostics. The displayed reason may prefer a structured Claude terminal
 failure only when stderr consists solely of known workspace-trust warning lines;
-the raw tails still drive exact eviction and other classifiers. Session-limit
-terminal output is not a short-backoff automatic retry signal.
+task failure notes also name the proven Claude API-error/session-limit result
+shape while retaining bounded raw diagnostics. The raw tails still drive exact
+eviction and other classifiers. Session-limit terminal output is not a
+short-backoff automatic retry signal.
 
 Claude-backed thread participants reuse their Claude session across turns. State lives on `thread_participants.agent_session_id` and `last_resumed_seq`. Plan: `docs/superpowers/plans/2026-06-02-thread-claude-session-resume.md`.
 

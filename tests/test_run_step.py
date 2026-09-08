@@ -893,6 +893,43 @@ def test_run_step_session_failure_note_includes_diagnostics(
     assert "wrote ExplorePage.tsx" in note
 
 
+def test_run_step_persists_observed_claude_session_limit_reason(
+    runtime, db, monkeypatch, tmp_path,
+):
+    """Shipping executor parsing feeds the persisted task failure note."""
+    from unittest.mock import MagicMock
+
+    from runtime.orchestrator.executors import _parse_claude_terminal_error, _run_command
+    from runtime.orchestrator.orchestrator import Orchestrator
+    import runtime.orchestrator.executors as executors
+
+    db.insert_task(TaskRecord(id="T-1", brief="x", assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+    proc = MagicMock(pid=4242, returncode=1)
+    notice = "You've hit your session limit · resets 12:20am (Asia/Shanghai)"
+    proc.communicate.return_value = (
+        '{"type":"result","subtype":"success","is_error":true,'
+        '"terminal_reason":"api_error","api_error_status":429,'
+        f'"result":"{notice}"}}',
+        "Ignoring 1 permissions.allow entry from .claude/settings.json: this workspace has not been trusted.\n",
+    )
+    monkeypatch.setattr(executors.subprocess, "Popen", lambda *a, **k: proc)
+    result = _run_command(
+        ["claude", "-p", "x"], tmp_path, "sess-limit", 30,
+        error_parser=_parse_claude_terminal_error,
+    )
+    monkeypatch.setattr(orch, "_run_agent", lambda *a, **k: (result, None))
+
+    orch.run_step("T-1")
+
+    note = db.get_task("T-1").note or ""
+    assert "session_limit" in note
+    assert notice in note
+    assert "this workspace has not been trusted" in note
+    assert result.rate_limited is False
+
+
 def test_run_step_opaque_failure_no_auto_revisit(
     runtime, db, monkeypatch,
 ):

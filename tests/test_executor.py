@@ -1255,6 +1255,42 @@ def test_parse_claude_terminal_error_success_ignored():
     assert reason is None
 
 
+def test_parse_claude_terminal_error_observed_session_limit_success_envelope():
+    """The observed Claude 2.1.x API-error result is terminal despite subtype.
+
+    This is deliberately narrower than treating success envelopes or 429s as
+    failures: all typed discriminator fields and the proved session-limit
+    wording are required.
+    """
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    stdout = json.dumps({
+        "type": "result", "subtype": "success", "is_error": True,
+        "terminal_reason": "api_error", "api_error_status": 429,
+        "result": "You've hit your session limit · resets 12:20am (Asia/Shanghai)",
+    }, ensure_ascii=False)
+    assert _parse_claude_terminal_error(stdout, "") == "session_limit"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("is_error", False),
+    ("terminal_reason", "other_error"),
+    ("api_error_status", "429"),
+])
+def test_parse_claude_terminal_error_observed_success_shape_requires_typed_discriminators(
+    field, value,
+):
+    from runtime.orchestrator.executors import _parse_claude_terminal_error
+
+    envelope = {
+        "type": "result", "subtype": "success", "is_error": True,
+        "terminal_reason": "api_error", "api_error_status": 429,
+        "result": "You've hit your session limit · resets 12:20am (Asia/Shanghai)",
+    }
+    envelope[field] = value
+    assert _parse_claude_terminal_error(json.dumps(envelope), "") is None
+
+
 def test_parse_claude_terminal_error_empty_stdout_returns_none():
     """Empty stdout → None (fall back to existing error)."""
     from runtime.orchestrator.executors import _parse_claude_terminal_error
