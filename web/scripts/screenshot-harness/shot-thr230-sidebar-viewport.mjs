@@ -1120,12 +1120,18 @@ async function run() {
   // labels: a run whose mock, browser, or artifacts misbehaved has produced no
   // usable evidence at all, and a `before` run in that state must NEVER be
   // read as "the bug reproduced".
+  // `browserDefaultRefusals` is deliberately NOT part of this predicate. Those
+  // are requests the BROWSER issues on its own (the closed set is `favicon.ico`
+  // — see BROWSER_DEFAULT_PATHS) and that the fail-closed mock correctly
+  // refuses with a 404 because they are absent from the pinned dist. Treating
+  // them as an infrastructure failure made every run report itself unhealthy,
+  // including an `after` run with 72/72 checks green. Nothing app-originated is
+  // excused: any other unexpected request still lands in `srv.violations`.
   const infraHealthy =
     fatal === null &&
     cleanupErrors.length === 0 &&
     srv.violations.length === 0 &&
-    stale.length === 0 &&
-    srv.browserDefaultRefusals.length === 0;
+    stale.length === 0;
   const clean = infraHealthy && checks.failed.length === 0;
 
   console.log(
@@ -1144,28 +1150,59 @@ async function run() {
     // failure, or a failure in the self-test/design-preservation checks) means
     // the run proves nothing and is reported as such.
     const failedIds = new Set(checks.failed.map((f) => f.id));
+    // Measured on the pinned base build at 1280x600 (see the `before` ledger):
+    //   document  clientHeight 600 / scrollHeight 654   -> the rail grows the page
+    //   aside     clientHeight 600 / scrollHeight 654, overflow-y: visible
+    //   nav       474 tall, scrollHeight 474            -> no internal scroller
+    //   footer    545..654, account row 594..642        -> account row past the fold
+    // The defect signature is therefore "the sidebar's own content spills and
+    // expands the document, taking the account row out of reach", in BOTH
+    // themes. It is emphatically NOT "the aside rect leaves the viewport".
     const REQUIRED_BASELINE_FAILURES = [
-      'aside-inside-viewport:laptop-1280x600/light',
       'no-document-scroll:laptop-1280x600/light',
-      'footer-settings-reachable:laptop-1280x600/light',
+      'no-document-scroll:laptop-1280x600/dark',
       'footer-account-reachable:laptop-1280x600/light',
+      'footer-account-reachable:laptop-1280x600/dark',
+      'overflow-is-internal:1280x600',
     ];
-    // These must PASS even on the baseline: the two adversarial self-tests
-    // prove the probes can still see a defect, and the width/inventory checks
-    // prove the build under test is the real app, not a broken render.
-    const MUST_PASS_ON_BASELINE = checks.results
-      .map((r) => r.id)
-      .filter(
-        (id) =>
-          id.startsWith('red-side-') ||
-          id.startsWith('nav-item-count:') ||
-          id.startsWith('rail-width:'),
-      );
+    // These must PASS even on the baseline. The adversarial self-tests prove the
+    // probes can still see a defect and the width/inventory checks prove the
+    // build under test is the real app; the four explicit ids below pin the
+    // baseline to THIS failure mode rather than "something, anything, broke":
+    // the rail is still positioned correctly (aside rect 0..600) and Settings is
+    // still above the fold (558..590), and the tall laptop viewport is clean —
+    // the defect is specific to the short viewport.
+    const MUST_PASS_ON_BASELINE = [
+      'aside-inside-viewport:laptop-1280x600/light',
+      'footer-settings-reachable:laptop-1280x600/light',
+      'no-document-scroll:laptop-1280x800/light',
+      'footer-account-reachable:laptop-1280x800/light',
+      ...checks.results
+        .map((r) => r.id)
+        .filter(
+          (id) =>
+            id.startsWith('red-side-') ||
+            id.startsWith('nav-item-count:') ||
+            id.startsWith('rail-width:'),
+        ),
+    ];
+
+    // A check id that no longer exists would silently vanish from BOTH lists
+    // (an absent id is never in `failedIds`, so it can never be "wrongly
+    // failed"), quietly turning the gate off. Name them as an explicit error.
+    const knownIds = new Set(checks.results.map((r) => r.id));
+    const unknownGateIds = [
+      ...REQUIRED_BASELINE_FAILURES,
+      ...MUST_PASS_ON_BASELINE,
+    ].filter((id) => !knownIds.has(id));
 
     const missing = REQUIRED_BASELINE_FAILURES.filter((id) => !failedIds.has(id));
     const wronglyFailed = MUST_PASS_ON_BASELINE.filter((id) => failedIds.has(id));
     const reproduced =
-      infraHealthy && missing.length === 0 && wronglyFailed.length === 0;
+      infraHealthy &&
+      unknownGateIds.length === 0 &&
+      missing.length === 0 &&
+      wronglyFailed.length === 0;
 
     manifest.baseline_verdict = {
       reproduced,
@@ -1173,6 +1210,8 @@ async function run() {
       required_failures: REQUIRED_BASELINE_FAILURES,
       missing_required_failures: missing,
       self_test_or_preservation_checks_that_wrongly_failed: wronglyFailed,
+      must_pass_on_baseline: MUST_PASS_ON_BASELINE,
+      gate_ids_not_present_in_this_run: unknownGateIds,
       fatal_error: fatal,
       cleanup_errors: cleanupErrors,
       api_violations: srv.violations.length,
