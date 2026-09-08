@@ -9,6 +9,61 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 - Python: `tests/contract/test_openapi_snapshot.py` pins OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
 - TypeScript: `web/src/test/openapi-coverage.test.ts` asserts every documented path is either included with a TS mirror or excluded with justification.
 
+### App shell rail height and scroll contract (THR-230)
+
+`AppShell` (`web/src/routes.tsx`) is a `h-full` flex row: the `Sidebar`
+(`web/src/design-system/layouts/AppShell/Sidebar.tsx`) plus a content column
+holding the `AppBar` and a `flex-1 overflow-hidden` `<main>`. `html`, `body`,
+and `#root` are all `height: 100%`, so **nothing in the shell may grow the
+document scroller** — a window scrollbar would scroll the AppBar and the rail
+out of view together.
+
+The rail therefore owns its own vertical overflow:
+
+- The `<aside>` stays exactly viewport-tall (`h-full`) at the viewport sizes
+  the shell supports and that the harness exercises (1280x800, 1280x600,
+  390x844, 390x600); it is not a claim about untested sizes.
+- The org-switcher header (`section[aria-label="Organization switcher"]`) and
+  the footer (Settings + the account row) are `shrink-0`: they are never
+  squeezed, and the footer keeps `mt-auto` so it pins to the bottom of the rail
+  at tall viewports.
+- The primary-navigation `<nav>` is the single internal scroll region —
+  `flex-1 min-h-0 overflow-y-auto`. `min-h-0` is required: without it the flex
+  `min-height: auto` floor stops the column shrinking and the content spills
+  past the rail into the document scroller.
+- That `<nav>` is also `relative`, so the `sr-only` labels of the collapsed
+  icon rail (absolutely positioned below `md`) resolve against it instead of
+  escaping to the initial containing block and re-growing the document.
+- The rail's leading/trailing space lives INSIDE that scroller (`pt-3` / `pb-1`,
+  replacing the former outer `mt-3`) and `scroll-py-1` reserves the matching
+  scroll padding, so the focus ring on the first and last items is not clipped
+  when Tab scrolls them flush against a scrollport edge. `pt-3` reproduces the
+  old `mt-3` offset exactly, so no item moves at rest.
+
+Overflow is always carried by that internal scroller — never by clipping,
+dropping, or shrinking navigation items, and never by reducing typography. The
+rail widths (`w-rail` 244px, `w-rail-narrow` 56px below `md`) and the flat
+14-item navigation order are unchanged by this contract.
+
+Evidence harness:
+`web/scripts/screenshot-harness/shot-thr230-sidebar-viewport.mjs` reproduces the
+geometry at 1280x800 / 1280x600 / 390x844 / 390x600 in both themes, with
+keyboard, internal-scroll, resize-cycle, org-switch, shell-data-state, and
+adversarial displacement/ancestor-clip probes. Long routed content is proven
+with a real, genuinely long dashboard payload (the `long-content` mock shell
+state) scrolled inside its real `ContentWrap` scroller — the last row must
+start off-screen and become visible after a positive scroll — not with a
+synthetic block appended to the `overflow-hidden` `<main>`. Run it twice
+(`--label=before` against a pre-fix dist, `--label=after`); the `before` run
+only reports a reproduction when the run is otherwise healthy (no fatal error,
+no mock-route violation, no stale artifact, no browser-default refusal, and the
+adversarial self-tests plus the rail-width/nav-inventory checks still passing)
+AND exactly the 1280x600 rail/footer overflow checks fail. Structural
+regression coverage lives in
+`web/src/design-system/layouts/AppShell/Sidebar.test.tsx`
+(`THR-230: the sidebar owns its own vertical overflow`) — class-level, so it
+supplements rather than replaces the browser geometry evidence.
+
 ### Settings
 
 The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with exactly three left sub-nav panels: Assistant · Organization · Executors. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (The TopBar gear button and `SettingsDialog` are prototype/design-preview surfaces only — not production entry points.) It shows:

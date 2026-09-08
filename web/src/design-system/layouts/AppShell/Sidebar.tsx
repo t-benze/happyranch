@@ -135,7 +135,7 @@ export function Sidebar(): JSX.Element {
     >
       {/* Context header — wordmark + org context line + caret, doubling as the
           org switcher (BUG-01/08). Keeps the existing org-switch route logic. */}
-      <section aria-label="Organization switcher">
+      <section aria-label="Organization switcher" className="shrink-0">
         <SelectPrimitive.Root
           value={activeSlug ?? undefined}
           onValueChange={onOrgChange}
@@ -193,7 +193,10 @@ export function Sidebar(): JSX.Element {
         </SelectPrimitive.Root>
       </section>
 
-      <nav aria-label="Primary navigation items" className="mt-3 flex flex-col gap-0.5 px-3">
+      <nav
+        aria-label="Primary navigation items"
+        className="relative flex min-h-0 flex-1 scroll-py-1 flex-col gap-0.5 overflow-y-auto px-3 pt-3 pb-1"
+      >
         <SidebarNavItem {...sidebarLink('dashboard', true)} icon={HomeIcon}>
           Home
         </SidebarNavItem>
@@ -243,7 +246,7 @@ export function Sidebar(): JSX.Element {
       </nav>
 
       {/* Footer — static account row (BUG-07). */}
-      <div className="border-border mt-auto flex flex-col gap-1 border-t px-3 py-3">
+      <div className="border-border mt-auto flex shrink-0 flex-col gap-1 border-t px-3 py-3">
         <SidebarNavItem {...sidebarLink('settings', true)} icon={Settings}>
           Settings
         </SidebarNavItem>
