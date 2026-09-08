@@ -541,6 +541,155 @@ def test_cleared_session_with_live_executor_pid_is_ineligible(tmp_path: Path) ->
     assert "executor_pid_unavailable" in collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).reasons
 
 
+def test_exported_collector_detects_pid_disappearance_identity_flip_and_session_transition(tmp_path: Path, monkeypatch, evidence_sources) -> None:
+    """C1 #27/#31: final OS and session observations are independent evidence."""
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED)); db.update_task("TASK-1", executor_pid=42)
+    import runtime.daemon.task_scratch_evidence as subject
+    sessions = SessionTracker(); original_scan = subject._scan
+    def change_after_initial(*args, **kwargs):
+        result = original_scan(*args, **kwargs)
+        (proc / "42/stat").write_text("42 (agent) S 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 10 0")
+        sessions.set_active("TASK-1", "dev_agent", "later")
+        return result
+    monkeypatch.setattr(subject, "_scan", change_after_initial)
+    changed = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert {"sessions_changed_during_collection", "executor_pid_live_or_ambiguous", "executor_identity_changed_during_collection", "process_population_changed_during_collection"} <= set(changed.reasons)
+    sessions.clear("TASK-1", "dev_agent")
+    monkeypatch.setattr(subject, "_scan", lambda *args, **kwargs: original_scan(*args, **kwargs))
+    original_population = subject._population; calls = 0
+    def disappearing(*args, **kwargs):
+        nonlocal calls
+        value = original_population(*args, **kwargs); calls += 1
+        if calls == 2: (proc / "42").rename(proc / "gone")
+        return value
+    monkeypatch.setattr(subject, "_population", disappearing)
+    gone = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert {"process_identity_unavailable", "executor_identity_changed_during_collection"} <= set(gone.reasons)
+    assert (gone.process_roots, gone.process_cwds, gone.open_fds) == (None, None, None)
+
+
+@pytest.mark.parametrize("field", ["assigned_agent", "current_session_id"])
+def test_exported_collector_missing_recovery_authority_has_exact_reason(tmp_path: Path, evidence_sources, field: str) -> None:
+    """C1 #32/#33: each persisted authority half is mandatory."""
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED)); db.update_task("TASK-1", **{field: None})
+    evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert not evidence.eligible and "recovery_authority_unavailable" in evidence.reasons
+
+
+def test_exported_collector_task_and_job_n_plus_one_caps_are_unavailable(tmp_path: Path, monkeypatch, evidence_sources) -> None:
+    """C2 #48/#55/#61: every bounded source rejects its N+1th member."""
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED)); db.insert_task(_task("TASK-2", TaskStatus.COMPLETED))
+    import runtime.daemon.task_scratch_evidence as subject
+    monkeypatch.setattr(subject, "MAX_TASKS", 1)
+    task_capped = subject.collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "task_scan_capped" in task_capped.reasons
+    monkeypatch.setattr(subject, "MAX_TASKS", 10); db.update_task("TASK-2", parent_task_id="TASK-1")
+    for ident in ("JOB-1", "JOB-2"):
+        db.insert_job(JobRecord(id=ident, task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED, created_at=datetime.now(timezone.utc).isoformat()))
+    monkeypatch.setattr(subject, "MAX_JOBS", 1)
+    job_capped = subject.collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "job_scan_capped" in job_capped.reasons
+
+
+@pytest.mark.parametrize("mutation", ["result", "job", "parent"])
+def test_exported_collector_rechecks_late_durable_mutations(tmp_path: Path, monkeypatch, evidence_sources, mutation: str) -> None:
+    """C2 #50/#52-54: a post-scan durable mutation invalidates the observation."""
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    import runtime.daemon.task_scratch_evidence as subject
+    original = subject._scan
+    def mutate(*args, **kwargs):
+        value = original(*args, **kwargs)
+        if mutation == "result": db.insert_task_result("TASK-1", "dev_agent", "session", "late", 1)
+        elif mutation == "job": db.insert_job(JobRecord(id="JOB-late", task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING, created_at=datetime.now(timezone.utc).isoformat()))
+        else:
+            db._conn.execute("UPDATE tasks SET parent_task_id = ? WHERE id = ?", ("TASK-late", "TASK-1"))
+            db._conn.commit()
+        return value
+    monkeypatch.setattr(subject, "_scan", mutate)
+    evidence = subject.collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "durable_state_changed_during_collection" in evidence.reasons and not evidence.eligible
+
+
+def test_exported_collector_isolates_same_task_id_between_databases(tmp_path: Path) -> None:
+    """C4 #78: identical task IDs cannot transfer authority between org databases."""
+    db_a, proc_a = _sources(tmp_path / "a"); db_b, proc_b = _sources(tmp_path / "b")
+    try:
+        db_a.insert_task(_task("TASK-1", TaskStatus.COMPLETED)); db_b.insert_task(_task("TASK-1", TaskStatus.PENDING))
+        assert collect_task_scratch_evidence(db=db_a, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc_a, monotonic_now=31, daemon_started_monotonic=0).eligible
+        denied = collect_task_scratch_evidence(db=db_b, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc_b, monotonic_now=31, daemon_started_monotonic=0)
+        assert not denied.eligible and "nonterminal_or_unresolved_lineage" in denied.reasons
+    finally:
+        db_a.close(); db_b.close()
+
+
+@pytest.mark.parametrize("status", [TaskStatus.CANCELLED, TaskStatus.SUPERSEDED])
+def test_exported_collector_accepts_terminal_cancelled_and_superseded_alone(tmp_path: Path, evidence_sources, status: TaskStatus) -> None:
+    """C8 #12/#13: terminal state alone is eligible without a hidden parent rule."""
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", status))
+    assert collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).eligible
+
+
+def test_exported_collector_reports_missing_target_and_lineage_edge(tmp_path: Path, evidence_sources) -> None:
+    """C8 #14/#22: absent target and explicit missing lineage edge fail closed."""
+    db, proc = evidence_sources
+    missing = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-none", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "task_missing" in missing.reasons
+    db.insert_task(_task("TASK-1", TaskStatus.COMPLETED, parent="TASK-gone"))
+    edge = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "lineage_missing" in edge.reasons and not edge.eligible
+
+
+def test_real_zombie_sweep_clears_permission_indeterminate_pid_once(tmp_path: Path, monkeypatch) -> None:
+    """C6: the shipping sweep treats an unprobeable PID as alive and clears once."""
+    db, _proc_root = _sources(tmp_path)
+    try:
+        db.insert_task(_task("TASK-1", TaskStatus.IN_PROGRESS)); now = datetime.now(timezone.utc)
+        db.update_task("TASK-1", executor_pid=4242, last_heartbeat=(now - timedelta(seconds=STALE_HEARTBEAT_SECONDS + 1)).isoformat(), zombie_flagged_at=(now - timedelta(seconds=1)).isoformat())
+        import runtime.daemon.zombie_reaper as subject
+        monkeypatch.setattr(subject, "_pid_is_dead", lambda _pid: False)
+        _sweep_org_zombies(db, now=now, uptime=31, warm_up_seconds=30)
+        assert db.get_task("TASK-1").zombie_flagged_at is None
+        assert [row["action"] for row in db.get_audit_logs("TASK-1")].count("zombie_cleared") == 1
+        _sweep_org_zombies(db, now=now, uptime=31, warm_up_seconds=30)
+        assert [row["action"] for row in db.get_audit_logs("TASK-1")].count("zombie_cleared") == 1
+    finally:
+        db.close()
+
+
+def test_zombie_sweep_does_not_consume_stale_session_fingerprint(tmp_path: Path, monkeypatch) -> None:
+    """C7: only a current-session result can consume a flagged fingerprint."""
+    db, _proc_root = _sources(tmp_path)
+    try:
+        now = datetime.now(timezone.utc); db.insert_task(TaskRecord(id="TASK-1", brief="x", status=TaskStatus.IN_PROGRESS, task_type="subtask", assigned_agent="dev_agent", current_session_id="session"))
+        db.update_task("TASK-1", executor_pid=4242, last_heartbeat=(now - timedelta(seconds=STALE_HEARTBEAT_SECONDS + 1)).isoformat(), zombie_flagged_at=(now - timedelta(seconds=1)).isoformat())
+        db.insert_task_result("TASK-1", "dev_agent", "old-session", "old", 1, status="completed")
+        import runtime.daemon.zombie_reaper as subject
+        monkeypatch.setattr(subject, "_pid_is_dead", lambda _pid: True)
+        _sweep_org_zombies(db, now=now, uptime=31, warm_up_seconds=30, orchestrator=_recovery_orchestrator(db))
+        still = db.get_task("TASK-1")
+        assert still.status is TaskStatus.IN_PROGRESS and still.zombie_flagged_at is not None
+    finally:
+        db.close()
+
+
+def test_zombie_sweep_keeps_current_fingerprint_flagged_without_orchestrator_then_consumes(tmp_path: Path, monkeypatch) -> None:
+    """C7: absence of the consumer preserves the flag; the shipping consumer consumes it."""
+    db, _proc_root = _sources(tmp_path)
+    try:
+        now = datetime.now(timezone.utc); db.insert_task(TaskRecord(id="TASK-1", brief="x", status=TaskStatus.IN_PROGRESS, task_type="subtask", assigned_agent="dev_agent", current_session_id="session"))
+        db.update_task("TASK-1", executor_pid=4242, last_heartbeat=(now - timedelta(seconds=STALE_HEARTBEAT_SECONDS + 1)).isoformat(), zombie_flagged_at=(now - timedelta(seconds=1)).isoformat())
+        db.insert_task_result("TASK-1", "dev_agent", "session", "done", 1, status="completed")
+        import runtime.daemon.zombie_reaper as subject
+        monkeypatch.setattr(subject, "_pid_is_dead", lambda _pid: True)
+        _sweep_org_zombies(db, now=now, uptime=31, warm_up_seconds=30)
+        assert db.get_task("TASK-1").zombie_flagged_at is not None
+        _sweep_org_zombies(db, now=now, uptime=31, warm_up_seconds=30, orchestrator=_recovery_orchestrator(db))
+        assert db.get_task("TASK-1").status is TaskStatus.COMPLETED
+        assert db.get_task("TASK-1").zombie_flagged_at is None
+    finally:
+        db.close()
+
+
 def _recovery_orchestrator(db: Database) -> MagicMock:
     """Minimal adapter: only external notification/execution remains stubbed.
 
@@ -726,11 +875,13 @@ def test_recovered_blocked_job_resumes_through_shipping_cas_and_typed_completion
     assert queue.items == [("test", "TASK-JOB", {"trigger": "job_terminal", "triggering_job_id": "JOB-TERM"})]
     assert parked is not None and parked.status is TaskStatus.IN_PROGRESS and parked.block_kind is BlockKind.BLOCKED_ON_JOB
 
-    observed: list[tuple[TaskStatus, BlockKind | None, str | None]] = []
+    observed: list[tuple[TaskStatus, BlockKind | None, str | None, int]] = []
     def _successful_external_executor(*_args):
         active = db.get_task("TASK-JOB")
         assert active is not None
-        observed.append((active.status, active.block_kind, active.blocked_on_job_ids))
+        reread = db.get_latest_task_result("TASK-JOB", "dev_agent", "resume-session")
+        assert reread is not None
+        observed.append((active.status, active.block_kind, active.blocked_on_job_ids, reread["id"]))
         in_executor = collect_task_scratch_evidence(
             db=db, sessions=SessionTracker(), task_id="TASK-JOB", root=tmp_path / "root",
             proc_root=proc, monotonic_now=31, daemon_started_monotonic=0,
@@ -749,7 +900,7 @@ def test_recovered_blocked_job_resumes_through_shipping_cas_and_typed_completion
     after = db.get_task("TASK-JOB")
     # The CAS clears the parked discriminator; the historical linked-job
     # field is retained by the shipping writer for resume provenance.
-    assert observed == [(TaskStatus.IN_PROGRESS, None, '["JOB-TERM"]')]
+    assert observed == [(TaskStatus.IN_PROGRESS, None, '["JOB-TERM"]', fingerprint["id"])]
     assert after is not None and after.status is TaskStatus.COMPLETED and after.block_kind is None
     assert after.blocked_on_job_ids == '["JOB-TERM"]'
     resumed = [row for row in db.get_audit_logs("TASK-JOB") if row["action"] == "task_resumed_from_jobs"]
