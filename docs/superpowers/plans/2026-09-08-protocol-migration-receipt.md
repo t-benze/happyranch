@@ -136,7 +136,7 @@ Focused pytest batches passed (overlap exists; counts must not be summed):
 - 179: cleanup/schedule scheduler, KB store/routes/deletion, blocked-on-job completion.
 - 303 (20 deselected): thread/resume, wake/dream, active policy, production skill
   publication, session/task containment.
-- 114: models, capabilities, source resolver, generic-CLI retirement and freshness.
+- 114: models, capabilities, source resolver, retired adapter-profile coverage and freshness.
 - 119: OpenAPI snapshot, settings API, orchestrator, time injection, repo refresh.
 - 9: final source/config/hash and frozen packaging inventory regressions.
 - 3 real-daemon integration checks: callback task completion, unknown-session
@@ -163,9 +163,18 @@ passed. Remaining old paths are historical records or compatibility diagnostics.
 The legacy non-default config setting refuses startup; operators must migrate any
 such deployment override before release. No live org configuration was altered.
 
-Full CI is pending: CLAUDE.md's durable-job-only rule applies, and this external
-Codex session has no HappyRanch task/session binding for job submission. No full-CI
-receipt, native macOS build, merge, serving deployment, production-policy activation,
-or live cleanup is claimed. Release verification remains a separate step using
-the complete release and its matching assets/configuration. G1 remains a separately
-scoped runtime enforcement follow-up, not a completed enforcement improvement.
+TASK-7091 reran the two retained focused command batches at the integrated head
+with durable full logs: 334 and 572 tests passed. Its first full local-CI run
+then exposed the unclassified historical adapter-profile phrase above; that
+documentation defect was repaired before rerunning final verification. The
+task-bound host cannot execute the nested-daemon Codex callback integration:
+both unchanged main and this candidate fail before the fake executor launches
+because inherited task-containment sidecars are correctly refused. This is a
+host/harness interaction, not a passing local integration result; exact-head
+GitHub workflow evidence remains required.
+
+No full-CI receipt, native macOS build, merge, serving deployment,
+production-policy activation, or live cleanup is claimed here. Release
+verification remains a separate step using the complete release and its
+matching assets/configuration. G1 remains a separately scoped runtime
+enforcement follow-up, not a completed enforcement improvement.
