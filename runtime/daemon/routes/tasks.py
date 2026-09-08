@@ -736,8 +736,18 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             if (locked_task is None or locked_task.assigned_agent != body.agent
                     or "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)" not in locked_task.brief):
                 raise HTTPException(status_code=400, detail={"code": "cleanup_context_unavailable"})
-            if org.sessions.get_active(task_id, body.agent) != body.session_id:
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "session_mismatch"})
+            locked_session = org.sessions.get_active(task_id, body.agent)
+            if locked_session != body.session_id:
+                # A concurrent cleanup callback can commit the immutable pair
+                # and clear the volatile tracker while this callback waits for
+                # the same org lock.  Treat only that persisted same-session
+                # receipt path as the compatible duplicate; a replacement
+                # session remains an ownership mismatch.
+                if not (
+                    locked_session is None
+                    and org.db.get_latest_task_result(task_id, body.agent, body.session_id) is not None
+                ):
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "session_mismatch"})
         result_kwargs = dict(
             task_id=task_id,
             agent=body.agent,
