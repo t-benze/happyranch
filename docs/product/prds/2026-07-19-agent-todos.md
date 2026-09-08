@@ -186,6 +186,17 @@ Important provenance rules:
 
 ## Acceptance Criteria
 
+For the Todos semantic-tone UI-conformance unit (PR #836), founder THR-221
+seq214 (“we do not need to support mobile layout”), carried by TASK-7076 /
+TASK-7094, sets the required populated matrix to exactly four desktop 1440×900
+rows: list/light, list/dark, detail/light, and detail/dark. Loading, empty,
+error/retry, keyboard/accessibility, applicable auth/permission and mutation
+states, and desktop overlays still require evidence. Mobile acceptance, repair,
+recapture, backlog, and mobile-only blockers are no longer required. Preserve
+existing responsive functionality and automated tests. Historical mobile failures
+remain failed and out of scope, never relabeled as passes. This visual scope
+does not change the behavioral criteria below or other surfaces' matrices.
+
 - Given an in-org agent has a valid active session, it can create a self-owned
   Todo whether `scheduling.enabled_agents` is absent or excludes that agent.
 - Given the founder instructs an in-org agent to send a

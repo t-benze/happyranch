@@ -37,7 +37,7 @@ The implementation, if ever approved, must reconcile every changed surface with 
 
 The founder needs to move from an operational question to the record that can answer or act on it: “What needs a decision?”, “What is running or failed?”, “What governs this organization?”, and “When will this agent run?” The current surface inventory is broad, while the supplied screens mix evidence, workflow, and configuration. A visual consolidation without an intent model would make governance look like a feature setting, and could make stale evidence or browser-visible controls appear authoritative.
 
-Primary user: the founder operating one local organization. Secondary audience: an authorized agent/session only where an existing daemon contract permits it. The target remains desktop-first; content-level mobile improvements are welcome only when separately scoped, because the current AppShell has no responsive-shell commitment.
+Primary user: the founder operating one local organization. Secondary audience: an authorized agent/session only where an existing daemon contract permits it. The UI-conformance target is desktop-only at 1440×900 in light and dark themes, under founder THR-221 seq214 (“we do not need to support mobile layout”), carried by TASK-7076 / TASK-7094. Mobile acceptance and mobile-specific repair, recapture, backlog, or blockers are no longer required. Existing responsive functionality and automated tests remain intact; historical mobile failures remain failed and out of scope.
 
 ## Goals and success signals
 
@@ -127,7 +127,7 @@ The user experience should ensure the setting is *discoverable* from Work Hours 
 - The Work Hours organization control has exactly one editable UI owner in Settings → Organization operating controls; Work Hours shows derived gate/eligibility state and a link, not a duplicate editable switch.
 - A contract test/proof demonstrates that changing the control still uses `PUT /orgs/{slug}/settings/org` with the single `working_hours` section, rejects invalid agent/team references, preserves last-known-good state and `config:working_hours` audit evidence, and does not introduce a per-agent or daemon-global enable write.
 - Fixtures prove the gate-before-eligibility-before-resolution-before-routine/evidence order plus organization/team/agent schedule resolution and provenance; disabled/ineligible/no-routine/scheduled/fired/terminal-error outcomes remain distinct, with root-task links preserved.
-- Browser evidence covers loading, empty, error, 401/403, validation rejection, stale/disconnected, and populated states; keyboard-only navigation reaches controls, feedback and deep links. Any desktop/mobile limitation is disclosed rather than hidden.
+- Browser evidence covers loading, empty, error, 401/403, validation rejection, stale/disconnected, and populated states; keyboard-only navigation reaches controls, feedback and deep links. Desktop limitations remain explicit; mobile acceptance is outside the seq214 scope. Preserve desktop accessibility and interaction-overlay requirements.
 - No visual element claims a new role, decision, data field, cost, health promise, freshness guarantee, assistant authority, or Skills write path without an approved supporting contract.
 
 ## Risks

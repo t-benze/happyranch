@@ -69,7 +69,7 @@ leaf resolution → routine source → wake evidence. Client-computed display va
 not scheduler authority. Invalid agent/team references must leave the previous valid
 configuration effective and retain the existing config:working_hours audit evidence.
 
-## Desktop and mobile states
+## Desktop scope and states
 
 Desktop is the supported design target. Deliver design frames at 1440×900 in light
 and dark themes for each changed surface, plus the named interaction overlays below.
@@ -86,11 +86,18 @@ navigation, page title, assistant entry) and make the canonical record handoff c
 | 401/403 | Describe session/auth failure or server denial truthfully; do not say a visual “founder-only” gate enforced access. |
 | Recoverable error | Keep context, offer retry/recovery, and never replace a record identifier with fabricated content. |
 
-Mobile is explicitly **not** a responsive-shell deliverable in this pilot. At narrow
-widths, current content must remain operable without horizontal clipping, lost focus,
-or unreachable dialogs/actions; a redesigned drawer, collapsed navigation, or
-mobile-specific IA requires separately approved scope. Any limitation discovered in
-review is recorded as a limitation, not treated as solved by desktop screenshots.
+Founder THR-221 seq214 (“we do not need to support mobile layout”), carried by
+TASK-7076 / TASK-7094, makes this UI-conformance program desktop-only at 1440×900
+in light and dark themes. Mobile acceptance, repair, recapture, backlog, and
+mobile-only blockers are no longer required. Preserve existing responsive
+functionality and automated tests; retain historical mobile failures as failed,
+out-of-scope evidence, never as passes. Desktop state, keyboard/accessibility,
+and interaction-overlay requirements remain in force.
+
+For the bounded Todos semantic-tone PR #836, the required populated matrix is
+Todos list/light, list/dark, detail/light, and detail/dark at 1440×900. This
+four-row matrix does not replace the surface-specific states or overlays required
+for other product surfaces, and does not establish full desktop conformance.
 
 ## Provenance, authority, and accessibility requirements
 
