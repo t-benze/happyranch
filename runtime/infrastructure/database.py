@@ -4644,9 +4644,6 @@ class Database:
             if receipt_rows:
                 raise RuntimeError("cleanup_receipt_already_present")
             result_id = self._insert_task_result_uncommitted(**kwargs)
-            stage_hook = getattr(self, "_cleanup_completion_stage_hook", None)
-            if stage_hook is not None:
-                stage_hook("after_result")
             payload = {
                 "receipt_version": cleanup_activity.version, "task_id": kwargs["task_id"], "agent": kwargs["agent"],
                 "session_id": kwargs["session_id"], "task_result_id": result_id,
@@ -4659,13 +4656,7 @@ class Database:
                 "manifest_digest": None, "ledger_digest": None,
             }
             self.insert_audit_log_uncommitted(kwargs["task_id"], kwargs["agent"], "workspace_cleanup_completed", payload)
-            if stage_hook is not None:
-                stage_hook("after_audit")
-            if stage_hook is not None:
-                stage_hook("before_commit")
             self._conn.commit()
-            if stage_hook is not None:
-                stage_hook("after_commit")
             return True
         except Exception:
             self._conn.rollback()
