@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator.org_config import load_org_config
-from runtime.orchestrator.executors import _meaningful_stderr, reporting_detail
+from runtime.orchestrator.executors import _meaningful_stderr
 
 if TYPE_CHECKING:
     from runtime.models import TaskRecord
@@ -3273,28 +3273,28 @@ def _session_failed_note(result, report) -> str:
     bits: list[str] = []
     rc = getattr(result, "returncode", None)
     bits.append(f"rc={rc}" if rc is not None else "rc=?")
-    err = _meaningful_stderr(getattr(result, "stderr_tail", "") or "")
+    err = str(getattr(result, "human_error", "") or "") or _meaningful_stderr(
+        getattr(result, "stderr_tail", "") or ""
+    )
     out = (getattr(result, "stdout_tail", "") or "").strip()
     preview_src, label = (err, "stderr") if err else (out, "stdout") if out else ("", "")
     if label:
-        preview = reporting_detail(preview_src, cap=300)
+        preview = preview_src.replace("\n", " ")[:300]
         bits.append(f"{label}: {preview}")
     terminal_error = str(getattr(result, "terminal_error", "") or "").strip()
     # Raw stderr remains the human cause.  A structured classification is
     # supplementary evidence, never a reason to conceal that cause.
     if terminal_error:
         bits.append(f"terminal_error: {terminal_error[:120]}")
-    # stdout contains the structured Claude result, including its reset notice.
-    # Keep that supplementary detail when meaningful stderr supplied the human
-    # cause; otherwise it would be lost by the precedence rule above.
-    if err and out:
-        bits.append(f"stdout: {reporting_detail(out, cap=300)}")
+    notice = str(getattr(result, "terminal_error_notice", "") or "").strip()
+    if notice:
+        bits.append(f"notice: {notice[:300]}")
     # ``error`` is built from full provider output, so it must never be copied
     # wholesale into durable task state.  Tails above already preserve it.
     if not label:
         error_str = str(getattr(result, "error", "") or "").replace("\n", " ").strip()
         if error_str:
-            bits.append(reporting_detail(error_str, cap=300))
+            bits.append(error_str[:300])
     if report is None and getattr(result, "success", False):
         bits.append("no completion callback")
     return f"agent session failed ({'; '.join(bits)})"

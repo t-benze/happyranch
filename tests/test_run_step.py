@@ -899,7 +899,9 @@ def test_run_step_persists_observed_claude_session_limit_reason(
     """Shipping executor parsing feeds the persisted task failure note."""
     from unittest.mock import MagicMock
 
-    from runtime.orchestrator.executors import _parse_claude_terminal_error, _run_command
+    from runtime.orchestrator.executors import (
+        _parse_claude_session_limit_notice, _parse_claude_terminal_error, _run_command,
+    )
     from runtime.orchestrator.orchestrator import Orchestrator
     import runtime.orchestrator.executors as executors
 
@@ -918,6 +920,7 @@ def test_run_step_persists_observed_claude_session_limit_reason(
     result = _run_command(
         ["claude", "-p", "x"], tmp_path, "sess-limit", 30,
         error_parser=_parse_claude_terminal_error,
+        terminal_error_notice_parser=_parse_claude_session_limit_notice,
     )
     monkeypatch.setattr(orch, "_run_agent", lambda *a, **k: (result, None))
 
@@ -936,7 +939,9 @@ def test_run_step_meaningful_stderr_keeps_structured_reset_notice(
     """Human stderr wins, while stdout retains the session reset notice."""
     from unittest.mock import MagicMock
 
-    from runtime.orchestrator.executors import _parse_claude_terminal_error, _run_command
+    from runtime.orchestrator.executors import (
+        _parse_claude_session_limit_notice, _parse_claude_terminal_error, _run_command,
+    )
     from runtime.orchestrator.orchestrator import Orchestrator
     import runtime.orchestrator.executors as executors
 
@@ -949,12 +954,16 @@ def test_run_step_meaningful_stderr_keeps_structured_reset_notice(
         '{"type":"result","subtype":"success","is_error":true,'
         '"terminal_reason":"api_error","api_error_status":429,'
         f'"result":"{notice}"}}',
-        "API Error: 529 Overloaded\\n",
+        "API Error: 529 Overloaded\n" + (
+            "Ignoring 1 permissions.allow entry from .claude/settings.json: "
+            "this workspace has not been trusted.\n"
+        ) * 50,
     )
     monkeypatch.setattr(executors.subprocess, "Popen", lambda *a, **k: proc)
     result = _run_command(
         ["claude", "-p", "x"], tmp_path, "sess-limit", 30,
         error_parser=_parse_claude_terminal_error,
+        terminal_error_notice_parser=_parse_claude_session_limit_notice,
     )
     monkeypatch.setattr(orch, "_run_agent", lambda *a, **k: (result, None))
 
@@ -963,6 +972,7 @@ def test_run_step_meaningful_stderr_keeps_structured_reset_notice(
     note = db.get_task("T-1").note or ""
     assert note.index("API Error: 529 Overloaded") < note.index("terminal_error: session_limit")
     assert notice in note
+    assert result.human_error == "API Error: 529 Overloaded"
 
 
 def test_run_step_opaque_failure_no_auto_revisit(

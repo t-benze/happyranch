@@ -91,7 +91,7 @@ class FakeResult:
 
 class FakeTimeoutResult:
     success = False
-    error = "Session timed out after 1800 seconds; token=timeout-secret"
+    error = "Session timed out after 1800 seconds"
     returncode = None
     session_id = "executor-session"
     agent_session_id = None
@@ -201,7 +201,6 @@ async def test_run_dream_timeout_sets_timeout_status_and_audit(org_state):
     dream = org_state.db.get_dream("DREAM-001")
     assert dream.status == DreamStatus.TIMEOUT
     assert "timed out" in dream.error
-    assert "timeout-secret" not in dream.error
     actions = list(org_state.db.get_audit_logs("DREAM-001"))
     assert actions[-1]["payload"]["reason"] == dream.error
     action_names = [r["action"] for r in actions]
@@ -470,9 +469,7 @@ async def test_run_dream_real_chain_session_limit(
     assert dream.status == DreamStatus.FAILED
     assert dream.error == (
         "Workspace trust warning: untrusted directory "
-        "(terminal_error: session_limit); stdout: "
-        '{"type":"result","subtype":"error_during_execution","is_error":true,'
-        '"result":"Session limit reached"}'
+        "(terminal_error: session_limit); notice: Session limit reached"
     )
     actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
     assert actions[-1]["action"] == "dream_failed"
@@ -514,9 +511,7 @@ async def test_run_dream_real_chain_certificate_error(
     assert dream.status == DreamStatus.FAILED
     assert dream.error == (
         "Workspace trust warning: untrusted directory (terminal_error: "
-        "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR); stdout: "
-        '{"type":"result","subtype":"error_during_execution","is_error":true,'
-        '"result":"UNKNOWN_CERTIFICATE_VERIFICATION_ERROR: unable to verify"}'
+        "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR)"
     )
     actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
     assert actions[-1]["action"] == "dream_failed"

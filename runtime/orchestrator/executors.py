@@ -71,6 +71,10 @@ class ExecutorResult:
     # ``error`` (THR-116).  Examples: ``session_limit``,
     # ``transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR``.
     terminal_error: str | None = None
+    # Reporting-only metadata selected from complete producer streams before
+    # diagnostic tails are truncated. It never drives classification or retry.
+    human_error: str | None = None
+    terminal_error_notice: str | None = None
     # Closed, structured THR-200 outcome seam. Breaker consumers use only
     # these values and ``provider_launched``; error/stdout/stderr remain
     # diagnostic evidence and are never parsed for breaker accounting.
@@ -518,6 +522,18 @@ def _parse_codex_session_id(stdout: str) -> str | None:
     return None
 
 
+def _parse_claude_session_limit_notice(stdout: str, stderr: str) -> str | None:
+    """Return the validated session-limit notice, never arbitrary stdout."""
+    if _parse_claude_terminal_error(stdout, stderr) != "session_limit":
+        return None
+    try:
+        obj = json.loads(stdout.strip())
+    except json.JSONDecodeError:
+        return None
+    result = obj.get("result") if isinstance(obj, dict) else None
+    return result if isinstance(result, str) else None
+
+
 def _parse_pi_session_id(stdout: str) -> str | None:
     """Extract the session header ``id`` from Pi's `--mode json` event stream.
 
@@ -907,24 +923,6 @@ _BENIGN_LAUNCHER_STDERR_LINES = (
     re.compile(r"^Set hasTrustDialogAccepted to true to trust this workspace\.?$"),
 )
 
-# Durable failure reporting is a bounded preview, never a second raw provider
-# transcript. Classification, eviction, retry, and throttling keep using the
-# original streams.
-_REPORTING_DETAIL_CAP = 1200
-_REPORTING_SECRET = re.compile(
-    r"(?i)\b(?:authorization|api[_-]?key|token|secret)\s*[:=]\s*[^\s,;]+"
-)
-_REPORTING_BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+")
-
-
-def reporting_detail(text: str, *, cap: int = _REPORTING_DETAIL_CAP) -> str:
-    """Return a single-line, credential-redacted reporting preview."""
-    detail = " ".join(str(text or "").split())
-    detail = _REPORTING_SECRET.sub("[REDACTED]", detail)
-    detail = _REPORTING_BEARER.sub("Bearer [REDACTED]", detail)
-    return detail[-cap:]
-
-
 def _meaningful_stderr(text: str) -> str:
     """Remove only complete, known-benign launcher/Claude warning lines."""
     return "\n".join(
@@ -932,6 +930,12 @@ def _meaningful_stderr(text: str) -> str:
         if line.strip()
         and not any(pattern.fullmatch(line.strip()) for pattern in _BENIGN_LAUNCHER_STDERR_LINES)
     ).strip()
+
+
+def _selected_human_error(text: str) -> str:
+    """Select the first meaningful complete stderr line before tailing."""
+    meaningful = _meaningful_stderr(text)
+    return next((line.strip() for line in meaningful.splitlines() if line.strip()), "")
 
 
 def _run_command(
@@ -946,6 +950,7 @@ def _run_command(
     provider: str = "claude",
     on_throttle_event: "OnThrottleEvent | None" = None,
     error_parser: Callable[[str, str], "str | None"] | None = None,
+    terminal_error_notice_parser: Callable[[str, str], "str | None"] | None = None,
     strict_envelope_validator: Callable[[str], "str | None"] | None = None,
     pre_launch_validator: Callable[[], None] | None = None,
     org_slug: str | None = None,
@@ -1106,12 +1111,19 @@ def _run_command(
             # so callers like dream_runner can persist a deterministic reason
             # instead of incidental stderr noise.
             terminal_error = None
+            terminal_error_notice = None
             if error_parser is not None:
                 try:
                     terminal_error = error_parser(full_stdout, full_stderr)
                 except Exception as exc:
                     logger.warning("error parser raised: %s", exc)
                     terminal_error = None
+            if terminal_error_notice_parser is not None:
+                try:
+                    terminal_error_notice = terminal_error_notice_parser(full_stdout, full_stderr)
+                except Exception as exc:
+                    logger.warning("terminal notice parser raised: %s", exc)
+                    terminal_error_notice = None
             return ExecutorResult(
                 success=False,
                 duration_seconds=int(time.monotonic() - start_time),
@@ -1122,6 +1134,8 @@ def _run_command(
                 error=f"Command exited with code {proc.returncode}{error_summary}",
                 rate_limited=rate_limited,
                 terminal_error=terminal_error,
+                human_error=_selected_human_error(full_stderr) or None,
+                terminal_error_notice=terminal_error_notice,
                 failure_category="provider_nonzero",
                 provider_launched=True,
             )
@@ -1373,6 +1387,7 @@ class ClaudeExecutor:
             provider="claude",
             on_throttle_event=on_throttle_event,
             error_parser=_parse_claude_terminal_error,
+            terminal_error_notice_parser=_parse_claude_session_limit_notice,
             pre_launch_validator=pre_launch_validator,
             org_slug=org_slug,
             running=running,

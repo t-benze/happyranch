@@ -33,7 +33,6 @@ from runtime.models import (
 from runtime.orchestrator.executors import (
     ExecutorResult,
     _meaningful_stderr,
-    reporting_detail,
 )
 from runtime.orchestrator.executor_registry import build_executor, get_registry
 from runtime.orchestrator.host_supervisor import (
@@ -73,20 +72,21 @@ def _executor_error_detail(result, rc) -> str:
     (e.g. an ``API Error: 529 Overloaded`` raised inside the claude CLI), which
     was previously only recoverable by digging into the claude session JSONL.
     """
-    stderr = str(getattr(result, "stderr_tail", "") or "")
+    stderr = str(getattr(result, "human_error", "") or "") or str(
+        getattr(result, "stderr_tail", "") or ""
+    )
     terminal_error = str(getattr(result, "terminal_error", "") or "").strip()
-    if (
-        terminal_error
-        and not _meaningful_stderr(stderr)
-    ):
-        return reporting_detail(terminal_error, cap=_REASON_DETAIL_CAP)
+    notice = str(getattr(result, "terminal_error_notice", "") or "").strip()
+    if terminal_error and not _meaningful_stderr(stderr):
+        return f"{terminal_error}; notice: {notice[:_REASON_DETAIL_CAP]}" if notice else terminal_error
 
     raw = (str(getattr(result, "error", "") or "")
            or str(getattr(result, "stderr_tail", "") or "")).strip()
     prefix = f"Command exited with code {rc}"
     if raw.startswith(prefix):
         raw = raw[len(prefix):].lstrip(": ").strip()
-    return reporting_detail(raw, cap=_REASON_DETAIL_CAP)
+    detail = raw.replace("\n", " ")[:_REASON_DETAIL_CAP]
+    return f"{detail}; notice: {notice[:_REASON_DETAIL_CAP]}" if notice else detail
 
 
 @dataclass(frozen=True)
