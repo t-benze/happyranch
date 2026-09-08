@@ -54,12 +54,84 @@ with a real, genuinely long dashboard payload (the `long-content` mock shell
 state) scrolled inside its real `ContentWrap` scroller — the last row must
 start off-screen and become visible after a positive scroll — not with a
 synthetic block appended to the `overflow-hidden` `<main>`. Run it twice
-(`--label=before` against a pre-fix dist, `--label=after`); the `before` run
-only reports a reproduction when the run is otherwise healthy (no fatal error,
-no mock-route violation, no stale artifact, no browser-default refusal, and the
-adversarial self-tests plus the rail-width/nav-inventory checks still passing)
-AND exactly the 1280x600 rail/footer overflow checks fail. Structural
-regression coverage lives in
+(`--label=before` against a pre-fix dist, `--label=after`).
+
+Both runs are adjudicated by one function, `classifyRun`, against a **fixed,
+hand-declared inventory of every check id the script emits**
+(`EXPECTED_CHECK_IDS`). Categories are never derived from whichever checks
+happened to execute, because a derived category cannot notice a check that
+stopped running. A run is accepted only when all of the following hold:
+
+- every id in the inventory ran, exactly once, and no id outside it appeared;
+- the failed set equals the label's expected-failure set exactly — the
+  enumerated `EXPECTED_BASELINE_FAILURES` for `--label=before`, and the empty
+  set for `--label=after`. Every remaining id is a preservation assertion that
+  must pass, by construction rather than by hand-picking, so an unrelated
+  regression can never coexist with a "reproduced" verdict;
+- infrastructure is healthy: no fatal scenario error, no swallowed cleanup
+  error, no fail-closed mock-route violation, no stale artifact, and no request
+  that escaped the pinned local origin.
+
+`EXPECTED_BASELINE_FAILURES` is written from **measured** baseline geometry, not
+from prose: at 1280x600 the pre-fix rail rect is already correct (0..600) and
+Settings is still above the fold — the defect is that the rail's *content*
+spills, grows the document to 654px, and takes the account row out of reach. So
+`aside-inside-viewport:*` and `footer-settings-reachable:laptop-1280x600/*` are
+must-pass on the baseline; demanding that they fail would demand a defect the
+code does not have.
+
+**Browser-default refusals are recorded, not scored.** The fail-closed mock
+serves only the pinned `dist` tree, and Chromium asks for `/favicon.ico` on its
+own even though the app declares `/happyranch-favicon.svg`. That request is
+404'd and counted in `browser_default_refusals`, but it is deliberately outside
+the health predicate: it is a closed set of exactly one path
+(`BROWSER_DEFAULT_PATHS = {favicon.ico}`), it is browser-originated rather than
+app-originated, and folding it in previously made every run — including a fully
+green `after` run — report itself unhealthy. Anything the app originates that
+is not on the allowlist is still a violation and still fails the run.
+
+**Network isolation is browser-wide, not server-local.** Counting requests that
+arrive at the local Node server says nothing about requests sent elsewhere, and
+`web/index.html` links `fonts.googleapis.com` (stylesheet) and preconnects to
+`fonts.gstatic.com`. Before any navigation the harness installs a
+**context-level fail-closed route**: only the exact pinned
+`http://127.0.0.1:<port>` origin continues; every other URL is aborted with
+`blockedbyclient`. Attempts stay visible in the ledger, so the evidence records
+what the page tried to reach, not only what it reached.
+
+**Font provenance and its limit.** Three families are self-hosted in the pinned
+build via `@font-face` in `web/src/design-system/tokens/tokens.css`
+(`/fonts/HankenGrotesk-latin.woff2`, `/fonts/Newsreader-normal-latin.woff2`,
+`/fonts/Newsreader-italic-latin.woff2`); they are same-origin and load
+normally, and the ledger pins every dist file's `sha256`. The wordmark family
+`Baloo 2` is **remote-only** — it is fetched from Google Fonts at runtime — so
+the egress guard blocks it and the sidebar wordmark renders in its declared
+`sans-serif` fallback. The harness measures and records that substitution
+rather than hiding it: **no production visual-fidelity claim is made for the
+wordmark glyphs.** Geometry and reachability evidence is unaffected — the
+org-switcher header is `shrink-0` and its measured height is in the ledger.
+
+Presence is decided by the registered `FontFaceSet` plus a canvas width
+measurement — **not** by `FontFaceSet.check()`, which answers "is anything still
+pending for this list" and therefore returns `true` for a family that is
+entirely absent. The check ids are `self-hosted-fonts-loaded:1280x600` (the two
+self-hosted families are registered and loaded),
+`font-measurement-method-discriminates:1280x600` (a positive control: a family
+that IS registered must measure differently from the bare fallback, so
+"identical widths" cannot just mean the technique is blind), and
+`fallback-font-substitution-declared:1280x600` (`Baloo 2` is not registered and
+the wordmark's declared stack measures identically to `sans-serif` alone). The
+raw `check()` values stay in the ledger as provenance, under a field name that
+says what they are not.
+
+`--selftest` runs `classifyRun` alone against synthetic runs and writes
+`thr230-gate-selftest.json`: positive controls plus negative receipts for a
+clean run submitted as a baseline, an unrelated preservation failure, an absent
+required or must-pass check, an unknown or duplicated check id, a mock-route
+violation, a stale artifact, a fatal error, a cleanup failure, and successful
+external egress. It needs no browser.
+
+Structural regression coverage lives in
 `web/src/design-system/layouts/AppShell/Sidebar.test.tsx`
 (`THR-230: the sidebar owns its own vertical overflow`) — class-level, so it
 supplements rather than replaces the browser geometry evidence.
