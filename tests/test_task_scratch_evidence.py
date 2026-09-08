@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -11,7 +11,13 @@ import pytest
 from runtime.daemon.sessions import SessionTracker
 from runtime.daemon.task_scratch_evidence import collect_task_scratch_evidence
 from runtime.daemon.routes.tasks import CancelBody, cancel_task
-from runtime.daemon.zombie_reaper import _consume_zombie_fingerprint, _sweep_org_zombies
+from runtime.daemon.zombie_reaper import (
+    FLAG_TTL_NO_FINGERPRINT_SECONDS,
+    STALE_HEARTBEAT_SECONDS,
+    _consume_zombie_fingerprint,
+    _pid_is_dead,
+    _sweep_org_zombies,
+)
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
 from runtime.models import BlockKind, CompletionReport, JobInterpreter, JobRecord, JobStatus, TaskRecord, TaskStatus
@@ -345,6 +351,12 @@ def test_recovered_blocked_job_resumes_through_shipping_cas_and_typed_completion
     assert parked is not None and parked.block_kind is BlockKind.BLOCKED_ON_JOB
     assert parked.blocked_on_job_ids == '["JOB-TERM"]'
     assert db.get_latest_task_result("TASK-JOB", "dev_agent", "resume-session")["id"] == fingerprint["id"]
+    parked_evidence = collect_task_scratch_evidence(
+        db=db, sessions=SessionTracker(), task_id="TASK-JOB", root=tmp_path / "root",
+        proc_root=proc, monotonic_now=31, daemon_started_monotonic=0,
+    )
+    assert not parked_evidence.eligible
+    assert "nonterminal_or_unresolved_lineage" in parked_evidence.reasons
 
     assert not _maybe_resume_blocked_task(orch, "TASK-JOB", trigger="job_terminal",
                                           triggering_job_id="JOB-TERM")
@@ -355,6 +367,12 @@ def test_recovered_blocked_job_resumes_through_shipping_cas_and_typed_completion
         db.transition_job_to_terminal("JOB-TERM", status=terminal_status, exit_code=0 if terminal_status is JobStatus.COMPLETED else 1,
                                       finished_at="2026-01-01T00:00:00+00:00", duration_ms=1,
                                       stdout_head="test", stderr_head="" if terminal_status is JobStatus.COMPLETED else "failed")
+    terminal = db.get_job("JOB-TERM")
+    assert terminal is not None and terminal.status is terminal_status
+    if terminal_status is JobStatus.REJECTED:
+        assert terminal.reviewed_by == "qa_engineer" and terminal.reject_reason == "test"
+    else:
+        assert terminal.exit_code == (0 if terminal_status is JobStatus.COMPLETED else 1)
     assert _maybe_resume_blocked_task(orch, "TASK-JOB", trigger="job_terminal",
                                       triggering_job_id="JOB-TERM")
     assert queue.items == [("test", "TASK-JOB", {"trigger": "job_terminal", "triggering_job_id": "JOB-TERM"})]
@@ -365,6 +383,12 @@ def test_recovered_blocked_job_resumes_through_shipping_cas_and_typed_completion
         active = db.get_task("TASK-JOB")
         assert active is not None
         observed.append((active.status, active.block_kind, active.blocked_on_job_ids))
+        in_executor = collect_task_scratch_evidence(
+            db=db, sessions=SessionTracker(), task_id="TASK-JOB", root=tmp_path / "root",
+            proc_root=proc, monotonic_now=31, daemon_started_monotonic=0,
+        )
+        assert not in_executor.eligible
+        assert "nonterminal_or_unresolved_lineage" in in_executor.reasons
         return (
             ExecutorResult(success=True, duration_seconds=1, session_id="resumed-session", returncode=0),
             CompletionReport(task_id="TASK-JOB", agent="dev_agent", status="completed", confidence=100,
@@ -382,6 +406,10 @@ def test_recovered_blocked_job_resumes_through_shipping_cas_and_typed_completion
     assert after.blocked_on_job_ids == '["JOB-TERM"]'
     resumed = [row for row in db.get_audit_logs("TASK-JOB") if row["action"] == "task_resumed_from_jobs"]
     assert len(resumed) == 1 and resumed[0]["payload"]["job_outcomes"] == {"JOB-TERM": terminal_status.value}
+    assert resumed[0]["payload"] == {
+        "trigger": "job_terminal", "triggering_job_id": "JOB-TERM",
+        "job_outcomes": {"JOB-TERM": terminal_status.value}, "blocking_job_ids": ["JOB-TERM"],
+    }
     assert db.get_job_status("JOB-TERM") == terminal_status.value
     retained = db.get_latest_task_result("TASK-JOB", "dev_agent", "resume-session")
     assert retained is not None and retained["id"] == fingerprint["id"]
@@ -417,6 +445,56 @@ def test_sweep_selection_warmup_and_flagged_fingerprint_use_shipping_path(tmp_pa
     actions = [row["action"] for row in db.get_audit_logs("TASK-SWEEP")]
     assert actions.count("zombie_flagged") == 1 and actions.count("zombie_cleared") == 1
     assert queue.items == []
+
+
+def test_sweep_warmup_heartbeat_process_and_no_fingerprint_ttl_selection(
+    tmp_path: Path, monkeypatch, request: pytest.FixtureRequest,
+) -> None:
+    """L4: real sweep predicates retain state until the exact safe selection."""
+    db, orch, queue, proc = _recovery_fixture(tmp_path, request)
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    stale = (now - timedelta(seconds=STALE_HEARTBEAT_SECONDS)).isoformat()
+    db.insert_task(TaskRecord(id="TASK-L4", brief="x", status=TaskStatus.IN_PROGRESS,
+                              assigned_agent="dev_agent", current_session_id="s",
+                              last_heartbeat=stale, executor_pid=123))
+    db.update_task("TASK-L4", last_heartbeat=stale, executor_pid=123)
+    before = (db.get_task("TASK-L4"), db.get_task_results("TASK-L4"), db.get_audit_logs("TASK-L4"), list(queue.items))
+    monkeypatch.setattr("runtime.daemon.zombie_reaper._pid_is_dead", lambda _pid: True)
+    _sweep_org_zombies(db, now=now, uptime=29, warm_up_seconds=30, orchestrator=orch)
+    assert (db.get_task("TASK-L4"), db.get_task_results("TASK-L4"), db.get_audit_logs("TASK-L4"), list(queue.items)) == before
+    assert "zombie_warmup" in collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-L4", root=tmp_path / "root", proc_root=proc, monotonic_now=29, daemon_started_monotonic=0).reasons
+    _sweep_org_zombies(db, now=now, uptime=30, warm_up_seconds=30, orchestrator=orch)
+    flagged = db.get_task("TASK-L4")
+    assert flagged is not None and flagged.zombie_flagged_at is not None
+    assert not collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-L4", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).eligible
+    db.update_task("TASK-L4", last_heartbeat=now.isoformat())
+    _sweep_org_zombies(db, now=now, uptime=30, warm_up_seconds=30, orchestrator=orch)
+    assert db.get_task("TASK-L4").zombie_flagged_at is None
+    assert [r["action"] for r in db.get_audit_logs("TASK-L4")].count("zombie_cleared") == 1
+    db.update_task("TASK-L4", last_heartbeat=stale, zombie_flagged_at=now.isoformat())
+    monkeypatch.setattr("runtime.daemon.zombie_reaper._pid_is_dead", lambda _pid: False)
+    _sweep_org_zombies(db, now=now, uptime=30, warm_up_seconds=30, orchestrator=orch)
+    assert db.get_task("TASK-L4").zombie_flagged_at is None
+    db.update_task("TASK-L4", zombie_flagged_at=now.isoformat(), executor_pid=None)
+    _sweep_org_zombies(db, now=now, uptime=30, warm_up_seconds=30, orchestrator=orch)
+    assert db.get_task("TASK-L4").zombie_flagged_at is not None
+    db.update_task("TASK-L4", executor_pid=123,
+                   zombie_flagged_at=(now - timedelta(seconds=FLAG_TTL_NO_FINGERPRINT_SECONDS)).isoformat())
+    monkeypatch.setattr("runtime.daemon.zombie_reaper._pid_is_dead", lambda _pid: True)
+    _sweep_org_zombies(db, now=now, uptime=30, warm_up_seconds=30, orchestrator=orch)
+    cancelled = db.get_task("TASK-L4")
+    assert cancelled is not None and cancelled.status is TaskStatus.CANCELLED and cancelled.block_kind is None
+    assert [r["action"] for r in db.get_audit_logs("TASK-L4")].count("zombie_cancelled") == 1
+    assert db.get_task_results("TASK-L4") == [] and queue.items == []
+    assert not collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-L4", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).eligible
+
+
+def test_pid_permission_ambiguity_is_not_a_dead_process(monkeypatch) -> None:
+    """L4 process probe: permission ambiguity has the shipping conservative effect."""
+    def denied(_pid: int, _signal: int) -> None:
+        raise PermissionError
+    monkeypatch.setattr("runtime.daemon.zombie_reaper.os.kill", denied)
+    assert not _pid_is_dead(123)
 
 
 def test_recovery_delegate_and_then_persist_real_lineage_effects(tmp_path: Path, request: pytest.FixtureRequest) -> None:
