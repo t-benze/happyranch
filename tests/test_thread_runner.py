@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from runtime.config import Settings
 from runtime.daemon.thread_runner import (
+    _executor_error_detail,
     _render_message,
     build_thread_delta_prompt,
     build_thread_prompt,
@@ -143,6 +144,21 @@ class FakeOrgState:
         self.db = db
         self.root = root
         self.slug = "test"
+
+
+def test_executor_error_detail_uses_selected_full_stream_cause_and_notice():
+    """Thread failure reasons retain the selected cause, not a truncated tail."""
+    result = FakeExecutorResult(False, error="Command exited with code 1: tail-only")
+    result.human_error = "API Error: 529 Overloaded"
+    result.stderr_tail = "ust this workspace."
+    result.terminal_error = "session_limit"
+    result.terminal_error_notice = "You've hit your session limit · resets 12:20am"
+
+    detail = _executor_error_detail(result, 1)
+
+    assert detail.startswith("API Error: 529 Overloaded")
+    assert "resets 12:20am" in detail
+    assert "tail-only" not in detail
 
 
 def _seed_queued_reply(db, thread_id, agent_name, triggering_seq):
@@ -409,7 +425,7 @@ async def test_no_callback_failure_surfaces_executor_error(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_no_callback_failure_preserves_claude_diagnostics_in_audit_reason(
+async def test_no_callback_failure_keeps_selected_cause_separate_from_audit_tails(
     tmp_path, monkeypatch,
 ):
     db = Database(tmp_path / "happyranch.db")
@@ -457,13 +473,8 @@ async def test_no_callback_failure_preserves_claude_diagnostics_in_audit_reason(
 
     inv_after = db.get_invocation_any_status(inv.invocation_token)
     assert inv_after.decline_reason is not None
-    assert len(inv_after.decline_reason) > 300
-    for diagnostic in (
-        '"api_error_status":429',
-        '"terminal_reason":"credit_exhausted"',
-        '"result":"Your account has insufficient credits',
-    ):
-        assert diagnostic in inv_after.decline_reason
+    assert inv_after.decline_reason.endswith("raw stderr warning")
+    assert '"api_error_status":429' not in inv_after.decline_reason
 
     audit_row = next(
         row for row in db.get_audit_logs("THR-001")

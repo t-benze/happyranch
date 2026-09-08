@@ -80,12 +80,19 @@ def _executor_error_detail(result, rc) -> str:
     if terminal_error and not _meaningful_stderr(stderr):
         return f"{terminal_error}; notice: {notice[:_REASON_DETAIL_CAP]}" if notice else terminal_error
 
-    raw = (str(getattr(result, "error", "") or "")
-           or str(getattr(result, "stderr_tail", "") or "")).strip()
-    prefix = f"Command exited with code {rc}"
-    if raw.startswith(prefix):
-        raw = raw[len(prefix):].lstrip(": ").strip()
-    detail = raw.replace("\n", " ")[:_REASON_DETAIL_CAP]
+    # ``human_error`` was selected from the complete producer stream before
+    # tailing.  Keep that human cause distinct from the raw diagnostic tails
+    # below; ``error`` may contain the complete stderr and is only a legacy
+    # fallback when no selected cause exists.
+    if stderr:
+        detail = stderr.replace("\n", " ")[:_REASON_DETAIL_CAP]
+    else:
+        raw = (str(getattr(result, "error", "") or "")
+               or str(getattr(result, "stderr_tail", "") or "")).strip()
+        prefix = f"Command exited with code {rc}"
+        if raw.startswith(prefix):
+            raw = raw[len(prefix):].lstrip(": ").strip()
+        detail = raw.replace("\n", " ")[:_REASON_DETAIL_CAP]
     return f"{detail}; notice: {notice[:_REASON_DETAIL_CAP]}" if notice else detail
 
 
