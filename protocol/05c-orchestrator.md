@@ -1357,7 +1357,7 @@ unavailable measurement is not a measured zero. Each bounded source, including
 an iterator advance, is admitted
 against the collector's shared deadline (a blocking source read cannot be forcibly
 interrupted); complete fresh counts, including zero, remain measurements when an
-independent lifecycle/session reason rejects eligibility. B2b recollects before any later action and B3 owns
+independent lifecycle, session, or durable-authority reason rejects eligibility. B2b recollects before any later action and B3 owns
 current-boot coverage.
 
 1. **Measures** the OWNING AGENT's workspace with an explicit bounded,

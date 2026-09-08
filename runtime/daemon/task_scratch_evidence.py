@@ -88,6 +88,9 @@ def _scan(proc: Path, root: Path, deadline: int) -> tuple[int | None, int | None
                     if _expired(deadline): raise RuntimeError("process_scan_timeout")
                     try: fd = next(iterator)
                     except StopIteration: break
+                    # Iterator advancement may complete after the deadline;
+                    # do not begin its dependent readlink in that state.
+                    if _expired(deadline): raise RuntimeError("process_scan_timeout")
                     count += 1
                     if count > MAX_FDS_PER_PROCESS: raise RuntimeError("open_fd_scan_capped")
                     if _under(os.readlink(fd.path), root): fds += 1; reasons.add("open_fd_reference")
@@ -280,7 +283,7 @@ def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, tas
         "observation_timeout", "process_scan_unavailable", "process_scan_timeout",
         "process_reference_unavailable", "open_fd_scan_capped",
         "process_population_unavailable", "process_population_changed_during_collection",
-        "process_identity_unavailable", "executor_identity_unavailable",
+        "process_identity_unavailable",
         "executor_identity_changed_during_collection", "boot_id_unavailable",
         "boot_id_changed_during_collection",
     }

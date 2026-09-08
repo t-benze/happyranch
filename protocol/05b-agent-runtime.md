@@ -1359,7 +1359,7 @@ enumeration, source open, and iterator advance against one shared deadline (with
 already-started read), including aggregate linked-job reads. Ambiguous,
 missing, capped, changing, warm-up, recovery, permission, or live-reference
 evidence is ineligible. A complete fresh root/cwd/fd measurement remains
-truthful, including zero, when only an independent eligibility reason applies;
+truthful, including zero, when only an independent lifecycle, session, or durable-authority reason applies;
 partial or invalid scans remain unavailable rather than fabricated zeros. It
 has no production caller or engine/ledger import; B2b must
 recollect at action time and B3 remains coverage authority.

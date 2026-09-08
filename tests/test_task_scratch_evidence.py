@@ -135,6 +135,44 @@ def test_complete_zero_measurement_survives_independent_ineligibility(tmp_path: 
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (0, 0, 0)
 
 
+def test_exported_collector_keeps_complete_os_measurements_when_durable_snapshot_is_unavailable(tmp_path: Path, monkeypatch) -> None:
+    """Durable authority loss rejects eligibility without falsifying OS counts."""
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    import runtime.daemon.task_scratch_evidence as subject
+    monkeypatch.setattr(subject, "_snapshot", lambda *_args: None)
+    evidence = subject.collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert not evidence.eligible
+    assert "executor_identity_unavailable" in evidence.reasons
+    assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (0, 0, 0)
+
+
+def test_exported_collector_stops_fd_readlink_after_expired_iterator_advance(tmp_path: Path, monkeypatch) -> None:
+    """An fd iterator result observed after expiry cannot start readlink."""
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    root = tmp_path / "root"; root.mkdir(); (proc / "42/cwd").unlink(); (proc / "42/cwd").symlink_to(root)
+    import runtime.daemon.task_scratch_evidence as subject
+    expired = False; original_scandir = subject.os.scandir; original_readlink = subject.os.readlink
+    class FdEntries:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def __iter__(self): return self
+        def __next__(self):
+            nonlocal expired
+            if expired: raise StopIteration
+            expired = True
+            return type("Fd", (), {"path": str(proc / "42/fd/0")})()
+    def scandir(path): return FdEntries() if str(path).endswith("42/fd") else original_scandir(path)
+    def readlink(path):
+        if str(path).endswith("42/fd/0"): raise AssertionError("post-expiry fd readlink started")
+        return original_readlink(path)
+    monkeypatch.setattr(subject.os, "scandir", scandir)
+    monkeypatch.setattr(subject.os, "readlink", readlink)
+    monkeypatch.setattr(subject, "_expired", lambda _deadline: expired)
+    evidence = subject.collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert "process_scan_timeout" in evidence.reasons
+    assert evidence.process_roots is evidence.process_cwds is evidence.open_fds is None
+
+
 def test_non_numeric_proc_entries_do_not_consume_population_budget(tmp_path: Path, monkeypatch) -> None:
     db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
     import runtime.daemon.task_scratch_evidence as subject
