@@ -498,3 +498,88 @@ describe('/jobs renders the reinstated approval-queue surface (TASK-907)', () =>
     });
   });
 });
+
+describe('THR-230: the sidebar owns its own vertical overflow', () => {
+  /**
+   * At short laptop heights (e.g. a 1280x600 CSS content viewport) the rail's
+   * intrinsic content is taller than the viewport. Before THR-230 the excess
+   * spilled out of the `h-full` <aside> and grew the DOCUMENT scroller, pushing
+   * the footer account row below the fold.
+   *
+   * The contract these tests guard is structural, because jsdom has no layout
+   * engine: the nav landmark — and only the nav landmark — is the shrinkable
+   * internal scroll region, while the org-switcher header and the footer stay
+   * unshrinkable so their controls are never squeezed or clipped. The live
+   * geometry (aside inside the viewport, document scrollHeight == clientHeight,
+   * scrolled/keyboard reachability of the last link and the footer controls) is
+   * verified separately in browser evidence using the real routed app; see
+   * the sidebar guidance in `docs/agent-guides/web-and-cli.md`.
+   */
+  test('nav landmark is the shrinkable internal scroll region', async () => {
+    seedSidebarShell();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    const nav = await screen.findByRole('navigation', { name: 'Primary navigation items' });
+    const cls = nav.className.split(/\s+/);
+
+    // Scrolls internally instead of overflowing the rail.
+    expect(cls).toContain('overflow-y-auto');
+    // Absorbs the free space and, critically, may shrink below its content
+    // height — `min-h-0` defeats the flex `min-height: auto` floor that made
+    // the column overflow its `h-full` parent in the first place.
+    expect(cls).toContain('flex-1');
+    expect(cls).toContain('min-h-0');
+    // Contains its own absolutely positioned descendants (the `sr-only` labels
+    // of the collapsed icon rail) so they cannot escape to the initial
+    // containing block and re-grow the document.
+    expect(cls).toContain('relative');
+    // Keyboard focus scrolls the target flush against the scrollport edge.
+    // `scroll-py-1` reserves the room, and the leading/trailing space lives
+    // INSIDE the scroller (`pt-3`/`pb-1`, not the former outer `mt-3`) so the
+    // focus ring on the first and last items is never clipped at either edge.
+    // Rest positions are unchanged: `pt-3` reproduces the old `mt-3` offset.
+    expect(cls).toContain('scroll-py-1');
+    expect(cls).toContain('pt-3');
+    expect(cls).toContain('pb-1');
+    expect(cls).not.toContain('mt-3');
+  });
+
+  test('the org-switcher header and the footer are not shrinkable', async () => {
+    seedSidebarShell();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    const aside = await screen.findByRole('navigation', { name: 'Primary navigation' });
+
+    const header = aside.querySelector('section[aria-label="Organization switcher"]');
+    expect(header).not.toBeNull();
+    expect(header!.className.split(/\s+/)).toContain('shrink-0');
+
+    const footer = screen.getByLabelText('Account: You, Founder').parentElement;
+    expect(footer).not.toBeNull();
+    expect(footer!.className.split(/\s+/)).toContain('shrink-0');
+    // The footer still pins to the bottom of the rail at tall viewports.
+    expect(footer!.className.split(/\s+/)).toContain('mt-auto');
+  });
+
+  test('every nav item and both footer controls stay inside the rail', async () => {
+    seedSidebarShell();
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
+
+    const aside = await screen.findByRole('navigation', { name: 'Primary navigation' });
+    const nav = within(aside).getByRole('navigation', { name: 'Primary navigation items' });
+
+    // The overflow is carried by an internal scroller, never by dropping,
+    // clipping, or collapsing items: all fourteen survive.
+    expect(within(nav).getAllByRole('link')).toHaveLength(14);
+    expect(within(nav).getByRole('link', { name: 'Home' })).toBeInTheDocument();
+    expect(within(nav).getByRole('link', { name: 'Health' })).toBeInTheDocument();
+
+    // Settings and the account row live in the footer, OUTSIDE the scroller,
+    // so they stay pinned and reachable however far the nav scrolls.
+    const settings = within(aside).getByRole('link', { name: 'Settings' });
+    const account = within(aside).getByLabelText('Account: You, Founder');
+    expect(nav.contains(settings)).toBe(false);
+    expect(nav.contains(account)).toBe(false);
+    expect(account).toHaveAttribute('tabindex', '0');
+  });
+});
