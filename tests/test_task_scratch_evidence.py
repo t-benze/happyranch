@@ -273,6 +273,116 @@ def test_exported_collector_charges_unsuccessful_linked_lookups_before_read(tmp_
     assert calls == ["MISSING-2", "MISSING-2"]
 
 
+@pytest.mark.parametrize("reader,call", [
+    ("get_task", 1), ("get_task", 2),
+    ("get_latest_task_result", 1), ("get_latest_task_result", 2),
+    ("list_jobs_db", 1), ("list_jobs_db", 2), ("get_job", 1),
+])
+def test_exported_collector_stops_all_source_reads_after_db_return(
+    tmp_path: Path, monkeypatch, reader: str, call: int,
+) -> None:
+    """A1p: each admitted DB return is a shared-deadline admission boundary."""
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    if reader == "get_job":
+        db.insert_job(JobRecord(id="JOB-1", task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED, created_at=datetime.now(timezone.utc).isoformat()))
+        db.update_task("TASK-1", blocked_on_job_ids='["JOB-1"]')
+    import runtime.daemon.task_scratch_evidence as subject
+    expired = False; starts: list[str] = []; seen = 0
+    for name in ("get_task", "get_latest_task_result", "list_jobs_db", "get_job"):
+        original = getattr(db, name)
+        def wrapped(*args, _name=name, _original=original, **kwargs):
+            nonlocal expired, seen
+            starts.append(_name)
+            assert not expired, f"post-expiry source read: {_name}"
+            value = _original(*args, **kwargs)
+            if _name == reader:
+                seen += 1
+                if seen == call: expired = True
+            return value
+        monkeypatch.setattr(db, name, wrapped)
+    monkeypatch.setattr(subject, "_expired", lambda _deadline: expired)
+    evidence = subject.collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert expired and "observation_timeout" in evidence.reasons
+    assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
+
+
+def test_exported_collector_expiry_boundaries_do_not_start_dependent_proc_reads(tmp_path: Path, monkeypatch) -> None:
+    """A2p: source opens/advances are admitted; an in-flight call is not cancelled."""
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    root = tmp_path / "root"; root.mkdir(); _proc(proc, 43, root=str(root), cwd=str(root), fd=str(root / "held"))
+    import runtime.daemon.task_scratch_evidence as subject
+    original_readlink, original_scandir, original_boot = subject.os.readlink, subject.os.scandir, Path.read_text
+    for trigger in ("cwd", "fd-readlink", "population-open", "pid-stat", "boot", "sessions"):
+        expired = False; after: list[str] = []
+        def readlink(path, *, _trigger=trigger):
+            nonlocal expired
+            value = original_readlink(path)
+            if (_trigger == "cwd" and str(path).endswith("/cwd")) or (_trigger == "fd-readlink" and "/fd/" in str(path)):
+                expired = True
+            return value
+        def scandir(path, *, _trigger=trigger):
+            nonlocal expired
+            value = original_scandir(path)
+            if _trigger == "population-open" and str(path) == str(proc): expired = True
+            return value
+        def read_text(path, *args, _trigger=trigger, **kwargs):
+            nonlocal expired
+            value = original_boot(path, *args, **kwargs)
+            if (_trigger == "boot" and str(path).endswith("boot_id")) or (_trigger == "pid-stat" and str(path).endswith("43/stat")): expired = True
+            return value
+        monkeypatch.setattr(subject.os, "readlink", readlink); monkeypatch.setattr(subject.os, "scandir", scandir); monkeypatch.setattr(Path, "read_text", read_text)
+        sessions = SessionTracker()
+        if trigger == "sessions":
+            original_iter = sessions.iter_active
+            def iter_active():
+                nonlocal expired
+                result = original_iter(); expired = True; return result
+            monkeypatch.setattr(sessions, "iter_active", iter_active)
+        monkeypatch.setattr(subject, "_expired", lambda _deadline: expired)
+        evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+        assert expired and not evidence.eligible
+        assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
+        monkeypatch.undo()
+
+
+@pytest.mark.parametrize("kind,expected_calls,reason", [
+    ("foreign", 2, "linked_job_authority_unavailable"), ("running", 0, "job_scan_capped"),
+    ("terminal", 0, "job_scan_capped"), ("duplicate", 0, "linked_job_authority_unavailable"),
+])
+def test_exported_collector_linked_job_cap_is_per_snapshot_and_pre_read(
+    tmp_path: Path, monkeypatch, kind: str, expected_calls: int, reason: str,
+) -> None:
+    """A3p: listed rows and every linked attempt consume the same per-snapshot cap."""
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    linked = "JOB-X" if kind != "duplicate" else "JOB-X"
+    db.update_task("TASK-1", blocked_on_job_ids=json.dumps([linked, linked] if kind == "duplicate" else [linked]))
+    if kind != "foreign":
+        db.insert_job(JobRecord(id=linked, task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING if kind == "running" else JobStatus.COMPLETED, created_at=datetime.now(timezone.utc).isoformat()))
+    else:
+        db.insert_job(JobRecord(id=linked, task_id="OTHER", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED, created_at=datetime.now(timezone.utc).isoformat()))
+    import runtime.daemon.task_scratch_evidence as subject
+    calls: list[str] = []; original = db.get_job
+    monkeypatch.setattr(subject, "MAX_JOBS", 1)
+    monkeypatch.setattr(db, "get_job", lambda job_id: calls.append(job_id) or original(job_id))
+    evidence = subject.collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert calls == [linked] * expected_calls and reason in evidence.reasons
+
+
+@pytest.mark.parametrize("case,reason", [
+    ("warmup", "zombie_warmup"), ("session", "active_session"), ("job", "active_job"), ("missing", "recovery_authority_unavailable"), ("pid", "executor_pid_live_or_ambiguous"),
+])
+def test_exported_collector_retains_complete_zero_counts_for_independent_rejection(tmp_path: Path, case: str, reason: str) -> None:
+    """B1p: independent authority rejection never turns a complete zero into unavailable."""
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED));
+    if case == "pid": db.update_task("TASK-1", executor_pid=42)
+    sessions = SessionTracker(); now = 0 if case == "warmup" else 31
+    if case == "session": sessions.set_active("TASK-1", "dev_agent", "session")
+    if case == "job": db.insert_job(JobRecord(id="JOB-1", task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING, created_at=datetime.now(timezone.utc).isoformat()))
+    if case == "missing": db.update_task("TASK-1", assigned_agent=None)
+    evidence = collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=now, daemon_started_monotonic=0)
+    assert reason in evidence.reasons and (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (0, 0, 0)
+
+
 def test_cleared_session_with_live_executor_pid_is_ineligible(tmp_path: Path) -> None:
     db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED)); db.update_task("TASK-1", executor_pid=42)
     sessions = SessionTracker(); sessions.set_active("TASK-1", "dev_agent", "session"); sessions.clear("TASK-1", "dev_agent")
