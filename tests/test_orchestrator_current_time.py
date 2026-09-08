@@ -25,9 +25,9 @@ _TASK_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", 
 
 @pytest.fixture(autouse=True)
 def _ensure_protocol_skills(test_settings):
-    """TASK-2511: pre-create protocol/skills/ source dirs."""
+    """TASK-2511: pre-create runtime/skills/bundled/ source dirs."""
     for sid in _TASK_CONTRACT_IDS:
-        src = test_settings.get_protocol_dir() / "skills" / sid
+        src = test_settings.get_bundled_skills_dir() / sid
         src.mkdir(parents=True, exist_ok=True)
         (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")
 

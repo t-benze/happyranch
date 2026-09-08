@@ -65,7 +65,7 @@ async def test_thread_spawn_stops_on_materialization_error(org_state, tmp_path, 
     Under the canonical store model, the correct unit seam for inducing
     a materialization failure is to inject an explicit
     SymlinkMaterializationError into the SymlinkMaterializer, not to rely
-    on an empty protocol/skills/ directory (which the production code now
+    on an empty runtime/skills/bundled/ directory (which the production code now
     skips with continue)."""
     db = org_state.db
     db.insert_thread(ThreadRecord(id="THR-001", subject="test"))
@@ -97,7 +97,7 @@ async def test_thread_spawn_stops_on_materialization_error(org_state, tmp_path, 
 
     # Create source skill dirs so the canonical build has real content.
     settings = Settings(project_root=tmp_path)
-    proto_skills = tmp_path / "protocol" / "skills"
+    proto_skills = tmp_path / "runtime" / "skills" / "bundled"
     proto_skills.mkdir(parents=True, exist_ok=True)
     _make_skill_dir(proto_skills, "start-task")
     _make_skill_dir(proto_skills, "jobs")
@@ -189,7 +189,7 @@ async def test_dream_spawn_stops_on_materialization_error(org_state, tmp_path, m
 
     # Create source skill dirs so canonical store builds succeed.
     settings = Settings(project_root=tmp_path)
-    proto_skills = tmp_path / "protocol" / "skills"
+    proto_skills = tmp_path / "runtime" / "skills" / "bundled"
     proto_skills.mkdir(parents=True, exist_ok=True)
     _make_skill_dir(proto_skills, "jobs")
     _make_skill_dir(proto_skills, "make-worktree")
@@ -283,9 +283,9 @@ async def test_wake_spawn_succeeds_when_contracts_present(org_state, tmp_path, m
     (ws / "agent.yaml").write_text("executor: claude\n")
     (ws / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
 
-    # Create protocol/skills/ with real contracts so materialization succeeds.
+    # Create runtime/skills/bundled/ with real contracts so materialization succeeds.
     settings = Settings(project_root=tmp_path)
-    proto_skills = tmp_path / "protocol" / "skills"
+    proto_skills = tmp_path / "runtime" / "skills" / "bundled"
     proto_skills.mkdir(parents=True, exist_ok=True)
     _make_skill_dir(proto_skills, "start-task")
     _make_skill_dir(proto_skills, "jobs")
@@ -368,7 +368,7 @@ async def test_wake_spawn_stops_on_materialization_error(org_state, tmp_path, mo
 
     # Create source skill dirs so canonical store builds succeed.
     settings = Settings(project_root=tmp_path)
-    proto_skills = tmp_path / "protocol" / "skills"
+    proto_skills = tmp_path / "runtime" / "skills" / "bundled"
     proto_skills.mkdir(parents=True, exist_ok=True)
     _make_skill_dir(proto_skills, "start-task")
     _make_skill_dir(proto_skills, "jobs")
@@ -478,7 +478,7 @@ async def test_schedule_spawn_stops_on_materialization_error(org_state, tmp_path
 
     # Create source skill dirs so canonical store builds succeed.
     settings = Settings(project_root=tmp_path)
-    proto_skills = tmp_path / "protocol" / "skills"
+    proto_skills = tmp_path / "runtime" / "skills" / "bundled"
     proto_skills.mkdir(parents=True, exist_ok=True)
     _make_skill_dir(proto_skills, "start-task")
     _make_skill_dir(proto_skills, "jobs")

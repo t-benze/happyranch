@@ -20,12 +20,12 @@ logger = logging.getLogger(__name__)
 
 # Test override: when set (via monkeypatch), takes precedence over the
 # settings-derived skills source. Production code leaves this ``None`` and
-# adapters resolve the source via ``self._settings.get_protocol_dir() / "skills"``.
+# adapters resolve the source via ``self._settings.get_bundled_skills_dir()``.
 _SKILLS_SRC: Path | None = None
 
 
 def _resolve_skills_src(settings: Settings) -> Path:
-    """Source directory for ``protocol/skills/``.
+    """Source directory for ``runtime/skills/bundled/``.
 
     Honors the module-level ``_SKILLS_SRC`` test override before falling back
     to the settings-derived path so unit tests can stand up a fake skills tree
@@ -33,7 +33,7 @@ def _resolve_skills_src(settings: Settings) -> Path:
     """
     if _SKILLS_SRC is not None:
         return _SKILLS_SRC
-    return settings.get_protocol_dir() / "skills"
+    return settings.get_bundled_skills_dir()
 
 
 # ── Canonical skill store + symlink materializer ──────────────────
@@ -248,9 +248,7 @@ def ensure_system_contracts_materialized(
         )
 
 
-# ── Phase-4 cutover flag: reversible gate on the wholesale protocol/skills/ dump ─
-#
-# ── Cutover guard ─────────────────────────────────────────────────
+# ── Retired copy entrypoints ──────────────────────────────────────
 # The wholesale copy is permanently removed. No executable copy path
 # survives. Any caller still referencing these stubs will raise.
 
@@ -1487,7 +1485,7 @@ def _non_stop_command_warning_section() -> list[str]:
         "  (`aws`, `stripe`, `ssh`, `sudo`, blocked `gh` verbs)\n",
         "Submit a **job** instead — the daemon runs the subprocess, your session",
         "continues, and you check on it with `happyranch jobs tail|wait|stop` when",
-        "ready. See the **jobs** skill (`protocol/skills/jobs/SKILL.md`; available",
+        "ready. See the **jobs** skill (available",
         "to you under your workspace's skills directory) for the form fields, the",
         "two policy flags (`review_required`, `persistent`), and how to self-block",
         "when founder review is required.\n",
@@ -1573,11 +1571,10 @@ def _task_completion_format_section() -> list[str]:
     """System-injected reminder of the completion contract.
 
     Replaces the per-agent ``## Task Completion Format`` stubs that lived in
-    agent ``.md`` files. The canonical JSON payload shape — including the
-    manager-only ``decision`` block — lives in the ``start-task`` skill's
-    *Report completion* step (``skills/start-task/SKILL.md``) and the
-    universal spec (``protocol/00-completion-contract.md``). This section
-    keeps every agent pointed at them and lists the prose-``summary`` items
+    agent ``.md`` files. Request models and transition handlers own the
+    completion contract. The ``start-task`` skill's *Report completion* step
+    explains the payload, including the owner-only ``decision`` block.
+    This section points at that skill and lists the prose-``summary`` items
     that apply regardless of role, so individual agent files don't have to
     restate (and slowly drift from) the contract.
     """
@@ -1878,8 +1875,6 @@ class ClaudeWorkspaceAdapter:
             "## Knowledge Base (shared across agents)\n",
             "Path: `<runtime>/kb/`. Read: everyone. Write: any agent (via `--from-file`).",
             "Delete: any team manager (audited); founder via `--as-founder`.",
-            "Protocol docs are available in your session prompt `Protocol Docs`",
-            "block — use `Read` to load any doc from its absolute bundled path.",
         ]
         if include_start_task:
             sections.extend([
@@ -1970,11 +1965,11 @@ class CodexWorkspaceAdapter:
         """Write AGENTS.md to workspace with system prompt and context pointers.
 
         Codex CLI ≥0.125 discovers skills by walking ``.agents/skills/`` from
-        the working directory up to the repo root, so the same
-        ``protocol/skills/`` tree that Claude consumes is copied into
-        ``<ws>/.agents/skills/`` by ``_copy_skills``. AGENTS.md therefore
-        only points at the **start-task** skill — it does not re-inline the
-        completion contract. The skill itself is the source of truth.
+        the working directory up to the repo root. Canonical materialization
+        publishes relative skill links under BOTH ``.claude/skills`` and
+        ``.agents/skills``. AGENTS.md points at the **start-task** skill for
+        usage instructions; request models and transition handlers enforce
+        the completion contract.
         """
         _assert_no_reserved_headers_in_body(agent_name, system_prompt)
         workspace.mkdir(parents=True, exist_ok=True)

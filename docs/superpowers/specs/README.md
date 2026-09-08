@@ -8,7 +8,9 @@ For current behavior, use these sources before old specs:
 
 - `README.md` for end-user setup and product surface.
 - `CLAUDE.md` and `docs/agent-guides/` for current agent/developer guidance.
-- `protocol/` and `protocol/skills/` for current runtime and agent contracts.
+- `runtime/skills/bundled/` for agent instructions explaining implemented workflows.
+- Historical `protocol/` references identify documents retired after `01d5ede5`;
+  use Git history for their original contents.
 - `tests/contract/openapi.json`, route tests, and implementation for executable truth.
 
 When a spec conflicts with those sources, treat the spec as historical unless this index marks it `current`.
@@ -16,7 +18,7 @@ When a spec conflicts with those sources, treat the spec as historical unless th
 ## Status Labels
 
 - `current`: Current design reference for behavior not fully captured elsewhere.
-- `implemented`: Implemented, but current behavior should be checked in agent guides, protocol docs, tests, and code.
+- `implemented`: Implemented, but current behavior should be checked in agent guides, tests, and code.
 - `superseded`: Replaced by a later design or implementation shape.
 - `historical`: Useful background, but not a current contract.
 - `abandoned`: Not implemented or intentionally dropped.
@@ -37,14 +39,14 @@ New specs should include a short status block near the top:
 | `2026-09-01-thread-reply-breaker-persistence.md` | current | THR-200 PR A additive SQLite contract plus PR B runtime lifecycle and cooldown/restart invariants. |
 | `2026-04-12-product-engineering-crew-design.md` | historical | Sample-org background; org content now lives under `examples/orgs/` and runtime org trees. |
 | `2026-04-14-orchestrator-daemon-design.md` | implemented | Current contracts: `docs/agent-guides/orchestrator-contracts.md`, `runtime/daemon/`, `runtime/orchestrator/`. |
-| `2026-04-17-manage-agent-design.md` | implemented | Current contracts: `protocol/skills/manage-agent/SKILL.md`, agent guide, routes in `runtime/daemon/routes/agents.py`. |
+| `2026-04-17-manage-agent-design.md` | implemented | Current contracts: `runtime/skills/bundled/manage-agent/SKILL.md`, agent guide, routes in `runtime/daemon/routes/agents.py`. |
 | `2026-04-17-manage-repo-design.md` | implemented | Uses old `opc` wording; current CLI is `happyranch manage-repo`. |
 | `2026-04-18-agent-memory-design.md` | superseded | Per-agent learnings and task recall have evolved; see `docs/agent-guides/features-and-invariants.md`. |
-| `2026-04-19-shared-kb-design.md` | superseded | Pre-multi-org path/CLI history; current KB contract is `protocol/06-knowledge-base.md`. |
+| `2026-04-19-shared-kb-design.md` | superseded | Pre-multi-org path/CLI history; current KB contract is `docs/agent-guides/features-and-invariants.md`. |
 | `2026-04-19-task-status-redesign.md` | implemented | Current status vocabulary: `docs/agent-guides/orchestrator-contracts.md`. |
 | `2026-04-20-multi-executor-design.md` | implemented | Current executor guide: `docs/agent-guides/agent-executors-and-permissions.md`. |
 | `2026-04-21-opc-revisit-design.md` | implemented | Old name; current command is `happyranch revisit`. |
-| `2026-04-21-talk-flow-design.md` | removed | Talk surface removed per THR-023 (2026-06-15); replaced by `protocol/skills/reflection/SKILL.md` (named `review` until the THR-106 rename). |
+| `2026-04-21-talk-flow-design.md` | removed | Talk surface removed per THR-023 (2026-06-15); replaced by `runtime/skills/bundled/reflection/SKILL.md` (named `review` until the THR-106 rename). |
 | `2026-04-23-revisit-root-link-design.md` | implemented | Current revisit notes: `docs/agent-guides/features-and-invariants.md`. |
 | `2026-04-24-content-team-design.md` | historical | Org-specific planning background. |
 | `2026-04-26-multi-org-runtime-design.md` | superseded | Replaced by parallel multi-org runtime and HappyRanch rename work. |
@@ -69,9 +71,9 @@ New specs should include a short status block near the top:
 | `2026-05-25-feishu-script-request-notifications-design.md` | removed | REMOVED in TASK-302 (THR-022). DB tables dormant; web UI + threads are sole control surface. |
 | `2026-05-25-session-timeout-auto-route-design.md` | retired | TASK-3604 removed automatic daemon successor creation. See `docs/agent-guides/features-and-invariants.md` §Session-Timeout Auto-Route. Legacy `auto_revisit_of` audit rows remain readable. |
 | `2026-05-26-cancel-race-design.md` | implemented | Current cancel behavior in task routes and run-step helpers. |
-| `2026-05-26-jobs-design.md` | current | Current jobs design companion; executable truth in `protocol/skills/jobs/SKILL.md` and `runtime/daemon/routes/jobs.py`. |
+| `2026-05-26-jobs-design.md` | current | Current jobs design companion; executable truth in `runtime/skills/bundled/jobs/SKILL.md` and `runtime/daemon/routes/jobs.py`. |
 | `2026-05-28-task-blocked-by-job-design.md` | implemented | Current behavior: feature guide and jobs skill. |
-| `2026-05-28-thread-talk-self-dispatch-only-design.md` | current | Current thread self-dispatch rule; talk dispatch removed. See protocol skills and routes. |
+| `2026-05-28-thread-talk-self-dispatch-only-design.md` | current | Current thread self-dispatch rule; talk dispatch removed. See bundled skills and routes. |
 | `2026-05-28-thread-task-followup-design.md` | implemented | Current follow-up behavior: feature guide and `runtime/orchestrator/run_step.py`. |
 | `2026-05-30-add-org-and-agent-from-web-ui-design.md` | implemented | Current web agents/orgs UI and routes. |
 | `2026-05-30-dashboard-overhaul-design.md` | implemented | Current dashboard UI/API. |
@@ -89,8 +91,8 @@ New specs should include a short status block near the top:
 | `2026-06-10-assistant-self-registration-design.md` | implemented | Replaces system-assistant executor probing with CLI self-registration (`assistant register`); implemented in `runtime/daemon/routes/assistant.py` (`/assistant/init`, `/assistant/register`), `runtime/system_assistant.py`, `cli/commands/assistant.py`. |
 | `2026-06-10-kb-view-tracking-design.md` | implemented | Agent-CLI KB view tracking; implemented in `runtime/daemon/routes/kb.py`, `runtime/infrastructure/database.py`, `cli/commands/kb.py`. Caller-signal mechanism in KB `kb-view-tracking-caller-signal`. |
 | `2026-06-10-working-hours-design.md` | implemented | Per-agent working-hours wake mechanism; implemented in `runtime/daemon/wake_runner.py`, `work_hours_scheduler.py`, `wake_queue.py`, `runtime/infrastructure/work_hours_store.py`, and `runtime/daemon/routes/work_hours.py`. |
-| `2026-06-30-pr-ci-waiter-guarded-merge-design.md` | implemented | PR CI waiter and guarded merge engine design; contract in `protocol/00-completion-contract.md` and `docs/agent-guides/`. Implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`, `tests/daemon/test_pr_ci_waiter_gh.py`, `tests/daemon/test_pr_ci_merge_gh.py`. |
-| `2026-08-22-linux-canonical-store-design.md` | current | Linux same-owner canonical skill-store and launch support; current contracts in `protocol/05b-agent-runtime.md` and the executor guide. |
+| `2026-06-30-pr-ci-waiter-guarded-merge-design.md` | implemented | PR CI waiter and guarded merge engine design; contract in `docs/agent-guides/orchestrator-contracts.md` and `docs/agent-guides/`. Implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`, `tests/daemon/test_pr_ci_waiter_gh.py`, `tests/daemon/test_pr_ci_merge_gh.py`. |
+| `2026-08-22-linux-canonical-store-design.md` | current | Linux same-owner canonical skill-store and launch support; current contracts in `docs/agent-guides/agent-executors-and-permissions.md` and the executor guide. |
 | `2026-08-24-host-resource-concurrency.md` | current | Capability-based host-session supervisor (admission + lifecycle core, Slice A); governing spec for THR-207 / TASK-5584. Current contracts: `runtime/orchestrator/host_supervisor.py`, `runtime/platform/session_backend.py`. |
 | `2026-08-25-thread-rename-and-pinning-design.md` | implemented (rev 2 — msg-9 correction) | Founder-only thread rename + pin (THR-209 Phase 1). Current contracts: `docs/agent-guides/features-and-invariants.md` (Threads), routes in `runtime/daemon/routes/threads.py`, pin storage `threads.pinned_at`, open-list pinned ordering by numeric thread ID desc (archived/status-less views have no pin presentation), web UI in `web/src/features/threads/ThreadsPage.tsx`. |
 | `2026-08-26-managed-remote-access-contract.md` | current | Normative managed remote-access contract (THR-097 merge unit A, TASK-5771): one Headscale cell per customer, ciphertext-only DERP, supervised portable Python connector, loopback daemon + final-hop bearer injection, explicit allow-list, credential/failure taxonomy, hostile threat fixtures. Machine-readable contract: `tests/contract/managed_remote_access/`; connector core (unit C) + Linux supervised packaging (unit 3) implemented; control-plane units B–D outside this PR. |

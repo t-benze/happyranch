@@ -77,11 +77,11 @@ class TestUnifiedMaterializationPreservesSystemContracts:
 
     @pytest.fixture(autouse=True)
     def _set_skills_src(self, monkeypatch):
-        """Point _SKILLS_SRC at the real protocol/skills for system contract resolution."""
+        """Point _SKILLS_SRC at the real runtime/skills/bundled for system contract resolution."""
         import runtime.orchestrator.workspace_adapters as wa
         from pathlib import Path
         repo_root = Path(__file__).resolve().parent.parent
-        monkeypatch.setattr(wa, "_SKILLS_SRC", repo_root / "protocol" / "skills")
+        monkeypatch.setattr(wa, "_SKILLS_SRC", repo_root / "runtime" / "skills" / "bundled")
 
     def test_system_contracts_survive_after_managed_reconciliation(
         self, tmp_path: Path, test_settings: Settings,
@@ -146,11 +146,11 @@ class TestUnifiedMaterializationPreservesSystemContracts:
         claude_start_task = workspace / ".claude" / "skills" / "start-task"
         # start-task does NOT require repos, so it should always be materialized
         # for task context. However, if the source tree at _SKILLS_SRC doesn't
-        # have the skill directory, it won't appear. The real protocol/skills
+        # have the skill directory, it won't appear. The real runtime/skills/bundled
         # must be available.
         if not claude_start_task.exists():
             # The skill source wasn't found — this is expected in isolated
-            # test environments where protocol/skills is not under tmp_path.
+            # test environments where runtime/skills/bundled is not under tmp_path.
             # This test documents the expected behavior: when the source
             # IS available, the symlink MUST exist.
             claude_root = workspace / ".claude" / "skills"
@@ -221,7 +221,7 @@ class TestCutoverCompleteness:
 
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
-        proto_skills = tmp_path / "protocol" / "skills"
+        proto_skills = tmp_path / "runtime" / "skills" / "bundled"
         for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {{ORG_SLUG}}.\n")
@@ -239,7 +239,7 @@ class TestCutoverCompleteness:
         if claude.is_dir():
             # Skills were materialized — verify canonical delivery.
             # Each skill should be a symlink (or directory), not a
-            # wholesale copy of the entire protocol/skills/ tree.
+            # wholesale copy of the entire runtime/skills/bundled/ tree.
             children = list(claude.iterdir())
             # The start-task skill should be present.
             start_task = claude / "start-task" / "SKILL.md"
@@ -341,7 +341,7 @@ class TestOrgSlugRemediation:
 
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
-        proto_skills = tmp_path / "protocol" / "skills"
+        proto_skills = tmp_path / "runtime" / "skills" / "bundled"
         for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {{ORG_SLUG}}.\n")

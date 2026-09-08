@@ -1,32 +1,30 @@
 # Agent Executors And Permissions
 
-> **SUPERSESSION NOTICE (TASK-4009/TASK-4012/TASK-4346):** Skill materialization
-> now uses the **canonical skill store + workspace symlink architecture**
-> (macOS and Linux). The legacy per-session copy model is REMOVED. The executor
-> and daemon share the same OS identity — linked, validated relative skill
-> links live under BOTH ``.claude/skills`` and ``.agents/skills``. Every
-> user-facing and executor-facing guidance surface names both roots.
-> Integrity verification is DETECTION-ONLY with FAIL-CLOSED refusal — NO
-> OS-level security boundary, no automatic repair from same-UID local source.
-> See ``protocol/05b-agent-runtime.md`` § "Canonical skill store + workspace
-> symlinks" for ownership, provenance, link validation, refusal/withdrawal/
-> retention semantics, integrity verification, and the compatibility-fallback
-> boundary. Windows and unknown platforms are NOT supported — explicitly fail
-> closed.
->
-> **INTEGRITY HONESTY NOTICE:** Do NOT call canonical targets immutable,
-> protected, or claim write/chmod/ACL denial. The prompt guard is operational
-> guidance, not enforcement. Integrity verification is DETECTION-ONLY with
-> FAIL-CLOSED refusal — NO automatic repair from same-UID local source. A
-> same-UID process may mutate, race validation, and affect active/overlapping
-> sessions. Manual recovery only: (a) ``set-executor`` for broken links,
-> (b) ``happyranch skills recover <slug> <version> <content_hash>`` for
-> corrupted canonical bytes of the eligible current B2 version. No automatic
-> repair from same-UID local source.
-> Recovery requires that an authoritative re-sync/redeploy of release or
-> custom artifacts has occurred outside the compromised same-owner local
-> source before recovery can safely materialize again. Policy withdrawal
-> and atomic link repair remain safe.
+## Bundled skill sources and canonical delivery
+
+Release-owned instructions and supporting assets live in
+`runtime/skills/bundled/`. `runtime/skills/system_contracts.py` owns the context
+predicates; the managed catalog and eligibility resolver retain their independent
+policy checks. Ordinary prompts advertise eligible skills, not developer docs.
+Skills teach the existing workflows; required runtime checks belong at the
+implemented admission, callback, or transition boundary.
+
+`workspace_adapters.py` resolves sources and constructs the full system-contract
+union before canonical publication. `canonical_store.py` hashes relative member
+paths and bytes, so a source-directory relocation alone does not change package
+identity. The pre-launch/retry validators check the declared member bytes and
+relative links in both `.claude/skills` and `.agents/skills`. Context union never
+withdraws another context's system-contract link; managed/custom policies remain
+withdrawable. A tombstone committed during selection excludes the skill at the
+publication barrier; it does not recall already-running work. Canonical-store,
+production-boundary, and materialization tests own these guarantees.
+
+The daemon and executor share one OS identity. Integrity checks detect mismatches
+and refuse launches; they do not provide OS isolation or close same-UID TOCTOU
+windows. Existing corrupt packages are never rebuilt automatically. Manual
+recovery requires authoritative artifact re-sync first; valid byte integrity is
+required before repairing links. macOS/Linux are supported; other platforms fail
+closed. Relocation preserves historical packages, ledgers, and links.
 
 **Supported host contract:** macOS (darwin) and native Linux use the same
 same-owner POSIX adapter: relative symlinks, same-directory ``os.replace``,
@@ -36,8 +34,6 @@ through the existing named refusal paths. Containers and network filesystems
 are supported only when they preserve those semantics. Windows and unknown
 platforms have no fallback. See the current Linux design in
 ``docs/superpowers/specs/2026-08-22-linux-canonical-store-design.md``.
-
-# Agent Executors And Permissions
 
 **THR-095 (founder ruling option B):** The executor is declared in the
 **org/agents/<name>.md frontmatter** (``AgentDef.executor``) — the single
@@ -74,10 +70,10 @@ When `model` is **unset** (the default for all existing agents), the executor la
 
 Custom/self-registered profiles do not currently support `model_arg` (separate founder-gated track).
 
-Missing values default to `claude`. All executors share `protocol/skills/`.
+Missing values default to `claude`. All executors share `runtime/skills/bundled/`.
 
 **Worktree-root guard.** The ``make-worktree`` skill (injected as a system
-contract per §4.7 of the orchestrator protocol) delivers a stdlib-only guard
+contract by `runtime/skills/system_contracts.py`) delivers a stdlib-only guard
 script (``worktree_guard.py``) alongside its ``SKILL.md``. The guard runs at
 worktree setup and verify points, validates repository/worktree identity
 (same git common directory + registered worktree), records canonical absolute
@@ -189,9 +185,8 @@ and creates the receipt-only connection record (it starts zero subprocesses)
 Connected, no PENDING wait, no founder click. Founders can check the same
 terminal outcome from the CLI with
 ``happyranch custom-cli status <profile-name> [--wait]``.
-See ``protocol/05b-agent-runtime.md`` § "Slices 1–3: projection, launch fence,
-UI cutover" (and its `workspace_adapter_id` correction note) for the full
-contract. The PENDING/approve/reject/bind-profile routes below remain as
+The custom CLI routes and conformance tests define the projection and launch
+fences, including the wrapper-declared `workspace_adapter_id`. The PENDING/approve/reject/bind-profile routes below remain as
 operator-only one-time disposition tooling for legacy records — a new
 custom CLI should always use the ordinary Connect
 flow instead.
@@ -477,7 +472,7 @@ registered profiles are **not** agent enrollments. Assigning an agent
 to a registered executor
 is a separate founder gate — see [Switching an Existing Agent's
 Executor](#switching-an-existing-agents-executor) and
-`protocol/skills/manage-agent/SKILL.md`. Registration only adds the profile
+`runtime/skills/bundled/manage-agent/SKILL.md`. Registration only adds the profile
 to the executor registry; the founder must still explicitly assign it to
 individual agents.
 
@@ -498,7 +493,7 @@ opencode: `OpencodeWorkspaceAdapter.write_opencode_json` writes a strict default
 
 Pi: `PiExecutor.run` invokes `pi -p ... --mode json` from the agent workspace. Use external containment when command/tool restriction matters.
 
-Enrolling a worker with a non-default executor: set `"executor": "<profile-name>"` in the `happyranch manage-agent --from-file` payload where the profile name is a registered executor profile (built-in: `codex`, `opencode`, `pi`, or a custom profile registered in the machine-global runtime store). Founder approval bootstraps the right workspace surface. See `protocol/skills/manage-agent/SKILL.md`.
+Enrolling a worker with a non-default executor: set `"executor": "<profile-name>"` in the `happyranch manage-agent --from-file` payload where the profile name is a registered executor profile (built-in: `codex`, `opencode`, `pi`, or a custom profile registered in the machine-global runtime store). Founder approval bootstraps the right workspace surface. See `runtime/skills/bundled/manage-agent/SKILL.md`.
 
 **THR-095:** Repos are configured in the **org/agents/<name>.md frontmatter**
 (``AgentDef.repos``) — the single authoritative store. The workspace

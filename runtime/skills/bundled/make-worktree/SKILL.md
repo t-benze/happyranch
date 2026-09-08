@@ -33,8 +33,8 @@ echo "WORKTREE_ROOT=$WORKTREE_ROOT"
 echo "PRIMARY_ROOT=$PRIMARY_ROOT"
 
 # 3. Locate the guard script — delivered alongside this skill file.
-#    The skill is injected into .claude/skills/make-worktree/ (Claude)
-#    or .agents/skills/make-worktree/ (AGENTS.md-based executors).
+#    The skill is linked under BOTH .claude/skills/make-worktree/
+#    and .agents/skills/make-worktree/ for every executor.
 #    The workspace root is 5 parents above the task worktree
 #    (<workspace>/repos/<repo>/.claude/worktrees/<task_id>):
 WORKSPACE_ROOT=$(cd "$WORKTREE_ROOT/../../../../.." && pwd -P)

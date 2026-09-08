@@ -9,7 +9,7 @@
 - Agent names are plain strings; agents are discovered dynamically from `<runtime>/orgs/<slug>/org/agents/*.md`.
 - Tests should cover business logic such as escalation rules and audit-log shape.
 
-`README.md` is for end users. `CLAUDE.md` is for repo-wide agent instructions. Design docs in `protocol/` and specs in `docs/superpowers/specs/` are the source of truth for behavior.
+`README.md` is for end users. `CLAUDE.md` is for repo-wide agent instructions. Implementation and behavior tests own runtime rules. These guides explain them; `docs/superpowers/specs/` retains design history.
 
 When starting a feature, read the relevant design doc first and follow existing patterns in `runtime/orchestrator/`.
 
@@ -81,7 +81,7 @@ session's `progress` receipts must never satisfy the new session. Labels say
 what is observed — a fresh heartbeat is never presented as substantive
 progress, and absent/malformed data is surfaced as unavailable, never
 fabricated. Both `happyranch details` and the Tasks UI render this summary;
-`protocol/skills/start-task/SKILL.md` §5 makes the corresponding worker
+`runtime/skills/bundled/start-task/SKILL.md` §5 makes the corresponding worker
 checkpoint policy concrete.
 
 ### Post-deploy operational measurement (not a shipping gate)
@@ -187,6 +187,16 @@ measure.
 
 ## Manager Decision Contract
 
+The completion route authenticates the active task/session binding and validates
+submitted job waits and structured evidence before persisting a report.
+`run_step.py` consumes it into a daemon-owned transition; an agent's `blocked`
+report is distinct from the task's stored state. `pr_ci_merge.py` owns guarded
+merge verdict extraction: a non-null canonical structured verdict is primary;
+unusable structured values cannot fall back to prose. Its tests cover null legacy
+fallback and contradictory evidence. A submitted `local_ci` object is strictly
+validated by `LocalCiEvidence`, but is not an independently verified CI receipt,
+and the daemon does not infer that a task pushed a PR from its prose.
+
 Team-manager completion payloads carry two fields:
 
 - `summary`: human-readable prose stored on `task_results.output_summary` and rendered in details, audit logs, and `task_history.md`.
@@ -194,11 +204,29 @@ Team-manager completion payloads carry two fields:
 
 The child-task brief field in a `delegate` decision is `prompt`, not `brief`. Pydantic v2 silently ignores extras, so `"brief"` creates an empty-brief child task.
 
-Full schema and examples: `protocol/00-completion-contract.md`.
+Wire fields are defined by `CompletionBody` in `runtime/daemon/routes/tasks.py`;
+internal decisions by `NextStep` in `runtime/models.py`. The bundled `start-task`
+skill explains usage. The two models serve different boundaries; do not copy one
+as a second HTTP schema.
+
+### Active team authority policy
+
+`authority_policy_store.py` owns immutable releases, activation history, candidate
+pins, and their transactional linkage. Eligible manager launches bind the exact
+rendered policy to the session; the hook consumes that binding, never a newly
+selected current activation. `authority.py` validates authenticated manager
+self-evaluation for active-policy sessions and applies daemon-owned cancellation,
+budget, lineage, protected-boundary, replay, and CAS checks. Semantic evidence is
+advisory to those checks. The single-use continuation envelope grants only the
+same-root lifecycle. Static-policy compatibility remains separate. Policy routes
+provide the founder-authorized release/activation UI; code landing does not
+activate a production policy. Authority hook/store/route/envelope tests cover the
+negative cases. There is no universal post-session detector for arbitrary
+external side effects or role-based pathname enforcement.
 
 ## Inline Delegation Chains
 
-A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg when a child terminates completed with a matching verdict. Since THR-211, auto-advance may also fire from a child whose completion report has durably landed while its task row still reads `in_progress` (the completion-status-lag window) — the recognition is session-safe and at-most-once, and the chain gate consumes the exact authenticated `(task_id, assigned_agent, current_session_id)` report so a newer unrelated row can never advance or clear the chain; see `protocol/00-completion-contract.md` and `protocol/05c-orchestrator.md` (Completion-status lag).
+A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg when a child terminates completed with a matching verdict. Since THR-211, auto-advance may also fire from a child whose completion report has durably landed while its task row still reads `in_progress` (the completion-status-lag window) — the recognition is session-safe and at-most-once, and the chain gate consumes the exact authenticated `(task_id, assigned_agent, current_session_id)` report so a newer unrelated row can never advance or clear the chain; see `tests/test_thr211_completion_status_lag.py` for the session-bound regression cases.
 
 A configured reviewer leg (org setting `reviewer_agents`, default `code_reviewer`) MUST declare `expect_verdict: "APPROVE"`; omission is a HARD REJECT — the whole delegation is denied before any child spawns, the owner receives a feedback task result and feedback orchestration step naming the required `expect_verdict: "APPROVE"`, and the root stays PENDING and is re-enqueued for a corrected decision (never a root failure). Missing agent / missing workspace delegates keep hard terminal failure. Same semantics apply to pipeline-carrier legs in fan-out decisions.
 

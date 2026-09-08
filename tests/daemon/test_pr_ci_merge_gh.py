@@ -631,7 +631,7 @@ def test_recall_fetch_verdict_correct_command() -> None:
 
 
 # ── canonical-vocabulary / annotated-prose extraction contract (THR-204) ────
-# The contract is canonical in protocol/00-completion-contract.md
+# The contract is canonical in docs/agent-guides/orchestrator-contracts.md
 # ("Merge-evidence contract"): a NON-NULL structured `verdict` must be a
 # canonical non-empty token; prose `Verdict:` lines may carry the canonical
 # token followed by a human annotation (e.g. `Verdict: PASS — rationale`);

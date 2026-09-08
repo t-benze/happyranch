@@ -272,8 +272,8 @@ def test_manager_prompt_documents_fanout_child_retry_link():
     assert "before any child" in p
 
 
-def test_canonical_contract_documents_fanout_child_retry_link():
-    """The canonical completion contract must document the nested fanout
+def test_bundled_task_skill_documents_fanout_child_retry_link():
+    """The delivered task skill must explain the nested fanout
     retry link with the same three semantics as the emitted prompt:
     (1) a supplied link must identify a FAILED child of the same parent
     assigned to the same target agent; (2) the field is mandatory when a
@@ -282,7 +282,7 @@ def test_canonical_contract_documents_fanout_child_retry_link():
     child is spawned. Regression for the TASK-4987 HIGH finding."""
     contract = (
         Path(__file__).resolve().parent.parent
-        / "protocol" / "00-completion-contract.md"
+        / "runtime" / "skills" / "bundled" / "start-task" / "SKILL.md"
     ).read_text(encoding="utf-8")
     # The nested field is documented on fanout children.
     assert "children[].revisit_of_task_id" in contract or "revisit_of_task_id" in contract

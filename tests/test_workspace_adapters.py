@@ -19,7 +19,7 @@ def runtime(tmp_path: Path) -> OrgPaths:
 
 
 def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings, tmp_dir, runtime):
-    skills_root = test_settings.get_protocol_dir() / "skills"
+    skills_root = test_settings.get_bundled_skills_dir()
     (skills_root / "start-task").mkdir(parents=True)
     (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
 
@@ -49,11 +49,11 @@ def test_claude_adapter_bootstrap_creates_claude_files_and_skills(test_settings,
 
 def test_codex_adapter_bootstrap_creates_agents_md_and_skills_tree(test_settings, tmp_dir, runtime):
     """Codex CLI ≥0.125 discovers skills under ``.agents/skills/`` (walking from
-    cwd up to repo root). The adapter must copy ``protocol/skills/`` into the
+    cwd up to repo root). The adapter must copy ``runtime/skills/bundled/`` into the
     workspace and AGENTS.md must point at the start-task skill — not inline
     the full completion contract (the skill is the source of truth).
     """
-    skills_root = test_settings.get_protocol_dir() / "skills"
+    skills_root = test_settings.get_bundled_skills_dir()
     (skills_root / "start-task").mkdir(parents=True)
     (skills_root / "start-task" / "SKILL.md").write_text(
         "---\nname: start-task\ndescription: Use this skill at the start of every task.\n---\n"
@@ -105,14 +105,14 @@ def test_copy_skills_substitutes_org_slug(tmp_path: Path, monkeypatch) -> None:
     """
     from runtime.config import Settings
 
-    proto = tmp_path / "protocol" / "skills" / "start-task"
+    proto = tmp_path / "runtime" / "skills" / "bundled" / "start-task"
     proto.mkdir(parents=True)
     (proto / "SKILL.md").write_text(
         "Run: happyranch report-completion --org {ORG_SLUG} --task-id ...\n"
     )
     monkeypatch.setattr(
         "runtime.orchestrator.workspace_adapters._SKILLS_SRC",
-        tmp_path / "protocol" / "skills",
+        tmp_path / "runtime" / "skills" / "bundled",
     )
 
     rt = RuntimeDir.init(tmp_path / "rt")
@@ -156,7 +156,7 @@ def test_opencode_adapter_bootstrap_creates_agents_md_skills_and_opencode_json(
     file that gates bash by command-prefix glob. The adapter must write all
     three.
     """
-    skills_root = test_settings.get_protocol_dir() / "skills"
+    skills_root = test_settings.get_bundled_skills_dir()
     (skills_root / "start-task").mkdir(parents=True)
     (skills_root / "start-task" / "SKILL.md").write_text(
         "---\nname: start-task\ndescription: Use this skill at the start of every task.\n---\n"
@@ -193,7 +193,7 @@ def test_opencode_json_strict_deny_default_with_opc_baseline(
     """opencode.json must default to ``bash.*: deny`` and explicitly allow
     only sanctioned prefixes. The baseline ``happyranch *`` is always allowed; an
     agent without per-agent extras gets exactly the baseline."""
-    skills_root = test_settings.get_protocol_dir() / "skills"
+    skills_root = test_settings.get_bundled_skills_dir()
     (skills_root / "start-task").mkdir(parents=True)
     (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
 
@@ -238,7 +238,7 @@ def test_opencode_json_includes_agent_specific_allow_rules(
     runtime.agents_dir.mkdir(parents=True, exist_ok=True)
     (runtime.agents_dir / "engineering_head.md").write_text(render_agent_text(eh))
 
-    skills_root = test_settings.get_protocol_dir() / "skills"
+    skills_root = test_settings.get_bundled_skills_dir()
     (skills_root / "start-task").mkdir(parents=True)
     (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
 
@@ -274,7 +274,7 @@ def test_codex_agents_md_does_not_inline_completion_contract(test_settings, tmp_
     This test is the inverse of the (now-removed) "inlines_completion_contract"
     test that locked in the pre-0.125 behavior.
     """
-    skills_root = test_settings.get_protocol_dir() / "skills"
+    skills_root = test_settings.get_bundled_skills_dir()
     (skills_root / "start-task").mkdir(parents=True)
     (skills_root / "start-task" / "SKILL.md").write_text(
         "---\nname: start-task\ndescription: Use this skill at the start of every task.\n---\n"
@@ -371,7 +371,7 @@ def test_claude_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
     assert "npm run dev" in content
     assert "tail -f" in content
     # Points at the jobs skill (the actual remediation path)
-    assert "protocol/skills/jobs/SKILL.md" in content
+    assert "runtime/skills/bundled/jobs/SKILL.md" in content
     # Mentions the flags so the agent knows what to fill on the submit form
     assert "persistent" in content
     assert "review_required" in content
@@ -395,7 +395,7 @@ def test_codex_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> None:
     adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "AGENTS.md").read_text()
     assert "## Long-running and non-stop commands" in content
-    assert "protocol/skills/jobs/SKILL.md" in content
+    assert "runtime/skills/bundled/jobs/SKILL.md" in content
     # TASK-3604: no auto-revisit in generated instruction
     assert "auto-revisit" not in content.lower()
     assert "FAILED" in content
@@ -412,7 +412,7 @@ def test_opencode_agents_md_warns_about_non_stop_commands(tmp_path: Path) -> Non
     adapter.write_agents_md(workspace, "dev_agent", "You are dev_agent.")
     content = (workspace / "AGENTS.md").read_text()
     assert "## Long-running and non-stop commands" in content
-    assert "protocol/skills/jobs/SKILL.md" in content
+    assert "runtime/skills/bundled/jobs/SKILL.md" in content
     # TASK-3604: no auto-revisit in generated instruction
     assert "auto-revisit" not in content.lower()
     assert "FAILED" in content
@@ -445,7 +445,7 @@ def test_non_stop_command_warning_section_contract(tmp_path: Path) -> None:
         "non-stop command warning must not reference auto-revisit mechanism"
     )
     # Still recommends jobs as the remedy
-    assert "protocol/skills/jobs/SKILL.md" in text
+    assert "runtime/skills/bundled/jobs/SKILL.md" in text
     # Mentions explicit recovery paths
     assert ("happyranch revisit" in text or "FAILED" in text), (
         "non-stop command warning must reference terminal failure or explicit recovery"
