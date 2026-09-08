@@ -1008,6 +1008,7 @@ def test_run_step_all_benign_full_stderr_uses_terminal_reason_not_tail(
     assert "stderr:" not in note
     assert "terminal_error: session_limit" in note
     assert "resets 12:20am" in note
+    assert note.index("terminal_error: session_limit") < note.index("stdout:")
 
 
 def test_run_step_opaque_failure_no_auto_revisit(

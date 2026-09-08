@@ -3280,10 +3280,9 @@ def _session_failed_note(result, report) -> str:
         )
     )
     out = (getattr(result, "stdout_tail", "") or "").strip()
-    preview_src, label = (err, "stderr") if err else (out, "stdout") if out else ("", "")
-    if label:
-        preview = preview_src.replace("\n", " ")[:300]
-        bits.append(f"{label}: {preview}")
+    if err:
+        preview = err.replace("\n", " ")[:300]
+        bits.append(f"stderr: {preview}")
     terminal_error = str(getattr(result, "terminal_error", "") or "").strip()
     # Raw stderr remains the human cause.  A structured classification is
     # supplementary evidence, never a reason to conceal that cause.
@@ -3292,9 +3291,14 @@ def _session_failed_note(result, report) -> str:
     notice = str(getattr(result, "terminal_error_notice", "") or "").strip()
     if notice:
         bits.append(f"notice: {notice[:300]}")
+    # A selected human cause or recognized terminal notice must lead any raw
+    # stdout diagnostic fragment.  Complete stderr inspection can validly
+    # select no cause, while stdout still contains the JSON envelope.
+    if not err and out:
+        bits.append(f"stdout: {out.replace(chr(10), ' ')[:300]}")
     # ``error`` is built from full provider output, so it must never be copied
     # wholesale into durable task state.  Tails above already preserve it.
-    if not label:
+    if not err and not out:
         error_str = str(getattr(result, "error", "") or "").replace("\n", " ").strip()
         if error_str:
             bits.append(error_str[:300])
