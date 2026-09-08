@@ -760,9 +760,11 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             )
             if not inserted:
                 # A second writer won between the route's tracker read and
-                # the database writer lock.  Preserve the ordinary immutable
-                # duplicate acknowledgement; do not graft a new receipt.
-                return {"ok": True}
+                # the database writer lock, or a prior request committed just
+                # before its volatile completion steps were interrupted.
+                # Preserve the immutable pair and finish the idempotent
+                # tracker/event completion below; never graft a receipt.
+                pass
     # Clear the tracker so a duplicate POST for the same session is rejected as
     # unknown_session rather than silently persisting a second row.
     org.sessions.clear(task_id, body.agent)
