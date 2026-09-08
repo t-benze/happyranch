@@ -50,6 +50,9 @@ def _pid_start(entry: Path) -> str:
 
 
 def _population(proc: Path, deadline: int) -> list[Path] | None:
+    # Admission is checked before opening an enumerable source: an already
+    # observed deadline never starts another bounded observation.
+    if _expired(deadline): return None
     try:
         rows: list[Path] = []
         with os.scandir(proc) as entries:
@@ -134,6 +137,7 @@ def _snapshot(db: Database, task_id: str, reasons: set[str], deadline: int) -> t
     members = _component(tasks, task_id, reasons, deadline)
     if not members: reasons.add("task_missing"); return None
     out: list[tuple[object, ...]] = []
+    job_observations = 0
     for listed in tasks:
         if listed.id not in members: continue
         if _expired(deadline): reasons.add("observation_timeout"); return None
@@ -149,6 +153,7 @@ def _snapshot(db: Database, task_id: str, reasons: set[str], deadline: int) -> t
         if task.status not in TERMINAL or task.zombie_flagged_at or task.active_chain or task.active_fanout: reasons.add("nonterminal_or_unresolved_lineage")
         if not task.assigned_agent or not task.current_session_id: reasons.add("recovery_authority_unavailable")
         else:
+            if _expired(deadline): reasons.add("observation_timeout"); return None
             try:
                 result = db.get_latest_task_result(task.id, task.assigned_agent, task.current_session_id)
                 out.append(("result", task.id, repr(result)))
@@ -158,13 +163,15 @@ def _snapshot(db: Database, task_id: str, reasons: set[str], deadline: int) -> t
                 if result is not None and result.get("status") in {"in_progress", "working"}:
                     reasons.add("recovery_fingerprint_unresolved")
             except Exception: reasons.add("recovery_fingerprint_unavailable")
+        if _expired(deadline): reasons.add("observation_timeout"); return None
         try: jobs = db.list_jobs_db(task_id=task.id, limit=MAX_JOBS + 1)
         except Exception: reasons.add("job_scan_unavailable"); continue
         if len(jobs) > MAX_JOBS: reasons.add("job_scan_capped"); continue
-        if sum(1 for item in out if item[0] == "job") + len(jobs) > MAX_JOBS:
+        if job_observations + len(jobs) > MAX_JOBS:
             reasons.add("job_scan_capped"); return None
         for job in jobs:
             if _expired(deadline): reasons.add("observation_timeout"); return None
+            job_observations += 1
             out.append(("job", task.id, job.id, _shape(job)))
             if job.status not in TERMINAL_JOBS: reasons.add("active_job")
         if task.blocked_on_job_ids is not None:
@@ -180,6 +187,8 @@ def _snapshot(db: Database, task_id: str, reasons: set[str], deadline: int) -> t
                 continue
             for linked_id in linked_ids:
                 if _expired(deadline): reasons.add("observation_timeout"); return None
+                if job_observations >= MAX_JOBS:
+                    reasons.add("job_scan_capped"); return None
                 try:
                     linked = db.get_job(linked_id)
                 except Exception:
@@ -187,6 +196,7 @@ def _snapshot(db: Database, task_id: str, reasons: set[str], deadline: int) -> t
                 if linked is None or linked.task_id != task.id or linked.status not in TERMINAL_JOBS:
                     reasons.add("linked_job_authority_unavailable")
                 else:
+                    job_observations += 1
                     out.append(("linked_job", task.id, linked.id, linked.status.value))
     return tuple(sorted(out, key=repr))
 
@@ -254,6 +264,17 @@ def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, tas
                 reasons.add("executor_identity_changed_during_collection")
     if old_boot != before_scan_boot or before_scan_boot != final_boot: reasons.add("boot_id_changed_during_collection")
     if _expired(deadline): reasons.add("observation_timeout")
-    if reasons or roots is None or cwds is None or fds is None or old_boot is None or before_scan_boot is None or final_boot is None:
+    # Eligibility is stricter than measurement validity.  A complete, fresh
+    # scan may truthfully report zero references even when lifecycle/session
+    # authority independently rejects reclamation.
+    measurement_invalid = {
+        "observation_timeout", "process_scan_unavailable", "process_scan_timeout",
+        "process_reference_unavailable", "open_fd_scan_capped",
+        "process_population_unavailable", "process_population_changed_during_collection",
+        "process_identity_unavailable", "executor_identity_unavailable",
+        "executor_identity_changed_during_collection", "boot_id_unavailable",
+        "boot_id_changed_during_collection",
+    }
+    if roots is None or cwds is None or fds is None or old_boot is None or before_scan_boot is None or final_boot is None or reasons & measurement_invalid:
         roots = cwds = fds = None
     return TaskScratchEvidence(task_id, not reasons, tuple(sorted(reasons)), final_boot, time.time_ns(), roots, cwds, fds)

@@ -1354,9 +1354,14 @@ No production path imports it; teardown/scheduler wiring, activation, live
 deletion, deployment, and legacy backlog eligibility remain absent.
 THR-195 B2a separately supplies a dormant, short-lived evidence collector from
 current durable task/revisit/job/result records, advisory session state, and
-fresh Linux boot/PID root/cwd/open-fd reads. Ambiguous, missing, capped,
-changing, warm-up, recovery, permission, or live-reference evidence is
-ineligible. It has no production caller or engine/ledger import; B2b must
+fresh Linux boot/PID root/cwd/open-fd reads. It admits each bounded read or
+enumeration against one shared deadline (without pretending to preempt an
+already-started read), including aggregate linked-job reads. Ambiguous,
+missing, capped, changing, warm-up, recovery, permission, or live-reference
+evidence is ineligible. A complete fresh root/cwd/fd measurement remains
+truthful, including zero, when only an independent eligibility reason applies;
+partial or invalid scans remain unavailable rather than fabricated zeros. It
+has no production caller or engine/ledger import; B2b must
 recollect at action time and B3 remains coverage authority.
 Runtime-launched task-agent and job subprocesses instead receive one canonical
 mode-0700 root at

@@ -106,6 +106,35 @@ def test_durable_and_process_changes_during_observation_fail_closed(tmp_path: Pa
     assert evidence.process_roots is evidence.process_cwds is evidence.open_fds is None
 
 
+def test_snapshot_admission_stops_result_and_jobs_after_task_read(tmp_path: Path, monkeypatch) -> None:
+    """An observed expiry admits no further DB observation, but does not preempt one."""
+    db, _proc_root = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    import runtime.daemon.task_scratch_evidence as subject
+    expired = False
+    original_get_task = db.get_task
+    def get_task(task_id: str):
+        nonlocal expired
+        result = original_get_task(task_id); expired = True
+        return result
+    monkeypatch.setattr(db, "get_task", get_task)
+    monkeypatch.setattr(subject, "_expired", lambda _deadline: expired)
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("post-expiry DB read started")
+    monkeypatch.setattr(db, "get_latest_task_result", forbidden)
+    monkeypatch.setattr(db, "list_jobs_db", forbidden)
+    reasons: set[str] = set()
+    assert subject._snapshot(db, "TASK-1", reasons, 1) is None
+    assert reasons == {"observation_timeout"}
+
+
+def test_complete_zero_measurement_survives_independent_ineligibility(tmp_path: Path) -> None:
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.PENDING))
+    evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert not evidence.eligible
+    assert "nonterminal_or_unresolved_lineage" in evidence.reasons
+    assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (0, 0, 0)
+
+
 def test_non_numeric_proc_entries_do_not_consume_population_budget(tmp_path: Path, monkeypatch) -> None:
     db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
     import runtime.daemon.task_scratch_evidence as subject

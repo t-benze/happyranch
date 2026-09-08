@@ -1353,8 +1353,10 @@ does not seal a ledger or authorize coverage, and cannot exclude future writers.
 It makes a finite shared-deadline observation from complete durable task/job/result
 rows, advisory sessions, and Linux boot/PID/root/cwd/fd identity. It fails closed
 on changed, missing, capped, timed-out, partial, or unavailable observations; an
-unavailable measurement is not a measured zero, and blocking source reads cannot
-be forcibly interrupted. B2b recollects before any later action and B3 owns
+unavailable measurement is not a measured zero. Each bounded source is admitted
+against the collector's shared deadline (a blocking source read cannot be forcibly
+interrupted); complete fresh counts, including zero, remain measurements when an
+independent lifecycle/session reason rejects eligibility. B2b recollects before any later action and B3 owns
 current-boot coverage.
 
 1. **Measures** the OWNING AGENT's workspace with an explicit bounded,
