@@ -1424,6 +1424,123 @@ def test_approve_agent_bootstraps_workspace(
     # The .md frontmatter is the single source of truth.
 
 
+def test_approve_agent_refreshes_bootstrap_inputs_after_clone_winner(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """A real accepted update wins after exact pending-to-active promotion."""
+    from datetime import datetime, timezone
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.orchestrator.agent_def import AgentDef
+
+    paths = _paths(org_state)
+    pending = AgentDef(
+        name="fresh_approval", team="engineering", role="worker", executor="claude",
+        allow_rules=(), repos={"docs": "https://example.test/docs.git"},
+        enrolled_by="engineering_head", enrolled_at_task=_EH_TASK,
+        enrolled_at=datetime.now(timezone.utc), system_prompt="old prompt\n",
+    )
+    prompt_loader.write_pending_agent(paths, pending)
+    # Normal manage-agent enrollment records the matching roster membership.
+    org_state.teams.add_worker("engineering", "fresh_approval")
+    original_pending_bytes = (paths.pending_agents_dir / "fresh_approval.md").read_bytes()
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as mock_builder:
+        clone = mock_builder.return_value.clone_repo
+
+        async def controlled_to_thread(func, *args, **kwargs):
+            if func is clone:
+                arrived.set()
+                await asyncio.wait_for(release.wait(), timeout=1)
+                return True
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+
+        async def exercise() -> None:
+            approve = asyncio.create_task(agents_mod.approve_agent(
+                "alpha", "fresh_approval", org_state,
+            ))
+            await asyncio.wait_for(arrived.wait(), timeout=1)
+            assert not (paths.pending_agents_dir / "fresh_approval.md").exists()
+            assert (paths.agents_dir / "fresh_approval.md").read_bytes() == original_pending_bytes
+            _activate_eh_session(org_state)
+            revision = prompt_loader.agent_revision(paths, "fresh_approval")
+            assert revision is not None
+            assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                action="update", name="fresh_approval", task_id=_EH_TASK,
+                session_id=_EH_SESSION, expected_revision=revision,
+                system_prompt="winner prompt\n", executor="codex",
+                description="winner", repos={"winner": "/winner"},
+            ), org_state) == {"ok": True}
+            winning_bytes = (paths.agents_dir / "fresh_approval.md").read_bytes()
+            release.set()
+            assert await asyncio.wait_for(approve, timeout=1) == {"ok": True}
+            assert (paths.agents_dir / "fresh_approval.md").read_bytes() == winning_bytes
+
+        asyncio.run(exercise())
+        bootstrap = mock_builder.return_value.ensure_workspace_ready.call_args
+        assert bootstrap.args[2] == "winner prompt\n"
+        assert bootstrap.kwargs["provider"] == "codex"
+
+    winner = prompt_loader.load_agent(paths, "fresh_approval")
+    assert winner is not None and winner.repos == {"winner": "/winner"}
+    audits = org_state.db.get_audit_logs(_EH_TASK)
+    assert len([row for row in audits if row["action"] == "agent_managed"]) == 1
+
+
+def test_approve_agent_refuses_missing_canonical_after_suspended_clone(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """Controlled removal after promotion cannot trigger stale bootstrap."""
+    from datetime import datetime, timezone
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.orchestrator.agent_def import AgentDef
+
+    paths = _paths(org_state)
+    prompt_loader.write_pending_agent(paths, AgentDef(
+        name="missing_approval", team="content", role="worker", executor="claude",
+        allow_rules=(), repos={"docs": "https://example.test/docs.git"},
+        enrolled_by="engineering_head", enrolled_at_task=_EH_TASK,
+        enrolled_at=datetime.now(timezone.utc), system_prompt="old prompt\n",
+    ))
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as mock_builder:
+        clone = mock_builder.return_value.clone_repo
+
+        async def controlled_to_thread(func, *args, **kwargs):
+            if func is clone:
+                arrived.set()
+                await asyncio.wait_for(release.wait(), timeout=1)
+                return True
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+
+        async def exercise() -> None:
+            approve = asyncio.create_task(agents_mod.approve_agent(
+                "alpha", "missing_approval", org_state,
+            ))
+            await asyncio.wait_for(arrived.wait(), timeout=1)
+            (paths.agents_dir / "missing_approval.md").unlink()
+            release.set()
+            with pytest.raises(HTTPException) as raised:
+                await asyncio.wait_for(approve, timeout=1)
+            assert raised.value.status_code == 404
+            assert raised.value.detail == "agent 'missing_approval' not found"
+
+        asyncio.run(exercise())
+        mock_builder.return_value.ensure_workspace_ready.assert_not_called()
+        mock_builder.return_value.create_agent_dirs.assert_not_called()
+
+    assert prompt_loader.load_agent(paths, "missing_approval") is None
+    assert prompt_loader.load_pending_agent(paths, "missing_approval") is None
+
+
 def test_approve_non_pending_returns_409(
     tmp_home, app, org_state, auth_headers,
 ) -> None:

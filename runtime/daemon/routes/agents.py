@@ -1276,12 +1276,21 @@ async def founder_create_agent(
     ctx = ContextBuilder(org.settings, paths, slug=org.slug)
     for repo_name, url in repos.items():
         await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
+
+    # Cloning yields to the event loop.  Bootstrap from the current active
+    # definition so an accepted update is not fed stale prompt/provider
+    # inputs, and never recreate a definition removed while cloning.  This
+    # fresh capture does not serialize workspace generation against arbitrary
+    # later writes.
+    fresh = prompt_loader.load_agent(paths, body.name)
+    if fresh is None:
+        raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
     await asyncio.to_thread(
         ctx.ensure_workspace_ready,
         workspace,
         body.name,
-        agent_def.system_prompt,
-        provider=agent_def.executor,
+        fresh.system_prompt,
+        provider=fresh.executor,
     )
     await asyncio.to_thread(ctx.create_agent_dirs, workspace, body.name)
 
@@ -2131,12 +2140,19 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
     for repo_name, url in repos.items():
         await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
 
+    # Promotion is synchronous before the first await, but cloning is not.
+    # Use a fresh active snapshot for bootstrap; it does not serialize later
+    # workspace generation against arbitrary canonical writers.
+    fresh = prompt_loader.load_agent(paths, agent_name)
+    if fresh is None:
+        raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+
     await asyncio.to_thread(
         ctx.ensure_workspace_ready,
         workspace,
         agent_name,
-        agent_def.system_prompt,
-        provider=agent_def.executor,
+        fresh.system_prompt,
+        provider=fresh.executor,
     )
     await asyncio.to_thread(ctx.create_agent_dirs, workspace, agent_name)
 
