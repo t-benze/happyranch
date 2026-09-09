@@ -306,7 +306,7 @@ def test_exported_collector_charges_unsuccessful_linked_lookups_before_read(tmp_
 def _observe_all_evidence_sources(
     *, db: Database, proc: Path, sessions: SessionTracker, monkeypatch: pytest.MonkeyPatch,
     trigger: str | None = None,
-) -> tuple[list[tuple[str, str, str, str, bool]], list[int]]:
+) -> tuple[list[tuple[str, str, str, str, int, bool]], list[int]]:
     """Transparent A1/A2 observer: forward every production reader unchanged.
 
     The clock changes only after the selected real reader returns.  Recording is
@@ -315,11 +315,16 @@ def _observe_all_evidence_sources(
     """
     import runtime.daemon.task_scratch_evidence as subject
     clock = [0]
-    events: list[tuple[str, str, str, str, bool]] = []
+    events: list[tuple[str, str, str, str, int, bool]] = []
     proc_opens = 0; stats: dict[str, int] = {}; calls: dict[str, int] = {}
+    occurrences: dict[tuple[str, str, str, str], int] = {}; snapshot = [0]
 
     def record(kind: str, family: str, identity: str, phase: str) -> None:
-        events.append((kind, family, identity, phase, clock[0] > subject.SCAN_NS))
+        key = (kind, family, identity, phase)
+        occurrences[key] = occurrences.get(key, 0) + 1
+        # These labels are observer-only provenance.  The production evidence
+        # dataclass deliberately remains a finite measurement, not an event log.
+        events.append((*key, occurrences[key], clock[0] > subject.SCAN_NS))
 
     def fire(family: str, identity: str, phase: str) -> None:
         nonlocal proc_opens
@@ -344,9 +349,11 @@ def _observe_all_evidence_sources(
         original = getattr(db, name)
         def wrapped(*args, _name=name, _original=original, **kwargs):
             calls[_name] = calls.get(_name, 0) + 1
-            record("START", "db", _name, "snapshot")
+            if _name == "list_tasks": snapshot[0] += 1
+            phase = "initial" if snapshot[0] == 1 else "final"
+            record("START", "db", _name, phase)
             value = _original(*args, **kwargs)
-            record("RETURN", "db", _name, "snapshot"); fire("db", _name, "snapshot")
+            record("RETURN", "db", _name, phase); fire("db", _name, phase)
             return value
         monkeypatch.setattr(db, name, wrapped)
 
@@ -354,7 +361,7 @@ def _observe_all_evidence_sources(
     def read_text(path: Path, *args, **kwargs):
         text = str(path)
         if text.endswith("boot_id"):
-            family, identity, phase = "boot", "boot", "read"
+            family, identity, phase = "boot", "boot", ("initial" if not any(e[1] == "boot" for e in events) else "final")
         elif text.startswith(str(proc)) and text.endswith("/stat"):
             identity = Path(path).parent.name; stats[identity] = stats.get(identity, 0) + 1
             family, phase = "stat", "initial" if stats[identity] == 1 else "final"
@@ -407,9 +414,10 @@ def _observe_all_evidence_sources(
         return value
     original_iter = sessions.iter_active
     def iter_active():
-        record("START", "sessions", "iter_active", "snapshot")
+        phase = "initial" if not any(e[1] == "sessions" for e in events) else "final"
+        record("START", "sessions", "iter_active", phase)
         value = original_iter()
-        record("RETURN", "sessions", "iter_active", "snapshot"); fire("sessions", "iter_active", "snapshot")
+        record("RETURN", "sessions", "iter_active", phase); fire("sessions", "iter_active", phase)
         return value
     monkeypatch.setattr(Path, "read_text", read_text); monkeypatch.setattr(subject.os, "scandir", scandir)
     monkeypatch.setattr(subject.os, "readlink", readlink); monkeypatch.setattr(sessions, "iter_active", iter_active)
@@ -434,8 +442,9 @@ def test_exported_collector_stops_all_source_reads_after_db_return(
     import runtime.daemon.task_scratch_evidence as subject
     evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert clock[0] > subject.SCAN_NS and "observation_timeout" in evidence.reasons
-    assert sum(event[0] == "RETURN" and event[1:4] == ("db", reader, "snapshot") for event in events) == call, events
-    assert not [event for event in events if event[0] == "START" and event[4]], events
+    returns = [event for event in events if event[0] == "RETURN" and event[1] == "db" and event[2] == reader]
+    assert [(event[3], event[4]) for event in returns] == ([ ("initial", 1) ] if call == 1 else [("initial", 1), ("final", 1)]), events
+    assert not [event for event in events if event[0] == "START" and event[5]], events
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
 
 
@@ -448,7 +457,8 @@ def test_exported_collector_unexpired_control_observes_every_source_family(
     db.update_task("TASK-1", blocked_on_job_ids='["JOB-1"]')
     # Both fake PIDs are nonreferencing; this control proves every intended
     # source remains reachable without borrowing an expiry case's fixture.
-    _proc(proc, 43)
+    # PID 42 is the empty-fd control; PID 43 has a nonreferencing FD.
+    _proc(proc, 43, fd="/")
     sessions = SessionTracker(); events, _clock = _observe_all_evidence_sources(db=db, proc=proc, sessions=sessions, monkeypatch=monkeypatch)
     import runtime.daemon.task_scratch_evidence as subject
     evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
@@ -456,15 +466,42 @@ def test_exported_collector_unexpired_control_observes_every_source_family(
     assert evidence.eligible and {"db", "boot", "stat", "scandir", "iterator", "readlink", "sessions"} <= families, events
     observed = {event[1:4] for event in events}
     expected = {
-        *( ("db", name, "snapshot") for name in ("list_tasks", "get_task", "get_latest_task_result", "list_jobs_db", "get_job") ),
+        *( ("db", name, phase) for name in ("list_tasks", "get_task", "get_latest_task_result", "list_jobs_db", "get_job") for phase in ("initial", "final") ),
         *( ("stat", pid, phase) for pid in ("42", "43") for phase in ("initial", "final") ),
         *( ("readlink", f"{pid}:{name}", "read") for pid in ("42", "43") for name in ("root", "cwd") ),
         *( ("scandir", f"{pid}:fd", "scan") for pid in ("42", "43") ),
         ("scandir", "proc", "initial"), ("scandir", "proc", "final"),
-        ("boot", "boot", "read"), ("sessions", "iter_active", "snapshot"),
+        ("boot", "boot", "initial"), ("boot", "boot", "final"),
+        ("sessions", "iter_active", "initial"), ("sessions", "iter_active", "final"),
     }
     assert expected <= observed, events
     assert {("iterator", "proc:proc:3", "initial"), ("iterator", "proc:proc:3", "final")} <= observed, events
+    assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (0, 0, 0)
+    expected_inventory = {
+        ("START", "db", name, phase): 1 for name in ("list_tasks", "get_task", "get_latest_task_result", "list_jobs_db", "get_job") for phase in ("initial", "final")
+    }
+    expected_inventory.update({("RETURN", "db", name, phase): 1 for name in ("list_tasks", "get_task", "get_latest_task_result", "list_jobs_db", "get_job") for phase in ("initial", "final")})
+    for kind in ("START", "RETURN"):
+        expected_inventory[(kind, "boot", "boot", "initial")] = 1
+        expected_inventory[(kind, "boot", "boot", "final")] = 2
+        for phase in ("initial", "final"):
+            expected_inventory[(kind, "sessions", "iter_active", phase)] = 1
+            expected_inventory[(kind, "scandir", "proc", phase)] = 1
+            for pid in ("42", "43"):
+                expected_inventory[(kind, "stat", pid, phase)] = 1
+                expected_inventory[(kind, "readlink", f"{pid}:root", "read")] = 1
+                expected_inventory[(kind, "readlink", f"{pid}:cwd", "read")] = 1
+            for ordinal in (1, 2, 3, 4):
+                expected_inventory[(kind if ordinal < 4 else "EXHAUSTED", "iterator", f"proc:proc:{ordinal}", phase)] = 1
+        for pid, fd_events in (("42", 1), ("43", 2)):
+            expected_inventory[(kind, "scandir", f"{pid}:fd", "scan")] = 1
+            for ordinal in range(1, fd_events + 1):
+                event_kind = kind if ordinal < fd_events else "EXHAUSTED"
+                expected_inventory[(event_kind, "iterator", f"{pid}:fd:fd:{ordinal}", "scan")] = 1
+            if pid == "43":
+                expected_inventory[(kind, "readlink", "43:fd:3", "read")] = 1
+    observed_inventory = {key: sum(event[:4] == key for event in events) for key in expected_inventory}
+    assert observed_inventory == expected_inventory
 
 
 @pytest.mark.parametrize("trigger,fds", [
@@ -484,12 +521,21 @@ def test_exported_collector_expiry_boundaries_do_not_start_dependent_proc_reads(
     import runtime.daemon.task_scratch_evidence as subject
     evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert clock[0] > subject.SCAN_NS, (trigger, events)
-    if ":" in trigger:
-        family, identity = trigger.split(":", 1)
-        expected_family = {"cwd": "readlink", "fd-readlink": "readlink", "fd-next": "iterator"}[family]
-        assert any(event[0] == "RETURN" and event[1] == expected_family and event[2] == identity for event in events), (trigger, events)
+    expected_target = {
+        "cwd:43:cwd": ("readlink", "43:cwd", "read"),
+        "fd-next:43:fd:fd:1": ("iterator", "43:fd:fd:1", "scan"),
+        "fd-readlink:43:fd:4": ("readlink", "43:fd:4", "read"),
+        "initial-population-open": ("scandir", "proc", "initial"),
+        "final-population-open": ("scandir", "proc", "final"),
+        "population-next": ("iterator", "proc:proc:1", "initial"),
+        "final-pid-stat": ("stat", "42", "final"),
+        "boot": ("boot", "boot", "initial"),
+        "sessions": ("sessions", "iter_active", "initial"),
+    }[trigger]
+    assert any(event[0] == "RETURN" and event[1:4] == expected_target and event[4] == 1 for event in events), (trigger, events)
+    assert "observation_timeout" in evidence.reasons
     assert not evidence.eligible
-    assert not [event for event in events if event[0] == "START" and event[4]], (trigger, events)
+    assert not [event for event in events if event[0] == "START" and event[5]], (trigger, events)
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
 
 
@@ -846,8 +892,8 @@ def test_zombie_sweep_keeps_current_fingerprint_flagged_without_orchestrator_the
         after = db.get_task("TASK-1")
         after_results, after_audit = db.get_task_results("TASK-1"), db.get_audit_logs("TASK-1")
         # Equality is against the entire durable task record, not a selected
-        # identity allowlist.  The sole generated value is retained from the
-        # shipping write and bounded around the real consumer call.
+        # identity allowlist.  Both completion fields are generated by the
+        # shipping write and are bounded around the real consumer call.
         assert after is not None and after.completed_at is not None
         expected_task = before[0].model_copy(update={
             "status": TaskStatus.COMPLETED, "zombie_flagged_at": None,
@@ -855,18 +901,21 @@ def test_zombie_sweep_keeps_current_fingerprint_flagged_without_orchestrator_the
             "completed_at": after.completed_at, "updated_at": after.updated_at,
         })
         assert after.model_dump() == expected_task.model_dump()
-        assert now <= after.completed_at <= call_finished
+        assert call_started <= after.completed_at <= call_finished
         assert call_started <= after.updated_at <= call_finished
         assert after_results == before[1] and queue.items == before[3]
         assert after_audit[:-1] == before[2]
         assert len(after_audit) == len(before[2]) + 1
         cleared = after_audit[-1]
-        assert cleared["task_id"] == "TASK-1" and cleared["agent"] == "dev_agent"
-        assert cleared["action"] == "zombie_cleared"
-        assert cleared["payload"] == {"reason": "zombie recovered — flag cleared"}
-        assert isinstance(cleared["id"], int) and cleared["id"] > 0
+        prior_ids = {row["id"] for row in before[2]}
+        assert isinstance(cleared["id"], int) and cleared["id"] > 0 and cleared["id"] not in prior_ids
         assert isinstance(cleared["timestamp"], str)
         assert call_started <= datetime.fromisoformat(cleared["timestamp"]) <= call_finished
+        assert cleared == {
+            "id": cleared["id"], "task_id": "TASK-1", "agent": "dev_agent",
+            "action": "zombie_cleared", "payload": {"reason": "zombie recovered — flag cleared"},
+            "timestamp": cleared["timestamp"],
+        }
     finally:
         db.close()
 
