@@ -821,6 +821,8 @@ def _bounded_lifespan_context(
     deadline_seconds: float,
     auth_headers,
     org_slug: str,
+    shutdown_entered: "threading.Event | None" = None,
+    shutdown_release: "threading.Event | None" = None,
 ) -> None:
     """Enter the real FastAPI TestClient lifespan in a NON-DAEMON thread
     with a bounded-join watchdog.  On success the function returns normally.
@@ -855,6 +857,15 @@ def _bounded_lifespan_context(
 
     _thread = threading.Thread(target=_runner, daemon=False)
     _thread.start()
+
+    # The forced-watchdog control must only begin its deadline after the real
+    # lifespan shutdown has entered the injected cancellation boundary.  This
+    # keeps the test's expiry ordering independent of startup/GET scheduling.
+    if shutdown_entered is not None:
+        assert shutdown_entered.wait(timeout=deadline_seconds), (
+            "lifespan shutdown did not enter the injected cancellation "
+            "boundary before the watchdog deadline"
+        )
     _thread.join(timeout=deadline_seconds)
 
     if not _completed.is_set():
@@ -869,6 +880,8 @@ def _bounded_lifespan_context(
 
         # Release the blocked compose so the worker thread can exit.
         compose_unblock.set()
+        if shutdown_release is not None:
+            shutdown_release.set()
 
         # Bounded second-stage: wait for the worker.
         _worker_clean = compose_done.wait(timeout=deadline_seconds)
@@ -1029,10 +1042,10 @@ def test_forced_watchdog_regression_cleanup_ownership(
     """Forced-watchdog regression: prove the deterministic cleanup path
     actually owns both the compose worker and the TestClient context thread.
 
-    Uses a deliberately short watchdog deadline while the lifespan shutdown
-    takes slightly longer (via a brief cancel_scheduler delay), forcing the
-    watchdog to expire.  The cleanup path must release compose_unblock, wait
-    for compose_done, join the TestClient thread under second-stage
+    Uses a deliberately short watchdog deadline after real shutdown has
+    entered an injected cancellation boundary, forcing watchdog expiry. The
+    cleanup path must release both injected blockers, wait for compose_done,
+    join the TestClient thread under second-stage
     deadlines, and assert both are dead before raising — never leaving an
     unowned thread or worker.
 
@@ -1040,8 +1053,6 @@ def test_forced_watchdog_regression_cleanup_ownership(
     real TestClient shutdown: after compose_unblock is released the lifespan
     completes cleanly."""
     import threading
-    import time
-
     import pytest
 
     from runtime.daemon.app import create_app
@@ -1055,6 +1066,8 @@ def test_forced_watchdog_regression_cleanup_ownership(
     compose_entered = threading.Event()
     compose_unblock = threading.Event()
     compose_done = threading.Event()
+    shutdown_entered = threading.Event()
+    shutdown_release = threading.Event()
     # Track whether cancel+reap have completed.
     cancel_reap_done = threading.Event()
 
@@ -1091,13 +1104,15 @@ def test_forced_watchdog_regression_cleanup_ownership(
         compose_unblock.set()
     monkeypatch.setattr(mgr, "reap_scheduler", _reap_and_release)
 
-    # Deliberately slow down cancel_scheduler so the lifespan shutdown
-    # takes longer than the watchdog deadline.  The cleanup path will
-    # release compose_unblock first, the worker finishes, and once
-    # cancel_scheduler returns the remaining shutdown is fast.
+    # Block real lifespan cancellation only after it has entered shutdown.
+    # The watchdog starts after that handshake and its cleanup releases this
+    # blocker before joining the TestClient thread.
     original_cancel = mgr.cancel_scheduler
     def _slow_cancel():
-        time.sleep(0.8)
+        shutdown_entered.set()
+        assert shutdown_release.wait(timeout=5), (
+            "watchdog cleanup did not release the injected shutdown blocker"
+        )
         original_cancel()
     monkeypatch.setattr(mgr, "cancel_scheduler", _slow_cancel)
 
@@ -1114,6 +1129,8 @@ def test_forced_watchdog_regression_cleanup_ownership(
                 compose_unblock=compose_unblock,
                 compose_done=compose_done,
                 deadline_seconds=_DEADLINE_SECONDS,
+                shutdown_entered=shutdown_entered,
+                shutdown_release=shutdown_release,
                 auth_headers=auth_headers,
                 org_slug=org_state.slug,
             )
@@ -1122,6 +1139,9 @@ def test_forced_watchdog_regression_cleanup_ownership(
         # the TestClient context thread must be terminated.
         assert compose_done.is_set(), (
             "compose worker must be terminated after cleanup"
+        )
+        assert shutdown_release.is_set(), (
+            "watchdog cleanup must release the entered shutdown boundary"
         )
     finally:
         dp_mod.compose_dashboard_summary = original_compose
