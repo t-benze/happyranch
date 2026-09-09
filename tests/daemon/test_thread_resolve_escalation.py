@@ -902,7 +902,9 @@ async def test_autonomous_continue_accepts_beyond_legacy_step_cap(client_with_ru
     org.db.insert_task(TaskRecord(id="T-BUDGET", brief="test", dispatched_from_thread_id="THR-BUDGET"))
     org.db.update_task(
         "T-BUDGET", status=TaskStatus.ESCALATED, block_kind=None,
-        orchestration_step_count=org.orchestrator._settings.max_orchestration_steps,
+        # 51 proves this route and its final continuation transaction do not
+        # merely accept the former/default threshold value.
+        orchestration_step_count=51,
     )
     payload = _autonomous_continue_payload(
         org, thread_id="THR-BUDGET", task_id="T-BUDGET", agent="engineering_head",
@@ -912,7 +914,7 @@ async def test_autonomous_continue_accepts_beyond_legacy_step_cap(client_with_ru
     assert response.json()["new_status"] == "pending"
     task = org.db.get_task("T-BUDGET")
     assert task.status == TaskStatus.PENDING
-    assert task.orchestration_step_count == org.orchestrator._settings.max_orchestration_steps
+    assert task.orchestration_step_count == 51
     invocation = org.db.get_invocation_any_status(payload["invocation_token"])
     assert invocation is not None
     assert invocation.status == ThreadInvocationStatus.CONSUMED

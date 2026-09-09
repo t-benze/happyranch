@@ -1404,11 +1404,11 @@ def test_server_gate_permission_surface_change_during_attempt_escalates(runtime,
 
 def test_server_fence_beyond_legacy_step_cap_continues(runtime, db, monkeypatch):
     """The retained step counter is telemetry, not an authority fence."""
-    from runtime.config import Settings as _Settings
     _seed_claimed_root(db)
-    db.update_task(
-        "T-ROOT", orchestration_step_count=_Settings().max_orchestration_steps,
-    )
+    # 51 crosses the former default threshold.  The authority hook reaches
+    # the final continuation CAS rather than treating counter telemetry as a
+    # policy fence.
+    db.update_task("T-ROOT", orchestration_step_count=51)
     fake = StrictFakeAuthorityEvaluator()
     orch = _make_orch(runtime, db, evaluator=fake)
     out = run_authority_hook(
