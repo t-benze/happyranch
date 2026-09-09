@@ -16,7 +16,6 @@ const mockSystem: SystemSettings = {
   opencode_cli_path: { value: '/usr/local/bin/opencode', restart_required: true },
   pi_cli_path: { value: '/usr/local/bin/pi', restart_required: true },
   session_timeout_seconds: { value: 1800, restart_required: false },
-  max_orchestration_steps: { value: 50, restart_required: true },
   queue_workers: { value: 3, restart_required: true },
   host_global_session_cap: { value: 13, restart_required: true },
   protocol_dir: { value: 'protocol', restart_required: true },
@@ -199,7 +198,7 @@ describe('SettingsDialog', () => {
     renderDialog();
 
     const badges = screen.getAllByText('Restart required');
-    expect(badges.length).toBe(7); // 4 CLI paths + max_orchestration_steps + queue_workers + protocol_dir
+    expect(badges.length).toBe(6); // 4 CLI paths + queue_workers + protocol_dir
 
     // Session timeout should NOT have a restart badge
     const sessionRows = screen.getAllByText('Session timeout (s)');
@@ -497,7 +496,6 @@ const SETTINGS_FIXTURE: SettingsSnapshot = {
     opencode_cli_path: { value: '/usr/local/bin/opencode', restart_required: true },
     pi_cli_path: { value: '/usr/local/bin/pi', restart_required: true },
     session_timeout_seconds: { value: 1800, restart_required: true },
-    max_orchestration_steps: { value: 50, restart_required: true },
     queue_workers: { value: 3, restart_required: true },
     host_global_session_cap: { value: 13, restart_required: true },
     protocol_dir: { value: 'protocol', restart_required: true },
