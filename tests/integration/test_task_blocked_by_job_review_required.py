@@ -63,6 +63,38 @@ def _wait_for_task_status(
     )
 
 
+def _wait_for_task_parked_on_job(
+    base: str,
+    task_id: str,
+    expected_job_id: str,
+    *,
+    timeout: float = 20.0,
+) -> dict:
+    """Wait until the exact submitted job durably parks the task."""
+    deadline = time.monotonic() + timeout
+    body: dict = {}
+    while time.monotonic() < deadline:
+        r = httpx.get(f"{base}/tasks/{task_id}", headers=_auth_headers(), timeout=5.0)
+        body = r.json()
+        task = body.get("task", {})
+        raw_job_ids = task.get("blocked_on_job_ids") or "[]"
+        try:
+            job_ids = json.loads(raw_job_ids)
+        except json.JSONDecodeError:
+            job_ids = []
+        if (
+            task.get("status") == "in_progress"
+            and task.get("block_kind") == "blocked_on_job"
+            and job_ids == [expected_job_id]
+        ):
+            return body
+        time.sleep(0.2)
+    raise AssertionError(
+        "task did not durably park on the expected job before founder action: "
+        f"task_id={task_id!r} expected_job_id={expected_job_id!r} last_body={body}"
+    )
+
+
 def test_review_required_founder_approves_then_resumes(
     live_daemon,
     runtime,
@@ -204,11 +236,7 @@ def test_review_required_founder_approves_then_resumes(
 
     # Wait for the task to reach blocked state (self-block must complete before
     # we act as founder, to avoid the task resuming before it's fully blocked).
-    _wait_for_task_status(
-        base, task_id,
-        terminal=("in_progress",),  # Path B: parked on jobs = in_progress(blocked_on_job)
-        timeout=20.0,
-    )
+    _wait_for_task_parked_on_job(base, task_id, job_id)
 
     # ── 6. Founder action: approve (run) the pending review_required job.
     r = httpx.post(
@@ -431,11 +459,7 @@ def test_review_required_founder_rejects_then_resumes(
     assert job_id.startswith("JOB-"), f"unexpected job_id: {job_id!r}"
 
     # Wait for the task to reach blocked state.
-    _wait_for_task_status(
-        base, task_id,
-        terminal=("in_progress",),  # Path B: parked on jobs = in_progress(blocked_on_job)
-        timeout=20.0,
-    )
+    _wait_for_task_parked_on_job(base, task_id, job_id)
 
     # ── 6. Founder action: REJECT the pending job.
     r = httpx.post(
