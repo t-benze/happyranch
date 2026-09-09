@@ -237,6 +237,22 @@ def test_active_session_and_unresolved_recovery_are_not_safe(tmp_path: Path) -> 
     assert "recovery_fingerprint_unresolved" in unresolved.reasons
 
 
+def test_frozen_c1_unrelated_active_session_does_not_block_completed_target(tmp_path: Path) -> None:
+    """Frozen #30: a tracker entry for another task is not target authority."""
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    sessions = SessionTracker(); sessions.set_active("TASK-OTHER", "dev_agent", "other")
+    evidence = collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert evidence.eligible and "active_session" not in evidence.reasons
+
+
+def test_frozen_c2_owned_pending_job_blocks_completed_target(tmp_path: Path) -> None:
+    """Frozen #43: an owned PENDING job is an active_job authority denial."""
+    db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    db.insert_job(JobRecord(id="JOB-PENDING", task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.PENDING, created_at=datetime.now(timezone.utc).isoformat()))
+    evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert not evidence.eligible and "active_job" in evidence.reasons
+
+
 def test_boot_is_uuid_and_final_change_is_rejected(tmp_path: Path, monkeypatch) -> None:
     db, proc = _sources(tmp_path); db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
     (proc / "sys/kernel/random/boot_id").write_text("not-a-uuid\n")
@@ -488,6 +504,17 @@ def test_exported_collector_open_fd_cap_is_unavailable_not_complete_zero(tmp_pat
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
 
 
+def test_exported_collector_missing_only_owned_pid_fd_is_unavailable(tmp_path: Path, evidence_sources) -> None:
+    """C3 #72: valid boot/PID/root/cwd do not turn a missing PID fd dir into zero."""
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    root = tmp_path / "root"; root.mkdir(); _proc(proc, 43, root=str(root), cwd=str(root))
+    for child in (proc / "43/fd").iterdir(): child.unlink()
+    (proc / "43/fd").rmdir()
+    evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert not evidence.eligible
+    assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
+
+
 @pytest.mark.parametrize("probe,relation,expected_reason", [
     ("root", "exact", "process_root_reference"), ("root", "descendant", "process_root_reference"), ("root", "prefix", None),
     ("cwd", "exact", "process_cwd_reference"), ("cwd", "descendant", "process_cwd_reference"), ("cwd", "prefix", None),
@@ -714,43 +741,50 @@ def test_real_zombie_sweep_clears_permission_indeterminate_pid_once(tmp_path: Pa
         db.close()
 
 
-def test_zombie_sweep_does_not_consume_stale_session_fingerprint(tmp_path: Path, monkeypatch) -> None:
+def _durable_recovery_snapshot(db: Database, task_id: str, queue: _Queue) -> tuple[object, list[dict], list[dict], list[tuple[str, str]]]:
+    """Exact relevant effects around the shipping sweep/consumer seam."""
+    return db.get_task(task_id), db.get_task_results(task_id), db.get_audit_logs(task_id), list(queue.items)
+
+
+def test_zombie_sweep_does_not_consume_stale_session_fingerprint(tmp_path: Path, monkeypatch, request: pytest.FixtureRequest) -> None:
     """C7: only a current-session result can consume a flagged fingerprint."""
-    db, _proc_root = _sources(tmp_path)
+    db, orch, queue, _proc_root = _recovery_fixture(tmp_path, request)
     try:
         now = datetime.now(timezone.utc); db.insert_task(TaskRecord(id="TASK-1", brief="x", status=TaskStatus.IN_PROGRESS, task_type="subtask", assigned_agent="dev_agent", current_session_id="session"))
         db.update_task("TASK-1", executor_pid=4242, last_heartbeat=(now - timedelta(seconds=STALE_HEARTBEAT_SECONDS + 1)).isoformat(), zombie_flagged_at=(now - timedelta(seconds=1)).isoformat())
         db.insert_task_result("TASK-1", "dev_agent", "old-session", "old", 1, status="completed")
-        before = (db.get_task_results("TASK-1"), db.get_audit_logs("TASK-1"))
+        before = _durable_recovery_snapshot(db, "TASK-1", queue)
         import runtime.daemon.zombie_reaper as subject
         monkeypatch.setattr(subject, "_pid_is_dead", lambda _pid: True)
-        _sweep_org_zombies(db, now=now, uptime=31, warm_up_seconds=30, orchestrator=_recovery_orchestrator(db))
+        _sweep_org_zombies(db, now=now, uptime=31, warm_up_seconds=30, orchestrator=orch)
         still = db.get_task("TASK-1")
         assert still.status is TaskStatus.IN_PROGRESS and still.zombie_flagged_at is not None
-        assert (db.get_task_results("TASK-1"), db.get_audit_logs("TASK-1")) == before
+        assert _durable_recovery_snapshot(db, "TASK-1", queue) == before
     finally:
         db.close()
 
 
-def test_zombie_sweep_keeps_current_fingerprint_flagged_without_orchestrator_then_consumes(tmp_path: Path, monkeypatch) -> None:
+def test_zombie_sweep_keeps_current_fingerprint_flagged_without_orchestrator_then_consumes(tmp_path: Path, monkeypatch, request: pytest.FixtureRequest) -> None:
     """C7: absence of the consumer preserves the flag; the shipping consumer consumes it."""
-    db, _proc_root = _sources(tmp_path)
+    db, orch, queue, _proc_root = _recovery_fixture(tmp_path, request)
     try:
         now = datetime.now(timezone.utc); db.insert_task(TaskRecord(id="TASK-1", brief="x", status=TaskStatus.IN_PROGRESS, task_type="subtask", assigned_agent="dev_agent", current_session_id="session"))
         db.update_task("TASK-1", executor_pid=4242, last_heartbeat=(now - timedelta(seconds=STALE_HEARTBEAT_SECONDS + 1)).isoformat(), zombie_flagged_at=(now - timedelta(seconds=1)).isoformat())
         db.insert_task_result("TASK-1", "dev_agent", "session", "done", 1, status="completed")
         import runtime.daemon.zombie_reaper as subject
         monkeypatch.setattr(subject, "_pid_is_dead", lambda _pid: True)
-        before = (db.get_task_results("TASK-1"), db.get_audit_logs("TASK-1"))
+        before = _durable_recovery_snapshot(db, "TASK-1", queue)
         _sweep_org_zombies(db, now=now, uptime=31, warm_up_seconds=30)
         assert db.get_task("TASK-1").zombie_flagged_at is not None
-        assert (db.get_task_results("TASK-1"), db.get_audit_logs("TASK-1")) == before
-        _sweep_org_zombies(db, now=now, uptime=31, warm_up_seconds=30, orchestrator=_recovery_orchestrator(db))
+        assert _durable_recovery_snapshot(db, "TASK-1", queue) == before
+        _sweep_org_zombies(db, now=now, uptime=31, warm_up_seconds=30, orchestrator=orch)
         after = db.get_task("TASK-1")
         after_results, after_audit = db.get_task_results("TASK-1"), db.get_audit_logs("TASK-1")
         assert after.status is TaskStatus.COMPLETED and after.zombie_flagged_at is None
-        assert [row["id"] for row in after_results] == [row["id"] for row in before[0]]
-        assert [row["action"] for row in after_audit].count("zombie_cleared") == [row["action"] for row in before[1]].count("zombie_cleared") + 1
+        assert after_results == before[1] and queue.items == before[3]
+        assert after_audit[:-1] == before[2]
+        assert after_audit[-1]["action"] == "zombie_cleared"
+        assert after_audit[-1]["task_id"] == "TASK-1"
     finally:
         db.close()
 
