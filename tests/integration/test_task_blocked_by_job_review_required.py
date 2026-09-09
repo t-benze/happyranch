@@ -95,6 +95,54 @@ def _wait_for_task_parked_on_job(
     )
 
 
+def _single_audit_entry(entries: list[dict], action: str) -> dict:
+    """Return the one audit row for a lifecycle action, never a lookalike."""
+    matches = [entry for entry in entries if entry["action"] == action]
+    assert len(matches) == 1, f"expected one {action}; got {matches!r}"
+    return matches[0]
+
+
+def _assert_job_pending(base: str, job_id: str, headers: dict) -> None:
+    """Founder action is permitted only after the submitted job is still pending."""
+    response = httpx.get(f"{base}/jobs/{job_id}", headers=headers, timeout=5.0)
+    assert response.status_code == 200, response.text
+    assert response.json().get("status") == "pending", response.json()
+
+
+def _audit_payload(entry: dict) -> dict:
+    payload = entry.get("payload") or {}
+    return json.loads(payload) if isinstance(payload, str) else payload
+
+
+@pytest.mark.parametrize(
+    ("task", "expected_job_id"),
+    [
+        ({"status": "in_progress"}, "JOB-1"),
+        (
+            {
+                "status": "in_progress",
+                "block_kind": "blocked_on_job",
+                "blocked_on_job_ids": json.dumps(["JOB-wrong"]),
+            },
+            "JOB-expected",
+        ),
+    ],
+)
+def test_wait_for_task_parked_on_job_rejects_incomplete_or_wrong_readiness(
+    monkeypatch, task: dict, expected_job_id: str
+) -> None:
+    """Status-only and wrong-job observations never satisfy founder readiness."""
+    class _Response:
+        def json(self) -> dict:
+            return {"task": task}
+
+    monkeypatch.setattr(httpx, "get", lambda *args, **kwargs: _Response())
+    with pytest.raises(AssertionError, match="did not durably park"):
+        _wait_for_task_parked_on_job(
+            "http://test", "TASK-1", expected_job_id, timeout=0.0
+        )
+
+
 def test_review_required_founder_approves_then_resumes(
     live_daemon,
     runtime,
@@ -236,7 +284,9 @@ def test_review_required_founder_approves_then_resumes(
 
     # Wait for the task to reach blocked state (self-block must complete before
     # we act as founder, to avoid the task resuming before it's fully blocked).
-    _wait_for_task_parked_on_job(base, task_id, job_id)
+    parked = _wait_for_task_parked_on_job(base, task_id, job_id)
+    assert parked["task"]["blocked_on_job_ids"] == json.dumps([job_id])
+    _assert_job_pending(base, job_id, headers)
 
     # ── 6. Founder action: approve (run) the pending review_required job.
     r = httpx.post(
@@ -264,55 +314,34 @@ def test_review_required_founder_approves_then_resumes(
     )
     assert r.status_code == 200, r.text
     entries = r.json()["entries"]
-    actions = [e["action"] for e in entries]
-
     # 8a. Agent submitted a job.
-    assert "job_submitted" in actions, (
-        f"missing job_submitted in audit; actions={actions}"
-    )
+    submitted_entry = _single_audit_entry(entries, "job_submitted")
 
     # 8b. Task was blocked on the job.
-    assert "task_blocked_on_jobs" in actions, (
-        f"missing task_blocked_on_jobs in audit; actions={actions}"
-    )
+    blocked_entry = _single_audit_entry(entries, "task_blocked_on_jobs")
+    assert _audit_payload(blocked_entry)["blocking_job_ids"] == [job_id]
 
     # 8c. Job ran and completed (after founder approval via /run).
-    assert "job_run_started" in actions, (
-        f"missing job_run_started (founder-triggered) in audit; actions={actions}"
-    )
-    assert "job_run_completed" in actions, (
-        f"missing job_run_completed in audit; actions={actions}"
-    )
-    started_entry = next(e for e in entries if e["action"] == "job_run_started")
-    terminal_entry = next(e for e in entries if e["action"] == "job_run_completed")
+    started_entry = _single_audit_entry(entries, "job_run_started")
+    terminal_entry = _single_audit_entry(entries, "job_run_completed")
     assert started_entry["agent"] == "founder"
     assert terminal_entry["agent"] == "founder"
 
     # 8d. Task was auto-resumed (proves CAS flip fired and BLOCKED-JOBS-RESULTS
     #     header was injected before stage 2).
-    assert "task_resumed_from_jobs" in actions, (
-        f"missing task_resumed_from_jobs in audit; actions={actions}"
-    )
+    _single_audit_entry(entries, "task_resumed_from_jobs")
 
     # 8e. The resume audit row should reference the same job.
-    submitted_entry = next(e for e in entries if e["action"] == "job_submitted")
-    payload_raw = submitted_entry.get("payload") or {}
-    if isinstance(payload_raw, str):
-        payload_raw = json.loads(payload_raw)
+    payload_raw = _audit_payload(submitted_entry)
     submitted_job_id = payload_raw.get("script_request_id")
     assert submitted_job_id == job_id, (
         f"job_submitted.script_request_id={submitted_job_id!r} != job_id={job_id!r}"
     )
 
-    resumed_entry = next(e for e in entries if e["action"] == "task_resumed_from_jobs")
-    resumed_payload = resumed_entry.get("payload") or {}
-    if isinstance(resumed_payload, str):
-        resumed_payload = json.loads(resumed_payload)
+    resumed_entry = _single_audit_entry(entries, "task_resumed_from_jobs")
+    resumed_payload = _audit_payload(resumed_entry)
     blocking_ids = resumed_payload.get("blocking_job_ids", [])
-    assert job_id in blocking_ids, (
-        f"task_resumed_from_jobs.blocking_job_ids={blocking_ids!r} "
-        f"does not include job_id={job_id!r}"
-    )
+    assert blocking_ids == [job_id]
 
     # 8f. Both stages ran.
     assert counter_file.exists(), "counter file was never created by fake_claude"
@@ -327,6 +356,7 @@ def test_review_required_founder_approves_then_resumes(
     assert resumed_payload.get("trigger") == "job_terminal", (
         f"expected trigger=job_terminal (founder-approved flow), got: {resumed_payload}"
     )
+    assert resumed_payload.get("triggering_job_id") == job_id
 
 
 def test_review_required_founder_rejects_then_resumes(
@@ -459,7 +489,9 @@ def test_review_required_founder_rejects_then_resumes(
     assert job_id.startswith("JOB-"), f"unexpected job_id: {job_id!r}"
 
     # Wait for the task to reach blocked state.
-    _wait_for_task_parked_on_job(base, task_id, job_id)
+    parked = _wait_for_task_parked_on_job(base, task_id, job_id)
+    assert parked["task"]["blocked_on_job_ids"] == json.dumps([job_id])
+    _assert_job_pending(base, job_id, headers)
 
     # ── 6. Founder action: REJECT the pending job.
     r = httpx.post(
@@ -490,47 +522,31 @@ def test_review_required_founder_rejects_then_resumes(
     )
     assert r.status_code == 200, r.text
     entries = r.json()["entries"]
-    actions = [e["action"] for e in entries]
-
     # 8a. Agent submitted a job.
-    assert "job_submitted" in actions, (
-        f"missing job_submitted in audit; actions={actions}"
-    )
+    submitted_entry = _single_audit_entry(entries, "job_submitted")
 
     # 8b. Task was blocked on the job.
-    assert "task_blocked_on_jobs" in actions, (
-        f"missing task_blocked_on_jobs in audit; actions={actions}"
-    )
+    blocked_entry = _single_audit_entry(entries, "task_blocked_on_jobs")
+    assert _audit_payload(blocked_entry)["blocking_job_ids"] == [job_id]
 
     # 8c. Job was rejected by founder.
-    assert "job_rejected" in actions, (
-        f"missing job_rejected in audit; actions={actions}"
-    )
+    rejected_entry = _single_audit_entry(entries, "job_rejected")
+    assert rejected_entry["agent"] == "founder"
 
     # 8d. Task was auto-resumed.
-    assert "task_resumed_from_jobs" in actions, (
-        f"missing task_resumed_from_jobs in audit; actions={actions}"
-    )
+    _single_audit_entry(entries, "task_resumed_from_jobs")
 
     # 8e. The resume payload references the correct job.
-    submitted_entry = next(e for e in entries if e["action"] == "job_submitted")
-    payload_raw = submitted_entry.get("payload") or {}
-    if isinstance(payload_raw, str):
-        payload_raw = json.loads(payload_raw)
+    payload_raw = _audit_payload(submitted_entry)
     submitted_job_id = payload_raw.get("script_request_id")
     assert submitted_job_id == job_id, (
         f"job_submitted.script_request_id={submitted_job_id!r} != job_id={job_id!r}"
     )
 
-    resumed_entry = next(e for e in entries if e["action"] == "task_resumed_from_jobs")
-    resumed_payload = resumed_entry.get("payload") or {}
-    if isinstance(resumed_payload, str):
-        resumed_payload = json.loads(resumed_payload)
+    resumed_entry = _single_audit_entry(entries, "task_resumed_from_jobs")
+    resumed_payload = _audit_payload(resumed_entry)
     blocking_ids = resumed_payload.get("blocking_job_ids", [])
-    assert job_id in blocking_ids, (
-        f"task_resumed_from_jobs.blocking_job_ids={blocking_ids!r} "
-        f"does not include job_id={job_id!r}"
-    )
+    assert blocking_ids == [job_id]
 
     # 8f. The outcomes in the resume payload show "rejected" for this job.
     job_outcomes = resumed_payload.get("job_outcomes", {})
@@ -552,3 +568,4 @@ def test_review_required_founder_rejects_then_resumes(
     assert resumed_payload.get("trigger") == "job_terminal", (
         f"expected trigger=job_terminal (founder-rejected flow), got: {resumed_payload}"
     )
+    assert resumed_payload.get("triggering_job_id") == job_id
