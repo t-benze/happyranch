@@ -2271,31 +2271,44 @@ def test_set_executor_switches_org_and_workspace(
 def test_set_executor_refreshes_after_materialization_and_preserves_newer_fields(
     tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:
-    """The shipping route must not serialize its pre-await AgentDef."""
-    from dataclasses import replace
+    """A real accepted update wins while the shipping switch is suspended."""
+    from fastapi import HTTPException
     from runtime.daemon.routes import agents as agents_mod
-    from runtime.orchestrator.agent_def import render_agent_text
     from runtime.orchestrator import prompt_loader
 
     _seed_active_agent(org_state, "dev_agent", executor="claude", system_prompt="old\n")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
 
-    def winner(*_args, **_kwargs):
-        current = prompt_loader.load_agent(_paths(org_state), "dev_agent")
-        assert current is not None
-        newer = replace(current, system_prompt="winner prompt\n",
-                        repos={"happyranch": "/winner"}, description="winner description")
-        (_paths(org_state).agents_dir / "dev_agent.md").write_text(render_agent_text(newer))
-        return []
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
 
-    monkeypatch.setattr(agents_mod, "_executor_switch_materialize", winner)
+    async def controlled_to_thread(func, *args, **kwargs):
+        if func is agents_mod._executor_switch_materialize:
+            arrived.set()
+            await release.wait()
+            return []
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
     with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
-        response = TestClient(app).put(
-            "/api/v1/orgs/alpha/agents/dev_agent/executor",
-            json={"executor": "pi"}, headers=auth_headers,
-        )
-    assert response.status_code == 200, response.text
+        async def exercise() -> None:
+            switch = asyncio.create_task(agents_mod.set_agent_executor(
+                "alpha", "dev_agent", agents_mod.SetExecutorBody(executor="pi"), org_state,
+            ))
+            await arrived.wait()
+            revision = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+            assert revision is not None
+            winner = await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+                expected_revision=revision, system_prompt="winner prompt\n",
+                repos={"happyranch": "/winner"}, description="winner description",
+            ), org_state)
+            assert winner == {"ok": True}
+            release.set()
+            assert (await switch)["after"]["org_executor"] == "pi"
+        _activate_eh_session(org_state)
+        asyncio.run(exercise())
     updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert updated is not None
     assert updated.executor == "pi"
@@ -2303,47 +2316,61 @@ def test_set_executor_refreshes_after_materialization_and_preserves_newer_fields
     assert updated.repos == {"happyranch": "/winner"}
     assert updated.description == "winner description"
     assert MockCB.return_value.ensure_workspace_ready.call_args.args[2] == "winner prompt\n"
+    audits = org_state.db.get_audit_logs(_EH_TASK)
+    assert len([row for row in audits if row["action"] == "agent_managed"]) == 1
 
 
 def test_set_executor_rejects_competing_executor_after_materialization(
     tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:
-    """A competing executor/model change wins; the stale switch emits no audit."""
-    from dataclasses import replace
+    """A competing accepted executor update wins; stale switch has no audit."""
+    from fastapi import HTTPException
     from runtime.daemon.routes import agents as agents_mod
-    from runtime.orchestrator.agent_def import render_agent_text
     from runtime.orchestrator import prompt_loader
 
     _seed_active_agent(org_state, "dev_agent", executor="claude")
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
 
-    def winner(*_args, **_kwargs):
-        current = prompt_loader.load_agent(_paths(org_state), "dev_agent")
-        assert current is not None
-        (_paths(org_state).agents_dir / "dev_agent.md").write_text(
-            render_agent_text(replace(current, executor="codex"))
-        )
-        return []
-
-    monkeypatch.setattr(agents_mod, "_executor_switch_materialize", winner)
-    response = TestClient(app).put(
-        "/api/v1/orgs/alpha/agents/dev_agent/executor",
-        json={"executor": "pi"}, headers=auth_headers,
-    )
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "executor_switch_conflict"
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+    async def controlled_to_thread(func, *args, **kwargs):
+        if func is agents_mod._executor_switch_materialize:
+            arrived.set(); await release.wait(); return []
+        return await real_to_thread(func, *args, **kwargs)
+    monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+    _activate_eh_session(org_state)
+    async def exercise() -> None:
+        loser = asyncio.create_task(agents_mod.set_agent_executor(
+            "alpha", "dev_agent", agents_mod.SetExecutorBody(executor="pi"), org_state))
+        await arrived.wait()
+        revision = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+        assert revision is not None
+        assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+            action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+            expected_revision=revision, executor="codex"), org_state) == {"ok": True}
+        winning_bytes = (_paths(org_state).agents_dir / "dev_agent.md").read_bytes()
+        release.set()
+        with pytest.raises(HTTPException) as raised:
+            await loser
+        assert raised.value.status_code == 409
+        assert raised.value.detail["code"] == "executor_switch_conflict"
+        assert (_paths(org_state).agents_dir / "dev_agent.md").read_bytes() == winning_bytes
+    asyncio.run(exercise())
     winner_def = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert winner_def is not None and winner_def.executor == "codex"
+    assert len([r for r in org_state.db.get_audit_logs(_EH_TASK) if r["action"] == "agent_managed"]) == 1
 
 
 def test_manage_agent_reset_failure_preserves_newer_canonical_bytes(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    """Conditional rollback must not replace a winner during bootstrap await."""
-    from dataclasses import replace
+    """A real accepted winner during bootstrap prevents stale compensation."""
+    import logging
+    from fastapi import HTTPException
+    from unittest.mock import Mock
+    from runtime.daemon.routes import agents as agents_mod
     from runtime.infrastructure import database as db_module
-    from runtime.orchestrator.agent_def import render_agent_text
     from runtime.orchestrator import prompt_loader
 
     _activate_eh_session(org_state)
@@ -2351,31 +2378,50 @@ def test_manage_agent_reset_failure_preserves_newer_canonical_bytes(
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
 
-    def bootstrap(*_args, **_kwargs):
-        current = prompt_loader.load_agent(_paths(org_state), "dev_agent")
-        assert current is not None
-        winner = replace(current, system_prompt="newer winner\n")
-        (_paths(org_state).agents_dir / "dev_agent.md").write_text(render_agent_text(winner))
+    arrived, release = asyncio.Event(), asyncio.Event()
+    bootstrap = Mock()
+    real_to_thread = agents_mod.asyncio.to_thread
+    bootstrap_calls = 0
+    async def controlled_to_thread(func, *args, **kwargs):
+        nonlocal bootstrap_calls
+        if func is bootstrap:
+            bootstrap_calls += 1
+            if bootstrap_calls == 1:
+                arrived.set()
+                await release.wait()
+            return None
+        return await real_to_thread(func, *args, **kwargs)
 
     with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, patch.object(
         db_module.Database, "_reset_thread_sessions_for_agent_uncommitted",
         side_effect=RuntimeError("injected reset failure"), create=True,
-    ):
-        MockCB.return_value.ensure_workspace_ready.side_effect = bootstrap
-        response = TestClient(app, raise_server_exceptions=False).post(
-            "/api/v1/orgs/alpha/agents/manage",
-            json={"action": "update", "name": "dev_agent", "task_id": _EH_TASK,
-                  "session_id": _EH_SESSION,
-                  "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
-                  "executor": "codex"}, headers=auth_headers,
-        )
-    assert response.status_code == 500, response.text
+    ), patch.object(agents_mod.asyncio, "to_thread", controlled_to_thread):
+        MockCB.return_value.ensure_workspace_ready = bootstrap
+        async def exercise() -> None:
+            initial = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+            assert initial is not None
+            loser = asyncio.create_task(agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+                expected_revision=initial, executor="codex"), org_state))
+            await arrived.wait()
+            current = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+            assert current is not None
+            # The winner is another accepted shipping route call on this loop.
+            assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+                expected_revision=current, system_prompt="newer winner\n"), org_state) == {"ok": True}
+            winning_bytes = (_paths(org_state).agents_dir / "dev_agent.md").read_bytes()
+            release.set()
+            with pytest.raises(RuntimeError, match="injected reset failure"):
+                await loser
+            assert (_paths(org_state).agents_dir / "dev_agent.md").read_bytes() == winning_bytes
+        asyncio.run(exercise())
     winner = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert winner is not None
     assert winner.executor == "codex"
     assert winner.system_prompt == "newer winner\n"
     # Reconciliation of the stale prior definition is forbidden on conflict.
-    assert MockCB.return_value.ensure_workspace_ready.call_count == 1
+    assert bootstrap_calls == 2
 
 
 def test_set_executor_invalid_returns_422_and_no_mutation(
