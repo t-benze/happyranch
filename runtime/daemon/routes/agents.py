@@ -663,15 +663,17 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         if not body.description or not body.system_prompt:
             raise HTTPException(status_code=422, detail="description and system_prompt required for enroll")
         _validate_executor(body.executor or "claude")
-        # Reuse any name that has ever been enrolled (active, pending, or
-        # terminated) to keep historical identity unambiguous.
-        if prompt_loader.is_name_unavailable(paths, body.name):
-            detail = {"code": "agent_name_unavailable", "name": body.name}
-            if prompt_loader.is_terminated(paths, body.name):
-                detail["reason"] = "a terminated agent with this name exists"
-            raise HTTPException(status_code=409, detail=detail)
-        # Validate target_team BEFORE inserting — avoid zombie enrollment files.
         async with org.teams_lock:
+            # Reuse any name that has ever been enrolled (active, pending, or
+            # terminated) to keep historical identity unambiguous.  This must
+            # share the lock with the synchronous pending write: the helper
+            # atomically replaces an existing pending file.
+            if prompt_loader.is_name_unavailable(paths, body.name):
+                detail = {"code": "agent_name_unavailable", "name": body.name}
+                if prompt_loader.is_terminated(paths, body.name):
+                    detail["reason"] = "a terminated agent with this name exists"
+                raise HTTPException(status_code=409, detail=detail)
+            # Validate target_team BEFORE inserting — avoid zombie enrollment files.
             target_team = body.target_team or manager_team
             if target_team != manager_team:
                 raise HTTPException(
@@ -2163,17 +2165,17 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
 async def reject_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
     paths = OrgPaths(root=org.root)
 
-    pending = prompt_loader.load_pending_agent(paths, agent_name)
-    if pending is None:
-        existing = prompt_loader.load_agent(paths, agent_name)
-        if existing is not None:
-            raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
-        raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
-
-    # Drop the file first; if it's already gone the reject_agent helper raises
-    # FileNotFoundError. Holding teams_lock keeps the file-unlink + teams-yaml
-    # mutation paired so a concurrent enrollment can't observe a half-state.
+    # Fresh-read after acquiring the lock so a promotion or replacement that
+    # wins while this request waits cannot be unlinked or removed by stale team.
     async with org.teams_lock:
+        pending = prompt_loader.load_pending_agent(paths, agent_name)
+        if pending is None:
+            existing = prompt_loader.load_agent(paths, agent_name)
+            if existing is not None:
+                raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
+            raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+        # Drop the file first; holding teams_lock keeps the synchronous unlink
+        # and teams-yaml mutation paired with the freshly read pending state.
         try:
             prompt_loader.reject_agent(paths, agent_name)
         except FileNotFoundError:

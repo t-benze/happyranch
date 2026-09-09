@@ -967,6 +967,99 @@ def test_manage_agent_enroll_duplicate_returns_409(
     assert r.status_code == 409
 
 
+def _pending_agent(name: str, team: str, prompt: str = "prompt\n"):
+    from datetime import datetime, timezone
+    from runtime.orchestrator.agent_def import AgentDef
+
+    return AgentDef(
+        name=name, team=team, role="worker", executor="claude",
+        allow_rules=(), repos={}, enrolled_by="engineering_head",
+        enrolled_at_task=_EH_TASK, enrolled_at=datetime.now(timezone.utc),
+        system_prompt=prompt,
+    )
+
+
+def test_manage_agent_enroll_same_name_waiters_keep_one_pending_winner(
+    tmp_home, org_state,
+) -> None:
+    """Two real route calls queued on the lock cannot overwrite a pending winner."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    paths = _paths(org_state)
+    first = agents_mod.ManageAgentBody(
+        action="enroll", name="lock_writer", task_id=_EH_TASK,
+        session_id=_EH_SESSION, description="first", system_prompt="first bytes\n",
+    )
+    second = agents_mod.ManageAgentBody(
+        action="enroll", name="lock_writer", task_id=_EH_TASK,
+        session_id=_EH_SESSION, description="second", system_prompt="second bytes\n",
+    )
+    winner_bytes: list[bytes] = []
+
+    async def exercise() -> None:
+        async with org_state.teams_lock:
+            winner = asyncio.create_task(agents_mod.manage_agent("alpha", first, org_state))
+            loser = asyncio.create_task(agents_mod.manage_agent("alpha", second, org_state))
+            await asyncio.sleep(0)
+        assert await asyncio.wait_for(winner, timeout=1) == {"ok": True, "status": "pending"}
+        winner_bytes.append((paths.pending_agents_dir / "lock_writer.md").read_bytes())
+        with pytest.raises(HTTPException) as raised:
+            await asyncio.wait_for(loser, timeout=1)
+        assert raised.value.status_code == 409
+        assert raised.value.detail == {"code": "agent_name_unavailable", "name": "lock_writer"}
+
+    asyncio.run(exercise())
+    pending_path = paths.pending_agents_dir / "lock_writer.md"
+    assert pending_path.read_bytes() == winner_bytes[0]
+    assert b"first bytes" in winner_bytes[0] and b"second bytes" not in winner_bytes[0]
+    assert "lock_writer" in org_state.teams.all_agents()
+    audits = [row for row in org_state.db.get_audit_logs(_EH_TASK) if row["action"] == "agent_managed"]
+    assert len(audits) == 1
+
+
+@pytest.mark.parametrize("unavailable", ["active", "pending", "terminated"])
+def test_manage_agent_enroll_rechecks_unavailability_after_waiting_for_lock(
+    tmp_home, org_state, unavailable,
+) -> None:
+    """Controlled storage injection proves the final availability check is locked."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    paths = _paths(org_state)
+    body = agents_mod.ManageAgentBody(
+        action="enroll", name="late_taken", task_id=_EH_TASK,
+        session_id=_EH_SESSION, description="late", system_prompt="late bytes\n",
+    )
+
+    async def exercise() -> None:
+        async with org_state.teams_lock:
+            waiting = asyncio.create_task(agents_mod.manage_agent("alpha", body, org_state))
+            await asyncio.sleep(0)
+            # This direct fixture injection models the canonical state changed
+            # by another supported writer while this request was lock-queued.
+            if unavailable == "active":
+                _seed_active_agent(org_state, "late_taken", system_prompt="active bytes\n")
+            elif unavailable == "pending":
+                prompt_loader.write_pending_agent(paths, _pending_agent(
+                    "late_taken", "engineering", "pending bytes\n",
+                ))
+            else:
+                terminated = paths.agents_dir / "_terminated" / "late_taken.md"
+                terminated.parent.mkdir(parents=True, exist_ok=True)
+                terminated.write_text("terminated fixture\n")
+        with pytest.raises(HTTPException) as raised:
+            await asyncio.wait_for(waiting, timeout=1)
+        assert raised.value.status_code == 409
+        if unavailable == "terminated":
+            assert raised.value.detail["reason"] == "a terminated agent with this name exists"
+
+    asyncio.run(exercise())
+    assert not (paths.pending_agents_dir / "late_taken.md").exists() or unavailable == "pending"
+
+
 def test_manage_agent_enroll_rejects_invalid_executor_at_boundary(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
@@ -1601,6 +1694,98 @@ def test_reject_agent_removes_from_teams_yaml(
     # Pending file gone AND team membership removed.
     assert prompt_loader.load_pending_agent(_paths(org_state), "rookie_writer") is None
     assert "rookie_writer" not in org_state.teams.all_agents()
+
+
+def test_reject_agent_refreshes_after_waiting_for_promotion(
+    tmp_home, org_state,
+) -> None:
+    """A promotion that wins while reject waits preserves active bytes and roster."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+
+    paths = _paths(org_state)
+    prompt_loader.write_pending_agent(paths, _pending_agent(
+        "promoted_writer", "engineering", "pending winner bytes\n",
+    ))
+    org_state.teams.add_worker("engineering", "promoted_writer")
+
+    async def exercise() -> None:
+        async with org_state.teams_lock:
+            reject = asyncio.create_task(agents_mod.reject_agent(
+                "alpha", "promoted_writer", org_state,
+            ))
+            await asyncio.sleep(0)
+            promoted = prompt_loader.approve_agent(paths, "promoted_writer")
+            active_bytes = (paths.agents_dir / "promoted_writer.md").read_bytes()
+        with pytest.raises(HTTPException) as raised:
+            await asyncio.wait_for(reject, timeout=1)
+        assert raised.value.status_code == 409
+        assert (paths.agents_dir / "promoted_writer.md").read_bytes() == active_bytes
+        assert promoted.system_prompt == "pending winner bytes\n"
+
+    asyncio.run(exercise())
+    assert "promoted_writer" in org_state.teams.all_agents()
+    assert prompt_loader.load_pending_agent(paths, "promoted_writer") is None
+
+
+def test_reject_agent_missing_while_waiting_preserves_membership(
+    tmp_home, org_state,
+) -> None:
+    """A missing pending file after lock wait has no stale roster side effect."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+
+    paths = _paths(org_state)
+    prompt_loader.write_pending_agent(paths, _pending_agent("vanished_writer", "engineering"))
+    org_state.teams.add_worker("engineering", "vanished_writer")
+    org_state.teams.add_worker("engineering", "unrelated_writer")
+
+    async def exercise() -> None:
+        async with org_state.teams_lock:
+            reject = asyncio.create_task(agents_mod.reject_agent(
+                "alpha", "vanished_writer", org_state,
+            ))
+            await asyncio.sleep(0)
+            # Controlled filesystem injection: another actor removed its
+            # pending record before this lock-queued rejection entered.
+            prompt_loader.reject_agent(paths, "vanished_writer")
+        with pytest.raises(HTTPException) as raised:
+            await asyncio.wait_for(reject, timeout=1)
+        assert raised.value.status_code == 404
+
+    asyncio.run(exercise())
+    assert "vanished_writer" in org_state.teams.all_agents()
+    assert "unrelated_writer" in org_state.teams.all_agents()
+
+
+def test_reject_agent_uses_current_pending_team_after_waiting(
+    tmp_home, org_state,
+) -> None:
+    """Controlled pending replacement removes only its fresh current-team entry."""
+    from runtime.daemon.routes import agents as agents_mod
+
+    paths = _paths(org_state)
+    prompt_loader.write_pending_agent(paths, _pending_agent("moved_writer", "engineering"))
+    org_state.teams.add_worker("engineering", "moved_writer")
+    org_state.teams.add_worker("content", "unrelated_writer")
+
+    async def exercise() -> None:
+        async with org_state.teams_lock:
+            reject = asyncio.create_task(agents_mod.reject_agent(
+                "alpha", "moved_writer", org_state,
+            ))
+            await asyncio.sleep(0)
+            # Controlled fixture replacement isolates the stale-team seam;
+            # normal enrollment is now correctly refused for this reuse.
+            prompt_loader.write_pending_agent(paths, _pending_agent("moved_writer", "content"))
+            org_state.teams.add_worker("content", "moved_writer")
+        assert await asyncio.wait_for(reject, timeout=1) == {"ok": True}
+
+    asyncio.run(exercise())
+    assert prompt_loader.load_pending_agent(paths, "moved_writer") is None
+    assert "moved_writer" in org_state.teams.all_agents()
+    assert org_state.teams.team_for_agent("moved_writer") == "engineering"
+    assert "unrelated_writer" in org_state.teams.all_agents()
 
 
 def test_list_enrollments(
