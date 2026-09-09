@@ -121,6 +121,44 @@ The user experience should ensure the setting is *discoverable* from Work Hours 
 
 **Approved pilot sequence:** deliver the #576 Work Hours governance-placement pattern first, then #577 as the bounded navigation-only AppShell grouping pilot. Preserve existing routes, deep links, and compatibility redirects. Do not use either pilot to smuggle in cross-domain runtime changes or broader navigation consolidation.
 
+## Bounded Todos colour delivery acceptance
+
+Founder THR-221 seq235/236, carried by TASK-7171 / TASK-7176, narrows
+PR #836 acceptance to Todos semantic-colour convergence at desktop 1440×900:
+list/detail in light/dark. Armed/firing/fired use positive tones; failed/timeout
+use attention; paused/cancelled/expired use neutral. Labels and component
+geometry remain unchanged, only armed/firing have LEDs, and unknown values retain
+the raw label with neutral tone and no LED. List/detail share StatusPill and
+existing theme tokens; the local colour mapper and six obsolete raw-colour
+exceptions are removed without new exemptions.
+
+Acceptance requires production-seam regression evidence for the shared callers,
+current-main integration, full local CI, independent code-review APPROVE and QA
+PASS, and exact-head PR CI (Python 3.14, Web Node 24, Linux/macOS canonical-store
+validation). Task StatusBadge failed retains its independent abandoned/red style;
+thread open/archived, job exits and Dashboard explicit verdict mappings retain
+their behavior. KB types are freeform: future values matching the added schedule
+words inherit their shared tones. TASK-7171's 109-entry census has no matching
+types, which is a snapshot rather than a permanent vocabulary guarantee.
+
+The four accepted normal desktop PNG/raw milestones remain bounded historical
+colour proof after source/build correspondence is reverified. Current-main
+Sidebar integration changes the shell, so those images are not fresh integrated
+shell captures. Historical full acceptance remains 0/4. TASK-7123 adds bounded
+colour/used-font, loading, empty, error→Retry→populated, missing-detail and
+keyboard observations; it does not establish complete pixel/state coverage.
+
+Broader product audit obligations remain separate: post-scroll capture diagnosis,
+B3/B4 reached/restored and induced/restored pixels and clipping, native popup
+pixels, filtered-empty, mutation/conflict/permission/stale/disconnected states,
+complete focus/overlay evidence, and unrelated shell/typography/spacing
+conformance. Their missing evidence and historical failures are retained, never
+relabeled PASS; they are not prerequisites to this bounded colour delivery.
+Any actual defect attributable to PR #836 still blocks its merge, including one
+found in a deferred area. Wider behavioral requirements below remain in force.
+Existing responsive functionality and automated tests remain; mobile is outside
+founder seq214 acceptance scope. No full UI conformance or deployment is claimed.
+
 ## Acceptance criteria for any future implementation proposal
 
 - It includes a route-to-group and current-contract crosswalk covering every changed normal product route, with explicit retained deep links and excluded developer/compatibility routes.

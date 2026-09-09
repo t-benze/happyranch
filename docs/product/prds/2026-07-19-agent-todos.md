@@ -186,16 +186,41 @@ Important provenance rules:
 
 ## Acceptance Criteria
 
-For the Todos semantic-tone UI-conformance unit (PR #836), founder THR-221
-seq214 (“we do not need to support mobile layout”), carried by TASK-7076 /
-TASK-7094, sets the required populated matrix to exactly four desktop 1440×900
-rows: list/light, list/dark, detail/light, and detail/dark. Loading, empty,
-error/retry, keyboard/accessibility, applicable auth/permission and mutation
-states, and desktop overlays still require evidence. Mobile acceptance, repair,
-recapture, backlog, and mobile-only blockers are no longer required. Preserve
-existing responsive functionality and automated tests. Historical mobile failures
-remain failed and out of scope, never relabeled as passes. This visual scope
-does not change the behavioral criteria below or other surfaces' matrices.
+Founder THR-221 seq235/236, carried by TASK-7171 / TASK-7176, narrows
+PR #836 acceptance to Todos semantic-colour convergence at desktop 1440×900:
+list/detail in light/dark. Armed/firing/fired use positive tones; failed/timeout
+use attention; paused/cancelled/expired use neutral. Labels and component
+geometry remain unchanged, only armed/firing have LEDs, and unknown values retain
+the raw label with neutral tone and no LED. List/detail share StatusPill and
+existing theme tokens; the local colour mapper and six obsolete raw-colour
+exceptions are removed without new exemptions.
+
+Acceptance requires production-seam regression evidence for the shared callers,
+current-main integration, full local CI, independent code-review APPROVE and QA
+PASS, and exact-head PR CI (Python 3.14, Web Node 24, Linux/macOS canonical-store
+validation). Task StatusBadge failed retains its independent abandoned/red style;
+thread open/archived, job exits and Dashboard explicit verdict mappings retain
+their behavior. KB types are freeform: future values matching the added schedule
+words inherit their shared tones. TASK-7171's 109-entry census has no matching
+types, which is a snapshot rather than a permanent vocabulary guarantee.
+
+The four accepted normal desktop PNG/raw milestones remain bounded historical
+colour proof after source/build correspondence is reverified. Current-main
+Sidebar integration changes the shell, so those images are not fresh integrated
+shell captures. Historical full acceptance remains 0/4. TASK-7123 adds bounded
+colour/used-font, loading, empty, error→Retry→populated, missing-detail and
+keyboard observations; it does not establish complete pixel/state coverage.
+
+Broader product audit obligations remain separate: post-scroll capture diagnosis,
+B3/B4 reached/restored and induced/restored pixels and clipping, native popup
+pixels, filtered-empty, mutation/conflict/permission/stale/disconnected states,
+complete focus/overlay evidence, and unrelated shell/typography/spacing
+conformance. Their missing evidence and historical failures are retained, never
+relabeled PASS; they are not prerequisites to this bounded colour delivery.
+Any actual defect attributable to PR #836 still blocks its merge, including one
+found in a deferred area. Wider behavioral requirements below remain in force.
+Existing responsive functionality and automated tests remain; mobile is outside
+founder seq214 acceptance scope. No full UI conformance or deployment is claimed.
 
 - Given an in-org agent has a valid active session, it can create a self-owned
   Todo whether `scheduling.enabled_agents` is absent or excludes that agent.
