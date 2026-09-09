@@ -249,6 +249,12 @@ def live_daemon(
     monkeypatch.setenv("HAPPYRANCH_CLAUDE_CLI_PATH", str(fake_claude))
     monkeypatch.setenv("HAPPYRANCH_CODEX_CLI_PATH", str(fake_codex))
     monkeypatch.setenv("HAPPYRANCH_OPENCODE_CLI_PATH", str(fake_opencode))
+    # The daemon is a nested process: it must receive a copied environment
+    # without only the outer task-containment contract, then establish its own
+    # containment for executor children.  Preserve TMPDIR/TMP/TEMP and every
+    # other test/outer-job setting.
+    monkeypatch.delenv("HAPPYRANCH_TASK_TMP_ROOT", raising=False)
+    monkeypatch.delenv("HAPPYRANCH_TASK_SCRATCH_MANIFEST", raising=False)
     # Disable executor launch spacing (issue #85) so integration runs stay fast
     # and deterministic — the 1.5s default would serialize same-provider launches.
     monkeypatch.setenv("HAPPYRANCH_EXECUTOR_LAUNCH_SPACING_SECONDS", "0")
@@ -297,6 +303,11 @@ def live_daemon_idle(
     monkeypatch.setenv("HAPPYRANCH_CLAUDE_CLI_PATH", str(fake_claude))
     monkeypatch.setenv("HAPPYRANCH_CODEX_CLI_PATH", str(fake_codex))
     monkeypatch.setenv("HAPPYRANCH_OPENCODE_CLI_PATH", str(fake_opencode))
+    # Match live_daemon: remove only outer task-containment markers before
+    # starting this nested daemon; ordinary temporary-directory settings stay
+    # inherited for the test process.
+    monkeypatch.delenv("HAPPYRANCH_TASK_TMP_ROOT", raising=False)
+    monkeypatch.delenv("HAPPYRANCH_TASK_SCRATCH_MANIFEST", raising=False)
     # Disable executor launch spacing (issue #85) — see live_daemon.
     monkeypatch.setenv("HAPPYRANCH_EXECUTOR_LAUNCH_SPACING_SECONDS", "0")
     # Executor launch is registration-only. The idle daemon still needs the
