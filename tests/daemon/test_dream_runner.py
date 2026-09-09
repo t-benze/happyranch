@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -201,9 +202,11 @@ async def test_run_dream_timeout_sets_timeout_status_and_audit(org_state):
     dream = org_state.db.get_dream("DREAM-001")
     assert dream.status == DreamStatus.TIMEOUT
     assert "timed out" in dream.error
-    actions = [r["action"] for r in org_state.db.get_audit_logs("DREAM-001")]
-    assert "dream_timeout" in actions
-    assert "dream_failed" not in actions
+    actions = list(org_state.db.get_audit_logs("DREAM-001"))
+    assert actions[-1]["payload"]["reason"] == dream.error
+    action_names = [r["action"] for r in actions]
+    assert "dream_timeout" in action_names
+    assert "dream_failed" not in action_names
     # A timeout must NOT advance the successful-dream window.
     assert org_state.db.get_last_successful_dream("dev_agent") is None
 
@@ -338,9 +341,7 @@ class FakeStructuredResultExecutor:
 
 
 async def test_run_dream_session_limit_classified_terminal_error(org_state):
-    """(a) Structured terminal session-limit result + unrelated stderr:
-    persisted dream.error and dream_failed audit reason must be the
-    classified 'session_limit', not the raw stderr-based error."""
+    """Structured result keeps the existing dream error/audit surfaces aligned."""
     _insert_pending_dream(org_state)
     fake = FakeStructuredResultExecutor(FakeSessionLimitResult())
 
@@ -351,15 +352,11 @@ async def test_run_dream_session_limit_classified_terminal_error(org_state):
     assert dream.error == "session_limit"
     actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
     assert actions[-1]["action"] == "dream_failed"
-    assert actions[-1]["payload"]["reason"] == "session_limit"
-    # Must NOT contain the stderr noise.
-    assert "Workspace trust warning" not in dream.error
+    assert actions[-1]["payload"]["reason"] == dream.error
 
 
 async def test_run_dream_certificate_error_classified_terminal_error(org_state):
-    """(b) Structured UNKNOWN_CERTIFICATE_VERIFICATION_ERROR result +
-    unrelated stderr: persisted error and audit reason must be the
-    classified transport_error reason."""
+    """Structured certificate result keeps the existing surfaces aligned."""
     _insert_pending_dream(org_state)
     fake = FakeStructuredResultExecutor(FakeCertificateErrorResult())
 
@@ -370,9 +367,7 @@ async def test_run_dream_certificate_error_classified_terminal_error(org_state):
     assert dream.error == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
     actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
     assert actions[-1]["action"] == "dream_failed"
-    assert actions[-1]["payload"]["reason"] == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
-    # Must NOT contain the stderr noise.
-    assert "Workspace trust warning" not in dream.error
+    assert actions[-1]["payload"]["reason"] == dream.error
 
 
 async def test_run_dream_timeout_unchanged_by_terminal_error(org_state):
@@ -445,15 +440,18 @@ async def test_run_dream_real_chain_session_limit(
     mock_subprocess, _mock_resolve_binary, org_state,
 ):
     """Real-chain (session-limit): mocked subprocess produces
-    {type:result, subtype:error_during_execution} + workspace-trust stderr →
+    the observed success-subtype API-error envelope + a trust-warning lookalike stderr →
     ClaudeExecutor.run() with production parser → run_dream →
-    dream.error == dream_failed.payload.reason == 'session_limit'."""
+    dream.error/audit retain the meaningful stderr before the supplementary
+    terminal classification.  A lookalike is not the exact benign warning
+    shape and must not be suppressed."""
     _insert_pending_dream(org_state)
 
     mock_subprocess.Popen.return_value = _popen_mock(
         returncode=1,
-        stdout='{"type":"result","subtype":"error_during_execution","is_error":true,'
-               '"result":"Session limit reached"}',
+        stdout='{"type":"result","subtype":"success","is_error":true,'
+               '"terminal_reason":"api_error","api_error_status":429,'
+               '"result":"You\'ve hit your session limit · resets tomorrow"}',
         stderr="Workspace trust warning: untrusted directory\n",
     )
 
@@ -471,12 +469,39 @@ async def test_run_dream_real_chain_session_limit(
     mock_subprocess.Popen.assert_called_once()
     dream = org_state.db.get_dream("DREAM-001")
     assert dream.status == DreamStatus.FAILED
-    assert dream.error == "session_limit"
+    assert dream.error == (
+        "Workspace trust warning: untrusted directory "
+        "(terminal_error: session_limit); notice: You've hit your session limit · resets tomorrow"
+    )
     actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
     assert actions[-1]["action"] == "dream_failed"
-    assert actions[-1]["payload"]["reason"] == "session_limit"
-    # Must NOT contain the stderr noise.
-    assert "Workspace trust warning" not in dream.error
+    assert actions[-1]["payload"]["reason"] == dream.error
+
+
+@patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
+@patch("runtime.orchestrator.executors.subprocess")
+async def test_run_dream_real_chain_all_benign_stderr_uses_validated_notice(
+    mock_subprocess, _mock_resolve_binary, org_state,
+):
+    """Complete stderr selection prevents a truncated benign tail reaching persistence."""
+    _insert_pending_dream(org_state)
+    fixture = Path(__file__).parents[1] / "fixtures" / "claude-task6941-result.sanitized.json"
+    payload = json.loads(fixture.read_text())
+    # The validated notice must survive even after a later property evicts it
+    # from the capped raw stdout tail.
+    payload["later_diagnostic"] = "x" * 3000
+    mock_subprocess.Popen.return_value = _popen_mock(
+        returncode=1,
+        stdout=json.dumps(payload),
+        stderr="Set hasTrustDialogAccepted to true to trust this workspace.\n" * 50,
+    )
+    await run_dream(org_state=org_state, dream_id="DREAM-001", executor_factory=lambda _n, _s, paths: ClaudeExecutor(claude_cli_path="claude", permission_mode="auto", settings=Settings(), paths=paths))
+    dream = org_state.db.get_dream("DREAM-001")
+    assert dream.error == (
+        "session_limit; notice: You've hit your session limit · "
+        "resets 12:20am (Asia/Shanghai)"
+    )
+    assert org_state.db.get_audit_logs("DREAM-001")[-1]["payload"]["reason"] == dream.error
 
 
 @patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")
@@ -486,9 +511,9 @@ async def test_run_dream_real_chain_certificate_error(
 ):
     """Real-chain (certificate): mocked subprocess produces
     {type:result, subtype:error_during_execution, result: certificate...}
-    + workspace-trust stderr → ClaudeExecutor.run() with production parser
-    → run_dream → dream.error == dream_failed.payload.reason ==
-    'transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR'."""
+    + a trust-warning lookalike stderr → ClaudeExecutor.run() with production
+    parser → run_dream.  The real stderr remains the human cause and the
+    structured classification stays supplementary."""
     _insert_pending_dream(org_state)
 
     mock_subprocess.Popen.return_value = _popen_mock(
@@ -512,11 +537,13 @@ async def test_run_dream_real_chain_certificate_error(
     mock_subprocess.Popen.assert_called_once()
     dream = org_state.db.get_dream("DREAM-001")
     assert dream.status == DreamStatus.FAILED
-    assert dream.error == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
+    assert dream.error == (
+        "Workspace trust warning: untrusted directory (terminal_error: "
+        "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR)"
+    )
     actions = [r for r in org_state.db.get_audit_logs("DREAM-001")]
     assert actions[-1]["action"] == "dream_failed"
-    assert actions[-1]["payload"]["reason"] == "transport_error: UNKNOWN_CERTIFICATE_VERIFICATION_ERROR"
-    assert "Workspace trust warning" not in dream.error
+    assert actions[-1]["payload"]["reason"] == dream.error
 
 
 @patch("runtime.orchestrator.executors._resolve_binary", return_value="/usr/bin/env")

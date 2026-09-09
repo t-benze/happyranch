@@ -2,6 +2,7 @@
 a task one subprocess call at a time under the new async execution model."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -891,6 +892,126 @@ def test_run_step_session_failure_note_includes_diagnostics(
     assert "rc=0" in note
     assert "no completion callback" in note
     assert "wrote ExplorePage.tsx" in note
+
+
+def test_run_step_persists_observed_claude_session_limit_reason(
+    runtime, db, monkeypatch, tmp_path,
+):
+    """Shipping executor parsing feeds the persisted task failure note."""
+    from unittest.mock import MagicMock
+
+    from runtime.orchestrator.executors import (
+        _parse_claude_session_limit_notice, _parse_claude_terminal_error, _run_command,
+    )
+    from runtime.orchestrator.orchestrator import Orchestrator
+    import runtime.orchestrator.executors as executors
+
+    db.insert_task(TaskRecord(id="T-1", brief="x", assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+    proc = MagicMock(pid=4242, returncode=1)
+    fixture = Path(__file__).parent / "fixtures" / "claude-task6941-result.sanitized.json"
+    envelope = json.loads(fixture.read_text())
+    # The full checked-in fixture supplies the observed shape.  Place a long
+    # later property after its result to prove the selected notice is not an
+    # incidental stdout-tail substring.
+    envelope["later_diagnostic"] = "x" * 3_000
+    notice = envelope["result"]
+    proc.communicate.return_value = (
+        json.dumps(envelope, ensure_ascii=False),
+        "Ignoring 1 permissions.allow entry from .claude/settings.json: this workspace has not been trusted.\n",
+    )
+    monkeypatch.setattr(executors.subprocess, "Popen", lambda *a, **k: proc)
+    result = _run_command(
+        ["claude", "-p", "x"], tmp_path, "sess-limit", 30,
+        error_parser=_parse_claude_terminal_error,
+        terminal_error_notice_parser=_parse_claude_session_limit_notice,
+    )
+    monkeypatch.setattr(orch, "_run_agent", lambda *a, **k: (result, None))
+
+    orch.run_step("T-1")
+
+    note = db.get_task("T-1").note or ""
+    assert "session_limit" in note
+    assert notice in note
+    assert "this workspace has not been trusted" not in note
+    assert result.rate_limited is False
+
+
+def test_run_step_meaningful_stderr_keeps_structured_reset_notice(
+    runtime, db, monkeypatch, tmp_path,
+):
+    """Human stderr wins, while stdout retains the session reset notice."""
+    from unittest.mock import MagicMock
+
+    from runtime.orchestrator.executors import (
+        _parse_claude_session_limit_notice, _parse_claude_terminal_error, _run_command,
+    )
+    from runtime.orchestrator.orchestrator import Orchestrator
+    import runtime.orchestrator.executors as executors
+
+    db.insert_task(TaskRecord(id="T-1", brief="x", assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+    proc = MagicMock(pid=4242, returncode=1)
+    notice = "You've hit your session limit · resets 12:20am (Asia/Shanghai)"
+    proc.communicate.return_value = (
+        '{"type":"result","subtype":"success","is_error":true,'
+        '"terminal_reason":"api_error","api_error_status":429,'
+        f'"result":"{notice}"}}',
+        "API Error: 529 Overloaded\n" + (
+            "Ignoring 1 permissions.allow entry from .claude/settings.json: "
+            "this workspace has not been trusted.\n"
+        ) * 50,
+    )
+    monkeypatch.setattr(executors.subprocess, "Popen", lambda *a, **k: proc)
+    result = _run_command(
+        ["claude", "-p", "x"], tmp_path, "sess-limit", 30,
+        error_parser=_parse_claude_terminal_error,
+        terminal_error_notice_parser=_parse_claude_session_limit_notice,
+    )
+    monkeypatch.setattr(orch, "_run_agent", lambda *a, **k: (result, None))
+
+    orch.run_step("T-1")
+
+    note = db.get_task("T-1").note or ""
+    assert note.index("API Error: 529 Overloaded") < note.index("terminal_error: session_limit")
+    assert notice in note
+    assert result.human_error == "API Error: 529 Overloaded"
+
+
+def test_run_step_all_benign_full_stderr_uses_terminal_reason_not_tail(
+    runtime, db, monkeypatch, tmp_path,
+):
+    """A cap-boundary benign tail cannot replace selected empty stderr."""
+    from unittest.mock import MagicMock
+    from runtime.orchestrator.executors import (
+        _parse_claude_session_limit_notice, _parse_claude_terminal_error, _run_command,
+    )
+    from runtime.orchestrator.orchestrator import Orchestrator
+    import runtime.orchestrator.executors as executors
+
+    db.insert_task(TaskRecord(id="T-1", brief="x", assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+    fixture = Path(__file__).parent / "fixtures" / "claude-task6941-result.sanitized.json"
+    payload = json.loads(fixture.read_text())
+    # Ensure the notice is selected from the complete result before tailing.
+    payload["later_diagnostic"] = "x" * 3000
+    proc = MagicMock(pid=4242, returncode=1)
+    proc.communicate.return_value = (json.dumps(payload), "Set hasTrustDialogAccepted to true to trust this workspace.\n" * 50)
+    monkeypatch.setattr(executors.subprocess, "Popen", lambda *a, **k: proc)
+    result = _run_command(["claude", "-p", "x"], tmp_path, "sess-limit", 30,
+        error_parser=_parse_claude_terminal_error,
+        terminal_error_notice_parser=_parse_claude_session_limit_notice)
+    monkeypatch.setattr(orch, "_run_agent", lambda *a, **k: (result, None))
+    orch.run_step("T-1")
+    note = db.get_task("T-1").note or ""
+    assert result.human_error is None and result.human_error_inspected is True
+    assert "stderr:" not in note
+    assert "terminal_error: session_limit" in note
+    assert "resets 12:20am" in note
+    assert note.index("terminal_error: session_limit") < note.index("stdout:")
 
 
 def test_run_step_opaque_failure_no_auto_revisit(
