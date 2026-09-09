@@ -99,7 +99,13 @@ def _list_dir(directory: Path) -> list[AgentDef]:
     out: list[AgentDef] = []
     for entry in sorted(directory.iterdir()):
         if entry.is_file() and entry.suffix == ".md" and not entry.name.startswith("."):
-            out.append(parse_agent_file(entry))
+            # A canonical entry can disappear after is_file() but before its
+            # parser opens it.  Omit that transient roster entry instead of
+            # failing the whole list response.
+            try:
+                out.append(parse_agent_file(entry))
+            except FileNotFoundError:
+                continue
     return out
 
 

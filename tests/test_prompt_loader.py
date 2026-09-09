@@ -74,6 +74,22 @@ def test_list_agents_excludes_pending(tmp_path: Path) -> None:
     assert names == ["active1", "active2"]
 
 
+def test_list_agents_skips_entry_that_disappears_before_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
+    disappearing = _write_agent(rt, "disappearing")
+
+    def _unlink_then_parse(path: Path) -> AgentDef:
+        assert path == disappearing
+        path.unlink()
+        return prompt_loader.parse_agent_file(path)
+
+    monkeypatch.setattr(prompt_loader, "parse_agent_file", _unlink_then_parse)
+    assert prompt_loader.list_agents(rt) == []
+
+
 def test_list_pending_only_pending(tmp_path: Path) -> None:
     rt_dir = RuntimeDir.init(tmp_path / "rt")
     rt = OrgPaths(root=rt_dir.orgs_dir / "x")

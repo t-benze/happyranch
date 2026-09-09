@@ -1054,6 +1054,16 @@ def test_manage_agent_parser_requires_org():
         ])
 
 
+def test_manage_agent_parser_accepts_expected_revision():
+    parser = build_parser()
+    args = parser.parse_args([
+        "manage-agent", "update", "--org", "alpha", "--name", "dev_agent",
+        "--task-id", "TASK-001", "--session-id", "sess-123",
+        "--expected-revision", "a" * 64,
+    ])
+    assert args.expected_revision == "a" * 64
+
+
 def test_cmd_manage_agent_posts_to_daemon():
     import argparse
 
@@ -1068,7 +1078,7 @@ def test_cmd_manage_agent_posts_to_daemon():
         action="enroll", name="content_writer",
         task_id="TASK-001", session_id="sess-123",
         description="Writes guides", system_prompt="You are...",
-        repos=None,
+        repos=None, expected_revision="b" * 64,
     )
     with patch("cli.main.OpcClient.from_env", return_value=fake):
         cmd_manage_agent(args)
@@ -1076,6 +1086,7 @@ def test_cmd_manage_agent_posts_to_daemon():
     assert args_pos[0] == "/api/v1/orgs/alpha/agents/manage"
     assert kwargs["json"]["action"] == "enroll"
     assert kwargs["json"]["name"] == "content_writer"
+    assert kwargs["json"]["expected_revision"] == "b" * 64
 
 
 def test_cmd_manage_agent_from_file(tmp_path):
@@ -1090,6 +1101,7 @@ def test_cmd_manage_agent_from_file(tmp_path):
         "session_id": "sess-123",
         "description": "Writes guides",
         "system_prompt": "You are the Content Writer...",
+        "expected_revision": "c" * 64,
     }
     f = tmp_path / "enroll.json"
     f.write_text(json.dumps(payload))
@@ -1109,6 +1121,7 @@ def test_cmd_manage_agent_from_file(tmp_path):
     assert args_pos[0] == "/api/v1/orgs/alpha/agents/manage"
     assert kwargs["json"]["action"] == "enroll"
     assert kwargs["json"]["name"] == "content_writer"
+    assert kwargs["json"]["expected_revision"] == "c" * 64
 
 
 

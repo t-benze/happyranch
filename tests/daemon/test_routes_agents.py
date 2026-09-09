@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 from unittest.mock import patch
+
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -32,6 +36,30 @@ def test_list_agents_returns_names(tmp_home, app, org_state, auth_headers) -> No
     assert "agents" in body
     names = [a["name"] for a in body["agents"]]
     assert "engineering_head" in names
+
+
+def test_list_agents_skips_disappearing_entry_and_emits_same_byte_revision(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    _seed_active_agent(org_state, "dev_agent", system_prompt="stable bytes\n")
+    _seed_active_agent(org_state, "payment_agent", system_prompt="gone bytes\n")
+    paths = _paths(org_state)
+    disappearing = paths.agents_dir / "payment_agent.md"
+    real_parse = prompt_loader.parse_agent_file
+
+    def _disappear_before_parse(path):
+        if path == disappearing:
+            path.unlink()
+        return real_parse(path)
+
+    monkeypatch.setattr(prompt_loader, "parse_agent_file", _disappear_before_parse)
+    response = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
+    assert response.status_code == 200, response.text
+    rows = {row["name"]: row for row in response.json()["agents"]}
+    assert "payment_agent" not in rows
+    raw = (paths.agents_dir / "dev_agent.md").read_bytes()
+    assert rows["dev_agent"]["system_prompt"] == "stable bytes\n"
+    assert rows["dev_agent"]["revision"] == hashlib.sha256(raw).hexdigest()
 
 
 def test_list_agents_returns_full_shape(
@@ -891,6 +919,97 @@ def test_manage_agent_update_requires_well_formed_revision(
         )
         assert response.status_code == 422
         assert response.json()["detail"]["code"] == "expected_revision_required"
+
+
+def test_manage_agent_update_rejects_explicit_null_revision(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    response = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={
+            "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+            "session_id": _EH_SESSION, "expected_revision": None,
+            "description": "must not land",
+        }, headers=auth_headers,
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "expected_revision_required"
+
+
+def test_manage_agent_update_rechecks_stale_base_after_teams_lock(
+    tmp_home, org_state,
+) -> None:
+    """A R0 request that waits behind a winner is rejected after lock entry."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", system_prompt="R0\n")
+    paths = _paths(org_state)
+    r0 = prompt_loader.agent_revision(paths, "dev_agent")
+    assert r0 is not None
+    body = agents_mod.ManageAgentBody(
+        action="update", name="dev_agent", task_id=_EH_TASK,
+        session_id=_EH_SESSION, expected_revision=r0, system_prompt="loser B\n",
+    )
+
+    async def _exercise() -> None:
+        async with org_state.teams_lock:
+            loser = asyncio.create_task(agents_mod.manage_agent("alpha", body, org_state))
+            await asyncio.sleep(0)
+            _seed_active_agent(org_state, "dev_agent", system_prompt="winner A\n")
+        with pytest.raises(HTTPException) as raised:
+            await loser
+        assert raised.value.status_code == 409
+
+    asyncio.run(_exercise())
+    winner = prompt_loader.load_agent(paths, "dev_agent")
+    assert winner is not None and winner.system_prompt == "winner A\n"
+
+
+def test_manage_agent_whole_prompt_stale_loser_has_no_bootstrap_or_audit(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", system_prompt="R0 whole prompt\n")
+    paths = _paths(org_state)
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    r0 = prompt_loader.agent_revision(paths, "dev_agent")
+    assert r0 is not None
+    client = TestClient(app)
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as mock_builder:
+        mock_builder.return_value.ensure_workspace_ready.return_value = None
+        winner = client.post("/api/v1/orgs/alpha/agents/manage", json={
+            "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+            "session_id": _EH_SESSION, "expected_revision": r0,
+            "system_prompt": "R1 winner entry A\n",
+        }, headers=auth_headers)
+        assert winner.status_code == 200, winner.text
+        winning_bytes = (paths.agents_dir / "dev_agent.md").read_bytes()
+        audit_after_winner = list(org_state.db.get_audit_logs(_EH_TASK))
+        loser = client.post("/api/v1/orgs/alpha/agents/manage", json={
+            "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+            "session_id": _EH_SESSION, "expected_revision": r0,
+            "system_prompt": "R0 whole prompt\n", "description": "entry B",
+        }, headers=auth_headers)
+        assert loser.status_code == 409
+        mock_builder.return_value.ensure_workspace_ready.assert_called_once()
+    assert (paths.agents_dir / "dev_agent.md").read_bytes() == winning_bytes
+    assert org_state.db.get_audit_logs(_EH_TASK) == audit_after_winner
+    fresh = client.post("/api/v1/orgs/alpha/agents/manage", json={
+        "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+        "session_id": _EH_SESSION,
+        "expected_revision": prompt_loader.agent_revision(paths, "dev_agent"),
+        "description": "entry B",
+    }, headers=auth_headers)
+    assert fresh.status_code == 200, fresh.text
+    reapplied = prompt_loader.load_agent(paths, "dev_agent")
+    assert reapplied is not None
+    assert reapplied.system_prompt == "R1 winner entry A\n"
+    assert reapplied.description == "entry B"
 
 
 def test_manage_agent_update_persists_executor_to_workspace(
