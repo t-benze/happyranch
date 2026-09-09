@@ -72,7 +72,7 @@ def test_run_step_noop_on_blocked_escalated(runtime, db):
     assert t.block_kind is None
 
 
-def test_run_step_over_budget_parks_escalated(runtime, db):
+def test_run_step_beyond_legacy_cap_claims_and_runs(runtime, db, monkeypatch):
     from runtime.orchestrator.orchestrator import Orchestrator
     settings = Settings(max_orchestration_steps=3)
     db.insert_task(TaskRecord(
@@ -81,27 +81,16 @@ def test_run_step_over_budget_parks_escalated(runtime, db):
     db.update_task("T-1", orchestration_step_count=3)  # already at the cap
 
     orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    monkeypatch.setattr(orch, "_run_agent", lambda *args, **kwargs: (
+        _make_result(), _make_report(output_summary=json.dumps({"action": "done", "summary": "done"})),
+    ))
     orch.run_step("T-1")
 
     t = db.get_task("T-1")
-    assert t.status == TaskStatus.ESCALATED  # Path B: top-level status
+    assert t.status == TaskStatus.COMPLETED
     assert t.block_kind is None
-    assert t.note and "max steps" in t.note
-    # Audit row
-    escalations = [
-        a for a in db.get_audit_logs("T-1") if a["action"] == "escalation"
-    ]
-    assert len(escalations) == 1
-    assert "max steps" in escalations[0]["payload"]["reason"]
-    outcomes = [
-        a for a in db.get_audit_logs("T-1") if a["action"] == "authority_hook"
-    ]
-    assert len(outcomes) == 1
-    assert outcomes[0]["payload"]["outcome"] == "not_applicable"
-    assert outcomes[0]["payload"]["reason_code"] == (
-        "runtime_orchestration_step_budget_exhausted"
-    )
-    assert outcomes[0]["payload"]["causal_escalation_audit_id"] == escalations[0]["id"]
+    assert t.orchestration_step_count == 4
+    assert not [a for a in db.get_audit_logs("T-1") if a["action"] == "escalation"]
 
 
 def test_run_step_transitions_pending_to_in_progress_and_increments_count(
@@ -2288,7 +2277,7 @@ def test_run_step_escalate_surfaces_in_thread(runtime, db, monkeypatch):
     assert any(i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP for i in invs)
 
 
-def test_run_step_over_budget_surfaces_in_thread(runtime, db):
+def test_run_step_beyond_legacy_cap_does_not_escalate_thread(runtime, db, monkeypatch):
     from runtime.models import ThreadInvocationPurpose
     from runtime.orchestrator.orchestrator import Orchestrator
     settings = Settings(max_orchestration_steps=3)
@@ -2302,13 +2291,16 @@ def test_run_step_over_budget_surfaces_in_thread(runtime, db):
 
     orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test",
                         teams=TeamsRegistry.load(runtime.root))
+    monkeypatch.setattr(orch, "_run_agent", lambda *args, **kwargs: (
+        _make_result(), _make_report(output_summary=json.dumps({"action": "done", "summary": "done"})),
+    ))
     orch.run_step("T-1")
 
     msgs = db.list_thread_messages("THR-9")
     esc = [m for m in msgs if m.system_payload
            and m.system_payload.get("kind_tag") == "task_escalated"]
-    assert len(esc) == 1
-    assert "max steps" in esc[0].system_payload["reason"]
+    assert esc == []
+    assert db.get_task("T-1").orchestration_step_count == 4
 
 
 def test_non_manager_owner_of_task_type_emits_decision(runtime, db, monkeypatch):
@@ -2749,10 +2741,12 @@ def test_regression_revise_verdict_chain_advance_unchanged(
     assert tid == "T-PAR"
 
 
-def test_run_step_nonroot_over_budget_fails_and_routes_to_parent(runtime, db):
-    """THR-033 Change A — the one substantive behavioral fix: a NON-root task
-    that exceeds the step budget FAILS (block_kind=NULL) instead of parking in
-    escalated, and hands back to its parent for bounded recovery."""
+def test_run_step_nonroot_beyond_legacy_cap_claims_once(runtime, db, monkeypatch):
+    """A non-root beyond the retired cap completes through the normal seam.
+
+    The retained counter remains monotonic and the usual parent wake occurs;
+    neither a failure nor an escalation is manufactured by step count.
+    """
     from runtime.orchestrator.orchestrator import Orchestrator
     settings = Settings(max_orchestration_steps=3)
 
@@ -2768,30 +2762,23 @@ def test_run_step_nonroot_over_budget_fails_and_routes_to_parent(runtime, db):
     orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
     q = _SlugQueue()
     orch._queue = q
+    monkeypatch.setattr(orch, "_run_agent", lambda *args, **kwargs: (
+        _make_result(), _make_report(output_summary="done"),
+    ))
 
     orch.run_step("T-CHD")
 
     child = db.get_task("T-CHD")
-    assert child.status == TaskStatus.FAILED
+    assert child.orchestration_step_count == 4
+    assert child.status == TaskStatus.COMPLETED
     assert child.block_kind is None
-    assert child.note and "max steps" in child.note
-    assert child.completed_at is not None  # terminal row carries completed_at
-
-    # Never escalated — no escalation audit row for the child.
-    escalations = [
-        a for a in db.get_audit_logs("T-CHD") if a["action"] == "escalation"
-    ]
-    assert escalations == []
-
-    # Parent woken (1 failed child < bound).
-    assert q.qsize() == 1
-    assert q.get_nowait() == ("test", "T-PAR")
+    assert not [a for a in db.get_audit_logs("T-CHD") if a["action"] == "escalation"]
+    assert q.qsize() == 1  # ordinary completed-child wake, not a cap failure
 
 
-def test_run_step_nonroot_over_budget_idempotent_single_parent_wake(runtime, db):
+def test_run_step_nonroot_beyond_legacy_cap_duplicate_claim_is_at_most_once(runtime, db, monkeypatch):
     """Duplicate delivery of the same at-cap non-root row wakes the parent
-    exactly once. The CAS in try_fail_over_budget (and the entry-state guard)
-    makes the second delivery a no-op."""
+    exactly once. The normal atomic claim makes the second delivery a no-op."""
     from runtime.orchestrator.orchestrator import Orchestrator
     settings = Settings(max_orchestration_steps=3)
 
@@ -2807,17 +2794,20 @@ def test_run_step_nonroot_over_budget_idempotent_single_parent_wake(runtime, db)
     orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
     q = _SlugQueue()
     orch._queue = q
+    monkeypatch.setattr(orch, "_run_agent", lambda *args, **kwargs: (
+        _make_result(), _make_report(output_summary="done"),
+    ))
 
     orch.run_step("T-CHD")
     orch.run_step("T-CHD")  # duplicate delivery
 
-    assert db.get_task("T-CHD").status == TaskStatus.FAILED
-    assert q.qsize() == 1  # parent enqueued exactly once
+    assert db.get_task("T-CHD").status == TaskStatus.COMPLETED
+    assert db.get_task("T-CHD").orchestration_step_count == 4
+    assert q.qsize() == 1  # duplicate delivery did not add another wake
 
 
-def test_run_step_root_over_budget_still_escalates(runtime, db):
-    """THR-033 Change A: a ROOT task that exceeds the step budget parks
-    in escalated for the founder — unchanged."""
+def test_run_step_root_beyond_legacy_cap_does_not_escalate(runtime, db, monkeypatch):
+    """A root beyond the retired cap finishes normally without escalation."""
     from runtime.orchestrator.orchestrator import Orchestrator
     settings = Settings(max_orchestration_steps=3)
     db.insert_task(TaskRecord(
@@ -2826,13 +2816,15 @@ def test_run_step_root_over_budget_still_escalates(runtime, db):
     db.update_task("T-ROOT", orchestration_step_count=3)
 
     orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    monkeypatch.setattr(orch, "_run_agent", lambda *args, **kwargs: (
+        _make_result(), _make_report(output_summary=json.dumps({"action": "done", "summary": "done"})),
+    ))
     orch.run_step("T-ROOT")
 
     t = db.get_task("T-ROOT")
     assert t.parent_task_id is None
-    assert t.status == TaskStatus.ESCALATED  # Path B: top-level status
-    assert t.block_kind is None
-    assert t.note and "max steps" in t.note
+    assert t.status == TaskStatus.COMPLETED
+    assert t.orchestration_step_count == 4
 
 
 def test_run_step_nonroot_self_block_never_escalated(runtime, db, monkeypatch):

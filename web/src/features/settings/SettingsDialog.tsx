@@ -84,7 +84,7 @@ function SystemSection({ sys }: { sys: SystemSettings }): JSX.Element {
     { label: 'OpenCode CLI path', entry: sys.opencode_cli_path },
     { label: 'Pi CLI path', entry: sys.pi_cli_path },
     { label: 'Session timeout (s)', entry: sys.session_timeout_seconds },
-    { label: 'Max orchestration steps', entry: sys.max_orchestration_steps },
+    // The retired total step setting has no UI row.
     { label: 'Queue workers', entry: sys.queue_workers },
     { label: 'Protocol dir', entry: sys.protocol_dir },
   ];

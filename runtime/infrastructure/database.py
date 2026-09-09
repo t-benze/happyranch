@@ -7016,13 +7016,13 @@ class Database:
 
     @_synchronized
     def autonomous_continuation_budget_exhausted(
-        self, task_id: str, *, max_steps: int, max_revise_rounds: int,
+        self, task_id: str, *, max_revise_rounds: int,
     ) -> bool:
         """Whether a root is under any absolute THR-166 budget blocker.
 
-        This derives all three durable causes from task state and lineage:
-        orchestration steps, the configured revise-round cap, and the existing
-        per-slice retry ceiling.  It intentionally does not inspect request
+        This derives the independent durable causes from task state and lineage:
+        the configured revise-round cap and existing per-slice retry ceiling.
+        It intentionally does not inspect request
         evidence or manager-authored prose.
         """
         cte = self._autonomous_continuation_retry_lineage_cte()
@@ -7032,8 +7032,7 @@ class Database:
                   FROM tasks
                  WHERE id = ?
                    AND (
-                       orchestration_step_count >= ?
-                       OR (? > 0 AND revision_count >= ?)
+                       (? > 0 AND revision_count >= ?)
                        OR EXISTS (
                            SELECT 1 FROM retry_lineage
                             WHERE depth > 0
@@ -7041,8 +7040,7 @@ class Database:
                               AND status = 'failed'
                        )
                    )""",
-            (task_id, task_id, max_steps, max_revise_rounds,
-             max_revise_rounds, task_id),
+            (task_id, task_id, max_revise_rounds, max_revise_rounds, task_id),
         ).fetchone()
         return row is not None
 
@@ -7054,7 +7052,6 @@ class Database:
         thread_id: str,
         dispatcher: str,
         invocation_token: str,
-        max_steps: int,
         max_revise_rounds: int,
         note: str,
         audit_payload: dict,
@@ -7076,7 +7073,6 @@ class Database:
                 UPDATE tasks
                    SET status = ?, block_kind = NULL, note = ?, updated_at = ?
                    WHERE id = ? AND status = ? AND cancelled_at IS NULL
-                     AND orchestration_step_count < ?
                      AND (? <= 0 OR revision_count < ?)
                      AND NOT EXISTS (
                          SELECT 1 FROM retry_lineage
@@ -7085,7 +7081,7 @@ class Database:
                             AND status = 'failed'
                      )""",
                 (task_id, TaskStatus.PENDING.value, note, now, task_id,
-                 TaskStatus.ESCALATED.value, max_steps, max_revise_rounds,
+                 TaskStatus.ESCALATED.value, max_revise_rounds,
                  max_revise_rounds, task_id),
             )
             # sqlite3 reports ``rowcount=-1`` for an UPDATE prefixed by a
@@ -12137,7 +12133,6 @@ class Database:
         expected_model_digest: str,
         expected_input_digest: str,
         expected_causal_event_id: str,
-        expected_max_orchestration_steps: int,
         expected_max_revise_rounds: int,
         expected_status: TaskStatus,
         expected_block_kind: BlockKind | None,
@@ -12235,11 +12230,8 @@ class Database:
                 return False
             terminal = t["status"] in _AUTHORITY_TERMINAL_STATUSES
             budget_ok = (
-                t["orchestration_step_count"] < expected_max_orchestration_steps
-                and (
-                    expected_max_revise_rounds <= 0
-                    or t["revision_count"] < expected_max_revise_rounds
-                )
+                expected_max_revise_rounds <= 0
+                or t["revision_count"] < expected_max_revise_rounds
             )
             if not (
                 t["assigned_agent"] == expected_manager_agent

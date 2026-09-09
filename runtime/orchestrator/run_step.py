@@ -121,61 +121,8 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         )
         return
 
-    # ---- 2. Budget guard (persisted, survives restarts) ----
-    max_steps = orch._settings.max_orchestration_steps
+    # ---- 2. Atomic claim (persisted count is monotonic telemetry) ----
     next_count = task.orchestration_step_count + 1
-    if next_count > max_steps:
-        reason = f"max steps ({max_steps}) exceeded"
-        if not is_root(task):
-            # THR-033 Change A: a NON-root task that hits the step budget must
-            # NOT escalate directly to the founder — it fails and hands back to
-            # its parent (bounded failure-recovery carries it up). The CAS is
-            # required for the same dup-delivery reason as the root path below:
-            # this guard runs BEFORE try_claim_for_step, so it has no upstream
-            # CAS. Only the first delivery wins and proceeds to wake the parent
-            # + post the followup exactly once.
-            if not db.try_fail_over_budget(
-                task_id,
-                expected_status=task.status,
-                expected_block_kind=task.block_kind,
-                note=reason,
-            ):
-                logger.debug(
-                    "run_step %s: lost over-budget fail race, dropping", task_id,
-                )
-                return
-            _enqueue_parent_if_waiting(orch, task_id)
-            _maybe_post_thread_followup(
-                orch, task_id,
-                status=TaskStatus.FAILED, auto_revisit_spawned=False,
-            )
-            return
-        # Root: park in escalated for the founder (try_escalate* now writes the
-        # top-level ESCALATED status; behavior otherwise unchanged).
-        # Atomic CAS on the eligible pre-state read at step 1. This guard runs
-        # BEFORE try_claim_for_step, so without it two duplicate deliveries of
-        # the same stale at-cap row would both escalate and double-post the
-        # thread `task_escalated` message + TASK_FOLLOWUP. If False: another
-        # worker escalated first (or /cancel landed) — drop silently.
-        if not db.try_escalate_runtime(
-            task_id,
-            reason=reason,
-            agent="orchestrator",
-            reason_code="runtime_orchestration_step_budget_exhausted",
-            expected_status=task.status,
-            expected_block_kind=task.block_kind,
-            match_expected_state=True,
-        ):
-            logger.debug(
-                "run_step %s: lost over-budget escalate race, dropping", task_id,
-            )
-            return
-        orch.notify_escalated(
-            task_id=task_id, agent="orchestrator", reason=reason,
-        )
-        _maybe_post_thread_escalation(orch, task_id, reason=reason)
-        return
-
     # ---- 3. Atomic claim: unblock + increment + mark in_progress ----
     # Conditional CAS on (expected_status, expected_block_kind) — if another
     # worker has already claimed this task_id (duplicate enqueue from a
@@ -1477,7 +1424,6 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
     base = build_capabilities_prompt(
         agents=agents_for_prompt,
         step_number=task.orchestration_step_count + 1,  # 1-indexed for manager display
-        max_steps=orch._settings.max_orchestration_steps,
         prior_steps=prior_steps,
         manager_name=agent,
         self_only=not is_mgr,

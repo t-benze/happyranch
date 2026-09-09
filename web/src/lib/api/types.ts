@@ -737,7 +737,6 @@ export interface SystemSettings {
   opencode_cli_path: SystemSettingEntry;
   pi_cli_path: SystemSettingEntry;
   session_timeout_seconds: SystemSettingEntry;
-  max_orchestration_steps: SystemSettingEntry;
   queue_workers: SystemSettingEntry;
   host_global_session_cap: SystemSettingEntry;
   protocol_dir: SystemSettingEntry;

@@ -896,7 +896,7 @@ async def test_autonomous_continue_keeps_each_protected_boundary_escalated(
 
 
 @pytest.mark.asyncio
-async def test_autonomous_continue_rejects_exhausted_step_budget(client_with_runtime):
+async def test_autonomous_continue_accepts_beyond_legacy_step_cap(client_with_runtime):
     client, org = client_with_runtime
     org.db.insert_thread(ThreadRecord(id="THR-BUDGET", subject="Test", status=ThreadStatus.OPEN))
     org.db.insert_task(TaskRecord(id="T-BUDGET", brief="test", dispatched_from_thread_id="THR-BUDGET"))
@@ -908,9 +908,19 @@ async def test_autonomous_continue_rejects_exhausted_step_budget(client_with_run
         org, thread_id="THR-BUDGET", task_id="T-BUDGET", agent="engineering_head",
     )
     response = client.post("/api/v1/orgs/alpha/threads/THR-BUDGET/resolve-escalation", json=payload)
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
-    assert org.db.get_task("T-BUDGET").status == TaskStatus.ESCALATED
+    assert response.status_code == 200
+    assert response.json()["new_status"] == "pending"
+    task = org.db.get_task("T-BUDGET")
+    assert task.status == TaskStatus.PENDING
+    assert task.orchestration_step_count == org.orchestrator._settings.max_orchestration_steps
+    invocation = org.db.get_invocation_any_status(payload["invocation_token"])
+    assert invocation is not None
+    assert invocation.status == ThreadInvocationStatus.CONSUMED
+    audits = [
+        row for row in org.db.get_audit_logs("T-BUDGET")
+        if row["action"] == "escalation_continued_autonomously"
+    ]
+    assert len(audits) == 1
 
 
 def _assert_budget_rejection_is_non_mutating(org, *, task_id: str, token: str, queue) -> None:

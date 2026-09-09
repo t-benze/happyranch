@@ -2114,13 +2114,11 @@ async def resolve_escalation_from_thread(
             or causal_payload.get("causal_escalation_audit_id") != escalation_rows[-1]["id"]
         ):
             _continuation_reject(org, task.id, dispatcher, "continuation_noncausal_followup")
-        max_steps = org.orchestrator._settings.max_orchestration_steps
         max_revise_rounds = load_org_config(
             org.orchestrator._paths,
         ).max_revise_rounds
         if org.db.autonomous_continuation_budget_exhausted(
             task.id,
-            max_steps=max_steps,
             max_revise_rounds=max_revise_rounds,
         ):
             _continuation_reject(org, task.id, dispatcher, "continuation_budget_exhausted")
@@ -2149,14 +2147,13 @@ async def resolve_escalation_from_thread(
         async with org.db_lock:
             committed = org.db.continue_escalation_from_followup(
                 task_id=task.id, thread_id=thread_id, dispatcher=dispatcher,
-                invocation_token=body.invocation_token, max_steps=max_steps,
+                invocation_token=body.invocation_token,
                 max_revise_rounds=max_revise_rounds,
                 note=note, audit_payload=audit_payload,
             )
         if not committed:
             if org.db.autonomous_continuation_budget_exhausted(
                 task.id,
-                max_steps=max_steps,
                 max_revise_rounds=max_revise_rounds,
             ):
                 _continuation_reject(org, task.id, dispatcher, "continuation_budget_exhausted")

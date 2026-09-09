@@ -15,7 +15,6 @@ def test_prompt_does_not_duplicate_brief():
     prompt = build_capabilities_prompt(
         agents=[],
         step_number=1,
-        max_steps=10,
     )
     assert "Add Alipay support for international cards" not in prompt
     # Structural assertion: no top-level "# Task" header re-emitting the brief.
@@ -36,7 +35,6 @@ def test_prompt_lists_available_agents_without_tier_column():
     prompt = build_capabilities_prompt(
         agents=agents,
         step_number=1,
-        max_steps=10,
     )
     # Names + descriptions render
     assert "dev_agent" in prompt
@@ -53,10 +51,9 @@ def test_prompt_includes_step_number():
     prompt = build_capabilities_prompt(
         agents=[],
         step_number=3,
-        max_steps=10,
     )
     assert "step 3" in prompt.lower()
-    assert "10" in prompt
+    assert "maximum" not in prompt.lower()
 
 
 def test_prompt_includes_prior_steps():
@@ -72,7 +69,6 @@ def test_prompt_includes_prior_steps():
     prompt = build_capabilities_prompt(
         agents=[],
         step_number=2,
-        max_steps=10,
         prior_steps=prior,
     )
     assert "product_manager" in prompt
@@ -83,7 +79,6 @@ def test_prompt_no_prior_steps():
     prompt = build_capabilities_prompt(
         agents=[],
         step_number=1,
-        max_steps=10,
     )
     assert "Prior Steps" not in prompt
 
@@ -92,7 +87,6 @@ def test_prompt_includes_available_actions():
     prompt = build_capabilities_prompt(
         agents=[],
         step_number=1,
-        max_steps=10,
     )
     assert "delegate" in prompt
     assert "done" in prompt
@@ -105,17 +99,16 @@ def test_prompt_includes_constraints():
     org-specific budget / jurisdictional / content thresholds (those live in
     each agent's role_guidance / system prompt, loaded from
     <runtime>/org/agents/<name>.md). The block must still:
-      - render a step-budget line so the manager paces decisions, and
+      - render a step-telemetry line so the manager can identify the decision, and
       - point the manager at the founder for out-of-scope work.
     """
     prompt = build_capabilities_prompt(
         agents=[],
         step_number=3,
-        max_steps=10,
     )
-    # Step budget must be rendered.
+    # Step telemetry, not a budget, is rendered.
     assert "step 3" in prompt.lower()
-    assert "10" in prompt
+    assert "maximum" not in prompt.lower()
     # Generic escalation pointer to the founder must remain.
     assert "founder" in prompt.lower()
     # Org-specific HK/Macau constraints must NOT be inlined into the
@@ -136,7 +129,6 @@ def test_prompt_frames_json_as_mandatory():
     prompt = build_capabilities_prompt(
         agents=[],
         step_number=1,
-        max_steps=10,
     )
     # Mandatory language — something unmistakable, not a soft request.
     lowered = prompt.lower()
@@ -151,7 +143,6 @@ def test_prompt_shows_wrong_example():
     prompt = build_capabilities_prompt(
         agents=[],
         step_number=1,
-        max_steps=10,
     )
     # "WRONG" or "BAD" label on a prose example — so the LLM cannot miss
     # the contrast between acceptable and unacceptable output.
@@ -165,7 +156,6 @@ def test_prompt_warns_that_prose_escalates():
     prompt = build_capabilities_prompt(
         agents=[],
         step_number=1,
-        max_steps=10,
     )
     lowered = prompt.lower()
     assert "escalate" in lowered and (
@@ -177,7 +167,7 @@ def test_prompt_warns_that_prose_escalates():
 def test_self_only_prompt_omits_roster_and_names_self():
     from runtime.orchestrator.capabilities import build_capabilities_prompt
     p = build_capabilities_prompt(
-        agents=[], step_number=1, max_steps=10,
+        agents=[], step_number=1,
         manager_name="dev_agent", self_only=True,
     )
     assert "Available Agents" not in p          # no team roster
@@ -194,7 +184,7 @@ def test_manager_prompt_advertises_fanout_shape():
     so managers know how to invoke native fan-out from their capabilities block."""
     p = build_capabilities_prompt(
         agents=[{"name": "dev_agent", "description": "Implements features"}],
-        step_number=1, max_steps=10,
+        step_number=1,
         manager_name="engineering_head",
     )
     assert "fanout" in p
@@ -207,7 +197,7 @@ def test_manager_prompt_shows_fanout_required_fields():
     """The manager prompt must show the required fan-out fields and constraints."""
     p = build_capabilities_prompt(
         agents=[{"name": "dev_agent", "description": "Implements features"}],
-        step_number=1, max_steps=10,
+        step_number=1,
         manager_name="engineering_head",
     )
     # Required fields advertised
@@ -220,7 +210,7 @@ def test_manager_prompt_shows_fanout_constraints():
     THR-056 option 3 mutating fan-out."""
     p = build_capabilities_prompt(
         agents=[{"name": "dev_agent", "description": "Implements features"}],
-        step_number=1, max_steps=10,
+        step_number=1,
         manager_name="engineering_head",
     )
     # Width constraints
@@ -257,7 +247,7 @@ def test_manager_prompt_documents_fanout_child_retry_link():
     otherwise-valid retry fanout is rejected."""
     p = build_capabilities_prompt(
         agents=[{"name": "dev_agent", "description": "Implements features"}],
-        step_number=1, max_steps=10,
+        step_number=1,
         manager_name="engineering_head",
     )
     # The nested field must be advertised on fanout children.
@@ -301,7 +291,7 @@ def test_manager_prompt_no_longer_claims_only_delegate_done_escalate():
     only delegate/done/escalate — the contradiction the reviewer flagged."""
     p = build_capabilities_prompt(
         agents=[{"name": "dev_agent", "description": "Implements features"}],
-        step_number=1, max_steps=10,
+        step_number=1,
         manager_name="engineering_head",
     )
     # The old contradictory phrase must be gone
@@ -319,7 +309,7 @@ def test_manager_prompt_no_longer_claims_only_delegate_done_escalate():
 
 def test_manager_prompt_marks_supersede_as_always_available_manager_action():
     p = build_capabilities_prompt(
-        agents=[], step_number=1, max_steps=10, manager_name="engineering_manager",
+        agents=[], step_number=1, manager_name="engineering_manager",
     )
     assert '"action": "supersede"' in p
     assert "Manager root replanning" in p
@@ -336,7 +326,7 @@ def test_self_only_prompt_advertises_fanout_as_unavailable():
     """The self-only prompt must mention fanout exists but is unavailable
     in self-only mode, so non-manager owners are not confused by its absence."""
     p = build_capabilities_prompt(
-        agents=[], step_number=1, max_steps=10,
+        agents=[], step_number=1,
         manager_name="dev_agent", self_only=True,
     )
     assert "fanout" in p.lower()
