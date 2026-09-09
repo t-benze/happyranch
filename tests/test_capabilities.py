@@ -170,6 +170,9 @@ def test_self_only_prompt_omits_roster_and_names_self():
         agents=[], step_number=1,
         manager_name="dev_agent", self_only=True,
     )
+    assert "max_orchestration_steps" not in p
+    assert "maximum" not in p.lower()
+    assert "step budget" not in p.lower()
     assert "Available Agents" not in p          # no team roster
     assert "dev_agent" in p                       # delegate-to-self target named
     assert '"action": "delegate"' in p

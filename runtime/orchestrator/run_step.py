@@ -932,8 +932,8 @@ def _consume_completion_report(
                 if cap > 0 and task.revision_count >= cap:
                     # THR-026 seq33: revise-round budget exhausted.
                     # DELIBERATE stop-with-best — do NOT increment, do NOT
-                    # delegate, do NOT auto-revisit. Mirror the section-2
-                    # step-budget terminal's root/non-root split.
+                    # delegate, do NOT auto-revisit. Non-root tasks fail and
+                    # wake their parent; root tasks escalate under this revise limit.
                     reason = f"iteration_budget_exhausted: revise budget ({cap} rounds) exhausted"
                     if not is_root(task):
                         _fail(orch, task_id, note=reason)

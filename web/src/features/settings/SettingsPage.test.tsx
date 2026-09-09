@@ -1325,3 +1325,22 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     );
   });
 });
+
+
+describe('active SettingsPage — retired maximum absence', () => {
+  beforeEach(() => {
+    stubBaseHandlers();
+    server.use(http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, () => HttpResponse.error()));
+  });
+  test.each([false, true])('organization populated/optional-empty=%s has no maximum', async (empty) => {
+    if (empty) server.use(http.get(`/api/v1/orgs/${SLUG}/settings`, () =>
+      HttpResponse.json({ ...SETTINGS_PAYLOAD, org: { ...SETTINGS_PAYLOAD.org,
+        session_timeout_seconds: null, reviewer_agents: [], dreaming: {
+          ...SETTINGS_PAYLOAD.org.dreaming, agents: { mode: 'all', include: [], exclude: [] }
+        } } })));
+    mountAt(`/orgs/${SLUG}/settings/organization`);
+    expect(await screen.findByTestId('settings-content')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Organization' })).toBeInTheDocument();
+    expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
+  });
+});

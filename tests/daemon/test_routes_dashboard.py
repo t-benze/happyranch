@@ -1147,3 +1147,133 @@ def test_forced_watchdog_regression_cleanup_ownership(
         dp_mod.compose_dashboard_summary = original_compose
         mgr.reap_scheduler = original_reap
         mgr.cancel_scheduler = original_cancel
+
+
+def test_cleanup_incomplete_is_hard_failure_and_outer_owner_reaps(
+    tmp_home, daemon_state, auth_headers, monkeypatch,
+) -> None:
+    """A separate owner must recover resources after the helper hard-fails."""
+    import threading
+    import pytest
+
+    from runtime.daemon.app import create_app
+    from runtime.orchestrator import dashboard_projection as dp_mod
+
+    # Ensure no prior projection for the alpha org.
+    org_state = daemon_state.orgs["alpha"]
+    assert org_state.dashboard_projection.get_projection() is None
+
+    # Patch compose_dashboard_summary to block in a real worker thread.
+    compose_entered = threading.Event()
+    compose_unblock = threading.Event()
+    compose_done = threading.Event()
+    shutdown_entered = threading.Event()
+    shutdown_release = threading.Event()
+    # Track whether cancel+reap have completed.
+    cancel_reap_done = threading.Event()
+    tasks = []
+    order = []
+
+    outer_release = threading.Event()
+    owned_threads = []
+    original_client = TestClient
+    def owned_client(*args, **kwargs):
+        owned_threads.append(threading.current_thread())
+        return original_client(*args, **kwargs)
+    monkeypatch.setitem(globals(), "TestClient", owned_client)
+    original_compose = dp_mod.compose_dashboard_summary
+    def blocking_compose(*, db, kb_store, teams, now):
+        owned_threads.append(threading.current_thread())
+        compose_entered.set()
+        compose_unblock.wait()
+        outer_release.wait()
+        compose_done.set()
+        return {
+            "heartbeat": [],
+            "narrative_counts": {
+                "completed_today": 0, "failed_today": 0,
+                "escalated_open": 0, "kb_added_today": 0,
+                "agents_active_now": 0, "spend_today_usd": 0.0,
+            },
+            "escalations": [], "stale_escalations": [],
+            "active_by_team": [], "recent_activity": [],
+            "updates_this_week": [], "org_pulse": [],
+            "org_age_days": 0, "server_now": "2026-01-01T00:00:00",
+            "generated_at": None,
+        }
+    monkeypatch.setattr(dp_mod, "compose_dashboard_summary", blocking_compose)
+
+    # Shorten the refresh interval.
+    monkeypatch.setattr(dp_mod, "_REFRESH_INTERVAL_SECONDS", 0.1)
+
+    # Monkeypatch reap_scheduler to release the blocked worker AFTER
+    # cancel+reap complete (same as the main success-path test).
+    mgr = org_state.dashboard_projection
+    original_reap = mgr.reap_scheduler
+    async def _reap_and_release():
+        assert order == ["cancel"]
+        await original_reap()
+        order.append("reap")
+        cancel_reap_done.set()
+        compose_unblock.set()
+    monkeypatch.setattr(mgr, "reap_scheduler", _reap_and_release)
+
+    # Block real lifespan cancellation only after it has entered shutdown.
+    # The watchdog starts after that handshake and its cleanup releases this
+    # blocker before joining the TestClient thread.
+    original_cancel = mgr.cancel_scheduler
+    def _slow_cancel():
+        shutdown_entered.set()
+        assert shutdown_release.wait(timeout=5), (
+            "watchdog cleanup did not release the injected shutdown blocker"
+        )
+        tasks.append(mgr._refresh_task)
+        original_cancel()
+        order.append("cancel")
+    monkeypatch.setattr(mgr, "cancel_scheduler", _slow_cancel)
+
+    try:
+        app = create_app(daemon_state)
+
+        # Watchdog deadline deliberately short to force expiry.
+        _DEADLINE_SECONDS = 0.5
+
+        with pytest.raises(AssertionError, match="^Watchdog cleanup incomplete: cannot terminally own all resources") as caught:
+            _bounded_lifespan_context(
+                app=app,
+                compose_entered=compose_entered,
+                compose_unblock=compose_unblock,
+                compose_done=compose_done,
+                deadline_seconds=_DEADLINE_SECONDS,
+                shutdown_entered=shutdown_entered,
+                shutdown_release=shutdown_release,
+                auth_headers=auth_headers,
+                org_slug=org_state.slug,
+            )
+
+        print("W4 exact failure:", str(caught.value))
+        assert str(caught.value) == (
+            "Watchdog cleanup incomplete: cannot terminally own all resources"
+            "; worker compose_done timed out during cleanup"
+            "; TestClient thread did not exit during cleanup"
+        )
+        assert not compose_done.is_set()
+        assert any(t.is_alive() for t in owned_threads)
+        assert compose_unblock.is_set() and shutdown_release.is_set()
+    finally:
+        compose_unblock.set()
+        shutdown_release.set()
+        outer_release.set()
+        for thread in owned_threads:
+            thread.join(timeout=5)
+        assert compose_done.is_set()
+        assert owned_threads and all(not t.is_alive() for t in owned_threads)
+        assert cancel_reap_done.is_set()
+        assert mgr._refresh_task is None
+        assert not daemon_state.queue.is_running()
+        assert org_state.sessions.count_active() == 0
+        assert order == ["cancel", "reap"]
+        assert tasks and all(task.done() for task in tasks)
+        dp_mod.compose_dashboard_summary = original_compose
+        mgr.reap_scheduler = original_reap
+        mgr.cancel_scheduler = original_cancel

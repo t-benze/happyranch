@@ -236,7 +236,7 @@ def test_review_required_founder_approves_then_resumes(
             # ── Stage 1: submit review_required=true job + self-block ──
 
             # Submit a job that needs founder review (review_required=true).
-            payload="/tmp/blocked-by-job-rr-approve-submit-$$.json"
+            payload="{tmp_path}/blocked-by-job-rr-approve-submit-$$.json"
             printf '{{
               "task_id": "%s",
               "session_id": "%s",
@@ -248,7 +248,7 @@ def test_review_required_founder_approves_then_resumes(
               "persistent": false
             }}' "$task_id" "$session_id" > "$payload"
 
-            submit_log="/tmp/blocked-by-job-rr-approve-submit-log-$$.txt"
+            submit_log="{tmp_path}/blocked-by-job-rr-approve-submit-log-$$.txt"
             happyranch jobs submit --from-file "$payload" --org "$org_slug" > "$submit_log" 2>&1
             cat "$submit_log" >&2
 
@@ -263,30 +263,22 @@ def test_review_required_founder_approves_then_resumes(
             # Record the job_id for the test driver to pick up and act on.
             echo "$job_id" > "{jobid_file}"
 
-            # Self-block with waiting_on_job_ids via direct HTTP call.
-            # The happyranch CLI report-completion --from-file path does not yet
-            # expose waiting_on_job_ids; we POST to the daemon directly.
-            port=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.port")
-            token=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.token")
-
-            completion_payload="/tmp/blocked-by-job-rr-approve-completion-$$.json"
+            # The shipping file callback forwards the exact blocking job IDs.
+            completion_payload="{tmp_path}/blocked-by-job-rr-approve-completion-$$.json"
             printf '{{
+              "task_id": "%s",
               "session_id": "%s",
               "agent": "%s",
               "status": "blocked",
               "confidence": 0,
-              "output_summary": "Waiting for %s to be reviewed and approved.",
-              "risks_flagged": [],
+              "summary": "Waiting for %s to be reviewed and approved.",
+              "risks": [],
               "dependencies": [],
-              "suggested_reviewer_focus": [],
+              "reviewer_focus": [],
               "waiting_on_job_ids": ["%s"]
-            }}' "$session_id" "$agent" "$job_id" "$job_id" > "$completion_payload"
+            }}' "$task_id" "$session_id" "$agent" "$job_id" "$job_id" > "$completion_payload"
 
-            curl -s -X POST \\
-                "http://127.0.0.1:$port/api/v1/orgs/$org_slug/tasks/$task_id/completion" \\
-                -H "Authorization: Bearer $token" \\
-                -H "Content-Type: application/json" \\
-                -d @"$completion_payload" >&2
+            happyranch report-completion --org "$org_slug" --from-file "$completion_payload" >&2
             echo "" >&2
             echo "Stage 1: blocked with waiting_on_job_ids=[$job_id]" >&2
 
@@ -294,10 +286,9 @@ def test_review_required_founder_approves_then_resumes(
             # ── Stage 2: founder-approved job ran; complete the task ──
             echo "Stage 2: task resumed after founder-approved job, reporting completion" >&2
 
-            happyranch report-completion --org "$org_slug" \\
-                --task-id "$task_id" --session-id "$session_id" \\
-                --agent "$agent" --status completed --confidence 90 \\
-                --summary '{{"action":"done","summary":"completed after founder-approved job unblock"}}'
+            done_payload="{tmp_path}/rr-approve-done-$$.json"
+            printf '{{"task_id":"%s","session_id":"%s","agent":"%s","status":"completed","confidence":90,"summary":"completed after founder-approved job unblock","decision":{{"action":"done","summary":"completed after founder-approved job unblock"}}}}' "$task_id" "$session_id" "$agent" > "$done_payload"
+            happyranch report-completion --org "$org_slug" --from-file "$done_payload"
             echo "Stage 2: reported completed" >&2
         fi
     """))
@@ -385,6 +376,7 @@ def test_review_required_founder_approves_then_resumes(
     resumed_payload = _audit_payload(resumed_entry)
     blocking_ids = resumed_payload.get("blocking_job_ids", [])
     assert blocking_ids == [job_id]
+    assert resumed_payload.get("job_outcomes") == {job_id: "completed"}
 
     # 8f. Both stages ran.
     assert counter_file.exists(), "counter file was never created by fake_claude"
@@ -400,6 +392,7 @@ def test_review_required_founder_approves_then_resumes(
         f"expected trigger=job_terminal (founder-approved flow), got: {resumed_payload}"
     )
     assert resumed_payload.get("triggering_job_id") == job_id
+    print("E2 effects", json.dumps({"task_id": task_id, "job_id": job_id, "parked": parked["task"]["blocked_on_job_ids"], "resume": resumed_payload, "audit_actions": [entry["action"] for entry in entries], "invocations": int(counter_file.read_text())}))
 
 
 def test_review_required_founder_rejects_then_resumes(
@@ -444,7 +437,7 @@ def test_review_required_founder_rejects_then_resumes(
             # ── Stage 1: submit review_required=true job + self-block ──
 
             # Submit a job that needs founder review (review_required=true).
-            payload="/tmp/blocked-by-job-rr-reject-submit-$$.json"
+            payload="{tmp_path}/blocked-by-job-rr-reject-submit-$$.json"
             printf '{{
               "task_id": "%s",
               "session_id": "%s",
@@ -456,7 +449,7 @@ def test_review_required_founder_rejects_then_resumes(
               "persistent": false
             }}' "$task_id" "$session_id" > "$payload"
 
-            submit_log="/tmp/blocked-by-job-rr-reject-submit-log-$$.txt"
+            submit_log="{tmp_path}/blocked-by-job-rr-reject-submit-log-$$.txt"
             happyranch jobs submit --from-file "$payload" --org "$org_slug" > "$submit_log" 2>&1
             cat "$submit_log" >&2
 
@@ -471,28 +464,22 @@ def test_review_required_founder_rejects_then_resumes(
             # Record the job_id for the test driver to pick up and reject.
             echo "$job_id" > "{jobid_file}"
 
-            # Self-block with waiting_on_job_ids via direct HTTP call.
-            port=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.port")
-            token=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.token")
-
-            completion_payload="/tmp/blocked-by-job-rr-reject-completion-$$.json"
+            # The shipping file callback forwards the exact blocking job IDs.
+            completion_payload="{tmp_path}/blocked-by-job-rr-reject-completion-$$.json"
             printf '{{
+              "task_id": "%s",
               "session_id": "%s",
               "agent": "%s",
               "status": "blocked",
               "confidence": 0,
-              "output_summary": "Waiting for %s to be reviewed — may be rejected.",
-              "risks_flagged": [],
+              "summary": "Waiting for %s to be reviewed — may be rejected.",
+              "risks": [],
               "dependencies": [],
-              "suggested_reviewer_focus": [],
+              "reviewer_focus": [],
               "waiting_on_job_ids": ["%s"]
-            }}' "$session_id" "$agent" "$job_id" "$job_id" > "$completion_payload"
+            }}' "$task_id" "$session_id" "$agent" "$job_id" "$job_id" > "$completion_payload"
 
-            curl -s -X POST \\
-                "http://127.0.0.1:$port/api/v1/orgs/$org_slug/tasks/$task_id/completion" \\
-                -H "Authorization: Bearer $token" \\
-                -H "Content-Type: application/json" \\
-                -d @"$completion_payload" >&2
+            happyranch report-completion --org "$org_slug" --from-file "$completion_payload" >&2
             echo "" >&2
             echo "Stage 1: blocked with waiting_on_job_ids=[$job_id]" >&2
 
@@ -500,10 +487,9 @@ def test_review_required_founder_rejects_then_resumes(
             # ── Stage 2: job was rejected by founder; adapt and complete ──
             echo "Stage 2: task resumed after founder-rejected job, reporting completion" >&2
 
-            happyranch report-completion --org "$org_slug" \\
-                --task-id "$task_id" --session-id "$session_id" \\
-                --agent "$agent" --status completed --confidence 90 \\
-                --summary '{{"action":"done","summary":"completed despite job rejection — adapted plan"}}'
+            done_payload="{tmp_path}/rr-reject-done-$$.json"
+            printf '{{"task_id":"%s","session_id":"%s","agent":"%s","status":"completed","confidence":90,"summary":"completed despite job rejection — adapted plan","decision":{{"action":"done","summary":"completed despite job rejection — adapted plan"}}}}' "$task_id" "$session_id" "$agent" > "$done_payload"
+            happyranch report-completion --org "$org_slug" --from-file "$done_payload"
             echo "Stage 2: reported completed" >&2
         fi
     """))
@@ -612,3 +598,4 @@ def test_review_required_founder_rejects_then_resumes(
         f"expected trigger=job_terminal (founder-rejected flow), got: {resumed_payload}"
     )
     assert resumed_payload.get("triggering_job_id") == job_id
+    print("E2 effects", json.dumps({"task_id": task_id, "job_id": job_id, "parked": parked["task"]["blocked_on_job_ids"], "resume": resumed_payload, "audit_actions": [entry["action"] for entry in entries], "invocations": int(counter_file.read_text())}))

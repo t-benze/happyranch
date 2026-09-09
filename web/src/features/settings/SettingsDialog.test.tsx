@@ -7,6 +7,7 @@ import { DataContext } from '@/design-system/providers/DataContext';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import { SettingsDialog } from './SettingsDialog';
+import { SettingsPage } from './SettingsPage';
 import type { SettingsSnapshot, SystemSettings, OrgSettings, OrgSettingsPatch, AssistantStatus, AssistantRegisterBody } from '@/lib/api/types';
 import type { QueryLike, MutationLike } from '@/design-system/providers/DataContext';
 
@@ -69,6 +70,8 @@ function renderDialog(
     repairMutateAsync?: ReturnType<typeof vi.fn>;
     registerMutateAsync?: ReturnType<typeof vi.fn>;
   },
+  queryOverride?: Partial<QueryLike<SettingsSnapshot>>,
+  page = false,
 ) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const snapshot = overrides
@@ -80,6 +83,7 @@ function renderDialog(
     isLoading: false,
     isError: false,
     error: null,
+    ...queryOverride,
   });
 
   const useUpdateOrgSettings = (): MutationLike<OrgSettingsPatch, SettingsSnapshot> => ({
@@ -148,7 +152,7 @@ function renderDialog(
           <Route
             element={
               <DataContext.Provider value={ctxValue}>
-                <SettingsDialog open onOpenChange={onClose} />
+                {page ? <SettingsPage /> : <SettingsDialog open onOpenChange={onClose} />}
               </DataContext.Provider>
             }
           >
@@ -621,5 +625,45 @@ describe('SettingsDialog — assistant status network evidence', () => {
     // Advance past the old 5 000 ms refetchInterval.
     await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(counter.count()).toBe(1);
+  });
+});
+
+
+describe('active settings surfaces — retired maximum absence', () => {
+  test.each([false, true])('loading surface page=%s has no maximum', (page) => {
+    renderDialog(undefined, vi.fn(), vi.fn(), undefined,
+      { data: undefined, isLoading: true }, page);
+    expect(screen.getByText('Loading settings…')).toBeInTheDocument();
+    expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
+  });
+  test.each([false, true])('error surface page=%s has no maximum', (page) => {
+    renderDialog(undefined, vi.fn(), vi.fn(), undefined,
+      { data: undefined, isError: true, error: new Error('synthetic failure') }, page);
+    expect(screen.getByText(/Could not load settings/)).toBeInTheDocument();
+    expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
+  });
+  test.each([false, true])('synthetic no-data page=%s is a shell, not API-empty success', (page) => {
+    renderDialog(undefined, vi.fn(), vi.fn(), undefined,
+      { data: undefined }, page);
+    expect(screen.getByText('Settings')).toBeInTheDocument();
+    expect(screen.queryByText('Loading settings…')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Could not load settings/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-content')).not.toBeInTheDocument();
+    expect(screen.queryByText('Queue workers')).not.toBeInTheDocument();
+    expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
+  });
+  test('populated dialog keeps real fields while omitting maximum', () => {
+    renderDialog();
+    expect(screen.getByText('Queue workers')).toBeInTheDocument();
+    expect(screen.getAllByText('Session timeout (s)')).toHaveLength(2);
+    expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
+  });
+  test('empty optional org values retain a usable dialog form and no maximum', () => {
+    renderDialog({ org: { ...mockOrg, session_timeout_seconds: null,
+      reviewer_agents: [], dreaming: { ...mockOrg.dreaming,
+        agents: { mode: 'all', include: [], exclude: [] } } } });
+    expect(screen.getByText('Queue workers')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument();
+    expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
   });
 });
