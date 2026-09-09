@@ -12,7 +12,8 @@ into the orchestrator's manager-root escalation commit point. It defines:
   ``"continue_same_root"`` (the named same-root permitted action was executed)
   or ``"escalate"`` (fail closed: the existing escalation path proceeds).
 
-Invariants (THR-181 / KB escalation-bounded-self-resume-ruling):
+Invariants (THR-181; see ``docs/agent-guides/orchestrator-contracts.md`` —
+``Active team authority policy``):
 
 * Exactly ONE audited evaluation per eligible attempt; the DB is the
   single-evaluation and exactly-once-consumption guard (UNIQUE candidate_id
