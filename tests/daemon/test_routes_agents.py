@@ -3026,8 +3026,9 @@ def test_manage_agent_reset_failure_preserves_newer_canonical_bytes(
         ("audit", "missing"),
     ],
 )
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
 def test_manage_agent_compensation_preserves_canonical_ownership_and_sessions(
-    tmp_home, app, org_state, auth_headers, monkeypatch, caplog, failure_kind, outcome,
+    tmp_home, app, org_state, auth_headers, monkeypatch, caplog, failure_kind, outcome, newline,
 ) -> None:
     """Real same-loop failures restore only operation-owned canonical bytes."""
     import logging
@@ -3041,7 +3042,7 @@ def test_manage_agent_compensation_preserves_canonical_ownership_and_sessions(
     active_path = _paths(org_state).agents_dir / "dev_agent.md"
     # Deliberately retain extra valid formatting: compensation must restore
     # these exact pre-loser bytes, rather than a newly rendered definition.
-    original_bytes = active_path.read_bytes().replace(b"\n", b"\r\n")
+    original_bytes = active_path.read_bytes().replace(b"\n", newline)
     active_path.write_bytes(original_bytes)
     original = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert original is not None
