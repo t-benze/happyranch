@@ -142,7 +142,7 @@ def test_build_prompt_includes_managed_skills_when_present():
     assert "test-skill" in prompt
 
 
-def test_build_prompt_includes_protocol_docs_when_present():
+def test_build_prompt_includes_repository_refresh_warning():
     prompt = build_schedule_prompt(
         org_slug="test-org",
         schedule_id="SCHEDULE-001",
@@ -155,10 +155,11 @@ def test_build_prompt_includes_protocol_docs_when_present():
         recurrence=None,
         timezone="UTC",
         org_config=_org_config(),
-        protocol_doc_manifest="Protocol Docs:\n- 00-completion-contract.md",
+        repo_refresh_note="Repository refresh: offline; using existing checkout",
     )
-    assert "Protocol Docs:" in prompt
-    assert "00-completion-contract.md" in prompt
+    assert "Repository refresh:" in prompt
+    assert "offline; using existing checkout" in prompt
+    assert "Protocol Docs" not in prompt
 
 
 def test_build_prompt_current_time_rendered():

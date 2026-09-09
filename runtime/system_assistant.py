@@ -313,7 +313,7 @@ Authority boundary:
 
 Knowledge:
 - Start with `happyranch/README.md` in this workspace.
-- Use the copied HappyRanch guides under `happyranch/docs/`, `happyranch/protocol/`,
+- Use the copied HappyRanch guides under `happyranch/docs/`, `happyranch/runtime/skills/bundled/`,
   and `happyranch/skills/` as your local source of truth.
 - Prefer `happyranch` CLI commands when inspecting or changing a runtime.
 """
@@ -416,20 +416,14 @@ _KNOWLEDGE_SOURCES = [
         "docs/agent-guides/features-and-invariants.md",
         "docs/agent-guides/features-and-invariants.md",
     ),
-    ("protocol/00-completion-contract.md", "protocol/00-completion-contract.md"),
-    ("protocol/05-runtime-blueprint.md", "protocol/05-runtime-blueprint.md"),
-    ("protocol/05b-agent-runtime.md", "protocol/05b-agent-runtime.md"),
-    ("protocol/05c-orchestrator.md", "protocol/05c-orchestrator.md"),
-    ("protocol/06-knowledge-base.md", "protocol/06-knowledge-base.md"),
-    ("protocol/skills/reflection/SKILL.md", "protocol/skills/reflection/SKILL.md"),
-    ("protocol/skills/jobs/SKILL.md", "protocol/skills/jobs/SKILL.md"),
     ("skills/happyranch/SKILL.md", "skills/happyranch/SKILL.md"),
 ]
 _KNOWLEDGE_PACKAGE = "runtime.system_knowledge"
+_BUNDLED_KNOWLEDGE_SKILLS = ("reflection", "jobs")
 _SOURCE_ROOT_MARKERS = (
     "pyproject.toml",
     "docs/agent-guides/runtime-and-configuration.md",
-    "protocol/05-runtime-blueprint.md",
+    "runtime/config.py",
 )
 
 
@@ -518,13 +512,21 @@ def _write_knowledge_pack(paths: SystemAssistantPaths) -> None:
     root = _knowledge_source_root()
     copied: list[str] = []
     missing: list[str] = []
-    for source_rel, dest_rel in _KNOWLEDGE_SOURCES:
-        source = root / source_rel
+    from runtime.skills.sources import bundled_skills_dir
+
+    # Reference copies come from the same release-owned assets as org skills.
+    # Do not package a second source tree or use assistant copies for launches.
+    sources = [(root / source_rel, dest_rel) for source_rel, dest_rel in _KNOWLEDGE_SOURCES]
+    sources.extend(
+        (bundled_skills_dir() / slug / "SKILL.md", f"runtime/skills/bundled/{slug}/SKILL.md")
+        for slug in _BUNDLED_KNOWLEDGE_SKILLS
+    )
+    for source, dest_rel in sources:
         destination = paths.knowledge_dir / dest_rel
         if _copy_knowledge_file(source, destination, base=paths.knowledge_dir):
             copied.append(dest_rel)
         else:
-            missing.append(source_rel)
+            missing.append(dest_rel)
     index = "\n".join(
         [
             "# HappyRanch System Assistant Knowledge",
@@ -546,7 +548,7 @@ def _write_knowledge_pack(paths: SystemAssistantPaths) -> None:
             "- `docs/agent-guides/runtime-and-configuration.md`",
             "- `docs/agent-guides/web-and-cli.md`",
             "- `docs/agent-guides/agent-executors-and-permissions.md`",
-            "- `protocol/05-runtime-blueprint.md`",
+            "- `docs/agent-guides/project-layout.md`",
             "- `skills/happyranch/SKILL.md`",
             "",
             "Copied files:",

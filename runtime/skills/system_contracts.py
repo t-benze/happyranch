@@ -12,9 +12,8 @@ This module is the SINGLE SOURCE OF TRUTH for:
 Used by BOTH the injection code (``workspace_adapters.inject_system_contracts``)
 and the CLI debug output (``skills effective``).
 
-Phase 1 (this file): encodes the definitions + context predicates.
-Phase 4 (future): the wholesale protocol/skills dump is removed and this
-becomes the SOLE skill injection path.
+This module defines context predicates. Canonical materialization validates
+release-owned bundled packages before publishing links in both provider roots.
 """
 
 from __future__ import annotations
@@ -54,7 +53,7 @@ class SystemContract:
     """A system-contract skill definition with its context-exposure predicate.
 
     Fields:
-        id: skill slug (matches the directory name under protocol/skills/<id>/)
+        id: skill slug (matches the directory name under runtime/skills/bundled/<id>/)
         name: human-readable name for debug/CLI output
         description: one-line purpose
         when_to_use: guidance for the agent
@@ -72,7 +71,7 @@ class SystemContract:
     requires_repo: bool = False
 
 
-# ── The 6 system contracts (single source of truth) ──────────────────
+# ── System contracts (single source of truth) ──────────────────
 
 SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
     SystemContract(
@@ -87,7 +86,7 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             "Use when you have reusable guidance to capture as a custom skill "
             "from an active task session."
         ),
-        source_path="protocol/skills/create-skill/SKILL.md",
+        source_path="runtime/skills/bundled/create-skill/SKILL.md",
         contexts=(SessionContext.TASK,),
         requires_repo=True,
     ),
@@ -99,7 +98,7 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             "progress, completion callback, output placement."
         ),
         when_to_use="Use at the start of every task session.",
-        source_path="protocol/skills/start-task/SKILL.md",
+        source_path="runtime/skills/bundled/start-task/SKILL.md",
         contexts=(
             SessionContext.TASK, SessionContext.WAKE,
             SessionContext.SCHEDULE,
@@ -113,7 +112,7 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             "commands; prevents blocked sessions and captures founder-review workflow."
         ),
         when_to_use="Use when a command may not return synchronously.",
-        source_path="protocol/skills/jobs/SKILL.md",
+        source_path="runtime/skills/bundled/jobs/SKILL.md",
         contexts=(
             SessionContext.TASK,
             SessionContext.THREAD,
@@ -131,7 +130,7 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             "protects user work and concurrent sessions."
         ),
         when_to_use="Use before any git commit, checkout, or file edit inside repos/.",
-        source_path="protocol/skills/make-worktree/SKILL.md",
+        source_path="runtime/skills/bundled/make-worktree/SKILL.md",
         contexts=(
             SessionContext.TASK,
             SessionContext.THREAD,
@@ -153,7 +152,7 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             "Use for thread invocations, task-followups, and task sessions "
             "that may compose or post to threads."
         ),
-        source_path="protocol/skills/thread/SKILL.md",
+        source_path="runtime/skills/bundled/thread/SKILL.md",
         contexts=(
             SessionContext.TASK, SessionContext.THREAD, SessionContext.WAKE,
             SessionContext.SCHEDULE, SessionContext.BOOTSTRAP,
@@ -167,7 +166,7 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             "handling and dream-specific completion callback."
         ),
         when_to_use="Use during scheduled dream invocations only.",
-        source_path="protocol/skills/dream/SKILL.md",
+        source_path="runtime/skills/bundled/dream/SKILL.md",
         contexts=(SessionContext.DREAM,),
     ),
     SystemContract(
@@ -182,7 +181,7 @@ SYSTEM_CONTRACTS: tuple[SystemContract, ...] = (
             "Use when the founder or operator has explicitly instructed you to "
             "schedule a Todo for yourself."
         ),
-        source_path="protocol/skills/todos/SKILL.md",
+        source_path="runtime/skills/bundled/todos/SKILL.md",
         contexts=(
             SessionContext.TASK,
             SessionContext.THREAD,

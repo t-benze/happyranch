@@ -62,7 +62,7 @@ When the founder indicates the reflection is done:
    happyranch learning add --org {ORG_SLUG} --agent <your_name> --from-file /tmp/lrn-<slug>.yaml
    ```
 
-3. **Identify KB-worthy material.** Apply the rules in `protocol/06-knowledge-base.md` (≥12-month lifespan; not agent-private). Write `/tmp/kb-<slug>.md` with YAML frontmatter and a markdown body, then call:
+3. **Identify KB-worthy material.** Prefer durable, cross-agent knowledge with an expected useful lifespan of at least 12 months; keep agent-private lessons in memory. Write `/tmp/kb-<slug>.md` with YAML frontmatter and a markdown body, then call:
 
    ```bash
    happyranch kb add --org {ORG_SLUG} --agent <your_name> --from-file /tmp/kb-<slug>.md

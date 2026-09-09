@@ -238,10 +238,10 @@ def test_ensure_workspace_ready_does_not_overwrite_existing_learnings(test_setti
 
 def test_ensure_workspace_ready_does_not_copy_skills_after_cutover(test_settings, tmp_path, runtime):
     """With _WHOLESALE_DUMP_ENABLED = False (the cutover default), bootstrap
-    ensure_workspace_ready must NOT wholesale-copy protocol/skills/ into the
+    ensure_workspace_ready must NOT wholesale-copy runtime/skills/bundled/ into the
     workspace. Explicit injection paths (inject_system_contracts +
     inject_managed_skills) are the sole delivery mechanism."""
-    skills_root = test_settings.get_protocol_dir() / "skills"
+    skills_root = test_settings.get_bundled_skills_dir()
     (skills_root / "start-task").mkdir(parents=True)
     (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
     (skills_root / "make-worktree").mkdir(parents=True)
@@ -256,7 +256,7 @@ def test_ensure_workspace_ready_does_not_copy_skills_after_cutover(test_settings
 
 
 def test_ensure_workspace_ready_without_skills_dir_is_noop(test_settings, tmp_path, runtime):
-    skills_root = test_settings.get_protocol_dir() / "skills"
+    skills_root = test_settings.get_bundled_skills_dir()
     assert not skills_root.exists()
     workspace = tmp_path / "workspace"
     ContextBuilder(test_settings, runtime, slug="test").ensure_workspace_ready(workspace, "dev_agent", "system prompt")
@@ -281,7 +281,7 @@ def test_ensure_workspace_ready_can_bootstrap_codex_workspace(test_settings, tmp
 
 def test_ensure_workspace_ready_can_bootstrap_pi_workspace(test_settings, tmp_path, runtime):
     """Pi workspace boots via Codex adapter; with cutover, no wholesale skill dump."""
-    skills_root = test_settings.get_protocol_dir() / "skills"
+    skills_root = test_settings.get_bundled_skills_dir()
     (skills_root / "start-task").mkdir(parents=True)
     (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
 

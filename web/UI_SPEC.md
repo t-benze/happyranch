@@ -1,6 +1,6 @@
 # UI_SPEC.md — HappyRanch Founder Console
 
-**Companion to:** `web/DESIGN.md` (tokens), `web/ARCHITECTURE.md` (layer rules), `docs/superpowers/specs/2026-05-14-web-ui-design.md` (the original web-UI design doc), `protocol/05e-dashboard.md` (informs the future Audit / Trends surface).
+**Companion to:** `web/DESIGN.md` (tokens), `web/ARCHITECTURE.md` (layer rules), `docs/superpowers/specs/2026-05-14-web-ui-design.md` (the original web-UI design doc), `docs/agent-guides/web-and-cli.md` (informs the future Audit / Trends surface).
 
 **Status:** v0.1 spec. Threads is implemented; the other four nav slots (Tasks, KB, Audit, Agents) are sketched only to anchor the navigation model.
 
@@ -497,7 +497,7 @@ Browse and read knowledge-base entries. Read-only by default. A flag-gated compo
 
 ### Purpose
 
-The work log from `protocol/05e-dashboard.md` Page 3 (audit trail) plus Page 4 (escalation history) and Page 6 (execution traces). One feature folder, sub-routed.
+The work log from `docs/agent-guides/web-and-cli.md` Page 3 (audit trail) plus Page 4 (escalation history) and Page 6 (execution traces). One feature folder, sub-routed.
 
 ### One-screen sketch
 

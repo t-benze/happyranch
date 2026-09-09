@@ -1068,7 +1068,7 @@ def test_escalated_task_followup_prompt_matches_governing_skill_contract():
         "follow-up never authorizes that gate",
     )
     skill = " ".join(
-        (Path(__file__).resolve().parents[1] / "protocol/skills/thread/SKILL.md")
+        (Path(__file__).resolve().parents[1] / "runtime/skills/bundled/thread/SKILL.md")
         .read_text()
         .split()
     )

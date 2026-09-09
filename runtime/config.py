@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Project root — where source code and protocol docs live
+    # Package root — contains runtime/, in a checkout or installed distribution.
     project_root: Path = Field(
         default_factory=lambda: Path(__file__).resolve().parent.parent
     )
@@ -59,8 +59,20 @@ class Settings(BaseSettings):
     # Pi executor
     pi_cli_path: str = "pi"
 
-    # Protocol docs (relative to project_root)
+    # Retired setting retained for configuration/API compatibility. Only the old
+    # default is accepted; custom source selection must never silently change.
     protocol_dir: str = "protocol"
+
+    @field_validator("protocol_dir")
+    @classmethod
+    def _reject_protocol_override(cls, value: str) -> str:
+        if value != "protocol":
+            raise ValueError(
+                "protocol_dir overrides are retired; migrate approved skill assets "
+                "to runtime/skills/bundled in the release, then remove the "
+                "protocol_dir/HAPPYRANCH_PROTOCOL_DIR override"
+            )
+        return value
 
     # Task constraints
     session_timeout_seconds: int = 1800  # 30 minutes
@@ -124,8 +136,10 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
-    def get_protocol_dir(self) -> Path:
-        return self.project_root / self.protocol_dir
+    def get_bundled_skills_dir(self) -> Path:
+        from runtime.skills.sources import bundled_skills_dir
+
+        return bundled_skills_dir(self.project_root)
 
     @property
     def daemon_home(self) -> Path:

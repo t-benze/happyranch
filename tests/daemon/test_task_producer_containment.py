@@ -282,7 +282,7 @@ def _seed_org(paths: OrgPaths, tmp_path: Path, test_settings: Settings) -> None:
     )
     (paths.root / "org" / "config.yaml").write_text("timezone: Asia/Shanghai\n")
     # Protocol skill sources for the system-contract materializer.
-    proto = test_settings.get_protocol_dir() / "skills"
+    proto = test_settings.get_bundled_skills_dir()
     for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "wake", "schedule"):
         src = proto / sid
         src.mkdir(parents=True, exist_ok=True)

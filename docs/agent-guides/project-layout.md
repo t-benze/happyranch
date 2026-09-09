@@ -15,18 +15,16 @@ Agents operate autonomously within authority defined by their org. The system en
 
 A single runtime container hosts multiple orgs under `<runtime>/orgs/<slug>/`. Each org has its own org content, SQLite DB, workspaces, KB, threads, jobs, and artifacts. One daemon serves all orgs concurrently.
 
-## Design Documents
+## Current behavior and navigation
 
-Read these before changing behavior:
+Implementation, request models, OpenAPI, and behavior tests own runtime rules.
+The six guides in this directory explain the corresponding code surfaces; use
+CLAUDE.md's "Read When Touching" table to select one. Historical designs in
+`docs/superpowers/specs/` do not override implemented behavior.
 
-- `protocol/00-completion-contract.md` - completion-report format, manager decision schema, agent callback list.
-- `protocol/05-runtime-blueprint.md` - index for runtime docs.
-- `protocol/05b-agent-runtime.md` - executor model, memory architecture, lifecycle and scheduling.
-- `protocol/05c-orchestrator.md` - orchestrator responsibilities, permissions, task state machine.
-- `protocol/05e-dashboard.md` - dashboard layout, API endpoints, implementation order.
-- `protocol/06-knowledge-base.md` - shared KB rules.
-
-`05c-orchestrator.md` and `05e-dashboard.md` are org-agnostic and use placeholder team names. Org-specific charter, teams, and prompts live in `<runtime>/orgs/<slug>/org/`.
+Bundled instructions live in `runtime/skills/bundled/`. They teach agents to use
+implemented workflows; a prose instruction alone does not enforce a requirement.
+Ordinary agent sessions discover eligible skills, not a protocol-document index.
 
 ## Tech Stack
 
@@ -54,13 +52,12 @@ Tracked source is split by product surface:
 |   |-- daemon/                  # FastAPI app, routes, queue, sessions, jobs/thread runners
 |   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts
 |   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, chains
-|   `-- tools/                   # reserved runtime tooling package
+|   |-- skills/bundled/          # release-owned agent instructions and supporting assets
+|   `-- tools/                   # runtime tooling
 |-- web/                         # React SPA; build output goes to web/dist/
 |   |-- src/                     # features, hooks, design-system, host, lib/api, mocks, tests
 |   |-- public/                  # static brand assets
 |   `-- scripts/                 # web-local build/design-system helpers
-|-- protocol/                    # kernel docs 00/05*/06 and agent workspace skills
-|   `-- skills/                  # start-task, make-worktree, manage-repo, manage-agent, dispatch, jobs, thread, review
 |-- skills/happyranch/           # founder-facing CLI skill and shell helper
 |-- docs/
 |   |-- agent-guides/            # on-demand agent/developer reference

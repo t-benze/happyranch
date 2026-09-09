@@ -10,6 +10,7 @@ Build with:  uv run pyinstaller packaging/daemon.spec --clean
 """
 
 import os, sys
+import tomllib
 from pathlib import Path
 
 # SPECPATH is the absolute directory of the spec file (PyInstaller convention).
@@ -17,6 +18,16 @@ from pathlib import Path
 _SPEC_DIR = Path(__file__).resolve().parent if '__file__' in dir() else Path(SPECPATH).resolve()
 # Project root is the parent of the packaging/ directory.
 _PROJ = _SPEC_DIR.parent
+
+# Use the wheel's explicit data inventory for frozen releases too. PyInstaller
+# expects destination directories, whereas wheel force-include maps full paths.
+_wheel_data = tomllib.loads((_PROJ / 'pyproject.toml').read_text())[
+    'tool']['hatch']['build']['targets']['wheel']['force-include']
+_runtime_data = [
+    (str(_PROJ / source), destination if (_PROJ / source).is_dir()
+     else str(Path(destination).parent))
+    for source, destination in _wheel_data.items()
+]
 
 # ---- PyInstaller hooks directory -------------------------------------------
 # We ship a mini-hook that forces collect_submodules on the runtime package
@@ -34,12 +45,9 @@ _common_analysis_kwargs = dict(
     pathex=[str(_PROJ)],
     binaries=[],
     datas=[
-        # Protocol docs — needed so Settings.project_root / "protocol" resolves.
-        (str(_PROJ / 'protocol'), 'protocol'),
+        *_runtime_data,
         # Agent skills — needed at runtime for skill resolution.
         (str(_PROJ / 'skills'), 'skills'),
-        # Docs — bundled by hatch into runtime/system_knowledge/.
-        (str(_PROJ / 'docs'), 'docs'),
     ],
     hiddenimports=[
         # ---- Third-party lazy/dynamic imports ----

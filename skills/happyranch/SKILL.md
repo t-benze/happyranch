@@ -115,7 +115,7 @@ scripts/happyranch manage-repo update --agent dev_agent --repo-name docs --url h
 
 ## Knowledge Base
 
-Per-org entries under `<runtime>/orgs/<slug>/kb/` — each org has its own KB; orgs do not share. Full rules: `protocol/06-knowledge-base.md`.
+Per-org entries under `<runtime>/orgs/<slug>/kb/` — each org has its own KB; orgs do not share. Full rules: `docs/agent-guides/features-and-invariants.md`.
 
 ```bash
 # Read (safe, any agent / any caller)

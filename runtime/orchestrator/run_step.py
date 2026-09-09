@@ -966,7 +966,7 @@ def _consume_completion_report(
         # Engineering Team flows); subsequent same-agent delegations are
         # genuine revise cycles. Re-delegating to QA/reviewer is *not* a
         # revision and must not bump the count (spec
-        # `protocol/05a-teams.md`: "manager escalates after 2 rounds").
+        # historical team design: "manager escalates after 2 rounds").
         existing_children = db.get_children(task_id)
         completed_children = []
         for cid in existing_children:
@@ -2363,7 +2363,7 @@ def _carrier_complete_on_chain_complete(
 # failed slice (revisit_of_task_id on the new child points to the failed
 # predecessor), the orchestrator can derive retry count from existing DB
 # lineage — no schema migration.
-_FAILURE_ROUND_BOUND = 2  # kept as doc-only reference (protocol/05c)
+_FAILURE_ROUND_BOUND = 2  # kept as doc-only reference (historical failure-recovery design)
 _SLICE_RETRY_CEILING = 1  # per-slice retry ceiling; 2nd failure escalates
 
 

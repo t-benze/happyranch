@@ -28,7 +28,6 @@ from runtime.orchestrator.org_config import (
     render_current_time_line,
     resolve_dreaming_timezone_display,
     resolve_managed_skills_index,
-    resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
     format_repo_refresh_note,
@@ -61,7 +60,7 @@ def build_dream_prompt(
     org_config: OrgConfig,
     now: Callable[[], datetime] | None = None,
     managed_skills_index: str = "",
-    protocol_doc_manifest: str = "",
+    repo_refresh_note: str = "",
     active_policy_section: str = "",
 ) -> str:
     """Compose the private dream-session prompt.
@@ -77,13 +76,13 @@ def build_dream_prompt(
     tz, label = resolve_dreaming_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
     skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
-    docs_block = f"\n{protocol_doc_manifest}\n" if protocol_doc_manifest else ""
+    repo_refresh_block = f"\n{repo_refresh_note}\n" if repo_refresh_note else ""
     return f"""# Private Nightly Dream
 
 You are {dream.agent_name}. This is private reflection for HappyRanch org `{org_slug}`.
 This is not a task or thread. Do not call report-completion.
 
-current_time: {current_time}{skills_block}{docs_block}
+current_time: {current_time}{skills_block}{repo_refresh_block}
 Dream id: {dream.id}
 Window start: {dream.window_start.isoformat() if dream.window_start else "last 24 hours"}
 Window end: {dream.window_end.isoformat()}
@@ -276,10 +275,7 @@ async def run_dream(
     # blocking: offline / dirty / non-ff / timeout are swallowed.
     repo_refresh_results = refresh_workspace_repos(workspace)
 
-    protocol_doc_manifest = "\n".join(filter(None, (
-        resolve_protocol_doc_manifest(settings=settings),
-        format_repo_refresh_note(repo_refresh_results),
-    )))
+    repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
     # ── Per-retry launch validator ───────────────────────────────
     def _pre_launch_validator():
@@ -306,7 +302,7 @@ async def run_dream(
         task_history=_load_task_history(workspace),
         org_config=org_config,
         managed_skills_index=managed_skills_index,
-        protocol_doc_manifest=protocol_doc_manifest,
+        repo_refresh_note=repo_refresh_note,
         active_policy_section=active_policy_section,
     )
 
