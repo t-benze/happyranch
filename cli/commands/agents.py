@@ -366,7 +366,7 @@ def register(sub) -> None:
     p_ma.add_argument("--description", default=None, help="Agent description")
     p_ma.add_argument("--system-prompt", dest="system_prompt", default=None, help="System prompt")
     p_ma.add_argument("--expected-revision", dest="expected_revision", default=None,
-                      help="Required current revision for a whole-definition update")
+                      help="Required roster revision for an update; copy it from the same GET /agents row")
     p_ma.add_argument("--executor", default=None, help="Agent executor (default: claude)")
     p_ma.add_argument("--repos", default=None, help="JSON dict of repos")
     p_ma.add_argument("--from-file", dest="from_file", default=None,

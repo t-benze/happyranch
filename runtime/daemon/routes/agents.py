@@ -664,8 +664,8 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             raise HTTPException(status_code=422, detail="description and system_prompt required for enroll")
         _validate_executor(body.executor or "claude")
         async with org.teams_lock:
-            # Reuse any name that has ever been enrolled (active, pending, or
-            # terminated) to keep historical identity unambiguous.  This must
+            # Never reuse a name that has ever been enrolled (active, pending,
+            # or terminated), to keep historical identity unambiguous. This must
             # share the lock with the synchronous pending write: the helper
             # atomically replaces an existing pending file.
             if prompt_loader.is_name_unavailable(paths, body.name):

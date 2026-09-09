@@ -93,6 +93,16 @@ scripts/daemon.sh stop --force     # graceful shutdown (default daemon needs --f
 happyranch web [--no-open]
 ```
 
+### Team-manager agent updates
+
+`happyranch manage-agent update` is a task-session callback, not a browser
+Agents-page feature. Read the active `GET /agents` roster first, compose the
+intended whole-definition update from that exact row, and pass its `revision`
+as `expected_revision` (or `--expected-revision` for the direct CLI form).
+The daemon returns 422 for missing, null, or malformed revisions and 409 for a
+stale base. On 409, reread and deliberately reapply the intended field change;
+do not pair older composed content with a newer roster revision.
+
 Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` > auto-infer only when exactly one org exists > error. Container-level commands take no `--org`.
 
 System assistant commands are container-level:

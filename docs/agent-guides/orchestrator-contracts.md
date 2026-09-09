@@ -31,6 +31,13 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
 ## Agent Lifecycle: Enrollment, Approval, and Termination
 
 - **Enrollment.** `manage-agent enroll` creates a pending agent file under `org/agents/_pending/<name>.md`. A founder (or team manager with an active session) may enroll agents only into their own team.
+- **Whole-definition update.** A team-manager `manage-agent update` first reads
+  the active `GET /agents` roster and uses the target row's `revision` with
+  the exact canonical content from that same read as `expected_revision`. The
+  route rejects missing, null, malformed revisions with 422 and stale bases
+  with 409; after a conflict, the caller must reread and deliberately reapply
+  its intended field change. A later roster revision must never bless an
+  already-composed stale update.
 - **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md` and bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
 - **Termination.** `manage-agent terminate` archives an approved **non-manager worker** on the caller's team. It is refused if the agent is a manager, belongs to another team, or has live work. Live work includes non-terminal tasks assigned to the agent, already-started thread invocations, firing schedules, running work-hours wakes, running dreams, or pending/running jobs attributable to the agent. If the agent is quiescent, the route:
   - archives the active `org/agents/<name>.md` to `org/agents/_terminated/<name>.md`;
