@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import time
 from textwrap import dedent
+from typing import Callable
 
 import httpx
 import pytest
@@ -69,11 +70,13 @@ def _wait_for_task_parked_on_job(
     expected_job_id: str,
     *,
     timeout: float = 20.0,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict:
     """Wait until the exact submitted job durably parks the task."""
-    deadline = time.monotonic() + timeout
+    deadline = monotonic() + timeout
     body: dict = {}
-    while time.monotonic() < deadline:
+    while monotonic() < deadline:
         r = httpx.get(f"{base}/tasks/{task_id}", headers=_auth_headers(), timeout=5.0)
         body = r.json()
         task = body.get("task", {})
@@ -88,7 +91,7 @@ def _wait_for_task_parked_on_job(
             and job_ids == [expected_job_id]
         ):
             return body
-        time.sleep(0.2)
+        sleep(0.2)
     raise AssertionError(
         "task did not durably park on the expected job before founder action: "
         f"task_id={task_id!r} expected_job_id={expected_job_id!r} last_body={body}"
@@ -132,15 +135,55 @@ def test_wait_for_task_parked_on_job_rejects_incomplete_or_wrong_readiness(
     monkeypatch, task: dict, expected_job_id: str
 ) -> None:
     """Status-only and wrong-job observations never satisfy founder readiness."""
+    reads = 0
+
     class _Response:
         def json(self) -> dict:
             return {"task": task}
 
-    monkeypatch.setattr(httpx, "get", lambda *args, **kwargs: _Response())
-    with pytest.raises(AssertionError, match="did not durably park"):
+    def get(*args, **kwargs) -> _Response:
+        nonlocal reads
+        reads += 1
+        return _Response()
+
+    ticks = iter((0.0, 0.0, 1.0))
+    monkeypatch.setattr(httpx, "get", get)
+    with pytest.raises(AssertionError, match="did not durably park") as rejected:
         _wait_for_task_parked_on_job(
-            "http://test", "TASK-1", expected_job_id, timeout=0.0
+            "http://test", "TASK-1", expected_job_id, timeout=1.0,
+            monotonic=lambda: next(ticks), sleep=lambda _: None,
         )
+    assert reads == 1
+    assert f"last_body={{'task': {task!r}}}" in str(rejected.value)
+
+
+def test_wait_for_task_parked_on_job_accepts_exact_durable_readiness(monkeypatch) -> None:
+    """The helper accepts only an observed exact durable parked state."""
+    reads = 0
+
+    class _Response:
+        def json(self) -> dict:
+            return {
+                "task": {
+                    "status": "in_progress",
+                    "block_kind": "blocked_on_job",
+                    "blocked_on_job_ids": json.dumps(["JOB-expected"]),
+                }
+            }
+
+    def get(*args, **kwargs) -> _Response:
+        nonlocal reads
+        reads += 1
+        return _Response()
+
+    ticks = iter((0.0, 0.0))
+    monkeypatch.setattr(httpx, "get", get)
+    parked = _wait_for_task_parked_on_job(
+        "http://test", "TASK-1", "JOB-expected", timeout=1.0,
+        monotonic=lambda: next(ticks), sleep=lambda _: None,
+    )
+    assert reads == 1
+    assert parked["task"]["blocked_on_job_ids"] == json.dumps(["JOB-expected"])
 
 
 def test_review_required_founder_approves_then_resumes(
