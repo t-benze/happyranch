@@ -2316,8 +2316,10 @@ def test_set_executor_refreshes_after_materialization_and_preserves_newer_fields
     assert updated.repos == {"happyranch": "/winner"}
     assert updated.description == "winner description"
     assert MockCB.return_value.ensure_workspace_ready.call_args.args[2] == "winner prompt\n"
-    audits = org_state.db.get_audit_logs(_EH_TASK)
-    assert len([row for row in audits if row["action"] == "agent_managed"]) == 1
+    winner_audits = org_state.db.get_audit_logs(_EH_TASK)
+    assert len([row for row in winner_audits if row["action"] == "agent_managed"]) == 1
+    switch_audits = org_state.db.get_audit_logs("founder")
+    assert len([row for row in switch_audits if row["action"] == "agent_managed"]) == 1
 
 
 def test_set_executor_rejects_competing_executor_after_materialization(
@@ -2360,6 +2362,95 @@ def test_set_executor_rejects_competing_executor_after_materialization(
     winner_def = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert winner_def is not None and winner_def.executor == "codex"
     assert len([r for r in org_state.db.get_audit_logs(_EH_TASK) if r["action"] == "agent_managed"]) == 1
+
+
+def test_set_executor_rejects_model_only_winner_after_materialization(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """A model-only shipping update fences a suspended executor switch."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.orchestrator import prompt_loader
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude", model="old-model")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    async def controlled_to_thread(func, *args, **kwargs):
+        if func is agents_mod._executor_switch_materialize:
+            arrived.set()
+            await release.wait()
+            return []
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        async def exercise() -> None:
+            loser = asyncio.create_task(agents_mod.set_agent_executor(
+                "alpha", "dev_agent", agents_mod.SetExecutorBody(executor="pi"), org_state,
+            ))
+            await arrived.wait()
+            assert await agents_mod.set_agent_model(
+                "alpha", "dev_agent", agents_mod.SetModelBody(model="winner-model"), org_state,
+            ) == {"agent": "dev_agent", "before": "old-model", "after": "winner-model"}
+            winning_bytes = (_paths(org_state).agents_dir / "dev_agent.md").read_bytes()
+            release.set()
+            with pytest.raises(HTTPException) as raised:
+                await loser
+            assert raised.value.status_code == 409
+            assert raised.value.detail["code"] == "executor_switch_conflict"
+            assert (_paths(org_state).agents_dir / "dev_agent.md").read_bytes() == winning_bytes
+
+        asyncio.run(exercise())
+        MockCB.return_value.ensure_workspace_ready.assert_not_called()
+    winner = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert winner is not None
+    assert winner.executor == "claude"
+    assert winner.model == "winner-model"
+    audits = org_state.db.get_audit_logs("founder")
+    assert len([row for row in audits if row["action"] == "agent_managed"]) == 1
+
+
+def test_set_executor_rejects_disappeared_agent_after_materialization(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """A removed canonical definition cannot be recreated by a stale switch."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as agents_mod
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    async def controlled_to_thread(func, *args, **kwargs):
+        if func is agents_mod._executor_switch_materialize:
+            arrived.set()
+            await release.wait()
+            return []
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        async def exercise() -> None:
+            loser = asyncio.create_task(agents_mod.set_agent_executor(
+                "alpha", "dev_agent", agents_mod.SetExecutorBody(executor="pi"), org_state,
+            ))
+            await arrived.wait()
+            (_paths(org_state).agents_dir / "dev_agent.md").unlink()
+            release.set()
+            with pytest.raises(HTTPException) as raised:
+                await loser
+            assert raised.value.status_code == 404
+            assert raised.value.detail["code"] == "agent_not_found"
+
+        asyncio.run(exercise())
+        MockCB.return_value.ensure_workspace_ready.assert_not_called()
+    assert not (_paths(org_state).agents_dir / "dev_agent.md").exists()
+    assert not org_state.db.get_audit_logs("founder")
 
 
 def test_manage_agent_reset_failure_preserves_newer_canonical_bytes(
