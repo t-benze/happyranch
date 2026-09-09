@@ -265,6 +265,7 @@ class ManageAgentBody(BaseModel):
     model: str | None = None
     allow_rules: list[str] | None = None
     target_team: str | None = None
+    expected_revision: str | None = None
 
     @field_validator("allow_rules")
     @classmethod
@@ -444,7 +445,11 @@ def list_agents(slug: str, org: OrgDep) -> dict:
     """
     paths = OrgPaths(root=org.root)
     rows = []
-    for agent_def in prompt_loader.list_agents(paths):
+    for listed_agent in prompt_loader.list_agents(paths):
+        loaded = prompt_loader.load_agent_with_revision(paths, listed_agent.name)
+        if loaded is None:
+            continue
+        agent_def, revision = loaded
         name = agent_def.name
         # THR-095: repos are read from AgentDef.repos (org/agents/<name>.md).
         # agent.yaml is no longer the source for repos.
@@ -459,6 +464,7 @@ def list_agents(slug: str, org: OrgDep) -> dict:
             # Phase 2: additive read-only fields (D6 spec)
             "repos": repos,
             "system_prompt": agent_def.system_prompt,
+            "revision": revision,
         })
     return {"agents": rows}
 
@@ -694,12 +700,13 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         return {"ok": True, "status": "pending"}
 
     elif body.action == ManageAgentAction.update:
-        existing = prompt_loader.load_agent(paths, body.name)
-        if existing is None:
-            raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
-        # Reject cross-team update attempts — hold the lock to prevent a torn
-        # read racing against a concurrent terminate.
+        if body.expected_revision is None or not re.fullmatch(r"[0-9a-f]{64}", body.expected_revision):
+            raise HTTPException(status_code=422, detail={"code": "expected_revision_required", "message": "update requires a 64-character expected_revision"})
         async with org.teams_lock:
+            loaded = prompt_loader.load_agent_with_revision(paths, body.name)
+            if loaded is None:
+                raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
+            existing, current_revision = loaded
             agent_team = org.teams.team_for_agent(body.name) if org.teams is not None else None
             if agent_team != manager_team:
                 raise HTTPException(
@@ -710,54 +717,52 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                         "agent_team": agent_team,
                     },
                 )
-        if body.executor is not None:
-            _validate_executor(body.executor)
-        # Build the updated AgentDef, preserving fields not being updated.
-        # model: use Pydantic field-set detection to distinguish omitted
-        # (preserve existing) vs explicit null (clear).
-        model_is_set = "model" in body.model_fields_set
-        executor_changed = (
-            body.executor is not None and body.executor != existing.executor
-        )
-        if model_is_set:
-            resolved_model = body.model if body.model else None
-        elif executor_changed:
-            # A model override is executor-specific. Never carry an omitted
-            # value from the old executor into a newly selected executor.
-            resolved_model = None
-        else:
-            resolved_model = existing.model
-        updated = AgentDef(
-            name=existing.name,
-            team=existing.team,
-            role=existing.role,
-            executor=body.executor or existing.executor,
-            allow_rules=tuple(body.allow_rules) if body.allow_rules is not None else existing.allow_rules,
-            repos=body.repos if body.repos is not None else existing.repos,
-            enrolled_by=existing.enrolled_by,
-            enrolled_at_task=existing.enrolled_at_task,
-            enrolled_at=existing.enrolled_at,
-            system_prompt=body.system_prompt if body.system_prompt is not None else existing.system_prompt,
-            description=body.description if body.description is not None else existing.description,
-            model=resolved_model,
-        )
-        # Atomic overwrite of the active file via tempfile + os.replace.
-        active_path = paths.agents_dir / f"{body.name}.md"
-        from runtime.orchestrator.agent_def import render_agent_text
-        fd, tmp = tempfile.mkstemp(
-            prefix=f".{body.name}.", suffix=".md",
-            dir=str(paths.agents_dir),
-        )
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write(render_agent_text(updated))
-            os.replace(tmp, active_path)
-        except Exception:
+            if current_revision != body.expected_revision:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "stale_agent_revision", "current_revision": current_revision})
+            if body.executor is not None:
+                _validate_executor(body.executor)
+            # Build the updated AgentDef, preserving fields not being updated.
+            # model: use Pydantic field-set detection to distinguish omitted
+            # (preserve existing) vs explicit null (clear).
+            model_is_set = "model" in body.model_fields_set
+            executor_changed = (
+                body.executor is not None and body.executor != existing.executor
+            )
+            if model_is_set:
+                resolved_model = body.model if body.model else None
+            elif executor_changed:
+                # A model override is executor-specific. Never carry an omitted
+                # value from the old executor into a newly selected executor.
+                resolved_model = None
+            else:
+                resolved_model = existing.model
+            updated = AgentDef(
+                name=existing.name,
+                team=existing.team,
+                role=existing.role,
+                executor=body.executor or existing.executor,
+                allow_rules=tuple(body.allow_rules) if body.allow_rules is not None else existing.allow_rules,
+                repos=body.repos if body.repos is not None else existing.repos,
+                enrolled_by=existing.enrolled_by,
+                enrolled_at_task=existing.enrolled_at_task,
+                enrolled_at=existing.enrolled_at,
+                system_prompt=body.system_prompt if body.system_prompt is not None else existing.system_prompt,
+                description=body.description if body.description is not None else existing.description,
+                model=resolved_model,
+            )
+            active_path = paths.agents_dir / f"{body.name}.md"
+            from runtime.orchestrator.agent_def import render_agent_text
+            fd, tmp = tempfile.mkstemp(prefix=f".{body.name}.", suffix=".md", dir=str(paths.agents_dir))
             try:
-                os.unlink(tmp)
-            except FileNotFoundError:
-                pass
-            raise
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(render_agent_text(updated))
+                os.replace(tmp, active_path)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except FileNotFoundError:
+                    pass
+                raise
         workspace = paths.workspaces_dir / body.name
         if workspace.exists() and (body.system_prompt or body.executor is not None):
             # Reconcile the workspace bootstrap for the (possibly new) executor

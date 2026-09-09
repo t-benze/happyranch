@@ -5,6 +5,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from runtime.orchestrator._paths import OrgPaths
+from runtime.orchestrator import prompt_loader
 
 _EH_TASK = "TASK-100"
 _EH_SESSION = "sess-eh-test"
@@ -811,6 +812,8 @@ def _seed_active_agent(
 def test_manage_agent_update_changes_prompt(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
+    from runtime.orchestrator import prompt_loader
+
     # Use dev_agent which belongs to engineering team (managed by engineering_head).
     _activate_eh_session(org_state)
     _seed_active_agent(org_state, "dev_agent", system_prompt="old prompt\n")
@@ -827,22 +830,74 @@ def test_manage_agent_update_changes_prompt(
                 "name": "dev_agent",
             "task_id": _EH_TASK,
             "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
             "system_prompt": "new prompt",
             "executor": "codex",
         },
         headers=auth_headers,
     )
     assert r.status_code == 200
-    from runtime.orchestrator import prompt_loader
     updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert updated is not None
     assert "new prompt" in updated.system_prompt
     assert updated.executor == "codex"
 
 
+def test_manage_agent_update_rejects_stale_revision(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", system_prompt="old\n")
+    revision = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+    assert revision is not None
+    client = TestClient(app)
+    first = client.post("/api/v1/orgs/alpha/agents/manage", json={
+        "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+        "session_id": _EH_SESSION, "system_prompt": "winner\n",
+        "expected_revision": revision,
+    }, headers=auth_headers)
+    assert first.status_code == 200, first.text
+    stale = client.post("/api/v1/orgs/alpha/agents/manage", json={
+        "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+        "session_id": _EH_SESSION, "description": "stale loser",
+        "expected_revision": revision,
+    }, headers=auth_headers)
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "stale_agent_revision"
+    winner = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert winner is not None
+    assert winner.system_prompt == "winner\n"
+    assert winner.description is None
+
+
+def test_manage_agent_update_requires_well_formed_revision(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    client = TestClient(app)
+    for revision in (None, "", "not-a-sha", "0" * 63):
+        payload = {
+            "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+            "session_id": _EH_SESSION, "description": "must not land",
+        }
+        if revision is not None:
+            payload["expected_revision"] = revision
+        response = client.post(
+            "/api/v1/orgs/alpha/agents/manage", json=payload,
+            headers=auth_headers,
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "expected_revision_required"
+
+
 def test_manage_agent_update_persists_executor_to_workspace(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
+    from runtime.orchestrator import prompt_loader
+
     # Use dev_agent which belongs to engineering team (managed by engineering_head).
     _activate_eh_session(org_state)
     _seed_active_agent(org_state, "dev_agent")
@@ -856,6 +911,7 @@ def test_manage_agent_update_persists_executor_to_workspace(
             "name": "dev_agent",
             "task_id": _EH_TASK,
             "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
             "executor": "codex",
         },
         headers=auth_headers,
@@ -878,6 +934,7 @@ def test_manage_agent_update_executor_regenerates_bootstrap(
         get_registry,
         ExecutorProfile,
     )
+    from runtime.orchestrator import prompt_loader
 
     _activate_eh_session(org_state)
     _seed_active_agent(org_state, "dev_agent", executor="claude", system_prompt="sys prompt")
@@ -903,9 +960,10 @@ def test_manage_agent_update_executor_regenerates_bootstrap(
             json={
                 "action": "update",
                 "name": "dev_agent",
-                "task_id": _EH_TASK,
-                "session_id": _EH_SESSION,
-                "executor": "testcustom",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
+            "executor": "testcustom",
             },
             headers=auth_headers,
         )
@@ -2339,9 +2397,10 @@ def test_manage_agent_update_set_model(
             json={
                 "action": "update",
                 "name": "dev_agent",
-                "task_id": _EH_TASK,
-                "session_id": _EH_SESSION,
-                "model": "claude-sonnet-4-20250514",
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
+            "model": "claude-sonnet-4-20250514",
             },
             headers=auth_headers,
         )
@@ -2374,9 +2433,10 @@ def test_manage_agent_update_clear_model_explicit_null(
             json={
                 "action": "update",
                 "name": "dev_agent",
-                "task_id": _EH_TASK,
-                "session_id": _EH_SESSION,
-                "model": None,
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
+            "model": None,
             },
             headers=auth_headers,
         )
@@ -2416,9 +2476,10 @@ def test_manage_agent_update_changed_executor_omit_model_clears(
             json={
                 "action": "update",
                 "name": "dev_agent",
-                "task_id": _EH_TASK,
-                "session_id": _EH_SESSION,
-                # model omitted entirely
+            "task_id": _EH_TASK,
+            "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
+            # model omitted entirely
                 "executor": "codex",
             },
             headers=auth_headers,
@@ -2448,6 +2509,7 @@ def test_manage_agent_update_unchanged_executor_omit_model_preserves(
         json={
             "action": "update", "name": "dev_agent",
             "task_id": _EH_TASK, "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
             "executor": "claude",
         },
         headers=auth_headers,
@@ -2474,8 +2536,9 @@ def test_manage_agent_update_changed_executor_explicit_model_sets_new_choice(
             "/api/v1/orgs/alpha/agents/manage",
             json={
                 "action": "update", "name": "dev_agent",
-                "task_id": _EH_TASK, "session_id": _EH_SESSION,
-                "executor": "codex", "model": "new-codex-model",
+            "task_id": _EH_TASK, "session_id": _EH_SESSION,
+            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
+            "executor": "codex", "model": "new-codex-model",
             },
             headers=auth_headers,
         )
@@ -4296,8 +4359,9 @@ def test_manage_agent_update_executor_switch_invalidates_thread_sessions(
         mock_ctx.ensure_workspace_ready.return_value = None
         resp = client.post(
             "/api/v1/orgs/alpha/agents/manage",
-            json={"action": "update", "name": "dev_agent",
+                json={"action": "update", "name": "dev_agent",
                   "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
                   "executor": "codex"},
             headers=auth_headers,
         )
@@ -4340,8 +4404,9 @@ def test_manage_agent_update_failed_switch_leaves_prior_state_intact(
         mock_ctx.ensure_workspace_ready.side_effect = RuntimeError("boom")
         resp = TestClient(app, raise_server_exceptions=False).post(
             "/api/v1/orgs/alpha/agents/manage",
-            json={"action": "update", "name": "dev_agent",
+                json={"action": "update", "name": "dev_agent",
                   "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
                   "executor": "codex"},
             headers=auth_headers,
         )
@@ -4382,8 +4447,9 @@ def test_manage_agent_update_same_executor_does_not_invalidate(
         mock_ctx.ensure_workspace_ready.return_value = None
         resp = client.post(
             "/api/v1/orgs/alpha/agents/manage",
-            json={"action": "update", "name": "dev_agent",
+                json={"action": "update", "name": "dev_agent",
                   "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
                   "executor": "codex"},
             headers=auth_headers,
         )
@@ -4436,8 +4502,9 @@ def test_manage_agent_update_switch_reset_failure_rolls_back_switch(
         mock_ctx.ensure_workspace_ready.return_value = None
         resp = TestClient(app, raise_server_exceptions=False).post(
             "/api/v1/orgs/alpha/agents/manage",
-            json={"action": "update", "name": "dev_agent",
+                json={"action": "update", "name": "dev_agent",
                   "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
                   "executor": "codex"},
             headers=auth_headers,
         )
@@ -4513,8 +4580,9 @@ def test_manage_agent_update_switch_audit_failure_rolls_back_switch(
         mock_ctx.ensure_workspace_ready.return_value = None
         resp = TestClient(app, raise_server_exceptions=False).post(
             "/api/v1/orgs/alpha/agents/manage",
-            json={"action": "update", "name": "dev_agent",
+                json={"action": "update", "name": "dev_agent",
                   "task_id": _EH_TASK, "session_id": _EH_SESSION,
+                  "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
                   "executor": "codex"},
             headers=auth_headers,
         )

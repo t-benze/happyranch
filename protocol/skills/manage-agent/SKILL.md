@@ -5,6 +5,12 @@ description: Enroll, update, or terminate an agent. Write a JSON file and call h
 
 # manage-agent
 
+For an `update`, first obtain the target's current `revision` from the active
+agent roster and include that exact value as `expected_revision` in the
+callback payload. A missing, null, malformed, or stale revision is rejected;
+reload and deliberately reapply only the intended field change rather than
+resubmitting an older whole definition.
+
 Manage the agent roster. You can **enroll** a new agent (requires founder approval), **update** an existing agent's system prompt or description, or **terminate** a non-manager worker (archives its definition and workspace).
 
 ## Authentication paths
