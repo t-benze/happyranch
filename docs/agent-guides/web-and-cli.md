@@ -2,6 +2,24 @@
 
 ## Web UI
 
+### Dashboard projection
+
+`GET /api/v1/orgs/{slug}/dashboard/summary` reads the per-org in-memory
+last-known-good projection. `runtime/orchestrator/dashboard_projection.py`
+owns coalesced background refresh and atomic `dashboard_projection.json`
+publication; the HTTP route never composes the summary under its request lock.
+A valid persisted projection serves after restart. Without one, the route
+returns 503 until background warm-up succeeds. A refresh failure retains prior
+data; `generated_at` describes that data's age and `server_now` is response time.
+Database lock wait/hold warnings identify slow operations without changing the
+schema. Dashboard/projection tests cover these behaviors.
+
+The SPA supports mutations, including task cancellation/revisit and Settings.
+Use `web/src/routes.tsx`, API functions, and the OpenAPI snapshot for the current
+surface. The daemon defaults to loopback; remote access uses the connector.
+
+### Web contract and navigation
+
 Layer rules, boundary rules, and agent-callback omissions live in `web/ARCHITECTURE.md`. Full design: `docs/superpowers/specs/2026-05-14-web-ui-design.md`.
 
 Every browser-callable daemon route maps to one TypeScript function in `web/src/lib/api/`. Two paired tests enforce this:
@@ -164,7 +182,7 @@ disposition (`cancel` or `consume_result`):
 ```
 
 The `--from-file` path must be absolute. See `docs/agent-guides/features-and-invariants.md`
-(Org Portability) and `protocol/05c-orchestrator.md` (Organization portability)
+(Org Portability) and `docs/agent-guides/orchestrator-contracts.md` (Organization portability)
 for the exhaustive root allow-list (including `work_hours`), quiescence/zombie
 reporting, the conservative schedule policy (any armed or firing schedule
 refuses, with existing-control remedies only), and reconciliation limits.
@@ -191,7 +209,7 @@ python -m runtime.daemon.pr_ci_merge \
 
 Both print structured JSON verdicts to stdout and exit with mapped codes (0 = success).
 The review/QA evidence extraction follows the **Merge-evidence contract** in
-`protocol/00-completion-contract.md`: the canonical vocabulary
+`docs/agent-guides/orchestrator-contracts.md`: the canonical vocabulary
 `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL`, NON-NULL structured
 `verdict` primary (canonical token only), serialized `null` (the durable
 recall producer's representation of legacy/no-structured rows) using the
@@ -200,7 +218,7 @@ rejection of missing/contradictory/malformed/ambiguous evidence and unusable
 non-null structured values.
 The poll job runs with `review_required=false` through the existing jobs path; agents never
 get raw `gh pr merge` grants. The full workflow narrative (submit → blocked → resume → inspect →
-merge/revise) is documented in `protocol/skills/jobs/SKILL.md` and
+merge/revise) is documented in `runtime/skills/bundled/jobs/SKILL.md` and
 `docs/agent-guides/features-and-invariants.md`.
 
 ### Per-agent model selection

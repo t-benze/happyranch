@@ -1,12 +1,7 @@
-"""THR-070: Session-time skill body freshness + protocol doc manifest.
+"""Bundled skill freshness and repository-refresh prompt transport.
 
-Acceptance criteria:
-  1. Edit a bundled skill, start a NEW session — agent's loaded skill body
-     reflects the edit WITHOUT a lifecycle event.
-  2. Edit a protocol doc in the bundle → injected manifest points at the
-     bundled absolute path; no path points at repos/happyranch/protocol.
-  3. Injected manifest is minimal (1 line/item), smaller than full bodies.
-  4. THR-055 capability-skill compact-index still renders (regression).
+Canonical source/member refusal, context eligibility, and managed indexes remain
+covered after protocol-document discovery is retired.
 """
 from __future__ import annotations
 
@@ -16,9 +11,6 @@ from pathlib import Path
 import pytest
 import runtime.orchestrator.workspace_adapters as wa_mod
 from runtime.config import Settings
-from runtime.orchestrator.org_config import (
-    resolve_protocol_doc_manifest,
-)
 from runtime.orchestrator.workspace_adapters import (
     refresh_session_skills,
     inject_system_contracts,
@@ -43,7 +35,7 @@ class TestRefreshSessionSkills:
         Since materialize_workspace_skills now unions all seven ordinary
         SessionContext values, the preflight requires every system contract
         source directory to exist on disk."""
-        skills_root = settings.get_protocol_dir() / "skills"
+        skills_root = settings.get_bundled_skills_dir()
         for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (skills_root / sid).mkdir(parents=True, exist_ok=True)
             if not (skills_root / sid / "SKILL.md").exists():
@@ -54,7 +46,7 @@ class TestRefreshSessionSkills:
     ):
         """Skills land in both .claude/skills/ and .agents/skills/."""
         self._make_all_contracts(test_settings)
-        skills_root = test_settings.get_protocol_dir() / "skills"
+        skills_root = test_settings.get_bundled_skills_dir()
         (skills_root / "start-task" / "SKILL.md").write_text("# start-task\n")
 
         workspace = tmp_path / "workspace"
@@ -73,7 +65,7 @@ class TestRefreshSessionSkills:
     ):
         """ACCEPTANCE #1: Edit bundled skill → refresh → workspace reflects edit."""
         self._make_all_contracts(test_settings)
-        skills_root = test_settings.get_protocol_dir() / "skills"
+        skills_root = test_settings.get_bundled_skills_dir()
         (skills_root / "start-task" / "SKILL.md").write_text("VERSION 1\n")
 
         workspace = tmp_path / "workspace"
@@ -96,7 +88,7 @@ class TestRefreshSessionSkills:
     ):
         """Skills in source are always materialized; system contracts only."""
         self._make_all_contracts(test_settings)
-        skills_root = test_settings.get_protocol_dir() / "skills"
+        skills_root = test_settings.get_bundled_skills_dir()
         (skills_root / "start-task" / "SKILL.md").write_text("skill v1\n")
 
         workspace = tmp_path / "workspace"
@@ -122,7 +114,7 @@ class TestRefreshSessionSkills:
         """Existing stale symlink is repaired (replaced with fresh target)."""
         self._make_all_contracts(test_settings)
         import os as _os
-        skills_root = test_settings.get_protocol_dir() / "skills"
+        skills_root = test_settings.get_bundled_skills_dir()
         (skills_root / "start-task" / "SKILL.md").write_text("BUNDLED\n")
         (skills_root / "start-task" / "helper.md").write_text("helper\n")
 
@@ -144,7 +136,7 @@ class TestRefreshSessionSkills:
     ):
         """{ORG_SLUG} placeholder is preserved in canonical content."""
         self._make_all_contracts(test_settings)
-        skills_root = test_settings.get_protocol_dir() / "skills"
+        skills_root = test_settings.get_bundled_skills_dir()
         (skills_root / "start-task" / "SKILL.md").write_text(
             "Run: happyranch --org {ORG_SLUG} do-thing\n"
         )
@@ -161,7 +153,7 @@ class TestRefreshSessionSkills:
         self, test_settings: Settings, tmp_path: Path,
     ):
         """Fail-closed when source directory doesn't exist.
-        With the source-existence check, missing protocol/skills/ raises
+        With the source-existence check, missing runtime/skills/bundled/ raises
         SystemContractMaterializationError."""
         # Don't create the skills dir
         workspace = tmp_path / "workspace"
@@ -192,133 +184,6 @@ class TestRefreshSessionSkills:
             workspace / ".claude" / "skills" / "start-task" / "SKILL.md"
         ).read_text()
         assert "FAKE" in content
-
-
-# ── PART B: resolve_protocol_doc_manifest ──────────────────────────────
-
-
-class TestResolveProtocolDocManifest:
-    """Prove the manifest renders correctly and points at bundled paths."""
-
-    def test_manifest_renders_one_line_per_doc(
-        self, test_settings: Settings, tmp_path: Path,
-    ):
-        """Each .md file in protocol/ gets one line in the manifest."""
-        protocol_dir = test_settings.get_protocol_dir()
-        protocol_dir.mkdir(parents=True, exist_ok=True)
-        (protocol_dir / "00-test.md").write_text("# Test Doc\nOne-line purpose.\n")
-        (protocol_dir / "01-other.md").write_text("# Other Doc\nAnother purpose.\n")
-
-        manifest = resolve_protocol_doc_manifest(settings=test_settings)
-
-        assert "Test Doc" in manifest
-        assert "Other Doc" in manifest
-        assert "One-line purpose" in manifest
-        assert "Another purpose" in manifest
-        # Two docs → two list items
-        assert manifest.count("\n- ") == 2
-
-    def test_manifest_includes_absolute_bundled_path(
-        self, test_settings: Settings, tmp_path: Path,
-    ):
-        """ACCEPTANCE #2: manifest points at bundled absolute paths,
-        NOT at repos/happyranch/protocol."""
-        protocol_dir = test_settings.get_protocol_dir()
-        protocol_dir.mkdir(parents=True, exist_ok=True)
-        (protocol_dir / "00-test.md").write_text("# Test Doc\nPurpose.\n")
-
-        manifest = resolve_protocol_doc_manifest(settings=test_settings)
-
-        abs_path = str((protocol_dir / "00-test.md").resolve())
-        assert abs_path in manifest
-        assert "repos/happyranch/protocol" not in manifest
-        assert "Read:" in manifest
-
-    def test_manifest_minimal_one_liner_per_doc(
-        self, test_settings: Settings, tmp_path: Path,
-    ):
-        """ACCEPTANCE #3: one line per doc, minimal — smaller than full bodies."""
-        protocol_dir = test_settings.get_protocol_dir()
-        protocol_dir.mkdir(parents=True, exist_ok=True)
-        # Write a large doc body
-        large_body = "# Large Doc\nPurpose line.\n" + ("padding\n" * 500)
-        (protocol_dir / "00-large.md").write_text(large_body)
-
-        manifest = resolve_protocol_doc_manifest(settings=test_settings)
-
-        # Manifest is much smaller than the full body
-        assert len(manifest) < len(large_body)
-        # One line per doc in the manifest
-        assert manifest.count("\n- ") == 1
-
-    def test_manifest_empty_when_no_protocol_dir(
-        self, test_settings: Settings,
-    ):
-        """Empty string when protocol dir doesn't exist."""
-        from unittest.mock import MagicMock
-        mock_settings = MagicMock()
-        mock_settings.get_protocol_dir.return_value = Path("/nonexistent/path")
-
-        manifest = resolve_protocol_doc_manifest(settings=mock_settings)
-        assert manifest == ""
-
-    def test_manifest_empty_when_no_md_files(
-        self, test_settings: Settings, tmp_path: Path,
-    ):
-        """Empty string when protocol dir exists but has no .md files."""
-        protocol_dir = test_settings.get_protocol_dir()
-        protocol_dir.mkdir(parents=True, exist_ok=True)
-        (protocol_dir / "not-a-doc.txt").write_text("hello\n")
-
-        manifest = resolve_protocol_doc_manifest(settings=test_settings)
-        assert manifest == ""
-
-    def test_manifest_extracts_title_from_h1(
-        self, test_settings: Settings, tmp_path: Path,
-    ):
-        """Title comes from first # heading, not filename stem."""
-        protocol_dir = test_settings.get_protocol_dir()
-        protocol_dir.mkdir(parents=True, exist_ok=True)
-        (protocol_dir / "99-foo.md").write_text(
-            "# Orchestrator: Routing & State\nThe application layer.\n"
-        )
-
-        manifest = resolve_protocol_doc_manifest(settings=test_settings)
-
-        assert "Orchestrator: Routing & State" in manifest
-        assert "The application layer" in manifest
-
-    def test_manifest_fallback_on_unreadable_file(
-        self, test_settings: Settings, tmp_path: Path,
-    ):
-        """Graceful fallback when a .md file can't be read."""
-        protocol_dir = test_settings.get_protocol_dir()
-        protocol_dir.mkdir(parents=True, exist_ok=True)
-        broken = protocol_dir / "broken.md"
-        broken.write_text("# OK\nPurpose.\n")
-        # Make unreadable
-        broken.chmod(0o000)
-
-        try:
-            manifest = resolve_protocol_doc_manifest(settings=test_settings)
-            # Should not crash; should still render something (filename-based fallback)
-            assert "Protocol reference" in manifest
-        finally:
-            broken.chmod(0o644)
-
-    def test_manifest_none_settings_returns_empty(self):
-        """None settings → empty string."""
-        manifest = resolve_protocol_doc_manifest(settings=None)
-        assert manifest == ""
-
-    def test_manifest_has_header_section(self, test_settings: Settings, tmp_path: Path):
-        """Manifest starts with a ## Protocol Docs header."""
-        protocol_dir = test_settings.get_protocol_dir()
-        protocol_dir.mkdir(parents=True, exist_ok=True)
-        (protocol_dir / "00-test.md").write_text("# Test\nPurpose.\n")
-
-        manifest = resolve_protocol_doc_manifest(settings=test_settings)
-        assert manifest.startswith("## Protocol Docs")
 
 
 # ── THR-055 regression ─────────────────────────────────────────────────
@@ -370,10 +235,10 @@ class TestThr055Regression:
 # ── Prompt-builder integration ─────────────────────────────────────────
 
 
-class TestProtocolDocManifestInPrompts:
-    """Prove protocol_doc_manifest flows through all 4 session prompt builders."""
+class TestRepositoryRefreshNotesInPrompts:
+    """Prove repo_refresh_note flows through all 4 session prompt builders."""
 
-    def test_orchestrator_prompt_includes_doc_manifest(self):
+    def test_orchestrator_prompt_includes_refresh_note(self):
         """Orchestrator._build_agent_prompt injects docs_block."""
         from runtime.orchestrator.orchestrator import Orchestrator
         from unittest.mock import MagicMock
@@ -386,13 +251,13 @@ class TestProtocolDocManifestInPrompts:
         prompt = orch._build_agent_prompt(
             "claude", "agent1", "T-1", "s-1", "brief",
             prompt="",
-            protocol_doc_manifest="## Protocol Docs\n- **Foo** — bar. Read: /abs/path",
+            repo_refresh_note="## Repository refresh\n- repo: offline; using existing checkout",
         )
-        assert "## Protocol Docs" in prompt
-        assert "Read: /abs/path" in prompt
+        assert "## Repository refresh" in prompt
+        assert "offline; using existing checkout" in prompt
 
-    def test_orchestrator_prompt_empty_manifest_no_op(self):
-        """Empty manifest produces no extra block."""
+    def test_orchestrator_prompt_empty_refresh_note_no_op(self):
+        """Empty refresh note produces no extra block."""
         from runtime.orchestrator.orchestrator import Orchestrator as RealOrch
         from unittest.mock import MagicMock
 
@@ -403,12 +268,12 @@ class TestProtocolDocManifestInPrompts:
         prompt = orch._build_agent_prompt(
             "claude", "agent1", "T-1", "s-1", "brief",
             prompt="",
-            protocol_doc_manifest="",
+            repo_refresh_note="",
         )
-        assert "## Protocol Docs" not in prompt
+        assert "## Repository refresh" not in prompt
 
-    def test_wake_prompt_includes_doc_manifest(self):
-        """build_wake_prompt injects the doc manifest."""
+    def test_wake_prompt_includes_refresh_note(self):
+        """build_wake_prompt injects the refresh note."""
         from runtime.daemon.wake_runner import build_wake_prompt
         from runtime.orchestrator.org_config import OrgConfig
 
@@ -424,13 +289,13 @@ class TestProtocolDocManifestInPrompts:
             preamble="",
             routines=["do thing"],
             org_config=OrgConfig(),
-            protocol_doc_manifest="## Protocol Docs\n- **Foo** — bar. Read: /abs/path",
+            repo_refresh_note="## Repository refresh\n- repo: offline; using existing checkout",
         )
-        assert "## Protocol Docs" in prompt
-        assert "Read: /abs/path" in prompt
+        assert "## Repository refresh" in prompt
+        assert "offline; using existing checkout" in prompt
 
-    def test_wake_prompt_empty_manifest_no_op(self):
-        """Empty manifest → no block injected."""
+    def test_wake_prompt_empty_refresh_note_no_op(self):
+        """Empty refresh note → no block injected."""
         from runtime.daemon.wake_runner import build_wake_prompt
         from runtime.orchestrator.org_config import OrgConfig
 
@@ -446,12 +311,12 @@ class TestProtocolDocManifestInPrompts:
             preamble="",
             routines=["do thing"],
             org_config=OrgConfig(),
-            protocol_doc_manifest="",
+            repo_refresh_note="",
         )
-        assert "## Protocol Docs" not in prompt
+        assert "## Repository refresh" not in prompt
 
-    def test_thread_full_prompt_includes_doc_manifest(self):
-        """build_thread_prompt injects the doc manifest."""
+    def test_thread_full_prompt_includes_refresh_note(self):
+        """build_thread_prompt injects the refresh note."""
         from runtime.daemon.thread_runner import build_thread_prompt
         from runtime.orchestrator.org_config import OrgConfig
         from runtime.models import (
@@ -475,13 +340,13 @@ class TestProtocolDocManifestInPrompts:
             invocation_token="tok", invoked_agent="a1",
             purpose="reply", triggering_seq=1,
             org_config=OrgConfig(),
-            protocol_doc_manifest="## Protocol Docs\n- **Foo** — bar. Read: /abs/path",
+            repo_refresh_note="## Repository refresh\n- repo: offline; using existing checkout",
         )
-        assert "## Protocol Docs" in prompt
-        assert "Read: /abs/path" in prompt
+        assert "## Repository refresh" in prompt
+        assert "offline; using existing checkout" in prompt
 
-    def test_thread_delta_prompt_includes_doc_manifest(self):
-        """build_thread_delta_prompt injects the doc manifest."""
+    def test_thread_delta_prompt_includes_refresh_note(self):
+        """build_thread_delta_prompt injects the refresh note."""
         from runtime.daemon.thread_runner import build_thread_delta_prompt
         from runtime.orchestrator.org_config import OrgConfig
         from runtime.models import (
@@ -505,13 +370,13 @@ class TestProtocolDocManifestInPrompts:
             purpose="reply", triggering_seq=2,
             triggering_message=messages[0],
             org_config=OrgConfig(),
-            protocol_doc_manifest="## Protocol Docs\n- **Foo** — bar. Read: /abs/path",
+            repo_refresh_note="## Repository refresh\n- repo: offline; using existing checkout",
         )
-        assert "## Protocol Docs" in prompt
-        assert "Read: /abs/path" in prompt
+        assert "## Repository refresh" in prompt
+        assert "offline; using existing checkout" in prompt
 
-    def test_dream_prompt_includes_doc_manifest(self, tmp_path: Path):
-        """build_dream_prompt injects the doc manifest."""
+    def test_dream_prompt_includes_refresh_note(self, tmp_path: Path):
+        """build_dream_prompt injects the refresh note."""
         from runtime.daemon.dream_runner import build_dream_prompt
         from runtime.orchestrator.org_config import OrgConfig
         from runtime.models import DreamRecord
@@ -532,10 +397,10 @@ class TestProtocolDocManifestInPrompts:
             recent_audit=[],
             task_history="",
             org_config=OrgConfig(),
-            protocol_doc_manifest="## Protocol Docs\n- **Foo** — bar. Read: /abs/path",
+            repo_refresh_note="## Repository refresh\n- repo: offline; using existing checkout",
         )
-        assert "## Protocol Docs" in prompt
-        assert "Read: /abs/path" in prompt
+        assert "## Repository refresh" in prompt
+        assert "offline; using existing checkout" in prompt
 
 
 # ── PART D: inject_system_contracts (THR-055 Phase 1) ────────────────
@@ -549,7 +414,7 @@ class TestInjectSystemContracts:
         self, test_settings: Settings, tmp_path: Path,
     ):
         """TASK context: start-task, jobs, make-worktree (if repos), thread."""
-        skills_root = test_settings.get_protocol_dir() / "skills"
+        skills_root = test_settings.get_bundled_skills_dir()
         for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
@@ -593,7 +458,7 @@ class TestInjectSystemContracts:
         self, test_settings: Settings, tmp_path: Path,
     ):
         """TASK context without repos: no make-worktree, todos present."""
-        skills_root = test_settings.get_protocol_dir() / "skills"
+        skills_root = test_settings.get_bundled_skills_dir()
         for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
@@ -616,7 +481,7 @@ class TestInjectSystemContracts:
         self, test_settings: Settings, tmp_path: Path,
     ):
         """DREAM context: jobs, make-worktree (if repos), dream, todos. NOT start-task or thread."""
-        skills_root = test_settings.get_protocol_dir() / "skills"
+        skills_root = test_settings.get_bundled_skills_dir()
         for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
@@ -640,7 +505,7 @@ class TestInjectSystemContracts:
         self, test_settings: Settings, tmp_path: Path,
     ):
         """THREAD context: jobs, make-worktree (if repos), thread, todos. NOT start-task or dream."""
-        skills_root = test_settings.get_protocol_dir() / "skills"
+        skills_root = test_settings.get_bundled_skills_dir()
         for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
@@ -664,7 +529,7 @@ class TestInjectSystemContracts:
         self, test_settings: Settings, tmp_path: Path,
     ):
         """WAKE context: same as TASK (start-task, jobs, make-worktree if repos, thread, todos)."""
-        skills_root = test_settings.get_protocol_dir() / "skills"
+        skills_root = test_settings.get_bundled_skills_dir()
         for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
@@ -689,7 +554,7 @@ class TestInjectSystemContracts:
     ):
         """An unrecognised context string is a true no-op: no links or
         directories are created under .claude/skills or .agents/skills."""
-        skills_root = test_settings.get_protocol_dir() / "skills"
+        skills_root = test_settings.get_bundled_skills_dir()
         for name in ("start-task", "jobs", "make-worktree", "thread", "dream"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name}\n")
@@ -714,7 +579,7 @@ class TestInjectSystemContracts:
     ):
         """Calling both refresh_session_skills and inject_system_contracts
         is idempotent — the same skill bodies are re-copied."""
-        skills_root = test_settings.get_protocol_dir() / "skills"
+        skills_root = test_settings.get_bundled_skills_dir()
         for name in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (skills_root / name).mkdir(parents=True)
             (skills_root / name / "SKILL.md").write_text(f"# {name} v1\n")

@@ -148,7 +148,7 @@ def _print_repair(canonical_root: Path) -> None:
         "This prefix tells Python to resolve the `cli` and `runtime` packages "
         "from the canonical source checkout instead of the broken editable pointer. "
         "It is safe for one-off invocations but does not fix the underlying .pth. "
-        "See protocol/05b-agent-runtime.md § 'Spawn-Environment Invariant' for the "
+        "See docs/agent-guides/agent-executors-and-permissions.md § 'Spawn-Environment Invariant' for the "
         "long-term fix (never run pip/uv editable installation from a worktree "
         "against the shared venv).",
         file=sys.stderr,

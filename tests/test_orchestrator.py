@@ -20,7 +20,7 @@ from runtime.orchestrator.teams import TeamsRegistry
 
 @pytest.fixture(autouse=True)
 def _ensure_protocol_skills(test_settings):
-    """TASK-2511: pre-create protocol/skills/ source dirs so
+    """TASK-2511: pre-create runtime/skills/bundled/ source dirs so
     ensure_system_contracts_materialized can inject + verify on-disk."""
     _setup_protocol_skills(test_settings)
 
@@ -50,16 +50,16 @@ def orchestrator(test_settings, test_runtime):
 _DEFAULT_AGENTS = ["engineering_head", "product_manager", "dev_agent", "payment_agent"]
 
 # System-contract IDs expected for "task" context with repos.
-# Must exist in protocol/skills/ so ensure_system_contracts_materialized
+# Must exist in runtime/skills/bundled/ so ensure_system_contracts_materialized
 # (TASK-2511) can inject + verify them.
 _TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]
 
 
 def _setup_protocol_skills(settings, contract_ids: list[str] | None = None) -> None:
-    """Create minimal protocol/skills/<id>/SKILL.md source files so
+    """Create minimal runtime/skills/bundled/<id>/SKILL.md source files so
     ensure_system_contracts_materialized can inject them into workspaces."""
     for sid in (contract_ids or _TASK_CONTEXT_CONTRACT_IDS):
-        src = settings.get_protocol_dir() / "skills" / sid
+        src = settings.get_bundled_skills_dir() / sid
         src.mkdir(parents=True, exist_ok=True)
         (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")
 
@@ -587,8 +587,8 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
     # has content, then inject a materialization error to prevent symlink creation.
     _setup_workspaces(test_runtime, ["engineering_head"])
 
-    # Create source skill dirs in protocol/skills/ for the project_root temp.
-    proto_skills = test_settings.get_protocol_dir() / "skills"
+    # Create source skill dirs in runtime/skills/bundled/ for the project_root temp.
+    proto_skills = test_settings.get_bundled_skills_dir()
     proto_skills.mkdir(parents=True, exist_ok=True)
     for sid in ("start-task", "jobs", "make-worktree", "thread", "dream"):
         (proto_skills / sid).mkdir(parents=True, exist_ok=True)
@@ -617,7 +617,7 @@ def test_run_agent_fails_fast_when_workspace_missing_skill(orchestrator, test_ru
 def test_run_agent_raises_system_contract_error_on_missing_source(
     orchestrator, test_runtime, test_settings, monkeypatch):
     """TASK-4173 adversarial: When a required system-contract source
-    directory is absent from protocol/skills/, materialize_workspace_skills
+    directory is absent from runtime/skills/bundled/, materialize_workspace_skills
     must raise SystemContractMaterializationError — NOT silently continue.
 
     Proves:
@@ -633,7 +633,7 @@ def test_run_agent_raises_system_contract_error_on_missing_source(
     # contracts. We must remove start-task to simulate a real missing-source
     # scenario.
     import shutil
-    proto_skills = test_settings.get_protocol_dir() / "skills"
+    proto_skills = test_settings.get_bundled_skills_dir()
     start_task_dir = proto_skills / "start-task"
     if start_task_dir.exists():
         shutil.rmtree(start_task_dir)
@@ -820,9 +820,9 @@ def test_run_agent_materializes_persistent_verification_contract_for_descendants
     _setup_workspaces(test_runtime, ["dev_agent"])
     source = (
         Path(__file__).resolve().parents[1]
-        / "protocol" / "skills" / "jobs" / "SKILL.md"
+        / "runtime" / "skills" / "bundled" / "jobs" / "SKILL.md"
     ).read_text()
-    (test_settings.get_protocol_dir() / "skills" / "jobs" / "SKILL.md").write_text(source)
+    (test_settings.get_bundled_skills_dir() / "jobs" / "SKILL.md").write_text(source)
 
     orchestrator._db.insert_task(TaskRecord(
         id="TASK-PARENT", brief="parent", team="engineering",
@@ -3079,7 +3079,7 @@ def test_preflight_checks_all_contracts_before_any_canonical_build(
 
     _setup_workspaces(test_runtime)
 
-    proto_skills = test_settings.get_protocol_dir() / "skills"
+    proto_skills = test_settings.get_bundled_skills_dir()
     _setup_protocol_skills(test_settings)
 
     # ── Seed a known unrelated trusted package in the runner's canonical ──
@@ -3307,7 +3307,7 @@ def test_preflight_context_union_raises_on_missing_source_executor_switch(
     _setup_workspaces(test_runtime, ["dev_agent"])
     (test_runtime.workspaces_dir / "dev_agent" / "repos" / "test" / ".git").mkdir(parents=True, exist_ok=True)
 
-    proto_skills = test_settings.get_protocol_dir() / "skills"
+    proto_skills = test_settings.get_bundled_skills_dir()
     _setup_protocol_skills(test_settings, [
         "start-task", "jobs", "make-worktree", "thread", "dream", "todos",
     ])

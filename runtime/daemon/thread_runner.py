@@ -46,7 +46,6 @@ from runtime.orchestrator.org_config import (
     render_current_time_line,
     resolve_managed_skills_index,
     resolve_org_timezone_display,
-    resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
     format_repo_refresh_note,
@@ -747,7 +746,7 @@ def build_thread_prompt(
     org_config: OrgConfig,
     now: Callable[[], datetime] | None = None,
     managed_skills_index: str = "",
-    protocol_doc_manifest: str = "",
+    repo_refresh_note: str = "",
     active_policy_section: str = "",
 ) -> str:
     from runtime.orchestrator.active_authority_policy import assert_no_reserved_team_policy_header
@@ -771,12 +770,12 @@ def build_thread_prompt(
     tz, label = resolve_org_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
     skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
-    docs_block = f"\n{protocol_doc_manifest}\n" if protocol_doc_manifest else ""
+    repo_refresh_block = f"\n{repo_refresh_note}\n" if repo_refresh_note else ""
     return (
         f"{doctrine}"
         f"You are participating in thread {thread.id}: \"{thread.subject}\".\n\n"
         f"Participants: {parts_str}.\n"
-        f"current_time: {current_time}{skills_block}{docs_block}\n"
+        f"current_time: {current_time}{skills_block}{repo_refresh_block}\n"
         f"Started: {thread.started_at.isoformat()}. {forwarded}\n\n"
         f"Full message history follows. Most recent message is at the bottom.\n\n"
         f"---\n{history}\n\n"
@@ -785,7 +784,7 @@ def build_thread_prompt(
         f"Include this token in every callback payload (reply, decline,\n"
         f"dispatch). It authorizes this single turn and is single-use for the\n"
         f"terminal callback (reply/decline).\n\n"
-        f"Consult `protocol/skills/thread/SKILL.md` and respond.\n"
+        f"Consult the **thread** skill in your skill index and respond.\n"
         f"{active_policy_section}"
     )
 
@@ -802,7 +801,7 @@ def build_thread_delta_prompt(
     org_config: OrgConfig,
     now: Callable[[], datetime] | None = None,
     managed_skills_index: str = "",
-    protocol_doc_manifest: str = "",
+    repo_refresh_note: str = "",
     active_policy_section: str = "",
 ) -> str:
     """Turn 2+ prompt for a resumed agent session (issue #53).
@@ -829,19 +828,19 @@ def build_thread_delta_prompt(
     tz, label = resolve_org_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
     skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
-    docs_block = f"\n{protocol_doc_manifest}\n" if protocol_doc_manifest else ""
+    repo_refresh_block = f"\n{repo_refresh_note}\n" if repo_refresh_note else ""
     return (
         f"{doctrine}"
         f"Continuing thread {thread.id}: \"{thread.subject}\". "
         f"New activity since your last turn follows.\n\n"
-        f"current_time: {current_time}{skills_block}{docs_block}\n\n"
+        f"current_time: {current_time}{skills_block}{repo_refresh_block}\n\n"
         f"---\n{delta}\n\n"
         f"You have been invoked because:\n  {note}\n\n"
         f"Your invocation_token for this turn is: {invocation_token}\n"
         f"Include this token in every callback payload (reply, decline,\n"
         f"dispatch). It authorizes this single turn and is single-use for the\n"
         f"terminal callback (reply/decline).\n\n"
-        f"Consult `protocol/skills/thread/SKILL.md` and respond.\n"
+        f"Consult the **thread** skill in your skill index and respond.\n"
         f"{active_policy_section}"
     )
 
@@ -1150,15 +1149,6 @@ async def run_invocation(
     repo_refresh_results = refresh_workspace_repos(workspace)
 
     repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
-    # Protocol doc manifest — bundled-path one-liner per doc (THR-070).
-    try:
-        protocol_doc_manifest = resolve_protocol_doc_manifest(settings=settings)
-    except Exception:
-        protocol_doc_manifest = ""
-    protocol_doc_manifest = "\n".join(filter(None, (
-        protocol_doc_manifest,
-        repo_refresh_note,
-    )))
 
     # THR-095 F2: resolve threads settings from DB (override) → dataclass defaults.
     threads_cfg = resolve_org_setting_threads(org_state.db, code_default=OrgConfig())
@@ -1243,7 +1233,7 @@ async def run_invocation(
                 purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
                 triggering_message=triggering, org_config=org_config,
                 managed_skills_index=managed_skills_index,
-                protocol_doc_manifest=protocol_doc_manifest,
+                repo_refresh_note=repo_refresh_note,
                 active_policy_section=active_policy_section,
             )
             resume_sid = stored_sid
@@ -1255,7 +1245,7 @@ async def run_invocation(
                 purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
                 org_config=org_config,
                 managed_skills_index=managed_skills_index,
-                protocol_doc_manifest=protocol_doc_manifest,
+                repo_refresh_note=repo_refresh_note,
                 active_policy_section=active_policy_section,
             )
             shown_seqs = [m.seq for m in messages]
@@ -1558,7 +1548,7 @@ async def run_invocation(
                     purpose=inv.purpose.value, triggering_seq=inv.triggering_seq,
                     org_config=org_config,
                     managed_skills_index=managed_skills_index,
-                    protocol_doc_manifest=protocol_doc_manifest,
+                    repo_refresh_note=repo_refresh_note,
                     active_policy_section=active_policy_section,
                 )
                 # Re-apply the guardrail for the fallback prompt too.

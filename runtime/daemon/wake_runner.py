@@ -2,7 +2,7 @@
 
 ``build_wake_prompt`` is the pure, unit-testable prompt composition (mirroring
 ``dream_runner.build_dream_prompt``). The wake prompt is composed HERE in the
-daemon runner — no ``protocol/`` edit is needed to ship the mechanism.
+daemon runner — behavior is implemented here, independently of documentation.
 ``run_wake`` is the executor-backed invocation (mirroring ``run_dream``): it
 loads the waking agent's routine checklist, runs one executor session whose only
 job is to self-dispatch via ``work-hours spawn``, records token usage under
@@ -38,7 +38,6 @@ from runtime.orchestrator.org_config import (
     render_current_time_line,
     resolve_managed_skills_index,
     resolve_org_timezone_display,
-    resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
     format_repo_refresh_note,
@@ -67,7 +66,7 @@ def build_wake_prompt(
     dropped: int = 0,
     now: Callable[[], datetime] | None = None,
     managed_skills_index: str = "",
-    protocol_doc_manifest: str = "",
+    repo_refresh_note: str = "",
     active_policy_section: str = "",
 ) -> str:
     """Compose the wake-session prompt.
@@ -89,7 +88,7 @@ def build_wake_prompt(
     tz, label = resolve_org_timezone_display(org_config)
     current_time = render_current_time_line(tz, label, now)
     skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
-    docs_block = f"\n{protocol_doc_manifest}\n" if protocol_doc_manifest else ""
+    repo_refresh_block = f"\n{repo_refresh_note}\n" if repo_refresh_note else ""
     routine_block = "\n".join(routines) if routines else "(none)"
     preamble_block = f"{preamble}\n\n" if preamble else ""
     # No silent truncation: if routines were dropped past the cap, tell the
@@ -107,7 +106,7 @@ routines. It is NOT the work itself, and it is NOT a reflection. The real work
 happens in the root tasks you spawn — do not perform the routines here.
 
 Cadence: local_date {local_date}, slot {slot}, mode {mode}.
-current_time: {current_time}{skills_block}{docs_block}
+current_time: {current_time}{skills_block}{repo_refresh_block}
 Turn EACH routine below into ONE concrete root-task brief (phrased for the work
 due since the last wake at this cadence), then submit them ALL in a SINGLE
 callback:
@@ -229,10 +228,7 @@ async def run_wake(
     # blocking: offline / dirty / non-ff / timeout are swallowed.
     repo_refresh_results = refresh_workspace_repos(workspace)
 
-    protocol_doc_manifest = "\n".join(filter(None, (
-        resolve_protocol_doc_manifest(settings=settings),
-        format_repo_refresh_note(repo_refresh_results),
-    )))
+    repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
     # ── Per-retry launch validator ───────────────────────────────
     def _pre_launch_validator():
@@ -265,7 +261,7 @@ async def run_wake(
         org_config=org_config,
         dropped=parsed.dropped,
         managed_skills_index=managed_skills_index,
-        protocol_doc_manifest=protocol_doc_manifest,
+        repo_refresh_note=repo_refresh_note,
         active_policy_section=active_policy_section,
     )
 
