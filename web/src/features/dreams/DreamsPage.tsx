@@ -113,10 +113,10 @@ function DreamCard({
           <span className="text-text-primary font-mono text-xs font-medium tabular-nums">{dream.dream_id}</span>
           <span className="text-text-muted text-xs">·</span>
           <span className="text-text-secondary text-xs">{dream.agent_name}</span>
-          <span className={cn(
+          <span className={[
             'ml-auto text-overline px-1.5 py-0.5 rounded-full font-medium uppercase tracking-wide',
             statusPill(dream.status),
-          )}>
+          ].join(' ')}>
             {DREAM_STRINGS.statusLabel(dream.status)}
           </span>
         </div>

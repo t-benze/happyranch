@@ -256,6 +256,16 @@ describe('DreamsPage', () => {
     );
     renderPage(<DreamsPage />);
 
+    for (const [label, colour] of [
+      ['Completed', 'text-accent-text'],
+      ['Failed', 'text-feedback-danger'],
+      ['Missed', 'text-text-muted'],
+    ]) {
+      screen.getAllByText(label).forEach((badge) => {
+        expect(badge).toHaveClass('text-overline', colour);
+      });
+    }
+
     // Uppercase eyebrow with the live distinct-night count.
     expect(screen.getByText('NIGHTLY REFLECTION · 2 NIGHTS')).toBeDefined();
 

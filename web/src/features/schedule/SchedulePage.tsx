@@ -47,7 +47,6 @@ import { Link, useParams } from 'react-router-dom';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { Button } from '@/design-system/primitives/Button';
-import { cn } from '@/lib/utils';
 import { useWorkHoursList } from '@/hooks/schedule';
 import { useQueryClient } from '@tanstack/react-query';
 import type { WorkHourRecord } from '@/lib/api/types';
@@ -153,10 +152,10 @@ function WakeRow({ entry, slug }: { entry: WorkHourRecord; slug: string }): JSX.
     <div className="hover:bg-surface-hover flex items-center gap-3 rounded px-2 py-1.5 text-sm transition-colors">
       {/* Status pill */}
       <span
-        className={cn(
+        className={[
           'shrink-0 rounded-full px-2 py-0.5 text-overline font-medium uppercase tracking-wide',
           statusPill(entry.status),
-        )}
+        ].join(' ')}
       >
         {formatStatus(entry.status)}
       </span>

@@ -195,6 +195,8 @@ describe('THR-035: wake-execution list (consolidated into Work Hours Wakes view)
     // Status pills (rendered as uppercase pill text)
     const completedBadges = screen.getAllByText('Completed');
     expect(completedBadges.length).toBe(2);
+    completedBadges.forEach((badge) => expect(badge).toHaveClass('text-overline', 'text-accent-text'));
+    expect(screen.getByText('Pending')).toHaveClass('text-overline', 'text-text-muted');
 
     // Routine counts
     expect(screen.getAllByText('2 routines').length).toBe(2);

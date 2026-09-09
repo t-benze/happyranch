@@ -143,8 +143,7 @@ function renderDialog(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={['/orgs/alpha/dashboard']}>
         <Routes>
-          {/* Pathless shell route — mirrors the prototype shell where SettingsDialog
-              actually live. A relative <Link to="assistant"> resolves to /assistant
+          {/* Direct test-only mount. A relative <Link to="assistant"> resolves to /assistant
               here, NOT the removed assistant page route, which is the bug this test guards. */}
           <Route
             element={

@@ -202,7 +202,7 @@ export function Sidebar(): JSX.Element {
         </SidebarNavItem>
         <SidebarNavItem
           to={routes.inboxForOrg(activeSlug ?? '')}
-          enabled={!!activeSlug && !isPrototype}
+          enabled={!!activeSlug}
           icon={MessageSquare}
         >
           Threads

@@ -1,4 +1,5 @@
 import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { test, expect } from 'vitest';
 import { AppRoutes } from './routes';
@@ -51,7 +52,7 @@ test('root with no orgs redirects to the get-started onboarding surface', async 
   );
 });
 
-test('prototype threads detail keeps its fixture-assisted shell, navigation, and exit control', async () => {
+test('prototype threads detail keeps its fixture-assisted shell, inbox navigation, theme, and exit controls', async () => {
   const requests: string[] = [];
   const record = ({ request }: { request: Request }) => {
     const url = new URL(request.url);
@@ -67,6 +68,7 @@ test('prototype threads detail keeps its fixture-assisted shell, navigation, and
     http.get('/api/v1/orgs/demo-org/tokens', () => HttpResponse.json({ rollup: [] })),
   );
   renderWithProviders(<AppRoutes />, { route: '/__prototypes/threads-v2/THR-001' });
+  const user = userEvent.setup();
 
   try {
     await waitFor(() => {
@@ -76,7 +78,12 @@ test('prototype threads detail keeps its fixture-assisted shell, navigation, and
       expect(screen.queryByLabelText('Open assistant')).not.toBeInTheDocument();
       expect(screen.getByLabelText(/Switch to (light|dark) theme/i)).toBeInTheDocument();
       expect(screen.getByText('Q4 venue research — Macau pavilions')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Threads' })).toHaveAttribute('href', '/__prototypes/threads-v2');
     });
+    await user.click(screen.getByLabelText(/Switch to (light|dark) theme/i));
+    expect(screen.getByLabelText(/Switch to (light|dark) theme/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('link', { name: 'Threads' }));
+    await waitFor(() => expect(screen.getByText('Prototype sandbox')).toBeInTheDocument());
     await waitFor(() =>
       expect(requests).toEqual([
         '/api/v1/auth/bootstrap',
