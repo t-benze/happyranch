@@ -1968,6 +1968,7 @@ def test_run_step_drops_delegate_when_cancelled_during_session(runtime, db, monk
     db.insert_task(TaskRecord(
         id="T-RACE", brief="x", assigned_agent="engineering_head",
     ))
+    db.update_task("T-RACE", orchestration_step_count=500)
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test",
                         teams=TeamsRegistry.load(runtime.root))
     orch._queue = _SlugQueue()
@@ -2006,6 +2007,9 @@ def test_run_step_drops_delegate_when_cancelled_during_session(runtime, db, monk
     assert t.status == TaskStatus.FAILED
     assert t.note == "cancelled by founder: stop"
     assert t.cancelled_at is not None
+    # The successful pre-session claim advances telemetry once; cancellation
+    # cannot resurrect a second claim or launch/queue effect.
+    assert t.orchestration_step_count == 501
     # No child task spawned by the delegate decision.
     assert db.get_children("T-RACE") == []
     # Queue stays empty — nothing to dispatch.
@@ -2791,7 +2795,9 @@ def test_run_step_nonroot_beyond_legacy_cap_duplicate_claim_is_at_most_once(runt
         id="T-CHD", brief="c", assigned_agent="dev_agent",
         parent_task_id="T-PAR", task_type="subtask",
     ))
-    db.update_task("T-CHD", orchestration_step_count=3)
+    # Exercise the actual retired-cap boundary, rather than a small synthetic
+    # count: a duplicate delivery must not turn telemetry into a second launch.
+    db.update_task("T-CHD", orchestration_step_count=51)
 
     orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
     q = _SlugQueue()
@@ -2804,8 +2810,34 @@ def test_run_step_nonroot_beyond_legacy_cap_duplicate_claim_is_at_most_once(runt
     orch.run_step("T-CHD")  # duplicate delivery
 
     assert db.get_task("T-CHD").status == TaskStatus.COMPLETED
-    assert db.get_task("T-CHD").orchestration_step_count == 4
+    assert db.get_task("T-CHD").orchestration_step_count == 52
     assert q.qsize() == 1  # duplicate delivery did not add another wake
+
+
+def test_run_step_reopen_retains_high_count_and_claims_once(runtime, db, monkeypatch):
+    """Restart/recovery retains telemetry; the next real claim increments once."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    db.insert_task(TaskRecord(id="T-REOPEN", brief="x", assigned_agent="engineering_head"))
+    db.update_task("T-REOPEN", orchestration_step_count=500)
+    db.close()
+    reopened = Database(runtime.db_path)
+    orch = Orchestrator(
+        db=reopened, settings=Settings(max_orchestration_steps=3), paths=runtime,
+        slug="test", teams=TeamsRegistry.load(runtime.root),
+    )
+    monkeypatch.setattr(orch, "_run_agent", lambda *args, **kwargs: (
+        _make_result(), _make_report(output_summary=json.dumps({"action": "done", "summary": "done"})),
+    ))
+
+    orch.run_step("T-REOPEN")
+    orch.run_step("T-REOPEN")  # recovery duplicate after the terminal transition
+
+    task = reopened.get_task("T-REOPEN")
+    assert task.status == TaskStatus.COMPLETED
+    assert task.orchestration_step_count == 501
+    assert len([row for row in reopened.get_audit_logs("T-REOPEN") if row["action"] == "orchestration_step"]) == 1
+    reopened.close()
 
 
 @pytest.mark.parametrize("prior_count", [50, 51, 500])
