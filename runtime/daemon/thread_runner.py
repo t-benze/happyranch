@@ -1708,6 +1708,7 @@ async def run_invocation(
                         org_config=org_config,
                         managed_skills_index=managed_skills_index,
                         active_policy_section=active_policy_section,
+                        repo_refresh_note=repo_refresh_note,
                     )
                     + "\n"
                     + (escalation_note + "\n" if escalation_note else "")

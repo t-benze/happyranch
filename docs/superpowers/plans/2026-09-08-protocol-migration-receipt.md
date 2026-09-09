@@ -23,11 +23,23 @@ independent and retain their validation. Source-path metadata does not enter the
 directory content hash: canonical identity is derived from relative member paths
 and bytes. Changed skill bodies receive new content hashes by normal materialization.
 
-Risk: medium for asset relocation and prompt transport; no edits to canonical
+Risk: HIGH/load-bearing for asset relocation and prompt transport; no edits to canonical
 store algorithms, permissions, task transitions, authorization, or schema.
 The legacy default `protocol_dir=protocol` remains an inert compatibility field;
 non-default values fail configuration validation with migration guidance.
 No live org settings, canonical packages, or ledgers are changed by this branch.
+
+## Current-design source reconciliation
+
+The specs index is the authorized current-source routing surface for this
+retirement. Current designs that retain `protocol/` or `protocol/skills/`
+pathnames inside their append-only bodies preserve those pathnames as historical
+design text; their verified post-retirement destinations are the matching
+`runtime/skills/bundled/` skill and applicable `docs/agent-guides/` contract.
+In particular, the Linux canonical-store design's retired `protocol/05b-agent-runtime.md`
+pointer now routes through the executor guide and bundled skills. No excluded
+individual historical specification is rewritten or represented as a new
+current contract.
 
 ## Requirement dispositions
 

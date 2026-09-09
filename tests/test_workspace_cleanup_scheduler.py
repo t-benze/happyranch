@@ -42,6 +42,37 @@ from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
 
 
+def test_fail_open_threshold_contract_is_consistent_across_surviving_surfaces():
+    """Unavailable measurements remain advisory; only numeric low values skip."""
+    root = Path(__file__).parents[1]
+    surfaces = {
+        "CLAUDE.md": (root / "CLAUDE.md").read_text(),
+        "scheduler module": (
+            root / "runtime/daemon/workspace_cleanup_scheduler.py"
+        ).read_text(),
+    }
+
+    normalized = {
+        name: " ".join(source.split()) for name, source in surfaces.items()
+    }
+    for name, source in normalized.items():
+        assert "bypasses only numeric threshold evaluation" in source, name
+        assert "otherwise-due spawning continues" in source, name
+        assert "honest unavailable advisory context" in source, name
+        assert (
+            "only an available numeric result below 1 GiB skips" in source
+        ), name
+
+    obsolete_claims = {
+        "CLAUDE.md": "and the agent's workspace totals >= 1 GiB, triggers",
+        "scheduler module": (
+            "trigger only when that agent's workspace total is >= 1 GiB"
+        ),
+    }
+    for name, claim in obsolete_claims.items():
+        assert claim not in normalized[name], name
+
+
 # ── helpers ──────────────────────────────────────────────────────────────
 
 def _fmt(n: int) -> str:

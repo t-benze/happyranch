@@ -9,6 +9,9 @@ For current behavior, use these sources before old specs:
 - `README.md` for end-user setup and product surface.
 - `CLAUDE.md` and `docs/agent-guides/` for current agent/developer guidance.
 - `runtime/skills/bundled/` for agent instructions explaining implemented workflows.
+  When a design marked `current` still names a retired `protocol/` skill or
+  protocol document as its current source, use the matching bundled skill and
+  agent guide instead; the old in-spec pathname is historical design text.
 - Historical `protocol/` references identify documents retired after `01d5ede5`;
   use Git history for their original contents.
 - `tests/contract/openapi.json`, route tests, and implementation for executable truth.
@@ -92,7 +95,7 @@ New specs should include a short status block near the top:
 | `2026-06-10-kb-view-tracking-design.md` | implemented | Agent-CLI KB view tracking; implemented in `runtime/daemon/routes/kb.py`, `runtime/infrastructure/database.py`, `cli/commands/kb.py`. Caller-signal mechanism in KB `kb-view-tracking-caller-signal`. |
 | `2026-06-10-working-hours-design.md` | implemented | Per-agent working-hours wake mechanism; implemented in `runtime/daemon/wake_runner.py`, `work_hours_scheduler.py`, `wake_queue.py`, `runtime/infrastructure/work_hours_store.py`, and `runtime/daemon/routes/work_hours.py`. |
 | `2026-06-30-pr-ci-waiter-guarded-merge-design.md` | implemented | PR CI waiter and guarded merge engine design; contract in `docs/agent-guides/orchestrator-contracts.md` and `docs/agent-guides/`. Implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`, `tests/daemon/test_pr_ci_waiter_gh.py`, `tests/daemon/test_pr_ci_merge_gh.py`. |
-| `2026-08-22-linux-canonical-store-design.md` | current | Linux same-owner canonical skill-store and launch support; current contracts in `docs/agent-guides/agent-executors-and-permissions.md` and the executor guide. |
+| `2026-08-22-linux-canonical-store-design.md` | current | Linux same-owner canonical skill-store and launch support; current contracts in `docs/agent-guides/agent-executors-and-permissions.md`, `runtime/skills/bundled/`, and the executor guide. Its in-spec `protocol/05b-agent-runtime.md` Current Source is retired historical text. |
 | `2026-08-24-host-resource-concurrency.md` | current | Capability-based host-session supervisor (admission + lifecycle core, Slice A); governing spec for THR-207 / TASK-5584. Current contracts: `runtime/orchestrator/host_supervisor.py`, `runtime/platform/session_backend.py`. |
 | `2026-08-25-thread-rename-and-pinning-design.md` | implemented (rev 2 — msg-9 correction) | Founder-only thread rename + pin (THR-209 Phase 1). Current contracts: `docs/agent-guides/features-and-invariants.md` (Threads), routes in `runtime/daemon/routes/threads.py`, pin storage `threads.pinned_at`, open-list pinned ordering by numeric thread ID desc (archived/status-less views have no pin presentation), web UI in `web/src/features/threads/ThreadsPage.tsx`. |
 | `2026-08-26-managed-remote-access-contract.md` | current | Normative managed remote-access contract (THR-097 merge unit A, TASK-5771): one Headscale cell per customer, ciphertext-only DERP, supervised portable Python connector, loopback daemon + final-hop bearer injection, explicit allow-list, credential/failure taxonomy, hostile threat fixtures. Machine-readable contract: `tests/contract/managed_remote_access/`; connector core (unit C) + Linux supervised packaging (unit 3) implemented; control-plane units B–D outside this PR. |

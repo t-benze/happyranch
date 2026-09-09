@@ -46,6 +46,15 @@ def test_make_worktree_keeps_temporary_review_worktrees_in_workspace() -> None:
     assert "git worktree remove" in body
 
 
+def test_temporary_filesystem_producer_redirection_docs_are_in_parity() -> None:
+    """Surviving guidance retains the cleanup-eligibility boundary."""
+    repository_root = Path(__file__).resolve().parent.parent
+    body = (repository_root / "CLAUDE.md").read_text()
+    assert "workspace-owned and measurable" in body
+    assert "not cleanup-eligible" in body
+    assert "TMPDIR" in body
+
+
 def test_start_task_skill_documents_memory_consult() -> None:
     body = (SKILLS_ROOT / "start-task" / "SKILL.md").read_text()
     assert "task_history.md" in body

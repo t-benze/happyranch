@@ -403,6 +403,77 @@ class TestRepositoryRefreshNotesInPrompts:
         assert "offline; using existing checkout" in prompt
 
 
+@pytest.mark.asyncio
+async def test_nonresumable_thread_nudge_forwards_failed_refresh_note(tmp_path, monkeypatch):
+    """The shipping nudge rebuild carries the same failed-refresh context."""
+    from runtime.daemon import thread_runner as runner
+    from runtime.infrastructure.database import Database
+    from runtime.models import (
+        ThreadInvocationPurpose,
+        ThreadMessageKind,
+        ThreadRecord,
+    )
+    from runtime.orchestrator._paths import OrgPaths
+    from tests.conftest import seed_test_agents
+
+    db = Database(tmp_path / "happyranch.db")
+    db.insert_thread(ThreadRecord(id="THR-REFRESH", subject="refresh proof"))
+    db.add_thread_participant("THR-REFRESH", "alice", added_by="founder")
+    db.append_thread_message(
+        thread_id="THR-REFRESH", speaker="founder",
+        kind=ThreadMessageKind.MESSAGE, body_markdown="Please inspect the repo.",
+    )
+    invocation = db.mint_thread_invocation(
+        thread_id="THR-REFRESH", agent_name="alice", triggering_seq=1,
+        purpose=ThreadInvocationPurpose.REPLY,
+    )
+    db._conn.execute(
+        "INSERT INTO thread_reply_delivery_state "
+        "(thread_id, agent_name, acknowledged_through_seq, required_through_seq, "
+        "queued_invocation_token, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("THR-REFRESH", "alice", 0, 1, invocation.invocation_token,
+         "2026-01-01T00:00:00+00:00"),
+    )
+    db._conn.commit()
+
+    seed_test_agents(OrgPaths(root=tmp_path), ("alice",))
+    workspace = tmp_path / "workspaces" / "alice"
+    workspace.mkdir(parents=True)
+    (workspace / "agent.yaml").write_text("executor: claude\n")
+
+    class RecordingExecutor:
+        def __init__(self):
+            self.prompts: list[str] = []
+
+        def run(self, **kwargs):
+            self.prompts.append(kwargs["prompt"])
+            return type("Result", (), {
+                "success": True, "returncode": 0, "error": "",
+                "agent_session_id": None, "duration_seconds": 0,
+                "stdout_tail": "", "stderr_tail": "", "token_usage": None,
+            })()
+
+    executor = RecordingExecutor()
+    monkeypatch.setattr(runner, "refresh_workspace_repos", lambda _: {"repo": False})
+    monkeypatch.setattr(runner, "_RESUME_CAPABLE_EXECUTORS", frozenset())
+    monkeypatch.setattr(
+        runner, "_build_executor_for_provider",
+        lambda provider, settings, paths: executor,
+    )
+
+    org = type("Org", (), {"db": db, "root": tmp_path, "slug": "test"})()
+    await runner.run_invocation(
+        org_state=org, invocation_token=invocation.invocation_token,
+        settings=Settings(),
+    )
+
+    assert len(executor.prompts) == 2
+    for prompt in executor.prompts:
+        assert "Repository freshness at session start" in prompt
+        assert "repo did not fast-forward cleanly" in prompt
+    assert "ended without posting" in executor.prompts[1]
+
+
 # ── PART D: inject_system_contracts (THR-055 Phase 1) ────────────────
 
 
