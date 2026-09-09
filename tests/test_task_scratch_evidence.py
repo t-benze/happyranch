@@ -316,7 +316,7 @@ def _observe_all_evidence_sources(
     import runtime.daemon.task_scratch_evidence as subject
     clock = [0]
     events: list[tuple[str, str, str, str, bool]] = []
-    proc_opens = 0; stats: dict[str, int] = {}; advances: dict[str, int] = {"proc": 0, "fd": 0}
+    proc_opens = 0; stats: dict[str, int] = {}; calls: dict[str, int] = {}
 
     def record(kind: str, family: str, identity: str, phase: str) -> None:
         events.append((kind, family, identity, phase, clock[0] > subject.SCAN_NS))
@@ -326,13 +326,13 @@ def _observe_all_evidence_sources(
         if trigger is None:
             return
         selected = (
-            trigger == f"db:{identity}" or
+            family == "db" and trigger == f"db:{identity}:{calls[identity]}" or
             trigger == "boot" and family == "boot" or
             trigger == "sessions" and family == "sessions" or
             trigger == "cwd" and identity.endswith(":cwd") or
             trigger == "fd-readlink" and family == "readlink" and ":fd:" in identity or
-            trigger == "fd-next" and family == "iterator" and identity == "fd:1" or
-            trigger == "population-next" and family == "iterator" and identity == "proc:1" or
+            trigger == "fd-next" and family == "iterator" and identity.endswith(":fd:1") or
+            trigger == "population-next" and family == "iterator" and identity.endswith(":proc:1") or
             trigger == "initial-population-open" and family == "scandir" and identity == "proc" and phase == "initial" or
             trigger == "final-population-open" and family == "scandir" and identity == "proc" and phase == "final" or
             trigger == "final-pid-stat" and family == "stat" and identity == "42" and phase == "final"
@@ -343,6 +343,7 @@ def _observe_all_evidence_sources(
     for name in ("list_tasks", "get_task", "get_latest_task_result", "list_jobs_db", "get_job"):
         original = getattr(db, name)
         def wrapped(*args, _name=name, _original=original, **kwargs):
+            calls[_name] = calls.get(_name, 0) + 1
             record("START", "db", _name, "snapshot")
             value = _original(*args, **kwargs)
             record("RETURN", "db", _name, "snapshot"); fire("db", _name, "snapshot")
@@ -376,17 +377,19 @@ def _observe_all_evidence_sources(
         value = original_scandir(path)
         record("RETURN", family, identity, phase); fire(family, identity, phase)
         kind = "proc" if identity == "proc" else "fd"
+        advances = 0
         class Iterator:
             def __enter__(self): value.__enter__(); return self
             def __exit__(self, *args): return value.__exit__(*args)
             def __iter__(self): return self
             def __next__(self):
-                number = advances[kind] + 1; item_identity = f"{kind}:{number}"
+                nonlocal advances
+                number = advances + 1; item_identity = f"{identity}:{kind}:{number}"
                 record("START", "iterator", item_identity, phase)
                 try: item = next(value)
                 except StopIteration:
                     record("EXHAUSTED", "iterator", kind, phase); raise
-                advances[kind] = number
+                advances = number
                 record("RETURN", "iterator", item_identity, phase); fire("iterator", item_identity, phase)
                 return item
         return Iterator()
@@ -425,11 +428,11 @@ def test_exported_collector_stops_all_source_reads_after_db_return(
     if reader == "get_job":
         db.insert_job(JobRecord(id="JOB-1", task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED, created_at=datetime.now(timezone.utc).isoformat()))
         db.update_task("TASK-1", blocked_on_job_ids='["JOB-1"]')
-    sessions = SessionTracker(); events, clock = _observe_all_evidence_sources(db=db, proc=proc, sessions=sessions, monkeypatch=monkeypatch, trigger=f"db:{reader}")
+    sessions = SessionTracker(); events, clock = _observe_all_evidence_sources(db=db, proc=proc, sessions=sessions, monkeypatch=monkeypatch, trigger=f"db:{reader}:{call}")
     import runtime.daemon.task_scratch_evidence as subject
     evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert clock[0] > subject.SCAN_NS and "observation_timeout" in evidence.reasons
-    assert any(event[1:4] == ("db", reader, "snapshot") for event in events), events
+    assert sum(event[0] == "RETURN" and event[1:4] == ("db", reader, "snapshot") for event in events) >= call, events
     assert not [event for event in events if event[0] == "START" and event[4]], events
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
 
@@ -461,6 +464,8 @@ def test_exported_collector_expiry_boundaries_do_not_start_dependent_proc_reads(
     """A2p: source opens/advances are admitted; an in-flight call is not cancelled."""
     db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
     root = tmp_path / "root"; root.mkdir(); _proc(proc, 43, root=str(root), cwd=str(root), fd=str(root / "held"))
+    if fds == 2:
+        (proc / "43/fd" / "4").symlink_to(root / "held-second")
     sessions = SessionTracker(); events, clock = _observe_all_evidence_sources(db=db, proc=proc, sessions=sessions, monkeypatch=monkeypatch, trigger=trigger)
     import runtime.daemon.task_scratch_evidence as subject
     evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
