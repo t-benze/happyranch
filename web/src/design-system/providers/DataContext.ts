@@ -274,8 +274,8 @@ export interface DreamsRoutes {
 }
 
 // ---------------------------------------------------------------------------
-// OrgsApi — minimal read-only surface so the TopBar org dropdown works
-// under both providers without TopBar reaching into `@/lib/api` itself.
+// OrgsApi — minimal read-only surface for shell org navigation under both
+// providers without the shell reaching into `@/lib/api` itself.
 // ---------------------------------------------------------------------------
 
 export interface OrgsApi {
@@ -595,7 +595,7 @@ export interface ThreadRoutes {
   /** Inbox URL for the active context. */
   inbox: () => string;
   /**
-   * Inbox URL when switching to a specific org. Used by the TopBar org
+   * Inbox URL when switching to a specific org. Used by shell org
    * dropdown so the user lands in the right place regardless of which
    * provider is mounted. Under the real provider this is
    * `/orgs/<slug>/threads`; under the prototype it stays inside the

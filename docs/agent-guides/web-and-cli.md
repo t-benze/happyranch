@@ -53,7 +53,7 @@ fidelity.
 
 ### Settings
 
-The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with exactly three left sub-nav panels: Assistant · Organization · Executors. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (The TopBar gear button and `SettingsDialog` are prototype/design-preview surfaces only — not production entry points.) It shows:
+The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with exactly three left sub-nav panels: Assistant · Organization · Executors. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (`SettingsDialog` is a prototype/design-preview surface only — not a production entry point.) It shows:
 
 - **Assistant** — assistant status, setup/recovery, and assistant executor binding.
 - **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), browser-managed threads config (enabled and invocation timeout), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
@@ -164,7 +164,7 @@ Work status: Stale-but-alive — no substantive update recorded
 The full audit log (including inline `progress` messages) is unchanged.
 
 The founder-facing web surface is the **A-mode Cmd-K dock** (structured chat
-docked in the AppShell, toggled via the TopBar / Cmd-K shortcut). Assistant
+docked in the AppShell, toggled via the AppBar / Cmd-K shortcut). Assistant
 configuration (status / init / register / repair) is served over four HTTP routes
 (in `INCLUDED_PATHS` with TS mirrors in `web/src/lib/api/assistant.ts`).
 There is no standalone `/assistant` web page, no xterm terminal, and no

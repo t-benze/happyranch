@@ -114,7 +114,7 @@ function DreamCard({
           <span className="text-text-muted text-xs">·</span>
           <span className="text-text-secondary text-xs">{dream.agent_name}</span>
           <span className={cn(
-            'ml-auto text-[10px] px-1.5 py-0.5 rounded-full font-medium uppercase tracking-wide',
+            'ml-auto text-overline px-1.5 py-0.5 rounded-full font-medium uppercase tracking-wide',
             statusPill(dream.status),
           )}>
             {DREAM_STRINGS.statusLabel(dream.status)}

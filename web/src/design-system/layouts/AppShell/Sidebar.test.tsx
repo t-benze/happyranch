@@ -2,7 +2,7 @@
  * IA-1, IA-2, IA-10 tests for the Direction-A design overhaul Phase 1b.
  *
  * - IA-1: Sidebar renders its flat primary list, footer-pinned Settings, theme
- *   toggle, and org switcher; TopBar is retired.
+ *   toggle, and org switcher; the legacy tab bar is retired.
  * - IA-2: Default landing route resolves to Home/Dashboard.
  * - THR-140 seq 208: flattened primary navigation preserves short-window height.
  */
@@ -77,7 +77,7 @@ function seedSidebarShell(
   );
 }
 
-describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
+describe('IA-1: Sidebar (left rail replaces the legacy tab bar)', () => {
   test('renders the usage-ordered items in one named primary navigation landmark', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
@@ -160,14 +160,14 @@ describe('IA-1: Sidebar (left rail replaces TopBar)', () => {
     });
   });
 
-  test('TopBar is retired — no tab-bar header role exists', async () => {
+  test('the legacy tab bar is retired — no tab-bar header role exists', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
       expect(screen.getByLabelText(/Active org/i)).toBeInTheDocument();
     });
-    // The old TopBar rendered a <header role="banner"> — it should NOT exist
+    // The retired tab bar rendered a <header role="banner"> — it should NOT exist
     expect(screen.queryByRole('banner')).toBeNull();
   });
 

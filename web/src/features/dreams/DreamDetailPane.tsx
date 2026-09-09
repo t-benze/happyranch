@@ -226,7 +226,7 @@ export function DreamDetailPane({
           {dream && (
             <div className="mt-1 flex items-center gap-2">
               <span className={cn(
-                'text-[10px] px-1.5 py-0.5 rounded-full font-medium uppercase tracking-wide',
+                'text-overline px-1.5 py-0.5 rounded-full font-medium uppercase tracking-wide',
                 statusPill(dream.status),
               )}>
                 {DREAM_STRINGS.statusLabel(dream.status)}

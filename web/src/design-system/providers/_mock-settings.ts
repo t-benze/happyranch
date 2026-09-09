@@ -1,7 +1,7 @@
 /**
  * Mock implementation of `SettingsApi` for the prototype sandbox.
  *
- * Returns a static, realistic fixture so the TopBar-mounted SettingsDialog
+ * Returns a static, realistic fixture for the prototype SettingsDialog
  * can render without a real daemon. Prototype users see a read-only
  * preview — no backend calls, no org routing.
  */

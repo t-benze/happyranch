@@ -49,17 +49,16 @@ describe('Tailwind arbitrary-value callee coverage', () => {
     expect(messages.filter(({ ruleId }) => ruleId === 'tailwindcss/no-arbitrary-value')).toEqual([])
   })
 
-  it('freezes each current residue occurrence so additions and deletions fail', async () => {
-    const file = 'src/features/dreams/DreamsPage.tsx'
-    const one = "export const probe = () => cn('text-[10px]')"
-    const added = `${one}\nexport const added = () => cn('text-[10px]')`
-    const deleted = "export const probe = () => cn('text-xs')"
+  it.each([
+    'src/features/dreams/DreamsPage.tsx',
+    'src/features/dreams/DreamDetailPane.tsx',
+    'src/features/work-hours-config/WakesView.tsx',
+    'src/features/schedule/SchedulePage.tsx',
+  ])('rejects a text-[10px] reintroduction in %s', async (file) => {
+    const messages = await lint("export const probe = () => cn('text-[10px]')", file)
 
-    expect((await lint(one, file)).filter(({ severity }) => severity === 2)).toEqual([])
-    for (const source of [added, deleted]) {
-      expect(await lint(source, file)).toEqual(expect.arrayContaining([
-        expect.objectContaining({ ruleId: 'local/frozen-tailwind-arbitrary-baseline' }),
-      ]))
-    }
+    expect(messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: 'tailwindcss/no-arbitrary-value' }),
+    ]))
   })
 })

@@ -86,7 +86,7 @@ function AppShell(): JSX.Element {
 export function AppRoutes(): JSX.Element {
   return (
     <Routes>
-      {/* Prototype routes mount OUTSIDE AppShell so the TopBar + nav inside
+      {/* Prototype routes mount OUTSIDE AppShell so the shell primitives inside
           `PrototypesLayout` run under `<PrototypeProvider>`'s QueryClient
           and OrgSlugContext — keeping mock-only behaviour fully isolated
           from the daemon-backed routes. */}
