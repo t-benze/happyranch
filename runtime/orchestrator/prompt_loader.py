@@ -26,6 +26,7 @@ __all__ = [
     "AgentParseError",
     "load_agent",
     "load_agent_with_revision",
+    "load_agent_snapshot",
     "list_agents",
     "list_pending",
     "load_pending_agent",
@@ -69,6 +70,14 @@ def load_agent_with_revision(
     paths: OrgPaths, name: str,
 ) -> tuple[AgentDef, str] | None:
     """Load an active definition and its hash from the same byte snapshot."""
+    snapshot = load_agent_snapshot(paths, name)
+    return snapshot[:2] if snapshot is not None else None
+
+
+def load_agent_snapshot(
+    paths: OrgPaths, name: str,
+) -> tuple[AgentDef, str, bytes] | None:
+    """Load an active definition, revision, and exact canonical bytes together."""
     path = _agent_path(paths, name, pending=False)
     try:
         contents = path.read_bytes()
@@ -77,6 +86,7 @@ def load_agent_with_revision(
     return (
         parse_agent_text(contents.decode("utf-8"), expected_name=name),
         hashlib.sha256(contents).hexdigest(),
+        contents,
     )
 
 

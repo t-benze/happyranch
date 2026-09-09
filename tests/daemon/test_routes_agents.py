@@ -2268,6 +2268,116 @@ def test_set_executor_switches_org_and_workspace(
     # the old workspace_executor value for display purposes only.
 
 
+def test_set_executor_refreshes_after_materialization_and_preserves_newer_fields(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """The shipping route must not serialize its pre-await AgentDef."""
+    from dataclasses import replace
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.orchestrator.agent_def import render_agent_text
+    from runtime.orchestrator import prompt_loader
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude", system_prompt="old\n")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    def winner(*_args, **_kwargs):
+        current = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+        assert current is not None
+        newer = replace(current, system_prompt="winner prompt\n",
+                        repos={"happyranch": "/winner"}, description="winner description")
+        (_paths(org_state).agents_dir / "dev_agent.md").write_text(render_agent_text(newer))
+        return []
+
+    monkeypatch.setattr(agents_mod, "_executor_switch_materialize", winner)
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        response = TestClient(app).put(
+            "/api/v1/orgs/alpha/agents/dev_agent/executor",
+            json={"executor": "pi"}, headers=auth_headers,
+        )
+    assert response.status_code == 200, response.text
+    updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert updated is not None
+    assert updated.executor == "pi"
+    assert updated.system_prompt == "winner prompt\n"
+    assert updated.repos == {"happyranch": "/winner"}
+    assert updated.description == "winner description"
+    assert MockCB.return_value.ensure_workspace_ready.call_args.args[2] == "winner prompt\n"
+
+
+def test_set_executor_rejects_competing_executor_after_materialization(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """A competing executor/model change wins; the stale switch emits no audit."""
+    from dataclasses import replace
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.orchestrator.agent_def import render_agent_text
+    from runtime.orchestrator import prompt_loader
+
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    def winner(*_args, **_kwargs):
+        current = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+        assert current is not None
+        (_paths(org_state).agents_dir / "dev_agent.md").write_text(
+            render_agent_text(replace(current, executor="codex"))
+        )
+        return []
+
+    monkeypatch.setattr(agents_mod, "_executor_switch_materialize", winner)
+    response = TestClient(app).put(
+        "/api/v1/orgs/alpha/agents/dev_agent/executor",
+        json={"executor": "pi"}, headers=auth_headers,
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "executor_switch_conflict"
+    winner_def = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert winner_def is not None and winner_def.executor == "codex"
+
+
+def test_manage_agent_reset_failure_preserves_newer_canonical_bytes(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Conditional rollback must not replace a winner during bootstrap await."""
+    from dataclasses import replace
+    from runtime.infrastructure import database as db_module
+    from runtime.orchestrator.agent_def import render_agent_text
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", executor="claude")
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+
+    def bootstrap(*_args, **_kwargs):
+        current = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+        assert current is not None
+        winner = replace(current, system_prompt="newer winner\n")
+        (_paths(org_state).agents_dir / "dev_agent.md").write_text(render_agent_text(winner))
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, patch.object(
+        db_module.Database, "_reset_thread_sessions_for_agent_uncommitted",
+        side_effect=RuntimeError("injected reset failure"), create=True,
+    ):
+        MockCB.return_value.ensure_workspace_ready.side_effect = bootstrap
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={"action": "update", "name": "dev_agent", "task_id": _EH_TASK,
+                  "session_id": _EH_SESSION,
+                  "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
+                  "executor": "codex"}, headers=auth_headers,
+        )
+    assert response.status_code == 500, response.text
+    winner = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert winner is not None
+    assert winner.executor == "codex"
+    assert winner.system_prompt == "newer winner\n"
+    # Reconciliation of the stale prior definition is forbidden on conflict.
+    assert MockCB.return_value.ensure_workspace_ready.call_count == 1
+
+
 def test_set_executor_invalid_returns_422_and_no_mutation(
     tmp_home, app, org_state, auth_headers,
 ) -> None:

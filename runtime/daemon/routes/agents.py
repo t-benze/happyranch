@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json as _json
 import logging
 import os
@@ -703,10 +704,10 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         if body.expected_revision is None or not re.fullmatch(r"[0-9a-f]{64}", body.expected_revision):
             raise HTTPException(status_code=422, detail={"code": "expected_revision_required", "message": "update requires a 64-character expected_revision"})
         async with org.teams_lock:
-            loaded = prompt_loader.load_agent_with_revision(paths, body.name)
+            loaded = prompt_loader.load_agent_snapshot(paths, body.name)
             if loaded is None:
                 raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
-            existing, current_revision = loaded
+            existing, current_revision, original_bytes = loaded
             agent_team = org.teams.team_for_agent(body.name) if org.teams is not None else None
             if agent_team != manager_team:
                 raise HTTPException(
@@ -754,8 +755,9 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             from runtime.orchestrator.agent_def import render_agent_text
             fd, tmp = tempfile.mkstemp(prefix=f".{body.name}.", suffix=".md", dir=str(paths.agents_dir))
             try:
-                with os.fdopen(fd, "w") as fh:
-                    fh.write(render_agent_text(updated))
+                updated_bytes = render_agent_text(updated).encode("utf-8")
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(updated_bytes)
                 os.replace(tmp, active_path)
             except Exception:
                 try:
@@ -799,35 +801,55 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                     "executor-switch session invalidation failed for %s; "
                     "rolling back the switch", body.name,
                 )
-                # Best-effort compensation, mirroring the terminate rollback
-                # contract: restore the prior AgentDef (executor + every other
-                # updated field) and re-reconcile the workspace back to the
-                # prior executor profile.
+                # Restore only the exact canonical bytes this operation owns.
+                # The original read/commit happened under teams_lock; after
+                # workspace bootstrap yielded, another accepted route update
+                # may have won.  Do not overwrite that newer definition.
+                restored = False
                 try:
-                    fd, tmp = tempfile.mkstemp(
-                        prefix=f".{body.name}.", suffix=".md",
-                        dir=str(paths.agents_dir),
-                    )
-                    with os.fdopen(fd, "w") as fh:
-                        fh.write(render_agent_text(existing))
-                    os.replace(tmp, active_path)
+                    async with org.teams_lock:
+                        current = prompt_loader.load_agent_with_revision(paths, body.name)
+                        written_revision = hashlib.sha256(updated_bytes).hexdigest()
+                        if current is not None and current[1] == written_revision:
+                            fd, tmp = tempfile.mkstemp(
+                                prefix=f".{body.name}.", suffix=".md",
+                                dir=str(paths.agents_dir),
+                            )
+                            try:
+                                with os.fdopen(fd, "wb") as fh:
+                                    fh.write(original_bytes)
+                                os.replace(tmp, active_path)
+                                restored = True
+                            except Exception:
+                                try:
+                                    os.unlink(tmp)
+                                except FileNotFoundError:
+                                    pass
+                                raise
+                        else:
+                            _logger.warning(
+                                "executor-switch rollback conflict for %s; "
+                                "canonical definition changed or disappeared",
+                                body.name,
+                            )
                 except Exception:
                     _logger.exception(
                         "failed to restore agent file for %s", body.name,
                     )
-                try:
-                    if workspace.exists():
-                        ctx = ContextBuilder(org.settings, paths, slug=org.slug)
-                        await asyncio.to_thread(
-                            ctx.ensure_workspace_ready,
-                            workspace, body.name,
-                            existing.system_prompt,
-                            provider=existing.executor,
+                if restored:
+                    try:
+                        if workspace.exists():
+                            ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+                            await asyncio.to_thread(
+                                ctx.ensure_workspace_ready,
+                                workspace, body.name,
+                                existing.system_prompt,
+                                provider=existing.executor,
+                            )
+                    except Exception:
+                        _logger.exception(
+                            "failed to re-reconcile workspace for %s", body.name,
                         )
-                except Exception:
-                    _logger.exception(
-                        "failed to re-reconcile workspace for %s", body.name,
-                    )
                 raise
         # THR-095: agent.yaml executor/model sync REMOVED.
         # The .md frontmatter is the single source of truth.
@@ -1655,6 +1677,16 @@ async def set_agent_executor(
                 },
             )
 
+    # The materialization await above permits another accepted route writer.
+    # Refresh before bootstrap so it receives the latest prompt, and reject a
+    # competing executor/model change instead of silently clobbering it.
+    fresh = prompt_loader.load_agent(paths, agent_name)
+    if fresh is None:
+        raise HTTPException(status_code=404, detail={"code": "agent_not_found", "agent": agent_name})
+    if fresh.executor != existing.executor or fresh.model != existing.model:
+        raise HTTPException(status_code=409, detail={"code": "executor_switch_conflict", "agent": agent_name})
+    existing = fresh
+
     # ── Step 2: Bootstrap persistent workspace files ──
     # Run AFTER successful union but BEFORE frontmatter/audit persistence.
     # A bootstrap failure must clean up any partial files and refuse the
@@ -1715,38 +1747,36 @@ async def set_agent_executor(
     # ── Step 3: Persist the new executor frontmatter ──
     # Only reached if union materialization AND bootstrap both succeeded
     # (or no workspace exists).
-    updated = AgentDef(
-        name=existing.name,
-        team=existing.team,
-        role=existing.role,
-        executor=body.executor,  # type: ignore[arg-type]
-        allow_rules=existing.allow_rules,
-        repos=existing.repos,
-        enrolled_by=existing.enrolled_by,
-        enrolled_at_task=existing.enrolled_at_task,
-        enrolled_at=existing.enrolled_at,
-        system_prompt=existing.system_prompt,
-        description=existing.description,
-        # Model overrides are executor-specific. A real executor change
-        # returns the new executor to its CLI default; an idempotent request
-        # preserves the existing override.
-        model=None if body.executor != existing.executor else existing.model,
-    )
-    from runtime.orchestrator.agent_def import render_agent_text
-    active_path = paths.agents_dir / f"{agent_name}.md"
-    fd, tmp = tempfile.mkstemp(
-        prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
-    )
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(render_agent_text(updated))
-        os.replace(tmp, active_path)
-    except Exception:
+    # Final supported-route compare/mutate boundary: no await occurs while
+    # teams_lock is held. Atomic replace provides durable bytes, while this
+    # fresh read prevents a stale whole-definition write among ASGI writers.
+    async with org.teams_lock:
+        latest = prompt_loader.load_agent(paths, agent_name)
+        if latest is None:
+            raise HTTPException(status_code=404, detail={"code": "agent_not_found", "agent": agent_name})
+        if latest.executor != existing.executor or latest.model != existing.model:
+            raise HTTPException(status_code=409, detail={"code": "executor_switch_conflict", "agent": agent_name})
+        updated = AgentDef(
+            name=latest.name, team=latest.team, role=latest.role,
+            executor=body.executor, allow_rules=latest.allow_rules,
+            repos=latest.repos, enrolled_by=latest.enrolled_by,
+            enrolled_at_task=latest.enrolled_at_task, enrolled_at=latest.enrolled_at,
+            system_prompt=latest.system_prompt, description=latest.description,
+            model=None if body.executor != latest.executor else latest.model,
+        )
+        from runtime.orchestrator.agent_def import render_agent_text
+        active_path = paths.agents_dir / f"{agent_name}.md"
+        fd, tmp = tempfile.mkstemp(prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir))
         try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-        raise
+            with os.fdopen(fd, "w") as fh:
+                fh.write(render_agent_text(updated))
+            os.replace(tmp, active_path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
 
     after_ws = before_ws
     stale_files: list[str] = []
