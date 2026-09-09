@@ -329,9 +329,9 @@ def _observe_all_evidence_sources(
             family == "db" and trigger == f"db:{identity}:{calls[identity]}" or
             trigger == "boot" and family == "boot" or
             trigger == "sessions" and family == "sessions" or
-            trigger == "cwd" and identity.endswith(":cwd") or
-            trigger == "fd-readlink" and family == "readlink" and ":fd:" in identity or
-            trigger == "fd-next" and family == "iterator" and identity.endswith(":fd:1") or
+            trigger == f"cwd:{identity}" and family == "readlink" or
+            trigger == f"fd-readlink:{identity}" and family == "readlink" or
+            trigger == f"fd-next:{identity}" and family == "iterator" or
             trigger == "population-next" and family == "iterator" and identity.endswith(":proc:1") or
             trigger == "initial-population-open" and family == "scandir" and identity == "proc" and phase == "initial" or
             trigger == "final-population-open" and family == "scandir" and identity == "proc" and phase == "final" or
@@ -388,7 +388,9 @@ def _observe_all_evidence_sources(
                 record("START", "iterator", item_identity, phase)
                 try: item = next(value)
                 except StopIteration:
-                    record("EXHAUSTED", "iterator", kind, phase); raise
+                    # The exhausted iterator is part of the source identity:
+                    # do not collapse per-PID fd/proc exhaustion into a kind.
+                    record("EXHAUSTED", "iterator", f"{identity}:{kind}:{number}", phase); raise
                 advances = number
                 record("RETURN", "iterator", item_identity, phase); fire("iterator", item_identity, phase)
                 return item
@@ -432,7 +434,7 @@ def test_exported_collector_stops_all_source_reads_after_db_return(
     import runtime.daemon.task_scratch_evidence as subject
     evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert clock[0] > subject.SCAN_NS and "observation_timeout" in evidence.reasons
-    assert sum(event[0] == "RETURN" and event[1:4] == ("db", reader, "snapshot") for event in events) >= call, events
+    assert sum(event[0] == "RETURN" and event[1:4] == ("db", reader, "snapshot") for event in events) == call, events
     assert not [event for event in events if event[0] == "START" and event[4]], events
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
 
@@ -444,17 +446,29 @@ def test_exported_collector_unexpired_control_observes_every_source_family(
     db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
     db.insert_job(JobRecord(id="JOB-1", task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED, created_at=datetime.now(timezone.utc).isoformat()))
     db.update_task("TASK-1", blocked_on_job_ids='["JOB-1"]')
+    # Both fake PIDs are nonreferencing; this control proves every intended
+    # source remains reachable without borrowing an expiry case's fixture.
+    _proc(proc, 43)
     sessions = SessionTracker(); events, _clock = _observe_all_evidence_sources(db=db, proc=proc, sessions=sessions, monkeypatch=monkeypatch)
     import runtime.daemon.task_scratch_evidence as subject
     evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     families = {event[1] for event in events}
     assert evidence.eligible and {"db", "boot", "stat", "scandir", "iterator", "readlink", "sessions"} <= families, events
-    assert {("stat", "42", "initial"), ("stat", "42", "final"), ("scandir", "proc", "initial"), ("scandir", "proc", "final")} <= {event[1:4] for event in events}, events
-    assert any(event[0] == "EXHAUSTED" and event[2] == "proc" for event in events), events
+    observed = {event[1:4] for event in events}
+    expected = {
+        *( ("db", name, "snapshot") for name in ("list_tasks", "get_task", "get_latest_task_result", "list_jobs_db", "get_job") ),
+        *( ("stat", pid, phase) for pid in ("42", "43") for phase in ("initial", "final") ),
+        *( ("readlink", f"{pid}:{name}", "read") for pid in ("42", "43") for name in ("root", "cwd") ),
+        *( ("scandir", f"{pid}:fd", "scan") for pid in ("42", "43") ),
+        ("scandir", "proc", "initial"), ("scandir", "proc", "final"),
+        ("boot", "boot", "read"), ("sessions", "iter_active", "snapshot"),
+    }
+    assert expected <= observed, events
+    assert {("iterator", "proc:proc:3", "initial"), ("iterator", "proc:proc:3", "final")} <= observed, events
 
 
 @pytest.mark.parametrize("trigger,fds", [
-    ("cwd", 1), ("fd-next", 1), ("fd-readlink", 2),
+    ("cwd:43:cwd", 1), ("fd-next:43:fd:fd:1", 1), ("fd-readlink:43:fd:4", 2),
     ("initial-population-open", 0), ("final-population-open", 0),
     ("population-next", 0), ("final-pid-stat", 0), ("boot", 0), ("sessions", 0),
 ])
@@ -470,6 +484,10 @@ def test_exported_collector_expiry_boundaries_do_not_start_dependent_proc_reads(
     import runtime.daemon.task_scratch_evidence as subject
     evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert clock[0] > subject.SCAN_NS, (trigger, events)
+    if ":" in trigger:
+        family, identity = trigger.split(":", 1)
+        expected_family = {"cwd": "readlink", "fd-readlink": "readlink", "fd-next": "iterator"}[family]
+        assert any(event[0] == "RETURN" and event[1] == expected_family and event[2] == identity for event in events), (trigger, events)
     assert not evidence.eligible
     assert not [event for event in events if event[0] == "START" and event[4]], (trigger, events)
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
@@ -822,17 +840,23 @@ def test_zombie_sweep_keeps_current_fingerprint_flagged_without_orchestrator_the
         _sweep_org_zombies(db, now=now, uptime=31, warm_up_seconds=30)
         assert db.get_task("TASK-1").zombie_flagged_at is not None
         assert _durable_recovery_snapshot(db, "TASK-1", queue) == before
+        call_started = datetime.now(timezone.utc)
         _sweep_org_zombies(db, now=now, uptime=31, warm_up_seconds=30, orchestrator=orch)
+        call_finished = datetime.now(timezone.utc)
         after = db.get_task("TASK-1")
         after_results, after_audit = db.get_task_results("TASK-1"), db.get_audit_logs("TASK-1")
-        # The completion tail owns exactly these task fields; all other
-        # persisted task identity/lifecycle inputs survive recovery unchanged.
-        assert after.status is TaskStatus.COMPLETED
-        assert after.zombie_flagged_at is None
-        assert after.block_kind is None and after.note == "done" and after.final_output_dir is None
-        assert after.completed_at is not None and after.completed_at >= now
-        for field in ("id", "brief", "task_type", "assigned_agent", "current_session_id", "executor_pid", "last_heartbeat", "parent_task_id", "revisit_of_task_id", "blocked_on_job_ids"):
-            assert getattr(after, field) == getattr(before[0], field), field
+        # Equality is against the entire durable task record, not a selected
+        # identity allowlist.  The sole generated value is retained from the
+        # shipping write and bounded around the real consumer call.
+        assert after is not None and after.completed_at is not None
+        expected_task = before[0].model_copy(update={
+            "status": TaskStatus.COMPLETED, "zombie_flagged_at": None,
+            "block_kind": None, "note": "done", "final_output_dir": None,
+            "completed_at": after.completed_at, "updated_at": after.updated_at,
+        })
+        assert after.model_dump() == expected_task.model_dump()
+        assert now <= after.completed_at <= call_finished
+        assert call_started <= after.updated_at <= call_finished
         assert after_results == before[1] and queue.items == before[3]
         assert after_audit[:-1] == before[2]
         assert len(after_audit) == len(before[2]) + 1
@@ -841,7 +865,8 @@ def test_zombie_sweep_keeps_current_fingerprint_flagged_without_orchestrator_the
         assert cleared["action"] == "zombie_cleared"
         assert cleared["payload"] == {"reason": "zombie recovered — flag cleared"}
         assert isinstance(cleared["id"], int) and cleared["id"] > 0
-        assert isinstance(cleared["timestamp"], str) and datetime.fromisoformat(cleared["timestamp"]) >= now
+        assert isinstance(cleared["timestamp"], str)
+        assert call_started <= datetime.fromisoformat(cleared["timestamp"]) <= call_finished
     finally:
         db.close()
 
