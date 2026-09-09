@@ -5734,6 +5734,103 @@ def test_manage_agent_terminate_preflight_archive_collision_keeps_agent_active(
     assert org_state.teams.team_for_agent("dev_agent") == "engineering"
 
 
+@pytest.mark.parametrize(
+    ("fresh_state", "status_code", "code"),
+    [
+        ("missing", 404, None),
+        ("archive_collision", 409, "archive_collision"),
+        ("manager", 409, "manager_terminate_forbidden"),
+    ],
+)
+def test_manage_agent_terminate_final_lock_preflight_uses_fresh_canonical_state(
+    tmp_home, app, org_state, auth_headers, monkeypatch, fresh_state, status_code, code,
+) -> None:
+    """The final route boundary refuses facts changed after outer preflight."""
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    active = paths.agents_dir / "dev_agent.md"
+    original_snapshot = agents_mod.prompt_loader.load_agent_snapshot
+    calls = 0
+
+    def fresh_snapshot(paths_arg, name):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return original_snapshot(paths_arg, name)
+        if fresh_state == "missing":
+            active.unlink()
+        elif fresh_state == "archive_collision":
+            archive = paths.agents_dir / "_terminated" / "dev_agent.md"
+            archive.parent.mkdir(exist_ok=True)
+            archive.write_text("occupied")
+        else:
+            active.write_bytes(active.read_bytes().replace(b"role: worker", b"role: manager"))
+        return original_snapshot(paths_arg, name)
+
+    monkeypatch.setattr(agents_mod.prompt_loader, "load_agent_snapshot", fresh_snapshot)
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/orgs/alpha/agents/manage",
+        json={"action": "terminate", "name": "dev_agent", "task_id": _EH_TASK,
+              "session_id": _EH_SESSION}, headers=auth_headers,
+    )
+    assert response.status_code == status_code
+    if code is not None:
+        assert response.json()["detail"]["code"] == code
+    assert calls == 2
+    assert not org_state.db.get_audit_logs(_EH_TASK)
+
+
+def test_manage_agent_terminate_archives_worker_bytes_accepted_while_waiting_for_lock(
+    tmp_home, org_state,
+) -> None:
+    """A real winner queued first owns the lock; terminate archives its bytes."""
+    from dataclasses import replace
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", system_prompt="old worker\n")
+    paths = _paths(org_state)
+    before = prompt_loader.load_agent(paths, "dev_agent")
+    assert before is not None
+    winning_bytes = prompt_loader.render_agent_text(
+        replace(before, system_prompt="fresh worker bytes\n"),
+    ).encode()
+
+    async def exercise() -> None:
+        revision = prompt_loader.agent_revision(paths, "dev_agent")
+        assert revision is not None
+        async with org_state.teams_lock:
+            winner = asyncio.create_task(agents_mod.manage_agent(
+                "alpha", agents_mod.ManageAgentBody(
+                    action="update", name="dev_agent", task_id=_EH_TASK,
+                    session_id=_EH_SESSION, expected_revision=revision,
+                    system_prompt="fresh worker bytes\n",
+                ), org_state,
+            ))
+            await asyncio.sleep(0)
+            terminate = asyncio.create_task(agents_mod.manage_agent(
+                "alpha", agents_mod.ManageAgentBody(
+                    action="terminate", name="dev_agent", task_id=_EH_TASK,
+                    session_id=_EH_SESSION,
+                ), org_state,
+            ))
+            await asyncio.sleep(0)
+        assert await winner == {"ok": True}
+        assert await terminate == {"ok": True, "status": "terminated"}
+
+    asyncio.run(exercise())
+    active = paths.agents_dir / "dev_agent.md"
+    archived = paths.agents_dir / "_terminated" / "dev_agent.md"
+    assert not active.exists()
+    assert archived.read_bytes() == winning_bytes
+    archived_agent = prompt_loader.load_terminated_agent(paths, "dev_agent")
+    assert archived_agent is not None
+    assert archived_agent.system_prompt == "fresh worker bytes\n"
+
+
 def test_manage_agent_terminate_workspace_move_failure_rolls_back(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
@@ -5788,6 +5885,112 @@ def test_manage_agent_terminate_workspace_move_failure_rolls_back(
     assert workspace.exists()
     assert (workspace / "marker.txt").read_text() == "keep me"
     assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+
+
+@pytest.mark.parametrize("outcome", ["owned", "winner", "changed_archive", "missing_archive"])
+def test_manage_agent_terminate_workspace_failure_restores_only_owned_canonical_archive(
+    tmp_home, app, org_state, auth_headers, outcome, caplog,
+) -> None:
+    """The no-await early compensation never resurrects stale bytes."""
+    import logging
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    active = paths.agents_dir / "dev_agent.md"
+    original = active.read_bytes() + b"\n"
+    active.write_bytes(original)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    terminated = paths.agents_dir / "_terminated" / "dev_agent.md"
+
+    def fail_move(_src, _dst) -> None:
+        if outcome == "winner":
+            active.write_bytes(b"winner active\n")
+        elif outcome == "changed_archive":
+            terminated.write_bytes(b"changed archive\n")
+        elif outcome == "missing_archive":
+            terminated.unlink()
+        raise OSError("injected workspace move failure")
+
+    caplog.set_level(logging.WARNING, logger=agents_mod.__name__)
+    with patch("runtime.daemon.routes.agents._move_dir_atomically", side_effect=fail_move):
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={"action": "terminate", "name": "dev_agent", "task_id": _EH_TASK,
+                  "session_id": _EH_SESSION}, headers=auth_headers,
+        )
+    assert response.status_code == 500
+    if outcome == "owned":
+        assert active.read_bytes() == original
+        assert not terminated.exists()
+    elif outcome == "winner":
+        assert active.read_bytes() == b"winner active\n"
+        assert terminated.read_bytes() == original
+    elif outcome == "changed_archive":
+        assert not active.exists()
+        assert terminated.read_bytes() == b"changed archive\n"
+    else:
+        assert not active.exists()
+        assert not terminated.exists()
+    if outcome != "owned":
+        assert any("workspace rollback conflict" in row.message for row in caplog.records)
+
+
+@pytest.mark.parametrize("outcome", ["owned", "winner", "changed_archive", "missing_archive"])
+def test_manage_agent_terminate_cleanup_failure_restores_only_owned_canonical_archive(
+    tmp_home, app, org_state, auth_headers, outcome, caplog,
+) -> None:
+    """Late cleanup compensation applies the same exact-byte ownership rule."""
+    import logging
+    from runtime.daemon.routes import agents as agents_mod
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent")
+    paths = _paths(org_state)
+    active = paths.agents_dir / "dev_agent.md"
+    original = active.read_bytes() + b"\n"
+    active.write_bytes(original)
+    workspace = paths.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True)
+    (workspace / "marker").write_text("workspace")
+    terminated = paths.agents_dir / "_terminated" / "dev_agent.md"
+
+    def fail_cleanup(*_args, **_kwargs) -> None:
+        if outcome == "winner":
+            active.write_bytes(b"winner active\n")
+        elif outcome == "changed_archive":
+            terminated.write_bytes(b"changed archive\n")
+        elif outcome == "missing_archive":
+            terminated.unlink()
+        raise RuntimeError("injected cleanup failure")
+
+    caplog.set_level(logging.WARNING, logger=agents_mod.__name__)
+    with patch.object(org_state.db, "terminate_agent_cleanups", side_effect=fail_cleanup):
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/orgs/alpha/agents/manage",
+            json={"action": "terminate", "name": "dev_agent", "task_id": _EH_TASK,
+                  "session_id": _EH_SESSION}, headers=auth_headers,
+        )
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "terminate_cleanup_failed"
+    assert workspace.exists() and (workspace / "marker").read_text() == "workspace"
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+    if outcome == "owned":
+        assert active.read_bytes() == original
+        assert not terminated.exists()
+    elif outcome == "winner":
+        assert active.read_bytes() == b"winner active\n"
+        assert terminated.read_bytes() == original
+    elif outcome == "changed_archive":
+        assert not active.exists()
+        assert terminated.read_bytes() == b"changed archive\n"
+    else:
+        assert not active.exists()
+        assert not terminated.exists()
+    if outcome != "owned":
+        assert any("cleanup rollback conflict" in row.message for row in caplog.records)
 
 
 def test_manage_agent_terminate_cleanup_failure_rolls_back_everything(
