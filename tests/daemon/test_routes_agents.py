@@ -5740,46 +5740,98 @@ def test_manage_agent_terminate_preflight_archive_collision_keeps_agent_active(
         ("missing", 404, None),
         ("archive_collision", 409, "archive_collision"),
         ("manager", 409, "manager_terminate_forbidden"),
+        ("workspace_collision", 409, "archive_collision"),
+        ("workspace_file", 500, "workspace_archive_failed"),
+        ("workspace_not_writable", 500, "workspace_archive_failed"),
+        ("workspace_new", 200, None),
     ],
 )
 def test_manage_agent_terminate_final_lock_preflight_uses_fresh_canonical_state(
     tmp_home, app, org_state, auth_headers, monkeypatch, fresh_state, status_code, code,
 ) -> None:
-    """The final route boundary refuses facts changed after outer preflight."""
+    """Final preflight reads facts changed while terminate awaits teams_lock.
+
+    These controlled filesystem changes model states with no shipping writer.
+    They occur only after the shipping terminate coroutine has entered and is
+    awaiting its real lock; the test does not depend on a snapshot-read seam.
+    """
     from runtime.daemon.routes import agents as agents_mod
 
     _activate_eh_session(org_state)
     _seed_active_agent(org_state, "dev_agent")
     paths = _paths(org_state)
     active = paths.agents_dir / "dev_agent.md"
-    original_snapshot = agents_mod.prompt_loader.load_agent_snapshot
-    calls = 0
+    workspace = paths.workspaces_dir / "dev_agent"
+    archive = paths.agents_dir / "_terminated" / "dev_agent.md"
+    archived_workspace = paths.workspaces_dir / "_terminated" / "dev_agent"
+    entered_lock = asyncio.Event()
+    actual_lock = org_state.teams_lock
 
-    def fresh_snapshot(paths_arg, name):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return original_snapshot(paths_arg, name)
-        if fresh_state == "missing":
-            active.unlink()
-        elif fresh_state == "archive_collision":
-            archive = paths.agents_dir / "_terminated" / "dev_agent.md"
-            archive.parent.mkdir(exist_ok=True)
-            archive.write_text("occupied")
-        else:
-            active.write_bytes(active.read_bytes().replace(b"role: worker", b"role: manager"))
-        return original_snapshot(paths_arg, name)
+    class ObservedLock:
+        async def __aenter__(self):
+            entered_lock.set()
+            await actual_lock.acquire()
+            return self
 
-    monkeypatch.setattr(agents_mod.prompt_loader, "load_agent_snapshot", fresh_snapshot)
-    response = TestClient(app, raise_server_exceptions=False).post(
-        "/api/v1/orgs/alpha/agents/manage",
-        json={"action": "terminate", "name": "dev_agent", "task_id": _EH_TASK,
-              "session_id": _EH_SESSION}, headers=auth_headers,
-    )
+        async def __aexit__(self, *_args):
+            actual_lock.release()
+
+    async def exercise() -> dict:
+        org_state.teams_lock = ObservedLock()
+        await actual_lock.acquire()
+        try:
+            terminate = asyncio.create_task(agents_mod.manage_agent(
+                "alpha", agents_mod.ManageAgentBody(
+                    action="terminate", name="dev_agent", task_id=_EH_TASK,
+                    session_id=_EH_SESSION,
+                ), org_state,
+            ))
+            await asyncio.wait_for(entered_lock.wait(), timeout=1)
+            if fresh_state == "missing":
+                active.unlink()
+            elif fresh_state == "archive_collision":
+                archive.parent.mkdir(exist_ok=True)
+                archive.write_bytes(b"occupied archive\n")
+            elif fresh_state == "manager":
+                active.write_bytes(active.read_bytes().replace(b"role: worker", b"role: manager"))
+            elif fresh_state == "workspace_collision":
+                workspace.mkdir(parents=True)
+                archived_workspace.mkdir(parents=True)
+            elif fresh_state == "workspace_file":
+                workspace.parent.mkdir(parents=True, exist_ok=True)
+                workspace.write_bytes(b"not a workspace directory\n")
+            elif fresh_state == "workspace_not_writable":
+                workspace.mkdir(parents=True)
+                monkeypatch.setattr(agents_mod.os, "access", lambda *_args: False)
+            else:
+                workspace.mkdir(parents=True)
+                (workspace / "fresh-marker").write_bytes(b"fresh workspace\n")
+        finally:
+            actual_lock.release()
+        return await asyncio.wait_for(terminate, timeout=1)
+
+    if fresh_state == "workspace_new":
+        assert asyncio.run(exercise()) == {"ok": True, "status": "terminated"}
+        assert archive.exists()
+        assert (archived_workspace / "fresh-marker").read_bytes() == b"fresh workspace\n"
+        return
+
+    with pytest.raises(Exception) as error:
+        asyncio.run(exercise())
+    response = error.value
     assert response.status_code == status_code
     if code is not None:
-        assert response.json()["detail"]["code"] == code
-    assert calls == 2
+        assert response.detail["code"] == code
+    assert prompt_loader.load_agent(paths, "dev_agent") is not None or fresh_state == "missing"
+    assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+    if fresh_state == "archive_collision":
+        assert archive.read_bytes() == b"occupied archive\n"
+    elif fresh_state == "workspace_collision":
+        assert workspace.is_dir() and archived_workspace.is_dir()
+    elif fresh_state == "workspace_file":
+        assert workspace.read_bytes() == b"not a workspace directory\n"
+    elif fresh_state == "workspace_not_writable":
+        assert workspace.is_dir() and not archived_workspace.exists()
     assert not org_state.db.get_audit_logs(_EH_TASK)
 
 
@@ -5802,7 +5854,25 @@ def test_manage_agent_terminate_archives_worker_bytes_accepted_while_waiting_for
     async def exercise() -> None:
         revision = prompt_loader.agent_revision(paths, "dev_agent")
         assert revision is not None
-        async with org_state.teams_lock:
+        actual_lock = org_state.teams_lock
+        winner_waiting = asyncio.Event()
+        terminate_waiting = asyncio.Event()
+        entries = 0
+
+        class ObservedLock:
+            async def __aenter__(self):
+                nonlocal entries
+                entries += 1
+                (winner_waiting if entries == 1 else terminate_waiting).set()
+                await actual_lock.acquire()
+                return self
+
+            async def __aexit__(self, *_args):
+                actual_lock.release()
+
+        org_state.teams_lock = ObservedLock()
+        await actual_lock.acquire()
+        try:
             winner = asyncio.create_task(agents_mod.manage_agent(
                 "alpha", agents_mod.ManageAgentBody(
                     action="update", name="dev_agent", task_id=_EH_TASK,
@@ -5810,16 +5880,18 @@ def test_manage_agent_terminate_archives_worker_bytes_accepted_while_waiting_for
                     system_prompt="fresh worker bytes\n",
                 ), org_state,
             ))
-            await asyncio.sleep(0)
+            await asyncio.wait_for(winner_waiting.wait(), timeout=1)
             terminate = asyncio.create_task(agents_mod.manage_agent(
                 "alpha", agents_mod.ManageAgentBody(
                     action="terminate", name="dev_agent", task_id=_EH_TASK,
                     session_id=_EH_SESSION,
                 ), org_state,
             ))
-            await asyncio.sleep(0)
-        assert await winner == {"ok": True}
-        assert await terminate == {"ok": True, "status": "terminated"}
+            await asyncio.wait_for(terminate_waiting.wait(), timeout=1)
+        finally:
+            actual_lock.release()
+        assert await asyncio.wait_for(winner, timeout=1) == {"ok": True}
+        assert await asyncio.wait_for(terminate, timeout=1) == {"ok": True, "status": "terminated"}
 
     asyncio.run(exercise())
     active = paths.agents_dir / "dev_agent.md"
@@ -5829,6 +5901,8 @@ def test_manage_agent_terminate_archives_worker_bytes_accepted_while_waiting_for
     archived_agent = prompt_loader.load_terminated_agent(paths, "dev_agent")
     assert archived_agent is not None
     assert archived_agent.system_prompt == "fresh worker bytes\n"
+    actions = [row["action"] for row in org_state.db.get_audit_logs(_EH_TASK)]
+    assert actions == ["agent_managed", "agent_managed"]
 
 
 def test_manage_agent_terminate_workspace_move_failure_rolls_back(
@@ -5885,6 +5959,7 @@ def test_manage_agent_terminate_workspace_move_failure_rolls_back(
     assert workspace.exists()
     assert (workspace / "marker.txt").read_text() == "keep me"
     assert org_state.teams.team_for_agent("dev_agent") == "engineering"
+    assert not org_state.db.get_audit_logs(_EH_TASK)
 
 
 @pytest.mark.parametrize("outcome", ["owned", "winner", "changed_archive", "missing_archive"])

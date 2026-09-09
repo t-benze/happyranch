@@ -1026,7 +1026,11 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
 
             # Archive the filesystem identity FIRST. If this fails, no DB or
             # team mutation has occurred yet, so the agent remains fully active.
-            # rename (rather than replace) refuses a newly occupied archive.
+            # POSIX rename overwrites an existing destination.  The preceding
+            # final preflight is the supported daemon guarantee here: every
+            # in-process route writer is serialized by teams_lock and this
+            # archive/cleanup segment has no await.  It does not make a claim
+            # about an external same-UID or multiprocess filesystem writer.
             os.rename(active_path, terminated_agent_path)
             if workspace_exists:
                 try:
