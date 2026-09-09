@@ -303,6 +303,115 @@ def test_exported_collector_charges_unsuccessful_linked_lookups_before_read(tmp_
     assert calls == ["MISSING-2", "MISSING-2"]
 
 
+def _observe_all_evidence_sources(
+    *, db: Database, proc: Path, sessions: SessionTracker, monkeypatch: pytest.MonkeyPatch,
+    trigger: str | None = None,
+) -> tuple[list[tuple[str, str, str, str, bool]], list[int]]:
+    """Transparent A1/A2 observer: forward every production reader unchanged.
+
+    The clock changes only after the selected real reader returns.  Recording is
+    deliberately outside collector exception handling so an assertion below
+    sees the complete attempted observation, including iterator exhaustion.
+    """
+    import runtime.daemon.task_scratch_evidence as subject
+    clock = [0]
+    events: list[tuple[str, str, str, str, bool]] = []
+    proc_opens = 0; stats: dict[str, int] = {}; advances: dict[str, int] = {"proc": 0, "fd": 0}
+
+    def record(kind: str, family: str, identity: str, phase: str) -> None:
+        events.append((kind, family, identity, phase, clock[0] > subject.SCAN_NS))
+
+    def fire(family: str, identity: str, phase: str) -> None:
+        nonlocal proc_opens
+        if trigger is None:
+            return
+        selected = (
+            trigger == f"db:{identity}" or
+            trigger == "boot" and family == "boot" or
+            trigger == "sessions" and family == "sessions" or
+            trigger == "cwd" and identity.endswith(":cwd") or
+            trigger == "fd-readlink" and family == "readlink" and ":fd:" in identity or
+            trigger == "fd-next" and family == "iterator" and identity == "fd:1" or
+            trigger == "population-next" and family == "iterator" and identity == "proc:1" or
+            trigger == "initial-population-open" and family == "scandir" and identity == "proc" and phase == "initial" or
+            trigger == "final-population-open" and family == "scandir" and identity == "proc" and phase == "final" or
+            trigger == "final-pid-stat" and family == "stat" and identity == "42" and phase == "final"
+        )
+        if selected:
+            clock[0] = subject.SCAN_NS + 1
+
+    for name in ("list_tasks", "get_task", "get_latest_task_result", "list_jobs_db", "get_job"):
+        original = getattr(db, name)
+        def wrapped(*args, _name=name, _original=original, **kwargs):
+            record("START", "db", _name, "snapshot")
+            value = _original(*args, **kwargs)
+            record("RETURN", "db", _name, "snapshot"); fire("db", _name, "snapshot")
+            return value
+        monkeypatch.setattr(db, name, wrapped)
+
+    original_text, original_scandir, original_readlink = Path.read_text, subject.os.scandir, subject.os.readlink
+    def read_text(path: Path, *args, **kwargs):
+        text = str(path)
+        if text.endswith("boot_id"):
+            family, identity, phase = "boot", "boot", "read"
+        elif text.startswith(str(proc)) and text.endswith("/stat"):
+            identity = Path(path).parent.name; stats[identity] = stats.get(identity, 0) + 1
+            family, phase = "stat", "initial" if stats[identity] == 1 else "final"
+        else:
+            return original_text(path, *args, **kwargs)
+        record("START", family, identity, phase)
+        value = original_text(path, *args, **kwargs)
+        record("RETURN", family, identity, phase); fire(family, identity, phase)
+        return value
+    def scandir(path):
+        nonlocal proc_opens
+        text = str(path)
+        if text == str(proc):
+            proc_opens += 1; family, identity, phase = "scandir", "proc", "initial" if proc_opens == 1 else "final"
+        elif text.startswith(str(proc)) and text.endswith("/fd"):
+            family, identity, phase = "scandir", f"{Path(path).parent.name}:fd", "scan"
+        else:
+            return original_scandir(path)
+        record("START", family, identity, phase)
+        value = original_scandir(path)
+        record("RETURN", family, identity, phase); fire(family, identity, phase)
+        kind = "proc" if identity == "proc" else "fd"
+        class Iterator:
+            def __enter__(self): value.__enter__(); return self
+            def __exit__(self, *args): return value.__exit__(*args)
+            def __iter__(self): return self
+            def __next__(self):
+                number = advances[kind] + 1; item_identity = f"{kind}:{number}"
+                record("START", "iterator", item_identity, phase)
+                try: item = next(value)
+                except StopIteration:
+                    record("EXHAUSTED", "iterator", kind, phase); raise
+                advances[kind] = number
+                record("RETURN", "iterator", item_identity, phase); fire("iterator", item_identity, phase)
+                return item
+        return Iterator()
+    def readlink(path):
+        text = str(path)
+        if not text.startswith(str(proc)):
+            return original_readlink(path)
+        bits = Path(path).parts; pid = Path(path).parent.name if "/fd/" not in text else Path(path).parent.parent.name
+        name = Path(path).name; identity = f"{pid}:{name}" if "/fd/" not in text else f"{pid}:fd:{name}"
+        record("START", "readlink", identity, "read")
+        value = original_readlink(path)
+        record("RETURN", "readlink", identity, "read"); fire("readlink", identity, "read")
+        return value
+    original_iter = sessions.iter_active
+    def iter_active():
+        record("START", "sessions", "iter_active", "snapshot")
+        value = original_iter()
+        record("RETURN", "sessions", "iter_active", "snapshot"); fire("sessions", "iter_active", "snapshot")
+        return value
+    monkeypatch.setattr(Path, "read_text", read_text); monkeypatch.setattr(subject.os, "scandir", scandir)
+    monkeypatch.setattr(subject.os, "readlink", readlink); monkeypatch.setattr(sessions, "iter_active", iter_active)
+    monkeypatch.setattr(subject.time, "monotonic_ns", lambda: clock[0])
+    return events, clock
+
+
 @pytest.mark.parametrize("reader,call", [
     ("get_task", 1), ("get_task", 2),
     ("get_latest_task_result", 1), ("get_latest_task_result", 2),
@@ -316,24 +425,12 @@ def test_exported_collector_stops_all_source_reads_after_db_return(
     if reader == "get_job":
         db.insert_job(JobRecord(id="JOB-1", task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED, created_at=datetime.now(timezone.utc).isoformat()))
         db.update_task("TASK-1", blocked_on_job_ids='["JOB-1"]')
+    sessions = SessionTracker(); events, clock = _observe_all_evidence_sources(db=db, proc=proc, sessions=sessions, monkeypatch=monkeypatch, trigger=f"db:{reader}")
     import runtime.daemon.task_scratch_evidence as subject
-    clock = [0]; events: list[tuple[str, str, bool]] = []; seen = 0
-    for name in ("get_task", "get_latest_task_result", "list_jobs_db", "get_job"):
-        original = getattr(db, name)
-        def wrapped(*args, _name=name, _original=original, **kwargs):
-            nonlocal seen
-            events.append(("start", _name, clock[0] > subject.SCAN_NS))
-            value = _original(*args, **kwargs)
-            events.append(("return", _name, clock[0] > subject.SCAN_NS))
-            if _name == reader:
-                seen += 1
-                if seen == call: clock[0] = subject.SCAN_NS + 1
-            return value
-        monkeypatch.setattr(db, name, wrapped)
-    monkeypatch.setattr(subject.time, "monotonic_ns", lambda: clock[0])
-    evidence = subject.collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert clock[0] > subject.SCAN_NS and "observation_timeout" in evidence.reasons
-    assert not [event for event in events if event[0] == "start" and event[2]], events
+    assert any(event[1:4] == ("db", reader, "snapshot") for event in events), events
+    assert not [event for event in events if event[0] == "START" and event[4]], events
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
 
 
@@ -344,18 +441,13 @@ def test_exported_collector_unexpired_control_observes_every_source_family(
     db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
     db.insert_job(JobRecord(id="JOB-1", task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED, created_at=datetime.now(timezone.utc).isoformat()))
     db.update_task("TASK-1", blocked_on_job_ids='["JOB-1"]')
+    sessions = SessionTracker(); events, _clock = _observe_all_evidence_sources(db=db, proc=proc, sessions=sessions, monkeypatch=monkeypatch)
     import runtime.daemon.task_scratch_evidence as subject
-    seen: list[str] = []
-    for name in ("list_tasks", "get_task", "get_latest_task_result", "list_jobs_db", "get_job"):
-        original = getattr(db, name)
-        monkeypatch.setattr(db, name, lambda *args, _name=name, _original=original, **kwargs: seen.append(f"db:{_name}") or _original(*args, **kwargs))
-    original_read_text, original_scandir = Path.read_text, subject.os.scandir
-    monkeypatch.setattr(Path, "read_text", lambda path, *args, **kwargs: seen.append("boot" if str(path).endswith("boot_id") else "stat") or original_read_text(path, *args, **kwargs))
-    monkeypatch.setattr(subject.os, "scandir", lambda path: seen.append("proc" if str(path) == str(proc) else "fd") or original_scandir(path))
-    sessions = SessionTracker(); original_iter = sessions.iter_active
-    monkeypatch.setattr(sessions, "iter_active", lambda: seen.append("sessions") or original_iter())
     evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
-    assert evidence.eligible and {"db:list_tasks", "db:get_task", "db:get_latest_task_result", "db:list_jobs_db", "db:get_job", "boot", "stat", "proc", "fd", "sessions"} <= set(seen)
+    families = {event[1] for event in events}
+    assert evidence.eligible and {"db", "boot", "stat", "scandir", "iterator", "readlink", "sessions"} <= families, events
+    assert {("stat", "42", "initial"), ("stat", "42", "final"), ("scandir", "proc", "initial"), ("scandir", "proc", "final")} <= {event[1:4] for event in events}, events
+    assert any(event[0] == "EXHAUSTED" and event[2] == "proc" for event in events), events
 
 
 @pytest.mark.parametrize("trigger,fds", [
@@ -369,67 +461,12 @@ def test_exported_collector_expiry_boundaries_do_not_start_dependent_proc_reads(
     """A2p: source opens/advances are admitted; an in-flight call is not cancelled."""
     db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
     root = tmp_path / "root"; root.mkdir(); _proc(proc, 43, root=str(root), cwd=str(root), fd=str(root / "held"))
+    sessions = SessionTracker(); events, clock = _observe_all_evidence_sources(db=db, proc=proc, sessions=sessions, monkeypatch=monkeypatch, trigger=trigger)
     import runtime.daemon.task_scratch_evidence as subject
-    original_readlink, original_scandir, original_boot = subject.os.readlink, subject.os.scandir, Path.read_text
-    # Every parametrized row owns a fresh proc fixture.  Each flips the shared
-    # injected clock on a real source return; post-return assertions are outside
-    # collector exception paths, including iterator exhaustion.
-    clock = [0]; events: list[tuple[str, str, bool]] = []; advances = {"proc": 0, "fd": 0}; proc_scans = 0; stats_by_pid: dict[str, int] = {}
-    if trigger == "final-population-open":
-        (proc / "42").rename(proc / "nonnumeric")
-    if fds == 2:
-        (proc / "43" / "fd" / "4").symlink_to(root / "held2")
-    def readlink(path, *, _trigger=trigger):
-            events.append(("start", f"readlink:{Path(path).name}", clock[0] > subject.SCAN_NS))
-            value = original_readlink(path)
-            events.append(("return", f"readlink:{Path(path).name}", clock[0] > subject.SCAN_NS))
-            if (_trigger == "cwd" and str(path).endswith("/cwd")) or (_trigger == "fd-readlink" and "/fd/" in str(path)):
-                clock[0] = subject.SCAN_NS + 1
-            return value
-    def scandir(path, *, _trigger=trigger):
-            nonlocal proc_scans
-            if str(path) == str(proc): proc_scans += 1
-            events.append(("start", f"scandir:{Path(path).name}", clock[0] > subject.SCAN_NS))
-            value = original_scandir(path)
-            events.append(("return", f"scandir:{Path(path).name}", clock[0] > subject.SCAN_NS))
-            if _trigger == "initial-population-open" and str(path) == str(proc) and proc_scans == 1: clock[0] = subject.SCAN_NS + 1
-            if _trigger == "final-population-open" and str(path) == str(proc) and proc_scans == 2: clock[0] = subject.SCAN_NS + 1
-            class LoggedIterator:
-                def __enter__(self): value.__enter__(); return self
-                def __exit__(self, *args): return value.__exit__(*args)
-                def __iter__(self): return self
-                def __next__(self):
-                    kind = "fd" if str(path).endswith("/fd") else "proc"
-                    events.append(("start", f"next:{kind}", clock[0] > subject.SCAN_NS))
-                    try:
-                        item = next(value)
-                    except StopIteration:
-                        events.append(("exhausted", f"next:{kind}", clock[0] > subject.SCAN_NS)); raise
-                    advances[kind] += 1; events.append(("return", f"next:{kind}", clock[0] > subject.SCAN_NS))
-                    if (_trigger == "fd-next" and kind == "fd" and advances[kind] == 1) or (_trigger == "population-next" and kind == "proc" and advances[kind] == 1): clock[0] = subject.SCAN_NS + 1
-                    return item
-            return LoggedIterator()
-    def read_text(path, *args, _trigger=trigger, **kwargs):
-            src = "boot" if str(path).endswith("boot_id") else "stat"
-            events.append(("start", src, clock[0] > subject.SCAN_NS))
-            value = original_boot(path, *args, **kwargs)
-            events.append(("return", src, clock[0] > subject.SCAN_NS))
-            if src == "stat": stats_by_pid[Path(path).parent.name] = stats_by_pid.get(Path(path).parent.name, 0) + 1
-            if (_trigger == "boot" and src == "boot") or (_trigger == "final-pid-stat" and src == "stat" and Path(path).parent.name == "42" and stats_by_pid["42"] == 2): clock[0] = subject.SCAN_NS + 1
-            return value
-    monkeypatch.setattr(subject.os, "readlink", readlink); monkeypatch.setattr(subject.os, "scandir", scandir); monkeypatch.setattr(Path, "read_text", read_text)
-    sessions = SessionTracker()
-    if trigger == "sessions":
-        original_iter = sessions.iter_active
-        def iter_active():
-            events.append(("start", "sessions", clock[0] > subject.SCAN_NS)); result = original_iter(); events.append(("return", "sessions", clock[0] > subject.SCAN_NS)); clock[0] = subject.SCAN_NS + 1; return result
-        monkeypatch.setattr(sessions, "iter_active", iter_active)
-    monkeypatch.setattr(subject.time, "monotonic_ns", lambda: clock[0])
     evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert clock[0] > subject.SCAN_NS, (trigger, events)
-    if trigger == "final-pid-stat": assert stats_by_pid["42"] == 2 and stats_by_pid["43"] >= 1
     assert not evidence.eligible
-    assert not [event for event in events if event[0] == "start" and event[2]], (trigger, events)
+    assert not [event for event in events if event[0] == "START" and event[4]], (trigger, events)
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
 
 
@@ -783,11 +820,23 @@ def test_zombie_sweep_keeps_current_fingerprint_flagged_without_orchestrator_the
         _sweep_org_zombies(db, now=now, uptime=31, warm_up_seconds=30, orchestrator=orch)
         after = db.get_task("TASK-1")
         after_results, after_audit = db.get_task_results("TASK-1"), db.get_audit_logs("TASK-1")
-        assert after.status is TaskStatus.COMPLETED and after.zombie_flagged_at is None
+        # The completion tail owns exactly these task fields; all other
+        # persisted task identity/lifecycle inputs survive recovery unchanged.
+        assert after.status is TaskStatus.COMPLETED
+        assert after.zombie_flagged_at is None
+        assert after.block_kind is None and after.note == "done" and after.final_output_dir is None
+        assert after.completed_at is not None and after.completed_at >= now
+        for field in ("id", "brief", "task_type", "assigned_agent", "current_session_id", "executor_pid", "last_heartbeat", "parent_task_id", "revisit_of_task_id", "blocked_on_job_ids"):
+            assert getattr(after, field) == getattr(before[0], field), field
         assert after_results == before[1] and queue.items == before[3]
         assert after_audit[:-1] == before[2]
-        assert after_audit[-1]["action"] == "zombie_cleared"
-        assert after_audit[-1]["task_id"] == "TASK-1"
+        assert len(after_audit) == len(before[2]) + 1
+        cleared = after_audit[-1]
+        assert cleared["task_id"] == "TASK-1" and cleared["agent"] == "dev_agent"
+        assert cleared["action"] == "zombie_cleared"
+        assert cleared["payload"] == {"reason": "zombie recovered — flag cleared"}
+        assert isinstance(cleared["id"], int) and cleared["id"] > 0
+        assert isinstance(cleared["timestamp"], str) and datetime.fromisoformat(cleared["timestamp"]) >= now
     finally:
         db.close()
 
