@@ -321,6 +321,25 @@ def test_exported_collector_stops_all_source_reads_after_db_return(
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
 
 
+def test_exported_collector_unexpired_control_observes_every_source_family(
+    tmp_path: Path, monkeypatch, evidence_sources,
+) -> None:
+    """A1p control: forwarding instrumentation reaches DB, boot, proc and sessions."""
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    import runtime.daemon.task_scratch_evidence as subject
+    seen: list[str] = []
+    for name in ("list_tasks", "get_task", "get_latest_task_result", "list_jobs_db"):
+        original = getattr(db, name)
+        monkeypatch.setattr(db, name, lambda *args, _name=name, _original=original, **kwargs: seen.append(f"db:{_name}") or _original(*args, **kwargs))
+    original_read_text, original_scandir = Path.read_text, subject.os.scandir
+    monkeypatch.setattr(Path, "read_text", lambda path, *args, **kwargs: seen.append("boot" if str(path).endswith("boot_id") else "stat") or original_read_text(path, *args, **kwargs))
+    monkeypatch.setattr(subject.os, "scandir", lambda path: seen.append("proc" if str(path) == str(proc) else "fd") or original_scandir(path))
+    sessions = SessionTracker(); original_iter = sessions.iter_active
+    monkeypatch.setattr(sessions, "iter_active", lambda: seen.append("sessions") or original_iter())
+    evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert evidence.eligible and {"db:list_tasks", "db:get_task", "db:get_latest_task_result", "db:list_jobs_db", "boot", "stat", "proc", "fd", "sessions"} <= set(seen)
+
+
 @pytest.mark.parametrize("trigger,fds", [
     ("cwd", 1), ("fd-next", 1), ("fd-readlink", 2),
     ("initial-population-open", 0), ("final-population-open", 0),
@@ -337,7 +356,7 @@ def test_exported_collector_expiry_boundaries_do_not_start_dependent_proc_reads(
     # Every parametrized row owns a fresh proc fixture.  Each flips the shared
     # injected clock on a real source return; post-return assertions are outside
     # collector exception paths, including iterator exhaustion.
-    clock = [0]; events: list[tuple[str, str, bool]] = []; advances = {"proc": 0, "fd": 0}; proc_scans = 0; stats = 0
+    clock = [0]; events: list[tuple[str, str, bool]] = []; advances = {"proc": 0, "fd": 0}; proc_scans = 0; stats_by_pid: dict[str, int] = {}
     if trigger == "final-population-open":
         (proc / "42").rename(proc / "nonnumeric")
     if fds == 2:
@@ -373,13 +392,12 @@ def test_exported_collector_expiry_boundaries_do_not_start_dependent_proc_reads(
                     return item
             return LoggedIterator()
     def read_text(path, *args, _trigger=trigger, **kwargs):
-            nonlocal stats
             src = "boot" if str(path).endswith("boot_id") else "stat"
             events.append(("start", src, clock[0] > subject.SCAN_NS))
             value = original_boot(path, *args, **kwargs)
             events.append(("return", src, clock[0] > subject.SCAN_NS))
-            if src == "stat": stats += 1
-            if (_trigger == "boot" and src == "boot") or (_trigger == "final-pid-stat" and src == "stat" and stats == 2): clock[0] = subject.SCAN_NS + 1
+            if src == "stat": stats_by_pid[Path(path).parent.name] = stats_by_pid.get(Path(path).parent.name, 0) + 1
+            if (_trigger == "boot" and src == "boot") or (_trigger == "final-pid-stat" and src == "stat" and Path(path).parent.name == "42" and stats_by_pid["42"] == 2): clock[0] = subject.SCAN_NS + 1
             return value
     monkeypatch.setattr(subject.os, "readlink", readlink); monkeypatch.setattr(subject.os, "scandir", scandir); monkeypatch.setattr(Path, "read_text", read_text)
     sessions = SessionTracker()
@@ -391,6 +409,7 @@ def test_exported_collector_expiry_boundaries_do_not_start_dependent_proc_reads(
     monkeypatch.setattr(subject.time, "monotonic_ns", lambda: clock[0])
     evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert clock[0] > subject.SCAN_NS, (trigger, events)
+    if trigger == "final-pid-stat": assert stats_by_pid["42"] == 2 and stats_by_pid["43"] >= 1
     assert not evidence.eligible
     assert not [event for event in events if event[0] == "start" and event[2]], (trigger, events)
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
@@ -496,6 +515,16 @@ def test_exported_collector_complete_zero_is_eligible(tmp_path: Path, evidence_s
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (0, 0, 0)
 
 
+def test_exported_collector_combined_fake_proc_counts_are_exact_and_ineligible(tmp_path: Path, evidence_sources) -> None:
+    """C3: synthetic proc sources retain the exact combined (1, 1, 1) evidence."""
+    db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    root = tmp_path / "root"; root.mkdir(); _proc(proc, 43, root=str(root), cwd=str(root), fd=str(root / "held"))
+    evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
+    assert not evidence.eligible
+    assert {"process_root_reference", "process_cwd_reference", "open_fd_reference"} <= set(evidence.reasons)
+    assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (1, 1, 1)
+
+
 def test_exported_collector_unreadable_fd_is_unavailable(tmp_path: Path, monkeypatch, evidence_sources) -> None:
     """C3 #73: test-owned permission ambiguity is unavailable, never a zero."""
     db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED)); root = tmp_path / "root"; root.mkdir(); _proc(proc, 43)
@@ -544,19 +573,21 @@ def test_cleared_session_with_live_executor_pid_is_ineligible(tmp_path: Path) ->
     assert "executor_pid_unavailable" in collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0).reasons
 
 
-def test_exported_collector_detects_pid_disappearance_identity_flip_and_session_transition(tmp_path: Path, monkeypatch, evidence_sources) -> None:
+@pytest.mark.parametrize("change", ["pid", "session"])
+def test_exported_collector_independently_detects_pid_identity_flip_and_session_transition(tmp_path: Path, monkeypatch, evidence_sources, change: str) -> None:
     """C1 #27/#31: final OS and session observations are independent evidence."""
     db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED)); db.update_task("TASK-1", executor_pid=42)
     import runtime.daemon.task_scratch_evidence as subject
     sessions = SessionTracker(); original_scan = subject._scan
     def change_after_initial(*args, **kwargs):
         result = original_scan(*args, **kwargs)
-        (proc / "42/stat").write_text("42 (agent) S 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 10 0")
-        sessions.set_active("TASK-1", "dev_agent", "later")
+        if change == "pid": (proc / "42/stat").write_text("42 (agent) S 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 10 0")
+        else: sessions.set_active("TASK-1", "dev_agent", "later")
         return result
     monkeypatch.setattr(subject, "_scan", change_after_initial)
     changed = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
-    assert {"sessions_changed_during_collection", "executor_pid_live_or_ambiguous", "executor_identity_changed_during_collection", "process_population_changed_during_collection"} <= set(changed.reasons)
+    expected = {"executor_pid_live_or_ambiguous", "executor_identity_changed_during_collection", "process_population_changed_during_collection"} if change == "pid" else {"sessions_changed_during_collection", "executor_pid_live_or_ambiguous"}
+    assert expected <= set(changed.reasons)
     sessions.clear("TASK-1", "dev_agent")
     monkeypatch.setattr(subject, "_scan", lambda *args, **kwargs: original_scan(*args, **kwargs))
     original_population = subject._population; calls = 0
@@ -602,7 +633,7 @@ def test_exported_collector_task_and_job_n_plus_one_caps_are_unavailable(tmp_pat
     assert "job_scan_capped" in job_capped.reasons
 
 
-@pytest.mark.parametrize("mutation", ["result", "job_identity", "parent", "descendant"])
+@pytest.mark.parametrize("mutation", ["result", "job_identity", "job_insertion", "parent", "descendant"])
 def test_exported_collector_rechecks_late_durable_mutations(tmp_path: Path, monkeypatch, evidence_sources, mutation: str) -> None:
     """C2 #50/#52-54: a post-scan durable mutation invalidates the observation."""
     db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
@@ -616,6 +647,7 @@ def test_exported_collector_rechecks_late_durable_mutations(tmp_path: Path, monk
         elif mutation == "job_identity":
             db._conn.execute("UPDATE jobs SET title = ? WHERE id = ?", ("after", "JOB-fixed"))
             db._conn.commit()
+        elif mutation == "job_insertion": db.insert_job(JobRecord(id="JOB-late", task_id="TASK-1", agent_name="dev_agent", title="late", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED, created_at=datetime.now(timezone.utc).isoformat()))
         elif mutation == "descendant": db.insert_task(_task("TASK-late", TaskStatus.PENDING, parent="TASK-1"))
         else:
             db._conn.execute("UPDATE tasks SET parent_task_id = ? WHERE id = ?", ("TASK-late", "TASK-1"))
@@ -714,8 +746,11 @@ def test_zombie_sweep_keeps_current_fingerprint_flagged_without_orchestrator_the
         assert db.get_task("TASK-1").zombie_flagged_at is not None
         assert (db.get_task_results("TASK-1"), db.get_audit_logs("TASK-1")) == before
         _sweep_org_zombies(db, now=now, uptime=31, warm_up_seconds=30, orchestrator=_recovery_orchestrator(db))
-        assert db.get_task("TASK-1").status is TaskStatus.COMPLETED
-        assert db.get_task("TASK-1").zombie_flagged_at is None
+        after = db.get_task("TASK-1")
+        after_results, after_audit = db.get_task_results("TASK-1"), db.get_audit_logs("TASK-1")
+        assert after.status is TaskStatus.COMPLETED and after.zombie_flagged_at is None
+        assert [row["id"] for row in after_results] == [row["id"] for row in before[0]]
+        assert [row["action"] for row in after_audit].count("zombie_cleared") == [row["action"] for row in before[1]].count("zombie_cleared") + 1
     finally:
         db.close()
 
