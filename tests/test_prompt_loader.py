@@ -80,14 +80,19 @@ def test_list_agents_skips_entry_that_disappears_before_parse(
     rt_dir = RuntimeDir.init(tmp_path / "rt")
     rt = OrgPaths(root=rt_dir.orgs_dir / "x")
     disappearing = _write_agent(rt, "disappearing")
+    real_parse = prompt_loader.parse_agent_file
+    calls = 0
 
     def _unlink_then_parse(path: Path) -> AgentDef:
+        nonlocal calls
         assert path == disappearing
+        calls += 1
         path.unlink()
-        return prompt_loader.parse_agent_file(path)
+        return real_parse(path)
 
     monkeypatch.setattr(prompt_loader, "parse_agent_file", _unlink_then_parse)
     assert prompt_loader.list_agents(rt) == []
+    assert calls == 1
 
 
 def test_list_pending_only_pending(tmp_path: Path) -> None:

@@ -41,13 +41,36 @@ def test_list_agents_returns_names(tmp_home, app, org_state, auth_headers) -> No
 def test_list_agents_skips_disappearing_entry_and_emits_same_byte_revision(
     tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:
-    _seed_active_agent(org_state, "dev_agent", system_prompt="stable bytes\n")
+    _seed_active_agent(org_state, "dev_agent", system_prompt="old snapshot bytes\n")
     _seed_active_agent(org_state, "payment_agent", system_prompt="gone bytes\n")
     paths = _paths(org_state)
+    surviving = paths.agents_dir / "dev_agent.md"
     disappearing = paths.agents_dir / "payment_agent.md"
     real_parse = prompt_loader.parse_agent_file
+    old_bytes = surviving.read_bytes()
+    _seed_active_agent(org_state, "dev_agent", system_prompt="replacement snapshot bytes\n")
+    replacement_bytes = surviving.read_bytes()
+    surviving.write_bytes(old_bytes)
+
+    def _split_parse_hash_baseline(path):
+        """The pre-fix parse-then-hash shape produces a mismatched row."""
+        parsed = real_parse(path)
+        path.write_bytes(replacement_bytes)
+        return parsed, hashlib.sha256(path.read_bytes()).hexdigest()
+
+    baseline_path = paths.agents_dir / "_baseline" / "dev_agent.md"
+    baseline_path.parent.mkdir()
+    baseline_path.write_bytes(old_bytes)
+    old_agent, old_revision = _split_parse_hash_baseline(baseline_path)
+    assert old_agent.system_prompt == "old snapshot bytes\n"
+    assert old_revision == hashlib.sha256(replacement_bytes).hexdigest()
+    assert old_revision != hashlib.sha256(old_bytes).hexdigest()
+    baseline_path.unlink()
+    baseline_path.parent.rmdir()
 
     def _disappear_before_parse(path):
+        if path == surviving:
+            path.write_bytes(replacement_bytes)
         if path == disappearing:
             path.unlink()
         return real_parse(path)
@@ -58,7 +81,8 @@ def test_list_agents_skips_disappearing_entry_and_emits_same_byte_revision(
     rows = {row["name"]: row for row in response.json()["agents"]}
     assert "payment_agent" not in rows
     raw = (paths.agents_dir / "dev_agent.md").read_bytes()
-    assert rows["dev_agent"]["system_prompt"] == "stable bytes\n"
+    assert raw == replacement_bytes
+    assert rows["dev_agent"]["system_prompt"] == "replacement snapshot bytes\n"
     assert rows["dev_agent"]["revision"] == hashlib.sha256(raw).hexdigest()
 
 
@@ -840,8 +864,6 @@ def _seed_active_agent(
 def test_manage_agent_update_changes_prompt(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    from runtime.orchestrator import prompt_loader
-
     # Use dev_agent which belongs to engineering team (managed by engineering_head).
     _activate_eh_session(org_state)
     _seed_active_agent(org_state, "dev_agent", system_prompt="old prompt\n")
@@ -856,14 +878,14 @@ def test_manage_agent_update_changes_prompt(
             json={
                 "action": "update",
                 "name": "dev_agent",
-            "task_id": _EH_TASK,
-            "session_id": _EH_SESSION,
-            "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
-            "system_prompt": "new prompt",
-            "executor": "codex",
-        },
-        headers=auth_headers,
-    )
+                "task_id": _EH_TASK,
+                "session_id": _EH_SESSION,
+                "expected_revision": prompt_loader.agent_revision(_paths(org_state), "dev_agent"),
+                "system_prompt": "new prompt",
+                "executor": "codex",
+            },
+            headers=auth_headers,
+        )
     assert r.status_code == 200
     updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert updated is not None
@@ -874,8 +896,6 @@ def test_manage_agent_update_changes_prompt(
 def test_manage_agent_update_rejects_stale_revision(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
-    from runtime.orchestrator import prompt_loader
-
     _activate_eh_session(org_state)
     _seed_active_agent(org_state, "dev_agent", system_prompt="old\n")
     revision = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
@@ -973,7 +993,10 @@ def test_manage_agent_whole_prompt_stale_loser_has_no_bootstrap_or_audit(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
     _activate_eh_session(org_state)
-    _seed_active_agent(org_state, "dev_agent", system_prompt="R0 whole prompt\n")
+    original_prompt = "original entry\n"
+    winner_prompt = original_prompt + "entry A\n"
+    stale_loser_prompt = original_prompt + "entry B\n"
+    _seed_active_agent(org_state, "dev_agent", system_prompt=original_prompt)
     paths = _paths(org_state)
     workspace = org_state.root / "workspaces" / "dev_agent"
     workspace.mkdir(parents=True)
@@ -985,7 +1008,7 @@ def test_manage_agent_whole_prompt_stale_loser_has_no_bootstrap_or_audit(
         winner = client.post("/api/v1/orgs/alpha/agents/manage", json={
             "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
             "session_id": _EH_SESSION, "expected_revision": r0,
-            "system_prompt": "R1 winner entry A\n",
+            "system_prompt": winner_prompt,
         }, headers=auth_headers)
         assert winner.status_code == 200, winner.text
         winning_bytes = (paths.agents_dir / "dev_agent.md").read_bytes()
@@ -993,23 +1016,29 @@ def test_manage_agent_whole_prompt_stale_loser_has_no_bootstrap_or_audit(
         loser = client.post("/api/v1/orgs/alpha/agents/manage", json={
             "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
             "session_id": _EH_SESSION, "expected_revision": r0,
-            "system_prompt": "R0 whole prompt\n", "description": "entry B",
+            "system_prompt": stale_loser_prompt,
         }, headers=auth_headers)
         assert loser.status_code == 409
         mock_builder.return_value.ensure_workspace_ready.assert_called_once()
     assert (paths.agents_dir / "dev_agent.md").read_bytes() == winning_bytes
     assert org_state.db.get_audit_logs(_EH_TASK) == audit_after_winner
+    fresh_row = {
+        row["name"]: row
+        for row in client.get(
+            "/api/v1/orgs/alpha/agents", headers=auth_headers,
+        ).json()["agents"]
+    }["dev_agent"]
+    reapplied_prompt = fresh_row["system_prompt"] + "entry B\n"
     fresh = client.post("/api/v1/orgs/alpha/agents/manage", json={
         "action": "update", "name": "dev_agent", "task_id": _EH_TASK,
         "session_id": _EH_SESSION,
-        "expected_revision": prompt_loader.agent_revision(paths, "dev_agent"),
-        "description": "entry B",
+        "expected_revision": fresh_row["revision"],
+        "system_prompt": reapplied_prompt,
     }, headers=auth_headers)
     assert fresh.status_code == 200, fresh.text
     reapplied = prompt_loader.load_agent(paths, "dev_agent")
     assert reapplied is not None
-    assert reapplied.system_prompt == "R1 winner entry A\n"
-    assert reapplied.description == "entry B"
+    assert reapplied.system_prompt == original_prompt + "entry A\nentry B\n"
 
 
 def test_manage_agent_update_persists_executor_to_workspace(
