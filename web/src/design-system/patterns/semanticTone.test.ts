@@ -34,6 +34,20 @@ describe('semanticTone — value → tone map', () => {
     expect(toneFor('accepted')).toBe('positive');
   });
 
+  test.each([
+    ['armed', 'positive'],
+    ['firing', 'positive'],
+    ['fired', 'positive'],
+    ['failed', 'attention'],
+    ['timeout', 'attention'],
+    ['paused', 'neutral'],
+    ['cancelled', 'neutral'],
+    ['expired', 'neutral'],
+  ] as const)('Todos schedule status %s resolves to %s', (status, tone) => {
+    expect(toneFor(status)).toBe(tone);
+    expect(toneClass(status)).toBe(TONE_CLASS[tone]);
+  });
+
   test('is case- and whitespace-insensitive', () => {
     expect(toneFor('SOP')).toBe('positive');
     expect(toneFor(' Reference ')).toBe('info');

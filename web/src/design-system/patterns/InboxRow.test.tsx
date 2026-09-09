@@ -111,7 +111,7 @@ describe('InboxRow — thread layout (THR-099 id-first row)', () => {
         href="#"
       />,
     );
-    expect(screen.getByText('open')).toBeInTheDocument();
+    expect(screen.getByText('open')).toHaveClass('text-info', 'bg-info-soft');
     expect(screen.queryByText('active')).not.toBeInTheDocument();
     // mono thread id leads the row.
     expect(screen.getByText('THR-021')).toBeInTheDocument();
@@ -129,7 +129,7 @@ describe('InboxRow — thread layout (THR-099 id-first row)', () => {
         href="#"
       />,
     );
-    expect(screen.getByText('archived')).toBeInTheDocument();
+    expect(screen.getByText('archived')).toHaveClass('text-status-archived', 'border', 'border-border-default', 'bg-transparent');
     expect(screen.queryByText('done')).not.toBeInTheDocument();
     expect(screen.queryByText('active')).not.toBeInTheDocument();
   });
@@ -166,6 +166,6 @@ describe('InboxRow — thread layout (THR-099 id-first row)', () => {
     expect(screen.getByText('from dream')).toBeInTheDocument();
     expect(screen.getByLabelText(/Dream-originated/)).toBeInTheDocument();
     // Additive: the status badge still renders alongside the dream pill.
-    expect(screen.getByText('open')).toBeInTheDocument();
+    expect(screen.getByText('open')).toHaveClass('text-info', 'bg-info-soft');
   });
 });
