@@ -2358,10 +2358,20 @@ def test_set_executor_rejects_competing_executor_after_materialization(
         assert raised.value.status_code == 409
         assert raised.value.detail["code"] == "executor_switch_conflict"
         assert (_paths(org_state).agents_dir / "dev_agent.md").read_bytes() == winning_bytes
-    asyncio.run(exercise())
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        MockCB.return_value.ensure_workspace_ready.return_value = None
+        asyncio.run(exercise())
+        calls = MockCB.return_value.ensure_workspace_ready.call_args_list
+        assert len(calls) == 1
+        assert calls[0].args[2] == "prompt\n"
+        assert calls[0].kwargs["provider"] == "codex"
     winner_def = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert winner_def is not None and winner_def.executor == "codex"
     assert len([r for r in org_state.db.get_audit_logs(_EH_TASK) if r["action"] == "agent_managed"]) == 1
+    assert not org_state.db.get_audit_logs("founder")
+    # The only bootstrap is the accepted winner's update; the rejected loser
+    # must not materialize its stale executor profile.
+    assert not (workspace / "AGENTS.md").exists()
 
 
 def test_set_executor_rejects_model_only_winner_after_materialization(
@@ -2513,6 +2523,144 @@ def test_manage_agent_reset_failure_preserves_newer_canonical_bytes(
     assert winner.system_prompt == "newer winner\n"
     # Reconciliation of the stale prior definition is forbidden on conflict.
     assert bootstrap_calls == 2
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "outcome"),
+    [
+        ("reset", "owned"),
+        ("reset", "winner"),
+        ("reset", "missing"),
+        ("audit", "owned"),
+        ("audit", "winner"),
+        ("audit", "missing"),
+    ],
+)
+def test_manage_agent_compensation_preserves_canonical_ownership_and_sessions(
+    tmp_home, app, org_state, auth_headers, monkeypatch, caplog, failure_kind, outcome,
+) -> None:
+    """Real same-loop failures restore only operation-owned canonical bytes."""
+    import logging
+    from unittest.mock import Mock
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.infrastructure import database as db_module
+    from runtime.orchestrator import prompt_loader
+
+    _activate_eh_session(org_state)
+    _seed_active_agent(org_state, "dev_agent", executor="claude", model="old-model")
+    active_path = _paths(org_state).agents_dir / "dev_agent.md"
+    # Deliberately retain extra valid formatting: compensation must restore
+    # these exact pre-loser bytes, rather than a newly rendered definition.
+    original_bytes = active_path.read_bytes() + b"\n"
+    active_path.write_bytes(original_bytes)
+    original = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert original is not None
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    client = TestClient(app)
+    tid = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "s", "recipients": ["dev_agent"], "body_markdown": "m"},
+        headers=auth_headers,
+    ).json()["thread_id"]
+    org_state.db.update_thread_session(
+        tid, "dev_agent", agent_session_id="sess-claude", last_resumed_seq=6,
+    )
+
+    arrived, release = asyncio.Event(), asyncio.Event()
+    bootstrap = Mock()
+    bootstrap_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    async def controlled_to_thread(func, *args, **kwargs):
+        if func is bootstrap:
+            bootstrap_calls.append((args, kwargs))
+            if len(bootstrap_calls) == 1:
+                arrived.set()
+                await asyncio.wait_for(release.wait(), timeout=1)
+            return None
+        return await real_to_thread(func, *args, **kwargs)
+
+    reset_seen = {"value": False}
+    original_audit = db_module.Database.insert_audit_log_uncommitted
+
+    def fail_audit(self, task_id, agent, action, payload=None):
+        if action == "thread_session_invalidated":
+            row = self._conn.execute(
+                "SELECT agent_session_id, last_resumed_seq FROM thread_participants "
+                "WHERE thread_id = ? AND agent_name = ?", (tid, "dev_agent"),
+            ).fetchone()
+            reset_seen["value"] = row is not None and row["agent_session_id"] is None and row["last_resumed_seq"] == 0
+            raise RuntimeError("injected invalidation audit failure")
+        return original_audit(self, task_id, agent, action, payload)
+
+    failure_patch = (
+        patch.object(
+            db_module.Database, "_reset_thread_sessions_for_agent_uncommitted",
+            side_effect=RuntimeError("injected reset failure"),
+        )
+        if failure_kind == "reset"
+        else patch.object(db_module.Database, "insert_audit_log_uncommitted", new=fail_audit)
+    )
+    caplog.set_level(logging.WARNING, logger=agents_mod.__name__)
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB, failure_patch, patch.object(
+        agents_mod.asyncio, "to_thread", controlled_to_thread,
+    ):
+        MockCB.return_value.ensure_workspace_ready = bootstrap
+
+        async def exercise() -> None:
+            initial = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+            assert initial is not None
+            loser = asyncio.create_task(agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+                expected_revision=initial, executor="codex",
+            ), org_state))
+            await asyncio.wait_for(arrived.wait(), timeout=1)
+            if outcome == "winner":
+                current = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+                assert current is not None
+                assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                    action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+                    expected_revision=current, system_prompt="winner prompt\n", description="winner metadata",
+                ), org_state) == {"ok": True}
+                winning_bytes = active_path.read_bytes()
+            elif outcome == "missing":
+                active_path.unlink()
+                winning_bytes = None
+            else:
+                winning_bytes = None
+            release.set()
+            with pytest.raises(RuntimeError, match="injected"):
+                await loser
+            if outcome == "owned":
+                assert active_path.read_bytes() == original_bytes
+            elif outcome == "winner":
+                assert active_path.read_bytes() == winning_bytes
+            else:
+                assert not active_path.exists()
+
+        asyncio.run(exercise())
+
+    assert org_state.db.get_thread_session(tid, "dev_agent") == ("sess-claude", 6)
+    invalidations, _ = org_state.db.query_audit_logs(action="thread_session_invalidated", limit=10)
+    assert invalidations == []
+    assert org_state.db._conn.in_transaction is False
+    assert reset_seen["value"] is (failure_kind == "audit")
+    accepted = [row for row in org_state.db.get_audit_logs(_EH_TASK) if row["action"] == "agent_managed"]
+    assert len(accepted) == (1 if outcome == "winner" else 0)
+    if outcome == "owned":
+        assert len(bootstrap_calls) == 2
+        assert bootstrap_calls[-1][0][2] == original.system_prompt
+        assert bootstrap_calls[-1][1]["provider"] == original.executor
+        assert not any("rollback conflict" in record.message for record in caplog.records)
+    elif outcome == "winner":
+        assert len(bootstrap_calls) == 2
+        assert bootstrap_calls[-1][0][2] == "winner prompt\n"
+        assert bootstrap_calls[-1][1]["provider"] == "codex"
+        assert any("rollback conflict for dev_agent" in record.message for record in caplog.records)
+    else:
+        assert len(bootstrap_calls) == 1
+        assert any("rollback conflict for dev_agent" in record.message for record in caplog.records)
 
 
 def test_set_executor_invalid_returns_422_and_no_mutation(
