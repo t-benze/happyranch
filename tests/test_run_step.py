@@ -72,13 +72,14 @@ def test_run_step_noop_on_blocked_escalated(runtime, db):
     assert t.block_kind is None
 
 
-def test_run_step_beyond_legacy_cap_claims_and_runs(runtime, db, monkeypatch):
+@pytest.mark.parametrize("prior_count", [50, 51, 500])
+def test_run_step_beyond_legacy_cap_claims_and_runs(runtime, db, monkeypatch, prior_count):
     from runtime.orchestrator.orchestrator import Orchestrator
     settings = Settings(max_orchestration_steps=3)
     db.insert_task(TaskRecord(
         id="T-1", brief="x", assigned_agent="engineering_head",
     ))
-    db.update_task("T-1", orchestration_step_count=3)  # already at the cap
+    db.update_task("T-1", orchestration_step_count=prior_count)
 
     orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
     monkeypatch.setattr(orch, "_run_agent", lambda *args, **kwargs: (
@@ -89,7 +90,7 @@ def test_run_step_beyond_legacy_cap_claims_and_runs(runtime, db, monkeypatch):
     t = db.get_task("T-1")
     assert t.status == TaskStatus.COMPLETED
     assert t.block_kind is None
-    assert t.orchestration_step_count == 4
+    assert t.orchestration_step_count == prior_count + 1
     assert not [a for a in db.get_audit_logs("T-1") if a["action"] == "escalation"]
 
 
@@ -2741,7 +2742,8 @@ def test_regression_revise_verdict_chain_advance_unchanged(
     assert tid == "T-PAR"
 
 
-def test_run_step_nonroot_beyond_legacy_cap_claims_once(runtime, db, monkeypatch):
+@pytest.mark.parametrize("prior_count", [50, 51, 500])
+def test_run_step_nonroot_beyond_legacy_cap_claims_once(runtime, db, monkeypatch, prior_count):
     """A non-root beyond the retired cap completes through the normal seam.
 
     The retained counter remains monotonic and the usual parent wake occurs;
@@ -2757,7 +2759,7 @@ def test_run_step_nonroot_beyond_legacy_cap_claims_once(runtime, db, monkeypatch
         id="T-CHD", brief="c", assigned_agent="dev_agent",
         parent_task_id="T-PAR", task_type="subtask",
     ))
-    db.update_task("T-CHD", orchestration_step_count=3)  # already at the cap
+    db.update_task("T-CHD", orchestration_step_count=prior_count)
 
     orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
     q = _SlugQueue()
@@ -2769,7 +2771,7 @@ def test_run_step_nonroot_beyond_legacy_cap_claims_once(runtime, db, monkeypatch
     orch.run_step("T-CHD")
 
     child = db.get_task("T-CHD")
-    assert child.orchestration_step_count == 4
+    assert child.orchestration_step_count == prior_count + 1
     assert child.status == TaskStatus.COMPLETED
     assert child.block_kind is None
     assert not [a for a in db.get_audit_logs("T-CHD") if a["action"] == "escalation"]
@@ -2806,14 +2808,15 @@ def test_run_step_nonroot_beyond_legacy_cap_duplicate_claim_is_at_most_once(runt
     assert q.qsize() == 1  # duplicate delivery did not add another wake
 
 
-def test_run_step_root_beyond_legacy_cap_does_not_escalate(runtime, db, monkeypatch):
+@pytest.mark.parametrize("prior_count", [50, 51, 500])
+def test_run_step_root_beyond_legacy_cap_does_not_escalate(runtime, db, monkeypatch, prior_count):
     """A root beyond the retired cap finishes normally without escalation."""
     from runtime.orchestrator.orchestrator import Orchestrator
     settings = Settings(max_orchestration_steps=3)
     db.insert_task(TaskRecord(
         id="T-ROOT", brief="x", assigned_agent="engineering_head",
     ))
-    db.update_task("T-ROOT", orchestration_step_count=3)
+    db.update_task("T-ROOT", orchestration_step_count=prior_count)
 
     orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
     monkeypatch.setattr(orch, "_run_agent", lambda *args, **kwargs: (
@@ -2824,7 +2827,7 @@ def test_run_step_root_beyond_legacy_cap_does_not_escalate(runtime, db, monkeypa
     t = db.get_task("T-ROOT")
     assert t.parent_task_id is None
     assert t.status == TaskStatus.COMPLETED
-    assert t.orchestration_step_count == 4
+    assert t.orchestration_step_count == prior_count + 1
 
 
 def test_run_step_nonroot_self_block_never_escalated(runtime, db, monkeypatch):

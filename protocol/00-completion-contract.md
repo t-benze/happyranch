@@ -212,7 +212,7 @@ verdict or any non-approve verdict (`REQUEST_CHANGES` / `REVISE` / `BLOCK` /
 equivalent) clears the chain and wakes the manager — QA/downstream is never
 spawned. Ordinary verdict-less non-reviewer legs are unaffected.
 
-Step-budget effect: declaring a chain consumes one orchestration step; auto-advances do NOT consume steps. A clean small-item workflow (`dev → senior_dev[APPROVE] → qa_engineer[PASS]`) costs 2 steps (declare + final wake) instead of 4.
+Step-telemetry effect: declaring a chain increments the monotonic orchestration-step telemetry; auto-advances do not. A clean small-item workflow (`dev → senior_dev[APPROVE] → qa_engineer[PASS]`) records 2 manager steps (declare + final wake) instead of 4.
 
 Cross-team validation runs on every leg at decision-parse time; any off-team agent rejects the whole decision via the feedback mechanism.
 

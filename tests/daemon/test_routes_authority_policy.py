@@ -214,6 +214,18 @@ def test_bootstrap_template_round_trips_through_shipping_create_route(client_wit
     assert response.json()["release"]["continuation_phrase"] == CONTINUE_ROUTINE_PHRASE
 
 
+def test_bootstrap_template_does_not_describe_retired_step_budget(client_with_runtime):
+    """The live canonical projection may preserve independent limits only."""
+    client, org = client_with_runtime
+    _seed_agent(org)
+    body = client.get(
+        "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy"
+    ).json()["bootstrap_template"]
+    exhausted = next(clause for clause in body["clauses"] if clause["id"] == "esc-exhausted-limits")
+    assert "orchestration step budget" not in exhausted["condition"]
+    assert "revise-round budget" in exhausted["condition"]
+
+
 def test_store_corruption_is_sanitized(client_with_runtime):
     client, org = client_with_runtime
     _seed_agent(org)

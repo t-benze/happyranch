@@ -12152,7 +12152,7 @@ class Database:
         live state — every category the hook used before/during evaluation
         (candidate/policy/input identity, manager ownership and session,
         exact team, root status, cancellation, block/active-work, revisit/
-        successor lineage, orchestration and revise budgets, zombie/
+        successor lineage, revise budgets, zombie/
         partial-work evidence, adverse child verdicts). Any drift that landed
         while the evaluator ran — cancellation, session/manager/team change,
         block, active work, a successor/revisit signal, an exhausted
