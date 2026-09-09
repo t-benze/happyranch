@@ -793,9 +793,9 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
         # resume-capable executor must start from a fresh full-prompt launch,
         # never reuse a provider session minted under a different executor.
         # The reset and its invalidation audit commit in ONE database-owned
-        # transaction: if either fails, the whole switch is rolled back
-        # (prior frontmatter restored + workspace re-reconciled) so no new
-        # executor is ever installed over stale provider sessions.
+        # transaction: if either fails, rollback restores prior frontmatter
+        # and re-reconciles the workspace only while this operation still owns
+        # the canonical revision; a newer or missing definition is preserved.
         if executor_changed:
             try:
                 org.db.reset_thread_sessions_for_agent(

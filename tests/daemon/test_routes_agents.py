@@ -38,6 +38,22 @@ def test_list_agents_returns_names(tmp_home, app, org_state, auth_headers) -> No
     assert "engineering_head" in names
 
 
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
+def test_list_agents_accepts_snapshot_universal_newlines(
+    tmp_home, app, org_state, auth_headers, newline,
+) -> None:
+    _seed_active_agent(org_state, "dev_agent", system_prompt="snapshot prompt\n")
+    path = _paths(org_state).agents_dir / "dev_agent.md"
+    raw = path.read_bytes().replace(b"\n", newline)
+    path.write_bytes(raw)
+
+    response = TestClient(app).get("/api/v1/orgs/alpha/agents", headers=auth_headers)
+    assert response.status_code == 200, response.text
+    row = next(item for item in response.json()["agents"] if item["name"] == "dev_agent")
+    assert row["system_prompt"] == "snapshot prompt\n"
+    assert row["revision"] == hashlib.sha256(raw).hexdigest()
+
+
 def test_list_agents_skips_disappearing_entry_and_emits_same_byte_revision(
     tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:
@@ -3025,7 +3041,7 @@ def test_manage_agent_compensation_preserves_canonical_ownership_and_sessions(
     active_path = _paths(org_state).agents_dir / "dev_agent.md"
     # Deliberately retain extra valid formatting: compensation must restore
     # these exact pre-loser bytes, rather than a newly rendered definition.
-    original_bytes = active_path.read_bytes() + b"\n"
+    original_bytes = active_path.read_bytes().replace(b"\n", b"\r\n")
     active_path.write_bytes(original_bytes)
     original = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert original is not None

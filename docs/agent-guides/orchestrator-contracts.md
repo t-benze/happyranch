@@ -38,6 +38,21 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   with 409; after a conflict, the caller must reread and deliberately reapply
   its intended field change. A later roster revision must never bless an
   already-composed stale update.
+- **Freshness and conditional recovery.** Repository changes, founder create,
+  and approval capture the current prompt/provider after their clone work and
+  return 404 if that canonical definition disappeared. Executor switching
+  rereads after materialization: an executor or model winner returns
+  `409 executor_switch_conflict`, while unrelated fresh fields are preserved.
+  If update invalidation fails, its exact original bytes are restored only if
+  its written revision is still current; a newer or missing definition stays
+  in place and its stale workspace is not restored. Termination's early/late
+  archive recovery likewise requires an absent active file and the matching
+  owned archive. Enrollment, rejection, and termination make their final
+  availability/team/quiescence checks at their respective final boundaries.
+- **Scope of these checks.** `teams_lock` and no-`await` segments provide only
+  process-local event-loop protection. Synchronous unlocked segments remain
+  unlocked; this does not provide global workspace-generation fencing or
+  serialize external same-UID/multiprocess filesystem writers.
 - **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md` and bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
 - **Termination.** `manage-agent terminate` archives an approved **non-manager worker** on the caller's team. It is refused if the agent is a manager, belongs to another team, or has live work. Live work includes non-terminal tasks assigned to the agent, already-started thread invocations, firing schedules, running work-hours wakes, running dreams, or pending/running jobs attributable to the agent. If the agent is quiescent, the route:
   - archives the active `org/agents/<name>.md` to `org/agents/_terminated/<name>.md`;

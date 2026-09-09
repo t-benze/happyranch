@@ -539,6 +539,15 @@ It reconciles the `.md` frontmatter (atomic rewrite) and the executor
 bootstrap (``ensure_workspace_ready`` with the new provider). An unregistered
 executor is rejected with the list of registered profiles.
 
+The route rereads the canonical definition after materialization. A concurrent
+executor or model winner returns `409 executor_switch_conflict`; unrelated
+fresh fields are retained. If session invalidation then fails, it restores the
+exact original bytes only while its written revision is still current; a newer
+or missing definition remains authoritative and its stale workspace is not
+restored. This is process-local/no-`await` protection where documented, not
+global workspace-generation fencing or external same-UID/multiprocess
+serialization.
+
 Switching **away from Claude** leaves the Claude-only files (`CLAUDE.md`, `.claude/`) behind, because the new adapter writes `AGENTS.md`/`.agents/` and never deletes them. By default the command **warns** that these files are stale and names them; it never auto-deletes. Pass `--clean` to delete them:
 
 ```bash

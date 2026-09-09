@@ -84,7 +84,12 @@ def load_agent_snapshot(
     except FileNotFoundError:
         return None
     return (
-        parse_agent_text(contents.decode("utf-8"), expected_name=name),
+        # Match Path.read_text() universal-newline parsing without rereading or
+        # changing the exact bytes used for the revision and compensation.
+        parse_agent_text(
+            contents.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n"),
+            expected_name=name,
+        ),
         hashlib.sha256(contents).hexdigest(),
         contents,
     )
