@@ -503,6 +503,178 @@ def test_manage_repo_add_passes_provider_from_agent_def(
     )
 
 
+def test_manage_repo_refreshes_bootstrap_inputs_after_clone_winner(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """A real accepted update wins while the shipping clone is suspended."""
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.orchestrator import prompt_loader
+
+    _write_agent_md(_paths(org_state), _make_agent(
+        "dev_agent", executor="claude", system_prompt="old prompt\n",
+        description="old", model="old-model",
+    ))
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        clone = MockCB.return_value.clone_repo
+
+        async def controlled_to_thread(func, *args, **kwargs):
+            if func is clone:
+                arrived.set()
+                await asyncio.wait_for(release.wait(), timeout=1)
+                return True
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+
+        async def exercise() -> None:
+            repo_task = asyncio.create_task(agents_mod.manage_repo(
+                "alpha", "dev_agent", agents_mod.ManageRepoBody(
+                    action="add", repo_name="docs", url="https://example.test/docs.git",
+                ), org_state,
+            ))
+            await asyncio.wait_for(arrived.wait(), timeout=1)
+            revision = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+            assert revision is not None
+            assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+                expected_revision=revision, system_prompt="winner prompt\n",
+                description="winner", executor="codex", model="winner-model",
+                repos={"winner": "/winner"},
+            ), org_state) == {"ok": True}
+            winning_bytes = (_paths(org_state).agents_dir / "dev_agent.md").read_bytes()
+            release.set()
+            assert await asyncio.wait_for(repo_task, timeout=1) == {"ok": True}
+            assert (_paths(org_state).agents_dir / "dev_agent.md").read_bytes() == winning_bytes
+
+        _activate_eh_session(org_state)
+        asyncio.run(exercise())
+        bootstrap = MockCB.return_value.ensure_workspace_ready.call_args_list[-1]
+        assert bootstrap.args[2] == "winner prompt\n"
+        assert bootstrap.kwargs["provider"] == "codex"
+
+    winner = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert winner is not None
+    assert winner.repos == {"winner": "/winner"}
+    assert winner.description == "winner"
+    assert winner.model == "winner-model"
+    assert len([r for r in org_state.db.get_audit_logs(_EH_TASK) if r["action"] == "agent_managed"]) == 1
+
+
+def test_manage_repo_refuses_missing_canonical_after_suspended_clone(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """Controlled filesystem removal is a negative freshness injection, not a writer."""
+    from runtime.daemon.routes import agents as agents_mod
+
+    _write_agent_md(_paths(org_state), _make_agent("dev_agent", system_prompt="old prompt\n"))
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    arrived, release = asyncio.Event(), asyncio.Event()
+    real_to_thread = agents_mod.asyncio.to_thread
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        clone = MockCB.return_value.clone_repo
+
+        async def controlled_to_thread(func, *args, **kwargs):
+            if func is clone:
+                arrived.set()
+                await asyncio.wait_for(release.wait(), timeout=1)
+                return True
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(agents_mod.asyncio, "to_thread", controlled_to_thread)
+
+        async def exercise() -> None:
+            repo_task = asyncio.create_task(agents_mod.manage_repo(
+                "alpha", "dev_agent", agents_mod.ManageRepoBody(
+                    action="add", repo_name="docs", url="https://example.test/docs.git",
+                ), org_state,
+            ))
+            await asyncio.wait_for(arrived.wait(), timeout=1)
+            (_paths(org_state).agents_dir / "dev_agent.md").unlink()
+            release.set()
+            with pytest.raises(agents_mod.HTTPException) as exc_info:
+                await asyncio.wait_for(repo_task, timeout=1)
+            assert exc_info.value.status_code == 404
+            assert exc_info.value.detail == "agent 'dev_agent' not found"
+
+        asyncio.run(exercise())
+        MockCB.return_value.ensure_workspace_ready.assert_not_called()
+    assert not (_paths(org_state).agents_dir / "dev_agent.md").exists()
+    assert org_state.db.get_audit_logs(_EH_TASK) == []
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_repos"),
+    [
+        ({"action": "add", "repo_name": "new", "url": "https://new.test/repo.git"},
+         {"docs": "/docs", "new": "https://new.test/repo.git"}),
+        ({"action": "update", "repo_name": "docs", "url": "https://new.test/docs.git"},
+         {"docs": "https://new.test/docs.git"}),
+        ({"action": "remove", "repo_name": "docs"}, {}),
+    ],
+)
+def test_manage_repo_preserves_unrelated_agent_fields(
+    tmp_home, app, org_state, auth_headers, payload, expected_repos,
+) -> None:
+    paths = _paths(org_state)
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True)
+    _write_agent_md(paths, _make_agent(
+        "dev_agent", executor="codex", system_prompt="prompt\n",
+        description="description", repos={"docs": "/docs"}, model="model",
+    ))
+    before = prompt_loader.load_agent(paths, "dev_agent")
+    assert before is not None
+
+    with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
+        response = TestClient(app).post(
+            "/api/v1/orgs/alpha/agents/dev_agent/repos", json=payload, headers=auth_headers,
+        )
+        assert response.status_code == 200, response.text
+
+    after = prompt_loader.load_agent(paths, "dev_agent")
+    assert after is not None
+    assert after.repos == expected_repos
+    assert (after.executor, after.system_prompt, after.description, after.model,
+            after.allow_rules, after.enrolled_by, after.enrolled_at_task) == (
+        before.executor, before.system_prompt, before.description, before.model,
+        before.allow_rules, before.enrolled_by, before.enrolled_at_task,
+    )
+
+
+def test_set_model_set_and_clear_preserve_unrelated_agent_fields(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    from runtime.daemon.routes import agents as agents_mod
+    from runtime.orchestrator import prompt_loader
+
+    _write_agent_md(_paths(org_state), _make_agent(
+        "dev_agent", executor="codex", system_prompt="prompt\n",
+        description="description", repos={"docs": "/docs"}, model="old",
+    ))
+    before = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert before is not None
+    assert asyncio.run(agents_mod.set_agent_model(
+        "alpha", "dev_agent", agents_mod.SetModelBody(model="new"), org_state,
+    ))["after"] == "new"
+    assert asyncio.run(agents_mod.set_agent_model(
+        "alpha", "dev_agent", agents_mod.SetModelBody(model=None), org_state,
+    ))["after"] is None
+    after = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+    assert after is not None
+    assert (after.executor, after.system_prompt, after.description, after.repos,
+            after.allow_rules, after.enrolled_by, after.enrolled_at_task) == (
+        before.executor, before.system_prompt, before.description, before.repos,
+        before.allow_rules, before.enrolled_by, before.enrolled_at_task,
+    )
+
+
 def test_manage_repo_add_duplicate_returns_409(
     tmp_home, app, org_state, auth_headers,
 ) -> None:

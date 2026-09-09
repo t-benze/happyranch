@@ -567,7 +567,6 @@ async def manage_repo(
     agent_def = prompt_loader.load_agent(paths, agent_name)
     if agent_def is None:
         raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
-    agent_prompt = agent_def.system_prompt
 
     # THR-095: persist repos to org/agents/<name>.md frontmatter ONLY
     # (single source of truth).  agent.yaml is no longer the repo store.
@@ -630,9 +629,17 @@ async def manage_repo(
             shutil.rmtree(repo_dir)
         await asyncio.to_thread(ctx.clone_repo, workspace, body.repo_name, body.url)
 
+    # clone_repo can yield to the event loop.  Bootstrap from a fresh
+    # canonical snapshot afterwards so an accepted whole-definition update
+    # is not overwritten in workspace inputs (and a removed agent is not
+    # resurrected).  This capture does not serialize workspace generation
+    # against arbitrary later writes or external same-UID/multiprocess edits.
+    fresh = prompt_loader.load_agent(paths, agent_name)
+    if fresh is None:
+        raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
     await asyncio.to_thread(
-        ctx.ensure_workspace_ready, workspace, agent_name, agent_prompt,
-        provider=agent_def.executor,
+        ctx.ensure_workspace_ready, workspace, agent_name, fresh.system_prompt,
+        provider=fresh.executor,
     )
     return {"ok": True}
 
@@ -1027,10 +1034,10 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             # Archive the filesystem identity FIRST. If this fails, no DB or
             # team mutation has occurred yet, so the agent remains fully active.
             # POSIX rename overwrites an existing destination.  The preceding
-            # final preflight is the supported daemon guarantee here: every
-            # in-process route writer is serialized by teams_lock and this
-            # archive/cleanup segment has no await.  It does not make a claim
-            # about an external same-UID or multiprocess filesystem writer.
+            # final preflight is the supported daemon guarantee here: writers
+            # that await use teams_lock, while synchronous no-await event-loop
+            # writers cannot interleave this archive/cleanup segment. It does
+            # not make a claim about external same-UID or multiprocess writers.
             os.rename(active_path, terminated_agent_path)
             if workspace_exists:
                 try:
