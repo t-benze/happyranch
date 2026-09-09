@@ -342,9 +342,11 @@ def test_exported_collector_unexpired_control_observes_every_source_family(
 ) -> None:
     """A1p control: forwarding instrumentation reaches DB, boot, proc and sessions."""
     db, proc = evidence_sources; db.insert_task(_task("TASK-1", TaskStatus.COMPLETED))
+    db.insert_job(JobRecord(id="JOB-1", task_id="TASK-1", agent_name="dev_agent", title="x", rationale="x", script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED, created_at=datetime.now(timezone.utc).isoformat()))
+    db.update_task("TASK-1", blocked_on_job_ids='["JOB-1"]')
     import runtime.daemon.task_scratch_evidence as subject
     seen: list[str] = []
-    for name in ("list_tasks", "get_task", "get_latest_task_result", "list_jobs_db"):
+    for name in ("list_tasks", "get_task", "get_latest_task_result", "list_jobs_db", "get_job"):
         original = getattr(db, name)
         monkeypatch.setattr(db, name, lambda *args, _name=name, _original=original, **kwargs: seen.append(f"db:{_name}") or _original(*args, **kwargs))
     original_read_text, original_scandir = Path.read_text, subject.os.scandir
@@ -353,7 +355,7 @@ def test_exported_collector_unexpired_control_observes_every_source_family(
     sessions = SessionTracker(); original_iter = sessions.iter_active
     monkeypatch.setattr(sessions, "iter_active", lambda: seen.append("sessions") or original_iter())
     evidence = subject.collect_task_scratch_evidence(db=db, sessions=sessions, task_id="TASK-1", root=tmp_path / "root", proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
-    assert evidence.eligible and {"db:list_tasks", "db:get_task", "db:get_latest_task_result", "db:list_jobs_db", "boot", "stat", "proc", "fd", "sessions"} <= set(seen)
+    assert evidence.eligible and {"db:list_tasks", "db:get_task", "db:get_latest_task_result", "db:list_jobs_db", "db:get_job", "boot", "stat", "proc", "fd", "sessions"} <= set(seen)
 
 
 @pytest.mark.parametrize("trigger,fds", [
@@ -512,7 +514,7 @@ def test_exported_collector_missing_only_owned_pid_fd_is_unavailable(tmp_path: P
     (proc / "43/fd").rmdir()
     evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert not evidence.eligible
-    assert "process_scan_unavailable" in evidence.reasons
+    assert "process_population_unavailable" in evidence.reasons
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
 
 
