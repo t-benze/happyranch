@@ -187,6 +187,50 @@ class TestUnifiedMaterializationPreservesSystemContracts:
 
         # Should not crash — bootstrap is a valid ordinary context
 
+    def test_manage_agent_release_skill_delivers_revision_bound_update_guidance(
+        self, tmp_path: Path,
+    ) -> None:
+        """Both shipping roots receive the revision-present release package."""
+        repo_root = Path(__file__).resolve().parent.parent
+        settings = Settings(project_root=repo_root)
+        org_root = tmp_path / "org"
+        (org_root / "org").mkdir(parents=True)
+        (org_root / "org" / "config.yaml").write_text(json.dumps({
+            "skills": {
+                "agents": {
+                    "engineering_manager": {
+                        "allow": ["hr:manage-agent"], "deny": [],
+                    },
+                },
+            },
+        }))
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        specs = materialize_workspace_skills(
+            workspace, settings,
+            slug="delivery-fixture", context="task", provider="codex",
+            agent_name="engineering_manager", team="engineering",
+            skills_root=repo_root / "runtime" / "skills", org_root=org_root,
+        )
+
+        assert any(spec["slug"] == "manage-agent" for spec in specs)
+        intended = (repo_root / "runtime" / "skills" / "manage-agent" / "SKILL.md").read_bytes()
+        for provider_root in (".claude", ".agents"):
+            delivered = (workspace / provider_root / "skills" / "manage-agent" / "SKILL.md").read_bytes()
+            assert delivered == intended
+            assert b"expected_revision_required" in delivered
+            assert b"stale_agent_revision" in delivered
+            assert b"Never fetch a newer revision merely to bless" in delivered
+
+            update_example = re.search(
+                rb"\*\*Update an existing agent:\*\*\s*```json\s*(\{.*?\})\s*```",
+                delivered, re.DOTALL,
+            )
+            assert update_example is not None
+            example = json.loads(update_example.group(1))
+            assert example["expected_revision"] == "<revision from this agent's GET /agents row>"
+
 
 # ── Finding 5: Cutover completeness ───────────────────────────────────
 

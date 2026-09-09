@@ -5,6 +5,12 @@ description: Enroll, update, or terminate an agent. Write a JSON file and call h
 
 # manage-agent
 
+For an `update`, first obtain the target's current `revision` from the active
+agent roster and include that exact value as `expected_revision` in the
+callback payload. A missing, null, malformed, or stale revision is rejected;
+reload and deliberately reapply only the intended field change rather than
+resubmitting an older whole definition.
+
 Manage the agent roster. You can **enroll** a new agent (requires founder approval), **update** an existing agent's system prompt or description, or **terminate** a non-manager worker (archives its definition and workspace).
 
 ## Authentication paths
@@ -37,6 +43,7 @@ The daemon accepts (task_id + session_id) from your current task session. Use th
      "name": "content_writer",
      "task_id": "<task_id>",
      "session_id": "<session_id>",
+     "expected_revision": "<revision from this agent's GET /agents row>",
      "description": "Updated description",
      "system_prompt": "Updated system prompt...",
      "executor": "claude"
@@ -91,4 +98,12 @@ Agent names must be lowercase with underscores only (e.g. `content_writer`, `seo
 
 - If `happyranch` returns non-zero, retry once after 1 second.
 - `409` (duplicate/terminated name on enroll, non-approved agent on update/terminate, manager target, archive collision, or `agent_not_quiescent` conflicts) and `404` (agent not found) are not retryable.
-- `422` usually means the payload is missing required auth fields (task_id + session_id) — fix the JSON and retry.
+- `422 expected_revision_required` means an update omitted, supplied `null`,
+  or malformed its 64-character revision — read the active roster again and
+  compose the update from that row's matching canonical content and revision.
+- `409 stale_agent_revision` means another accepted update won. Read the
+  active roster again, deliberately reapply only the intended change to its
+  current content, and send that row's revision. Never fetch a newer revision
+  merely to bless an already-composed stale whole-definition payload.
+- Other `422` responses usually mean the payload is missing required auth
+  fields (task_id + session_id) — fix the JSON and retry.

@@ -17,6 +17,13 @@ describe('StatusBadge — Path B task vocabulary', () => {
     expect(container.querySelector('[aria-hidden]')).toBeNull();
   });
 
+  test('failed tasks retain abandoned red independently of Todo attention tones', () => {
+    const { container } = render(<StatusBadge status="failed" />);
+    expect(screen.getByText('failed')).toHaveClass('text-status-abandoned', 'bg-tier-red-tint');
+    expect(screen.getByText('failed')).not.toHaveClass('text-attention-text', 'bg-attention-soft');
+    expect(container.querySelector('[aria-hidden]')).toBeNull();
+  });
+
   test('cancelled renders a muted terminal token, no led dot', () => {
     const { container } = render(<StatusBadge status="cancelled" />);
     const badge = screen.getByText('cancelled');

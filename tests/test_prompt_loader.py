@@ -1,6 +1,7 @@
 """Tests for the file-based prompt_loader API."""
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,27 @@ def test_load_agent_does_not_return_pending(tmp_path: Path) -> None:
     assert prompt_loader.load_agent(rt, "draft") is None
 
 
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
+def test_snapshot_parses_universal_newlines_but_retains_original_bytes(
+    tmp_path: Path, newline: bytes,
+) -> None:
+    """One captured file supplies normalized parsing and raw revision bytes."""
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
+    path = _write_agent(rt, "dev_agent", body="line one\nline two\n")
+    raw = path.read_bytes().replace(b"\n", newline)
+    path.write_bytes(raw)
+
+    snapshot = prompt_loader.load_agent_snapshot(rt, "dev_agent")
+    assert snapshot is not None
+    agent, revision, retained = snapshot
+    assert agent.name == "dev_agent"
+    assert agent.system_prompt == "line one\nline two\n"
+    assert revision == hashlib.sha256(raw).hexdigest()
+    assert retained == raw
+    assert prompt_loader.agent_revision(rt, "dev_agent") == revision
+
+
 def test_list_agents_excludes_pending(tmp_path: Path) -> None:
     rt_dir = RuntimeDir.init(tmp_path / "rt")
     rt = OrgPaths(root=rt_dir.orgs_dir / "x")
@@ -72,6 +94,27 @@ def test_list_agents_excludes_pending(tmp_path: Path) -> None:
     _write_agent(rt, "draft", pending=True)
     names = sorted(a.name for a in prompt_loader.list_agents(rt))
     assert names == ["active1", "active2"]
+
+
+def test_list_agents_skips_entry_that_disappears_before_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rt_dir = RuntimeDir.init(tmp_path / "rt")
+    rt = OrgPaths(root=rt_dir.orgs_dir / "x")
+    disappearing = _write_agent(rt, "disappearing")
+    real_parse = prompt_loader.parse_agent_file
+    calls = 0
+
+    def _unlink_then_parse(path: Path) -> AgentDef:
+        nonlocal calls
+        assert path == disappearing
+        calls += 1
+        path.unlink()
+        return real_parse(path)
+
+    monkeypatch.setattr(prompt_loader, "parse_agent_file", _unlink_then_parse)
+    assert prompt_loader.list_agents(rt) == []
+    assert calls == 1
 
 
 def test_list_pending_only_pending(tmp_path: Path) -> None:

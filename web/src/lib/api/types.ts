@@ -508,6 +508,8 @@ export interface AgentSummary {
   // Phase 2: additive read-only fields (D6)
   repos: Record<string, string>;
   system_prompt: string;
+  /** Exact-content revision for a whole-definition update. */
+  revision?: string | null;
 }
 
 export interface AgentEnrollment {
