@@ -509,6 +509,11 @@ The orchestrator assembles each agent's context into an executor-specific bootst
 
 Claude workspaces have a `.claude/settings.json` that configures Claude Code's auto-allowed tools. Codex, opencode, and Pi workspaces do not use that file. Across executors, agents call back through the same single-line `happyranch ... --from-file` contract. Agents can read, write, and execute freely within their workspace and the cloned codebase, subject to the executor's sandbox mode and the orchestrator's workflow rules. Pi has no HappyRanch-managed sandbox or permission file in this integration.
 
+The THR-195 B2a task-scratch collector is not an executor permission or action
+surface: it is a dormant, production-unreferenced finite observation. It reports
+full durable lifecycle/recovery rows plus bounded Linux process references, and
+never converts missing, partial, capped, or timed-out reads into safe zeroes.
+
 ### Skill materialization at session spawn
 
 Skills — structured guidance packages that tell an agent how to perform specific
@@ -1347,6 +1352,17 @@ contract excludes a deliberately hostile same-UID replacement in the final
 identity-check-to-pathname-syscall window and does not promise its preservation.
 No production path imports it; teardown/scheduler wiring, activation, live
 deletion, deployment, and legacy backlog eligibility remain absent.
+THR-195 B2a separately supplies a dormant, short-lived evidence collector from
+current durable task/revisit/job/result records, advisory session state, and
+fresh Linux boot/PID root/cwd/open-fd reads. It admits each bounded read or
+enumeration, source open, and iterator advance against one shared deadline (without pretending to preempt an
+already-started read), including aggregate linked-job reads. Ambiguous,
+missing, capped, changing, warm-up, recovery, permission, or live-reference
+evidence is ineligible. A complete fresh root/cwd/fd measurement remains
+truthful, including zero, when only an independent lifecycle, session, or durable-authority reason applies;
+partial or invalid scans remain unavailable rather than fabricated zeros. It
+has no production caller or engine/ledger import; B2b must
+recollect at action time and B3 remains coverage authority.
 Runtime-launched task-agent and job subprocesses instead receive one canonical
 mode-0700 root at
 ``<workspace>/.happyranch/task-tmp/<canonical TASK-N>`` through ``TMPDIR``,
