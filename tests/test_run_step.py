@@ -1798,7 +1798,8 @@ def test_run_step_concurrent_claim_spawns_only_one_agent(
                               assigned_agent="dev_agent", parent_task_id="T-PAR"))
     db.update_task("T-C1", status=TaskStatus.COMPLETED)
     db.update_task("T-C2", status=TaskStatus.COMPLETED)
-    db.update_task("T-PAR", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED, note="waiting")
+    db.update_task("T-PAR", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+                   note="waiting", orchestration_step_count=500)
 
     orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=10),
                         paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
@@ -1852,11 +1853,15 @@ def test_run_step_concurrent_claim_spawns_only_one_agent(
     assert len(agent_calls) == 1, (
         f"expected 1 _run_agent call, got {len(agent_calls)}: {agent_calls}"
     )
-    # And the step counter incremented exactly once — not twice.
+    # The successful high-count claim advances telemetry once; the losing CAS
+    # cannot add another count, lifecycle audit, or parent-queue wake.
     par = db.get_task("T-PAR")
-    assert par.orchestration_step_count == 1, (
-        f"expected orchestration_step_count=1, got {par.orchestration_step_count}"
+    assert par.orchestration_step_count == 501, (
+        f"expected orchestration_step_count=501, got {par.orchestration_step_count}"
     )
+    assert len([row for row in db.get_audit_logs("T-PAR")
+                if row["action"] == "orchestration_step"]) == 1
+    assert orch._queue is None  # root completion has no parent wake to enqueue
 
 
 def test_revisit_header_includes_sr_summary(runtime, db):
