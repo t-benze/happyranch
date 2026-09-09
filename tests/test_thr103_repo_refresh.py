@@ -164,7 +164,7 @@ _TASK_CONTEXT_CONTRACT_IDS = ["start-task", "jobs", "make-worktree", "thread", "
 
 def _setup_protocol_skills(settings) -> None:
     for sid in _TASK_CONTEXT_CONTRACT_IDS:
-        src = settings.get_protocol_dir() / "skills" / sid
+        src = settings.get_bundled_skills_dir() / sid
         src.mkdir(parents=True, exist_ok=True)
         (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")
 

@@ -2,6 +2,17 @@
 
 ## Settings
 
+Bundled skill sources resolve under the selected package root at
+`runtime/skills/bundled/`, including installed wheels. `Settings.get_bundled_skills_dir`
+uses the single resolver in `runtime/skills/sources.py`; missing sources never
+fall back to another checkout. The retired `protocol_dir` setting remains only
+as an inert default-valued compatibility field on the existing settings response.
+Non-default YAML/environment overrides are rejected with migration guidance:
+publish approved assets in the new release location, then remove the override.
+There is no automatic source migration or canonical byte repair. Remove this
+compatibility field only in a separately versioned settings-contract change
+after deployed override inventory and client migration are complete.
+
 Operational settings are represented by `Settings` in `runtime/config.py`.
 
 Resolution order:
@@ -52,7 +63,7 @@ additional producers.
 | `HAPPYRANCH_OPENCODE_CLI_PATH` | `opencode` | Default command metadata for opencode (config/docs only — executor launch requires ``executors.json`` pin) |
 | `HAPPYRANCH_PI_CLI_PATH` | `pi` | Default command metadata for pi (config/docs only — executor launch requires ``executors.json`` pin) |
 | `HAPPYRANCH_PERMISSION_MODE` | `auto` | Claude Code permission mode |
-| `HAPPYRANCH_PROTOCOL_DIR` | `protocol` | Protocol docs dirname relative to project root |
+| `HAPPYRANCH_PROTOCOL_DIR` | `protocol` | Retired compatibility value; non-default overrides refuse startup |
 | `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Legacy accepted setting; inert (not an execution limit) |
 | `HAPPYRANCH_QUEUE_WORKERS` | `6` | Daemon-wide `run_step` worker slots; must be greater than 0; restart required |
 | `HAPPYRANCH_HOST_GLOBAL_SESSION_CAP` | `13` | Healthy enforcement-capable daemon-wide host-session admission cap; capability fallbacks remain conservative; restart required |

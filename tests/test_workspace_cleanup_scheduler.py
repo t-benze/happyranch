@@ -42,19 +42,13 @@ from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
 
 
-def test_fail_open_threshold_contract_is_consistent_across_normative_surfaces():
-    """Normative summaries distinguish unavailable from numeric measurements."""
+def test_fail_open_threshold_contract_is_consistent_across_surviving_surfaces():
+    """Unavailable measurements remain advisory; only numeric low values skip."""
     root = Path(__file__).parents[1]
     surfaces = {
         "CLAUDE.md": (root / "CLAUDE.md").read_text(),
         "scheduler module": (
             root / "runtime/daemon/workspace_cleanup_scheduler.py"
-        ).read_text(),
-        "agent runtime protocol": (
-            root / "protocol/05b-agent-runtime.md"
-        ).read_text(),
-        "orchestrator protocol": (
-            root / "protocol/05c-orchestrator.md"
         ).read_text(),
     }
 
@@ -73,14 +67,6 @@ def test_fail_open_threshold_contract_is_consistent_across_normative_surfaces():
         "CLAUDE.md": "and the agent's workspace totals >= 1 GiB, triggers",
         "scheduler module": (
             "trigger only when that agent's workspace total is >= 1 GiB"
-        ),
-        "agent runtime protocol": (
-            "agent's workspace totals >= 1 GiB "
-            "(founder-approved defaults, TASK-6036), triggers"
-        ),
-        "orchestrator protocol": (
-            "founder threshold: trigger only when the agent's workspace totals "
-            ">= 1 GiB"
         ),
     }
     for name, claim in obsolete_claims.items():
@@ -1470,7 +1456,7 @@ _TASK_CONTEXT_CONTRACT_IDS = (
 
 def _setup_protocol_skills(settings: Settings) -> None:
     for sid in _TASK_CONTEXT_CONTRACT_IDS:
-        src = settings.get_protocol_dir() / "skills" / sid
+        src = settings.get_bundled_skills_dir() / sid
         src.mkdir(parents=True, exist_ok=True)
         (src / "SKILL.md").write_text(f"# {sid}\n\nSkill body for {sid}.\n")
 

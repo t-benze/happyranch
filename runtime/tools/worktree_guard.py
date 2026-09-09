@@ -3,7 +3,7 @@
 This is a stdlib-only, zero-dependency module delivered alongside the
 make-worktree system-contract skill. It is NOT importable from other
 HappyRanch modules — the skill delivers it as a standalone executable
-script into ``protocol/skills/make-worktree/worktree_guard.py`` for
+script into ``runtime/skills/bundled/make-worktree/worktree_guard.py`` for
 agent workspace injection.
 
 Commands:

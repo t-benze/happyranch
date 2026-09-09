@@ -68,7 +68,7 @@ CLOSED_ACTIONS = frozenset(
 # or hides a protected-boundary condition — fails closed to ESCALATE. The
 # narrow permitted action (return the CURRENT root to pending for another
 # manager decision step) is additionally server-proven safe across every
-# protected category (see authority.py and 05c-orchestrator.md §THR-181).
+# protected category (see authority.py and its behavior tests).
 CONTINUE_ROUTINE_PHRASE = (
     "routine same-root follow-through of the already-completed slice"
 )

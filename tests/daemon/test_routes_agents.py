@@ -5089,7 +5089,7 @@ def test_set_executor_materialization_real_missing_source_stops_before_build(
     # Use the real protocol skills to build a canonical package for a
     # trusted system contract (start-task) and create symlinks into
     # BOTH .claude/skills and .agents/skills.
-    proto_skills_real = org_state.settings.get_protocol_dir() / "skills"
+    proto_skills_real = org_state.settings.get_bundled_skills_dir()
     if (proto_skills_real / "start-task").is_dir():
         from runtime.orchestrator.workspace_adapters import _compute_dir_hash
         trusted_hash = _compute_dir_hash(proto_skills_real / "start-task")
@@ -5148,7 +5148,7 @@ def test_set_executor_materialization_real_missing_source_stops_before_build(
     import tempfile as _tempfile, shutil as _shutil
     _tmp_proto = tmp_home / "_task4175_proto_skills"
     _shutil.copytree(
-        org_state.settings.get_protocol_dir() / "skills",
+        org_state.settings.get_bundled_skills_dir(),
         _tmp_proto, symlinks=True,
     )
     dream_dir = _tmp_proto / "dream"

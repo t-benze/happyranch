@@ -9,7 +9,7 @@ The HTTP route reads ONLY the in-memory projection; it never calls
 compose_dashboard_summary synchronously. Cold-start / no-projection-yet
 returns a deterministic 503 with a standard error envelope.
 
-Spec: protocol/05e-dashboard.md (THR-129 cache-only behavior)
+Spec: docs/agent-guides/web-and-cli.md (THR-129 cache-only behavior)
 """
 from __future__ import annotations
 

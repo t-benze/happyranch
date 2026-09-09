@@ -54,7 +54,7 @@ atomic transaction (``Database.insert_cleanup_report_thread_and_task``) —
 any failure rolls back every durable row (zero residue), nothing is
 enqueued, and a later retry succeeds exactly once (TASK-6046 finding 1).
 
-Contract-relevant bounds (all documented in protocol/05b + 05c):
+Contract-relevant bounds (all documented in the workspace-cleanup behavior tests):
 
 - Cadence: weekly, Sunday 03:30 in the org's effective timezone (TASK-5552
   §6). A live scheduler evaluates the occurrence once when its scan cursor

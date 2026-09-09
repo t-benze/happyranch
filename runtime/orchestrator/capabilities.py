@@ -128,7 +128,7 @@ def build_capabilities_prompt(
         "",
         "Each leg in `then` has `agent`, `prompt`, and optional `expect_verdict`.",
         "The orchestrator auto-advances on verdict match; mismatches, blocked subtasks,",
-        "or final-leg matches wake you. Full shape: `protocol/00-completion-contract.md`.\n",
+        "or final-leg matches wake you. Full shape: the **start-task** skill.\n",
         "### Reviewer legs (HARD REJECT)\n",
         "Reviewer identities are configured per-org, not hardcoded: any chain leg whose",
         "`agent` is one of this org's configured reviewer agents"

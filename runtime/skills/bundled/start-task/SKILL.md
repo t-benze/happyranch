@@ -77,8 +77,9 @@ Parameters:
    If the task produces a standalone document (report, plan, analysis), write its files under `output/<task_id>/` in your workspace root — **not** inside any repo or worktree. Capture the relative path (e.g. `output/TASK-001`) and include it as `output_dir` in your completion payload so future sessions can retrieve it via `happyranch recall --org {ORG_SLUG} <task_id>`.
 
    If during the task you realize you need async input from another agent
-   (and you're not yet blocked), consult `protocol/skills/thread/SKILL.md`
-   "Compose a new thread" rather than escalating.
+   (and you're not yet blocked), use the delivered `thread` skill selected
+   from the injected skill catalog and follow its "Compose a new thread"
+   guidance rather than escalating.
 
 5. **Report progress (long-running tasks).** If the task spans more than a
    few minutes — multi-phase implementation, lengthy build/test, large
@@ -135,7 +136,7 @@ Parameters:
    **Contribute NO if:**
    - The info is specific to this task (→ task artifact).
    - It's your own operational preference (record it via the mid-task learning callback instead).
-   - It's already in `protocol/` docs.
+   - It duplicates runtime instructions or implementation reference material.
    - The info has a <12-month useful lifespan.
 
    Write `/tmp/kb-<slug>.md` with YAML frontmatter (`slug`, `title`, `type`, `topic`, optional `tags`, `source_task`) followed by a markdown body, then:
@@ -198,8 +199,8 @@ Parameters:
    `summary`, a team-manager session must include a top-level `decision`
    object that the orchestrator will execute. Workers omit it. Omitting it
    from a manager session escalates the task. See the response-format
-   section of your role_guidance for the exact shapes. The canonical
-   contract is `protocol/00-completion-contract.md` — this skill restates
+   section of your role_guidance for the exact shapes. The runtime request models and transition handlers enforce the
+   contract; this skill explains
    the valid actions:
 
    - `delegate` — hand the next subtask to a worker; requires `agent` and `prompt`.
@@ -230,10 +231,15 @@ Parameters:
      routes through a serial follow-up delegate after join, never a fan-out child.
      Team-manager gated. The parent parks in `in_progress(delegated)` with `active_fanout`
      metadata and wakes once when all children are terminal.
+     When retrying a failed child, each retrying child MUST include
+     `children[].revisit_of_task_id`: the FAILED child of this parent assigned
+     to the same agent. A missing or invalid link rejects the WHOLE fanout
+     before any child is spawned. A retrying `delegate` likewise supplies the
+     failed child's id as `revisit_of_task_id`.
    - `done` — the task is complete; requires `summary` of the outcome.
    - `escalate` — the task needs founder intervention; requires `reason`.
 
-   Full shapes and examples: `protocol/00-completion-contract.md`.
+   Use the decision shapes below; the daemon validates them at submission and consumption.
 
    Example (delegation):
 
@@ -344,4 +350,9 @@ Parameters:
 
 ## Permission walls
 
-If your executor refuses a command (Claude `--allowedTools`, opencode `permission.bash`, Codex sandbox), and the operation genuinely needs founder-grade credentials, see `protocol/skills/scripts/SKILL.md`. Pi has no HappyRanch-managed command-refusal surface; use the same script-review path for founder-grade operations even if Pi itself would run the command. Submit the script for founder review, then self-block your task referencing the SR-NNN.
+If your executor refuses a command and the operation needs founder-grade
+credentials, use the **jobs** skill. Submit a job with `review_required=true`
+and a concrete rationale, then report `status="blocked"` with its `JOB-NNN`
+in `waiting_on_job_ids`. Resume only through the existing job-result workflow.
+Pi has no HappyRanch-managed command-refusal surface; founder-grade operations
+still use reviewed jobs. Review does not grant new executor permissions.

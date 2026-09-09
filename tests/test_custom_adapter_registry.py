@@ -1308,7 +1308,7 @@ class TestBaselinePermissionRegression:
         # - runtime/config.py (Settings)
         # - runtime/orchestrator/executors.py (permission flags)
         # - runtime/orchestrator/workspace_adapters (permission files)
-        # - protocol/ (auth)
+        # - release-owned bundled skills (auth)
         # These are all verified as D5 is a separate slice
         pass  # Structural invariant — tested implicitly through unchanged code paths
 
