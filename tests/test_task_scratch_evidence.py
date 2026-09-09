@@ -512,6 +512,7 @@ def test_exported_collector_missing_only_owned_pid_fd_is_unavailable(tmp_path: P
     (proc / "43/fd").rmdir()
     evidence = collect_task_scratch_evidence(db=db, sessions=SessionTracker(), task_id="TASK-1", root=root, proc_root=proc, monotonic_now=31, daemon_started_monotonic=0)
     assert not evidence.eligible
+    assert "process_scan_unavailable" in evidence.reasons
     assert (evidence.process_roots, evidence.process_cwds, evidence.open_fds) == (None, None, None)
 
 
