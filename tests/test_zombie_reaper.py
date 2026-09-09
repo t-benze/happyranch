@@ -631,7 +631,7 @@ def test_flagged_zombie_with_fingerprint_cleared_immediately_before_ttl(db: Data
     """Finding 1 (HIGH): flagged task + fingerprint appearing before TTL →
     consumed immediately (no TTL wait), flag cleared, zombie_cleared audit emitted.
 
-    Per protocol/05c recovery clause: 'or a result appears' triggers immediate
+    Per recovery contract: 'or a result appears' triggers immediate
     flag clearing. Merely NULL-ing zombie_flagged_at without consuming would
     re-flag next tick, so the clear is paired with fingerprint consumption.
     """

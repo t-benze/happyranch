@@ -178,8 +178,7 @@ The merge guard is conjunctive — all must pass before the engine attempts merg
 - the PR is still open and not draft;
 - the helper uses the configured merge method.
 
-Review/QA evidence extraction follows the **Merge-evidence contract** in
-`protocol/00-completion-contract.md` (canonical vocabulary
+The guarded-merge implementation validates review/QA evidence (canonical vocabulary
 `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL`; NON-NULL structured
 `verdict` primary; serialized `null` — the durable recall producer's
 representation of legacy/no-structured rows — uses the strict annotated

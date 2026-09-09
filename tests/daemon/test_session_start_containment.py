@@ -178,7 +178,7 @@ class TestTaskStartContainment:
         from runtime.runtime import RuntimeDir
 
         # ── Source skills for the materializer (monkeypatched seam) ──
-        src = tmp_path / "protocol" / "skills"
+        src = tmp_path / "runtime" / "skills" / "bundled"
         for sid in [
             "create-skill", "start-task", "jobs", "make-worktree",
             "thread", "dream", "todos",
@@ -257,7 +257,7 @@ class TestTaskStartContainment:
         from runtime.orchestrator.orchestrator import Orchestrator
         from runtime.runtime import RuntimeDir
 
-        src = tmp_path / "protocol" / "skills"
+        src = tmp_path / "runtime" / "skills" / "bundled"
         for sid in [
             "create-skill", "start-task", "jobs", "make-worktree",
             "thread", "dream", "todos",

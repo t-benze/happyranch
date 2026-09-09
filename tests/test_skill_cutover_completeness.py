@@ -1,6 +1,6 @@
 """Contract-completeness guard: every agent × session-context receives its
 COMPLETE required system-contract + managed-catalog skill set WITHOUT the
-wholesale protocol/skills dump.
+wholesale runtime/skills/bundled dump.
 
 This test is the GATE for THR-055 Phase 4 (the cutover). It must fail red
 when the bootstrap _copy_skills still leaks the wholesale dump; it must pass
@@ -10,7 +10,7 @@ session-time wholesale copy.
 REAL-SOURCE GUARD: This test reads the REAL in-repo artifacts —
   - ``org/config.yaml`` (eligibility policy, shipped in Phase 2-3)
   - ``runtime/skills/`` (managed catalog with real approval states)
-  - ``protocol/skills/`` (injection + bootstrap source skill bodies)
+  - ``runtime/skills/bundled/`` (injection + bootstrap source skill bodies)
 If the shipped policy, catalog, or source dirs drift (e.g. reflection's policy_class changes, or a catalog entry
 regresses), this guard MUST fail — it is a fail-closed integrity check.
 """
@@ -120,7 +120,7 @@ def _assert_real_sources_present() -> None:
     catalog_path = _REPO_ROOT / "runtime" / "skills"
     if not catalog_path.is_dir():
         missing.append(str(catalog_path))
-    proto_path = _REPO_ROOT / "protocol" / "skills"
+    proto_path = _REPO_ROOT / "runtime" / "skills" / "bundled"
     if not proto_path.is_dir():
         missing.append(str(proto_path))
     if missing:
@@ -235,12 +235,12 @@ def _skills_after_bootstrap(workspace: Path, provider: str) -> set[str]:
 
 @pytest.fixture(autouse=True)
 def _isolate_skills_src_override():
-    """Set _SKILLS_SRC to the real protocol/skills/ for this module's tests
+    """Set _SKILLS_SRC to the real runtime/skills/bundled/ for this module's tests
     and restore it afterward so other test modules aren't affected.
     """
     import runtime.orchestrator.workspace_adapters as wa
     original = wa._SKILLS_SRC
-    wa._SKILLS_SRC = _REPO_ROOT / "protocol" / "skills"
+    wa._SKILLS_SRC = _REPO_ROOT / "runtime" / "skills" / "bundled"
     yield
     wa._SKILLS_SRC = original
 
@@ -532,9 +532,9 @@ class TestMakeWorktreeGuardInDeliveredSkill:
     worktree-root guard workflow for both supported skill destinations."""
 
     def test_source_skill_contains_guard_workflow(self):
-        """The source protocol/skills/make-worktree/SKILL.md contains
+        """The source runtime/skills/bundled/make-worktree/SKILL.md contains
         the guard setup and verify commands."""
-        source = _REPO_ROOT / "protocol" / "skills" / "make-worktree" / "SKILL.md"
+        source = _REPO_ROOT / "runtime" / "skills" / "bundled" / "make-worktree" / "SKILL.md"
         body = source.read_text()
 
         # Guard setup command must be present (via GUARD variable or literal)

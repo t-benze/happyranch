@@ -41,7 +41,7 @@ class TaskStatus(StrEnum):
     # closed here instead of re-running — distinct from COMPLETED so the audit
     # trail shows it was superseded, not finished by an agent. Joins every
     # terminal predicate (TERMINAL_STATES, _TERMINAL_TASK_STATUSES,
-    # _TERMINAL_STATUS_TO_EVENT). See protocol/05c-orchestrator.md and
+    # _TERMINAL_STATUS_TO_EVENT). See docs/agent-guides/orchestrator-contracts.md and
     # docs/agent-guides/features-and-invariants.md (escalation).
     #
     # Phase 3 (THR-037): BLOCKED and BlockKind.ESCALATED were fully retired

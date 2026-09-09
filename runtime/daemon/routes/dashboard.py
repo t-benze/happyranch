@@ -4,7 +4,7 @@ Cache-only: reads the per-org durable last-known-good projection refreshed
 every 10s by a coalesced asyncio scheduler. Never calls compose_dashboard_summary
 synchronously. Cold-start / no-projection-yet returns 503.
 
-Spec: protocol/05e-dashboard.md
+Spec: docs/agent-guides/web-and-cli.md
 """
 from __future__ import annotations
 

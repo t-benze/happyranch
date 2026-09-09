@@ -840,7 +840,7 @@ class TestImportSeamCoverage:
 
         # Create system-contract source dirs so materialize_workspace_skills
         # can resolve them (required by the fail-closed source-existence check).
-        proto_skills = tmp_path / "protocol" / "skills"
+        proto_skills = tmp_path / "runtime" / "skills" / "bundled"
         for sid in ("start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"):
             (proto_skills / sid).mkdir(parents=True, exist_ok=True)
             (proto_skills / sid / "SKILL.md").write_text(f"# {sid}\n\nSkill body.\n")
@@ -1996,7 +1996,7 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
 
         # Create source directories for system contracts so
         # materialize_workspace_skills has something to build.
-        protocol_skills = tmp_path / "protocol" / "skills"
+        protocol_skills = tmp_path / "runtime" / "skills" / "bundled"
         for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = protocol_skills / sid
             d.mkdir(parents=True)
@@ -2294,7 +2294,7 @@ class TestRunnerPathDualFailureNoExecutorLaunch:
         )
 
         # Create source directories for system contracts
-        protocol_skills = tmp_path / "protocol" / "skills"
+        protocol_skills = tmp_path / "runtime" / "skills" / "bundled"
         for sid in ["start-task", "jobs", "make-worktree", "thread", "dream", "todos", "create-skill"]:
             d = protocol_skills / sid
             d.mkdir(parents=True)

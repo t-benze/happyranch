@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 
-SKILLS_ROOT = Path(__file__).resolve().parent.parent / "protocol" / "skills"
+SKILLS_ROOT = Path(__file__).resolve().parent.parent / "runtime" / "skills" / "bundled"
 
 
 def _parse_frontmatter(text: str) -> dict:
@@ -47,18 +47,12 @@ def test_make_worktree_keeps_temporary_review_worktrees_in_workspace() -> None:
 
 
 def test_temporary_filesystem_producer_redirection_docs_are_in_parity() -> None:
+    """Surviving guidance retains the cleanup-eligibility boundary."""
     repository_root = Path(__file__).resolve().parent.parent
-    surfaces = [
-        repository_root / "CLAUDE.md",
-        repository_root / "protocol" / "05b-agent-runtime.md",
-        repository_root / "protocol" / "05c-orchestrator.md",
-    ]
-
-    for surface in surfaces:
-        body = surface.read_text()
-        assert "workspace-owned and measurable" in body, surface
-        assert "not cleanup-eligible" in body, surface
-        assert "TMPDIR" in body, surface
+    body = (repository_root / "CLAUDE.md").read_text()
+    assert "workspace-owned and measurable" in body
+    assert "not cleanup-eligible" in body
+    assert "TMPDIR" in body
 
 
 def test_start_task_skill_documents_memory_consult() -> None:

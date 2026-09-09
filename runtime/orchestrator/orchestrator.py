@@ -46,7 +46,6 @@ from runtime.orchestrator.org_config import (
     render_current_time_line,
     resolve_managed_skills_index,
     resolve_org_timezone_display,
-    resolve_protocol_doc_manifest,
 )
 from runtime.orchestrator.workspace_adapters import (
     format_repo_refresh_note,
@@ -453,7 +452,7 @@ class Orchestrator:
         now: Callable[[], datetime] | None = None,
         memory_digest: str | None = None,
         managed_skills_index: str = "",
-        protocol_doc_manifest: str = "",
+        repo_refresh_note: str = "",
         attachments_block: str = "",
         active_policy_section: str = "",
     ) -> str:
@@ -490,8 +489,8 @@ class Orchestrator:
         digest_block = f"\n{memory_digest}\n" if memory_digest else ""
         # THR-055 managed skills index — compact manifest of eligible skills
         skills_block = f"\n{managed_skills_index}\n" if managed_skills_index else ""
-        # THR-070 protocol doc manifest — bundled-path one-liner per doc
-        docs_block = f"\n{protocol_doc_manifest}\n" if protocol_doc_manifest else ""
+        # Repository refresh warnings remain visible independently of skills.
+        repo_refresh_block = f"\n{repo_refresh_note}\n" if repo_refresh_note else ""
         return (
             f"{intro}"
             f"\n"
@@ -504,7 +503,7 @@ class Orchestrator:
             f"{digest_block}"
             f"{attachments_block}"
             f"{skills_block}"
-            f"{docs_block}"
+            f"{repo_refresh_block}"
             f"{active_policy_section}"
         )
 
@@ -909,11 +908,8 @@ class Orchestrator:
         # blocking: offline / dirty / non-ff / timeout are swallowed.
         repo_refresh_results = refresh_workspace_repos(workspace)
 
-        # Protocol doc manifest — bundled-path one-liner per doc (THR-070).
-        protocol_doc_manifest = "\n".join(filter(None, (
-            resolve_protocol_doc_manifest(settings=self._settings),
-            format_repo_refresh_note(repo_refresh_results),
-        )))
+        # Repository refresh observations remain independent of skill guidance.
+        repo_refresh_note = format_repo_refresh_note(repo_refresh_results)
 
         # THR-109: resolve inherited task attachments and materialize them
         # into the per-session attachment directory.
@@ -934,7 +930,7 @@ class Orchestrator:
         assert_no_reserved_team_policy_header(prompt or "", source="role guidance")
         assert_no_reserved_team_policy_header(memory_digest or "", source="memory digest")
         assert_no_reserved_team_policy_header(managed_skills_index, source="managed skills index")
-        assert_no_reserved_team_policy_header(protocol_doc_manifest, source="protocol manifest")
+        assert_no_reserved_team_policy_header(repo_refresh_note, source="repository refresh note")
         assert_no_reserved_team_policy_header(attachments_block, source="attachment manifest")
         policy_snapshot = resolve_active_team_policy_snapshot(
             store=AuthorityPolicyStore(self._db), team=team, agent_name=agent_name,
@@ -964,7 +960,7 @@ class Orchestrator:
             prompt,
             memory_digest=memory_digest,
             managed_skills_index=managed_skills_index,
-            protocol_doc_manifest=protocol_doc_manifest,
+            repo_refresh_note=repo_refresh_note,
             attachments_block=attachments_block,
             active_policy_section=(f"\n{active_policy_section}" if active_policy_section else ""),
         )

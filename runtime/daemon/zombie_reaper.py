@@ -158,7 +158,7 @@ def _sweep_org_zombies(
         else:
             # ── ALREADY FLAGGED ──
             # If a task_result fingerprint appears on an already-flagged zombie,
-            # treat it as recovery IMMEDIATELY (protocol/05c recovery clause).
+            # treat it as recovery IMMEDIATELY (recovery contract).
             # A real result is never a false-reap — honoring it immediately is
             # the safe direction (founder-approved loss function, THR-090 seq12).
             # Design note: merely clearing zombie_flagged_at without consuming

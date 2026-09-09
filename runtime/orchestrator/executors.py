@@ -102,7 +102,7 @@ _TAIL_BYTES = 2000
 # Popen with a normalized, actionable category instead of letting execve raise
 # E2BIG mid-launch. The prompt is NEVER truncated, and the guard is purely a
 # transport check: encoded byte size is transport-only — it must never be
-# interpreted as a cost or reset policy (see protocol/05b-agent-runtime.md;
+# interpreted as a cost or reset policy (see docs/agent-guides/agent-executors-and-permissions.md;
 # future cost policy should use turn count or cumulative session tokens).
 _PROMPT_TRANSPORT_TOO_LARGE = "prompt_transport_too_large"
 
@@ -267,7 +267,7 @@ def _resolve_binary(executor_name: str) -> str:
 # (agent executor, custom adapter, job script) runs an editable install
 # or `uv sync`. Stripped from the child environment so the shared venv
 # is never accidentally mutated from a disposable worktree.
-# See protocol/05b-agent-runtime.md § "Spawn-Environment Invariant".
+# See docs/agent-guides/agent-executors-and-permissions.md § "Spawn-Environment Invariant".
 _ENV_VARS_TO_STRIP: frozenset[str] = frozenset({
     "VIRTUAL_ENV",             # standard venv activation; directs pip/uv
     "UV_PROJECT_ENVIRONMENT",   # uv project environment target override
