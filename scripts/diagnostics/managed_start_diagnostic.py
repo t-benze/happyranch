@@ -57,28 +57,36 @@ def write_extraction(source: Path, output: Path) -> None:
 class RunResult:
     """Only bounded, non-content process observations cross this boundary."""
 
-    def __init__(self, returncode: int | None, stdout: bytes = b"", stderr: bytes = b"", truncated: bool = False, timed_out: bool = False) -> None:
+    def __init__(self, returncode: int | None, stdout: bytes = b"", stderr: bytes = b"", truncated: bool = False, timed_out: bool = False, failed: bool = False) -> None:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
         self.truncated = truncated
         self.timed_out = timed_out
+        self.failed = failed
 
 
 Runner = Callable[[Sequence[str], float], RunResult]
 
 
 def run_bounded(command: Sequence[str], deadline: float, *, now: Callable[[], float] = time.monotonic) -> RunResult:
-    """Drain both pipes within a shared deadline; never retain their prose."""
+    """Run one observer command to an absolute monotonic deadline.
+
+    Bytes are retained only long enough for the strict parsers below.  They
+    never cross this module's artifact/log boundary.
+    """
     remaining = deadline - now()
     if remaining <= 0:
-        return RunResult(None, timed_out=True)
-    proc = subprocess.Popen(list(command), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        return RunResult(None, timed_out=True, failed=True)
+    try:
+        proc = subprocess.Popen(list(command), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    except (OSError, subprocess.SubprocessError):
+        return RunResult(None, failed=True)
     assert proc.stdout is not None and proc.stderr is not None
     selector = selectors.DefaultSelector()
     selector.register(proc.stdout, selectors.EVENT_READ)
     selector.register(proc.stderr, selectors.EVENT_READ)
-    captured = 0
+    captured = {proc.stdout: bytearray(), proc.stderr: bytearray()}
     truncated = False
     try:
         while selector.get_map():
@@ -87,30 +95,45 @@ def run_bounded(command: Sequence[str], deadline: float, *, now: Callable[[], fl
                 raise TimeoutError
             events = selector.select(min(remaining, 0.05))
             for key, _ in events:
-                data = os.read(key.fileobj.fileno(), min(65536, max(1, MAX_BYTES - captured + 1)))
+                data = os.read(key.fileobj.fileno(), 65536)
                 if not data:
                     selector.unregister(key.fileobj)
-                elif captured + len(data) > MAX_BYTES:
-                    captured = MAX_BYTES
+                elif len(captured[key.fileobj]) + len(data) > MAX_BYTES:
                     truncated = True
+                    raise TimeoutError
                 else:
-                    captured += len(data)
+                    captured[key.fileobj].extend(data)
             if proc.poll() is not None and not events:
                 # A descendant can retain a pipe after its parent exits.
                 raise TimeoutError
-        return RunResult(proc.wait(timeout=max(0.01, deadline - now())), truncated=truncated)
+        return RunResult(proc.wait(timeout=max(0.01, deadline - now())), bytes(captured[proc.stdout]), bytes(captured[proc.stderr]), truncated=truncated)
     except (TimeoutError, OSError, subprocess.SubprocessError):
         try:
             os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            pass
+        try:
             proc.wait(timeout=0.2)
-        except (OSError, subprocess.SubprocessError):
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except OSError:
-                pass
+        except subprocess.SubprocessError:
+            pass
+        # The leader may have exited while a child still owns a pipe; the
+        # process group, not leader wait(), defines observation completion.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
             proc.wait()
-        return RunResult(proc.returncode, truncated=truncated, timed_out=True)
+        except subprocess.SubprocessError:
+            pass
+        return RunResult(proc.returncode, bytes(captured[proc.stdout]), bytes(captured[proc.stderr]), truncated=truncated, timed_out=True, failed=True)
     finally:
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                selector.unregister(stream)
+            except KeyError:
+                pass
+            stream.close()
         selector.close()
 
 
@@ -118,18 +141,29 @@ def _integer(value: str) -> int | None:
     return int(value) if value.isascii() and value.isdecimal() and len(value) <= 18 else None
 
 
+def _exec_status(value: str) -> dict[str, object] | None:
+    """Read systemd's structured ExecStartPre record without argv/path."""
+    if not value.startswith("{") or not value.endswith("}") or len(value) > 1024:
+        return None
+    fields = dict(part.strip().split("=", 1) for part in value[1:-1].split(";") if "=" in part)
+    code, status = fields.get("code"), fields.get("status")
+    if code not in {"exited", "killed", "dumped"} or (number := _integer(status or "")) is None:
+        return None
+    return {"code": code, "status": number}
+
+
 def _properties(text: bytes) -> dict[str, object] | None:
     """Parse systemctl's fixed key/value response without accepting prose."""
     if len(text) > MAX_BYTES or text.count(b"\n") > MAX_LINES:
         return None
     values: dict[str, str] = {}
-    allowed = {"Result", "ActiveState", "SubState", "MainPID", "NRestarts", "InvocationID", "ActiveEnterTimestampMonotonic", "ExecStartPreCode", "ExecStartPreStatus", "ExecMainCode", "ExecMainStatus"}
+    allowed = {"Result", "ActiveState", "SubState", "MainPID", "NRestarts", "InvocationID", "ActiveEnterTimestampMonotonic", "ExecStartPre", "ExecMainCode", "ExecMainStatus"}
     for raw in text.splitlines():
         try:
             key, value = raw.decode("ascii").split("=", 1)
         except (UnicodeDecodeError, ValueError):
             return None
-        if key not in allowed or key in values or len(value) > 64:
+        if key not in allowed or key in values or len(value) > (1024 if key == "ExecStartPre" else 64):
             return None
         values[key] = value
     if not values:
@@ -140,12 +174,53 @@ def _properties(text: bytes) -> dict[str, object] | None:
         elif key == "ActiveState" and value in ALLOWED_ACTIVE: output[key] = value
         elif key == "SubState" and value in ALLOWED_SUB: output[key] = value
         elif key == "InvocationID" and len(value) == 32 and all(c in "0123456789abcdef" for c in value): output[key] = value
-        elif key != "InvocationID" and (number := _integer(value)) is not None: output[key] = number
+        elif key == "ExecStartPre" and (record := _exec_status(value)) is not None: output[key] = record
+        elif key in {"MainPID", "NRestarts", "ActiveEnterTimestampMonotonic", "ExecMainStatus"} and (number := _integer(value)) is not None: output[key] = number
+        elif key == "ExecMainCode" and value in {"exited", "killed", "dumped"}: output[key] = value
         else: return None
     return output
 
 
-def collect(phase: str, output: Path, deadline: float, runner: Runner, *, paths: Sequence[str] = PATHS, now: Callable[[], float] = time.monotonic) -> dict[str, object]:
+PROPERTY_ARGS = ("--no-pager", "--property=Result", "--property=ActiveState", "--property=SubState", "--property=MainPID", "--property=NRestarts", "--property=InvocationID", "--property=ActiveEnterTimestampMonotonic", "--property=ExecStartPre", "--property=ExecMainCode", "--property=ExecMainStatus")
+
+
+def _path_metadata(result: RunResult) -> dict[str, object]:
+    if result.timed_out or result.truncated or result.returncode not in (0, 1):
+        return {"availability": "unavailable"}
+    if result.returncode == 1:
+        return {"present": False}
+    try:
+        mode, uid, gid = result.stdout.decode("ascii").strip().split(":")
+        if len(mode) > 8 or not all(c in "0123456789abcdef" for c in mode) or (owner := _integer(uid)) is None or (group := _integer(gid)) is None:
+            raise ValueError
+    except (UnicodeDecodeError, ValueError):
+        return {"availability": "unavailable"}
+    return {"present": True, "custody": {"owner_uid": owner, "owner_gid": group, "mode_hex": mode}}
+
+
+def _journal_records(raw: bytes) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    if len(raw) > MAX_BYTES or raw.count(b"\n") > MAX_LINES:
+        return records
+    for line in raw.splitlines()[:MAX_RECORDS]:
+        try:
+            item = json.loads(line)
+            if not isinstance(item, dict):
+                continue
+            unit = item.get("_SYSTEMD_UNIT")
+            stamp = item.get("__MONOTONIC_TIMESTAMP")
+            message = item.get("MESSAGE")
+            if unit not in UNITS or not isinstance(stamp, str) or (number := _integer(stamp)) is None or not isinstance(message, str):
+                continue
+        except (ValueError, TypeError):
+            continue
+        cause = next((candidate for candidate in CAUSES if candidate in message), None)
+        if cause:
+            records.append({"unit": unit, "cause": cause, "timestamp": number})
+    return records
+
+
+def collect(phase: str, output: Path, deadline: float, runner: Runner = run_bounded, *, paths: Sequence[str] = PATHS, now: Callable[[], float] = time.monotonic) -> dict[str, object]:
     """Persist secret-free, fail-closed causal observations for one seam.
 
     The later shell envelope owns when this is called.  This collector never
@@ -157,23 +232,18 @@ def collect(phase: str, output: Path, deadline: float, runner: Runner, *, paths:
         return document
     document = {"phase": phase, "units": {}, "paths": {}, "job": {"availability": "unavailable"}, "journal": []}
     for unit in UNITS:
-        result = runner(("systemctl", "show", unit), deadline - now())
-        parsed = None if result.timed_out or result.truncated else _properties(result.stdout)
+        result = runner(("systemctl", "show", unit, *PROPERTY_ARGS), deadline)
+        parsed = None if result.returncode != 0 or result.timed_out or result.truncated else _properties(result.stdout)
         document["units"][unit] = parsed if parsed is not None else {"availability": "unavailable"}
     for path in paths:
-        # Caller supplies a fixed test command; only boolean exit status survives.
-        result = runner(("test", "-e", path), deadline - now())
-        document["paths"][path] = {"present": result.returncode == 0} if result.returncode in (0, 1) and not result.timed_out else {"availability": "unavailable"}
-    journal = runner(("journalctl", "--diagnostic-fixed-format"), deadline - now())
-    if not journal.timed_out and not journal.truncated and len(journal.stdout) <= MAX_BYTES:
-        for line in journal.stdout.splitlines()[:MAX_RECORDS]:
-            try:
-                item = json.loads(line)
-                unit, cause, stamp = item["unit"], item["cause"], item["timestamp"]
-            except (ValueError, KeyError, TypeError):
-                continue
-            if unit in UNITS and cause in CAUSES and isinstance(stamp, int) and 0 <= stamp <= 10**18:
-                document["journal"].append({"unit": unit, "cause": cause, "timestamp": stamp})
+        result = runner(("sudo", "-n", "stat", "-c", "%f:%u:%g", "--", path), deadline)
+        document["paths"][path] = _path_metadata(result)
+    for unit in UNITS:
+        journal = runner(("journalctl", "--no-pager", "--output=json", f"--lines={MAX_RECORDS}", "--since=@0", "--until=@9999999999", f"_SYSTEMD_UNIT={unit}"), deadline)
+        if journal.returncode == 0 and not journal.timed_out and not journal.truncated:
+            for record in _journal_records(journal.stdout):
+                if record not in document["journal"]:
+                    document["journal"].append(record)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(document, sort_keys=True))
     return document
