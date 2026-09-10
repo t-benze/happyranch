@@ -261,19 +261,19 @@ Contract (founder-approved in THR-028; refined in THR-078):
    uses the configured THR-181 hook, and committed escalations remain
    human-resolved.
 
-4. **Other child failures → bounded manager wake.** A child failure that is
-   **not** a retry of a previously-FAILED slice does not count toward the
-   ceiling; the parent wakes for a fresh decision step. Multiple independent
-   slice failures each produce their own wake, but each distinct slice
-   exhausts independently only after its own retry fails.
+4. **Other child failures → bounded manager wake.** Every unresolved child
+   failure preserves its causal lineage and wakes the owning manager for a
+   fresh decision step. Multiple independent failures remain distinct durable
+   context; they do not activate a runtime ceiling, reset, or upward route.
 
 5. **Fan-out join context.** On a fan-out parent, per-slice terminal context
    (including the exhausted-slice trigger) is injected via
    `_inject_fanout_join_context`, giving the task owner per-slice detail.
 
 6. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
-   COMPLETED) clears the active chain and hands the parent back to the
-   bounded-wake path (same per-slice ceiling + escalation).
+   COMPLETED) clears the active chain and hands the actual decision owner back
+   to the bounded-wake path. Passive pipeline carriers instead fail closed
+   through their outer fanout barrier with causal-leaf context.
 
 7. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
    next decision step. REVISE-verdict auto-advance in chains is unchanged.
@@ -287,11 +287,10 @@ Traps:
 - Retry links are mechanical provenance: unchanged-assignment re-execution
   and manager-directed revised work both require a valid predecessor link;
   neither is a semantic brief comparison or automatic escalation trigger.
-- Root-only escalation: `is_root(parent)` guard before `try_escalate`; the
-  escalation reason names the current unresolved FAILED leaf, not a stale
-  sibling. Non-root parents on exhaustion fail and route upward (THR-033
-  Change A).
-- Escalation clears any active chain/fanout before escalating.
+- A manager may propose escalation through the configured THR-181 hook; a
+  committed escalation remains human-resolved. The causal reason names the
+  current unresolved FAILED leaf rather than a stale sibling. Non-root owners
+  do not route failure upward merely because a linked retry failed.
 - Chain-advance branch handles FAILED subtasks as well as COMPLETED:
   FAILED subtasks clear the chain and fall through to sibling-check +
   bounded-wake.

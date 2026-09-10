@@ -3873,7 +3873,7 @@ def test_thr183_genuine_unresolved_second_failure_wakes_owner_without_escalation
 
 
 def test_fanout_dispatched_manager_owns_failed_child_not_carrier(runtime, db, monkeypatch):
-    """A decision-capable fanout ``task`` is not a passive pipeline carrier."""
+    """A fanout-dispatched manager owns linked failures locally, not as a carrier."""
     from runtime.orchestrator.orchestrator import Orchestrator
 
     for name in ("engineering_head", "dev_agent"):
@@ -3881,15 +3881,26 @@ def test_fanout_dispatched_manager_owns_failed_child_not_carrier(runtime, db, mo
     db.insert_task(TaskRecord(id="T-OWNER-ROOT", brief="root", assigned_agent="engineering_head"))
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
     orch._queue = _SlugQueue()
+    owner_turns = 0
 
     def run(task_id, *args, **kwargs):
+        nonlocal owner_turns
         if task_id == "T-OWNER-ROOT":
             decision = {"action": "fanout", "width_cap_ack": 2, "children": [
                 {"agent": "engineering_head", "prompt": "nested decision owner"},
                 {"agent": "dev_agent", "prompt": "live sibling"},
             ]}
         elif db.get_task(task_id).task_type == "task":
-            decision = {"action": "delegate", "agent": "dev_agent", "prompt": "bounded child"}
+            owner_turns += 1
+            if owner_turns == 1:
+                decision = {"action": "delegate", "agent": "dev_agent", "prompt": "bounded child"}
+            elif owner_turns == 2:
+                decision = {
+                    "action": "delegate", "agent": "dev_agent", "prompt": "linked recovery",
+                    "revisit_of_task_id": db.get_children(task_id)[-1],
+                }
+            else:
+                decision = {"action": "done", "summary": "local manager decision"}
         else:
             return _make_result(success=False), None
         return _make_result(), _make_report(output_summary=json.dumps(decision))
@@ -3904,6 +3915,17 @@ def test_fanout_dispatched_manager_owns_failed_child_not_carrier(runtime, db, mo
     assert db.get_task(leaf).status == TaskStatus.FAILED
     assert db.get_task(owner.id).status == TaskStatus.IN_PROGRESS
     assert db.get_task(owner.id).block_kind == BlockKind.DELEGATED
+    orch.run_step(owner.id)
+    retry = db.get_children(owner.id)[-1]
+    assert db.get_task(retry).revisit_of_task_id == leaf
+    orch.run_step(retry)
+    assert db.get_task(retry).status == TaskStatus.FAILED
+    orch.run_step(owner.id)
+    assert owner_turns == 3
+    assert db.get_task(owner.id).status == TaskStatus.COMPLETED
+    outer = db.get_task("T-OWNER-ROOT")
+    assert outer.status == TaskStatus.IN_PROGRESS
+    assert outer.block_kind == BlockKind.DELEGATED
 
 
 def test_serial_second_failure_wakes_owner_with_real_terminal_and_revised_dispatch(
@@ -3948,15 +3970,29 @@ def test_serial_second_failure_wakes_owner_with_real_terminal_and_revised_dispat
                     "revisit_of_task_id": original,
                 }
             else:
-                decision = {"action": "done", "summary": "manager decided"}
+                # This is the post-second-failure owner turn.  It must be a
+                # real linked recovery decision, not an early ``done``.
+                decision = {
+                    "action": "delegate", "agent": "dev_agent", "prompt": "third revision",
+                    "revisit_of_task_id": db.get_children("T-SERIAL")[-1],
+                }
             return _make_result(), _make_report(output_summary=json.dumps(decision))
-        return _make_result(success=False), None
+        ordinal = len(db.get_children("T-SERIAL"))
+        return _make_result(), _make_report(
+            output_summary=f"terminal failure {ordinal}", status="blocked", verdict="FAIL",
+        )
 
     monkeypatch.setattr(orch, "_run_agent", run)
     orch.run_step("T-SERIAL")
     original = db.get_children("T-SERIAL")[0]
     orch.run_step(original)
     assert db.get_task(original).status is TaskStatus.FAILED
+    db.insert_task_result(
+        task_id=original, agent="dev_agent", session_id="serial-original",
+        status="failed", confidence_score=0, output_summary="terminal failure 1",
+        verdict="FAIL",
+    )
+    original_note = db.get_task(original).note
 
     # Consume the first manager wake and dispatch a linked, revised child.
     orch.run_step("T-SERIAL")
@@ -3964,6 +4000,12 @@ def test_serial_second_failure_wakes_owner_with_real_terminal_and_revised_dispat
     assert db.get_task(revised).revisit_of_task_id == original
     orch.run_step(revised)
     assert db.get_task(revised).status is TaskStatus.FAILED
+    db.insert_task_result(
+        task_id=revised, agent="dev_agent", session_id="serial-revised",
+        status="failed", confidence_score=0, output_summary="terminal failure 2",
+        verdict="FAIL",
+    )
+    revised_note = db.get_task(revised).note
 
     # A duplicate terminal callback may enqueue a stale delivery; the real
     # claim seam admits only one manager invocation.
@@ -3972,12 +4014,20 @@ def test_serial_second_failure_wakes_owner_with_real_terminal_and_revised_dispat
     orch.run_step("T-SERIAL")
     orch.run_step("T-SERIAL")
 
+    children = db.get_children("T-SERIAL")
+    third = children[-1]
     assert owner_turns == 3
+    assert len(children) == 3
+    assert db.get_task(third).revisit_of_task_id == revised
     assert db.get_task(original).status is TaskStatus.FAILED
     assert db.get_task(revised).status is TaskStatus.FAILED
+    assert db.get_task(original).note == original_note
+    assert db.get_task(revised).note == revised_note
     final_prompt = prompts[-1]
     assert f"task_id={revised}" in final_prompt
     assert "status=failed" in final_prompt
+    assert "verdict=FAIL" in final_prompt
+    assert "reason=self-blocked: terminal failure 2" in final_prompt
     assert f"revisit_of_task_id={original}" in final_prompt
     assert not [
         row for row in db.get_audit_logs("T-SERIAL")
