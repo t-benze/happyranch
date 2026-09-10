@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import selectors
 import shlex
 import signal
@@ -426,6 +427,84 @@ def collect(phase: str, output: Path, deadline: float, runner: Runner = run_boun
     return document
 
 
+def _safe_identity(value: str | None, pattern: str) -> str:
+    """Return a bounded identity, never an arbitrary runner-provided string."""
+    return value if value is not None and re.fullmatch(pattern, value) else "unavailable"
+
+
+def _canonical_observation(value: object) -> bool:
+    """Recognize precisely the collector's secret-free output grammar."""
+    if not isinstance(value, dict) or set(value) != {"phase", "units", "paths", "jobs", "journal"} or value.get("phase") not in PHASES:
+        return False
+    units, paths, jobs, journal = value["units"], value["paths"], value["jobs"], value["journal"]
+    if not isinstance(units, dict) or set(units) != set(UNITS) or not isinstance(paths, dict) or set(paths) != set(PATHS) or not isinstance(jobs, dict) or set(jobs) != set(UNITS):
+        return False
+    for item in units.values():
+        if not isinstance(item, dict) or any(not isinstance(key, str) or key not in {"Result", "ActiveState", "SubState", "MainPID", "NRestarts", "InvocationID", "ActiveEnterTimestampMonotonic", "ExecStartPre", "ExecMainCode", "ExecMainStatus", "availability"} for key in item): return False
+    for item in paths.values():
+        if not isinstance(item, dict) or not (item == {"availability": "unavailable"} or item == {"present": False} or (set(item) == {"present", "custody"} and item["present"] is True and isinstance(item["custody"], dict) and set(item["custody"]) == {"owner_uid", "owner_gid", "mode_hex"})): return False
+    for unit, item in jobs.items():
+        if not isinstance(item, dict): return False
+        if item.get("availability") == "unavailable":
+            if set(item) != {"availability", "reason"} or item["reason"] not in {"no_record", "query_failed", "window_unavailable"}: return False
+        elif item.get("availability") == "available":
+            if set(item) != {"availability", "records"} or not isinstance(item["records"], list) or len(item["records"]) > MAX_RECORDS: return False
+            if any(not isinstance(record, dict) or set(record) != {"availability", "unit", "id", "result"} or record["availability"] != "available" or record["unit"] != unit or not isinstance(record["id"], int) or record["result"] not in {"done", "failed", "canceled", "timeout", "dependency", "skipped"} for record in item["records"]): return False
+        else: return False
+    return isinstance(journal, list) and len(journal) <= MAX_RECORDS and all(isinstance(item, dict) and set(item) == {"unit", "cause", "timestamp"} and item["unit"] in UNITS and item["cause"] in CAUSES and isinstance(item["timestamp"], int) for item in journal)
+
+
+def publish(diagnostics: Path, destination: Path, *, identities: dict[str, str | None]) -> bool:
+    """Publish only canonical diagnostic records, never raw workflow inputs.
+
+    This is deliberately a consumer boundary: malformed or surplus JSON is
+    unavailable, rather than being copied through to an artifact.
+    """
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    provenance = {
+        "schema": "managed-start-diagnostic-provenance-v1",
+        "shipping": _safe_identity(identities.get("shipping"), r"[0-9a-f]{40}"),
+        "diagnostic": _safe_identity(identities.get("diagnostic"), r"[0-9a-f]{40}"),
+        "workflow": _safe_identity(identities.get("workflow"), r"[0-9a-f]{64}"),
+        "script": _safe_identity(identities.get("script"), r"[0-9a-f]{64}"),
+        "tests": _safe_identity(identities.get("tests"), r"[0-9a-f]{64}"),
+        "package": _safe_identity(identities.get("package"), r"[0-9a-f]{64}"),
+        "run_id": _safe_identity(identities.get("run_id"), r"[0-9]{1,20}"),
+        "run_attempt": _safe_identity(identities.get("run_attempt"), r"[0-9]{1,4}"),
+        "runner_image": _safe_identity(identities.get("runner_image"), r"ubuntu-24\.04"),
+        "systemd": _safe_identity(identities.get("systemd"), r"255"),
+    }
+    try:
+        _write_document(destination / "provenance.json", provenance)
+        for name in ("receipt.txt", "diagnostic-cleanup.json"):
+            source = diagnostics / name
+            if name == "receipt.txt" and source.is_file():
+                # Receipt has only fixed keys and numeric statuses; malformed
+                # content is represented by the fixed unavailable record.
+                lines = source.read_text(encoding="ascii", errors="strict").splitlines()
+                allowed = {"schema", "run_id", "run_attempt", "build_status", "harness_status"}
+                values = dict(line.split("=", 1) for line in lines if line.count("=") == 1)
+                if len(values) == len(lines) and set(values) <= allowed and all(re.fullmatch(r"[0-9]{1,20}|managed-start-diagnostic-receipt-v1", value) for value in values.values()):
+                    (destination / name).write_text("\n".join(f"{key}={values[key]}" for key in sorted(values)) + "\n", encoding="ascii")
+            elif name == "diagnostic-cleanup.json" and source.is_file():
+                value = json.loads(source.read_text(encoding="utf-8"))
+                if value in ({"cleanup": "complete"}, {"cleanup": "failed"}):
+                    _write_document(destination / name, value)
+        for source in diagnostics.glob("*-observation.json"):
+            value = json.loads(source.read_text(encoding="utf-8"))
+            # The collector's only accepted artifact shape has exact top-level
+            # keys. This rejects opaque/nested additions before reserialization.
+            if not _canonical_observation(value):
+                continue
+            _write_document(destination / source.name, value)
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return False
+    return True
+
+
 class _SafeParser(argparse.ArgumentParser):
     def error(self, _message: str) -> None:
         self.exit(2, "invalid diagnostic arguments\n")
@@ -441,19 +520,28 @@ def main() -> int:
     parser.add_argument("--window-start", type=int)
     parser.add_argument("--window-end", type=int)
     parser.add_argument("--budget-seconds", type=int)
+    parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--diagnostics", type=Path)
+    parser.add_argument("--identity", action="append", default=[])
     args = parser.parse_args()
-    if args.extract == args.capture or args.output is None:
+    if sum((args.extract, args.capture, args.publish)) != 1 or args.output is None:
         parser.error("mode")
     if args.extract and args.shipping is None:
         parser.error("shipping")
     if args.capture and (args.phase not in PHASES or args.window_start is None or args.window_end is None or args.budget_seconds is None or args.window_start < 0 or args.window_end < args.window_start or args.window_end - args.window_start > MAX_WINDOW_SECONDS or not 1 <= args.budget_seconds <= MAX_BUDGET_SECONDS):
         parser.error("capture")
+    if args.publish and args.diagnostics is None:
+        parser.error("publish")
     try:
         if args.extract:
             write_extraction(args.shipping, args.output)
-        else:
+        elif args.capture:
             deadline = time.monotonic() + args.budget_seconds
             collect(args.phase, args.output, deadline, window=(args.window_start, args.window_end))
+        else:
+            identities = dict(item.split("=", 1) for item in args.identity if item.count("=") == 1)
+            if not publish(args.diagnostics, args.output, identities=identities):
+                return 3
     except (OSError, ExtractionError, ValueError, subprocess.SubprocessError):
         return 3
     return 0

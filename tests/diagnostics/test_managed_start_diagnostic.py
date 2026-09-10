@@ -271,10 +271,38 @@ def test_workflow_uses_extractor_not_second_startup_program() -> None:
     assert "DENIAL_PROGRAM" not in SCRIPT.read_text()
     assert "peer-visible" not in SCRIPT.read_text()
     assert ' >"$package_tmp/build.raw" 2>&1' in workflow
-    assert ' >"$PACKAGE_TMP/harness.raw" 2>&1' in workflow
-    assert 'path: ${{ env.PUBLISH }}' in workflow
+    assert ' >"$package_tmp/harness.raw" 2>&1' in workflow
+    assert "path: ${{ env.PUBLISH || format('{0}/managed-start-publish', runner.temp) }}" in workflow
     assert 'path: ${{ env.DIAGNOSTICS }}' not in workflow
-    assert 'find "$DIAGNOSTICS" -maxdepth 1 -type f -name \'*-observation.json\'' in workflow
+    assert '--publish --diagnostics "$diagnostics" --output "$publish"' in workflow
+
+
+def test_publication_consumer_rejects_opaque_json_and_sanitizes_metadata(tmp_path: Path) -> None:
+    """Exercise the workflow consumer boundary without forwarding shell effects."""
+    diagnostics, published = tmp_path / "diagnostics", tmp_path / "published"
+    diagnostics.mkdir()
+    canary = "OPAQUE_NESTED_CANARY"
+    (diagnostics / "positive_failure-observation.json").write_text(json.dumps({"phase": "positive_failure", "units": {}, "paths": {}, "jobs": {}, "journal": [], "extra": {"secret": canary}}))
+    (diagnostics / "diagnostic-cleanup.json").write_text(json.dumps({"cleanup": "complete", "extra": canary}))
+    (diagnostics / "receipt.txt").write_text(f"schema=managed-start-diagnostic-receipt-v1\\nrun_id=12\\nextra={canary}\\n")
+    assert diagnostic.publish(diagnostics, published, identities={"run_id": "12", "run_attempt": "1", "runner_image": "ubuntu-24.04", "systemd": "255", "shipping": "a" * 40, "diagnostic": "b" * 40, "workflow": "c" * 64, "script": "d" * 64, "tests": "e" * 64, "package": "f" * 64})
+    output = "".join(path.read_text() for path in published.iterdir())
+    assert canary not in output
+    assert not (published / "positive_failure-observation.json").exists()
+    assert not (published / "diagnostic-cleanup.json").exists()
+    assert not (published / "receipt.txt").exists()
+    provenance = json.loads((published / "provenance.json").read_text())
+    assert provenance["runner_image"] == "ubuntu-24.04"
+
+
+def test_publication_consumer_retains_only_canonical_observation_and_cleanup(tmp_path: Path) -> None:
+    diagnostics, published = tmp_path / "diagnostics", tmp_path / "published"
+    diagnostics.mkdir()
+    document = diagnostic.collect("positive_failure", diagnostics / "positive_failure-observation.json", 9999999999, _collector_runner(), window=(1, 2), now=lambda: 0)
+    (diagnostics / "diagnostic-cleanup.json").write_text('{"cleanup":"failed"}')
+    assert diagnostic.publish(diagnostics, published, identities={})
+    assert json.loads((published / "positive_failure-observation.json").read_text()) == document
+    assert json.loads((published / "diagnostic-cleanup.json").read_text()) == {"cleanup": "failed"}
 
 
 def test_actual_shipping_denial_validator_accepts_complete_matrix_and_rejects_invalid(tmp_path: Path) -> None:
