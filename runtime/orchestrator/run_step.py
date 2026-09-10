@@ -2346,27 +2346,21 @@ def _carrier_complete_on_chain_complete(
     return True
 
 
-# THR-078: per-slice retry ceiling = 1.  When a fan-out owner re-dispatches a
-# failed slice (revisit_of_task_id on the new child points to the failed
-# predecessor), the orchestrator can derive retry count from existing DB
-# lineage — no schema migration.
-_FAILURE_ROUND_BOUND = 2  # kept as doc-only reference (historical failure-recovery design)
-_SLICE_RETRY_CEILING = 1  # per-slice retry ceiling; ownership stays with manager
+# Historical THR-078 lineage utility retained for old records and diagnostic
+# readers. Current failure routing does not call it: a valid retry link is
+# mechanical provenance and every unresolved failed leaf returns to its owner.
+_FAILURE_ROUND_BOUND = 2  # historical failure-recovery design reference
+_SLICE_RETRY_CEILING = 1  # historical diagnostic label; not a routing guard
 
 
 def _is_slice_retry_exhausted(
     orch: "Orchestrator", child: "TaskRecord", parent: "TaskRecord",
 ) -> bool:
-    """Return True if ``child`` is a retry of a previously-FAILED slice
-    under the same ``parent``, meaning the per-slice ceiling (_SLICE_RETRY_CEILING)
-    of 1 has been exhausted. Exhaustion is causal context for the owner; it
-    never commits a runtime escalation or suppresses the manager wake.
+    """Classify legacy retry lineage for diagnostic readers only.
 
-    Ceiling=1 means: exactly ONE retry is allowed AFTER a slice's FIRST
-    FAILURE; the SAME slice's SECOND failure returns a bounded decision to
-    its owner.  A retry of a previously COMPLETED (successful) slice does
-    not exhaust the ceiling on its first failure — the ceiling only fires
-    after a predecessor FAILED.
+    Current failure routing does not call this helper. A valid
+    ``revisit_of_task_id`` is mechanical provenance; an unresolved failed
+    leaf returns to its owner regardless of this historical classification.
 
     Derivation: follow the child's ``revisit_of_task_id`` chain.  A FAILED
     ancestor under the same parent counts toward the ceiling, but a COMPLETED
@@ -2571,20 +2565,12 @@ def _enqueue_parent_if_waiting(
     Per-slice revisit-lineage rule (THR-078, TASK-573 bounded failure-recovery):
       - every subtask COMPLETED → enqueue parent for its next manager
         decision step (unchanged happy path).
-      - a subtask FAILED, and no other failed child in this delegation
-        slot has exhausted its retry ceiling → clear any active chain,
-        enqueue the parent for a bounded manager-wake decision step. The
-        parent receives the failed subtask's reason so it can author an
-        updated brief.
-      - a subtask FAILED and its per-slice retry ceiling is exhausted
-        (this slice was already retried once — its ``revisit_of_task_id``
-        ancestor is a FAILED child of this same parent) → retain the current
-        unresolved FAILED leaf and wake the owning manager. The ceiling is
-        ``_SLICE_RETRY_CEILING = 1`` (exactly one retry after a slice's first
-        failure), evaluated per-slice via ``_is_slice_retry_exhausted`` from
-        the failing child's ``revisit_of_task_id`` lineage (no schema
-        migration). Exhaustion is context for the owner's decision; it does
-        not cause a runtime escalation or upward failure cascade.
+      - a subtask FAILED → retain the current unresolved FAILED leaf, clear
+        any active chain, and enqueue the owning manager for a bounded
+        decision step. The parent receives the failed subtask's reason so it
+        can decide whether to re-dispatch unchanged work or issue a revised
+        assignment. A linked historical retry failure is causal context only;
+        it does not cause a runtime escalation or upward failure cascade.
 
     ``root_auto_revisit_spawned`` is a retained compatibility/bookkeeping
     input. All current production callers (opaque-failure branches and
@@ -2696,13 +2682,10 @@ def _enqueue_parent_if_waiting(
 
     failed = [s for s in siblings if s.status == TaskStatus.FAILED]
     if failed:
-        # THR-078: per-slice retry ceiling (replaces old count-based
-        # _FAILURE_ROUND_BOUND).  THR-183: ceiling evaluation MUST use the
-        # current unresolved FAILED leaf of each logical retry lineage, not
-        # every historical FAILED sibling.  A later COMPLETED/SUPERSEDED
-        # descendant retires earlier failures in the same lineage, so a normal
-        # parent wake initiated by a completed child cannot select a stale
-        # failed sibling.
+        # THR-183: use the current unresolved FAILED leaf of each logical
+        # retry lineage, not every historical FAILED sibling. A later
+        # COMPLETED/SUPERSEDED descendant retires earlier failures in that
+        # lineage, so a normal parent wake cannot select a stale reason.
 
         unresolved_leaves = _current_unresolved_failed_leaves(orch, failed, parent)
         if unresolved_leaves:
@@ -2719,10 +2702,10 @@ def _enqueue_parent_if_waiting(
                 _carrier_fail_immediate(orch, parent, causal_leaf.id)
                 return  # carrier failure feeds the fan-out parent's barrier
 
-            # A retry-ceiling hit remains truthful causal context in the
+            # A linked historical retry remains truthful causal context in the
             # child's durable row/lineage. It is not a daemon escalation or
             # upward failure cascade: the owning manager decides whether to
-            # revise work or propose escalation through THR-181.
+            # re-dispatch, revise work, or propose escalation through THR-181.
             # Enqueue the parent for that fresh decision step. Do NOT
             # cascade-fail.
             # NOTE: active_fanout is NOT cleared here — the CAS-winner needs
@@ -3131,7 +3114,7 @@ def _maybe_post_thread_followup(
     # Find the original dispatched root via the revisit chain.
     # walk_revisit_chain returns [task, predecessor, ..., original].
     # Use a hop bound large enough to cover any realistic revisit chain
-    # (200 hops, matching the bound in _is_slice_retry_exhausted), and
+    # (200 hops, matching the historical retry-lineage diagnostic bound), and
     # handle LineageTooDeep defensively rather than crashing and silently
     # discarding the followup without any audit trail.
     from runtime.infrastructure.database import LineageTooDeep  # local: avoid cycle

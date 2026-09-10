@@ -303,20 +303,19 @@ Contract (founder-approved in THR-028, refined in THR-078):
    decision step. The failed subtask's reason is available so the task owner can
    author an updated brief.
 
-2. **Per-slice retry ceiling (THR-078).** A delegated slot gets exactly one
-   linked retry: the ceiling is `_SLICE_RETRY_CEILING = 1` — a slice that already had a
-   FAILED predecessor under the same parent (tracked via `revisit_of_task_id`
-   lineage, evaluated by `_is_slice_retry_exhausted`) and fails again exhausts
-   the ceiling. Retry of a COMPLETED predecessor does not count toward the
-   ceiling, and a later COMPLETED or SUPERSEDED descendant in the same lineage
-   retires earlier FAILED ancestors for ceiling evaluation (THR-183).
+2. **Mechanical retry provenance (THR-078).** A manager may re-dispatch
+   unchanged work or direct revised work with a valid `revisit_of_task_id`
+   link to a FAILED same-parent predecessor. The link records history; it
+   neither compares briefs nor itself authorizes root escalation. A later
+   COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors from
+   causal selection (THR-183).
 
-3. **Manager ownership on exhaustion.** When a slice's retry ceiling is
-   exhausted (its 2nd failure), its durable FAILED lineage remains available
-   and the owning parent is woken for a manager decision. The runtime neither
-   commits `runtime_retry_ceiling` escalation nor fails a nested decision owner
-   upward. A manager-proposed escalation uses the existing THR-181 hook and
-   its configured outcome; committed escalations remain human-resolved.
+3. **Manager ownership after failure.** An unresolved failed child keeps its
+   durable lineage and wakes its owning parent for a manager decision. The
+   runtime neither commits `runtime_retry_ceiling` escalation nor fails a
+   nested decision owner upward. A manager-proposed escalation uses the
+   existing THR-181 hook and its configured outcome; committed escalations
+   remain human-resolved.
 
 4. **Chain-leg failure.** A failed workflow chain leg clears the active chain
    and returns its decision owner to bounded wake. A passive fan-out pipeline
@@ -333,14 +332,9 @@ Contract (founder-approved in THR-028, refined in THR-078):
 
 Traps:
 
-- Retry ceiling is per-slice: `_is_slice_retry_exhausted` walks the failing
-  child's `revisit_of_task_id` chain; only a FAILED predecessor under the
-  same parent exhausts the slice. COMPLETED/SUPERSEDED predecessors retire
-  earlier FAILED ancestors for ceiling evaluation (THR-183).
-- Ceiling constant: `_SLICE_RETRY_CEILING = 1` (one retry after a slice's
-  first failure).
-- A retry-ceiling hit is causal context, not a runtime escalation trigger:
-  the owner decides revised recovery or a THR-181 escalation proposal.
+- A linked historical failure is causal context, not a runtime escalation
+  trigger: the owner decides unchanged re-execution, revised recovery, or a
+  THR-181 escalation proposal.
 - Retry links are mechanical provenance, never a semantic brief comparison:
   unchanged assignment re-execution and manager-directed revised work both
   require an explicit valid predecessor link, and the daemon creates neither

@@ -70,7 +70,7 @@ current-boot coverage.
 - **Revisit.** `happyranch revisit <task-id>` spawns a fresh root task inheriting brief and team from a terminal predecessor; old lineage freezes. Specs `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`, `docs/superpowers/specs/2026-04-23-revisit-root-link-design.md`. See [Revisit](#revisit) below for traps.
 - **Session-timeout auto-route (RETIRED — TASK-3604).** Automatic daemon successor creation on opaque agent failures has been removed per founder direction. Opaque failures now end FAILED and hand to the existing parent/founder recovery paths (bounded manager-wake, escalation, explicit founder revisit). Legacy `auto_revisit_of` audit rows remain readable for historical compatibility. Original spec `docs/superpowers/specs/2026-05-25-session-timeout-auto-route-design.md` (retired).
 - **Cancel (race + actor attribution).** Founder/agent task cancellation with race-safe state handling and audit attribution of who cancelled. Specs `docs/superpowers/specs/2026-05-26-cancel-race-design.md`, `docs/superpowers/specs/2026-06-06-cancel-actor-attribution-design.md`; impl in task routes and run-step helpers.
-- **Bounded failure-recovery (TASK-573 / THR-078 / THR-183).** When a subtask fails, the parent task is re-enqueued for a bounded manager-wake decision step (not cascade-failed). Each delegated slot gets exactly one linked retry: the current unresolved FAILED leaf of a slice's `revisit_of_task_id` lineage exhausts that slot on its second failure and returns durable causal context to the owning manager, never to a runtime retry-ceiling escalation or upward cascade. A later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors so a completed-child wake cannot select a stale reason. A manager may explicitly propose escalation through the configured THR-181 path; inactive/static policy is not evaluator CONTINUE, and committed escalations remain human-resolved. Passive pipeline carriers fail closed through their outer barrier with causal-leaf context, while fanout-dispatched `task` managers decide locally. Retry provenance is mechanical: the daemon neither compares briefs nor creates retry/successor loops. Implementation: `runtime/orchestrator/run_step.py:_enqueue_parent_if_waiting`, `_is_slice_retry_exhausted`. See [Bounded failure-recovery](#bounded-failure-recovery).
+- **Bounded failure-recovery (TASK-573 / THR-078 / THR-183).** When a subtask fails, the parent task is re-enqueued for a bounded manager-wake decision step (not cascade-failed). A linked historical failure remains durable causal context for the owning manager, never a runtime retry-ceiling escalation or upward cascade. A later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors so a completed-child wake cannot select a stale reason. A manager may mechanically re-dispatch unchanged work or direct revised work with a valid predecessor link; the daemon neither compares briefs nor creates retry/successor loops. A manager may explicitly propose escalation through the configured THR-181 path; inactive/static policy is not evaluator CONTINUE, and committed escalations remain human-resolved. Passive pipeline carriers fail closed through their outer barrier with causal-leaf context, while fanout-dispatched `task` managers decide locally. Implementation: `runtime/orchestrator/run_step.py:_enqueue_parent_if_waiting`. See [Bounded failure-recovery](#bounded-failure-recovery).
 
 ### Agent runtime & executors
 
@@ -248,15 +248,12 @@ Contract (founder-approved in THR-028; refined in THR-078):
    decision step. The failed subtask's reason (`note` + completion report /
    error context) is available so the task owner can author an updated brief.
 
-2. **Per-slice retry ceiling.** Each delegated slot gets exactly one retry
-   (THR-078, `_SLICE_RETRY_CEILING = 1`). A second failure of the **same**
-   retried slice exhausts the slot and escalates. Determination uses existing
-   `revisit_of_task_id` lineage within the same parent — the orchestrator
-   walks the revisit chain backward looking for a FAILED ancestor with
-   `parent_task_id == parent.id` (`_is_slice_retry_exhausted`). A later
-   COMPLETED or SUPERSEDED descendant in the lineage retires earlier FAILED
-   ancestors for ceiling evaluation (THR-183). No schema migration, no sibling
-   counting.
+2. **Mechanical retry provenance.** A manager may re-dispatch unchanged work
+   or direct revised work with a valid `revisit_of_task_id` link to a FAILED
+   same-parent predecessor. The link records lineage; it does not classify a
+   brief, authorize root escalation, or cause daemon retry/successor creation.
+   A later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors
+   from causal selection (THR-183). No schema migration or sibling counting.
 
 3. **Manager ownership on exhaustion.** A retried slice's second failure
    retains its durable causal lineage and wakes its owning manager. It is not
@@ -287,15 +284,9 @@ Contract (founder-approved in THR-028; refined in THR-078):
 
 Traps:
 
-- `_SLICE_RETRY_CEILING = 1`: exactly one retry after a slice's first failure;
-  the same slice's second failure escalates. `_FAILURE_ROUND_BOUND = 2` is
-  kept as a doc-only reference (historical failure-recovery design).
-- Retry detection: `_is_slice_retry_exhausted` walks the child's
-  `revisit_of_task_id` chain; only FAILED ancestors with the same
-  `parent_task_id` count toward the ceiling, and a COMPLETED/SUPERSEDED
-  ancestor retires earlier FAILED ancestors for ceiling evaluation
-  (THR-183). A retry of a previously COMPLETED slice is a fresh dispatch,
-  not an escalation trigger.
+- Retry links are mechanical provenance: unchanged-assignment re-execution
+  and manager-directed revised work both require a valid predecessor link;
+  neither is a semantic brief comparison or automatic escalation trigger.
 - Root-only escalation: `is_root(parent)` guard before `try_escalate`; the
   escalation reason names the current unresolved FAILED leaf, not a stale
   sibling. Non-root parents on exhaustion fail and route upward (THR-033

@@ -3906,6 +3906,85 @@ def test_fanout_dispatched_manager_owns_failed_child_not_carrier(runtime, db, mo
     assert db.get_task(owner.id).block_kind == BlockKind.DELEGATED
 
 
+def test_serial_second_failure_wakes_owner_with_real_terminal_and_revised_dispatch(
+    runtime, db, monkeypatch,
+):
+    """A real terminal sequence keeps both failed rows and returns control.
+
+    This is intentionally a shipping-seam test rather than seeded FAILED
+    rows: the first delegated child fails through ``run_step``, the owner
+    consumes that wake and dispatches a valid linked revision, and that child
+    also fails through ``run_step``.  The final owner prompt therefore proves
+    the durable causal id/status/verdict/reason/revisit context available to
+    the manager, while duplicate delivery cannot invoke it twice.
+    """
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    (runtime.workspaces_dir / "engineering_head").mkdir(parents=True, exist_ok=True)
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
+    db.insert_task(TaskRecord(
+        id="T-SERIAL", brief="root", assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    orch._queue = _SlugQueue()
+    prompts: list[str] = []
+    owner_turns = 0
+
+    def run(task_id, agent, prompt, **kwargs):
+        nonlocal owner_turns
+        if task_id == "T-SERIAL":
+            owner_turns += 1
+            prompts.append(prompt)
+            if owner_turns == 1:
+                decision = {"action": "delegate", "agent": "dev_agent", "prompt": "original"}
+            elif owner_turns == 2:
+                original = db.get_children("T-SERIAL")[0]
+                decision = {
+                    "action": "delegate", "agent": "dev_agent", "prompt": "revised",
+                    "revisit_of_task_id": original,
+                }
+            else:
+                decision = {"action": "done", "summary": "manager decided"}
+            return _make_result(), _make_report(output_summary=json.dumps(decision))
+        return _make_result(success=False), None
+
+    monkeypatch.setattr(orch, "_run_agent", run)
+    orch.run_step("T-SERIAL")
+    original = db.get_children("T-SERIAL")[0]
+    orch.run_step(original)
+    assert db.get_task(original).status is TaskStatus.FAILED
+
+    # Consume the first manager wake and dispatch a linked, revised child.
+    orch.run_step("T-SERIAL")
+    revised = db.get_children("T-SERIAL")[-1]
+    assert db.get_task(revised).revisit_of_task_id == original
+    orch.run_step(revised)
+    assert db.get_task(revised).status is TaskStatus.FAILED
+
+    # A duplicate terminal callback may enqueue a stale delivery; the real
+    # claim seam admits only one manager invocation.
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+    _enqueue_parent_if_waiting(orch, revised)
+    orch.run_step("T-SERIAL")
+    orch.run_step("T-SERIAL")
+
+    assert owner_turns == 3
+    assert db.get_task(original).status is TaskStatus.FAILED
+    assert db.get_task(revised).status is TaskStatus.FAILED
+    final_prompt = prompts[-1]
+    assert f"task_id={revised}" in final_prompt
+    assert "status=failed" in final_prompt
+    assert f"revisit_of_task_id={original}" in final_prompt
+    assert not [
+        row for row in db.get_audit_logs("T-SERIAL")
+        if row["action"] in {"escalation", "authority_hook"}
+    ]
+
+
 def test_passive_carrier_join_keeps_causal_leaf_details(runtime, db, monkeypatch):
     """The actual outer-manager prompt names both carrier and causal leaf."""
     from runtime.orchestrator.orchestrator import Orchestrator

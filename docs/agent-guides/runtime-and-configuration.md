@@ -475,14 +475,12 @@ Contract (founder-approved in THR-028, refined in THR-078):
    decision step. The failed subtask's reason (`note` + completion report /
    error context) is available so the task owner can author an updated brief.
 
-2. **Per-slice retry ceiling (THR-078).** A delegated slot gets exactly one
-   retry: the ceiling is `_SLICE_RETRY_CEILING = 1` — a slice whose
-   `revisit_of_task_id` ancestor (a FAILED child of the same parent) failed
-   again exhausts the ceiling. The ceiling is evaluated per-slice via
-   `_is_slice_retry_exhausted` from the failing child's `revisit_of_task_id`
-   lineage (no schema migration). A later COMPLETED or SUPERSEDED descendant
-   in the same lineage retires earlier FAILED ancestors for ceiling evaluation
-   (THR-183).
+2. **Mechanical retry provenance (THR-078).** A manager may re-dispatch
+   unchanged work or direct revised work with a valid `revisit_of_task_id`
+   link to a FAILED same-parent predecessor. The link is historical
+   provenance, not semantic brief comparison or automatic root escalation.
+   A later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors
+   from causal selection (THR-183).
 
 3. **Manager ownership on exhaustion.** A retried slice's second failure keeps
    its durable causal lineage and wakes the owning manager. It is not a runtime
@@ -505,7 +503,7 @@ Contract (founder-approved in THR-028, refined in THR-078):
 
 Implementation: `runtime/orchestrator/run_step.py` —
 `_enqueue_parent_if_waiting`, `_advance_chain_for_completed_child`,
-`_is_slice_retry_exhausted`, `_SLICE_RETRY_CEILING`. See also
+and the retry-link validation seam. See also
 `docs/agent-guides/features-and-invariants.md#bounded-failure-recovery` and
 `docs/agent-guides/orchestrator-contracts.md`.
 
