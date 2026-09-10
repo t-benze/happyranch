@@ -635,6 +635,9 @@ if n == 'git' and len(a) == 4 and a[0] == '-C' and a[2:] == ['rev-parse', 'HEAD'
 if n == 'uv' and a[:3] == ['run', 'python', 'app/linux/package/build_package.py']: raise SystemExit(int(os.environ.get('FINAL_BUILD_EXIT', '0')))
 if n == 'uv' and a == ['sync', '--frozen', '--group', 'build']: raise SystemExit(int(os.environ.get('SYNC_EXIT', '0')))
 if n == 'uv' and (a[:2] == ['build', '--wheel'] or a[:3] == ['run', 'python', 'app/linux/package/build_connector.py']): raise SystemExit(0)
+if n == 'python' and a == [os.environ['GITHUB_WORKSPACE'] + '/diagnostic/scripts/diagnostics/managed_start_diagnostic.py', '--extract', '--shipping', 'app/linux/package/real_systemd_n3.sh', '--output', os.environ['PACKAGE_TMP'] + '/diagnostic-harness.sh']:
+    pathlib.Path(a[-1]).write_text('# finite fixture harness\\n')
+    raise SystemExit(int(os.environ.get('EXTRACTOR_EXIT', '0')))
 if n == 'go' and (a == ['test', './...'] or a[:3] == ['build', '-trimpath', '-buildvcs=false']): raise SystemExit(0)
 if n == 'bash' and a == [os.environ['PACKAGE_TMP'] + '/diagnostic-harness.sh']: raise SystemExit(int(os.environ.get('HARNESS_EXIT', '0')))
 # A refusal must remain observable even when the workflow redirects both
@@ -687,6 +690,16 @@ def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, 
     if case in {"f2", "f2-shipping"}: shutil.rmtree(shipping_checkout)
     if case == "f3":
         env["FINAL_BUILD_EXIT"] = "37"; exits["build"] = run("Build pinned shipping package", shipping_checkout)
+    if case in {"f3-extractor3", "f3-harness7", "f3-harness0"}:
+        # The exact reuse block is run only through the finite adapter.  The
+        # external extractor and extracted harness are the two admitted
+        # effects; its later provenance block runs with the real local
+        # publisher, after this step has recorded its original status.
+        (bin_dir / "python").unlink(); (bin_dir / "python").symlink_to(fake)
+        env["EXTRACTOR_EXIT"] = "3" if case == "f3-extractor3" else "0"
+        env["HARNESS_EXIT"] = "7" if case == "f3-harness7" else "0"
+        exits["reuse"] = run("Reuse pinned setup through first start", shipping_checkout)
+        (bin_dir / "python").unlink(); (bin_dir / "python").symlink_to("/usr/bin/python3")
     if case == "f4": (diagnostics_dir / "diagnostic-cleanup.json").write_text(" " * 1_200_000 + '{"cleanup":"complete"}')
     if case == "f6":
         # Do not copy the corrupt result into the later producer document.
@@ -798,6 +811,41 @@ def test_actual_yaml_f3_nonfinal_sync37_records_original_status(tmp_path: Path) 
     assert result.returncode == 37
     assert "build_status=37\n" in (tmp_path / "managed-start-diagnostic/receipt.txt").read_text()
     assert exits["provenance"] == 0 and (published / "diagnostic-cleanup.json").is_file()
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_step_exit", "expected_effects"),
+    [
+        ("f3-extractor3", 3, ["python"]),
+        ("f3-harness7", 7, ["python", "bash"]),
+        ("f3-harness0", 0, ["python", "bash"]),
+    ],
+    ids=["F3-extractor-exit3", "F3-harness-exit7", "F3-harness-exit0"],
+)
+def test_actual_yaml_f3_reuse_records_extractor_and_harness_statuses(
+    tmp_path: Path, case: str, expected_step_exit: int, expected_effects: list[str]
+) -> None:
+    """The frozen reuse YAML records its own result before actual always provenance."""
+    exits, published, _env_bytes, traces = _actual_yaml_case(tmp_path, case)
+    assert exits["reuse"] == expected_step_exit
+    receipt = (tmp_path / "managed-start-diagnostic" / "receipt.txt").read_text()
+    assert f"harness_status={expected_step_exit}\n" in receipt
+    # The trace is captured immediately after the reuse block, before its
+    # subsequent always() provenance consumer.  Its finite adapter admits no
+    # command beyond the extractor and (only after successful extraction) the
+    # harness, so the order and count are part of the evidence.
+    effects = traces["Reuse pinned setup through first start"].split("effects:\n", 1)[1].splitlines()
+    assert [effect.split(" ", 1)[0] for effect in effects] == expected_effects
+    assert effects[0] == "python " + str(tmp_path / "diagnostic/scripts/diagnostics/managed_start_diagnostic.py") + " --extract --shipping app/linux/package/real_systemd_n3.sh --output " + str(tmp_path / "managed-start-package/diagnostic-harness.sh")
+    if expected_step_exit == 3:
+        assert len(effects) == 1
+    else:
+        assert effects[1] == "bash " + str(tmp_path / "managed-start-package/diagnostic-harness.sh")
+        assert len(effects) == 2
+    # This is fixture-supplied availability, not a claim that the emitted
+    # harness proved cleanup.  It survives the following real always() block.
+    assert exits["provenance"] == 0
+    assert json.loads((published / "diagnostic-cleanup.json").read_text()) == {"cleanup": "complete"}
 
 
 def test_actual_yaml_adapter_refusal_is_persisted_when_streams_and_status_are_swallowed(tmp_path: Path) -> None:
