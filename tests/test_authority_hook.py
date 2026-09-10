@@ -1402,28 +1402,24 @@ def test_server_gate_permission_surface_change_during_attempt_escalates(runtime,
     assert continued == []
 
 
-def test_server_fence_budget_exhausted_benign_reason_escalates(runtime, db, monkeypatch):
-    """Exhausted limits are a server-owned mechanical fence: even the exact
-    routine phrase cannot reach evaluation when the orchestration budget is
-    exhausted — the hook records ineligible and returns escalate (the caller
-    proceeds through the existing escalation path; no continuation)."""
-    from runtime.config import Settings as _Settings
+def test_server_fence_beyond_legacy_step_cap_continues(runtime, db, monkeypatch):
+    """The retained step counter is telemetry, not an authority fence."""
     _seed_claimed_root(db)
-    db.update_task(
-        "T-ROOT", orchestration_step_count=_Settings().max_orchestration_steps,
-    )
+    # 51 crosses the former default threshold.  The authority hook reaches
+    # the final continuation CAS rather than treating counter telemetry as a
+    # policy fence.
+    db.update_task("T-ROOT", orchestration_step_count=51)
     fake = StrictFakeAuthorityEvaluator()
     orch = _make_orch(runtime, db, evaluator=fake)
     out = run_authority_hook(
         orch, db.get_task("T-ROOT"), "engineering_head", CONTINUE_REASON, 7,
     )
-    assert out == "escalate"
-    # Never continued: the root stayed claimed (in_progress), no pending flip.
-    assert db.get_task("T-ROOT").status == TaskStatus.IN_PROGRESS
+    assert out == "continue_same_root"
+    assert db.get_task("T-ROOT").status == TaskStatus.PENDING
     row = _hook_outcome_rows(db, "T-ROOT")[0]
-    assert row["payload"]["outcome"] == OUTCOME_INELIGIBLE
-    assert "budget_exhausted" in row["payload"]["fence_results"]
-    assert db.list_authority_candidates_for_root("T-ROOT") == []
+    assert row["payload"]["outcome"] == OUTCOME_CONTINUED_SAME_ROOT
+    assert row["payload"]["fence_results"]["budget_exhausted"]["passed"]
+    assert len(db.list_authority_candidates_for_root("T-ROOT")) == 1
 
 
 def test_server_fence_revise_budget_exhausted_benign_reason_escalates(runtime, db, monkeypatch):
@@ -1515,8 +1511,8 @@ def _mutate_before_commit(db, mutate: str) -> None:
              "{}", "b", "b", _digest("b"), _digest("b"), "2026-01-01T00:00:00+00:00"),
         )
         db._conn.commit()
-    elif mutate == "budget_exhausted":
-        db.update_task("T-ROOT", orchestration_step_count=10_000)
+    elif mutate == "revise_budget_exhausted":
+        db.update_task("T-ROOT", revision_count=1)
     elif mutate == "adverse_child":
         _seed_child_verdict(db, "T-ROOT", "T-KID", "REQUEST_CHANGES")
     elif mutate == "zombie_flag":
@@ -1536,7 +1532,7 @@ def _mutate_before_commit(db, mutate: str) -> None:
 
 @pytest.mark.parametrize("mutate", [
     "cancel", "change_session", "change_team", "manager_change", "block_task",
-    "active_work", "revisit", "successor", "budget_exhausted",
+    "active_work", "revisit", "successor", "revise_budget_exhausted",
     "adverse_child", "zombie_flag", "candidate_mismatch",
 ])
 def test_consumption_recheck_race_fails_closed(runtime, db, monkeypatch, mutate):
@@ -1544,6 +1540,9 @@ def test_consumption_recheck_race_fails_closed(runtime, db, monkeypatch, mutate)
     evaluation and the final CAS: the atomic recheck refuses continuation and
     the attempt fails closed to ESCALATE (or stays cancelled) — never
     CONTINUE_SAME_ROOT."""
+    if mutate == "revise_budget_exhausted":
+        runtime.org_config_path.parent.mkdir(parents=True, exist_ok=True)
+        runtime.org_config_path.write_text("max_revise_rounds: 1\n")
     fake = StrictFakeAuthorityEvaluator()
     _seed_root(db)
     orch = _make_orch(runtime, db, evaluator=fake)
@@ -1583,8 +1582,11 @@ def test_fence_change_during_evaluation_caught_by_full_recheck(runtime, db, monk
     fake = StrictFakeAuthorityEvaluator()
     real_evaluate = fake.evaluate
 
+    runtime.org_config_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime.org_config_path.write_text("max_revise_rounds: 1\n")
+
     def exhaust_then_evaluate(snapshot):
-        db.update_task("T-ROOT", orchestration_step_count=10_000)
+        db.update_task("T-ROOT", revision_count=1)
         return real_evaluate(snapshot)
     fake.evaluate = exhaust_then_evaluate
 
@@ -1669,7 +1671,7 @@ def test_thread_origin_continue_same_root_through_completion_consumer(
 
 @pytest.mark.parametrize(
     "negative",
-    ["active_work", "adverse_verdict", "budget_exhausted"],
+    ["active_work", "adverse_verdict"],
 )
 def test_thread_origin_negative_controls_through_completion_consumer(
     runtime, db, monkeypatch, negative,
@@ -1681,8 +1683,6 @@ def test_thread_origin_negative_controls_through_completion_consumer(
         db.update_task_active_chain("T-ROOT", "chain-live")
     elif negative == "adverse_verdict":
         _seed_child_verdict(db, "T-ROOT", "T-KID", "REQUEST_CHANGES")
-    else:
-        db.update_task("T-ROOT", orchestration_step_count=10_000)
     fake = StrictFakeAuthorityEvaluator()
     orch = _make_orch(runtime, db, evaluator=fake)
     row_id = _seed_result_row(

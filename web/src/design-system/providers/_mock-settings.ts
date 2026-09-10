@@ -24,7 +24,6 @@ const FIXTURE: SettingsSnapshot = {
     opencode_cli_path: { value: '/usr/local/bin/opencode', restart_required: true },
     pi_cli_path: { value: '/usr/local/bin/pi', restart_required: true },
     session_timeout_seconds: { value: 1800, restart_required: false },
-    max_orchestration_steps: { value: 50, restart_required: true },
     queue_workers: { value: 3, restart_required: true },
     host_global_session_cap: { value: 13, restart_required: true },
     protocol_dir: { value: 'protocol', restart_required: true },

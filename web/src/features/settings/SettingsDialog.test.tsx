@@ -7,6 +7,7 @@ import { DataContext } from '@/design-system/providers/DataContext';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import { SettingsDialog } from './SettingsDialog';
+import { SettingsPage } from './SettingsPage';
 import type { SettingsSnapshot, SystemSettings, OrgSettings, OrgSettingsPatch, AssistantStatus, AssistantRegisterBody } from '@/lib/api/types';
 import type { QueryLike, MutationLike } from '@/design-system/providers/DataContext';
 
@@ -16,7 +17,6 @@ const mockSystem: SystemSettings = {
   opencode_cli_path: { value: '/usr/local/bin/opencode', restart_required: true },
   pi_cli_path: { value: '/usr/local/bin/pi', restart_required: true },
   session_timeout_seconds: { value: 1800, restart_required: false },
-  max_orchestration_steps: { value: 50, restart_required: true },
   queue_workers: { value: 3, restart_required: true },
   host_global_session_cap: { value: 13, restart_required: true },
   protocol_dir: { value: 'protocol', restart_required: true },
@@ -70,6 +70,8 @@ function renderDialog(
     repairMutateAsync?: ReturnType<typeof vi.fn>;
     registerMutateAsync?: ReturnType<typeof vi.fn>;
   },
+  queryOverride?: Partial<QueryLike<SettingsSnapshot>>,
+  page = false,
 ) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const snapshot = overrides
@@ -81,6 +83,7 @@ function renderDialog(
     isLoading: false,
     isError: false,
     error: null,
+    ...queryOverride,
   });
 
   const useUpdateOrgSettings = (): MutationLike<OrgSettingsPatch, SettingsSnapshot> => ({
@@ -149,7 +152,7 @@ function renderDialog(
           <Route
             element={
               <DataContext.Provider value={ctxValue}>
-                <SettingsDialog open onOpenChange={onClose} />
+                {page ? <SettingsPage /> : <SettingsDialog open onOpenChange={onClose} />}
               </DataContext.Provider>
             }
           >
@@ -199,7 +202,7 @@ describe('SettingsDialog', () => {
     renderDialog();
 
     const badges = screen.getAllByText('Restart required');
-    expect(badges.length).toBe(7); // 4 CLI paths + max_orchestration_steps + queue_workers + protocol_dir
+    expect(badges.length).toBe(6); // 4 CLI paths + queue_workers + protocol_dir
 
     // Session timeout should NOT have a restart badge
     const sessionRows = screen.getAllByText('Session timeout (s)');
@@ -497,7 +500,6 @@ const SETTINGS_FIXTURE: SettingsSnapshot = {
     opencode_cli_path: { value: '/usr/local/bin/opencode', restart_required: true },
     pi_cli_path: { value: '/usr/local/bin/pi', restart_required: true },
     session_timeout_seconds: { value: 1800, restart_required: true },
-    max_orchestration_steps: { value: 50, restart_required: true },
     queue_workers: { value: 3, restart_required: true },
     host_global_session_cap: { value: 13, restart_required: true },
     protocol_dir: { value: 'protocol', restart_required: true },
@@ -623,5 +625,45 @@ describe('SettingsDialog — assistant status network evidence', () => {
     // Advance past the old 5 000 ms refetchInterval.
     await act(() => vi.advanceTimersByTimeAsync(6_000));
     expect(counter.count()).toBe(1);
+  });
+});
+
+
+describe('active settings surfaces — retired maximum absence', () => {
+  test.each([false, true])('loading surface page=%s has no maximum', (page) => {
+    renderDialog(undefined, vi.fn(), vi.fn(), undefined,
+      { data: undefined, isLoading: true }, page);
+    expect(screen.getByText('Loading settings…')).toBeInTheDocument();
+    expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
+  });
+  test.each([false, true])('error surface page=%s has no maximum', (page) => {
+    renderDialog(undefined, vi.fn(), vi.fn(), undefined,
+      { data: undefined, isError: true, error: new Error('synthetic failure') }, page);
+    expect(screen.getByText(/Could not load settings/)).toBeInTheDocument();
+    expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
+  });
+  test.each([false, true])('synthetic no-data page=%s is a shell, not API-empty success', (page) => {
+    renderDialog(undefined, vi.fn(), vi.fn(), undefined,
+      { data: undefined }, page);
+    expect(screen.getByText('Settings')).toBeInTheDocument();
+    expect(screen.queryByText('Loading settings…')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Could not load settings/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-content')).not.toBeInTheDocument();
+    expect(screen.queryByText('Queue workers')).not.toBeInTheDocument();
+    expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
+  });
+  test('populated dialog keeps real fields while omitting maximum', () => {
+    renderDialog();
+    expect(screen.getByText('Queue workers')).toBeInTheDocument();
+    expect(screen.getAllByText('Session timeout (s)')).toHaveLength(2);
+    expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
+  });
+  test('empty optional org values retain a usable dialog form and no maximum', () => {
+    renderDialog({ org: { ...mockOrg, session_timeout_seconds: null,
+      reviewer_agents: [], dreaming: { ...mockOrg.dreaming,
+        agents: { mode: 'all', include: [], exclude: [] } } } });
+    expect(screen.getByText('Queue workers')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /save/i })).toBeInTheDocument();
+    expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
   });
 });

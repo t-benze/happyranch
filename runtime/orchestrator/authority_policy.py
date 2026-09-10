@@ -323,7 +323,7 @@ _ENGINEERING_CLAUSES: tuple[AuthorityClause, ...] = (
         category="exhausted-limits",
         condition=(
             "The proposed escalation reason or the structured facts cite ANY "
-            "exhausted limit: orchestration step budget, revise-round budget, "
+            "exhausted limit: revise-round budget, "
             "per-slice retry ceiling, provider/session retry budget, or any "
             "other bounded or cumulative limit."
         ),

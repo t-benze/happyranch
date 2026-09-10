@@ -925,7 +925,7 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
     - (1) a TASK_FOLLOWUP invocation is minted and its ``ThreadJob`` is
       delivered through the real ``ThreadQueue.put`` (deterministic signal)
     - (2) no thread_followup_skipped(enqueue_unavailable) audit is written
-    - (3) the task reaches the expected escalation terminal state
+    - (3) the task reaches its normal terminal state after the follow-up
 
     The unchanged test must fail if ONLY ``_wire_then_start_workers`` call
     order in app.py is temporarily reversed (red-side proof, not committed).
@@ -934,7 +934,6 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
     import inspect
     import threading
 
-    from runtime.config import Settings as _Settings
     from runtime.daemon.app import _wire_then_start_workers
     from runtime.models import (
         TaskRecord, TaskStatus, ThreadInvocationPurpose, ThreadRecord,
@@ -953,10 +952,7 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
 
     # ── B. Behavioural regression (runtime, deterministic sync) ──
 
-    # Max orchestration steps of 0 ensures the thread-dispatched root task
-    # hits the budget guard immediately on first pickup — no executor needed.
     org = daemon_state.orgs["alpha"]
-    org.orchestrator._settings = _Settings(max_orchestration_steps=0)
     db = org.db
     orch = org.orchestrator
     audit = orch._audit
@@ -1044,10 +1040,13 @@ def test_thread_queue_wiring_before_task_workers_prevents_enqueue_unavailable(
             f"not in place before escalation fired: {skipped}"
         )
 
-        # (3) Normal nearby lifecycle: task reached the expected terminal state.
+        # (3) Normal nearby lifecycle: the task ran through the follow-up path
+        # and reached its ordinary terminal outcome.  The test fixture has no
+        # runnable executor, so that outcome is FAILED; it must not rely on a
+        # retired total-step denial to reach it.
         t = db.get_task("TASK-STRT")
-        assert t.status == TaskStatus.ESCALATED
-        assert "max steps" in (t.note or "")
+        assert t.status == TaskStatus.FAILED
+        assert "agent invocation failed" in (t.note or "")
 
         # Consume the delivered job from the real queue (do not start the
         # daemon ThreadInvocationRunner — consuming the observed job is

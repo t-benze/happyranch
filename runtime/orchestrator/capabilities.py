@@ -6,7 +6,6 @@ from runtime.models import StepRecord
 def build_capabilities_prompt(
     agents: list[dict],
     step_number: int,
-    max_steps: int,
     prior_steps: list[StepRecord] | None = None,
     manager_name: str = "team_manager",
     self_only: bool = False,
@@ -61,7 +60,7 @@ def build_capabilities_prompt(
             "If you need parallel work, delegate sequentially or escalate to "
             "your parent.\n",
             "### Constraints\n",
-            f"- This is step {step_number} of maximum {max_steps}",
+            f"- This is orchestration step {step_number}.",
             "- Org-specific authority limits come from your role_guidance / "
             "system prompt — escalate anything outside them.",
         ]
@@ -244,7 +243,7 @@ def build_capabilities_prompt(
         "This is a side-channel capability, not one of the decision shapes above — "
         "your `decision` field must be one of delegate/done/escalate/fanout.\n",
         "### Constraints\n",
-        f"- This is step {step_number} of maximum {max_steps}",
+        f"- This is orchestration step {step_number}.",
         "- Org-specific authority limits (budget, jurisdictional, content)"
         " come from your role_guidance / system prompt — not this capabilities"
         " block. Escalate to the founder anything outside the bounds your"

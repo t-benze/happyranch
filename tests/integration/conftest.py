@@ -231,6 +231,14 @@ def fake_plan_env(fake_claude_plan_env: Path) -> Path:
     return fake_claude_plan_env
 
 
+def _nested_daemon_env() -> dict[str, str]:
+    """Isolate only the nested daemon; never change the outer job environment."""
+    child_env = os.environ.copy()
+    child_env.pop("HAPPYRANCH_TASK_TMP_ROOT", None)
+    child_env.pop("HAPPYRANCH_TASK_SCRATCH_MANIFEST", None)
+    return child_env
+
+
 @pytest.fixture
 def live_daemon(
     tmp_home,
@@ -249,6 +257,10 @@ def live_daemon(
     monkeypatch.setenv("HAPPYRANCH_CLAUDE_CLI_PATH", str(fake_claude))
     monkeypatch.setenv("HAPPYRANCH_CODEX_CLI_PATH", str(fake_codex))
     monkeypatch.setenv("HAPPYRANCH_OPENCODE_CLI_PATH", str(fake_opencode))
+    # The daemon is a nested process: it must receive a copied environment
+    # without only the outer task-containment contract, then establish its own
+    # containment for executor children.  Preserve TMPDIR/TMP/TEMP and every
+    # other test/outer-job setting.
     # Disable executor launch spacing (issue #85) so integration runs stay fast
     # and deterministic — the 1.5s default would serialize same-provider launches.
     monkeypatch.setenv("HAPPYRANCH_EXECUTOR_LAUNCH_SPACING_SECONDS", "0")
@@ -264,7 +276,7 @@ def live_daemon(
 
     runtimes_mod.register(runtime_container)
     script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
-    subprocess.run([str(script), "start"], check=True)
+    subprocess.run([str(script), "start"], check=True, env=_nested_daemon_env())
     # Wait for /health to respond
     deadline = time.time() + 5
     while time.time() < deadline:
@@ -280,7 +292,7 @@ def live_daemon(
         time.sleep(0.2)
     else:
         raise RuntimeError("daemon failed to start")
-    subprocess.run([str(script), "stop"], check=False)
+    subprocess.run([str(script), "stop"], check=False, env=_nested_daemon_env())
 
 
 @pytest.fixture
@@ -297,6 +309,8 @@ def live_daemon_idle(
     monkeypatch.setenv("HAPPYRANCH_CLAUDE_CLI_PATH", str(fake_claude))
     monkeypatch.setenv("HAPPYRANCH_CODEX_CLI_PATH", str(fake_codex))
     monkeypatch.setenv("HAPPYRANCH_OPENCODE_CLI_PATH", str(fake_opencode))
+    # Match live_daemon: copy the environment at the subprocess boundary;
+    # remove only the two markers from the child, retaining the parent intact.
     # Disable executor launch spacing (issue #85) — see live_daemon.
     monkeypatch.setenv("HAPPYRANCH_EXECUTOR_LAUNCH_SPACING_SECONDS", "0")
     # Executor launch is registration-only. The idle daemon still needs the
@@ -309,7 +323,7 @@ def live_daemon_idle(
         "opencode": str(fake_opencode),
     })
     script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
-    subprocess.run([str(script), "start"], check=True)
+    subprocess.run([str(script), "start"], check=True, env=_nested_daemon_env())
     deadline = time.time() + 5
     while time.time() < deadline:
         if paths_mod.port_file().exists():
@@ -324,4 +338,4 @@ def live_daemon_idle(
         time.sleep(0.2)
     else:
         raise RuntimeError("daemon failed to start")
-    subprocess.run([str(script), "stop"], check=False)
+    subprocess.run([str(script), "stop"], check=False, env=_nested_daemon_env())
