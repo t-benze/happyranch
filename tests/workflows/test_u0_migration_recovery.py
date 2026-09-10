@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from runtime.infrastructure.database import Database
+from tests.workflows.u0_evidence_helpers import accept_current_join
 
 
 def _adapter(path: Path) -> sqlite3.Connection:
@@ -30,7 +31,9 @@ def _seed(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO workflow_submissions VALUES ('s','i',1,X'61','digest-r1',NULL,'TASK-1','sess-1','result-1','maker-a')")
     conn.execute("INSERT INTO workflow_submission_contributors VALUES ('s','maker-a','TASK-1','sess-1','result-1','maker')")
     conn.execute("INSERT INTO workflow_rounds VALUES ('r','i','s',1,'reviewing')")
-    conn.execute("INSERT INTO workflow_review_requests VALUES ('q','r','reviewer-b',1,X'61','scope-r1','pending',NULL)")
+    for request, principal in (("q-founder", "founder"), ("q-implementation", "implementation"), ("q-test", "test")):
+        conn.execute("INSERT INTO workflow_review_requests VALUES (?,?,?,1,X'61',?,'approved',NULL)", (request, "r", principal, f"scope-{principal}"))
+        conn.execute("INSERT INTO workflow_review_receipts VALUES (?,?,?,?,1,X'61',?,'approved',NULL,'now')", (f"receipt-{principal}", request, "s", "digest-r1", f"proof-{principal}"))
 
 
 def _assert_service_validation(conn: sqlite3.Connection, *, principal: str, digest: str) -> None:
@@ -65,12 +68,37 @@ def test_proposed_adapter_rejects_wrong_digest_and_records_service_only_independ
     conn = _adapter(tmp_path / "candidate.db")
     _seed(conn)
     with pytest.raises(sqlite3.IntegrityError):
-        conn.execute("INSERT INTO workflow_review_receipts VALUES ('bad','q','s','wrong',1,X'61','proof-bad','approved',NULL,'now')")
+        conn.execute("INSERT INTO workflow_review_receipts VALUES ('bad','q-founder','s','wrong',1,X'61','proof-bad','approved',NULL,'now')")
     with pytest.raises(ValueError, match="historical_maker"):
         _assert_service_validation(conn, principal="maker-a", digest="digest-r1")
     with pytest.raises(ValueError, match="wrong_submission"):
         _assert_service_validation(conn, principal="reviewer-b", digest="wrong")
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_proposed_final_join_revalidates_all_current_signatures_and_exactly_once_effect(tmp_path: Path) -> None:
+    conn = _adapter(tmp_path / "join.db")
+    _seed(conn)
+    assert accept_current_join(conn, operation_key="join-1", body=b"same", final_principal="operator") == "effect-0967115f2813"
+    assert conn.execute("SELECT count(*) FROM workflow_events WHERE event_kind='joined'").fetchone() == (1,)
+    assert accept_current_join(conn, operation_key="join-1", body=b"same", final_principal="operator") == "effect-0967115f2813"
+    with pytest.raises(ValueError, match="body_conflict"):
+        accept_current_join(conn, operation_key="join-1", body=b"changed", final_principal="operator")
+    conn.execute("UPDATE workflow_review_requests SET assignment_generation=2 WHERE id='q-test'")
+    with pytest.raises(ValueError, match="three_signature"):
+        accept_current_join(conn, operation_key="join-2", body=b"next", final_principal="operator")
+
+
+def test_historical_source_inventory_is_explicit_and_corruption_stops_before_adapter(tmp_path: Path) -> None:
+    import json
+
+    inventory = json.loads((Path(__file__).parents[1] / "fixtures" / "workflow_u0" / "historical_sources.json").read_text())
+    assert {item["name"] for item in inventory["histories"]} == {"v0-db-backed-enrollment", "v1-flat-single-org"}
+    assert all("RuntimeDir.init" in item["initializer"] for item in inventory["histories"])
+    corrupt = tmp_path / "corrupt.db"
+    corrupt.write_bytes(b"not sqlite")
+    with pytest.raises(sqlite3.DatabaseError):
+        _adapter(corrupt)
 
 
 def test_interrupted_adapter_install_rolls_back_then_reopens_and_replays(tmp_path: Path) -> None:
