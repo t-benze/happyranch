@@ -10294,11 +10294,7 @@ class Database:
                 "AND e.state='open' AND d.agent_name=? AND d.state='held' LIMIT 1",
                 (thread_id, row["agent_name"]),
             ).fetchone()
-            if held is not None and running is None and queued is None:
-                state = "held"
-                from_seq = acknowledged + 1
-                through_seq = required
-            elif running is not None:
+            if running is not None:
                 state = "running"
                 from_seq = int(running_from or 0)
                 through_seq = int(running_through or 0)
@@ -10314,6 +10310,8 @@ class Database:
                 from_seq = acknowledged + 1
                 through_seq = required
             elif required > acknowledged:
+                # Exchange membership persists after a mention-pierced wake
+                # settles; only an outstanding range is a held delivery.
                 if held is not None:
                     state = "held"
                 else:
