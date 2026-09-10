@@ -475,26 +475,23 @@ Contract (founder-approved in THR-028, refined in THR-078):
    decision step. The failed subtask's reason (`note` + completion report /
    error context) is available so the task owner can author an updated brief.
 
-2. **Per-slice retry ceiling (THR-078).** A delegated slot gets exactly one
-   retry: the ceiling is `_SLICE_RETRY_CEILING = 1` — a slice whose
-   `revisit_of_task_id` ancestor (a FAILED child of the same parent) failed
-   again exhausts the ceiling. The ceiling is evaluated per-slice via
-   `_is_slice_retry_exhausted` from the failing child's `revisit_of_task_id`
-   lineage (no schema migration). A later COMPLETED or SUPERSEDED descendant
-   in the same lineage retires earlier FAILED ancestors for ceiling evaluation
-   (THR-183).
+2. **Mechanical retry provenance (THR-078).** A manager may re-dispatch
+   unchanged work or direct revised work with a valid `revisit_of_task_id`
+   link to a FAILED same-parent predecessor. The link is historical
+   provenance, not semantic brief comparison or automatic root escalation.
+   A later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors
+   from causal selection (THR-183).
 
-3. **Escalation on exhaustion.** When a slice's retry ceiling is exhausted
-   (its 2nd failure), a root parent transitions to `escalated` via
-   `try_escalate()`, carrying the causal terminal event (the current
-   unresolved FAILED leaf) in the escalation reason; a completed-child wake
-   cannot select a stale sibling reason. A non-root parent fails and recurses
-   upward (THR-033 root-only escalation). The parent does NOT cascade-fail —
-   the founder or upstream manager resolves the termination per existing routes.
+3. **Manager ownership on exhaustion.** A retried slice's second failure keeps
+   its durable causal lineage and wakes the owning manager. It is not a runtime
+   escalation or upward cascade. Any later manager-proposed escalation follows
+   the configured THR-181 hook; inactive/static policy is not evaluator
+   CONTINUE, and committed escalations remain human-resolved.
 
-4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
-   COMPLETED) clears the active chain and hands the parent back to its
-   bounded-wake path (same per-slice ceiling + escalation).
+4. **Chain-leg failure.** A failed chain leg clears the chain and returns a
+   decision owner to bounded wake. Passive pipeline carriers instead fail
+   closed and settle through their outer fan-out barrier with causal-leaf
+   context intact.
 
 5. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
    next decision step. REVISE-verdict auto-advance in chains is unchanged.
@@ -506,7 +503,7 @@ Contract (founder-approved in THR-028, refined in THR-078):
 
 Implementation: `runtime/orchestrator/run_step.py` —
 `_enqueue_parent_if_waiting`, `_advance_chain_for_completed_child`,
-`_is_slice_retry_exhausted`, `_SLICE_RETRY_CEILING`. See also
+and the retry-link validation seam. See also
 `docs/agent-guides/features-and-invariants.md#bounded-failure-recovery` and
 `docs/agent-guides/orchestrator-contracts.md`.
 

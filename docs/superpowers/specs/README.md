@@ -39,6 +39,7 @@ New specs should include a short status block near the top:
 
 | Spec | Status | Current source / notes |
 | --- | --- | --- |
+| `2026-09-10-delegated-failure-manager-routing.md` | implemented | Current routing contract: `docs/agent-guides/orchestrator-contracts.md` and `runtime/orchestrator/run_step.py`. |
 | `2026-09-01-thread-reply-breaker-persistence.md` | current | THR-200 PR A additive SQLite contract plus PR B runtime lifecycle and cooldown/restart invariants. |
 | `2026-04-12-product-engineering-crew-design.md` | historical | Sample-org background; org content now lives under `examples/orgs/` and runtime org trees. |
 | `2026-04-14-orchestrator-daemon-design.md` | implemented | Current contracts: `docs/agent-guides/orchestrator-contracts.md`, `runtime/daemon/`, `runtime/orchestrator/`. |
