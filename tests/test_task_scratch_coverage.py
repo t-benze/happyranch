@@ -169,16 +169,41 @@ def test_symlink_candidate_and_manifest_parent_never_read_referent(tmp_path: Pat
 def test_manifest_parent_guard_is_reachable_for_literal_candidate(tmp_path: Path) -> None:
     proc = tmp_path / "proc"; _boot(proc)
     workspace = tmp_path / "workspace"; root = workspace / ".happyranch/task-tmp/TASK-1"; root.mkdir(parents=True)
-    outside = tmp_path / "outside"; outside.mkdir(); (outside / "TASK-1.json").write_text("outside")
-    (workspace / ".happyranch/task-scratch-manifests").symlink_to(outside, target_is_directory=True)
-    calls: list[str] = []; real = coverage.os.open
+    outside = tmp_path / "outside"; outside.mkdir(); _manifest(outside, "TASK-1")
+    manifests = workspace / ".happyranch/task-scratch-manifests"
+    manifests.symlink_to(outside, target_is_directory=True)
+    opened: list[str] = []; paths_by_fd: dict[int, str] = {}; read_fds: list[int] = []; stated: list[tuple[str, bool]] = []; real_open = coverage.os.open; real_fdopen = coverage.os.fdopen; real_stat = Path.stat
     def watch(path: object, *args: object, **kwargs: object) -> int:
-        calls.append(str(path)); return real(path, *args, **kwargs)
-    with patch.object(coverage.os, "open", watch):
+        fd = real_open(path, *args, **kwargs); opened.append(str(path)); paths_by_fd[fd] = str(path); return fd
+    def watch_fdopen(fd: int, *args: object, **kwargs: object) -> object:
+        handle = real_fdopen(fd, *args, **kwargs)
+        original_read = handle.read
+        def read(*read_args: object, **read_kwargs: object) -> bytes:
+            read_fds.append(fd); return original_read(*read_args, **read_kwargs)
+        handle.read = read  # type: ignore[method-assign]
+        return handle
+    def watch_stat(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        stated.append((str(self), bool(kwargs.get("follow_symlinks", True))))
+        return real_stat(self, *args, **kwargs)
+    with patch.object(coverage.os, "open", watch), patch.object(coverage.os, "fdopen", watch_fdopen), patch.object(Path, "stat", watch_stat):
         observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
     bucket = next(row for row in observation.buckets if row.relative_path.endswith("TASK-1"))
     assert bucket.classification == "residual_unmanifested"
-    assert str(outside / "TASK-1.json") not in calls
+    lexical = manifests / "TASK-1.json"
+    assert (str(manifests), False) in stated
+    assert str(lexical) not in opened
+    assert str(outside / "TASK-1.json") not in opened
+    assert str(outside / "TASK-1.json") not in {paths_by_fd[fd] for fd in read_fds}
+
+    # A literal parent is the permitted control: it opens and consumes the
+    # manifest descriptor, unlike the lexical symlink parent above.
+    workspace2 = tmp_path / "workspace2"; root2 = workspace2 / ".happyranch/task-tmp/TASK-1"; root2.mkdir(parents=True); _manifest(workspace2, "TASK-1")
+    opened.clear(); paths_by_fd.clear(); read_fds.clear()
+    with patch.object(coverage.os, "open", watch), patch.object(coverage.os, "fdopen", watch_fdopen):
+        allowed = collect_task_scratch_coverage(workspace=workspace2, proc_root=proc)
+    assert any(path.endswith("task-scratch-manifests/TASK-1.json") for path in opened)
+    assert read_fds
+    assert any(row.relative_path.endswith("TASK-1") and row.classification == "canonical_regenerable" for row in allowed.buckets)
 
 
 def test_boot_post_open_timeout_closes_descriptor_in_each_pass(tmp_path: Path, monkeypatch: object) -> None:
@@ -186,54 +211,86 @@ def test_boot_post_open_timeout_closes_descriptor_in_each_pass(tmp_path: Path, m
     for expire_on_boot_open in (1, 2):
         proc = tmp_path / f"proc-{expire_on_boot_open}"; _boot(proc)
         workspace = tmp_path / f"workspace-{expire_on_boot_open}"; workspace.mkdir()
-        opens = closes = 0; expired = False; real_open = coverage.os.open; real_close = coverage.os.close
+        opens: list[int] = []; pending_boot_fdopens: dict[int, int] = {}; closes: list[int] = []; buffered_reads: list[int] = []; expired = False; real_open = coverage.os.open; real_close = coverage.os.close; real_fdopen = coverage.os.fdopen
         def watch_open(path: object, *args: object, **kwargs: object) -> int:
-            nonlocal opens, expired
+            nonlocal expired
             fd = real_open(path, *args, **kwargs)
             if str(path).endswith("boot_id"):
-                opens += 1
-                expired = opens == expire_on_boot_open
+                opens.append(fd)
+                pending_boot_fdopens[fd] = len(opens)
+                expired = len(opens) == expire_on_boot_open
             return fd
         def watch_close(fd: int) -> None:
-            nonlocal closes
-            closes += 1; real_close(fd)
+            closes.append(fd); pending_boot_fdopens.pop(fd, None); real_close(fd)
+        def watch_fdopen(fd: int, *args: object, **kwargs: object) -> object:
+            handle = real_fdopen(fd, *args, **kwargs)
+            original_read = handle.read
+            boot_index = pending_boot_fdopens.pop(fd, None)
+            def read(*read_args: object, **read_kwargs: object) -> bytes:
+                if boot_index is not None:
+                    buffered_reads.append(boot_index)
+                return original_read(*read_args, **read_kwargs)
+            handle.read = read  # type: ignore[method-assign]
+            return handle
         def clock() -> int:
             return 2 if expired else 0
         monkeypatch.setattr(coverage.time, "monotonic_ns", clock)
-        with patch.object(coverage.os, "open", watch_open), patch.object(coverage.os, "close", watch_close):
+        with patch.object(coverage.os, "open", watch_open), patch.object(coverage.os, "close", watch_close), patch.object(coverage.os, "fdopen", watch_fdopen):
             observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc, deadline_ns=1)
-        assert opens == expire_on_boot_open
-        assert closes >= 1
+        assert len(opens) == expire_on_boot_open
+        denied_fd = opens[-1]
+        assert denied_fd in closes
+        assert expire_on_boot_open not in buffered_reads
+        if expire_on_boot_open == 2:
+            assert 1 in buffered_reads
         assert "observation_timeout" in observation.reasons
         monkeypatch.undo()
 
 
 def test_boot_post_open_read_cap_closes_descriptor_in_each_pass(tmp_path: Path, monkeypatch: object) -> None:
-    for deny_on_boot_open in (1, 2):
-        proc = tmp_path / f"proc-{deny_on_boot_open}"; _boot(proc)
-        workspace = tmp_path / f"workspace-{deny_on_boot_open}"; workspace.mkdir()
-        opens = closes = 0; deny_read = False; real_open = coverage.os.open; real_close = coverage.os.close; real_admit = coverage._Budget.admit
-        def watch_open(path: object, *args: object, **kwargs: object) -> int:
-            nonlocal opens, deny_read
-            fd = real_open(path, *args, **kwargs)
-            if str(path).endswith("boot_id"):
-                opens += 1; deny_read = opens == deny_on_boot_open
-            return fd
-        def watch_close(fd: int) -> None:
-            nonlocal closes
-            closes += 1; real_close(fd)
-        def admit(self: coverage._Budget, *, read: bool = False, manifest_bytes: int = 0) -> bool:
-            nonlocal deny_read
-            if deny_read and read:
-                deny_read = False; self.reasons.add("read_cap"); return False
-            return real_admit(self, read=read, manifest_bytes=manifest_bytes)
-        monkeypatch.setattr(coverage._Budget, "admit", admit)
-        with patch.object(coverage.os, "open", watch_open), patch.object(coverage.os, "close", watch_close):
-            observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
-        assert opens >= deny_on_boot_open
-        assert closes >= 1
-        assert "read_cap" in observation.reasons
-        monkeypatch.undo()
+    # First measure the real shared budget, then reduce the numerical cap so
+    # pass one completes and pass two admits boot open but not its dependent read.
+    proc = tmp_path / "proc"; _boot(proc); workspace = tmp_path / "workspace"; root = workspace / ".happyranch/task-tmp/TASK-1"; root.mkdir(parents=True); _manifest(workspace, "TASK-1")
+    counts: list[int] = []; real_admit = coverage._Budget.admit
+    def count_admit(self: coverage._Budget, *, read: bool = False, manifest_bytes: int = 0) -> bool:
+        result = real_admit(self, read=read, manifest_bytes=manifest_bytes)
+        if read and result:
+            counts.append(self.reads)
+        return result
+    monkeypatch.setattr(coverage._Budget, "admit", count_admit)
+    assert collect_task_scratch_coverage(workspace=workspace, proc_root=proc).complete
+    first_pass_reads = len(counts) // 2
+    monkeypatch.undo()
+
+    monkeypatch.setattr(coverage, "MAX_READS", first_pass_reads + 1)
+    opened: list[int] = []; pending_boot_fdopens: list[int] = []; closed: list[int] = []; buffered_boot_reads: list[int] = []; real_open = coverage.os.open; real_close = coverage.os.close; real_fdopen = coverage.os.fdopen
+    def watch_open(path: object, *args: object, **kwargs: object) -> int:
+        fd = real_open(path, *args, **kwargs)
+        if str(path).endswith("boot_id"):
+            opened.append(fd); pending_boot_fdopens.append(fd)
+        return fd
+    def watch_close(fd: int) -> None:
+        closed.append(fd); real_close(fd)
+    def watch_fdopen(fd: int, *args: object, **kwargs: object) -> object:
+        handle = real_fdopen(fd, *args, **kwargs)
+        original_read = handle.read
+        boot_index = len(opened) if fd in pending_boot_fdopens else None
+        if fd in pending_boot_fdopens:
+            pending_boot_fdopens.remove(fd)
+        def read(*read_args: object, **read_kwargs: object) -> bytes:
+            if boot_index is not None:
+                buffered_boot_reads.append(boot_index)
+            return original_read(*read_args, **read_kwargs)
+        handle.read = read  # type: ignore[method-assign]
+        return handle
+    with patch.object(coverage.os, "open", watch_open), patch.object(coverage.os, "close", watch_close), patch.object(coverage.os, "fdopen", watch_fdopen):
+        observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+    assert len(opened) == 2
+    denied_fd = opened[-1]
+    assert denied_fd in closed
+    assert 2 not in buffered_boot_reads
+    assert 1 in buffered_boot_reads
+    assert "read_cap" in observation.reasons and not observation.complete and not observation.coverage_ready
 
 
 def test_candidate_timeout_cap_and_nested_incompleteness_remain_unknown(tmp_path: Path, monkeypatch: object) -> None:
@@ -242,28 +299,36 @@ def test_candidate_timeout_cap_and_nested_incompleteness_remain_unknown(tmp_path
         proc = tmp_path / f"proc-{failure}"; _boot(proc)
         workspace = tmp_path / f"workspace-{failure}"; root = workspace / ".happyranch/task-tmp/TASK-1"; (root / "nested").mkdir(parents=True)
         (root / "nested/payload").write_text("x"); _manifest(workspace, "TASK-1")
-        candidate_scans = 0; expired = False; real_scandir = coverage.os.scandir; real_admit = coverage._Budget.admit
+        candidate_scans = 0; nested_scans = 0; expired = False; real_scandir = coverage.os.scandir; real_admit = coverage._Budget.admit
         def clock() -> int:
             return 2 if expired else 0
         def watch_scandir(path: object, *args: object, **kwargs: object) -> object:
-            nonlocal candidate_scans, expired
+            nonlocal candidate_scans, nested_scans, expired
             if Path(path) == root:
                 candidate_scans += 1
-                # _walk and population each scan the literal root first;
-                # the third scan is _candidate_safe's bounded inspection.
-                if candidate_scans == 3:
+                # Each pass walks and populations the literal root before its
+                # candidate inspection. Trigger only at the second pass so the
+                # returned buckets remain the canonical first snapshot.
+                if candidate_scans == 6:
                     expired = failure == "timeout"
+            if Path(path) == root / "nested":
+                nested_scans += 1
             return real_scandir(path, *args, **kwargs)
         def admit(self: coverage._Budget, *, read: bool = False, manifest_bytes: int = 0) -> bool:
-            if failure == "cap" and candidate_scans == 3 and read:
-                self.reasons.add("read_cap"); return False
+            if failure == "cap" and candidate_scans == 6 and read:
+                # Exercise the production counter/cap comparison, rather than
+                # replacing admission with a synthetic denial.
+                monkeypatch.setattr(coverage, "MAX_READS", self.reads)
             return real_admit(self, read=read, manifest_bytes=manifest_bytes)
         monkeypatch.setattr(coverage.time, "monotonic_ns", clock)
         monkeypatch.setattr(coverage._Budget, "admit", admit)
         with patch.object(coverage.os, "scandir", watch_scandir):
             observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc, deadline_ns=1)
         bucket = next(row for row in observation.buckets if row.relative_path.endswith("TASK-1"))
-        assert candidate_scans >= 3
-        assert bucket.classification == "residual_unknown"
+        assert candidate_scans >= 6 and nested_scans >= 1
+        # The second-pass interruption does not rewrite the already returned
+        # first-snapshot bucket; incomplete/nonready is conveyed by reasons.
+        assert bucket.classification == "canonical_regenerable"
+        assert not observation.complete and not observation.coverage_ready
         assert ("observation_timeout" if failure == "timeout" else "read_cap") in observation.reasons
         monkeypatch.undo()
