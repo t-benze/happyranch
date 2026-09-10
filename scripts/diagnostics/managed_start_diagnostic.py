@@ -394,12 +394,12 @@ def collect(phase: str, output: Path, deadline: float, runner: Runner = run_boun
     The later shell envelope owns when this is called.  This collector never
     starts, stops, waits for, or changes a shipping service.
     """
-    if phase not in PHASES or deadline <= now():
-        document: dict[str, object] = {"phase": phase if phase in PHASES else "unavailable", "availability": "unavailable"}
+    if not isinstance(phase, str) or phase not in PHASES or deadline <= now():
+        document: dict[str, object] = _unavailable_observation(phase if isinstance(phase, str) and phase in PHASES else "unavailable", reason="deadline_expired")
         _write_document(output, document)
         return document
     if window is None or not all(isinstance(item, int) and 0 <= item <= 2**63 - 1 for item in window) or window[0] > window[1]:
-        document = {"phase": phase, "units": {}, "paths": {}, "jobs": {unit: {"availability": "unavailable", "reason": "window_unavailable"} for unit in UNITS}, "journal": {"availability": "unavailable", "reason": "window_unavailable"}}
+        document = _unavailable_observation(phase, reason="window_unavailable")
         _write_document(output, document); return document
     document = {"phase": phase, "units": {}, "paths": {}, "jobs": {unit: {"availability": "unavailable", "reason": "no_record"} for unit in UNITS}, "journal": []}
     for unit in UNITS:
@@ -436,12 +436,12 @@ def _safe_identity(value: str | None, pattern: str) -> str:
     return value if isinstance(value, str) and len(value) <= MAX_BYTES and re.fullmatch(pattern, value) else "unavailable"
 
 
-def _read_bounded(source: Path, limit: int) -> tuple[bytes | None, bool]:
+def _read_bounded(source: Path, limit: int) -> tuple[bytes | None, bool, bool]:
     """Read at most ``limit + 1`` bytes, independent of a raced file size.
 
-    The boolean distinguishes a genuine over-limit input from an unavailable
-    input.  Callers can therefore retain independent evidence without ever
-    decoding or reporting raw input/error data.
+    The flags distinguish a genuine over-limit input and an unreadable input
+    from absence.  Callers retain independent evidence without decoding or
+    reporting raw input/error data.
     """
     data = bytearray()
     try:
@@ -449,16 +449,18 @@ def _read_bounded(source: Path, limit: int) -> tuple[bytes | None, bool]:
             while len(data) <= limit:
                 chunk = stream.read(limit + 1 - len(data))
                 if not chunk:
-                    return bytes(data), False
+                    return bytes(data), False, False
                 data.extend(chunk)
+    except FileNotFoundError:
+        return None, False, False
     except OSError:
-        return None, False
-    return None, True
+        return None, False, True
+    return None, True, False
 
 
 def _canonical_observation(value: object) -> bool:
     """Recognize precisely the collector's secret-free output grammar."""
-    if not isinstance(value, dict) or set(value) != {"phase", "units", "paths", "jobs", "journal"} or value.get("phase") not in PHASES:
+    if not isinstance(value, dict) or set(value) != {"phase", "units", "paths", "jobs", "journal"} or not isinstance(value.get("phase"), str) or value["phase"] not in PHASES:
         return False
     units, paths, jobs, journal = value["units"], value["paths"], value["jobs"], value["journal"]
     if not isinstance(units, dict) or set(units) != set(UNITS) or not isinstance(paths, dict) or set(paths) != set(PATHS) or not isinstance(jobs, dict) or set(jobs) != set(UNITS):
@@ -469,31 +471,33 @@ def _canonical_observation(value: object) -> bool:
         if "availability" in item or not set(item) <= {"Result", "ActiveState", "SubState", "MainPID", "NRestarts", "InvocationID", "ActiveEnterTimestampMonotonic", "ExecStartPre", "ExecMainCode", "ExecMainStatus"}: return False
         for key, field in item.items():
             if field == {"availability": "not_applicable"} and key in OPTIONAL_PROPERTIES: continue
-            if key == "Result" and field in ALLOWED_RESULT: continue
-            if key == "ActiveState" and field in ALLOWED_ACTIVE: continue
-            if key == "SubState" and field in ALLOWED_SUB: continue
+            if key == "Result" and isinstance(field, str) and field in ALLOWED_RESULT: continue
+            if key == "ActiveState" and isinstance(field, str) and field in ALLOWED_ACTIVE: continue
+            if key == "SubState" and isinstance(field, str) and field in ALLOWED_SUB: continue
             if key == "InvocationID" and isinstance(field, str) and re.fullmatch(r"[0-9a-f]{32}", field): continue
             if key in {"MainPID", "NRestarts", "ActiveEnterTimestampMonotonic", "ExecMainStatus"} and isinstance(field, int) and not isinstance(field, bool) and 0 <= field <= 2**63 - 1: continue
             if key == "ExecMainCode" and isinstance(field, int) and not isinstance(field, bool) and field in {0, 1, 2, 3}: continue
             if key == "ExecStartPre" and isinstance(field, list) and len(field) <= MAX_RECORDS and all(isinstance(row, dict) and set(row) == {"code", "status"} and row["code"] in {"exited", "killed", "dumped"} and isinstance(row["status"], int) and not isinstance(row["status"], bool) and 0 <= row["status"] <= 2**63 - 1 for row in field): continue
             return False
     for item in paths.values():
-        if not isinstance(item, dict) or item == {"availability": "unavailable"} or item == {"present": False}: continue
+        if not isinstance(item, dict): return False
+        if item == {"availability": "unavailable"} or item == {"present": False}: continue
         custody = item.get("custody") if item.get("present") is True and set(item) == {"present", "custody"} else None
         if not isinstance(custody, dict) or set(custody) != {"owner_uid", "owner_gid", "mode_hex"} or not all(isinstance(custody[key], int) and not isinstance(custody[key], bool) and 0 <= custody[key] <= 2**63 - 1 for key in ("owner_uid", "owner_gid")) or not isinstance(custody["mode_hex"], str) or not re.fullmatch(r"[0-9a-f]{1,8}", custody["mode_hex"]): return False
     for unit, item in jobs.items():
         if not isinstance(item, dict): return False
         if item.get("availability") == "unavailable":
-            if set(item) != {"availability", "reason"} or item["reason"] not in {"no_record", "query_failed", "window_unavailable"}: return False
+            if set(item) != {"availability", "reason"} or not isinstance(item["reason"], str) or item["reason"] not in {"no_record", "query_failed", "window_unavailable", "deadline_expired", "read_failed"}: return False
         elif item.get("availability") == "available":
             if set(item) != {"availability", "records"} or not isinstance(item["records"], list) or len(item["records"]) > MAX_RECORDS: return False
-            if any(not isinstance(record, dict) or set(record) != {"availability", "unit", "id", "result"} or record["availability"] != "available" or record["unit"] != unit or not isinstance(record["id"], int) or record["result"] not in {"done", "failed", "canceled", "timeout", "dependency", "skipped"} for record in item["records"]): return False
+            if any(not isinstance(record, dict) or set(record) != {"availability", "unit", "id", "result"} or record["availability"] != "available" or record["unit"] != unit or not isinstance(record["id"], int) or isinstance(record["id"], bool) or record["id"] < 0 or record["id"] > 2**63 - 1 or not isinstance(record["result"], str) or record["result"] not in {"done", "failed", "canceled", "timeout", "dependency", "skipped"} for record in item["records"]): return False
         else: return False
-    return (journal == {"availability": "unavailable", "reason": "window_unavailable"} or isinstance(journal, list) and len(journal) <= MAX_JOURNAL_RECORDS and all(isinstance(item, dict) and set(item) == {"unit", "cause", "timestamp"} and item["unit"] in UNITS and item["cause"] in CAUSES and isinstance(item["timestamp"], int) and not isinstance(item["timestamp"], bool) and 0 <= item["timestamp"] <= 2**63 - 1 for item in journal))
+    return (isinstance(journal, dict) and set(journal) == {"availability", "reason"} and journal["availability"] == "unavailable" and isinstance(journal["reason"], str) and journal["reason"] in {"window_unavailable", "deadline_expired", "read_failed"} or isinstance(journal, list) and len(journal) <= MAX_JOURNAL_RECORDS and all(isinstance(item, dict) and set(item) == {"unit", "cause", "timestamp"} and isinstance(item["unit"], str) and item["unit"] in UNITS and isinstance(item["cause"], str) and item["cause"] in CAUSES and isinstance(item["timestamp"], int) and not isinstance(item["timestamp"], bool) and 0 <= item["timestamp"] <= 2**63 - 1 for item in journal))
 
 
-def _unavailable_observation(phase: str) -> dict[str, object]:
-    return {"phase": phase, "units": {unit: {"availability": "unavailable"} for unit in UNITS}, "paths": {path: {"availability": "unavailable"} for path in PATHS}, "jobs": {unit: {"availability": "unavailable", "reason": "query_failed"} for unit in UNITS}, "journal": {"availability": "unavailable", "reason": "window_unavailable"}}
+def _unavailable_observation(phase: str, *, reason: str = "query_failed") -> dict[str, object]:
+    safe_phase = phase if isinstance(phase, str) and phase in PHASES else "unavailable"
+    return {"phase": safe_phase, "units": {unit: {"availability": "unavailable"} for unit in UNITS}, "paths": {path: {"availability": "unavailable"} for path in PATHS}, "jobs": {unit: {"availability": "unavailable", "reason": reason} for unit in UNITS}, "journal": {"availability": "unavailable", "reason": reason if reason in {"window_unavailable", "deadline_expired", "read_failed"} else "window_unavailable"}}
 
 
 def publish(diagnostics: Path, destination: Path, *, identities: dict[str, str | None]) -> bool:
@@ -526,21 +530,26 @@ def publish(diagnostics: Path, destination: Path, *, identities: dict[str, str |
         return False
 
     complete = True
-    receipt, receipt_excessive = _read_bounded(diagnostics / "receipt.txt", MAX_BYTES)
-    if receipt_excessive:
+    receipt, receipt_excessive, receipt_unreadable = _read_bounded(diagnostics / "receipt.txt", MAX_BYTES)
+    if receipt_excessive or receipt_unreadable:
         complete = False
     elif receipt is not None:
         try:
             lines = receipt.decode("ascii", errors="strict").splitlines()
             allowed = {"schema", "run_id", "run_attempt", "build_status", "harness_status"}
             values = dict(line.split("=", 1) for line in lines if line.count("=") == 1)
-            if len(values) == len(lines) and set(values) <= allowed and all(re.fullmatch(r"[0-9]{1,20}|managed-start-diagnostic-receipt-v1", value) for value in values.values()):
+            statuses = {"build_status", "harness_status"}
+            valid_statuses = all(
+                key not in values or (re.fullmatch(r"[0-9]{1,3}", values[key]) and 0 <= int(values[key]) <= 255)
+                for key in statuses
+            )
+            if len(values) == len(lines) and set(values) <= allowed and values.get("schema") == "managed-start-diagnostic-receipt-v1" and all(re.fullmatch(r"[0-9]{1,20}", values[key]) for key in {"run_id", "run_attempt"} & set(values)) and valid_statuses:
                 (destination / "receipt.txt").write_text("\n".join(f"{key}={values[key]}" for key in sorted(values)) + "\n", encoding="ascii")
         except (OSError, UnicodeError, ValueError, TypeError):
             complete = False
 
-    cleanup, cleanup_excessive = _read_bounded(diagnostics / "diagnostic-cleanup.json", MAX_BYTES)
-    if cleanup_excessive:
+    cleanup, cleanup_excessive, cleanup_unreadable = _read_bounded(diagnostics / "diagnostic-cleanup.json", MAX_BYTES)
+    if cleanup_excessive or cleanup_unreadable:
         # Never represent an excessive cleanup record as complete, but keep
         # publishing independently valid observations below.
         complete = False
@@ -553,11 +562,11 @@ def publish(diagnostics: Path, destination: Path, *, identities: dict[str, str |
             complete = False
 
     for phase in sorted(PHASES):
-        payload, excessive = _read_bounded(diagnostics / f"{phase}-observation.json", MAX_BYTES * 32)
+        payload, excessive, unreadable = _read_bounded(diagnostics / f"{phase}-observation.json", MAX_BYTES * 32)
         try:
-            if excessive or payload is None:
-                if excessive:
-                    _write_document(destination / f"{phase}-observation.json", _unavailable_observation(phase))
+            if excessive or unreadable or payload is None:
+                if excessive or unreadable:
+                    _write_document(destination / f"{phase}-observation.json", _unavailable_observation(phase, reason="read_failed" if unreadable else "query_failed"))
                 continue
             value = json.loads(payload.decode("utf-8", errors="strict"))
             # The collector's only accepted artifact shape has exact top-level
