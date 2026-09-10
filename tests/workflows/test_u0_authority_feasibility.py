@@ -51,6 +51,38 @@ def _update(revision: str, prompt: str):
     return ManageAgentBody(action="update", name="dev_agent", task_id="TASK-U0", session_id="sess-u0", expected_revision=revision, system_prompt=prompt)
 
 
+def _r1_snapshot(*, db, tracker, paths, queue, task_ids: tuple[str, ...]) -> dict[str, object]:
+    """Capture the shipping evidence surfaces; proposed workflow tables do not exist.
+
+    This is deliberately a test helper, not a production evidence framework.
+    It records empty attachment observations as such rather than treating them
+    as evidence that an attachment-cleanup contract ran.
+    """
+    def record(value):
+        if value is None:
+            return None
+        return dict(value) if isinstance(value, dict) else value.model_dump()
+
+    rows = {task_id: record(db.get_task(task_id))
+            for task_id in task_ids}
+    return {
+        "tasks": rows,
+        "attachments": {task_id: [record(row) for row in db.list_task_attachments(task_id)]
+                        for task_id in task_ids},
+        "audits": {task_id: db.get_audit_logs(task_id) for task_id in task_ids},
+        "results": {task_id: [record(row) for row in db.get_task_results(task_id)]
+                    for task_id in task_ids},
+        "sessions": {task_id: tracker.get_active(task_id, "engineering_head")
+                     for task_id in task_ids},
+        "queue": list(queue._queue._queue),
+        "proposed_workflow_relations": "NOT PRESENT IN SHIPPING SCHEMA",
+        "active_chain": {task_id: rows[task_id]["active_chain"] if rows[task_id] else None
+                         for task_id in task_ids},
+        "active_fanout": {task_id: rows[task_id]["active_fanout"] if rows[task_id] else None
+                          for task_id in task_ids},
+    }
+
+
 def test_actual_prior_leg_context_is_immediate_report_only_not_authority_snapshot() -> None:
     report = CompletionReport(task_id="TASK-1", agent="maker_a", status="completed", confidence=90, output_summary="approved r1", verdict="APPROVE", output_dir="output/TASK-1")
     context = build_prior_leg_context(child_task_id="TASK-1", report=report)
@@ -305,6 +337,10 @@ def test_r1_termination_before_validate_denies_real_contained_delegation(tmp_pat
             body = ManageAgentBody(action="terminate", name="dev_agent",
                                     task_id="TASK-U0-AUTH", session_id="sess-authority")
             terminated["result"] = asyncio.run(manage_agent("test", body, org))
+            terminated["boundary"] = _r1_snapshot(
+                db=db, tracker=tracker, paths=paths, queue=state.queue,
+                task_ids=("TASK-U0-PARENT",),
+            )
         return original_validate(current_orch, decision)
 
     monkeypatch.setattr(run_step_mod, "_validate_delegate", terminate_at_boundary)
@@ -326,8 +362,12 @@ def test_r1_termination_before_validate_denies_real_contained_delegation(tmp_pat
     state = DaemonState.idle(orch._settings)
     state.orgs["test"] = SimpleNamespace(orchestrator=orch)
     orch.attach_queue(state.queue)
+    before = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
+                          task_ids=("TASK-U0-PARENT",))
     state.queue.enqueue("test", "TASK-U0-PARENT")
     asyncio.run(state.queue.drain_sync(Dispatcher(state)))
+    after = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
+                         task_ids=("TASK-U0-PARENT",))
 
     assert terminated["result"] == {"ok": True, "status": "terminated"}
     assert not (paths.agents_dir / "dev_agent.md").exists()
@@ -336,6 +376,16 @@ def test_r1_termination_before_validate_denies_real_contained_delegation(tmp_pat
     assert db.get_children("TASK-U0-PARENT") == []
     assert db.get_task("TASK-U0-PARENT").status is TaskStatus.FAILED
     assert backend.calls["launch"] == 1
+    assert before["tasks"]["TASK-U0-PARENT"]["status"] == TaskStatus.PENDING.value
+    assert terminated["boundary"]["tasks"]["TASK-U0-PARENT"]["status"] == TaskStatus.IN_PROGRESS.value
+    assert after["queue"] == []
+    assert terminated["boundary"]["attachments"]["TASK-U0-PARENT"] == []
+    assert terminated["boundary"]["proposed_workflow_relations"] == "NOT PRESENT IN SHIPPING SCHEMA"
+    parent_results = after["results"]["TASK-U0-PARENT"]
+    assert len(parent_results) == 1
+    assert parent_results[0]["task_id"] == "TASK-U0-PARENT"
+    assert parent_results[0]["agent"] == "engineering_head"
+    assert any(row["action"] == "agent_managed" for row in terminated["boundary"]["audits"]["TASK-U0-PARENT"] + db.get_audit_logs("TASK-U0-AUTH"))
 
 
 def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypatch) -> None:
@@ -371,6 +421,7 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
     tracker.set_active("TASK-U0-AUTH", "engineering_head", "sess-authority")
     reached, release, writer_done = threading.Event(), threading.Event(), threading.Event()
     observed: dict[str, object] = {}
+    writer_errors: list[BaseException] = []
     real_try_delegate = db.try_delegate
 
     def authority_writer() -> None:
@@ -384,7 +435,9 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
             assert raised.value.detail["code"] == "agent_not_quiescent"
         try:
             asyncio.run(terminate())
-        finally:
+        except BaseException as exc:
+            writer_errors.append(exc)
+        else:
             writer_done.set()
             release.set()
 
@@ -394,10 +447,21 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
             observed["boundary_child"] = child.id
             observed["boundary_parent"] = db.get_task(parent_id)
             observed["boundary_child_row"] = db.get_task(child.id)
+            # Independent SQLite readback proves the real try_delegate commit
+            # is visible before queue notification, not merely in db's cache.
+            import sqlite3
+            with sqlite3.connect(paths.db_path) as reader:
+                row = reader.execute(
+                    "SELECT parent_task_id, assigned_agent, status FROM tasks WHERE id = ?",
+                    (child.id,),
+                ).fetchone()
+            assert row == (parent_id, "dev_agent", TaskStatus.PENDING.value)
+            observed["independent_readback"] = row
             reached.set()
             thread = threading.Thread(target=authority_writer, daemon=True)
             thread.start()
             assert writer_done.wait(2), "termination writer did not reach post-commit boundary"
+            assert not writer_errors, writer_errors
             assert release.wait(1), "post-commit boundary was not released"
             thread.join(timeout=1)
             assert not thread.is_alive(), "termination writer did not finish"
@@ -430,8 +494,12 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
     state = DaemonState.idle(orch._settings)
     state.orgs["test"] = SimpleNamespace(orchestrator=orch)
     orch.attach_queue(state.queue)
+    before = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
+                          task_ids=("TASK-U0-PARENT",))
     state.queue.enqueue("test", "TASK-U0-PARENT")
     asyncio.run(state.queue.drain_sync(Dispatcher(state)))
+    after = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
+                         task_ids=("TASK-U0-PARENT", observed["boundary_child"]))
 
     assert reached.is_set()
     assert observed["boundary_child"] == db.get_children("TASK-U0-PARENT")[0]
@@ -448,3 +516,15 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
     assert len(db.get_task_results("TASK-U0-PARENT")) == 2
     assert len(db.get_task_results(child_id)) == 1
     assert backend.calls["launch"] == backend.calls["finish"] == 3
+    assert observed["independent_readback"] == ("TASK-U0-PARENT", "dev_agent", TaskStatus.PENDING.value)
+    assert before["tasks"]["TASK-U0-PARENT"]["status"] == TaskStatus.PENDING.value
+    assert after["queue"] == []
+    assert after["tasks"][child_id]["parent_task_id"] == "TASK-U0-PARENT"
+    assert after["tasks"][child_id]["assigned_agent"] == "dev_agent"
+    assert after["proposed_workflow_relations"] == "NOT PRESENT IN SHIPPING SCHEMA"
+    assert after["attachments"][child_id] == []
+    child_results = after["results"][child_id]
+    assert len(child_results) == 1
+    assert child_results[0]["task_id"] == child_id
+    assert child_results[0]["agent"] == "dev_agent"
+    assert not writer_errors

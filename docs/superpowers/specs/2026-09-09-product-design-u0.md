@@ -57,6 +57,21 @@ cancellation, and chain/fanout ownership schedules remain evidence requirements,
 not implied denial guarantees. `TaskQueue._worker_loop` dispatches `run_step`, whose
 delegation calls self-committing `Database.try_delegate` then queues a child;
 callback and cancellation are distinct routes. R2's historical
+
+The two currently observed authority cases are deliberately narrower than a
+general revocation protocol. Before `_validate_delegate`, supported
+`manage_agent terminate` archives the disposable worker and removes team
+membership; the real validator then denies delegation, with no child or child
+launch. After the real `try_delegate` commit but before queue notification, an
+independent SQLite connection reads the admitted child and the same writer is
+refused with `409 agent_not_quiescent`; releasing the queue then records the
+contained child callback and parent revisit. Each case snapshots task rows,
+chain/fanout fields, attachments, audits, queue, session bindings, results,
+and archive residue; proposed workflow relations are explicitly **NOT PRESENT
+IN SHIPPING SCHEMA**. Empty attachment snapshots are observations, not claims
+that an attachment-cleanup contract ran. The latter refusal proves only this
+writer's quiescence protection, not general revocation serialization.
+
 inventory now pins and acquires actual repository-history source objects for
 the pre-file-enrollment and pre-schema-v2 layouts. They are labelled
 `NOT_EXECUTED_HISTORICAL_RUNTIME_RESIDUAL`: source bytes do not relabel the
