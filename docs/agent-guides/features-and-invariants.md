@@ -60,6 +60,21 @@ interrupted); complete fresh counts, including zero, remain measurements when an
 independent lifecycle, session, or durable-authority reason rejects eligibility. B2b recollects before any later action and B3 owns
 current-boot coverage.
 
+### Dormant B3a task-scratch coverage
+
+The B3a coverage collector is likewise dormant and production-unreferenced. It
+compares two finite boot-bound snapshots of the fixed workspace partition and
+reports allocated bytes and entries (hardlinks count per observed entry), never
+a cleanup permit or writer exclusion. Each stat, open, dependent buffered read,
+directory read, and iterator advance has its own shared-deadline admission;
+manifest bytes share their actual-byte cap while boot reads do not consume it.
+Absent optional parents create neither an invented residual partition nor an
+unavailability reason, but present malformed parents remain literal
+no-follow residuals. Candidate scan uncertainty stays `residual_unknown` and
+fail-closed; observed repositories and special entries remain disqualifying.
+Unavailable, changed, capped, zero, and partial observations are never ready;
+B2b must recollect before any later action.
+
 ### Orchestration core
 
 - **Orchestrator & task state machine.** The daemon-side loop that advances each task one step at a time, drives manager-decision turns, spawns children, and records terminal state. Spec `docs/superpowers/specs/2026-04-14-orchestrator-daemon-design.md`; current contract `docs/agent-guides/orchestrator-contracts.md`; impl `runtime/orchestrator/run_step.py`, `runtime/orchestrator/orchestrator.py`.
