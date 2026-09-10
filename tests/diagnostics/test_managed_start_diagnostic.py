@@ -231,7 +231,7 @@ def test_actual_shipping_denial_validator_accepts_complete_matrix_and_rejects_in
 
 
 def _collector_runner(canary: bytes = b""):
-    properties = b"Result=exit-code\nActiveState=failed\nSubState=failed\nMainPID=7\nNRestarts=2\nInvocationID=0123456789abcdef0123456789abcdef\nExecStartPre={ path=/usr/bin/test ; argv[]=/usr/bin/test q7M9zCANARY ; code=exited ; status=126 }\nExecMainCode=exited\nExecMainStatus=1\n"
+    properties = b"Result=exit-code\nActiveState=failed\nSubState=failed\nMainPID=7\nNRestarts=2\nInvocationID=0123456789abcdef0123456789abcdef\nExecStartPre={ path=/usr/bin/test ; argv[]=/usr/bin/test q7M9zCANARY ; code=exited ; status=126 }\nExecMainCode=1\nExecMainStatus=1\n"
     journal = b'{"_SYSTEMD_UNIT":"happyranch-tsnet-sidecar.service","__MONOTONIC_TIMESTAMP":"12","MESSAGE":"credential_missing q7M9zCANARY"}\n'
     def runner(command: list[str] | tuple[str, ...], deadline: float) -> diagnostic.RunResult:
         assert deadline == 9999999999
@@ -239,24 +239,24 @@ def _collector_runner(canary: bytes = b""):
             return diagnostic.RunResult(0, properties + canary)
         if command[0] == "journalctl":
             return diagnostic.RunResult(0, journal + canary)
-        return diagnostic.RunResult(0 if command[-1].endswith("enrollment.key") else 1, b"81a4:0:0\n")
+        return diagnostic.RunResult(0, b"PRESENT:81a4:0:0\n")
     return runner
 
 
 def test_collector_persists_typed_causal_evidence_without_canary(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     artifact = tmp_path / "observation.json"
-    document = diagnostic.collect("positive_failure", artifact, 9999999999, _collector_runner(), now=lambda: 0)
+    document = diagnostic.collect("positive_failure", artifact, 9999999999, _collector_runner(), window=(1, 2), now=lambda: 0)
     persisted = artifact.read_text()
     assert "q7M9zCANARY" not in persisted + capsys.readouterr().out + capsys.readouterr().err
-    assert document["units"]["happyranch-tsnet-sidecar.service"]["ExecStartPre"] == {"code": "exited", "status": 126}
+    assert document["units"]["happyranch-tsnet-sidecar.service"]["ExecStartPre"] == [{"code": "exited", "status": 126}]
     assert document["journal"] == [{"unit": "happyranch-tsnet-sidecar.service", "cause": "credential_missing", "timestamp": 12}]
-    assert document["job"] == {"availability": "unavailable"}
+    assert document["job"] == {"availability": "unavailable", "reason": "historical_job_unavailable"}
 
 
 @pytest.mark.parametrize("malformed", [b"Result=exit-code\nResult=success\n", b"Result=q7M9zCANARY\n", b"MainPID=bad\n"])
 def test_collector_fails_closed_for_malformed_properties(tmp_path: Path, malformed: bytes) -> None:
     artifact = tmp_path / "observation.json"
-    diagnostic.collect("negative", artifact, 9999999999, _collector_runner(malformed), now=lambda: 0)
+    diagnostic.collect("negative", artifact, 9999999999, _collector_runner(malformed), window=(1, 2), now=lambda: 0)
     document = json.loads(artifact.read_text())
     assert all(value == {"availability": "unavailable"} for value in document["units"].values())
     assert "q7M9zCANARY" not in artifact.read_text()
@@ -266,7 +266,7 @@ def test_collector_marks_query_errors_unavailable_not_absent(tmp_path: Path) -> 
     def runner(command: list[str] | tuple[str, ...], _remaining: float) -> diagnostic.RunResult:
         return diagnostic.RunResult(3) if command[0] == "sudo" else diagnostic.RunResult(1)
     artifact = tmp_path / "observation.json"
-    diagnostic.collect("prepositive", artifact, 9999999999, runner, now=lambda: 0)
+    diagnostic.collect("prepositive", artifact, 9999999999, runner, window=(1, 2), now=lambda: 0)
     assert all(value == {"availability": "unavailable"} for value in json.loads(artifact.read_text())["paths"].values())
 
 
@@ -294,26 +294,26 @@ def test_actual_fake_command_adapter_persists_real_systemd255_shapes(tmp_path: P
     systemctl.write_text("""#!/usr/bin/env python3
 import sys
 assert sys.argv[1] == 'show' and '--property=ExecStartPre' in sys.argv
-print('Result=exit-code\\nActiveState=failed\\nSubState=failed\\nMainPID=7\\nNRestarts=2\\nInvocationID=0123456789abcdef0123456789abcdef\\nActiveEnterTimestampMonotonic=99\\nExecStartPre={ path=/usr/bin/test ; argv[]=/usr/bin/test ADAPTER_CANARY ; code=exited ; status=126 }\\nExecMainCode=exited\\nExecMainStatus=1')
+print('Result=exit-code\\nActiveState=failed\\nSubState=failed\\nMainPID=7\\nNRestarts=2\\nInvocationID=0123456789abcdef0123456789abcdef\\nActiveEnterTimestampMonotonic=99\\nExecStartPre={ path=/usr/bin/test ; argv[]=/usr/bin/test ADAPTER_CANARY ; code=exited ; status=126 }\\nExecMainCode=1\\nExecMainStatus=1')
 """)
     journalctl = bin_dir / "journalctl"
     journalctl.write_text("""#!/usr/bin/env python3
 import json, sys
-assert '--output=json' in sys.argv and any(arg.startswith('_SYSTEMD_UNIT=') for arg in sys.argv)
+assert '--output=json' in sys.argv and any(arg.startswith('--unit=') for arg in sys.argv) and '--since=@10' in sys.argv and '--until=@20' in sys.argv
 print(json.dumps({'_SYSTEMD_UNIT':'happyranch-tsnet-sidecar.service','__MONOTONIC_TIMESTAMP':'12','MESSAGE':'credential_missing ADAPTER_CANARY'}))
 """)
     sudo = bin_dir / "sudo"
     sudo.write_text("""#!/usr/bin/env python3
 import sys
-assert sys.argv[1:5] == ['-n', 'stat', '-c', '%f:%u:%g']
-print('81a4:0:0')
+assert sys.argv[1:4] == ['-n', 'python3', '-c']
+print('PRESENT:81a4:0:0')
 """)
     for command in bin_dir.iterdir(): command.chmod(0o755)
     artifact = tmp_path / "artifact.json"
     old_path = os.environ["PATH"]
     os.environ["PATH"] = f"{bin_dir}:{old_path}"
     try:
-        document = diagnostic.collect("positive_failure", artifact, __import__("time").monotonic() + 2)
+        document = diagnostic.collect("positive_failure", artifact, __import__("time").monotonic() + 2, window=(10, 20))
     finally:
         os.environ["PATH"] = old_path
     text = artifact.read_text() + capsys.readouterr().out + capsys.readouterr().err
@@ -327,10 +327,27 @@ def test_expired_deadline_starts_no_process_and_calls_cannot_renew(tmp_path: Pat
     def runner(command: Sequence[str], deadline: float) -> diagnostic.RunResult:
         calls.append(command)
         return diagnostic.RunResult(0)
-    diagnostic.collect("negative", tmp_path / "expired.json", 1, runner, now=lambda: 1)
+    diagnostic.collect("negative", tmp_path / "expired.json", 1, runner, window=(1, 2), now=lambda: 1)
     assert not calls
 
 
 @pytest.mark.parametrize("bad", [b"Result=123\n", b"Result=exit-code\nResult=success\n", b"ExecStartPre={ argv[]=CANARY ; code=7 ; status=1 }\n"])
 def test_property_enums_are_never_numeric_fallbacks(bad: bytes) -> None:
     assert diagnostic._properties(bad) is None
+
+
+def test_systemd255_numeric_main_and_repeated_precommands_are_typed() -> None:
+    parsed = diagnostic._properties(
+        b"Result=exit-code\nActiveState=inactive\nExecMainCode=1\nExecMainStatus=2\n"
+        b"ExecStartPre={ path=/bin/a ; code=killed ; status=15/TERM }\n"
+        b"ExecStartPre={ path=/bin/b ; code=exited ; status=0 }\n"
+    )
+    assert parsed == {"Result": "exit-code", "ActiveState": "inactive", "ExecMainCode": 1, "ExecMainStatus": 2, "ExecStartPre": [{"code": "killed", "status": 15}, {"code": "exited", "status": 0}]}
+
+
+def test_metadata_enoent_only_proves_absence_and_window_is_required(tmp_path: Path) -> None:
+    assert diagnostic._path_metadata(diagnostic.RunResult(0, b"ENOENT\n")) == {"present": False}
+    assert diagnostic._path_metadata(diagnostic.RunResult(0, b"UNAVAILABLE\n")) == {"availability": "unavailable"}
+    artifact = tmp_path / "observation.json"
+    diagnostic.collect("negative", artifact, 99, _collector_runner(), window=(20, 10), now=lambda: 0)
+    assert json.loads(artifact.read_text())["journal"] == {"availability": "unavailable", "reason": "window_unavailable"}

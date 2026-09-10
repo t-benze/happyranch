@@ -28,6 +28,9 @@ ALLOWED_RESULT = frozenset(("success", "exit-code", "signal", "timeout", "resour
 ALLOWED_ACTIVE = frozenset(("active", "inactive", "failed", "activating", "deactivating"))
 ALLOWED_SUB = frozenset(("running", "dead", "failed", "exited", "auto-restart", "start-pre", "start"))
 CAUSES = frozenset(("credential_missing", "credential_consumed", "exec_start_pre_failed", "main_exited", "timeout", "permission_denied"))
+# These are the five paths in the frozen harness.  The observer deliberately
+# accepts no caller-supplied paths: it reports metadata only and never opens a
+# credential.
 PATHS = ("/etc/happyranch/enrollment.key", "/etc/happyranch/enrollment.key.held", "/etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf", "/run/credentials/happyranch-tsnet-sidecar.service", "/var/lib/happyranch-tsnet-sidecar/credential.consumed")
 
 
@@ -145,9 +148,19 @@ def _exec_status(value: str) -> dict[str, object] | None:
     """Read systemd's structured ExecStartPre record without argv/path."""
     if not value.startswith("{") or not value.endswith("}") or len(value) > 1024:
         return None
-    fields = dict(part.strip().split("=", 1) for part in value[1:-1].split(";") if "=" in part)
+    fields: dict[str, str] = {}
+    for part in value[1:-1].split(";"):
+        if "=" not in part:
+            continue
+        key, item = part.strip().split("=", 1)
+        if key in fields:
+            return None
+        fields[key] = item
     code, status = fields.get("code"), fields.get("status")
-    if code not in {"exited", "killed", "dumped"} or (number := _integer(status or "")) is None:
+    # show_exec_status() appends a symbolic signal suffix (15/TERM) for
+    # killed records; the numeric prefix is the stable typed evidence.
+    numeric_status = (status or "").split("/", 1)[0]
+    if code not in {"exited", "killed", "dumped"} or (number := _integer(numeric_status)) is None:
         return None
     return {"code": code, "status": number}
 
@@ -156,27 +169,31 @@ def _properties(text: bytes) -> dict[str, object] | None:
     """Parse systemctl's fixed key/value response without accepting prose."""
     if len(text) > MAX_BYTES or text.count(b"\n") > MAX_LINES:
         return None
-    values: dict[str, str] = {}
+    values: dict[str, list[str]] = {}
     allowed = {"Result", "ActiveState", "SubState", "MainPID", "NRestarts", "InvocationID", "ActiveEnterTimestampMonotonic", "ExecStartPre", "ExecMainCode", "ExecMainStatus"}
     for raw in text.splitlines():
         try:
             key, value = raw.decode("ascii").split("=", 1)
         except (UnicodeDecodeError, ValueError):
             return None
-        if key not in allowed or key in values or len(value) > (1024 if key == "ExecStartPre" else 64):
+        if key not in allowed or len(value) > (1024 if key == "ExecStartPre" else 64):
             return None
-        values[key] = value
+        values.setdefault(key, []).append(value)
     if not values:
         return None
     output: dict[str, object] = {}
-    for key, value in values.items():
+    for key, raw_values in values.items():
+        if key != "ExecStartPre" and len(raw_values) != 1:
+            return None
+        value = raw_values[0]
         if key == "Result" and value in ALLOWED_RESULT: output[key] = value
         elif key == "ActiveState" and value in ALLOWED_ACTIVE: output[key] = value
         elif key == "SubState" and value in ALLOWED_SUB: output[key] = value
         elif key == "InvocationID" and len(value) == 32 and all(c in "0123456789abcdef" for c in value): output[key] = value
-        elif key == "ExecStartPre" and (record := _exec_status(value)) is not None: output[key] = record
+        elif key == "ExecStartPre" and all((record := _exec_status(item)) is not None for item in raw_values): output[key] = [_exec_status(item) for item in raw_values]
         elif key in {"MainPID", "NRestarts", "ActiveEnterTimestampMonotonic", "ExecMainStatus"} and (number := _integer(value)) is not None: output[key] = number
-        elif key == "ExecMainCode" and value in {"exited", "killed", "dumped"}: output[key] = value
+        # systemctl show v255 renders ExecMainCode as the numeric wait-code.
+        elif key == "ExecMainCode" and (number := _integer(value)) is not None and number in {0, 1, 2, 3}: output[key] = number
         else: return None
     return output
 
@@ -185,13 +202,18 @@ PROPERTY_ARGS = ("--no-pager", "--property=Result", "--property=ActiveState", "-
 
 
 def _path_metadata(result: RunResult) -> dict[str, object]:
-    if result.timed_out or result.truncated or result.returncode not in (0, 1):
+    # A small helper prints errno first.  GNU stat's exit status is not an
+    # errno, so only ENOENT proves absence.
+    if result.timed_out or result.truncated or result.returncode != 0:
         return {"availability": "unavailable"}
-    if result.returncode == 1:
-        return {"present": False}
     try:
-        mode, uid, gid = result.stdout.decode("ascii").strip().split(":")
-        if len(mode) > 8 or not all(c in "0123456789abcdef" for c in mode) or (owner := _integer(uid)) is None or (group := _integer(gid)) is None:
+        fields = result.stdout.decode("ascii").strip().split(":")
+        if fields == ["ENOENT"]:
+            return {"present": False}
+        if len(fields) != 4 or fields[0] != "PRESENT":
+            raise ValueError
+        _, mode, uid, gid = fields
+        if not mode or len(mode) > 8 or not all(c in "0123456789abcdef" for c in mode) or (owner := _integer(uid)) is None or (group := _integer(gid)) is None:
             raise ValueError
     except (UnicodeDecodeError, ValueError):
         return {"availability": "unavailable"}
@@ -207,20 +229,21 @@ def _journal_records(raw: bytes) -> list[dict[str, object]]:
             item = json.loads(line)
             if not isinstance(item, dict):
                 continue
-            unit = item.get("_SYSTEMD_UNIT")
+            unit = item.get("_SYSTEMD_UNIT") or item.get("UNIT") or item.get("JOB_UNIT")
             stamp = item.get("__MONOTONIC_TIMESTAMP")
             message = item.get("MESSAGE")
             if unit not in UNITS or not isinstance(stamp, str) or (number := _integer(stamp)) is None or not isinstance(message, str):
                 continue
         except (ValueError, TypeError):
             continue
-        cause = next((candidate for candidate in CAUSES if candidate in message), None)
+        lowered = message.lower()
+        cause = next((candidate for candidate in CAUSES if candidate.replace("_", " ") in lowered or candidate in lowered), None)
         if cause:
             records.append({"unit": unit, "cause": cause, "timestamp": number})
     return records
 
 
-def collect(phase: str, output: Path, deadline: float, runner: Runner = run_bounded, *, paths: Sequence[str] = PATHS, now: Callable[[], float] = time.monotonic) -> dict[str, object]:
+def collect(phase: str, output: Path, deadline: float, runner: Runner = run_bounded, *, window: tuple[int, int] | None = None, now: Callable[[], float] = time.monotonic) -> dict[str, object]:
     """Persist secret-free, fail-closed causal observations for one seam.
 
     The later shell envelope owns when this is called.  This collector never
@@ -230,16 +253,19 @@ def collect(phase: str, output: Path, deadline: float, runner: Runner = run_boun
         document: dict[str, object] = {"phase": phase if phase in PHASES else "unavailable", "availability": "unavailable"}
         output.write_text(json.dumps(document, sort_keys=True))
         return document
-    document = {"phase": phase, "units": {}, "paths": {}, "job": {"availability": "unavailable"}, "journal": []}
+    if window is None or not all(isinstance(item, int) and 0 <= item <= 2**63 - 1 for item in window) or window[0] > window[1]:
+        document = {"phase": phase, "units": {}, "paths": {}, "job": {"availability": "unavailable", "reason": "window_unavailable"}, "journal": {"availability": "unavailable", "reason": "window_unavailable"}}
+        output.parent.mkdir(parents=True, exist_ok=True); output.write_text(json.dumps(document, sort_keys=True)); return document
+    document = {"phase": phase, "units": {}, "paths": {}, "job": {"availability": "unavailable", "reason": "historical_job_unavailable"}, "journal": []}
     for unit in UNITS:
         result = runner(("systemctl", "show", unit, *PROPERTY_ARGS), deadline)
         parsed = None if result.returncode != 0 or result.timed_out or result.truncated else _properties(result.stdout)
         document["units"][unit] = parsed if parsed is not None else {"availability": "unavailable"}
-    for path in paths:
-        result = runner(("sudo", "-n", "stat", "-c", "%f:%u:%g", "--", path), deadline)
+    for path in PATHS:
+        result = runner(("sudo", "-n", "python3", "-c", "import os,stat,sys; p=sys.argv[1];\ntry:\n s=os.stat(p,follow_symlinks=False); print('PRESENT:%x:%d:%d' % (stat.S_IMODE(s.st_mode),s.st_uid,s.st_gid))\nexcept OSError as e:\n print('ENOENT' if e.errno==2 else 'UNAVAILABLE'); sys.exit(0)", path), deadline)
         document["paths"][path] = _path_metadata(result)
     for unit in UNITS:
-        journal = runner(("journalctl", "--no-pager", "--output=json", f"--lines={MAX_RECORDS}", "--since=@0", "--until=@9999999999", f"_SYSTEMD_UNIT={unit}"), deadline)
+        journal = runner(("journalctl", "--no-pager", "--output=json", f"--lines={MAX_RECORDS}", f"--since=@{window[0]}", f"--until=@{window[1]}", f"--unit={unit}"), deadline)
         if journal.returncode == 0 and not journal.timed_out and not journal.truncated:
             for record in _journal_records(journal.stdout):
                 if record not in document["journal"]:
