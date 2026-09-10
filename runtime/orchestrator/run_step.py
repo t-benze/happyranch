@@ -2432,7 +2432,6 @@ def _current_unresolved_failed_leaves(
             seen.add(leaf.id)
             leaves.append(leaf)
     return leaves
-    return leaves
 
 
 def _format_slice_retry_exhausted_reason(
