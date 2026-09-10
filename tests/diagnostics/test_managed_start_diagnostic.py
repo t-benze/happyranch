@@ -668,7 +668,8 @@ def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, 
     # makes `cd` fail before builder37 and produces false evidence.
     (shipping_checkout / "app/linux/tsnet-sidecar").mkdir(parents=True)
     effect_log = tmp_path / "effects.log"
-    env = dict(os.environ, PATH=str(bin_dir), RUNNER_TEMP=str(tmp_path), GITHUB_WORKSPACE=str(tmp_path), GITHUB_ENV=str(tmp_path / "github-env"), GITHUB_RUN_ID="1234", GITHUB_RUN_ATTEMPT="1", ImageOS="ubuntu24", ImageVersion="20260907.1.0", SHIPPING_SHA="2147c5c6edb5d847e4c0ca855a044fa850fd7e11", CANDIDATE_SHA="672b584b891e1375802f0e907b3276569badcff3", PYTHONDONTWRITEBYTECODE="1", EFFECT_LOG=str(effect_log))
+    image_version = "20260907." + "9" * 10_000 + ".0" if case == "metadata-overlong" else "20260907.1.0"
+    env = dict(os.environ, PATH=str(bin_dir), RUNNER_TEMP=str(tmp_path), GITHUB_WORKSPACE=str(tmp_path), GITHUB_ENV=str(tmp_path / "github-env"), GITHUB_RUN_ID="1234", GITHUB_RUN_ATTEMPT="1", ImageOS="ubuntu24", ImageVersion=image_version, SHIPPING_SHA="2147c5c6edb5d847e4c0ca855a044fa850fd7e11", CANDIDATE_SHA="672b584b891e1375802f0e907b3276569badcff3", PYTHONDONTWRITEBYTECODE="1", EFFECT_LOG=str(effect_log))
     traces: dict[str, str] = {}
     def run(name: str, cwd: Path = tmp_path) -> int:
         result = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", blocks[name]], cwd=cwd, env=env, check=False, capture_output=True, text=True, timeout=15)
@@ -710,7 +711,12 @@ def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, 
         env["HARNESS_EXIT"] = "7" if case == "f3-harness7" else "0"
         exits["reuse"] = run("Reuse pinned setup through first start", shipping_checkout)
         (bin_dir / "python").unlink(); (bin_dir / "python").symlink_to("/usr/bin/python3")
-    if case == "f4": (diagnostics_dir / "diagnostic-cleanup.json").write_text(" " * 1_200_000 + '{"cleanup":"complete"}')
+    if case == "f4":
+        (diagnostics_dir / "diagnostic-cleanup.json").write_text(" " * 1_200_000 + '{"cleanup":"complete"}')
+        # This is a separately-produced, valid later collector observation.
+        # It must not be erased or silently represented as complete merely
+        # because an earlier cleanup input is excessive.
+        diagnostic.collect("positive_success", diagnostics_dir / "positive_success-observation.json", 9999999999, runner=_collector_runner(), window=(1, 2), now=lambda: 0)
     if case == "f6":
         # Obtain both documents from the real bounded collector; never copy a
         # malformed record into the independent later producer fixture.
@@ -748,9 +754,12 @@ def test_actual_yaml_regression_requirements_are_not_helper_only(tmp_path: Path,
         assert "build_status=37\n" in (published / "receipt.txt").read_text()
     if case == "f4":
         # The current publisher reads the whole cleanup document despite its
-        # bounded collector contract; no unrelated provenance may disappear.
+        # bounded collector contract; no unrelated provenance or later
+        # independently valid observation may disappear or look complete.
         assert exits["provenance"] == 3
         assert json.loads((published / "provenance.json").read_text())["shipping"].startswith("2147")
+        later = json.loads((published / "positive_success-observation.json").read_text())
+        assert later["phase"] == "positive_success"
     if case == "f5": assert exits["provenance"] == 0
     if case == "f6":
         retained = json.loads((published / "positive_success-observation.json").read_text())
@@ -795,6 +804,69 @@ def test_actual_yaml_f2_checkout_absence_preserves_independent_provenance(tmp_pa
     assert (published / "receipt.txt").is_file()
     assert (published / "diagnostic-cleanup.json").is_file()
     assert all("fixture package" not in path.read_text(errors="ignore") for path in published.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_version", "expected_diagnostic"),
+    [
+        ("f5", "20260907.1.0", "672b584b891e1375802f0e907b3276569badcff3"),
+        ("metadata-overlong", "unavailable", "672b584b891e1375802f0e907b3276569badcff3"),
+        ("f2-diagnostic", "20260907.1.0", "unavailable"),
+    ],
+    ids=["F4-metadata-control", "F4-metadata-overlong", "F4-metadata-missing-diagnostic"],
+)
+def test_actual_yaml_f4_metadata_is_finite_and_has_independent_fallbacks(
+    tmp_path: Path, case: str, expected_version: str, expected_diagnostic: str,
+) -> None:
+    """Literal YAML provenance is tested for control, oversized and fallback inputs."""
+    exits, published, env_bytes, traces = _actual_yaml_case(tmp_path, case)
+    assert exits["provenance"] == 0
+    provenance_bytes = (published / "provenance.json").read_bytes()
+    provenance = json.loads(provenance_bytes)
+    assert provenance["runner_image"] == "ubuntu24"
+    assert provenance["systemd"] == "255"
+    assert provenance["image_version"] == expected_version
+    assert provenance["diagnostic"] == expected_diagnostic
+    assert len(provenance_bytes) <= diagnostic.MAX_BYTES
+    assert "9" * 100 not in provenance_bytes.decode("ascii")
+    assert "9" * 100 not in env_bytes + "\n".join(traces.values())
+
+
+@pytest.mark.parametrize(
+    ("name", "payload", "cap"),
+    [
+        ("receipt.txt", b"schema=managed-start-diagnostic-receipt-v1\n", diagnostic.MAX_BYTES),
+        ("diagnostic-cleanup.json", b'{"cleanup":"complete"}\n', diagnostic.MAX_BYTES),
+        ("positive_success-observation.json", b"{}", diagnostic.MAX_BYTES * 32),
+    ],
+    ids=["F4-receipt-read", "F4-cleanup-read", "F4-observation-read"],
+)
+def test_actual_publish_entrypoint_records_bounded_known_input_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, payload: bytes, cap: int,
+) -> None:
+    """Instrument the real `--publish` entry point without replacing publisher logic."""
+    diagnostics_dir, published = tmp_path / "diagnostics", tmp_path / "published"
+    diagnostics_dir.mkdir(); (diagnostics_dir / name).write_bytes(payload)
+    requested: list[tuple[str, int]] = []
+    original_read_text = Path.read_text
+
+    def traced_read_text(path: Path, *args: object, **kwargs: object) -> str:
+        if path.parent == diagnostics_dir and path.name == name:
+            # `read_text` has no length parameter: its invocation is an
+            # unbounded fallback and the trace remains durable even if the
+            # publisher catches the injected OSError.
+            requested.append((path.name, -1))
+            raise OSError("F4_INSTRUMENTED_UNBOUNDED_READ")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", traced_read_text)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--publish", "--diagnostics", str(diagnostics_dir), "--output", str(published)])
+    exit_code = diagnostic.main()
+    assert requested, "instrumentation did not reach the known publisher input"
+    assert exit_code == 3, "instrumented read violation must persist if publish catches it"
+    # Required future behavior: a bounded stream request, never read(-1),
+    # with at most one sentinel byte beyond the documented cap before decode.
+    assert all(0 <= length <= cap + 1 for _path, length in requested)
 
 
 def test_actual_yaml_f2_initializer_env_failure_skips_normal_steps_but_runs_always_provenance(tmp_path: Path) -> None:
