@@ -171,6 +171,99 @@ def test_manifest_parent_guard_is_reachable_for_literal_candidate(tmp_path: Path
     workspace = tmp_path / "workspace"; root = workspace / ".happyranch/task-tmp/TASK-1"; root.mkdir(parents=True)
     outside = tmp_path / "outside"; outside.mkdir(); (outside / "TASK-1.json").write_text("outside")
     (workspace / ".happyranch/task-scratch-manifests").symlink_to(outside, target_is_directory=True)
-    observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+    calls: list[str] = []; real = coverage.os.open
+    def watch(path: object, *args: object, **kwargs: object) -> int:
+        calls.append(str(path)); return real(path, *args, **kwargs)
+    with patch.object(coverage.os, "open", watch):
+        observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
     bucket = next(row for row in observation.buckets if row.relative_path.endswith("TASK-1"))
     assert bucket.classification == "residual_unmanifested"
+    assert str(outside / "TASK-1.json") not in calls
+
+
+def test_boot_post_open_timeout_closes_descriptor_in_each_pass(tmp_path: Path, monkeypatch: object) -> None:
+    """The second admission protects the buffered boot read, not just open()."""
+    for expire_on_boot_open in (1, 2):
+        proc = tmp_path / f"proc-{expire_on_boot_open}"; _boot(proc)
+        workspace = tmp_path / f"workspace-{expire_on_boot_open}"; workspace.mkdir()
+        opens = closes = 0; expired = False; real_open = coverage.os.open; real_close = coverage.os.close
+        def watch_open(path: object, *args: object, **kwargs: object) -> int:
+            nonlocal opens, expired
+            fd = real_open(path, *args, **kwargs)
+            if str(path).endswith("boot_id"):
+                opens += 1
+                expired = opens == expire_on_boot_open
+            return fd
+        def watch_close(fd: int) -> None:
+            nonlocal closes
+            closes += 1; real_close(fd)
+        def clock() -> int:
+            return 2 if expired else 0
+        monkeypatch.setattr(coverage.time, "monotonic_ns", clock)
+        with patch.object(coverage.os, "open", watch_open), patch.object(coverage.os, "close", watch_close):
+            observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc, deadline_ns=1)
+        assert opens == expire_on_boot_open
+        assert closes >= 1
+        assert "observation_timeout" in observation.reasons
+        monkeypatch.undo()
+
+
+def test_boot_post_open_read_cap_closes_descriptor_in_each_pass(tmp_path: Path, monkeypatch: object) -> None:
+    for deny_on_boot_open in (1, 2):
+        proc = tmp_path / f"proc-{deny_on_boot_open}"; _boot(proc)
+        workspace = tmp_path / f"workspace-{deny_on_boot_open}"; workspace.mkdir()
+        opens = closes = 0; deny_read = False; real_open = coverage.os.open; real_close = coverage.os.close; real_admit = coverage._Budget.admit
+        def watch_open(path: object, *args: object, **kwargs: object) -> int:
+            nonlocal opens, deny_read
+            fd = real_open(path, *args, **kwargs)
+            if str(path).endswith("boot_id"):
+                opens += 1; deny_read = opens == deny_on_boot_open
+            return fd
+        def watch_close(fd: int) -> None:
+            nonlocal closes
+            closes += 1; real_close(fd)
+        def admit(self: coverage._Budget, *, read: bool = False, manifest_bytes: int = 0) -> bool:
+            nonlocal deny_read
+            if deny_read and read:
+                deny_read = False; self.reasons.add("read_cap"); return False
+            return real_admit(self, read=read, manifest_bytes=manifest_bytes)
+        monkeypatch.setattr(coverage._Budget, "admit", admit)
+        with patch.object(coverage.os, "open", watch_open), patch.object(coverage.os, "close", watch_close):
+            observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+        assert opens >= deny_on_boot_open
+        assert closes >= 1
+        assert "read_cap" in observation.reasons
+        monkeypatch.undo()
+
+
+def test_candidate_timeout_cap_and_nested_incompleteness_remain_unknown(tmp_path: Path, monkeypatch: object) -> None:
+    """A partial candidate walk is not evidence of a repository/special file."""
+    for failure in ("timeout", "cap"):
+        proc = tmp_path / f"proc-{failure}"; _boot(proc)
+        workspace = tmp_path / f"workspace-{failure}"; root = workspace / ".happyranch/task-tmp/TASK-1"; (root / "nested").mkdir(parents=True)
+        (root / "nested/payload").write_text("x"); _manifest(workspace, "TASK-1")
+        candidate_scans = 0; expired = False; real_scandir = coverage.os.scandir; real_admit = coverage._Budget.admit
+        def clock() -> int:
+            return 2 if expired else 0
+        def watch_scandir(path: object, *args: object, **kwargs: object) -> object:
+            nonlocal candidate_scans, expired
+            if Path(path) == root:
+                candidate_scans += 1
+                # _walk and population each scan the literal root first;
+                # the third scan is _candidate_safe's bounded inspection.
+                if candidate_scans == 3:
+                    expired = failure == "timeout"
+            return real_scandir(path, *args, **kwargs)
+        def admit(self: coverage._Budget, *, read: bool = False, manifest_bytes: int = 0) -> bool:
+            if failure == "cap" and candidate_scans == 3 and read:
+                self.reasons.add("read_cap"); return False
+            return real_admit(self, read=read, manifest_bytes=manifest_bytes)
+        monkeypatch.setattr(coverage.time, "monotonic_ns", clock)
+        monkeypatch.setattr(coverage._Budget, "admit", admit)
+        with patch.object(coverage.os, "scandir", watch_scandir):
+            observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc, deadline_ns=1)
+        bucket = next(row for row in observation.buckets if row.relative_path.endswith("TASK-1"))
+        assert candidate_scans >= 3
+        assert bucket.classification == "residual_unknown"
+        assert ("observation_timeout" if failure == "timeout" else "read_cap") in observation.reasons
+        monkeypatch.undo()

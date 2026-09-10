@@ -362,8 +362,14 @@ def _snapshot(workspace: Path, proc_root: Path, budget: _Budget) -> _Snapshot:
             else:
                 raw, classification = _manifest(path, workspace, budget)
                 manifests.append((rel, raw, classification))
-                if classification == "canonical_regenerable" and _candidate_safe(path, root_dev, budget) is False:
-                    classification = "residual_repository_or_special"
+                if classification == "canonical_regenerable":
+                    candidate_safe = _candidate_safe(path, root_dev, budget)
+                    if candidate_safe is False:
+                        classification = "residual_repository_or_special"
+                    elif candidate_safe is None:
+                        # An interrupted candidate inspection is uncertainty,
+                        # never evidence that the candidate is safe.
+                        classification = "residual_unknown"
         buckets.append(CoverageBucket(rel, classification, *measured))
     return _Snapshot(boot, workspace_id, tuple(buckets), tuple(items), tuple(populations), tuple(manifests))
 
