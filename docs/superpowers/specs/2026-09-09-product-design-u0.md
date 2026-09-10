@@ -56,7 +56,8 @@ those seams. It proves that path only: authority mutation, callback ordering,
 cancellation, and chain/fanout ownership schedules remain evidence requirements,
 not implied denial guarantees. `TaskQueue._worker_loop` dispatches `run_step`, whose
 delegation calls self-committing `Database.try_delegate` then queues a child;
-callback and cancellation are distinct routes. R2's historical
+callback and cancellation are distinct routes. R2's historical runtime
+inventory remains subsequent work.
 
 The two currently observed authority cases are deliberately narrower than a
 general revocation protocol. Before `_validate_delegate`, supported
@@ -66,8 +67,9 @@ launch. After the real `try_delegate` commit but before queue notification, an
 independent SQLite connection reads the admitted child and the same writer is
 refused with `409 agent_not_quiescent`; releasing the queue then records the
 contained child callback and parent revisit. Each case snapshots task rows,
-chain/fanout fields, attachments, audits, queue, session bindings, results,
-and archive residue; proposed workflow relations are explicitly **NOT PRESENT
+chain/fanout fields, attachments, audits, queue, assigned-agent session/control
+bindings, results, canonical/workspace archive residue, and recorded host
+supervisor receipts; proposed workflow relations are explicitly **NOT PRESENT
 IN SHIPPING SCHEMA**. Empty attachment snapshots are observations, not claims
 that an attachment-cleanup contract ran. The latter refusal proves only this
 writer's quiescence protection, not general revocation serialization.

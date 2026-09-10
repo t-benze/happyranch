@@ -51,7 +51,8 @@ def _update(revision: str, prompt: str):
     return ManageAgentBody(action="update", name="dev_agent", task_id="TASK-U0", session_id="sess-u0", expected_revision=revision, system_prompt=prompt)
 
 
-def _r1_snapshot(*, db, tracker, paths, queue, task_ids: tuple[str, ...]) -> dict[str, object]:
+def _r1_snapshot(*, db, tracker, paths, queue, task_ids: tuple[str, ...],
+                 agent_names: tuple[str, ...] = ()) -> dict[str, object]:
     """Capture the shipping evidence surfaces; proposed workflow tables do not exist.
 
     This is deliberately a test helper, not a production evidence framework.
@@ -63,8 +64,12 @@ def _r1_snapshot(*, db, tracker, paths, queue, task_ids: tuple[str, ...]) -> dic
             return None
         return dict(value) if isinstance(value, dict) else value.model_dump()
 
-    rows = {task_id: record(db.get_task(task_id))
-            for task_id in task_ids}
+    rows = {task_id: record(db.get_task(task_id)) for task_id in task_ids}
+    agents = {
+        task_id: rows[task_id]["assigned_agent"] if rows[task_id] else None
+        for task_id in task_ids
+    }
+    identities = set(agent_names) | {agent for agent in agents.values() if agent}
     return {
         "tasks": rows,
         "attachments": {task_id: [record(row) for row in db.list_task_attachments(task_id)]
@@ -72,9 +77,19 @@ def _r1_snapshot(*, db, tracker, paths, queue, task_ids: tuple[str, ...]) -> dic
         "audits": {task_id: db.get_audit_logs(task_id) for task_id in task_ids},
         "results": {task_id: [record(row) for row in db.get_task_results(task_id)]
                     for task_id in task_ids},
-        "sessions": {task_id: tracker.get_active(task_id, "engineering_head")
-                     for task_id in task_ids},
+        "sessions": {task_id: tracker.get_active(task_id, agents[task_id])
+                     if agents[task_id] else None for task_id in task_ids},
+        "controls": {task_id: tracker.get_cancel_control(task_id, agents[task_id])
+                     is not None if agents[task_id] else False for task_id in task_ids},
         "queue": list(queue._queue._queue),
+        "canonical_agents": {name: (paths.agents_dir / f"{name}.md").exists()
+                             for name in identities},
+        "archived_agents": {name: (paths.agents_dir / "_terminated" / f"{name}.md").exists()
+                            for name in identities},
+        "workspaces": {name: (paths.workspaces_dir / name).exists()
+                       for name in identities},
+        "archived_workspaces": {name: (paths.workspaces_dir / "_terminated" / name).exists()
+                                for name in identities},
         "proposed_workflow_relations": "NOT PRESENT IN SHIPPING SCHEMA",
         "active_chain": {task_id: rows[task_id]["active_chain"] if rows[task_id] else None
                          for task_id in task_ids},
@@ -324,6 +339,8 @@ def test_r1_termination_before_validate_denies_real_contained_delegation(tmp_pat
                           event_bus=EventSink())
     # A separate active manager session owns the authority writer; it cannot
     # be mistaken for the parent invocation whose decision is being consumed.
+    db.insert_task(TaskRecord(id="TASK-U0-AUTH", team="engineering", brief="authority writer",
+                              assigned_agent="engineering_head", task_type="task"))
     tracker.set_active("TASK-U0-AUTH", "engineering_head", "sess-authority")
     terminated: dict[str, object] = {}
     original_validate = run_step_mod._validate_delegate
@@ -339,16 +356,22 @@ def test_r1_termination_before_validate_denies_real_contained_delegation(tmp_pat
             terminated["result"] = asyncio.run(manage_agent("test", body, org))
             terminated["boundary"] = _r1_snapshot(
                 db=db, tracker=tracker, paths=paths, queue=state.queue,
-                task_ids=("TASK-U0-PARENT",),
+                task_ids=("TASK-U0-PARENT",), agent_names=("dev_agent",),
             )
-        return original_validate(current_orch, decision)
+        result = original_validate(current_orch, decision)
+        terminated["validator_result"] = result
+        return result
 
     monkeypatch.setattr(run_step_mod, "_validate_delegate", terminate_at_boundary)
 
     class CallbackExecutor(_RecordingExecutor):
-        def set_invocation_context(self, **kwargs): self.context = kwargs
+        def set_invocation_context(self, **kwargs):
+            self.context = kwargs
         def run(self, **kwargs):
             task_id = self.context["task_id"]
+            self.callback_sessions = getattr(self, "callback_sessions", []) + [
+                (task_id, self.context["agent"], kwargs["session_id"])
+            ]
             body = CompletionBody(session_id=kwargs["session_id"], agent=self.context["agent"],
                 status="completed", confidence=100, output_summary="delegate after withdrawal",
                 decision=NextStep(action="delegate", agent="dev_agent", prompt="must deny").model_dump())
@@ -357,21 +380,24 @@ def test_r1_termination_before_validate_denies_real_contained_delegation(tmp_pat
 
     executor = CallbackExecutor()
     monkeypatch.setattr(orch, "_build_executor", lambda _provider: executor)
-    orch.attach_host_supervisor(HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0.0), publisher=lambda receipt: None))
+    receipts = []
+    orch.attach_host_supervisor(HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0.0), publisher=receipts.append))
     db.insert_task(TaskRecord(id="TASK-U0-PARENT", team="engineering", brief="withdraw", assigned_agent="engineering_head", task_type="task"))
     state = DaemonState.idle(orch._settings)
     state.orgs["test"] = SimpleNamespace(orchestrator=orch)
     orch.attach_queue(state.queue)
     before = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
-                          task_ids=("TASK-U0-PARENT",))
+                          task_ids=("TASK-U0-PARENT",), agent_names=("dev_agent",))
     state.queue.enqueue("test", "TASK-U0-PARENT")
     asyncio.run(state.queue.drain_sync(Dispatcher(state)))
     after = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
-                         task_ids=("TASK-U0-PARENT",))
+                         task_ids=("TASK-U0-PARENT",), agent_names=("dev_agent",))
 
     assert terminated["result"] == {"ok": True, "status": "terminated"}
     assert not (paths.agents_dir / "dev_agent.md").exists()
     assert (paths.agents_dir / "_terminated" / "dev_agent.md").exists()
+    assert not (paths.workspaces_dir / "dev_agent").exists()
+    assert (paths.workspaces_dir / "_terminated" / "dev_agent").exists()
     assert org.teams.team_for_agent("dev_agent") is None
     assert db.get_children("TASK-U0-PARENT") == []
     assert db.get_task("TASK-U0-PARENT").status is TaskStatus.FAILED
@@ -385,7 +411,21 @@ def test_r1_termination_before_validate_denies_real_contained_delegation(tmp_pat
     assert len(parent_results) == 1
     assert parent_results[0]["task_id"] == "TASK-U0-PARENT"
     assert parent_results[0]["agent"] == "engineering_head"
-    assert any(row["action"] == "agent_managed" for row in terminated["boundary"]["audits"]["TASK-U0-PARENT"] + db.get_audit_logs("TASK-U0-AUTH"))
+    assert parent_results[0]["session_id"] != "sess-authority"
+    assert executor.callback_sessions == [
+        ("TASK-U0-PARENT", "engineering_head", parent_results[0]["session_id"]),
+    ]
+    assert parent_results[0]["output_summary"] == "delegate after withdrawal"
+    assert after["tasks"]["TASK-U0-PARENT"]["note"] == (
+        "invalid delegate: no workspace for agent 'dev_agent'"
+    )
+    assert terminated["validator_result"] == "no workspace for agent 'dev_agent'"
+    assert terminated["boundary"]["canonical_agents"]["engineering_head"]
+    assert terminated["boundary"]["archived_agents"]["dev_agent"]
+    assert terminated["boundary"]["archived_workspaces"]["dev_agent"]
+    assert any(row["action"] == "agent_managed" for row in db.get_audit_logs("TASK-U0-AUTH"))
+    assert len(receipts) == 1
+    assert [request.logical_id for request in backend.requests] == ["TASK-U0-PARENT"]
 
 
 def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypatch) -> None:
@@ -418,6 +458,8 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
                           sessions=tracker, settings=orch._settings,
                           teams_lock=asyncio.Lock(), db_lock=asyncio.Lock(),
                           event_bus=EventSink())
+    db.insert_task(TaskRecord(id="TASK-U0-AUTH", team="engineering", brief="authority writer",
+                              assigned_agent="engineering_head", task_type="task"))
     tracker.set_active("TASK-U0-AUTH", "engineering_head", "sess-authority")
     reached, release, writer_done = threading.Event(), threading.Event(), threading.Event()
     observed: dict[str, object] = {}
@@ -437,7 +479,7 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
             asyncio.run(terminate())
         except BaseException as exc:
             writer_errors.append(exc)
-        else:
+        finally:
             writer_done.set()
             release.set()
 
@@ -465,14 +507,26 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
             assert release.wait(1), "post-commit boundary was not released"
             thread.join(timeout=1)
             assert not thread.is_alive(), "termination writer did not finish"
+            if writer_errors:
+                raise writer_errors[0]
+            # This is after the real writer returns its 409 but still before
+            # try_delegate returns to queue notification/launch.
+            observed["boundary"] = _r1_snapshot(
+                db=db, tracker=tracker, paths=paths, queue=state.queue,
+                task_ids=(parent_id, child.id),
+            )
         return committed
 
     monkeypatch.setattr(db, "try_delegate", pause_after_real_commit)
 
     class CallbackExecutor(_RecordingExecutor):
-        def set_invocation_context(self, **kwargs): self.context = kwargs
+        def set_invocation_context(self, **kwargs):
+            self.context = kwargs
         def run(self, **kwargs):
             task_id = self.context["task_id"]
+            self.callback_sessions = getattr(self, "callback_sessions", []) + [
+                (task_id, self.context["agent"], kwargs["session_id"])
+            ]
             prior = getattr(self, "runs", {}).get(task_id, 0)
             self.runs = {**getattr(self, "runs", {}), task_id: prior + 1}
             decision = (NextStep(action="delegate", agent="dev_agent", prompt="admitted child")
@@ -486,8 +540,9 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
 
     executor = CallbackExecutor()
     monkeypatch.setattr(orch, "_build_executor", lambda _provider: executor)
+    receipts = []
     orch.attach_host_supervisor(HostSessionSupervisor(
-        backend=backend, policy=canary_policy(sample_interval_seconds=0.0), publisher=lambda receipt: None,
+        backend=backend, policy=canary_policy(sample_interval_seconds=0.0), publisher=receipts.append,
     ))
     db.insert_task(TaskRecord(id="TASK-U0-PARENT", team="engineering", brief="parent",
                               assigned_agent="engineering_head", task_type="task"))
@@ -518,6 +573,19 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
     assert backend.calls["launch"] == backend.calls["finish"] == 3
     assert observed["independent_readback"] == ("TASK-U0-PARENT", "dev_agent", TaskStatus.PENDING.value)
     assert before["tasks"]["TASK-U0-PARENT"]["status"] == TaskStatus.PENDING.value
+    boundary = observed["boundary"]
+    assert boundary["tasks"][child_id]["status"] == TaskStatus.PENDING.value
+    assert boundary["tasks"][child_id]["parent_task_id"] == "TASK-U0-PARENT"
+    assert boundary["tasks"][child_id]["assigned_agent"] == "dev_agent"
+    assert boundary["queue"] == []
+    assert boundary["sessions"][child_id] is None and not boundary["controls"][child_id]
+    assert boundary["active_chain"]["TASK-U0-PARENT"] == before["active_chain"]["TASK-U0-PARENT"]
+    assert boundary["active_fanout"]["TASK-U0-PARENT"] == before["active_fanout"]["TASK-U0-PARENT"]
+    assert boundary["attachments"]["TASK-U0-PARENT"] == before["attachments"]["TASK-U0-PARENT"]
+    assert boundary["canonical_agents"]["dev_agent"]
+    assert not boundary["archived_agents"].get("dev_agent", False)
+    assert boundary["workspaces"]["dev_agent"]
+    assert not boundary["archived_workspaces"].get("dev_agent", False)
     assert after["queue"] == []
     assert after["tasks"][child_id]["parent_task_id"] == "TASK-U0-PARENT"
     assert after["tasks"][child_id]["assigned_agent"] == "dev_agent"
@@ -527,4 +595,16 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
     assert len(child_results) == 1
     assert child_results[0]["task_id"] == child_id
     assert child_results[0]["agent"] == "dev_agent"
+    assert child_results[0]["session_id"] != "sess-authority"
+    parent_results = after["results"]["TASK-U0-PARENT"]
+    assert executor.callback_sessions == [
+        ("TASK-U0-PARENT", "engineering_head", parent_results[0]["session_id"]),
+        (child_id, "dev_agent", child_results[0]["session_id"]),
+        ("TASK-U0-PARENT", "engineering_head", parent_results[1]["session_id"]),
+    ]
+    assert after["sessions"][child_id] is None and not after["controls"][child_id]
+    assert len(receipts) == 3
+    assert [request.logical_id for request in backend.requests] == [
+        "TASK-U0-PARENT", child_id, "TASK-U0-PARENT",
+    ]
     assert not writer_errors
