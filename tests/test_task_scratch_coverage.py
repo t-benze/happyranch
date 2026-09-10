@@ -173,6 +173,25 @@ def test_absent_optional_parents_are_not_invented_as_residuals(tmp_path: Path) -
     assert {row.relative_path for row in absent_tmp.buckets} >= {".", "ordinary", ".happyranch"}
 
 
+def test_unavailable_optional_parent_is_not_absent_or_malformed(tmp_path: Path, monkeypatch: object) -> None:
+    """A present but unreadable optional parent is an unavailable observation."""
+    proc = tmp_path / "proc"; _boot(proc)
+    workspace = tmp_path / "workspace"; workspace.mkdir(); (workspace / "ordinary").write_text("x")
+    owned = workspace / ".happyranch"; owned.mkdir()
+    real_stat = Path.stat
+    def unavailable(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if self == owned:
+            raise OSError("injected optional-parent metadata failure")
+        return real_stat(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "stat", unavailable)
+    observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+    paths = {row.relative_path for row in observation.buckets}
+    assert "metadata_unavailable" in observation.reasons
+    assert "noncanonical_ancestor" not in observation.reasons
+    assert "ordinary" in paths and ".happyranch" not in paths
+    assert not observation.complete and not observation.coverage_ready
+
+
 def test_symlink_candidate_and_manifest_parent_never_read_referent(tmp_path: Path) -> None:
     proc = tmp_path / "proc"; _boot(proc)
     workspace = tmp_path / "workspace"; outside = tmp_path / "outside"; outside.mkdir(parents=True)
@@ -423,9 +442,77 @@ def test_manifest_actual_bytes_and_growth_bound_are_shared_and_boot_is_excluded(
         if path == manifest and result is not None and not grew:
             grew = True; manifest.write_bytes(manifest.read_bytes() + b"x" * (raw_size + 1))
         return result
+    reads.clear(); paths_by_fd.clear()
     monkeypatch.setattr(coverage, "_stat", grow_after_stat)
-    capped = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+    with patch.object(coverage.os, "open", track_open), patch.object(coverage.os, "fdopen", track_fdopen):
+        capped = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
     assert grew and "manifest_byte_cap" in capped.reasons and not capped.complete and not capped.coverage_ready
+    assert reads == [(raw_size * 2, raw_size * 2)]
+    assert reads[0][0] == coverage.MAX_TOTAL_MANIFEST_BYTES
+
+    # The literal per-file 64 KiB ceiling is distinct from the shared allowance:
+    # a 64 KiB + 1 manifest is rejected before any descriptor read.
+    monkeypatch.undo(); oversized = b"x" * (coverage.MAX_MANIFEST_BYTES + 1)
+    manifest.write_bytes(oversized); attempted: list[str] = []
+    def watch_oversized_open(path: object, *args: object, **kwargs: object) -> int:
+        attempted.append(str(path)); return real_open(path, *args, **kwargs)
+    with patch.object(coverage.os, "open", watch_oversized_open):
+        per_file = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+    bucket = next(row for row in per_file.buckets if row.relative_path.endswith("TASK-1"))
+    assert bucket.classification == "residual_unmanifested"
+    assert str(manifest) not in attempted and not per_file.coverage_ready
+
+
+def test_manifest_post_open_denial_closes_without_read_in_each_snapshot(tmp_path: Path, monkeypatch: object) -> None:
+    """The dependent manifest read is separately denied after each real open."""
+    proc = tmp_path / "proc"; _boot(proc)
+    workspace = tmp_path / "workspace"; root = workspace / ".happyranch/task-tmp/TASK-1"; root.mkdir(parents=True); _manifest(workspace, "TASK-1")
+    manifest = workspace / ".happyranch/task-scratch-manifests/TASK-1.json"
+    real_open, real_close, real_fdopen = coverage.os.open, coverage.os.close, coverage.os.fdopen
+    opens_at_read: list[int] = []
+    def baseline_open(path: object, *args: object, **kwargs: object) -> int:
+        fd = real_open(path, *args, **kwargs)
+        if path == manifest:
+            opens_at_read.append(current_budget[0].reads)
+        return fd
+    current_budget: list[coverage._Budget] = []
+    real_admit = coverage._Budget.admit
+    def watch_admit(self: coverage._Budget, *args: object, **kwargs: object) -> bool:
+        current_budget[:] = [self]
+        return real_admit(self, *args, **kwargs)
+    with patch.object(coverage._Budget, "admit", watch_admit), patch.object(coverage.os, "open", baseline_open):
+        assert collect_task_scratch_coverage(workspace=workspace, proc_root=proc).complete
+    assert len(opens_at_read) == 2
+
+    for pass_number, fixed_cap in enumerate(opens_at_read, start=1):
+        monkeypatch.setattr(coverage, "MAX_READS", fixed_cap)
+        opened: list[int] = []; manifest_reads: list[int] = []; manifest_open_index: dict[int, int] = {}
+        def watch_open(path: object, *args: object, **kwargs: object) -> int:
+            fd = real_open(path, *args, **kwargs)
+            if path == manifest:
+                opened.append(fd); manifest_open_index[fd] = len(opened)
+            return fd
+        def watch_fdopen(fd: int, *args: object, **kwargs: object) -> object:
+            handle = real_fdopen(fd, *args, **kwargs); original_read = handle.read
+            def read(*read_args: object, **read_kwargs: object) -> bytes:
+                if fd in manifest_open_index:
+                    manifest_reads.append(manifest_open_index[fd])
+                return original_read(*read_args, **read_kwargs)
+            handle.read = read  # type: ignore[method-assign]
+            return handle
+        with patch.object(coverage.os, "open", watch_open), patch.object(coverage.os, "fdopen", watch_fdopen):
+            observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+        assert len(opened) == pass_number
+        denied_fd = opened[-1]
+        try:
+            os.fstat(denied_fd)
+        except OSError:
+            descriptor_closed = True
+        else:
+            descriptor_closed = False
+        assert descriptor_closed and pass_number not in manifest_reads
+        assert "read_cap" in observation.reasons and not observation.complete and not observation.coverage_ready
+        monkeypatch.undo()
 
 
 def test_scandir_admits_before_each_advance_including_exhaustion_and_fixed_caps(tmp_path: Path, monkeypatch: object) -> None:
@@ -457,6 +544,21 @@ def test_scandir_admits_before_each_advance_including_exhaustion_and_fixed_caps(
     monkeypatch.setattr(coverage, "MAX_ENTRIES", 1)
     entry_capped = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
     assert "entry_cap" in entry_capped.reasons and not entry_capped.complete
+
+
+def test_real_iterator_unavailable_is_incomplete_and_nonready(tmp_path: Path) -> None:
+    proc = tmp_path / "proc"; _boot(proc)
+    workspace = tmp_path / "workspace"; root = workspace / ".happyranch/task-tmp/TASK-1"; root.mkdir(parents=True)
+    (root / "payload").write_text("x"); _manifest(workspace, "TASK-1")
+    real_scandir = coverage.os.scandir
+    def unavailable(path: object, *args: object, **kwargs: object) -> object:
+        if path == root:
+            raise OSError("injected iterator failure")
+        return real_scandir(path, *args, **kwargs)
+    with patch.object(coverage.os, "scandir", unavailable):
+        observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+    assert "population_unavailable" in observation.reasons
+    assert not observation.complete and not observation.coverage_ready
 
 
 def test_candidate_timeout_cap_and_nested_incompleteness_remain_unknown(tmp_path: Path, monkeypatch: object) -> None:
