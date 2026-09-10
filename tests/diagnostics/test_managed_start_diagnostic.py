@@ -89,6 +89,8 @@ def test_emitted_shell_uses_absolute_observer_and_preserves_first_start_status(t
     assert 'exit "$diagnostic_first_positive_status"' in rendered
     assert 'diagnostic_cleanup_done=0' in rendered
     assert 'diagnostic_cleanup "$status"' in rendered
+    assert 'diagnostic_capture exceptional_exit || true' in rendered
+    assert 'status != 0' in rendered
     assert 'diagnostic-cleanup.json' in rendered
     assert 'diagnostics="${N3_DIAGNOSTICS_DIR:-$(mktemp -d)}"' in rendered
     assert 'DIAGNOSTIC_PYTHON=' in rendered
@@ -518,6 +520,20 @@ def test_capture_cli_output_failure_is_fixed_evidence_failure(tmp_path: Path) ->
     result = subprocess.run([sys.executable, str(SCRIPT), "--capture", "--phase", "negative", "--window-start", "1", "--window-end", "2", "--budget-seconds", "1", "--output", str(destination)], check=False, capture_output=True, text=True)
     assert result.returncode == 3
     assert not list(tmp_path.glob(".*diagnostic-tmp"))
+
+
+def test_capture_cli_accepts_truthful_exceptional_exit_phase(tmp_path: Path) -> None:
+    """The EXIT trap has a distinct final-state label, never a stale negative one."""
+    artifact = tmp_path / "exceptional-exit.json"
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--capture", "--phase", "exceptional_exit", "--window-start", "1", "--window-end", "2", "--budget-seconds", "1", "--output", str(artifact)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    # The host observer may not be available, but argument validation must
+    # admit the final-state phase rather than reject it as malformed.
+    assert result.returncode != 2
 
 
 def test_run_bounded_reaps_when_selector_setup_fails(monkeypatch: pytest.MonkeyPatch) -> None:

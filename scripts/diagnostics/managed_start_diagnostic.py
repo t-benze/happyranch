@@ -21,7 +21,7 @@ FIRST_POSITIVE = "sudo systemctl start happyranch-managed.target\n"
 # current tree.  Refuse even boundary-preserving substitutions.
 FROZEN_SHIPPING_SHA256 = "f63c0e5eef23468a454b896a24515a6db62fdf674cb8bffd250ca7a0477d2301"
 UNITS = ("happyranch-managed.target", "happyranch-tsnet-sidecar.service", "happyranch-connector.service")
-PHASES = frozenset(("negative", "prepositive", "positive_failure", "positive_success"))
+PHASES = frozenset(("negative", "prepositive", "positive_failure", "positive_success", "exceptional_exit"))
 MAX_BYTES = 4096
 MAX_LINES = 32
 MAX_RECORDS = 16
@@ -101,7 +101,19 @@ diagnostic_cleanup() {{
   (( original_status != 0 )) && return "$original_status"
   return "$cleanup_status"
 }}
-diagnostic_exit() {{ local status=$?; trap - EXIT INT TERM; diagnostic_cleanup "$status"; exit $?; }}
+diagnostic_exit() {{
+  local status=$?
+  trap - EXIT INT TERM
+  # The negative/prepositive artifacts describe earlier checkpoints, not the
+  # final exceptional state.  Once diagnostics exists, take one bounded
+  # best-effort final observation before cleanup destroys that state.  Its
+  # own failure must neither recurse through traps nor replace the cause.
+  if (( status != 0 )) && [[ -n "${{diagnostics:-}}" && -d "$diagnostics" ]]; then
+    diagnostic_capture exceptional_exit || true
+  fi
+  diagnostic_cleanup "$status"
+  exit $?
+}}
 diagnostic_signal_int() {{ trap - INT TERM; exit 130; }}
 diagnostic_signal_term() {{ trap - INT TERM; exit 143; }}
 DIAGNOSTIC_OBSERVER={observer}
