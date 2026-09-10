@@ -529,13 +529,18 @@ async def test_thread_supersede_remains_supported_and_replay_is_rejected(client_
     successor = org.db.get_task(superseded["payload"]["successor_root"])
     assert successor is not None
     assert successor.dispatched_from_thread_id == "THR-1"
+    assert successor.parent_task_id is None
+    assert successor.brief == "successor task"
     resolved = next(row for row in audits if row["action"] == "escalation_resolved")
     assert resolved["agent"] == "engineering_head"
     assert resolved["payload"]["resolution_path"] == "thread_manual_supersede"
-    assert any(
-        invocation.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP
-        for invocation in org.db.list_thread_invocations("THR-1")
-    )
+    followups = [
+        invocation for invocation in org.db.list_thread_invocations("THR-1")
+        if invocation.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP
+    ]
+    assert len(followups) == 1
+    assert followups[0].agent_name == "engineering_head"
+    assert ("alpha", successor.id, None) in list(client.app.state.daemon.queue._queue._queue)
 
 
 @pytest.mark.asyncio
@@ -580,6 +585,24 @@ async def test_thread_invalid_decision_preserves_pending_invocation(client_with_
 
 
 @pytest.mark.asyncio
+async def test_thread_supersede_requires_its_authorized_invocation_token(client_with_runtime):
+    """Retained thread supersede cannot fall back to a caller-declared actor."""
+    client, org = client_with_runtime
+    _seed(org)
+    response = client.post(
+        "/api/v1/orgs/alpha/threads/THR-1/resolve-escalation",
+        json={
+            "task_id": "T-1", "decision": "supersede", "rationale": "reroute",
+            "brief": "successor task", "dispatcher": "engineering_head",
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == {"code": "missing_invocation_token"}
+    assert org.db.get_task("T-1").status is TaskStatus.ESCALATED
+    assert not org.db.get_audit_logs("T-1")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("field,value", [
     ("policy_id", "old"), ("policy_version", ""), ("policy_provenance", None),
     ("continuation_class", []), ("attestation_checks", {}), ("evidence", [{"bad": True}]),
@@ -616,12 +639,36 @@ async def test_plain_task_human_continue_remains_supported(client_with_runtime):
     audit = org.db.get_audit_logs("T-MANUAL")[-1]
     assert audit["action"] == "escalation_resolved"
     assert audit["agent"] == "founder"
+    assert audit["payload"] == {
+        "decision": "continue", "rationale": "founder direction",
+        "resolution_path": "manual_break_glass",
+    }
+    assert ("alpha", "T-MANUAL", None) in list(client.app.state.daemon.queue._queue._queue)
+    assert not [
+        row for row in org.db.get_audit_logs("T-MANUAL")
+        if row["action"] == "escalation_continued_autonomously"
+    ]
 
 
 def test_resolve_escalation_openapi_declares_retired_410(app):
     paths = app.openapi()["paths"]
     task_response = paths["/api/v1/orgs/{slug}/tasks/{task_id}/resolve-escalation"]["post"]["responses"]["410"]
     thread_response = paths["/api/v1/orgs/{slug}/threads/{thread_id}/resolve-escalation"]["post"]["responses"]["410"]
-    assert "policy_id" in task_response["description"]
-    assert "invocation_token" in task_response["description"]
-    assert "agent thread continue is retired even without those fields" in thread_response["description"]
+    task_description = task_response["description"]
+    thread_description = thread_response["description"]
+    legacy_fields = (
+        "policy_id", "policy_version", "policy_provenance", "continuation_class",
+        "attestation_checks", "evidence",
+    )
+    for description in (task_description, thread_description):
+        assert "retired_autonomous_continuation" in description
+        assert all(field in description for field in legacy_fields)
+        assert "presence" in description.lower()
+    assert "invocation_token" in task_description
+    assert "dispatcher" in task_description
+    assert "before human actor fallback or resolution" in task_description
+    assert "an agent thread continue is retired even without those fields" in thread_description
+    # The operation-level rule is independent of the decision value: a
+    # supersede request carrying any legacy key is still rejected before the
+    # retained resolver. The field matrix above executes that served cell.
+    assert "any presence" in thread_description
