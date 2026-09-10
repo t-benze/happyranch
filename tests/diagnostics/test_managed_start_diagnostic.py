@@ -633,16 +633,21 @@ if n == 'git' and len(a) == 4 and a[0] == '-C' and a[2:] == ['rev-parse', 'HEAD'
     if not pathlib.Path(a[1]).exists(): raise SystemExit(1)
     print(os.environ['SHIPPING_SHA'] if a[1] == 'shipping' else os.environ['CANDIDATE_SHA']); raise SystemExit(0)
 if n == 'uv' and a[:3] == ['run', 'python', 'app/linux/package/build_package.py']: raise SystemExit(int(os.environ.get('FINAL_BUILD_EXIT', '0')))
-if n == 'uv' and (a == ['sync', '--frozen', '--group', 'build'] or a[:2] == ['build', '--wheel'] or a[:3] == ['run', 'python', 'app/linux/package/build_connector.py']): raise SystemExit(0)
+if n == 'uv' and a == ['sync', '--frozen', '--group', 'build']: raise SystemExit(int(os.environ.get('SYNC_EXIT', '0')))
+if n == 'uv' and (a[:2] == ['build', '--wheel'] or a[:3] == ['run', 'python', 'app/linux/package/build_connector.py']): raise SystemExit(0)
 if n == 'go' and (a == ['test', './...'] or a[:3] == ['build', '-trimpath', '-buildvcs=false']): raise SystemExit(0)
 if n == 'bash' and a == [os.environ['PACKAGE_TMP'] + '/diagnostic-harness.sh']: raise SystemExit(int(os.environ.get('HARNESS_EXIT', '0')))
+# A refusal must remain observable even when the workflow redirects both
+# streams.  Never forward an unrecognised command merely to make a fixture
+# progress.
+pathlib.Path(os.environ['EFFECT_LOG']).open('a').write('REFUSED:' + n + '\\n')
 print('REFUSED:' + n, file=sys.stderr); raise SystemExit(91)
 """)
     fake.chmod(0o755)
     return fake
 
 
-def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, str]:
+def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, str, dict[str, str]]:
     """Run selected real YAML blocks with a copied local subject and finite effects."""
     blocks = _diagnostic_workflow_blocks(); bin_dir = tmp_path / "bin"; bin_dir.mkdir()
     fake = _write_workflow_adapter(tmp_path)
@@ -661,9 +666,11 @@ def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, 
     (shipping_checkout / "app/linux/tsnet-sidecar").mkdir(parents=True)
     effect_log = tmp_path / "effects.log"
     env = dict(os.environ, PATH=str(bin_dir), RUNNER_TEMP=str(tmp_path), GITHUB_WORKSPACE=str(tmp_path), GITHUB_ENV=str(tmp_path / "github-env"), GITHUB_RUN_ID="1234", GITHUB_RUN_ATTEMPT="1", ImageOS="ubuntu24", ImageVersion="20260907.1.0", SHIPPING_SHA="2147c5c6edb5d847e4c0ca855a044fa850fd7e11", CANDIDATE_SHA="672b584b891e1375802f0e907b3276569badcff3", PYTHONDONTWRITEBYTECODE="1", EFFECT_LOG=str(effect_log))
+    traces: dict[str, str] = {}
     def run(name: str, cwd: Path = tmp_path) -> int:
         result = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", blocks[name]], cwd=cwd, env=env, check=False, capture_output=True, text=True, timeout=15)
         effects = effect_log.read_text() if effect_log.exists() else ""
+        traces[name] = "stdout:\n" + result.stdout + "\nstderr:\n" + result.stderr + "\neffects:\n" + effects
         assert result.returncode != 91 and "REFUSED:" not in result.stderr and "REFUSED:" not in effects, result.stderr + effects
         return result.returncode
     exits = {"init": run("Initialize failure-safe diagnostic receipt")}
@@ -676,7 +683,8 @@ def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, 
         doc = diagnostic.collect("positive_failure", diagnostics_dir / "positive_failure-observation.json", 99, runner=lambda *_: diagnostic.RunResult(0, b""), window=(1, 2), now=lambda: 0)
         doc["paths"][diagnostic.PATHS[0]] = "PATH_SCALAR_CANARY"
         (diagnostics_dir / "positive_failure-observation.json").write_text(json.dumps(doc))
-    if case == "f2": shutil.rmtree(diagnostic_checkout); shutil.rmtree(shipping_checkout)
+    if case in {"f2", "f2-diagnostic"}: shutil.rmtree(diagnostic_checkout)
+    if case in {"f2", "f2-shipping"}: shutil.rmtree(shipping_checkout)
     if case == "f3":
         env["FINAL_BUILD_EXIT"] = "37"; exits["build"] = run("Build pinned shipping package", shipping_checkout)
     if case == "f4": (diagnostics_dir / "diagnostic-cleanup.json").write_text(" " * 1_200_000 + '{"cleanup":"complete"}')
@@ -690,12 +698,12 @@ def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, 
         (diagnostics_dir / "positive_failure-observation.json").write_text(json.dumps(malformed))
         (diagnostics_dir / "positive_success-observation.json").write_text(json.dumps(valid))
     exits["provenance"] = run("Record provenance")
-    return exits, publish_dir, (tmp_path / "github-env").read_text() + "\nEFFECTS:\n" + (effect_log.read_text() if effect_log.exists() else "")
+    return exits, publish_dir, (tmp_path / "github-env").read_text() + "\nEFFECTS:\n" + (effect_log.read_text() if effect_log.exists() else ""), traces
 
 
 @pytest.mark.parametrize("case", ["f1", "f2", "f3", "f4", "f5", "f6"], ids=["F1-typed-path-scalar", "F2-missing-both-checkouts", "F3-final-builder37", "F4-bounded-cleanup-read", "F5-actual-yaml-shell", "F6-wrong-result-retains-later"])
 def test_actual_yaml_regression_requirements_are_not_helper_only(tmp_path: Path, case: str) -> None:
-    exits, published, env_bytes = _actual_yaml_case(tmp_path, case)
+    exits, published, env_bytes, traces = _actual_yaml_case(tmp_path, case)
     # F5 is the control proving these assertions use the exact YAML bytes and
     # inherited bash flags; the other rows encode required (currently red) behavior.
     assert "DIAGNOSTICS=" in env_bytes
@@ -704,6 +712,17 @@ def test_actual_yaml_regression_requirements_are_not_helper_only(tmp_path: Path,
         provenance = json.loads((published / "provenance.json").read_text())
         assert provenance["shipping"] == "unavailable" and provenance["diagnostic"] == "unavailable"
     if case == "f3":
+        # The exact terminal builder, rather than the earlier sync command,
+        # must have been reached under the inherited strict Bash flags.
+        assert traces["Build pinned shipping package"].split("effects:\n", 1)[1].splitlines() == [
+            "uv sync --frozen --group build",
+            "go test ./...",
+            "go build -trimpath -buildvcs=false -o " + str(tmp_path / "managed-start-package/happyranch-tsnet-sidecar") + " ./cmd/happyranch-tsnet-sidecar",
+            "uv build --wheel --out-dir " + str(tmp_path / "managed-start-package"),
+            "uv run python app/linux/package/build_connector.py --wheel  --output " + str(tmp_path / "managed-start-package/happyranch-connector"),
+            "uv run python app/linux/package/build_package.py --sidecar " + str(tmp_path / "managed-start-package/happyranch-tsnet-sidecar") + " --connector " + str(tmp_path / "managed-start-package/happyranch-connector") + " --wheel  --version ci --output " + str(tmp_path / "managed-start-package/happyranch-linux-amd64.tar"),
+        ]
+        assert exits["build"] == 37
         assert "uv run python app/linux/package/build_package.py" in env_bytes
         assert "build_status=37\n" in (published / "receipt.txt").read_text()
     if case == "f4":
@@ -715,3 +734,77 @@ def test_actual_yaml_regression_requirements_are_not_helper_only(tmp_path: Path,
     if case == "f6":
         retained = json.loads((published / "positive_success-observation.json").read_text())
         assert retained["phase"] == "positive_success" and retained["units"][diagnostic.UNITS[0]]["Result"] == "exit-code"
+
+
+@pytest.mark.parametrize("absence", ["baseline", "diagnostic", "shipping", "both"], ids=["F2-baseline", "F2-missing-diagnostic", "F2-missing-shipping", "F2-missing-both"])
+def test_actual_yaml_f2_checkout_absence_preserves_independent_provenance(tmp_path: Path, absence: str) -> None:
+    """The always provenance block has independent fields, not all-or-nothing fallback."""
+    case = {"baseline": "f5", "diagnostic": "f2-diagnostic", "shipping": "f2-shipping", "both": "f2"}[absence]
+    exits, published, _env_bytes, _traces = _actual_yaml_case(tmp_path, case)
+    assert exits["provenance"] == 0
+    raw = (published / "provenance.json").read_bytes()
+    document = json.loads(raw)
+    # The baseline fixture establishes every identity; absence only makes its
+    # corresponding checkout-derived fields unavailable.
+    if absence in {"diagnostic", "both"}:
+        assert document["diagnostic"] == "unavailable"
+    else:
+        assert document["diagnostic"].startswith("672b")
+    if absence in {"shipping", "both"}:
+        assert document["shipping"] == "unavailable"
+    else:
+        assert document["shipping"].startswith("2147")
+    assert document["package"] != "unavailable"
+    assert document["run_id"] == "1234" and document["run_attempt"] == "1"
+    assert document["systemd"] == "255"
+    assert (published / "receipt.txt").is_file()
+    assert (published / "diagnostic-cleanup.json").is_file()
+    assert all("fixture package" not in path.read_text(errors="ignore") for path in published.iterdir())
+
+
+def test_actual_yaml_f2_initializer_env_failure_skips_normal_steps_but_runs_always_provenance(tmp_path: Path) -> None:
+    blocks = _diagnostic_workflow_blocks()
+    (tmp_path / "github-env").mkdir()
+    # Use the same finite adapter and exact inherited shell invocation.  A
+    # directory GITHUB_ENV makes the initializer fail after its receipt setup.
+    bin_dir = tmp_path / "bin"; bin_dir.mkdir(); fake = _write_workflow_adapter(tmp_path)
+    for name in ("git", "systemctl", "uv", "bash", "go"): (bin_dir / name).symlink_to(fake)
+    for name in ("mkdir", "sha256sum", "awk", "grep", "sed", "cp", "find"): (bin_dir / name).symlink_to(Path("/usr/bin") / name)
+    (bin_dir / "python").symlink_to("/usr/bin/python3")
+    effect_log = tmp_path / "effects.log"
+    occupied_publish = tmp_path / "occupied-publish"; occupied_publish.write_text("not a directory")
+    env = dict(os.environ, PATH=str(bin_dir), RUNNER_TEMP=str(tmp_path), GITHUB_WORKSPACE=str(tmp_path), GITHUB_ENV=str(tmp_path / "github-env"), PUBLISH=str(occupied_publish), GITHUB_RUN_ID="1234", GITHUB_RUN_ATTEMPT="1", ImageOS="ubuntu24", ImageVersion="20260907.1.0", EFFECT_LOG=str(effect_log), PYTHONDONTWRITEBYTECODE="1")
+    init = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", blocks["Initialize failure-safe diagnostic receipt"]], cwd=tmp_path, env=env, check=False, capture_output=True, text=True)
+    assert init.returncode != 0
+    # A workflow would skip ordinary build/harness steps after this failure;
+    # invoke only the real always() block and require a truthful safe result.
+    always = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", blocks["Record provenance"]], cwd=tmp_path, env=env, check=False, capture_output=True, text=True)
+    assert always.returncode == 3
+    # `always()` may probe systemd for provenance, but no ordinary build,
+    # extractor, or harness effect is allowed after initialization failed.
+    assert effect_log.read_text().splitlines() == ["systemctl --version"]
+    assert "diagnostic_publication_failed" in always.stderr + always.stdout
+    assert not (occupied_publish / "provenance.json").exists()
+
+
+def test_actual_yaml_f3_nonfinal_sync37_records_original_status(tmp_path: Path) -> None:
+    exits, published, _env_bytes, traces = _actual_yaml_case(tmp_path, "f5")
+    # Re-run the exact build block with only its first admitted effect failing;
+    # this control distinguishes the terminal-builder regression from normal
+    # AND-list status capture.
+    blocks = _diagnostic_workflow_blocks(); env_path = tmp_path / "github-env"
+    env = dict(os.environ, PATH=str(tmp_path / "bin"), RUNNER_TEMP=str(tmp_path), GITHUB_WORKSPACE=str(tmp_path), GITHUB_ENV=str(env_path), EFFECT_LOG=str(tmp_path / "effects.log"), SYNC_EXIT="37", PACKAGE_TMP=str(tmp_path / "managed-start-package"), DIAGNOSTICS=str(tmp_path / "managed-start-diagnostic"))
+    result = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", blocks["Build pinned shipping package"]], cwd=tmp_path / "shipping", env=env, check=False, capture_output=True, text=True)
+    assert result.returncode == 37
+    assert "build_status=37\n" in (tmp_path / "managed-start-diagnostic/receipt.txt").read_text()
+    assert exits["provenance"] == 0 and (published / "diagnostic-cleanup.json").is_file()
+
+
+def test_actual_yaml_adapter_refusal_is_persisted_when_streams_and_status_are_swallowed(tmp_path: Path) -> None:
+    fake = _write_workflow_adapter(tmp_path); effect_log = tmp_path / "effects.log"
+    env = dict(os.environ, EFFECT_LOG=str(effect_log))
+    result = subprocess.run([str(fake)], executable=str(fake), env=env, check=False, capture_output=True, text=True)
+    # Deliberately discard the returned status and stderr as a workflow
+    # redirect could; the marker still exposes the finite refusal.
+    _ = result.returncode, result.stderr
+    assert effect_log.read_text().splitlines()[-1] == "REFUSED:fake.py"
