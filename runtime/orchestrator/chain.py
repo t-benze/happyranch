@@ -2,7 +2,7 @@
 
 A chain is a manager-authored multi-leg workflow declared in one `delegate`
 decision (NextStep.then). The orchestrator auto-advances routine happy-path
-legs on verdict match without consuming the manager's 50-step cap. See
+legs on verdict match while retaining the manager's monotonic step telemetry. See
 docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md.
 
 This module is pure logic — no DB, no orchestrator, no I/O. Integration with

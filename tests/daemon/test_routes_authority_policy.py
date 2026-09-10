@@ -34,11 +34,11 @@ def _seed_agent(org, name="engineering_manager", *, team="engineering", role="ma
     (paths.agents_dir / f"{name}.md").write_text(render_agent_text(agent))
 
 
-def _seed_active(org):
+def _seed_active(org, *, normative_text="text"):
     clauses = '[{"action":"escalate_to_founder","category":"protected","condition":"stop","id":"esc-protected"}]'
     release = AuthorityPolicyRelease(
         team="engineering", policy_id="engineering/pre-escalation-authority",
-        version=1, title="Policy", normative_text="text", clauses_json=clauses,
+        version=1, title="Policy", normative_text=normative_text, clauses_json=clauses,
         continuation_phrase="routine same-root follow-through of the already-completed slice",
         actor_kind="shared_local_operator_credential",
     )
@@ -212,6 +212,39 @@ def test_bootstrap_template_round_trips_through_shipping_create_route(client_wit
     assert response.json()["activated"] is False
     assert response.json()["release"]["clauses"] == template["clauses"]
     assert response.json()["release"]["continuation_phrase"] == CONTINUE_ROUTINE_PHRASE
+
+
+def test_bootstrap_template_does_not_describe_retired_step_budget(client_with_runtime):
+    """The live canonical projection may preserve independent limits only."""
+    client, org = client_with_runtime
+    _seed_agent(org)
+    body = client.get(
+        "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy"
+    ).json()["bootstrap_template"]
+    exhausted = next(clause for clause in body["clauses"] if clause["id"] == "esc-exhausted-limits")
+    assert "orchestration step budget" not in exhausted["condition"]
+    assert "revise-round budget" in exhausted["condition"]
+
+
+def test_active_immutable_release_remains_distinct_from_current_bootstrap_template(
+    client_with_runtime,
+):
+    """The route projects stored release bytes; it never substitutes bootstrap."""
+    client, org = client_with_runtime
+    _seed_agent(org)
+    release, activation = _seed_active(
+        org, normative_text="historical orchestration step budget wording",
+    )
+
+    body = client.get(
+        "/api/v1/orgs/alpha/agents/engineering_manager/team-escalation-policy"
+    ).json()
+    assert body["active"]["activation_id"] == activation.id
+    assert body["active"]["release"]["id"] == release.id
+    assert body["active"]["release"]["normative_text"] == (
+        "historical orchestration step budget wording"
+    )
+    assert "orchestration step budget" not in body["bootstrap_template"]["normative_text"]
 
 
 def test_store_corruption_is_sanitized(client_with_runtime):

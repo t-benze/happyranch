@@ -6991,136 +6991,6 @@ class Database:
         self._conn.commit()
         return cursor.rowcount == 1
 
-    def _autonomous_continuation_retry_lineage_cte(self) -> str:
-        """Return the persisted per-slice retry predicate used by THR-166.
-
-        The production retry ceiling treats a FAILED direct child as exhausted
-        when its revisit chain contains an earlier FAILED child of this same
-        parent.  Keep the 200-hop bound aligned with
-        ``run_step._is_slice_retry_exhausted``.
-        """
-        return """WITH RECURSIVE retry_lineage
-                   (child_id, id, parent_task_id, status, revisit_of_task_id, depth) AS (
-                   SELECT id, id, parent_task_id, status, revisit_of_task_id, 0
-                     FROM tasks
-                    WHERE parent_task_id = ? AND status = 'failed'
-                   UNION ALL
-                   SELECT retry_lineage.child_id, predecessor.id,
-                          predecessor.parent_task_id, predecessor.status,
-                          predecessor.revisit_of_task_id, retry_lineage.depth + 1
-                     FROM retry_lineage
-                     JOIN tasks AS predecessor
-                       ON predecessor.id = retry_lineage.revisit_of_task_id
-                    WHERE retry_lineage.depth < 199
-               )"""
-
-    @_synchronized
-    def autonomous_continuation_budget_exhausted(
-        self, task_id: str, *, max_steps: int, max_revise_rounds: int,
-    ) -> bool:
-        """Whether a root is under any absolute THR-166 budget blocker.
-
-        This derives all three durable causes from task state and lineage:
-        orchestration steps, the configured revise-round cap, and the existing
-        per-slice retry ceiling.  It intentionally does not inspect request
-        evidence or manager-authored prose.
-        """
-        cte = self._autonomous_continuation_retry_lineage_cte()
-        row = self._conn.execute(
-            f"""{cte}
-                SELECT 1
-                  FROM tasks
-                 WHERE id = ?
-                   AND (
-                       orchestration_step_count >= ?
-                       OR (? > 0 AND revision_count >= ?)
-                       OR EXISTS (
-                           SELECT 1 FROM retry_lineage
-                            WHERE depth > 0
-                              AND parent_task_id = ?
-                              AND status = 'failed'
-                       )
-                   )""",
-            (task_id, task_id, max_steps, max_revise_rounds,
-             max_revise_rounds, task_id),
-        ).fetchone()
-        return row is not None
-
-    @_synchronized
-    def continue_escalation_from_followup(
-        self,
-        *,
-        task_id: str,
-        thread_id: str,
-        dispatcher: str,
-        invocation_token: str,
-        max_steps: int,
-        max_revise_rounds: int,
-        note: str,
-        audit_payload: dict,
-    ) -> bool:
-        """Atomically consume the causal follow-up and make one queue intent.
-
-        The caller has already validated policy/evidence.  This transaction is
-        the final authority boundary: cancellation, a stale status, budget
-        exhaustion, or a replay rolls the whole operation back.  The caller may
-        notify the in-memory queue only after this commit; ``try_claim_for_step``
-        remains the at-most-once admission gate if that notification is replayed.
-        """
-        now = _now().isoformat()
-        try:
-            self._conn.execute("BEGIN")
-            cte = self._autonomous_continuation_retry_lineage_cte()
-            self._conn.execute(
-                f"""{cte}
-                UPDATE tasks
-                   SET status = ?, block_kind = NULL, note = ?, updated_at = ?
-                   WHERE id = ? AND status = ? AND cancelled_at IS NULL
-                     AND orchestration_step_count < ?
-                     AND (? <= 0 OR revision_count < ?)
-                     AND NOT EXISTS (
-                         SELECT 1 FROM retry_lineage
-                          WHERE depth > 0
-                            AND parent_task_id = ?
-                            AND status = 'failed'
-                     )""",
-                (task_id, TaskStatus.PENDING.value, note, now, task_id,
-                 TaskStatus.ESCALATED.value, max_steps, max_revise_rounds,
-                 max_revise_rounds, task_id),
-            )
-            # sqlite3 reports ``rowcount=-1`` for an UPDATE prefixed by a
-            # recursive CTE, so use SQLite's statement-local change count.
-            if self._conn.execute("SELECT changes()").fetchone()[0] != 1:
-                self._conn.rollback()
-                return False
-            token_update = self._conn.execute(
-                """UPDATE thread_invocations SET status = 'consumed', consumed_at = ?
-                   WHERE invocation_token = ? AND thread_id = ? AND agent_name = ?
-                     AND purpose = ? AND status = 'pending'""",
-                (now, invocation_token, thread_id, dispatcher,
-                 ThreadInvocationPurpose.TASK_FOLLOWUP.value),
-            )
-            if token_update.rowcount != 1:
-                self._conn.rollback()
-                return False
-            self._conn.execute(
-                "INSERT INTO audit_log (task_id, agent, action, payload, timestamp) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (task_id, dispatcher, "escalation_continued_autonomously",
-                 json.dumps(audit_payload), now),
-            )
-            self._conn.execute(
-                """UPDATE escalation_notifications
-                   SET consumed_at = ?, consumed_by = 'autonomous-continuation'
-                   WHERE task_id = ? AND consumed_at IS NULL""",
-                (now, task_id),
-            )
-            self._conn.commit()
-            return True
-        except Exception:
-            self._conn.rollback()
-            raise
-
     @_synchronized
     def mark_invocation_declined(
         self, token: str, *, decline_reason: str | None = None
@@ -10298,11 +10168,7 @@ class Database:
                 "AND e.state='open' AND d.agent_name=? AND d.state='held' LIMIT 1",
                 (thread_id, row["agent_name"]),
             ).fetchone()
-            if held is not None and running is None and queued is None:
-                state = "held"
-                from_seq = acknowledged + 1
-                through_seq = required
-            elif running is not None:
+            if running is not None:
                 state = "running"
                 from_seq = int(running_from or 0)
                 through_seq = int(running_through or 0)
@@ -10318,6 +10184,8 @@ class Database:
                 from_seq = acknowledged + 1
                 through_seq = required
             elif required > acknowledged:
+                # Exchange membership persists after a mention-pierced wake
+                # settles; only an outstanding range is a held delivery.
                 if held is not None:
                     state = "held"
                 else:
@@ -12137,7 +12005,6 @@ class Database:
         expected_model_digest: str,
         expected_input_digest: str,
         expected_causal_event_id: str,
-        expected_max_orchestration_steps: int,
         expected_max_revise_rounds: int,
         expected_status: TaskStatus,
         expected_block_kind: BlockKind | None,
@@ -12157,7 +12024,7 @@ class Database:
         live state — every category the hook used before/during evaluation
         (candidate/policy/input identity, manager ownership and session,
         exact team, root status, cancellation, block/active-work, revisit/
-        successor lineage, orchestration and revise budgets, zombie/
+        successor lineage, revise budgets, zombie/
         partial-work evidence, adverse child verdicts). Any drift that landed
         while the evaluator ran — cancellation, session/manager/team change,
         block, active work, a successor/revisit signal, an exhausted
@@ -12235,11 +12102,8 @@ class Database:
                 return False
             terminal = t["status"] in _AUTHORITY_TERMINAL_STATUSES
             budget_ok = (
-                t["orchestration_step_count"] < expected_max_orchestration_steps
-                and (
-                    expected_max_revise_rounds <= 0
-                    or t["revision_count"] < expected_max_revise_rounds
-                )
+                expected_max_revise_rounds <= 0
+                or t["revision_count"] < expected_max_revise_rounds
             )
             if not (
                 t["assigned_agent"] == expected_manager_agent

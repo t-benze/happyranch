@@ -63,7 +63,7 @@ current-boot coverage.
 ### Orchestration core
 
 - **Orchestrator & task state machine.** The daemon-side loop that advances each task one step at a time, drives manager-decision turns, spawns children, and records terminal state. Spec `docs/superpowers/specs/2026-04-14-orchestrator-daemon-design.md`; current contract `docs/agent-guides/orchestrator-contracts.md`; impl `runtime/orchestrator/run_step.py`, `runtime/orchestrator/orchestrator.py`.
-- **Task-owner decision loop & completion contract.** Task owners (task_type='task') end every turn with a `decision` (`delegate`/`fanout`/`done`/`escalate`; the `parallel` alias is accepted for `fanout`); subtask agents report a plain completion. **Only root tasks (`parent_task_id is None`) escalate to the founder; a non-root task that would escalate (via `decision:escalate` or by exceeding the step budget) instead fails and hands back to its parent, and bounded failure-recovery carries it up (THR-033 Change A).** Contract `docs/agent-guides/orchestrator-contracts.md`; guide `docs/agent-guides/orchestrator-contracts.md`; impl in `runtime/orchestrator/run_step.py`.
+- **Task-owner decision loop & completion contract.** Task owners (task_type='task') end every turn with a `decision` (`delegate`/`fanout`/`done`/`escalate`; the `parallel` alias is accepted for `fanout`); subtask agents report a plain completion. **Only root tasks (`parent_task_id is None`) escalate to the founder; a non-root task that would escalate via `decision:escalate` instead fails and hands back to its parent, and bounded failure-recovery carries it up (THR-033 Change A).** `orchestration_step_count` remains monotonic telemetry and never independently escalates or fails a task. Contract and guide `docs/agent-guides/orchestrator-contracts.md`; implementation in `runtime/orchestrator/run_step.py`.
 - **Inline delegation chains.** A task owner can declare a multi-leg subtask chain inline via `then: [...]`; the orchestrator auto-advances routine legs on matching verdict without consuming orchestration steps. Spec `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md` (current); impl `runtime/orchestrator/chain.py`.
 - **Task status model.** The canonical task status vocabulary and transition rules (`pending`, `in_progress`, `escalated`, `completed`, `failed`, `cancelled`, `superseded`). Under THR-037 Change B (Path B) a parent waiting on its children/jobs is `in_progress` with the reason in `block_kind`; the await-founder state is the top-level `escalated`; `cancelled` is a founder-initiated terminal. Specs `docs/superpowers/specs/2026-04-19-task-status-redesign.md` + `docs/superpowers/specs/2026-06-27-task-status-pathB-stored-design.md` (current); current vocabulary `docs/agent-guides/orchestrator-contracts.md`.
 - **Subtask / composite tasks.** Subtask agents spawn bounded subtasks under a parent task, for decomposing a single delegation into iterative steps. Spec `docs/superpowers/specs/2026-06-03-subtask-composite-task-design.md`; impl in `runtime/orchestrator/run_step.py`.
@@ -496,3 +496,17 @@ later obligation.
 ## Feishu Notifications (REMOVED)
 
 Feishu was removed in TASK-302 (THR-022). The web UI and threads are the sole control path for dispatch / revisit / resolve-escalation. Legacy `feishu_notifications` config blocks are tolerated on load but ignored. Database correlation tables (`escalation_notifications`, `processed_event_ids`) remain dormant in place.
+
+## Retired autonomous thread continuation
+
+Both served resolution contracts — `POST /tasks/{task_id}/resolve-escalation`
+and `POST /threads/{thread_id}/resolve-escalation` — return the stable `410`
+error code `retired_autonomous_continuation` when a former THR-166 envelope is
+present. Presence includes null, empty, malformed, and otherwise valid values
+for `policy_id`, `policy_version`, `policy_provenance`,
+`continuation_class`, `attestation_checks`, or `evidence`; the task route also
+rejects the former autonomous identity markers `invocation_token` and
+`dispatcher`. Rejection happens before actor fallback, invocation consumption,
+or the shared human resolver. A field-free agent thread `continue` is also
+retired. Ordinary human task resolution and thread `supersede` remain
+unchanged.

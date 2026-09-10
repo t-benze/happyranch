@@ -118,20 +118,6 @@ class AuditLogger:
             payload=payload,
         )
 
-    def log_escalation_continuation_rejected(
-        self, task_id: str, *, actor: str, payload: dict,
-    ) -> None:
-        """Record a rejected THR-166 autonomous-continuation attempt.
-
-        This is intentionally separate from the legacy/manual resolution audit:
-        rejected policy attempts must remain reviewable without changing the
-        meaning of ``audit_log.task_id``.
-        """
-        self._db.insert_audit_log(
-            task_id=task_id, agent=actor,
-            action="escalation_continuation_rejected", payload=payload,
-        )
-
     def log_zombie_flagged(self, task_id: str, agent: str) -> None:
         """Recorded by the ongoing zombie reaper when a zombie task is first
         flagged (THR-090 Track B)."""

@@ -12,7 +12,8 @@ into the orchestrator's manager-root escalation commit point. It defines:
   ``"continue_same_root"`` (the named same-root permitted action was executed)
   or ``"escalate"`` (fail closed: the existing escalation path proceeds).
 
-Invariants (THR-181 / KB escalation-bounded-self-resume-ruling):
+Invariants (THR-181; see ``docs/agent-guides/orchestrator-contracts.md`` —
+``Active team authority policy``):
 
 * Exactly ONE audited evaluation per eligible attempt; the DB is the
   single-evaluation and exactly-once-consumption guard (UNIQUE candidate_id
@@ -1139,19 +1140,18 @@ def _record_hook_outcome(
         return None
 
 
-def _current_budget_ceilings(orch: "Orchestrator") -> tuple[int, int]:
-    """The CURRENT release-controlled budget ceilings (orchestration steps,
-    revise rounds). ``max_revise_rounds <= 0`` means the revise budget is
+def _current_budget_ceilings(orch: "Orchestrator") -> int:
+    """The current release-controlled revise-round ceiling. ``<= 0`` means
+    the revise budget is
     disabled (unlimited). Re-read at every call site so the consumption-time
     recheck uses the freshest ceilings, not the evaluation-time ones."""
-    max_steps = orch._settings.max_orchestration_steps
     org_cap = 0
     try:
         from runtime.orchestrator.org_config import load_org_config
         org_cap = load_org_config(orch._paths).max_revise_rounds
     except Exception:
         org_cap = 0
-    return max_steps, org_cap
+    return org_cap
 
 
 def _server_evidence(
@@ -1186,16 +1186,12 @@ def _server_evidence(
     )
 
     # Budget counters + current ceilings.
-    max_steps, org_cap = _current_budget_ceilings(orch)
-    budget_exhausted = (
-        current.orchestration_step_count >= max_steps
-        or (org_cap > 0 and current.revision_count >= org_cap)
-    )
+    org_cap = _current_budget_ceilings(orch)
+    budget_exhausted = org_cap > 0 and current.revision_count >= org_cap
     facts["budget"] = json.dumps(
         {
             "value": {
                 "orchestration_step_count": current.orchestration_step_count,
-                "max_orchestration_steps": max_steps,
                 "revision_count": current.revision_count,
                 "max_revise_rounds": org_cap,
                 "exhausted": budget_exhausted,
@@ -1387,11 +1383,8 @@ def _eligible_fences(
         and current.active_fanout is None
         and current.blocked_on_job_ids is None
     )
-    max_steps, org_cap = _current_budget_ceilings(orch)
-    budget_ok = (
-        current.orchestration_step_count < max_steps
-        and (org_cap <= 0 or current.revision_count < org_cap)
-    )
+    org_cap = _current_budget_ceilings(orch)
+    budget_ok = org_cap <= 0 or current.revision_count < org_cap
     fences["budget_exhausted"] = AuthorityFenceResult(
         passed=budget_ok,
         code="budget_exceeded" if not budget_ok else None,
@@ -1998,7 +1991,7 @@ def run_authority_hook(
         # CURRENT task counters against these. ``current`` was re-fetched at
         # step 8b; ``current.status``/``block_kind`` are the expected values
         # for the atomic CAS.
-        fresh_max_steps, fresh_revise_cap = _current_budget_ceilings(orch)
+        fresh_revise_cap = _current_budget_ceilings(orch)
         try:
             committed = db.commit_authority_continue_same_root(
                 task_id=task.id,
@@ -2017,7 +2010,6 @@ def run_authority_hook(
                 expected_model_digest=model_digest,
                 expected_input_digest=input_digest,
                 expected_causal_event_id=causal_event_id,
-                expected_max_orchestration_steps=fresh_max_steps,
                 expected_max_revise_rounds=fresh_revise_cap,
                 expected_status=current.status,
                 expected_block_kind=current.block_kind,

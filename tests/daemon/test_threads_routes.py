@@ -3957,8 +3957,9 @@ def test_thread_and_messages_reply_delivery_parity(tmp_home, app, org_state, aut
     assert msgs_body["reply_delivery"][0]["state"] == "queued"
 
 
+@pytest.mark.parametrize("acknowledged", [246, 249])
 def test_thread_and_messages_project_authoritative_held_pair(
-    tmp_home, app, org_state, auth_headers,
+    tmp_home, app, org_state, auth_headers, acknowledged,
 ):
     """Both API consumers carry OPEN-exchange + matching-HELD truth."""
     client = TestClient(app)
@@ -3973,9 +3974,9 @@ def test_thread_and_messages_project_authoritative_held_pair(
     db = org_state.db
     db._conn.execute(
         "UPDATE thread_reply_delivery_state SET queued_invocation_token = NULL, "
-        "required_through_seq = 249, acknowledged_through_seq = 246, "
+        "required_through_seq = 249, acknowledged_through_seq = ?, "
         "last_terminal_reason = 'stale_timeout' WHERE thread_id = ?",
-        (tid,),
+        (acknowledged, tid),
     )
     db._conn.execute(
         "INSERT INTO thread_reply_exchange "
@@ -3998,6 +3999,9 @@ def test_thread_and_messages_project_authoritative_held_pair(
         f"/api/v1/orgs/alpha/threads/{tid}/messages", headers=auth_headers,
     ).json()["reply_delivery"]
     assert detail == messages
+    if acknowledged == 249:
+        assert detail == []
+        return
     assert detail[0]["state"] == "held"
     assert detail[0]["from_seq"] == 247
     assert detail[0]["through_seq"] == 249

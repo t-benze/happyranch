@@ -12,7 +12,7 @@ A single runtime container hosts **multiple orgs** under `<runtime>/orgs/<slug>/
 
 ### Manager-driven orchestration
 
-Each org has one or more **team managers** that drive task execution. When you submit a task, the manager analyzes it and decides what to do at each step — handle it directly, delegate to a team member, or escalate to the founder. There are no hardcoded task chains. `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` (default 50) caps runaway loops.
+Each org has one or more **team managers** that drive task execution. When you submit a task, the manager analyzes it and decides what to do at each step — handle it directly, delegate to a team member, or escalate to the founder. There are no hardcoded task chains. The historical orchestration-step count is monotonic telemetry, not an execution limit.
 
 ### Dynamic agents
 
@@ -419,7 +419,7 @@ requires explicit acknowledgement that restart alone will not make YAML win.
 | `HAPPYRANCH_OPENCODE_CLI_PATH` | `opencode` | Default command name for opencode (metadata only — executor launch requires `executors.json` pin) |
 | `HAPPYRANCH_PI_CLI_PATH` | `pi` | Default command name for pi (metadata only — executor launch requires `executors.json` pin) |
 | `HAPPYRANCH_PERMISSION_MODE` | `auto` | Claude Code permission mode |
-| `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Max manager decision steps before escalation |
+| `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Legacy accepted setting; inert (not an execution limit) |
 | `HAPPYRANCH_QUEUE_WORKERS` | `6` | Task `run_step` slots (daemon-wide, across all orgs). Must be positive. Takes effect on daemon restart. |
 | `HAPPYRANCH_HOST_GLOBAL_SESSION_CAP` | `13` | Healthy enforcement-capable host-session admission cap. Capability fallbacks can reduce the effective cap (macOS/no-enforcement remains 4). Must be positive. Takes effect on daemon restart. |
 | `HAPPYRANCH_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout (30 min) — global default; see overrides below |

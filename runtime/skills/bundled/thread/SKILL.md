@@ -220,12 +220,9 @@ knows), decline.
 
 **Escalation variant:** If the dispatched task **escalated** to the founder instead
 of finishing, the thread gets a `task_escalated` system message (with the escalation
-reason). First evaluate the existing THR-166 policy against the server-recorded causal
-terminal result; if it is eligible, submit the structured continuation request.
-Otherwise post the precise founder decision needed. Do not dispatch repair work from
-this turn. Acceptance only resumes this SAME root's ordinary lifecycle, which must
-delegate repair, review, and reverify before returning to the original protected gate;
-this follow-up never authorizes that gate.
+reason). Reply with the precise founder decision needed, or decline if there is nothing
+substantive to add. Do not dispatch repair work from this turn. Autonomous escalation
+continuation is retired.
 
 **What you may NOT do:** Dispatch a new task from this turn. The runtime rejects
 dispatch with purpose `task_followup` (HTTP 400 `wrong_invocation_purpose`). If a

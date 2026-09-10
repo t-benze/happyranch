@@ -7,7 +7,8 @@ database/config activation switch, agents/managers cannot self-modify or
 self-activate their governing policy, and a policy change ships through the
 ordinary review + CI + merge gates like any other release.
 
-Design contract (THR-181 / KB escalation-bounded-self-resume-ruling):
+Design contract (THR-181; see ``docs/agent-guides/orchestrator-contracts.md`` —
+``Active team authority policy``):
 
 * The policy is *semantic authority*. Server-owned mechanical fences
   (cancellation, budget exhaustion, protected gates, root-only escalation,
@@ -322,7 +323,7 @@ _ENGINEERING_CLAUSES: tuple[AuthorityClause, ...] = (
         category="exhausted-limits",
         condition=(
             "The proposed escalation reason or the structured facts cite ANY "
-            "exhausted limit: orchestration step budget, revise-round budget, "
+            "exhausted limit: revise-round budget, "
             "per-slice retry ceiling, provider/session retry budget, or any "
             "other bounded or cumulative limit."
         ),
