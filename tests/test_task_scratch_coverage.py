@@ -12,8 +12,8 @@ def _boot(proc: Path) -> None:
     (target / "boot_id").write_text("01234567-0123-8123-8123-0123456789ab")
 
 
-def _manifest(workspace: Path, task: str, *, producers: list[dict] | None = None) -> None:
-    root = workspace / ".happyranch/task-tmp" / task
+def _manifest(workspace: Path, task: str, *, producers: list[dict] | None = None, expected_root: Path | None = None) -> None:
+    root = workspace / ".happyranch/task-tmp" / task if expected_root is None else expected_root
     parent = workspace / ".happyranch/task-scratch-manifests"; parent.mkdir(parents=True, exist_ok=True)
     producer = {"producer_kind": "agent", "producer_id": "sess-1", "required": {"canonical_root": str(root), "ownership": "runtime"}, "observed": {"canonical_root": str(root), "mode": "0700"}, "classification": "regenerable_scratch", "observed_at": "2026-01-01T00:00:00+00:00"}
     data = {"version": 1, "task_id": task, "required_root": str(root), "observed_root": str(root), "root_classification": "regenerable_scratch", "manifest_classification": "durable_recovery_artifact", "lock_classification": "durable_recovery_artifact", "producers": [producer] if producers is None else producers}
@@ -169,17 +169,21 @@ def test_symlink_candidate_and_manifest_parent_never_read_referent(tmp_path: Pat
 def test_manifest_parent_guard_is_reachable_for_literal_candidate(tmp_path: Path) -> None:
     proc = tmp_path / "proc"; _boot(proc)
     workspace = tmp_path / "workspace"; root = workspace / ".happyranch/task-tmp/TASK-1"; root.mkdir(parents=True)
-    outside = tmp_path / "outside"; outside.mkdir(); _manifest(outside, "TASK-1")
+    # This is a valid manifest at the actual symlink referent, but it names the
+    # literal candidate.  Thus an accidental follow would reach a usable
+    # manifest; rejection is specifically the lexical-parent no-follow guard.
+    outside = tmp_path / "outside"; outside.mkdir(); _manifest(outside, "TASK-1", expected_root=root)
     manifests = workspace / ".happyranch/task-scratch-manifests"
-    manifests.symlink_to(outside, target_is_directory=True)
-    opened: list[str] = []; paths_by_fd: dict[int, str] = {}; read_fds: list[int] = []; stated: list[tuple[str, bool]] = []; real_open = coverage.os.open; real_fdopen = coverage.os.fdopen; real_stat = Path.stat
+    referent = outside / ".happyranch/task-scratch-manifests"
+    manifests.symlink_to(referent, target_is_directory=True)
+    opened: list[str] = []; paths_by_fd: dict[int, str] = {}; read_paths: list[str | None] = []; stated: list[tuple[str, bool]] = []; real_open = coverage.os.open; real_fdopen = coverage.os.fdopen; real_stat = Path.stat
     def watch(path: object, *args: object, **kwargs: object) -> int:
         fd = real_open(path, *args, **kwargs); opened.append(str(path)); paths_by_fd[fd] = str(path); return fd
     def watch_fdopen(fd: int, *args: object, **kwargs: object) -> object:
         handle = real_fdopen(fd, *args, **kwargs)
         original_read = handle.read
         def read(*read_args: object, **read_kwargs: object) -> bytes:
-            read_fds.append(fd); return original_read(*read_args, **read_kwargs)
+            read_paths.append(paths_by_fd.get(fd)); return original_read(*read_args, **read_kwargs)
         handle.read = read  # type: ignore[method-assign]
         return handle
     def watch_stat(self: Path, *args: object, **kwargs: object) -> os.stat_result:
@@ -192,18 +196,27 @@ def test_manifest_parent_guard_is_reachable_for_literal_candidate(tmp_path: Path
     lexical = manifests / "TASK-1.json"
     assert (str(manifests), False) in stated
     assert str(lexical) not in opened
-    assert str(outside / "TASK-1.json") not in opened
-    assert str(outside / "TASK-1.json") not in {paths_by_fd[fd] for fd in read_fds}
+    assert str(referent / "TASK-1.json") not in opened
+    assert str(lexical) not in {path for path, _ in stated}
+    assert str(referent / "TASK-1.json") not in {path for path, _ in stated}
+    assert str(referent / "TASK-1.json") not in read_paths
 
     # A literal parent is the permitted control: it opens and consumes the
     # manifest descriptor, unlike the lexical symlink parent above.
     workspace2 = tmp_path / "workspace2"; root2 = workspace2 / ".happyranch/task-tmp/TASK-1"; root2.mkdir(parents=True); _manifest(workspace2, "TASK-1")
-    opened.clear(); paths_by_fd.clear(); read_fds.clear()
+    opened.clear(); paths_by_fd.clear(); read_paths.clear()
     with patch.object(coverage.os, "open", watch), patch.object(coverage.os, "fdopen", watch_fdopen):
         allowed = collect_task_scratch_coverage(workspace=workspace2, proc_root=proc)
     assert any(path.endswith("task-scratch-manifests/TASK-1.json") for path in opened)
-    assert read_fds
+    assert any(path and path.endswith("task-scratch-manifests/TASK-1.json") for path in read_paths)
     assert any(row.relative_path.endswith("TASK-1") and row.classification == "canonical_regenerable" for row in allowed.buckets)
+
+    # A present non-directory parent is likewise rejected without attempting a
+    # descendant manifest read; only a literal directory is an allowed parent.
+    workspace3 = tmp_path / "workspace3"; root3 = workspace3 / ".happyranch/task-tmp/TASK-1"; root3.mkdir(parents=True)
+    bad_parent = workspace3 / ".happyranch/task-scratch-manifests"; bad_parent.write_text("not a directory")
+    rejected = collect_task_scratch_coverage(workspace=workspace3, proc_root=proc)
+    assert next(row for row in rejected.buckets if row.relative_path.endswith("TASK-1")).classification == "residual_unmanifested"
 
 
 def test_boot_post_open_timeout_closes_descriptor_in_each_pass(tmp_path: Path, monkeypatch: object) -> None:
@@ -293,42 +306,109 @@ def test_boot_post_open_read_cap_closes_descriptor_in_each_pass(tmp_path: Path, 
     assert "read_cap" in observation.reasons and not observation.complete and not observation.coverage_ready
 
 
+def test_boot_first_pass_fixed_read_cap_denies_after_open_without_counter_rewrite(tmp_path: Path, monkeypatch: object) -> None:
+    """A numeric cap can deny the first pass's dependent boot read after open."""
+    proc = tmp_path / "proc"; _boot(proc)
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    monkeypatch.setattr(coverage, "MAX_READS", 1)
+    opened: list[int] = []; closed: list[int] = []; reads: list[int] = []
+    real_open, real_close, real_fdopen = coverage.os.open, coverage.os.close, coverage.os.fdopen
+    def watch_open(path: object, *args: object, **kwargs: object) -> int:
+        fd = real_open(path, *args, **kwargs)
+        if str(path).endswith("boot_id"):
+            opened.append(fd)
+        return fd
+    def watch_close(fd: int) -> None:
+        closed.append(fd); real_close(fd)
+    def watch_fdopen(fd: int, *args: object, **kwargs: object) -> object:
+        handle = real_fdopen(fd, *args, **kwargs); original_read = handle.read
+        def read(*read_args: object, **read_kwargs: object) -> bytes:
+            reads.append(fd); return original_read(*read_args, **read_kwargs)
+        handle.read = read  # type: ignore[method-assign]
+        return handle
+    with patch.object(coverage.os, "open", watch_open), patch.object(coverage.os, "close", watch_close), patch.object(coverage.os, "fdopen", watch_fdopen):
+        observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+    assert opened and opened[0] in closed and opened[0] not in reads
+    assert "read_cap" in observation.reasons and not observation.complete
+
+
+def test_manifest_actual_bytes_and_growth_bound_are_shared_and_boot_is_excluded(tmp_path: Path, monkeypatch: object) -> None:
+    """Both snapshots account returned manifest bytes, not boot bytes or a stale stat."""
+    proc = tmp_path / "proc"; _boot(proc)
+    workspace = tmp_path / "workspace"; root = workspace / ".happyranch/task-tmp/TASK-1"; root.mkdir(parents=True)
+    _manifest(workspace, "TASK-1")
+    manifest = workspace / ".happyranch/task-scratch-manifests/TASK-1.json"
+    raw_size = manifest.stat().st_size
+    # Two successful returned bodies fit exactly; a third would not.  This
+    # catches charging boot reads or trusting the pre-open metadata length.
+    monkeypatch.setattr(coverage, "MAX_TOTAL_MANIFEST_BYTES", raw_size * 2)
+    observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+    assert observation.complete
+    # Growth after stat is bounded by manifest_read_size's remaining allowance.
+    original_stat = coverage._stat; grew = False
+    def grow_after_stat(path: Path, budget: coverage._Budget) -> os.stat_result | None:
+        nonlocal grew
+        result = original_stat(path, budget)
+        if path == manifest and result is not None and not grew:
+            grew = True; manifest.write_bytes(manifest.read_bytes() + b"x" * (raw_size + 1))
+        return result
+    monkeypatch.setattr(coverage, "_stat", grow_after_stat)
+    capped = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+    assert grew and "manifest_byte_cap" in capped.reasons and not capped.complete and not capped.coverage_ready
+
+
+def test_scandir_admits_before_each_advance_including_exhaustion_and_fixed_caps(tmp_path: Path, monkeypatch: object) -> None:
+    """The exported collector fails closed for iterator admission and both caps."""
+    proc = tmp_path / "proc"; _boot(proc)
+    workspace = tmp_path / "workspace"; root = workspace / ".happyranch/task-tmp/TASK-1"; root.mkdir(parents=True)
+    (root / "payload").write_text("x"); _manifest(workspace, "TASK-1")
+    monkeypatch.setattr(coverage, "MAX_READS", 1)
+    read_capped = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+    assert "read_cap" in read_capped.reasons and not read_capped.complete
+    monkeypatch.undo()
+    monkeypatch.setattr(coverage, "MAX_ENTRIES", 1)
+    entry_capped = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+    assert "entry_cap" in entry_capped.reasons and not entry_capped.complete
+
+
 def test_candidate_timeout_cap_and_nested_incompleteness_remain_unknown(tmp_path: Path, monkeypatch: object) -> None:
     """A partial candidate walk is not evidence of a repository/special file."""
-    for failure in ("timeout", "cap"):
-        proc = tmp_path / f"proc-{failure}"; _boot(proc)
-        workspace = tmp_path / f"workspace-{failure}"; root = workspace / ".happyranch/task-tmp/TASK-1"; (root / "nested").mkdir(parents=True)
+    # Each finite case reaches the recursive nested candidate call.  The cap is
+    # an independently fixed numeric bound (1), never rewritten to the live
+    # counter at the denial point.
+    for pass_number in (1, 2):
+      for failure in ("timeout", "cap"):
+        proc = tmp_path / f"proc-{pass_number}-{failure}"; _boot(proc)
+        workspace = tmp_path / f"workspace-{pass_number}-{failure}"; root = workspace / ".happyranch/task-tmp/TASK-1"; (root / "nested").mkdir(parents=True)
         (root / "nested/payload").write_text("x"); _manifest(workspace, "TASK-1")
-        candidate_scans = 0; nested_scans = 0; expired = False; real_scandir = coverage.os.scandir; real_admit = coverage._Budget.admit
+        candidate_roots = 0; expired = False; recursive: list[tuple[Path, bool | None]] = []; real_candidate_safe = coverage._candidate_safe
         def clock() -> int:
             return 2 if expired else 0
-        def watch_scandir(path: object, *args: object, **kwargs: object) -> object:
-            nonlocal candidate_scans, nested_scans, expired
-            if Path(path) == root:
-                candidate_scans += 1
-                # Each pass walks and populations the literal root before its
-                # candidate inspection. Trigger only at the second pass so the
-                # returned buckets remain the canonical first snapshot.
-                if candidate_scans == 6:
-                    expired = failure == "timeout"
-            if Path(path) == root / "nested":
-                nested_scans += 1
-            return real_scandir(path, *args, **kwargs)
-        def admit(self: coverage._Budget, *, read: bool = False, manifest_bytes: int = 0) -> bool:
-            if failure == "cap" and candidate_scans == 6 and read:
-                # Exercise the production counter/cap comparison, rather than
-                # replacing admission with a synthetic denial.
-                monkeypatch.setattr(coverage, "MAX_READS", self.reads)
-            return real_admit(self, read=read, manifest_bytes=manifest_bytes)
+        def watch_candidate(path: Path, root_dev: int, budget: coverage._Budget) -> bool | None:
+            nonlocal candidate_roots, expired
+            if path == root:
+                candidate_roots += 1
+            if path == root / "nested" and candidate_roots == pass_number:
+                # We are inside the selected recursive candidate invocation;
+                # use a fixed cap rather than manufacturing a counter value.
+                expired = failure == "timeout"
+                if failure == "cap":
+                    monkeypatch.setattr(coverage, "MAX_READS", 1)
+            value = real_candidate_safe(path, root_dev, budget)
+            if path == root / "nested":
+                recursive.append((path, value))
+            return value
         monkeypatch.setattr(coverage.time, "monotonic_ns", clock)
-        monkeypatch.setattr(coverage._Budget, "admit", admit)
-        with patch.object(coverage.os, "scandir", watch_scandir):
-            observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc, deadline_ns=1)
+        monkeypatch.setattr(coverage, "_candidate_safe", watch_candidate)
+        observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc, deadline_ns=1)
         bucket = next(row for row in observation.buckets if row.relative_path.endswith("TASK-1"))
-        assert candidate_scans >= 6 and nested_scans >= 1
-        # The second-pass interruption does not rewrite the already returned
-        # first-snapshot bucket; incomplete/nonready is conveyed by reasons.
-        assert bucket.classification == "canonical_regenerable"
+        assert candidate_roots >= pass_number
+        assert recursive[-1:] == [(root / "nested", None)]
+        assert len(recursive) == pass_number
+        # A first-pass interruption is retained as residual_unknown; a second
+        # pass never rewrites the returned first snapshot.
+        assert bucket.classification == ("residual_unknown" if pass_number == 1 else "canonical_regenerable")
         assert not observation.complete and not observation.coverage_ready
         assert ("observation_timeout" if failure == "timeout" else "read_cap") in observation.reasons
+        assert not {"metadata_changed_during_collection", "population_changed_during_collection", "classification_changed_during_collection"} & set(observation.reasons)
         monkeypatch.undo()
