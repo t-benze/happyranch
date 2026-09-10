@@ -835,6 +835,40 @@ def _bounded_lifespan_context(
     _completed = threading.Event()
     _error = [None]
 
+    def _release_and_reap(*, diagnostic: str) -> None:
+        """Terminally clean up everything this helper owns after thread start.
+
+        ``compose_done`` is only a completion signal: a delayed TestClient
+        context can fail the shutdown-entry handshake before it ever starts a
+        compose worker.  Do not turn that absence into an unreaped-worker
+        failure, but always release and reap the non-daemon context thread.
+        """
+        compose_unblock.set()
+        if shutdown_release is not None:
+            shutdown_release.set()
+
+        _worker_started = compose_entered.is_set()
+        _worker_clean = (
+            compose_done.wait(timeout=deadline_seconds)
+            if _worker_started
+            else True
+        )
+        _thread.join(timeout=deadline_seconds)
+        _thread_clean = not _thread.is_alive()
+
+        _cleanup_detail = ""
+        if not _worker_clean:
+            _cleanup_detail += "; worker compose_done timed out during cleanup"
+        if not _thread_clean:
+            _cleanup_detail += "; TestClient thread did not exit during cleanup"
+
+        if _worker_clean and _thread_clean:
+            raise AssertionError(diagnostic)
+        raise AssertionError(
+            "Watchdog cleanup incomplete: cannot terminally own all resources"
+            + _cleanup_detail
+        )
+
     def _runner() -> None:
         try:
             with TestClient(app) as client:
@@ -861,10 +895,14 @@ def _bounded_lifespan_context(
     # The forced-watchdog control must only begin its deadline after the real
     # lifespan shutdown has entered the injected cancellation boundary.  This
     # keeps the test's expiry ordering independent of startup/GET scheduling.
-    if shutdown_entered is not None:
-        assert shutdown_entered.wait(timeout=deadline_seconds), (
-            "lifespan shutdown did not enter the injected cancellation "
-            "boundary before the watchdog deadline"
+    if shutdown_entered is not None and not shutdown_entered.wait(
+        timeout=deadline_seconds,
+    ):
+        _release_and_reap(
+            diagnostic=(
+                "lifespan shutdown did not enter the injected cancellation "
+                "boundary before the watchdog deadline"
+            ),
         )
     _thread.join(timeout=deadline_seconds)
 
@@ -878,37 +916,7 @@ def _bounded_lifespan_context(
             f"the warm task, or asyncio.gather may be blocked"
         )
 
-        # Release the blocked compose so the worker thread can exit.
-        compose_unblock.set()
-        if shutdown_release is not None:
-            shutdown_release.set()
-
-        # Bounded second-stage: wait for the worker.
-        _worker_clean = compose_done.wait(timeout=deadline_seconds)
-
-        # Bounded second-stage: join the TestClient context thread.
-        _thread.join(timeout=deadline_seconds)
-        _thread_clean = not _thread.is_alive()
-
-        # Build cleanup-failure context.
-        _cleanup_detail = ""
-        if not _worker_clean:
-            _cleanup_detail += (
-                "; worker compose_done timed out during cleanup"
-            )
-        if not _thread_clean:
-            _cleanup_detail += (
-                "; TestClient thread did not exit during cleanup"
-            )
-
-        if _worker_clean and _thread_clean:
-            # Terminal: both owned — raise the original diagnostic.
-            raise AssertionError(_diagnostic + _cleanup_detail)
-        else:
-            raise AssertionError(
-                "Watchdog cleanup incomplete: cannot terminally own all "
-                "resources" + _cleanup_detail
-            )
+        _release_and_reap(diagnostic=_diagnostic)
 
     if _error[0] is not None:
         raise _error[0]
@@ -1034,6 +1042,73 @@ def test_lifespan_async_warm_serves_503_and_clean_shutdown(
     finally:
         dp_mod.compose_dashboard_summary = original_compose
         mgr.reap_scheduler = original_reap
+
+
+def test_shutdown_handshake_timeout_releases_and_reaps_owned_context(
+    monkeypatch,
+) -> None:
+    """A delayed TestClient entry cannot escape the helper's ownership.
+
+    This reaches the actual shutdown-entry handshake path, rather than the
+    later forced-watchdog path.  Its context thread is deliberately held until
+    helper cleanup releases the test-owned shutdown blocker.
+    """
+    import threading
+    import pytest
+
+    compose_entered = threading.Event()
+    compose_entered.set()
+    compose_unblock = threading.Event()
+    compose_done = threading.Event()
+    shutdown_entered = threading.Event()
+    shutdown_release = threading.Event()
+    owned_threads = []
+
+    class DelayedClient:
+        def __init__(self, app) -> None:
+            owned_threads.append(threading.current_thread())
+
+        def __enter__(self):
+            assert shutdown_release.wait(timeout=5), (
+                "helper cleanup did not release delayed TestClient entry"
+            )
+            return self
+
+        def get(self, *args, **kwargs):
+            return type(
+                "Response",
+                (),
+                {
+                    "status_code": 503,
+                    "json": lambda self: {"detail": "not yet available"},
+                },
+            )()
+
+        def __exit__(self, *args) -> None:
+            compose_done.set()
+
+    monkeypatch.setitem(globals(), "TestClient", DelayedClient)
+
+    with pytest.raises(
+        AssertionError,
+        match="lifespan shutdown did not enter the injected cancellation",
+    ):
+        _bounded_lifespan_context(
+            app=object(),
+            compose_entered=compose_entered,
+            compose_unblock=compose_unblock,
+            compose_done=compose_done,
+            deadline_seconds=0.1,
+            auth_headers={},
+            org_slug="isolated",
+            shutdown_entered=shutdown_entered,
+            shutdown_release=shutdown_release,
+        )
+
+    assert compose_unblock.is_set()
+    assert shutdown_release.is_set()
+    assert compose_done.is_set()
+    assert owned_threads and all(not thread.is_alive() for thread in owned_threads)
 
 
 def test_forced_watchdog_regression_cleanup_ownership(
