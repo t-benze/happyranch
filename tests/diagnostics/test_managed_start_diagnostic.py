@@ -848,25 +848,68 @@ def test_actual_publish_entrypoint_records_bounded_known_input_reads(
     diagnostics_dir, published = tmp_path / "diagnostics", tmp_path / "published"
     diagnostics_dir.mkdir(); (diagnostics_dir / name).write_bytes(payload)
     requested: list[tuple[str, int]] = []
-    original_read_text = Path.read_text
+    original_open = Path.open
 
-    def traced_read_text(path: Path, *args: object, **kwargs: object) -> str:
-        if path.parent == diagnostics_dir and path.name == name:
-            # `read_text` has no length parameter: its invocation is an
-            # unbounded fallback and the trace remains durable even if the
-            # publisher catches the injected OSError.
-            requested.append((path.name, -1))
-            raise OSError("F4_INSTRUMENTED_UNBOUNDED_READ")
-        return original_read_text(path, *args, **kwargs)
+    class TracedStream:
+        def __init__(self, stream: object, path: Path) -> None:
+            self.stream, self.path = stream, path
+        def __enter__(self) -> TracedStream: return self
+        def __exit__(self, *args: object) -> None: self.stream.close()  # type: ignore[attr-defined]
+        def read(self, size: int = -1) -> bytes:
+            requested.append((self.path.name, size))
+            return self.stream.read(size)  # type: ignore[attr-defined]
 
-    monkeypatch.setattr(Path, "read_text", traced_read_text)
+    def traced_open(path: Path, *args: object, **kwargs: object) -> object:
+        stream = original_open(path, *args, **kwargs)
+        return TracedStream(stream, path) if path.parent == diagnostics_dir and path.name == name else stream
+
+    monkeypatch.setattr(Path, "open", traced_open)
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--publish", "--diagnostics", str(diagnostics_dir), "--output", str(published)])
     exit_code = diagnostic.main()
     assert requested, "instrumentation did not reach the known publisher input"
-    assert exit_code == 3, "instrumented read violation must persist if publish catches it"
-    # Required future behavior: a bounded stream request, never read(-1),
+    assert exit_code == 0
+    # Required behavior: a bounded stream request, never read(-1),
     # with at most one sentinel byte beyond the documented cap before decode.
     assert all(0 <= length <= cap + 1 for _path, length in requested)
+    if name == "receipt.txt": assert (published / name).is_file()
+    elif name == "diagnostic-cleanup.json": assert json.loads((published / name).read_text()) == {"cleanup": "complete"}
+    else: assert json.loads((published / name).read_text()) == diagnostic._unavailable_observation("positive_success")
+
+
+def test_actual_publish_bounds_stream_when_reported_size_is_smaller_than_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raced/small stat result cannot turn a growing cleanup stream into a full read."""
+    diagnostics_dir, published = tmp_path / "diagnostics", tmp_path / "published"
+    diagnostics_dir.mkdir()
+    name = "diagnostic-cleanup.json"
+    source = diagnostics_dir / name
+    source.write_bytes(b'{"cleanup":"complete"}' + b"F4_STREAM_CANARY" * diagnostic.MAX_BYTES)
+    requested: list[int] = []
+    original_open, original_stat = Path.open, Path.stat
+
+    class TracedStream:
+        def __init__(self, stream: object) -> None: self.stream = stream
+        def __enter__(self) -> TracedStream: return self
+        def __exit__(self, *args: object) -> None: self.stream.close()  # type: ignore[attr-defined]
+        def read(self, size: int = -1) -> bytes:
+            requested.append(size)
+            return self.stream.read(size)  # type: ignore[attr-defined]
+
+    def traced_open(path: Path, *args: object, **kwargs: object) -> object:
+        stream = original_open(path, *args, **kwargs)
+        return TracedStream(stream) if path == source else stream
+    def small_stat(path: Path, *args: object, **kwargs: object) -> object:
+        result = original_stat(path, *args, **kwargs)
+        return type("SmallStat", (), {"st_size": 1})() if path == source else result
+
+    monkeypatch.setattr(Path, "open", traced_open)
+    monkeypatch.setattr(Path, "stat", small_stat)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--publish", "--diagnostics", str(diagnostics_dir), "--output", str(published)])
+    assert diagnostic.main() == 3
+    assert requested and all(0 <= size <= diagnostic.MAX_BYTES + 1 for size in requested)
+    assert not (published / name).exists()
+    assert "F4_STREAM_CANARY" not in "".join(path.read_text(errors="ignore") for path in published.iterdir())
 
 
 def test_actual_yaml_f2_initializer_env_failure_skips_normal_steps_but_runs_always_provenance(tmp_path: Path) -> None:

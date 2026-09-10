@@ -430,7 +430,30 @@ def collect(phase: str, output: Path, deadline: float, runner: Runner = run_boun
 
 def _safe_identity(value: str | None, pattern: str) -> str:
     """Return a bounded identity, never an arbitrary runner-provided string."""
-    return value if value is not None and re.fullmatch(pattern, value) else "unavailable"
+    # Values originate in runner environment variables.  Bound them before a
+    # regular expression or serialization can retain an unexpectedly large
+    # value.
+    return value if isinstance(value, str) and len(value) <= MAX_BYTES and re.fullmatch(pattern, value) else "unavailable"
+
+
+def _read_bounded(source: Path, limit: int) -> tuple[bytes | None, bool]:
+    """Read at most ``limit + 1`` bytes, independent of a raced file size.
+
+    The boolean distinguishes a genuine over-limit input from an unavailable
+    input.  Callers can therefore retain independent evidence without ever
+    decoding or reporting raw input/error data.
+    """
+    data = bytearray()
+    try:
+        with source.open("rb") as stream:
+            while len(data) <= limit:
+                chunk = stream.read(limit + 1 - len(data))
+                if not chunk:
+                    return bytes(data), False
+                data.extend(chunk)
+    except OSError:
+        return None, False
+    return None, True
 
 
 def _canonical_observation(value: object) -> bool:
@@ -499,40 +522,57 @@ def publish(diagnostics: Path, destination: Path, *, identities: dict[str, str |
     }
     try:
         _write_document(destination / "provenance.json", provenance)
-        for name in ("receipt.txt", "diagnostic-cleanup.json"):
-            source = diagnostics / name
-            if name == "receipt.txt" and source.is_file():
-                # Receipt has only fixed keys and numeric statuses; malformed
-                # content is represented by the fixed unavailable record.
-                if source.stat().st_size > MAX_BYTES:
-                    continue
-                lines = source.read_text(encoding="ascii", errors="strict").splitlines()
-                allowed = {"schema", "run_id", "run_attempt", "build_status", "harness_status"}
-                values = dict(line.split("=", 1) for line in lines if line.count("=") == 1)
-                if len(values) == len(lines) and set(values) <= allowed and all(re.fullmatch(r"[0-9]{1,20}|managed-start-diagnostic-receipt-v1", value) for value in values.values()):
-                    (destination / name).write_text("\n".join(f"{key}={values[key]}" for key in sorted(values)) + "\n", encoding="ascii")
-            elif name == "diagnostic-cleanup.json" and source.is_file():
-                value = json.loads(source.read_text(encoding="utf-8"))
-                if value in ({"cleanup": "complete"}, {"cleanup": "failed"}):
-                    _write_document(destination / name, value)
-        for phase in sorted(PHASES):
-            source = diagnostics / f"{phase}-observation.json"
-            if not source.is_file():
+    except (OSError, TypeError, ValueError):
+        return False
+
+    complete = True
+    receipt, receipt_excessive = _read_bounded(diagnostics / "receipt.txt", MAX_BYTES)
+    if receipt_excessive:
+        complete = False
+    elif receipt is not None:
+        try:
+            lines = receipt.decode("ascii", errors="strict").splitlines()
+            allowed = {"schema", "run_id", "run_attempt", "build_status", "harness_status"}
+            values = dict(line.split("=", 1) for line in lines if line.count("=") == 1)
+            if len(values) == len(lines) and set(values) <= allowed and all(re.fullmatch(r"[0-9]{1,20}|managed-start-diagnostic-receipt-v1", value) for value in values.values()):
+                (destination / "receipt.txt").write_text("\n".join(f"{key}={values[key]}" for key in sorted(values)) + "\n", encoding="ascii")
+        except (OSError, UnicodeError, ValueError, TypeError):
+            complete = False
+
+    cleanup, cleanup_excessive = _read_bounded(diagnostics / "diagnostic-cleanup.json", MAX_BYTES)
+    if cleanup_excessive:
+        # Never represent an excessive cleanup record as complete, but keep
+        # publishing independently valid observations below.
+        complete = False
+    elif cleanup is not None:
+        try:
+            value = json.loads(cleanup.decode("utf-8", errors="strict"))
+            if value in ({"cleanup": "complete"}, {"cleanup": "failed"}):
+                _write_document(destination / "diagnostic-cleanup.json", value)
+        except (OSError, UnicodeError, ValueError, TypeError):
+            complete = False
+
+    for phase in sorted(PHASES):
+        payload, excessive = _read_bounded(diagnostics / f"{phase}-observation.json", MAX_BYTES * 32)
+        try:
+            if excessive or payload is None:
+                if excessive:
+                    _write_document(destination / f"{phase}-observation.json", _unavailable_observation(phase))
                 continue
-            if source.stat().st_size > MAX_BYTES * 32:
-                _write_document(destination / f"{phase}-observation.json", _unavailable_observation(phase)); continue
-            try:
-                value = json.loads(source.read_text(encoding="utf-8"))
-            except (UnicodeError, ValueError):
-                _write_document(destination / f"{phase}-observation.json", _unavailable_observation(phase)); continue
+            value = json.loads(payload.decode("utf-8", errors="strict"))
             # The collector's only accepted artifact shape has exact top-level
             # keys. This rejects opaque/nested additions before reserialization.
             if not _canonical_observation(value):
                 _write_document(destination / f"{phase}-observation.json", _unavailable_observation(phase)); continue
             _write_document(destination / f"{phase}-observation.json", value)
-    except (OSError, UnicodeError, ValueError, TypeError):
-        return False
-    return True
+        except (OSError, UnicodeError, ValueError, TypeError):
+            # A malformed or unreadable observation has its per-phase fallback;
+            # it never prevents a later independent observation from surviving.
+            try:
+                _write_document(destination / f"{phase}-observation.json", _unavailable_observation(phase))
+            except (OSError, TypeError, ValueError):
+                complete = False
+    return complete
 
 
 class _SafeParser(argparse.ArgumentParser):
