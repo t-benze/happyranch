@@ -7,6 +7,9 @@ import subprocess
 import sys
 import json
 import hashlib
+import shutil
+
+import yaml
 
 import pytest
 
@@ -610,3 +613,91 @@ def test_run_bounded_reaps_when_selector_setup_fails(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(diagnostic.selectors, "DefaultSelector", BrokenSelector)
     result = diagnostic.run_bounded([sys.executable, "-c", "import time; time.sleep(10)"], __import__("time").monotonic() + 2)
     assert result.failed and result.timed_out
+
+
+# These are deliberately actual-workflow tests.  The adapter admits a finite
+# command grammar and never forwards a service, root, package, or network call.
+def _diagnostic_workflow_blocks() -> dict[str, str]:
+    workflow = yaml.load((ROOT / ".github/workflows/managed-start-diagnostic.yml").read_text(), Loader=yaml.BaseLoader)
+    return {step["name"]: step["run"] for step in workflow["jobs"]["diagnose"]["steps"] if "run" in step}
+
+
+def _write_workflow_adapter(root: Path) -> Path:
+    fake = root / "fake.py"
+    fake.write_text("""#!/usr/bin/python3
+import os, pathlib, sys
+n = pathlib.Path(sys.argv[0]).name; a = sys.argv[1:]
+if n == 'systemctl' and a == ['--version']: print('systemd 255 (255.4-1ubuntu8)'); raise SystemExit(0)
+if n == 'git' and len(a) == 4 and a[0] == '-C' and a[2:] == ['rev-parse', 'HEAD']:
+    if not pathlib.Path(a[1]).exists(): raise SystemExit(1)
+    print(os.environ['SHIPPING_SHA'] if a[1] == 'shipping' else os.environ['CANDIDATE_SHA']); raise SystemExit(0)
+if n == 'uv' and a[:3] == ['run', 'python', 'app/linux/package/build_package.py']: raise SystemExit(int(os.environ.get('FINAL_BUILD_EXIT', '0')))
+if n == 'uv' and (a == ['sync', '--frozen', '--group', 'build'] or a[:2] == ['build', '--wheel'] or a[:3] == ['run', 'python', 'app/linux/package/build_connector.py']): raise SystemExit(0)
+if n == 'go' and (a == ['test', './...'] or a[:3] == ['build', '-trimpath', '-buildvcs=false']): raise SystemExit(0)
+if n == 'bash' and a == [os.environ['PACKAGE_TMP'] + '/diagnostic-harness.sh']: raise SystemExit(int(os.environ.get('HARNESS_EXIT', '0')))
+print('REFUSED:' + n, file=sys.stderr); raise SystemExit(91)
+""")
+    fake.chmod(0o755)
+    return fake
+
+
+def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, str]:
+    """Run selected real YAML blocks with a copied local subject and finite effects."""
+    blocks = _diagnostic_workflow_blocks(); bin_dir = tmp_path / "bin"; bin_dir.mkdir()
+    fake = _write_workflow_adapter(tmp_path)
+    for name in ("git", "systemctl", "uv", "bash", "go"):
+        (bin_dir / name).symlink_to(fake)
+    for name in ("mkdir", "sha256sum", "awk", "grep", "sed", "cp", "find"):
+        (bin_dir / name).symlink_to(Path("/usr/bin") / name)
+    (bin_dir / "python").symlink_to("/usr/bin/python3")
+    diagnostic_checkout = tmp_path / "diagnostic"; shipping_checkout = tmp_path / "shipping"
+    for checkout in (diagnostic_checkout, shipping_checkout): checkout.mkdir()
+    for rel in (".github/workflows/managed-start-diagnostic.yml", "scripts/diagnostics/managed_start_diagnostic.py"):
+        target = diagnostic_checkout / rel; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes((ROOT / rel).read_bytes())
+    target = shipping_checkout / "app/linux/package/real_systemd_n3.sh"; target.parent.mkdir(parents=True); target.write_bytes(SHIPPING.read_bytes())
+    env = dict(os.environ, PATH=str(bin_dir), RUNNER_TEMP=str(tmp_path), GITHUB_WORKSPACE=str(tmp_path), GITHUB_ENV=str(tmp_path / "github-env"), GITHUB_RUN_ID="1234", GITHUB_RUN_ATTEMPT="1", ImageOS="ubuntu24", ImageVersion="20260907.1.0", SHIPPING_SHA="2147c5c6edb5d847e4c0ca855a044fa850fd7e11", CANDIDATE_SHA="672b584b891e1375802f0e907b3276569badcff3", PYTHONDONTWRITEBYTECODE="1")
+    def run(name: str, cwd: Path = tmp_path) -> int:
+        result = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", blocks[name]], cwd=cwd, env=env, check=False, capture_output=True, text=True, timeout=15)
+        assert result.returncode != 91, result.stderr
+        return result.returncode
+    exits = {"init": run("Initialize failure-safe diagnostic receipt")}
+    for line in (tmp_path / "github-env").read_text().splitlines():
+        key, value = line.split("=", 1); env[key] = value
+    diagnostics_dir = Path(env["DIAGNOSTICS"]); package_dir = Path(env["PACKAGE_TMP"]); publish_dir = Path(env["PUBLISH"])
+    (package_dir / "happyranch-linux-amd64.tar").write_text("fixture package")
+    (diagnostics_dir / "diagnostic-cleanup.json").write_text('{"cleanup":"complete"}\n')
+    if case == "f1":
+        doc = diagnostic.collect("positive_failure", diagnostics_dir / "positive_failure-observation.json", 99, runner=lambda *_: diagnostic.RunResult(0, b""), window=(1, 2), now=lambda: 0)
+        doc["paths"][diagnostic.PATHS[0]] = "PATH_SCALAR_CANARY"
+        (diagnostics_dir / "positive_failure-observation.json").write_text(json.dumps(doc))
+    if case == "f2": shutil.rmtree(diagnostic_checkout); shutil.rmtree(shipping_checkout)
+    if case == "f3":
+        env["FINAL_BUILD_EXIT"] = "37"; exits["build"] = run("Build pinned shipping package", shipping_checkout)
+    if case == "f4": (diagnostics_dir / "diagnostic-cleanup.json").write_text(" " * 1_200_000 + '{"cleanup":"complete"}')
+    if case == "f6":
+        def valid_collector(command: list[str], _deadline: float) -> diagnostic.RunResult:
+            if command[0] == "systemctl":
+                return diagnostic.RunResult(0, b"Result=exit-code\nActiveState=failed\nSubState=failed\nExecStartPre={ path=/bin/x ; code=exited ; status=126 }\nExecMainCode=1\nExecMainStatus=7\n")
+            if command[0] == "sudo": return diagnostic.RunResult(0, b"PRESENT:180:0:0")
+            unit = command[-1].split("=", 1)[1]
+            return diagnostic.RunResult(0, (json.dumps({"JOB_UNIT": unit, "JOB_ID": "42", "JOB_RESULT": "failed", "__MONOTONIC_TIMESTAMP": "100", "MESSAGE": "ordinary producer record"}) + "\n").encode())
+        doc = diagnostic.collect("positive_failure", diagnostics_dir / "positive_failure-observation.json", 99, runner=valid_collector, window=(1, 2), now=lambda: 0)
+        doc["units"][diagnostic.UNITS[0]]["Result"] = {"wrong": "type"}
+        (diagnostics_dir / "positive_failure-observation.json").write_text(json.dumps(doc))
+        (diagnostics_dir / "positive_success-observation.json").write_text(json.dumps(dict(doc, phase="positive_success")))
+    exits["provenance"] = run("Record provenance")
+    return exits, publish_dir, (tmp_path / "github-env").read_text()
+
+
+@pytest.mark.parametrize("case", ["f1", "f2", "f3", "f4", "f5", "f6"], ids=["F1-typed-path-scalar", "F2-missing-both-checkouts", "F3-final-builder37", "F4-bounded-cleanup-read", "F5-actual-yaml-shell", "F6-wrong-result-retains-later"])
+def test_actual_yaml_regression_requirements_are_not_helper_only(tmp_path: Path, case: str) -> None:
+    exits, published, env_bytes = _actual_yaml_case(tmp_path, case)
+    # F5 is the control proving these assertions use the exact YAML bytes and
+    # inherited bash flags; the other rows encode required (currently red) behavior.
+    assert "DIAGNOSTICS=" in env_bytes
+    if case == "f1": assert "PATH_SCALAR_CANARY" not in "".join(p.read_text() for p in published.glob("*"))
+    if case == "f2": assert json.loads((published / "provenance.json").read_text())["shipping"] is None
+    if case == "f3": assert "build_status=37\n" in (published / "receipt.txt").read_text()
+    if case == "f4": assert exits["provenance"] == 3  # oversized bytes must be refused before decoding
+    if case == "f5": assert exits["provenance"] == 0
+    if case == "f6": assert (published / "positive_success-observation.json").exists()
