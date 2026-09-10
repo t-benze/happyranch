@@ -1,5 +1,8 @@
 -- TASK-7263 U0 only: executable on isolated test adapters, never installed.
 PRAGMA foreign_keys=ON;
+-- This is the adapter's sole durable version discriminator.  It is created
+-- and committed in the same isolated transaction as every proposed table.
+CREATE TABLE workflow_adapter_versions (version INTEGER PRIMARY KEY CHECK(version=1));
 CREATE TABLE workflow_template_drafts (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, definition_bytes BLOB NOT NULL, definition_digest TEXT NOT NULL UNIQUE, compiler_pin TEXT NOT NULL, validator_pin TEXT NOT NULL, source_pin TEXT NOT NULL, author_principal TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE workflow_template_versions (id TEXT PRIMARY KEY, draft_id TEXT NOT NULL REFERENCES workflow_template_drafts(id), namespace TEXT NOT NULL, version INTEGER NOT NULL CHECK(version>0), definition_bytes BLOB NOT NULL, definition_digest TEXT NOT NULL UNIQUE, compiler_pin TEXT NOT NULL, validator_pin TEXT NOT NULL, source_pin TEXT NOT NULL, published_by TEXT NOT NULL, UNIQUE(namespace,version));
 CREATE TABLE workflow_authorization_revisions (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision>0), authority_bytes BLOB NOT NULL, authority_digest TEXT NOT NULL UNIQUE, source_pin TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(namespace,revision));

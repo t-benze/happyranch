@@ -2,11 +2,15 @@
 
 This U0 patch is deliberately non-production: it adds isolated proposed-schema and authority-limitation tests plus a frozen study preregistration. No route, daemon workflow, UI/CLI, migration, authority coordinator, or compatibility behavior is installed.
 
-The executable fixture calls the actual `Database` initializer on an isolated
-historical store, preserves that row, then uses an explicitly labelled test
-adapter to install/reopen the proposed additive relations. It checks rollback,
-replay, foreign keys and integrity. This is not a numbered production migration
-or a claim that the adapter is a supported production migration path. The
+The executable fixture calls the actual `RuntimeDir.init -> DaemonState.from_runtime
+-> OrgState.load -> Database` initializer chain on an isolated **current control**
+store, preserves that row, then uses an explicitly labelled test adapter to
+install/reopen the proposed additive relations. The adapter owns one transaction
+and has one committed version discriminator: it reopens only a complete version-1
+shape and refuses a partial or ambiguous workflow-shaped history without writes.
+It checks rollback, replay, foreign keys and integrity. This is not a numbered
+production migration or a claim that the adapter is a supported production
+migration path. The
 authority tests call the actual `manage_agent(update)` route under its real
 `teams_lock`: A→B→A demonstrates hash ABA, while same-hash contenders show the
 route-local stale-writer rejection. No route-to-workflow transaction, dispatch,
@@ -34,16 +38,23 @@ It is a negative feasibility probe, not a production transaction or a claim
 that SQLite constraints alone provide currentness, queue admission, authority
 fencing, or cutover safety.
 
-Stage-1 raw fixture digests: helper `68f60262bb8984a9f43d4cba013c0e72f0e68907377c677ff1f97b8b333b49d2`,
-recovery test `b3823e42e6e62f5e9f4f6af788349101f92fd2424a4459d634636103305c7338`,
-and proposed DDL `058b82675735d2ab6d63a97f9f118e8945876b81d6652d46a4be025033168c77`.
+Stage-1 helper digest remains `68f60262bb8984a9f43d4cba013c0e72f0e68907377c677ff1f97b8b333b49d2`.
+Stage-2 recovery evidence digests: recovery test
+`950d300231179cbc6026d1a0a156adef4381c2fa0d164cfb89cf4c4cc1a92f6f`,
+proposed DDL `b1ebb10207e89a1f1d57e79246d369545f98e4fb0107b57c65e50a60b339999d`,
+and historical-source inventory
+`453f1c813d8f82dd485c635ee0dfdeb9929f3555aef97d3a2ac9514ac42e1a33`.
 This digest record is proposal parity only and does not replace the withheld
 study lock.
 
 R1 remains an observed shipping limitation: `TaskQueue._worker_loop` dispatches
 `run_step`, whose delegation calls self-committing `Database.try_delegate` then
 queues a child; callback and cancellation are distinct routes. R2's historical
-inventory pins the v0 DB-backed and v1 flat runtime initializer/layouts and
-requires corrupt inputs to fail closed before the adapter. R5's decision packet
+inventory now truthfully records that authentic whole-runtime v0 DB-backed and
+v1 flat-layout source snapshots were not supplied/acquired in this stage; it
+does not relabel the current control as historical evidence. The next stage must
+obtain source-pinned whole-runtime layouts before claiming historical upgrades.
+Current control and corrupt/partial adapter inputs fail closed before any
+proposed adapter write. R5's decision packet
 must still classify every writer/reader/compensation participant and receive
 independent review before any protected D5 choice.

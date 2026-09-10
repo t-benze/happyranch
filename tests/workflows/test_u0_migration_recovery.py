@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -11,11 +12,50 @@ from tests.workflows.u0_evidence_helpers import accept_current_join, sha256_byte
 
 
 def _adapter(path: Path) -> sqlite3.Connection:
-    """Clearly labeled isolated adapter; this SQL is not a Database migration."""
+    """Install/reopen one isolated proposed schema, never a Database migration.
+
+    The single durable marker is deliberately the version row, not a second
+    publication-stage marker.  Any workflow-shaped partial or ambiguous state
+    refuses before writes; a committed version-one adapter simply reopens.
+    """
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA foreign_keys=ON")
     schema = (Path(__file__).parents[1] / "fixtures" / "workflow_u0" / "proposed_workflow_schema.sql").read_text()
-    conn.executescript(schema)
+    existing = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'workflow_%'"
+        )
+    }
+    if existing:
+        expected = set(re.findall(r"CREATE TABLE (workflow_[a-z_]+)", schema))
+        if existing != expected or "workflow_adapter_versions" not in existing:
+            conn.close()
+            raise ValueError("partial_or_ambiguous_isolated_adapter")
+        marker = conn.execute("SELECT version FROM workflow_adapter_versions").fetchall()
+        if marker != [(1,)]:
+            conn.close()
+            raise ValueError("partial_or_ambiguous_isolated_adapter")
+        return conn
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # executescript commits an open transaction, so execute each complete
+        # DDL statement under this adapter-owned transaction instead.
+        statement = ""
+        for line in schema.splitlines(keepends=True):
+            statement += line
+            if sqlite3.complete_statement(statement):
+                if statement.strip():
+                    conn.execute(statement)
+                statement = ""
+        if statement.strip():
+            raise ValueError("incomplete_isolated_adapter_schema")
+        conn.execute("INSERT INTO workflow_adapter_versions VALUES (1)")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        conn.close()
+        raise
     return conn
 
 
@@ -52,17 +92,28 @@ def _assert_service_validation(conn: sqlite3.Connection, *, principal: str, dige
         raise ValueError("wrong_submission_digest")
 
 
-def test_actual_database_initialization_preserves_historical_rows_then_adapter_installs(tmp_path: Path) -> None:
-    path = tmp_path / "historical-current.db"
-    db = Database(path)
+def test_actual_current_initialization_preserves_runtime_rows_then_adapter_installs(tmp_path: Path) -> None:
+    from runtime.config import Settings
+    from runtime.daemon.state import DaemonState
+    from runtime.runtime import RuntimeDir
+
+    runtime = RuntimeDir.init(tmp_path / "runtime")
+    root = runtime.orgs_dir / "alpha"
+    (root / "org").mkdir(parents=True)
+    (root / "org" / "teams.yaml").write_text(
+        "teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent]\n"
+    )
+    state = DaemonState.from_runtime(runtime, Settings())
+    db = state.orgs["alpha"].db
+    path = root / "happyranch.db"
     db.execute("CREATE TABLE u0_historical_marker(id TEXT PRIMARY KEY, value TEXT NOT NULL)")
-    db.execute("INSERT INTO u0_historical_marker VALUES ('v0-enrollment','preserved')")
+    db.execute("INSERT INTO u0_historical_marker VALUES ('current-control','preserved')")
     db._conn.commit()
     db.close()
     conn = _adapter(path)
     _seed(conn)
     conn.commit()
-    assert conn.execute("SELECT value FROM u0_historical_marker WHERE id='v0-enrollment'").fetchone() == ("preserved",)
+    assert conn.execute("SELECT value FROM u0_historical_marker WHERE id='current-control'").fetchone() == ("preserved",)
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
     conn.close()
@@ -195,26 +246,43 @@ def test_historical_source_inventory_is_explicit_and_corruption_stops_before_ada
 
     inventory = json.loads((Path(__file__).parents[1] / "fixtures" / "workflow_u0" / "historical_sources.json").read_text())
     assert {item["name"] for item in inventory["histories"]} == {"v0-db-backed-enrollment", "v1-flat-single-org"}
-    assert all("RuntimeDir.init" in item["initializer"] for item in inventory["histories"])
+    assert {item["status"] for item in inventory["histories"]} == {"UNAVAILABLE_AUTHENTIC_SOURCE"}
+    assert inventory["current_initializer"]["status"] == "CURRENT_CONTROL_ONLY"
+    assert "RuntimeDir.init" in inventory["current_initializer"]["initializer"]
     corrupt = tmp_path / "corrupt.db"
     corrupt.write_bytes(b"not sqlite")
     with pytest.raises(sqlite3.DatabaseError):
         _adapter(corrupt)
 
 
-def test_interrupted_adapter_install_rolls_back_then_reopens_and_replays(tmp_path: Path) -> None:
+def test_isolated_adapter_rolls_back_partial_state_then_reopens_idempotently(tmp_path: Path) -> None:
     path = tmp_path / "interrupted.db"
     Database(path).close()
     conn = sqlite3.connect(path)
     conn.execute("BEGIN")
-    conn.execute("CREATE TABLE workflow_install_marker(id TEXT PRIMARY KEY)")
+    conn.execute("CREATE TABLE workflow_adapter_versions(version INTEGER PRIMARY KEY)")
     conn.rollback()
-    assert conn.execute("SELECT name FROM sqlite_master WHERE name='workflow_install_marker'").fetchone() is None
+    assert conn.execute("SELECT name FROM sqlite_master WHERE name='workflow_adapter_versions'").fetchone() is None
     conn.close()
     installed = _adapter(path)
     _seed(installed)
     installed.commit()
     installed.close()
-    reopened = sqlite3.connect(path)
+    reopened = _adapter(path)
+    assert reopened.execute("SELECT version FROM workflow_adapter_versions").fetchall() == [(1,)]
     assert reopened.execute("SELECT count(*) FROM workflow_submissions").fetchone() == (1,)
     assert reopened.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
+def test_isolated_adapter_refuses_committed_partial_or_ambiguous_history_without_writes(tmp_path: Path) -> None:
+    path = tmp_path / "partial.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE workflow_template_drafts(id TEXT PRIMARY KEY)")
+    conn.commit()
+    before = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
+    conn.close()
+    with pytest.raises(ValueError, match="partial_or_ambiguous"):
+        _adapter(path)
+    check = sqlite3.connect(path)
+    assert check.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall() == before
+    assert check.execute("PRAGMA integrity_check").fetchone() == ("ok",)
