@@ -715,14 +715,23 @@ def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, 
         doc = diagnostic.collect("positive_failure", diagnostics_dir / "positive_failure-observation.json", 99, runner=lambda *_: diagnostic.RunResult(0, b""), window=(1, 2), now=lambda: 0)
         doc["paths"][diagnostic.PATHS[0]] = "PATH_SCALAR_CANARY"
         (diagnostics_dir / "positive_failure-observation.json").write_text(json.dumps(doc))
-    if case == "f1-bool-job":
+    if case in {"f1-bool-job", "f1-job-boolean", "f1-job-negative", "f1-present-zero", "f1-phase-mismatch"}:
         # Start with the real collector grammar, then corrupt two independent
         # producer fields.  The YAML publisher, rather than a helper call,
         # must refuse the whole malformed observation while retaining later
         # independently-produced evidence.
         bad = diagnostic.collect("positive_failure", diagnostics_dir / "positive_failure-observation.json", 9999999999, runner=_collector_runner(), window=(1, 2), now=lambda: 0)
-        bad["units"][diagnostic.UNITS[0]]["MainPID"] = True
-        bad["jobs"][diagnostic.UNITS[0]] = {"availability": "available", "records": [{"availability": "available", "unit": diagnostic.UNITS[0], "id": -1, "result": "failed"}]}
+        if case == "f1-bool-job":
+            bad["units"][diagnostic.UNITS[0]]["MainPID"] = True
+            bad["jobs"][diagnostic.UNITS[0]] = {"availability": "available", "records": [{"availability": "available", "unit": diagnostic.UNITS[0], "id": -1, "result": "failed"}]}
+        elif case == "f1-job-boolean":
+            bad["jobs"][diagnostic.UNITS[0]] = {"availability": "available", "records": [{"availability": "available", "unit": diagnostic.UNITS[0], "id": True, "result": "failed"}]}
+        elif case == "f1-job-negative":
+            bad["jobs"][diagnostic.UNITS[0]] = {"availability": "available", "records": [{"availability": "available", "unit": diagnostic.UNITS[0], "id": -1, "result": "failed"}]}
+        elif case == "f1-present-zero":
+            bad["paths"][diagnostic.PATHS[0]] = {"present": 0}
+        else:
+            bad["phase"] = "negative"
         (diagnostics_dir / "positive_failure-observation.json").write_text(json.dumps(bad))
         diagnostic.collect("positive_success", diagnostics_dir / "positive_success-observation.json", 9999999999, runner=_collector_runner(), window=(1, 2), now=lambda: 0)
     if case in {"f2", "f2-diagnostic"}: shutil.rmtree(diagnostic_checkout)
@@ -751,6 +760,25 @@ def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, 
         malformed = diagnostic.collect("positive_failure", diagnostics_dir / "positive_failure-observation.json", 9999999999, runner=_collector_runner(), window=(1, 2), now=lambda: 0)
         malformed["units"][diagnostic.UNITS[0]]["Result"] = {"wrong": "type"}
         (diagnostics_dir / "positive_failure-observation.json").write_text(json.dumps(malformed))
+        diagnostic.collect("positive_success", diagnostics_dir / "positive_success-observation.json", 9999999999, runner=_collector_runner(), window=(1, 2), now=lambda: 0)
+    if case.startswith("producer-"):
+        # These are the two original, truthful collector early-return forms.
+        # Their runner is deliberately hostile: acceptance must never rely on
+        # a query having happened before the published record is consumed.
+        calls: list[object] = []
+        def forbidden_runner(*args: object) -> diagnostic.RunResult:
+            calls.append(args)
+            raise AssertionError("original early return invoked a runner")
+        if case == "producer-expired":
+            original = diagnostic.collect("positive_failure", diagnostics_dir / "positive_failure-observation.json", 1, runner=forbidden_runner, window=(1, 2), now=lambda: 1)
+        else:
+            original = diagnostic.collect("positive_failure", diagnostics_dir / "positive_failure-observation.json", 2, runner=forbidden_runner, window=None, now=lambda: 0)
+            if case == "producer-window-extra":
+                original["opaque"] = "reject"
+            elif case == "producer-window-near-miss":
+                original["units"] = {diagnostic.UNITS[0]: {"availability": "unavailable"}}
+            (diagnostics_dir / "positive_failure-observation.json").write_text(json.dumps(original))
+        assert not calls
         diagnostic.collect("positive_success", diagnostics_dir / "positive_success-observation.json", 9999999999, runner=_collector_runner(), window=(1, 2), now=lambda: 0)
     exits["provenance"] = run("Record provenance")
     return exits, publish_dir, (tmp_path / "github-env").read_text() + "\nEFFECTS:\n" + (effect_log.read_text() if effect_log.exists() else ""), traces
@@ -806,6 +834,46 @@ def test_actual_yaml_f1_bool_and_negative_job_are_sanitized_without_losing_later
         "diagnostic-cleanup.json", "positive_failure-observation.json",
         "positive_success-observation.json", "provenance.json", "receipt.txt",
     ]
+
+
+@pytest.mark.parametrize("case", ["f1-job-boolean", "f1-job-negative", "f1-present-zero", "f1-phase-mismatch"])
+def test_actual_yaml_independent_typed_corruptions_are_unavailable_and_retain_later_phase(tmp_path: Path, case: str) -> None:
+    exits, published, _env_bytes, _traces = _actual_yaml_case(tmp_path, case)
+    assert exits["provenance"] == 0
+    assert json.loads((published / "positive_failure-observation.json").read_text()) == diagnostic._unavailable_observation("positive_failure")
+    assert json.loads((published / "positive_success-observation.json").read_text())["phase"] == "positive_success"
+
+
+@pytest.mark.parametrize(
+    ("case", "accepted"),
+    [
+        ("producer-expired", True),
+        ("producer-window", True),
+        ("producer-window-near-miss", False),
+        ("producer-window-extra", False),
+    ],
+)
+def test_actual_yaml_preserves_only_exact_original_early_return_producer_forms(
+    tmp_path: Path, case: str, accepted: bool,
+) -> None:
+    """Literal always-publisher retains exact original records and no near misses."""
+    exits, published, _env, traces = _actual_yaml_case(tmp_path, case)
+    assert exits["provenance"] == 0
+    assert "diagnostic_publication_failed" not in traces["Record provenance"]
+    original = json.loads((published / "positive_failure-observation.json").read_text())
+    later = json.loads((published / "positive_success-observation.json").read_text())
+    if accepted:
+        if case == "producer-expired":
+            assert original == {"phase": "positive_failure", "availability": "unavailable"}
+        else:
+            assert original == {
+                "phase": "positive_failure", "units": {}, "paths": {},
+                "jobs": {unit: {"availability": "unavailable", "reason": "window_unavailable"} for unit in diagnostic.UNITS},
+                "journal": {"availability": "unavailable", "reason": "window_unavailable"},
+            }
+    else:
+        assert original == diagnostic._unavailable_observation("positive_failure")
+    assert later["phase"] == "positive_success"
 
 
 def test_present_zero_is_not_the_absent_boolean_and_later_phase_survives(tmp_path: Path) -> None:

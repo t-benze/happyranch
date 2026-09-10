@@ -467,6 +467,16 @@ def _canonical_observation(value: object, *, expected_phase: str | None = None) 
     if expected_phase is not None and value["phase"] != expected_phase:
         return False
     units, paths, jobs, journal = value["units"], value["paths"], value["jobs"], value["journal"]
+    # Preserve precisely the original no-window collector early return.  It
+    # deliberately has no unit/path observations because no query ran; accept
+    # neither partial maps nor surplus producer fields through this boundary.
+    if (
+        units == {} and paths == {}
+        and isinstance(jobs, dict)
+        and jobs == {unit: {"availability": "unavailable", "reason": "window_unavailable"} for unit in UNITS}
+        and journal == {"availability": "unavailable", "reason": "window_unavailable"}
+    ):
+        return True
     if not isinstance(units, dict) or set(units) != set(UNITS) or not isinstance(paths, dict) or set(paths) != set(PATHS) or not isinstance(jobs, dict) or set(jobs) != set(UNITS):
         return False
     for item in units.values():
