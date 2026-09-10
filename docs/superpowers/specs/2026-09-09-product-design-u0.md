@@ -40,20 +40,22 @@ fencing, or cutover safety.
 
 Stage-1 helper digest remains `68f60262bb8984a9f43d4cba013c0e72f0e68907377c677ff1f97b8b333b49d2`.
 Stage-2 recovery evidence digests: recovery test
-`950d300231179cbc6026d1a0a156adef4381c2fa0d164cfb89cf4c4cc1a92f6f`,
+`52127402680480e154a7f74648586a5091d744822147b1fe04030683f8d537f6`,
 proposed DDL `b1ebb10207e89a1f1d57e79246d369545f98e4fb0107b57c65e50a60b339999d`,
 and historical-source inventory
-`453f1c813d8f82dd485c635ee0dfdeb9929f3555aef97d3a2ac9514ac42e1a33`.
+`bad48706cdeb9c54d774df6ba550c66926795d59b821705566d5e7452833434c`.
 This digest record is proposal parity only and does not replace the withheld
 study lock.
 
 R1 remains an observed shipping limitation: `TaskQueue._worker_loop` dispatches
 `run_step`, whose delegation calls self-committing `Database.try_delegate` then
 queues a child; callback and cancellation are distinct routes. R2's historical
-inventory now truthfully records that authentic whole-runtime v0 DB-backed and
-v1 flat-layout source snapshots were not supplied/acquired in this stage; it
-does not relabel the current control as historical evidence. The next stage must
-obtain source-pinned whole-runtime layouts before claiming historical upgrades.
+inventory now pins and acquires actual repository-history source objects for
+the pre-file-enrollment and pre-schema-v2 layouts. They are labelled
+`NOT_EXECUTED_HISTORICAL_RUNTIME_RESIDUAL`: source bytes do not relabel the
+current control or establish an historical upgrade. The next stage must
+construct complete source-pinned whole-runtime layouts and execute their
+supported initializers before claiming historical upgrades.
 Current control and corrupt/partial adapter inputs fail closed before any
 proposed adapter write. R5's decision packet
 must still classify every writer/reader/compensation participant and receive

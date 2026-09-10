@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import subprocess
 import threading
 from pathlib import Path
 
@@ -246,13 +247,31 @@ def test_historical_source_inventory_is_explicit_and_corruption_stops_before_ada
 
     inventory = json.loads((Path(__file__).parents[1] / "fixtures" / "workflow_u0" / "historical_sources.json").read_text())
     assert {item["name"] for item in inventory["histories"]} == {"v0-db-backed-enrollment", "v1-flat-single-org"}
-    assert {item["status"] for item in inventory["histories"]} == {"UNAVAILABLE_AUTHENTIC_SOURCE"}
+    assert {item["status"] for item in inventory["histories"]} == {"ACQUIRED_FROM_REPOSITORY_HISTORY"}
     assert inventory["current_initializer"]["status"] == "CURRENT_CONTROL_ONLY"
     assert "RuntimeDir.init" in inventory["current_initializer"]["initializer"]
     corrupt = tmp_path / "corrupt.db"
     corrupt.write_bytes(b"not sqlite")
     with pytest.raises(sqlite3.DatabaseError):
         _adapter(corrupt)
+
+
+def test_historical_sources_are_acquired_from_pinned_git_objects_not_relabelled_current_control(tmp_path: Path) -> None:
+    """Acquire actual legacy bytes; executing their runtime remains a residual."""
+    import hashlib
+    import json
+
+    inventory = json.loads((Path(__file__).parents[1] / "fixtures" / "workflow_u0" / "historical_sources.json").read_text())
+    root = subprocess.run(["git", "rev-parse", "--show-toplevel"], check=True, capture_output=True, text=True).stdout.strip()
+    for history in inventory["histories"]:
+        source = history["source"]
+        acquired = subprocess.run(["git", "show", f"{source['revision']}:{source['path']}"], cwd=root, check=True, capture_output=True).stdout
+        fixture = tmp_path / history["name"] / source["path"]
+        fixture.parent.mkdir(parents=True)
+        fixture.write_bytes(acquired)
+        assert hashlib.sha256(acquired).hexdigest() == source["sha256"]
+        assert fixture.read_bytes() == acquired
+        assert history["initializer_status"] == "NOT_EXECUTED_HISTORICAL_RUNTIME_RESIDUAL"
 
 
 def test_isolated_adapter_rolls_back_partial_state_then_reopens_idempotently(tmp_path: Path) -> None:
