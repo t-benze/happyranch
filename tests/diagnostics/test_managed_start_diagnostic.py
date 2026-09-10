@@ -683,6 +683,34 @@ def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, 
     diagnostics_dir = Path(env["DIAGNOSTICS"]); package_dir = Path(env["PACKAGE_TMP"]); publish_dir = Path(env["PUBLISH"])
     (package_dir / "happyranch-linux-amd64.tar").write_text("fixture package")
     (diagnostics_dir / "diagnostic-cleanup.json").write_text('{"cleanup":"complete"}\n')
+    # These cases deliberately remove the publisher checkout: the following
+    # `Record provenance` execution is therefore the literal inline fallback,
+    # not the frozen helper's similarly named publish command.
+    if case.startswith("fallback-"):
+        shutil.rmtree(diagnostic_checkout)
+        if case == "fallback-receipt-directory":
+            (diagnostics_dir / "receipt.txt").unlink()
+            (diagnostics_dir / "receipt.txt").mkdir()
+        elif case == "fallback-receipt-nonascii":
+            (diagnostics_dir / "receipt.txt").write_bytes(b"\xff")
+        elif case == "fallback-cleanup-oversized":
+            (diagnostics_dir / "diagnostic-cleanup.json").write_bytes(b" " * 4097)
+        elif case == "fallback-receipt-valid":
+            (diagnostics_dir / "receipt.txt").write_text("schema=managed-start-diagnostic-receipt-v1\nrun_id=20\nrun_attempt=4\nbuild_status=255\nharness_status=0\n")
+        elif case.startswith("fallback-receipt-invalid-"):
+            invalid = {
+                "schema": "schema=wrong\n",
+                "run-id": "schema=managed-start-diagnostic-receipt-v1\nrun_id=" + "1" * 21 + "\n",
+                "attempt": "schema=managed-start-diagnostic-receipt-v1\nrun_attempt=12345\n",
+                "status-high": "schema=managed-start-diagnostic-receipt-v1\nbuild_status=256\n",
+                "status-negative": "schema=managed-start-diagnostic-receipt-v1\nbuild_status=-1\n",
+                "duplicate": "schema=managed-start-diagnostic-receipt-v1\nschema=managed-start-diagnostic-receipt-v1\n",
+                "extra": "schema=managed-start-diagnostic-receipt-v1\nextra=1\n",
+            }
+            (diagnostics_dir / "receipt.txt").write_text(invalid[case.removeprefix("fallback-receipt-invalid-")])
+        elif case.startswith("fallback-write-"):
+            publish_dir.mkdir(exist_ok=True)
+            (publish_dir / case.removeprefix("fallback-write-")).mkdir()
     if case == "f1":
         doc = diagnostic.collect("positive_failure", diagnostics_dir / "positive_failure-observation.json", 99, runner=lambda *_: diagnostic.RunResult(0, b""), window=(1, 2), now=lambda: 0)
         doc["paths"][diagnostic.PATHS[0]] = "PATH_SCALAR_CANARY"
@@ -1005,3 +1033,49 @@ def test_actual_yaml_adapter_refusal_is_persisted_when_streams_and_status_are_sw
     # redirect could; the marker still exposes the finite refusal.
     _ = result.returncode, result.stderr
     assert effect_log.read_text().splitlines()[-1] == "REFUSED:fake.py"
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["fallback-receipt-directory", "fallback-receipt-nonascii", "fallback-cleanup-oversized"],
+)
+def test_actual_yaml_inline_fallback_rejects_genuine_input_errors(tmp_path: Path, case: str) -> None:
+    exits, published, _env, traces = _actual_yaml_case(tmp_path, case)
+    assert exits["provenance"] == 3
+    assert traces["Record provenance"].count("diagnostic_publication_failed") == 1
+    assert (published / "provenance.json").is_file()
+    assert not (published / "receipt.txt").exists() if "receipt" in case else (published / "receipt.txt").is_file()
+
+
+@pytest.mark.parametrize(
+    "case,blocked,retained",
+    [
+        ("fallback-write-provenance.json", "provenance.json", "receipt.txt"),
+        ("fallback-write-receipt.txt", "receipt.txt", "provenance.json"),
+        ("fallback-write-diagnostic-cleanup.json", "diagnostic-cleanup.json", "provenance.json"),
+    ],
+)
+def test_actual_yaml_inline_fallback_isolates_each_destination_write(
+    tmp_path: Path, case: str, blocked: str, retained: str,
+) -> None:
+    exits, published, _env, traces = _actual_yaml_case(tmp_path, case)
+    assert exits["provenance"] == 3
+    assert traces["Record provenance"].count("diagnostic_publication_failed") == 1
+    assert (published / blocked).is_dir()
+    assert (published / retained).is_file()
+
+
+def test_actual_yaml_inline_fallback_canonicalizes_valid_raw_receipt_bytes(tmp_path: Path) -> None:
+    exits, published, _env, _traces = _actual_yaml_case(tmp_path, "fallback-receipt-valid")
+    assert exits["provenance"] == 0
+    assert (published / "receipt.txt").read_bytes() == (
+        b"build_status=255\nharness_status=0\nrun_attempt=4\nrun_id=20\n"
+        b"schema=managed-start-diagnostic-receipt-v1\n"
+    )
+
+
+@pytest.mark.parametrize("suffix", ["schema", "run-id", "attempt", "status-high", "status-negative", "duplicate", "extra"])
+def test_actual_yaml_inline_fallback_rejects_invalid_raw_receipts(tmp_path: Path, suffix: str) -> None:
+    exits, published, _env, _traces = _actual_yaml_case(tmp_path, "fallback-receipt-invalid-" + suffix)
+    assert exits["provenance"] == 0
+    assert not (published / "receipt.txt").exists()

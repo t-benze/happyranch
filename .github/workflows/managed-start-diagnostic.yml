@@ -55,30 +55,48 @@ jobs:
           else
             python - "$publish" "$(git_id shipping)" "$(git_id diagnostic)" "$(sha diagnostic/.github/workflows/managed-start-diagnostic.yml)" "$(sha diagnostic/scripts/diagnostics/managed_start_diagnostic.py)" "$(sha diagnostic/tests/diagnostics/test_managed_start_diagnostic.py)" "$(sha "$package_tmp/happyranch-linux-amd64.tar")" "${GITHUB_RUN_ID:-}" "${GITHUB_RUN_ATTEMPT:-}" "${ImageOS:-}" "${ImageVersion:-}" "$systemd" "$diagnostics" 2>/dev/null <<'PY' || { printf '%s\n' 'diagnostic_publication_failed' >&2; exit 3; }
           import json, pathlib, re, sys
-          output = pathlib.Path(sys.argv[1]); diagnostics = pathlib.Path(sys.argv[13]); cap = 4096
+          output = pathlib.Path(sys.argv[1]); diagnostics = pathlib.Path(sys.argv[13]); cap = 4096; failed = False
           names = ("shipping", "diagnostic", "workflow", "script", "tests", "package", "run_id", "run_attempt", "runner_image", "image_version", "systemd")
           patterns = (r"[0-9a-f]{40}", r"[0-9a-f]{40}", r"[0-9a-f]{64}", r"[0-9a-f]{64}", r"[0-9a-f]{64}", r"[0-9a-f]{64}", r"[0-9]{1,20}", r"[0-9]{1,4}", r"ubuntu24|ubuntu-24\.04", r"[0-9]{8}\.[0-9]+\.[0-9]+", r"255")
           values = {key: value if len(value) <= cap and re.fullmatch(pattern, value) else "unavailable" for key, value, pattern in zip(names, sys.argv[2:13], patterns)}
-          output.mkdir(parents=True, exist_ok=True)
-          (output / "provenance.json").write_text(json.dumps({"schema": "managed-start-diagnostic-provenance-v1", **values}, sort_keys=True) + "\n", encoding="ascii")
+          try: output.mkdir(parents=True, exist_ok=True)
+          except OSError: failed = True
+          def write(name, value):
+              global failed
+              try: (output / name).write_text(value, encoding="ascii")
+              except OSError: failed = True
+          write("provenance.json", json.dumps({"schema": "managed-start-diagnostic-provenance-v1", **values}, sort_keys=True) + "\n")
           def bounded(name):
               try:
                   with (diagnostics / name).open("rb") as stream: return stream.read(cap + 1)
               except FileNotFoundError: return None
-              except OSError: return b""
+              except OSError:
+                  global failed
+                  failed = True; return None
           receipt = bounded("receipt.txt")
-          if receipt is not None and len(receipt) <= cap:
+          if receipt is not None:
+              try:
+                  if len(receipt) > cap: failed = True; receipt = None
+              except TypeError: failed = True; receipt = None
+          if receipt is not None:
               try:
                   lines = receipt.decode("ascii", "strict").splitlines(); fields = dict(line.split("=", 1) for line in lines if line.count("=") == 1)
                   valid = len(fields) == len(lines) and set(fields) <= {"schema", "run_id", "run_attempt", "build_status", "harness_status"} and fields.get("schema") == "managed-start-diagnostic-receipt-v1" and ("run_id" not in fields or re.fullmatch(r"[0-9]{1,20}", fields["run_id"])) and ("run_attempt" not in fields or re.fullmatch(r"[0-9]{1,4}", fields["run_attempt"])) and all(key not in fields or re.fullmatch(r"[0-9]{1,3}", fields[key]) and 0 <= int(fields[key]) <= 255 for key in ("build_status", "harness_status"))
-                  if valid: (output / "receipt.txt").write_text("".join(f"{key}={fields[key]}\n" for key in sorted(fields)), encoding="ascii")
-              except (UnicodeError, ValueError): pass
+                  if valid: write("receipt.txt", "".join(f"{key}={fields[key]}\n" for key in sorted(fields)))
+              except UnicodeError: failed = True
+              except ValueError: pass
           cleanup = bounded("diagnostic-cleanup.json")
-          if cleanup is not None and len(cleanup) <= cap:
+          if cleanup is not None:
+              try:
+                  if len(cleanup) > cap: failed = True; cleanup = None
+              except TypeError: failed = True; cleanup = None
+          if cleanup is not None:
               try:
                   value = json.loads(cleanup.decode("utf-8", "strict"))
-                  if value in ({"cleanup": "complete"}, {"cleanup": "failed"}): (output / "diagnostic-cleanup.json").write_text(json.dumps(value, sort_keys=True) + "\n", encoding="ascii")
-              except (UnicodeError, ValueError): pass
+                  if value in ({"cleanup": "complete"}, {"cleanup": "failed"}): write("diagnostic-cleanup.json", json.dumps(value, sort_keys=True) + "\n")
+              except UnicodeError: failed = True
+              except ValueError: pass
+          if failed: raise SystemExit(3)
           PY
           fi
       - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
