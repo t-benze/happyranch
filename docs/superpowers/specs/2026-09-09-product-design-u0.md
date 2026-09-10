@@ -47,9 +47,16 @@ and historical-source inventory
 This digest record is proposal parity only and does not replace the withheld
 study lock.
 
-R1 remains an observed shipping limitation: `TaskQueue._worker_loop` dispatches
-`run_step`, whose delegation calls self-committing `Database.try_delegate` then
-queues a child; callback and cancellation are distinct routes. R2's historical
+R1 retains an observed authority-fencing limitation. The retained queue test is
+explicitly diagnostic because it replaces `Orchestrator._run_agent`; separately,
+the contained positive control reaches the shipping queue, dispatcher, session
+binding, scratch/integrity validation, contained supervisor, `submit_completion`,
+persisted result readback, child completion, and parent revisit without replacing
+those seams. It proves that path only: authority mutation, callback ordering,
+cancellation, and chain/fanout ownership schedules remain evidence requirements,
+not implied denial guarantees. `TaskQueue._worker_loop` dispatches `run_step`, whose
+delegation calls self-committing `Database.try_delegate` then queues a child;
+callback and cancellation are distinct routes. R2's historical
 inventory now pins and acquires actual repository-history source objects for
 the pre-file-enrollment and pre-schema-v2 layouts. They are labelled
 `NOT_EXECUTED_HISTORICAL_RUNTIME_RESIDUAL`: source bytes do not relabel the
