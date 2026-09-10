@@ -43,11 +43,12 @@ def test_exported_observation_counts_real_hardlinks_and_reports_ready_dominant_r
     _manifest(workspace, "TASK-1")
     observation = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
     canonical = next(row for row in observation.buckets if row.relative_path.endswith("TASK-1"))
-    # The bucket includes root plus both names; the two names are hardlinks to
-    # the same inode but are deliberately two entries and two allocated shares.
-    assert canonical.entries >= 21
-    assert canonical.apparent_bytes >= payload.stat().st_size * len(aliases)
-    assert canonical.allocated_bytes >= payload.stat().st_blocks * 512 * len(aliases)
+    # The bucket includes its root, payload, and every one of the 20 aliases:
+    # accounting is per observed directory entry, not per unique inode.
+    names = [payload, *aliases]
+    assert canonical.entries == 1 + len(names) == 22
+    assert canonical.apparent_bytes == sum(name.stat().st_size for name in names) + root.stat().st_size
+    assert canonical.allocated_bytes == sum(name.stat().st_blocks * 512 for name in names) + root.stat().st_blocks * 512
     assert "TASK-1" in " ".join(observation.dominant)
     assert observation.complete and observation.coverage_ready
 
@@ -249,6 +250,7 @@ def test_manifest_parent_guard_is_reachable_for_literal_candidate(tmp_path: Path
     forbidden = bad_parent / "TASK-1.json"
     assert (str(bad_parent), False) in stated
     assert str(forbidden) not in attempted and str(forbidden) not in opened and str(forbidden) not in read_paths
+    assert str(forbidden) not in {path for path, _ in stated}
 
     # An inside-workspace symlink is also a rejected lexical parent.  Its
     # referent is candidate-valid, so this is not vacuously protected by a bad
@@ -263,6 +265,12 @@ def test_manifest_parent_guard_is_reachable_for_literal_candidate(tmp_path: Path
     assert (str(inside_parent), False) in stated
     assert str(inside_parent / "TASK-1.json") not in attempted
     assert str(inside_referent / "TASK-1.json") not in attempted
+    assert str(inside_parent / "TASK-1.json") not in {path for path, _ in stated}
+    # The referent remains an ordinary workspace sibling and may have metadata
+    # observed through that partition; only lexical-parent traversal is banned.
+    assert str(inside_referent / "TASK-1.json") in {path for path, _ in stated}
+    assert str(inside_parent / "TASK-1.json") not in read_paths
+    assert str(inside_referent / "TASK-1.json") not in read_paths
 
 
 def test_boot_post_open_timeout_closes_descriptor_in_each_pass(tmp_path: Path, monkeypatch: object) -> None:
@@ -425,7 +433,24 @@ def test_scandir_admits_before_each_advance_including_exhaustion_and_fixed_caps(
     proc = tmp_path / "proc"; _boot(proc)
     workspace = tmp_path / "workspace"; root = workspace / ".happyranch/task-tmp/TASK-1"; root.mkdir(parents=True)
     (root / "payload").write_text("x"); _manifest(workspace, "TASK-1")
-    monkeypatch.setattr(coverage, "MAX_READS", 1)
+    events: list[str] = []; real_admit = coverage._Budget.admit; real_scandir = coverage.os.scandir
+    class Rows:
+        def __init__(self, rows: object) -> None: self.rows = rows
+        def __enter__(self) -> "Rows": self.rows.__enter__(); return self  # type: ignore[union-attr]
+        def __exit__(self, *args: object) -> object: return self.rows.__exit__(*args)  # type: ignore[union-attr]
+        def __iter__(self) -> "Rows": return self
+        def __next__(self) -> os.DirEntry[str]: events.append("next"); return next(self.rows)  # type: ignore[arg-type]
+    def admit(self: coverage._Budget, *args: object, **kwargs: object) -> bool:
+        events.append("admit"); return real_admit(self, *args, **kwargs)
+    def scan(path: object, *args: object, **kwargs: object) -> Rows:
+        return Rows(real_scandir(path, *args, **kwargs))
+    with patch.object(coverage._Budget, "admit", admit), patch.object(coverage.os, "scandir", scan):
+        normal = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+    assert normal.complete and events.count("next") > 2
+    assert all(events[index - 1] == "admit" for index, event in enumerate(events) if event == "next")
+    # This numerical shared cap is installed before collection and reaches a
+    # directory iterator, unlike the historical boot-only MAX_READS=1 check.
+    monkeypatch.setattr(coverage, "MAX_READS", 20)
     read_capped = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
     assert "read_cap" in read_capped.reasons and not read_capped.complete
     monkeypatch.undo()
