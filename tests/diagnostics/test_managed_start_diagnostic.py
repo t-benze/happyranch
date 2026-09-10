@@ -250,7 +250,7 @@ def test_collector_persists_typed_causal_evidence_without_canary(tmp_path: Path,
     assert "q7M9zCANARY" not in persisted + capsys.readouterr().out + capsys.readouterr().err
     assert document["units"]["happyranch-tsnet-sidecar.service"]["ExecStartPre"] == [{"code": "exited", "status": 126}]
     assert document["journal"] == [{"unit": "happyranch-tsnet-sidecar.service", "cause": "credential_missing", "timestamp": 12}]
-    assert document["job"] == {"availability": "unavailable", "reason": "no_record"}
+    assert document["jobs"] == {unit: {"availability": "unavailable", "reason": "no_record"} for unit in diagnostic.UNITS}
 
 
 @pytest.mark.parametrize("malformed", [b"Result=exit-code\nResult=success\n", b"Result=q7M9zCANARY\n", b"MainPID=bad\n"])
@@ -350,17 +350,19 @@ def test_empty_optional_fields_preserve_independent_unit_state() -> None:
     assert parsed == {"Result": "success", "ActiveState": "inactive", "SubState": "dead", "MainPID": {"availability": "not_applicable"}, "ExecStartPre": {"availability": "not_applicable"}, "ExecMainStatus": {"availability": "not_applicable"}}
 
 
-def test_init_scope_job_fields_take_precedence_and_are_not_inferred_from_unit_result(tmp_path: Path) -> None:
+def test_structured_job_fields_are_retained_per_unit_and_not_inferred_from_result(tmp_path: Path) -> None:
     def runner(command: Sequence[str], _deadline: float) -> diagnostic.RunResult:
         if command[0] == "systemctl":
             return diagnostic.RunResult(0, b"Result=exit-code\nActiveState=failed\n")
         if command[-1] == "--unit=init.scope":
-            return diagnostic.RunResult(0, b'{"_SYSTEMD_UNIT":"init.scope","JOB_UNIT":"happyranch-connector.service","JOB_ID":"42","JOB_RESULT":"failed","__MONOTONIC_TIMESTAMP":"9","MESSAGE":"main exited"}\n')
+            return diagnostic.RunResult(0, b'{"_SYSTEMD_UNIT":"init.scope","JOB_UNIT":"happyranch-connector.service","JOB_ID":"42","JOB_RESULT":"failed","__MONOTONIC_TIMESTAMP":"9","MESSAGE":"main exited"}\n{"JOB_UNIT":"happyranch-managed.target","JOB_ID":"43","JOB_RESULT":"done"}\n')
         if command[0] == "journalctl":
             return diagnostic.RunResult(0, b"")
         return diagnostic.RunResult(0, b"ENOENT\n")
     document = diagnostic.collect("positive_failure", tmp_path / "observation.json", 99, runner, window=(1, 2), now=lambda: 0)
-    assert document["job"] == {"availability": "available", "unit": "happyranch-connector.service", "id": 42, "result": "failed"}
+    assert document["jobs"]["happyranch-connector.service"] == {"availability": "available", "unit": "happyranch-connector.service", "id": 42, "result": "failed"}
+    assert document["jobs"]["happyranch-managed.target"] == {"availability": "available", "unit": "happyranch-managed.target", "id": 43, "result": "done"}
+    assert document["jobs"]["happyranch-tsnet-sidecar.service"] == {"availability": "unavailable", "reason": "no_record"}
     assert document["journal"] == [{"unit": "happyranch-connector.service", "cause": "main_exited", "timestamp": 9}]
 
 
@@ -370,3 +372,67 @@ def test_metadata_enoent_only_proves_absence_and_window_is_required(tmp_path: Pa
     artifact = tmp_path / "observation.json"
     diagnostic.collect("negative", artifact, 99, _collector_runner(), window=(20, 10), now=lambda: 0)
     assert json.loads(artifact.read_text())["journal"] == {"availability": "unavailable", "reason": "window_unavailable"}
+
+
+def _observer_commands(tmp_path: Path) -> Path:
+    bin_dir = tmp_path / "observer-bin"
+    bin_dir.mkdir()
+    (bin_dir / "systemctl").write_text("""#!/usr/bin/env python3
+import sys
+print('Result=success\\nActiveState=inactive\\nSubState=dead\\nMainPID=0')
+""")
+    (bin_dir / "journalctl").write_text("""#!/usr/bin/env python3
+import json, sys
+unit = next(item[7:] for item in sys.argv if item.startswith('--unit='))
+if unit != 'init.scope': print(json.dumps({'JOB_UNIT':unit,'JOB_ID':str(len(unit)),'JOB_RESULT':'done'}))
+print(json.dumps({'_SYSTEMD_UNIT':unit if unit != 'init.scope' else 'happyranch-managed.target','__MONOTONIC_TIMESTAMP':'9','MESSAGE':'credential missing SECRET_CANARY'}))
+""")
+    (bin_dir / "sudo").write_text("""#!/usr/bin/env python3
+print('ENOENT')
+""")
+    for command in bin_dir.iterdir(): command.chmod(0o755)
+    return bin_dir
+
+
+def test_capture_cli_runs_collector_and_persists_all_three_jobs_without_canaries(tmp_path: Path) -> None:
+    artifact = tmp_path / "artifact.json"
+    bin_dir = _observer_commands(tmp_path)
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+    command = [sys.executable, str(SCRIPT), "--capture", "--phase", "positive_failure", "--window-start", "1", "--window-end", "3", "--budget-seconds", "5", "--output", str(artifact)]
+    result = subprocess.run(command, env=env, check=False, capture_output=True, text=True)
+    assert result.returncode == 0
+    document = json.loads(artifact.read_text())
+    assert set(document["jobs"]) == set(diagnostic.UNITS)
+    assert all(item["availability"] == "available" for item in document["jobs"].values())
+    assert "SECRET_CANARY" not in artifact.read_text() + result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--capture", "--phase", "nope", "--window-start", "1", "--window-end", "2", "--budget-seconds", "1"],
+    ["--capture", "--phase", "negative", "--window-start", "4", "--window-end", "2", "--budget-seconds", "1"],
+    ["--capture", "--phase", "negative", "--window-start", "1", "--window-end", "2", "--budget-seconds", "0"],
+])
+def test_capture_cli_invalid_arguments_have_zero_effects_and_no_echo(tmp_path: Path, arguments: list[str]) -> None:
+    artifact = tmp_path / "artifact.json"
+    canary = "ARGUMENT_CANARY"
+    result = subprocess.run([sys.executable, str(SCRIPT), *arguments, "--output", str(artifact), "--unexpected", canary], check=False, capture_output=True, text=True)
+    assert result.returncode == 2
+    assert not artifact.exists()
+    assert canary not in result.stdout + result.stderr
+
+
+def test_capture_cli_output_failure_is_fixed_evidence_failure(tmp_path: Path) -> None:
+    destination = tmp_path / "occupied"
+    destination.mkdir()
+    result = subprocess.run([sys.executable, str(SCRIPT), "--capture", "--phase", "negative", "--window-start", "1", "--window-end", "2", "--budget-seconds", "1", "--output", str(destination)], check=False, capture_output=True, text=True)
+    assert result.returncode == 3
+    assert not list(tmp_path.glob(".*diagnostic-tmp"))
+
+
+def test_run_bounded_reaps_when_selector_setup_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    class BrokenSelector:
+        def register(self, *_args: object) -> None: raise OSError("SELECTOR_CANARY")
+        def close(self) -> None: pass
+    monkeypatch.setattr(diagnostic.selectors, "DefaultSelector", BrokenSelector)
+    result = diagnostic.run_bounded([sys.executable, "-c", "import time; time.sleep(10)"], __import__("time").monotonic() + 2)
+    assert result.failed and result.timed_out

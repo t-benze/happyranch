@@ -24,6 +24,8 @@ PHASES = frozenset(("negative", "prepositive", "positive_failure"))
 MAX_BYTES = 4096
 MAX_LINES = 32
 MAX_RECORDS = 16
+MAX_WINDOW_SECONDS = 3600
+MAX_BUDGET_SECONDS = 60
 ALLOWED_RESULT = frozenset(("success", "exit-code", "signal", "timeout", "resources", "protocol", "unknown"))
 ALLOWED_ACTIVE = frozenset(("active", "inactive", "failed", "activating", "deactivating"))
 ALLOWED_SUB = frozenset(("running", "dead", "failed", "exited", "auto-restart", "start-pre", "start"))
@@ -58,6 +60,22 @@ def write_extraction(source: Path, output: Path) -> None:
     output.write_text(extract_startup(source.read_text()))
 
 
+def _write_document(output: Path, document: dict[str, object]) -> None:
+    """Atomically replace an artifact with already-redacted structured data."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.diagnostic-tmp")
+    try:
+        with open(temporary, "x", encoding="ascii") as handle:
+            os.chmod(temporary, 0o600)
+            handle.write(json.dumps(document, sort_keys=True, separators=(",", ":")))
+        os.replace(temporary, output)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
 class RunResult:
     """Only bounded, non-content process observations cross this boundary."""
 
@@ -87,12 +105,13 @@ def run_bounded(command: Sequence[str], deadline: float, *, now: Callable[[], fl
     except (OSError, subprocess.SubprocessError):
         return RunResult(None, failed=True)
     assert proc.stdout is not None and proc.stderr is not None
-    selector = selectors.DefaultSelector()
-    selector.register(proc.stdout, selectors.EVENT_READ)
-    selector.register(proc.stderr, selectors.EVENT_READ)
+    selector: selectors.BaseSelector | None = None
     captured = {proc.stdout: bytearray(), proc.stderr: bytearray()}
     truncated = False
     try:
+        selector = selectors.DefaultSelector()
+        selector.register(proc.stdout, selectors.EVENT_READ)
+        selector.register(proc.stderr, selectors.EVENT_READ)
         while selector.get_map():
             remaining = deadline - now()
             if remaining <= 0:
@@ -134,11 +153,13 @@ def run_bounded(command: Sequence[str], deadline: float, *, now: Callable[[], fl
     finally:
         for stream in (proc.stdout, proc.stderr):
             try:
-                selector.unregister(stream)
-            except KeyError:
+                if selector is not None:
+                    selector.unregister(stream)
+            except (AttributeError, KeyError, OSError):
                 pass
             stream.close()
-        selector.close()
+        if selector is not None:
+            selector.close()
 
 
 def _integer(value: str) -> int | None:
@@ -250,10 +271,11 @@ def _journal_records(raw: bytes) -> list[dict[str, object]]:
     return records
 
 
-def _job_record(raw: bytes) -> dict[str, object] | None:
+def _job_records(raw: bytes) -> list[dict[str, object]]:
     """Extract only a structured systemd job record; never infer it from Result."""
     if len(raw) > MAX_BYTES or raw.count(b"\n") > MAX_LINES:
-        return None
+        return []
+    records: list[dict[str, object]] = []
     for line in raw.splitlines()[:MAX_RECORDS]:
         try:
             item = json.loads(line)
@@ -263,8 +285,10 @@ def _job_record(raw: bytes) -> dict[str, object] | None:
             continue
         unit, job_id, result = item.get("JOB_UNIT") or item.get("UNIT"), item.get("JOB_ID"), item.get("JOB_RESULT")
         if unit in UNITS and isinstance(job_id, str) and (number := _integer(job_id)) is not None and isinstance(result, str) and result in {"done", "failed", "canceled", "timeout", "dependency", "skipped"}:
-            return {"availability": "available", "unit": unit, "id": number, "result": result}
-    return None
+            record = {"availability": "available", "unit": unit, "id": number, "result": result}
+            if record not in records:
+                records.append(record)
+    return records
 
 
 def collect(phase: str, output: Path, deadline: float, runner: Runner = run_bounded, *, window: tuple[int, int] | None = None, now: Callable[[], float] = time.monotonic) -> dict[str, object]:
@@ -275,12 +299,12 @@ def collect(phase: str, output: Path, deadline: float, runner: Runner = run_boun
     """
     if phase not in PHASES or deadline <= now():
         document: dict[str, object] = {"phase": phase if phase in PHASES else "unavailable", "availability": "unavailable"}
-        output.write_text(json.dumps(document, sort_keys=True))
+        _write_document(output, document)
         return document
     if window is None or not all(isinstance(item, int) and 0 <= item <= 2**63 - 1 for item in window) or window[0] > window[1]:
-        document = {"phase": phase, "units": {}, "paths": {}, "job": {"availability": "unavailable", "reason": "window_unavailable"}, "journal": {"availability": "unavailable", "reason": "window_unavailable"}}
-        output.parent.mkdir(parents=True, exist_ok=True); output.write_text(json.dumps(document, sort_keys=True)); return document
-    document = {"phase": phase, "units": {}, "paths": {}, "job": {"availability": "unavailable", "reason": "no_record"}, "journal": []}
+        document = {"phase": phase, "units": {}, "paths": {}, "jobs": {unit: {"availability": "unavailable", "reason": "window_unavailable"} for unit in UNITS}, "journal": {"availability": "unavailable", "reason": "window_unavailable"}}
+        _write_document(output, document); return document
+    document = {"phase": phase, "units": {}, "paths": {}, "jobs": {unit: {"availability": "unavailable", "reason": "no_record"} for unit in UNITS}, "journal": []}
     for unit in UNITS:
         result = runner(("systemctl", "show", unit, *PROPERTY_ARGS), deadline)
         parsed = None if result.returncode != 0 or result.timed_out or result.truncated else _properties(result.stdout)
@@ -291,31 +315,47 @@ def collect(phase: str, output: Path, deadline: float, runner: Runner = run_boun
     for unit in (*UNITS, "init.scope"):
         journal = runner(("journalctl", "--no-pager", "--output=json", f"--lines={MAX_RECORDS}", f"--since=@{window[0]}", f"--until=@{window[1]}", f"--unit={unit}"), deadline)
         if journal.returncode == 0 and not journal.timed_out and not journal.truncated:
-            job = _job_record(journal.stdout)
-            if job is not None:
-                document["job"] = job
+            for job in _job_records(journal.stdout):
+                document["jobs"][job["unit"]] = job
             for record in _journal_records(journal.stdout):
                 if record not in document["journal"]:
                     document["journal"].append(record)
-        elif document["job"] == {"availability": "unavailable", "reason": "no_record"}:
-            document["job"] = {"availability": "unavailable", "reason": "query_failed"}
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(document, sort_keys=True))
+        elif unit in UNITS and document["jobs"][unit]["reason"] == "no_record":
+            document["jobs"][unit] = {"availability": "unavailable", "reason": "query_failed"}
+    _write_document(output, document)
     return document
 
 
+class _SafeParser(argparse.ArgumentParser):
+    def error(self, _message: str) -> None:
+        self.exit(2, "invalid diagnostic arguments\n")
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = _SafeParser(add_help=False)
     parser.add_argument("--extract", action="store_true")
     parser.add_argument("--shipping", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--capture", action="store_true")
+    parser.add_argument("--phase")
+    parser.add_argument("--window-start", type=int)
+    parser.add_argument("--window-end", type=int)
+    parser.add_argument("--budget-seconds", type=int)
     args = parser.parse_args()
-    if not args.extract or args.shipping is None or args.output is None:
-        parser.error("--extract, --shipping, and --output are required")
+    if args.extract == args.capture or args.output is None:
+        parser.error("mode")
+    if args.extract and args.shipping is None:
+        parser.error("shipping")
+    if args.capture and (args.phase not in PHASES or args.window_start is None or args.window_end is None or args.budget_seconds is None or args.window_start < 0 or args.window_end < args.window_start or args.window_end - args.window_start > MAX_WINDOW_SECONDS or not 1 <= args.budget_seconds <= MAX_BUDGET_SECONDS):
+        parser.error("capture")
     try:
-        write_extraction(args.shipping, args.output)
-    except (OSError, ExtractionError) as exc:
-        parser.error(str(exc))
+        if args.extract:
+            write_extraction(args.shipping, args.output)
+        else:
+            deadline = time.monotonic() + args.budget_seconds
+            collect(args.phase, args.output, deadline, window=(args.window_start, args.window_end))
+    except (OSError, ExtractionError, ValueError, subprocess.SubprocessError):
+        return 3
     return 0
 
 
