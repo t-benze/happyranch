@@ -27,6 +27,7 @@ MAX_RECORDS = 16
 ALLOWED_RESULT = frozenset(("success", "exit-code", "signal", "timeout", "resources", "protocol", "unknown"))
 ALLOWED_ACTIVE = frozenset(("active", "inactive", "failed", "activating", "deactivating"))
 ALLOWED_SUB = frozenset(("running", "dead", "failed", "exited", "auto-restart", "start-pre", "start"))
+OPTIONAL_PROPERTIES = frozenset(("MainPID", "NRestarts", "InvocationID", "ActiveEnterTimestampMonotonic", "ExecStartPre", "ExecMainCode", "ExecMainStatus"))
 CAUSES = frozenset(("credential_missing", "credential_consumed", "exec_start_pre_failed", "main_exited", "timeout", "permission_denied"))
 # These are the five paths in the frozen harness.  The observer deliberately
 # accepts no caller-supplied paths: it reports metadata only and never opens a
@@ -186,6 +187,11 @@ def _properties(text: bytes) -> dict[str, object] | None:
         if key != "ExecStartPre" and len(raw_values) != 1:
             return None
         value = raw_values[0]
+        # `systemctl show` represents an unset optional property as an empty
+        # assignment. It must not erase independently valid state/result.
+        if key in OPTIONAL_PROPERTIES and value == "":
+            output[key] = {"availability": "not_applicable"}
+            continue
         if key == "Result" and value in ALLOWED_RESULT: output[key] = value
         elif key == "ActiveState" and value in ALLOWED_ACTIVE: output[key] = value
         elif key == "SubState" and value in ALLOWED_SUB: output[key] = value
@@ -194,7 +200,8 @@ def _properties(text: bytes) -> dict[str, object] | None:
         elif key in {"MainPID", "NRestarts", "ActiveEnterTimestampMonotonic", "ExecMainStatus"} and (number := _integer(value)) is not None: output[key] = number
         # systemctl show v255 renders ExecMainCode as the numeric wait-code.
         elif key == "ExecMainCode" and (number := _integer(value)) is not None and number in {0, 1, 2, 3}: output[key] = number
-        else: return None
+        else:
+            return None
     return output
 
 
@@ -229,7 +236,7 @@ def _journal_records(raw: bytes) -> list[dict[str, object]]:
             item = json.loads(line)
             if not isinstance(item, dict):
                 continue
-            unit = item.get("_SYSTEMD_UNIT") or item.get("UNIT") or item.get("JOB_UNIT")
+            unit = item.get("JOB_UNIT") or item.get("UNIT") or item.get("_SYSTEMD_UNIT")
             stamp = item.get("__MONOTONIC_TIMESTAMP")
             message = item.get("MESSAGE")
             if unit not in UNITS or not isinstance(stamp, str) or (number := _integer(stamp)) is None or not isinstance(message, str):
@@ -241,6 +248,23 @@ def _journal_records(raw: bytes) -> list[dict[str, object]]:
         if cause:
             records.append({"unit": unit, "cause": cause, "timestamp": number})
     return records
+
+
+def _job_record(raw: bytes) -> dict[str, object] | None:
+    """Extract only a structured systemd job record; never infer it from Result."""
+    if len(raw) > MAX_BYTES or raw.count(b"\n") > MAX_LINES:
+        return None
+    for line in raw.splitlines()[:MAX_RECORDS]:
+        try:
+            item = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(item, dict):
+            continue
+        unit, job_id, result = item.get("JOB_UNIT") or item.get("UNIT"), item.get("JOB_ID"), item.get("JOB_RESULT")
+        if unit in UNITS and isinstance(job_id, str) and (number := _integer(job_id)) is not None and isinstance(result, str) and result in {"done", "failed", "canceled", "timeout", "dependency", "skipped"}:
+            return {"availability": "available", "unit": unit, "id": number, "result": result}
+    return None
 
 
 def collect(phase: str, output: Path, deadline: float, runner: Runner = run_bounded, *, window: tuple[int, int] | None = None, now: Callable[[], float] = time.monotonic) -> dict[str, object]:
@@ -256,7 +280,7 @@ def collect(phase: str, output: Path, deadline: float, runner: Runner = run_boun
     if window is None or not all(isinstance(item, int) and 0 <= item <= 2**63 - 1 for item in window) or window[0] > window[1]:
         document = {"phase": phase, "units": {}, "paths": {}, "job": {"availability": "unavailable", "reason": "window_unavailable"}, "journal": {"availability": "unavailable", "reason": "window_unavailable"}}
         output.parent.mkdir(parents=True, exist_ok=True); output.write_text(json.dumps(document, sort_keys=True)); return document
-    document = {"phase": phase, "units": {}, "paths": {}, "job": {"availability": "unavailable", "reason": "historical_job_unavailable"}, "journal": []}
+    document = {"phase": phase, "units": {}, "paths": {}, "job": {"availability": "unavailable", "reason": "no_record"}, "journal": []}
     for unit in UNITS:
         result = runner(("systemctl", "show", unit, *PROPERTY_ARGS), deadline)
         parsed = None if result.returncode != 0 or result.timed_out or result.truncated else _properties(result.stdout)
@@ -264,12 +288,17 @@ def collect(phase: str, output: Path, deadline: float, runner: Runner = run_boun
     for path in PATHS:
         result = runner(("sudo", "-n", "python3", "-c", "import os,stat,sys; p=sys.argv[1];\ntry:\n s=os.stat(p,follow_symlinks=False); print('PRESENT:%x:%d:%d' % (stat.S_IMODE(s.st_mode),s.st_uid,s.st_gid))\nexcept OSError as e:\n print('ENOENT' if e.errno==2 else 'UNAVAILABLE'); sys.exit(0)", path), deadline)
         document["paths"][path] = _path_metadata(result)
-    for unit in UNITS:
+    for unit in (*UNITS, "init.scope"):
         journal = runner(("journalctl", "--no-pager", "--output=json", f"--lines={MAX_RECORDS}", f"--since=@{window[0]}", f"--until=@{window[1]}", f"--unit={unit}"), deadline)
         if journal.returncode == 0 and not journal.timed_out and not journal.truncated:
+            job = _job_record(journal.stdout)
+            if job is not None:
+                document["job"] = job
             for record in _journal_records(journal.stdout):
                 if record not in document["journal"]:
                     document["journal"].append(record)
+        elif document["job"] == {"availability": "unavailable", "reason": "no_record"}:
+            document["job"] = {"availability": "unavailable", "reason": "query_failed"}
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(document, sort_keys=True))
     return document

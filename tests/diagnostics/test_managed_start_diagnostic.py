@@ -250,7 +250,7 @@ def test_collector_persists_typed_causal_evidence_without_canary(tmp_path: Path,
     assert "q7M9zCANARY" not in persisted + capsys.readouterr().out + capsys.readouterr().err
     assert document["units"]["happyranch-tsnet-sidecar.service"]["ExecStartPre"] == [{"code": "exited", "status": 126}]
     assert document["journal"] == [{"unit": "happyranch-tsnet-sidecar.service", "cause": "credential_missing", "timestamp": 12}]
-    assert document["job"] == {"availability": "unavailable", "reason": "historical_job_unavailable"}
+    assert document["job"] == {"availability": "unavailable", "reason": "no_record"}
 
 
 @pytest.mark.parametrize("malformed", [b"Result=exit-code\nResult=success\n", b"Result=q7M9zCANARY\n", b"MainPID=bad\n"])
@@ -343,6 +343,25 @@ def test_systemd255_numeric_main_and_repeated_precommands_are_typed() -> None:
         b"ExecStartPre={ path=/bin/b ; code=exited ; status=0 }\n"
     )
     assert parsed == {"Result": "exit-code", "ActiveState": "inactive", "ExecMainCode": 1, "ExecMainStatus": 2, "ExecStartPre": [{"code": "killed", "status": 15}, {"code": "exited", "status": 0}]}
+
+
+def test_empty_optional_fields_preserve_independent_unit_state() -> None:
+    parsed = diagnostic._properties(b"Result=success\nActiveState=inactive\nSubState=dead\nMainPID=\nExecStartPre=\nExecMainStatus=\n")
+    assert parsed == {"Result": "success", "ActiveState": "inactive", "SubState": "dead", "MainPID": {"availability": "not_applicable"}, "ExecStartPre": {"availability": "not_applicable"}, "ExecMainStatus": {"availability": "not_applicable"}}
+
+
+def test_init_scope_job_fields_take_precedence_and_are_not_inferred_from_unit_result(tmp_path: Path) -> None:
+    def runner(command: Sequence[str], _deadline: float) -> diagnostic.RunResult:
+        if command[0] == "systemctl":
+            return diagnostic.RunResult(0, b"Result=exit-code\nActiveState=failed\n")
+        if command[-1] == "--unit=init.scope":
+            return diagnostic.RunResult(0, b'{"_SYSTEMD_UNIT":"init.scope","JOB_UNIT":"happyranch-connector.service","JOB_ID":"42","JOB_RESULT":"failed","__MONOTONIC_TIMESTAMP":"9","MESSAGE":"main exited"}\n')
+        if command[0] == "journalctl":
+            return diagnostic.RunResult(0, b"")
+        return diagnostic.RunResult(0, b"ENOENT\n")
+    document = diagnostic.collect("positive_failure", tmp_path / "observation.json", 99, runner, window=(1, 2), now=lambda: 0)
+    assert document["job"] == {"availability": "available", "unit": "happyranch-connector.service", "id": 42, "result": "failed"}
+    assert document["journal"] == [{"unit": "happyranch-connector.service", "cause": "main_exited", "timestamp": 9}]
 
 
 def test_metadata_enoent_only_proves_absence_and_window_is_required(tmp_path: Path) -> None:
