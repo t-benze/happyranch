@@ -3459,8 +3459,57 @@ def test_delegate_with_invalid_revisit_link_is_rejected(runtime, db, monkeypatch
     assert orch._queue.qsize() == 1
 
 
+@pytest.mark.parametrize("invalid_link, target_agent", [
+    ("T-OTHER-FAILED", "dev_agent"),
+    ("T-BADLINK-C1", "qa_engineer"),
+])
+def test_delegate_rejects_wrong_parent_or_agent_retry_link(
+    runtime, db, monkeypatch, invalid_link, target_agent,
+):
+    """Retry provenance must be this parent's failed child for that agent."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    for name in ("dev_agent", "qa_engineer", "engineering_head"):
+        (runtime.workspaces_dir / name).mkdir(parents=True, exist_ok=True)
+    db.insert_task(TaskRecord(
+        id="T-BADLINK", brief="parent", assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    db.insert_task(TaskRecord(
+        id="T-BADLINK-C1", brief="failed child", assigned_agent="dev_agent",
+        parent_task_id="T-BADLINK", task_type="subtask",
+    ))
+    db.insert_task(TaskRecord(
+        id="T-OTHER", brief="other parent", assigned_agent="engineering_head", task_type="task",
+    ))
+    db.insert_task(TaskRecord(
+        id="T-OTHER-FAILED", brief="foreign failure", assigned_agent="dev_agent",
+        parent_task_id="T-OTHER", task_type="subtask",
+    ))
+    for task_id in ("T-BADLINK-C1", "T-OTHER-FAILED"):
+        db.update_task(task_id, status=TaskStatus.FAILED)
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+    monkeypatch.setattr(orch, "_run_agent", lambda *args, **kwargs: (
+        _make_result(), _make_report(output_summary=json.dumps({
+            "action": "delegate", "agent": target_agent, "prompt": "bad retry",
+            "revisit_of_task_id": invalid_link,
+        })),
+    ))
+
+    orch.run_step("T-BADLINK")
+    assert db.get_children("T-BADLINK") == ["T-BADLINK-C1"]
+    assert db.get_task("T-BADLINK").status == TaskStatus.PENDING
+    assert orch._queue.qsize() == 1
+
+
 def test_fanout_retry_link_reaches_second_failure_escalation(runtime, db, monkeypatch):
-    """THR-078: retrying a failed fanout slice links its second failure."""
+    """A live sibling blocks the linked-second-failure owner wake.
+
+    Once that sibling settles, the real claim/prompt seam runs exactly once
+    and carries the failed leaf's durable context to the decision owner.
+    """
     import json
     from runtime.orchestrator.orchestrator import Orchestrator
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
@@ -3493,14 +3542,19 @@ def test_fanout_retry_link_reaches_second_failure_escalation(runtime, db, monkey
             ],
             "width_cap_ack": 2,
         },
+        {"action": "done", "summary": "owner handled linked failure"},
     ]
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
                         slug="test", teams=TeamsRegistry.load(runtime.root))
     orch._queue = _SlugQueue()
 
+    prompts: list[str] = []
+
     def fake_run_agent(task_id, agent, prompt, on_session_started=None):
         response = responses.pop(0)
-        if response["children"][0].get("revisit_of_task_id"):
+        if task_id == "T-FANOUT-RETRY":
+            prompts.append(prompt)
+        if response.get("children") and response["children"][0].get("revisit_of_task_id"):
             response["children"][0]["revisit_of_task_id"] = failed_slice_id
         return _make_result(), _make_report(output_summary=json.dumps(response))
 
@@ -3527,14 +3581,29 @@ def test_fanout_retry_link_reaches_second_failure_escalation(runtime, db, monkey
     )
     assert retry_slice.revisit_of_task_id == failed_slice.id
 
-    db.update_task(retry_slice.id, status=TaskStatus.FAILED)
+    db.update_task(retry_slice.id, status=TaskStatus.FAILED, note="terminal linked failure")
+    db.insert_task_result(
+        task_id=retry_slice.id, agent="dev_agent", session_id="fanout-retry",
+        status="failed", confidence_score=0, output_summary="terminal linked failure",
+        verdict="FAIL",
+    )
+    # The linked retry has failed, but its second-round sibling is still live:
+    # the barrier must not wake the owner prematurely.
+    queued_before_live_barrier = orch._queue.qsize()
+    _enqueue_parent_if_waiting(orch, retry_slice.id)
+    assert orch._queue.qsize() == queued_before_live_barrier
+
     db.update_task(second_round_qa.id, status=TaskStatus.COMPLETED)
     _enqueue_parent_if_waiting(orch, retry_slice.id)
+    orch.run_step("T-FANOUT-RETRY")
 
     parent = db.get_task("T-FANOUT-RETRY")
-    assert parent.status == TaskStatus.IN_PROGRESS
-    assert parent.block_kind == BlockKind.DELEGATED
-    assert orch._queue.qsize() == 5  # two rounds' children plus the owner wake
+    assert parent.status == TaskStatus.COMPLETED
+    final_prompt = prompts[-1]
+    assert f"task_id={retry_slice.id}" in final_prompt
+    assert "status=failed" in final_prompt
+    assert "verdict=FAIL" in final_prompt
+    assert "reason=terminal linked failure" in final_prompt
 
 
 def test_delegate_with_revisit_of_task_id_e2e_ceiling_wakes_owner(runtime, db, monkeypatch):

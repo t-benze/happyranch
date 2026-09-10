@@ -376,6 +376,76 @@ def test_continue_same_root_reachable_without_census_eligibility(
     assert payload["action"] == ACTION_CONTINUE_SAME_ROOT
 
 
+def test_second_failed_child_owner_proposal_reaches_real_continue_hook(
+    runtime, db, monkeypatch,
+):
+    """The owner may propose configured continuation after two real failures.
+
+    This joins the failure-to-owner path to the shipping THR-181 hook.  The
+    children fail through ``run_step``; only then does the owner propose the
+    release-controlled CONTINUE reason.  Candidate, evaluation, consumption,
+    audit and root effects must remain real rather than a static policy test.
+    """
+    for name in ("engineering_head", "dev_agent"):
+        (runtime.workspaces_dir / name).mkdir(parents=True, exist_ok=True)
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=StrictFakeAuthorityEvaluator())
+    owner_turns = 0
+
+    def run(task_id, agent, prompt, on_session_started=None):
+        nonlocal owner_turns
+        if task_id == "T-ROOT":
+            owner_turns += 1
+            if owner_turns == 1:
+                decision = {"action": "delegate", "agent": "dev_agent", "prompt": "first"}
+            elif owner_turns == 2:
+                decision = {
+                    "action": "delegate", "agent": "dev_agent", "prompt": "second",
+                    "revisit_of_task_id": db.get_children("T-ROOT")[-1],
+                }
+            else:
+                decision = {"action": "escalate", "reason": CONTINUE_REASON}
+                encoded = json.dumps(decision)
+                db.update_task("T-ROOT", current_session_id="proposal-session")
+                db.insert_task_result(
+                    task_id="T-ROOT", agent="engineering_head",
+                    session_id="proposal-session", status="completed",
+                    confidence_score=80, output_summary=encoded, decision_json=encoded,
+                )
+            return _make_result(), _make_report(output_summary=json.dumps(decision))
+        return _make_result(), _make_report(
+            output_summary="terminal child failure", status="blocked",
+        )
+
+    monkeypatch.setattr(orch, "_run_agent", run)
+    orch.run_step("T-ROOT")
+    first = db.get_children("T-ROOT")[-1]
+    orch.run_step(first)
+    assert db.get_task(first).status == TaskStatus.FAILED
+    orch.run_step("T-ROOT")
+    second = db.get_children("T-ROOT")[-1]
+    assert db.get_task(second).revisit_of_task_id == first
+    orch.run_step(second)
+    assert db.get_task(second).status == TaskStatus.FAILED
+    orch.run_step("T-ROOT")
+
+    root = db.get_task("T-ROOT")
+    assert owner_turns == 3
+    assert root.status == TaskStatus.PENDING
+    assert "authority-policy continued same root" in (root.note or "")
+    assert db.get_task(first).status == TaskStatus.FAILED
+    assert db.get_task(second).status == TaskStatus.FAILED
+    candidates = db.list_authority_candidates_for_root("T-ROOT")
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.lifecycle_state.value == "consumed"
+    assert db.get_authority_evaluation(candidate.id).disposition.value == "continue_same_root"
+    assert _authority_audit_events(db, candidate.id) == [
+        "candidate_claimed", "evaluation_recorded", "candidate_consumed",
+    ]
+    assert _escalation_rows(db, "T-ROOT") == []
+
+
 def test_continue_executes_only_the_named_same_root_action(runtime, db, monkeypatch):
     """Nothing beyond the named permitted action happens: no child, no
     supersede, no thread message, no notification, no escalation row."""
