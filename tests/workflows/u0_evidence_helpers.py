@@ -6,6 +6,7 @@ import json
 import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Protocol
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -35,27 +36,113 @@ def verify_detached_lock(manifest: dict[str, object], receipt: dict[str, str]) -
     return receipt.get("locked_manifest_sha256") == manifest["raw_manifest_sha256"] and receipt.get("reviewer") not in {None, "", "maker"}
 
 
-def accept_current_join(conn: sqlite3.Connection, *, operation_key: str, body: bytes, final_principal: str) -> str:
-    """Proposed single-owner transaction. It models, never installs, D5 semantics."""
+class JoinHooks(Protocol):
+    """Test-only deterministic observation points; never a runtime callback seam."""
+
+    def after_begin(self) -> None: ...
+
+
+def accept_current_join(
+    conn: sqlite3.Connection,
+    *,
+    operation_key: str,
+    body: bytes,
+    final_principal: str,
+    instance_id: str,
+    round_id: str,
+    hooks: JoinHooks | None = None,
+) -> str:
+    """Model a proposed *owned* join transaction; this is never production code.
+
+    Callers must provide an idle connection.  The helper owns `BEGIN IMMEDIATE`,
+    commits only its own work, and rolls that work back on every failure.
+    """
+    if conn.in_transaction:
+        raise ValueError("caller_transaction_not_allowed")
     digest = sha256_bytes(body)
-    with conn:
-        prior = conn.execute("SELECT request_digest, effect_id FROM workflow_operation_replays WHERE org_slug='org' AND principal=? AND operation_key=?", (final_principal, operation_key)).fetchone()
-        if prior:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if hooks is not None:
+            hooks.after_begin()
+        instance = conn.execute(
+            """SELECT i.status, rd.state, rd.submission_id, s.submission_digest, s.submission_bytes,
+                      b.authorization_revision_id, aa.authorization_revision_id
+               FROM workflow_instances i
+               JOIN workflow_rounds rd ON rd.instance_id=i.id
+               JOIN workflow_submissions s ON s.id=rd.submission_id AND s.instance_id=i.id
+               JOIN workflow_binding_snapshots b ON b.id=i.binding_snapshot_id
+               JOIN workflow_template_versions tv ON tv.id=b.template_version_id
+               LEFT JOIN workflow_active_authorizations aa ON aa.namespace=tv.namespace
+               WHERE i.id=? AND rd.id=?""",
+            (instance_id, round_id),
+        ).fetchone()
+        if instance is None or instance[1] != "reviewing" or instance[5] != instance[6]:
+            raise ValueError("current_binding_authority_required")
+        if sha256_bytes(instance[4]) != instance[3]:
+            raise ValueError("submitted_bytes_digest_required")
+        prior = conn.execute(
+            """SELECT request_digest, effect_id, instance_id FROM workflow_operation_replays
+               WHERE org_slug='org' AND principal=? AND operation_key=?""",
+            (final_principal, operation_key),
+        ).fetchone()
+        if prior is not None:
             if prior[0] != digest:
                 raise ValueError("operation_key_body_conflict")
+            if prior[2] != instance_id or instance[0] != "complete":
+                raise ValueError("replay_not_current")
+            conn.commit()
             return prior[1]
-        rows = conn.execute("""SELECT q.principal, q.status, q.assignment_generation, r.submission_digest, s.submission_digest
-            FROM workflow_review_requests q JOIN workflow_rounds rd ON rd.id=q.round_id
-            JOIN workflow_review_receipts r ON r.request_id=q.id
-            JOIN workflow_submissions s ON s.id=r.submission_id
-            WHERE rd.id='r' ORDER BY q.principal""").fetchall()
+        if instance[0] != "reviewing":
+            raise ValueError("instance_not_joinable")
+        rows = conn.execute(
+            """SELECT q.principal, q.status, q.assignment_generation,
+                      q.request_scope_bytes, q.request_scope_digest, r.assignment_generation,
+                      r.request_scope_digest, r.submission_id, r.submission_digest,
+                      r.outcome
+               FROM workflow_review_requests q
+               JOIN workflow_review_receipts r ON r.request_id=q.id
+               WHERE q.round_id=? ORDER BY q.principal""",
+            (round_id,),
+        ).fetchall()
         required = {"founder", "implementation", "test"}
-        if {r[0] for r in rows} != required or any(r[1] != "approved" or r[2] != 1 or r[3] != r[4] for r in rows):
+        if (
+            {row[0] for row in rows} != required
+            or len(rows) != len(required)
+            or any(
+                row[1] != "approved" or sha256_bytes(row[3]) != row[4]
+                or row[2] != row[5] or row[4] != row[6]
+                or row[7] != instance[2] or row[8] != instance[3]
+                or row[9] != "approved"
+                for row in rows
+            )
+        ):
             raise ValueError("current_three_signature_join_required")
-        makers = {r[0] for r in conn.execute("SELECT principal FROM workflow_submission_contributors WHERE submission_id='s'")}
-        if final_principal in makers:
+        contributors = {
+            row[0]
+            for row in conn.execute(
+                "SELECT principal FROM workflow_instance_contributors WHERE instance_id=?",
+                (instance_id,),
+            )
+        }
+        if final_principal in contributors:
             raise ValueError("historical_contributor_cannot_finalize")
-        receipt_id = "effect-" + digest[:12]
-        conn.execute("INSERT INTO workflow_events VALUES (?, 'i', 'joined', ?, ?, 'now')", (receipt_id, body, sha256_bytes(b"joined" + body)))
-        conn.execute("INSERT INTO workflow_operation_replays VALUES ('org', ?, ?, ?, ?)", (final_principal, operation_key, digest, receipt_id))
-        return receipt_id
+        effect_id = "effect-" + digest[:12]
+        changed = conn.execute(
+            "UPDATE workflow_instances SET status='complete' WHERE id=? AND status='reviewing'",
+            (instance_id,),
+        ).rowcount
+        if changed != 1:
+            raise ValueError("instance_not_joinable")
+        conn.execute(
+            "INSERT INTO workflow_events VALUES (?, ?, 'joined', ?, ?, 'now')",
+            (effect_id, instance_id, body, sha256_bytes(b"joined" + body)),
+        )
+        conn.execute(
+            "INSERT INTO workflow_operation_replays VALUES ('org', ?, ?, ?, ?, ?)",
+            (final_principal, operation_key, digest, instance_id, effect_id),
+        )
+        conn.commit()
+        return effect_id
+    except Exception:
+        conn.rollback()
+        raise

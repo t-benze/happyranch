@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
 
 from runtime.infrastructure.database import Database
-from tests.workflows.u0_evidence_helpers import accept_current_join
+from tests.workflows.u0_evidence_helpers import accept_current_join, sha256_bytes
 
 
 def _adapter(path: Path) -> sqlite3.Connection:
@@ -25,21 +26,26 @@ def _seed(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO workflow_active_authorizations VALUES ('eng','a')")
     conn.execute("INSERT INTO workflow_binding_snapshots VALUES ('b','v','a',X'61','b0','now')")
     conn.execute("INSERT INTO workflow_contexts VALUES ('c','b',X'61','c0','task','TASK-0')")
-    conn.execute("INSERT INTO workflow_instances VALUES ('i','b','c','TASK-ROOT','founder','reviewing')")
-    conn.execute("INSERT INTO workflow_instance_tasks VALUES ('i','TASK-1','sess-1','maker',1,'completed')")
-    conn.execute("INSERT INTO workflow_events VALUES ('e','i','submitted',X'61','e0','now')")
-    conn.execute("INSERT INTO workflow_submissions VALUES ('s','i',1,X'61','digest-r1',NULL,'TASK-1','sess-1','result-1','maker-a')")
-    conn.execute("INSERT INTO workflow_submission_contributors VALUES ('s','maker-a','TASK-1','sess-1','result-1','maker')")
-    conn.execute("INSERT INTO workflow_rounds VALUES ('r','i','s',1,'reviewing')")
+    conn.execute("INSERT INTO workflow_instances VALUES ('instance-9','b','c','TASK-ROOT','founder','reviewing')")
+    conn.execute("INSERT INTO workflow_instance_tasks VALUES ('instance-9','TASK-1','sess-1','maker',7,'completed')")
+    conn.execute("INSERT INTO workflow_events VALUES ('e','instance-9','submitted',X'61','e0','now')")
+    digest = "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+    conn.execute("INSERT INTO workflow_submissions VALUES ('submission-9','instance-9',4,X'61',?,NULL,'TASK-1','sess-1','result-1','maker-a')", (digest,))
+    conn.execute("INSERT INTO workflow_submission_contributors VALUES ('submission-9','maker-a','TASK-1','sess-1','result-1','maker')")
+    conn.execute("INSERT INTO workflow_instance_contributors VALUES ('instance-9','maker-a','TASK-1','sess-1','result-1','maker')")
+    conn.execute("INSERT INTO workflow_instance_contributors VALUES ('instance-9','maker-b','TASK-0','sess-0','result-0','maker')")
+    conn.execute("INSERT INTO workflow_rounds VALUES ('round-9','instance-9','submission-9',4,'reviewing')")
     for request, principal in (("q-founder", "founder"), ("q-implementation", "implementation"), ("q-test", "test")):
-        conn.execute("INSERT INTO workflow_review_requests VALUES (?,?,?,1,X'61',?,'approved',NULL)", (request, "r", principal, f"scope-{principal}"))
-        conn.execute("INSERT INTO workflow_review_receipts VALUES (?,?,?,?,1,X'61',?,'approved',NULL,'now')", (f"receipt-{principal}", request, "s", "digest-r1", f"proof-{principal}"))
+        scope = principal.encode()
+        scope_digest = sha256_bytes(scope)
+        conn.execute("INSERT INTO workflow_review_requests VALUES (?,?,?,7,?,?, 'approved',NULL)", (request, "round-9", principal, scope, scope_digest))
+        conn.execute("INSERT INTO workflow_review_receipts VALUES (?,?,?,?,7,?,X'61',?,'approved',NULL,'now')", (f"receipt-{principal}", request, "submission-9", digest, scope_digest, f"proof-{principal}"))
 
 
 def _assert_service_validation(conn: sqlite3.Connection, *, principal: str, digest: str) -> None:
     """Proposed service/transaction validation, deliberately not a SQLite claim."""
-    makers = {row[0] for row in conn.execute("SELECT principal FROM workflow_submission_contributors WHERE submission_id='s'")}
-    expected = conn.execute("SELECT submission_digest FROM workflow_submissions WHERE id='s'").fetchone()[0]
+    makers = {row[0] for row in conn.execute("SELECT principal FROM workflow_submission_contributors WHERE submission_id='submission-9'")}
+    expected = conn.execute("SELECT submission_digest FROM workflow_submissions WHERE id='submission-9'").fetchone()[0]
     if principal in makers:
         raise ValueError("historical_maker_cannot_review")
     if digest != expected:
@@ -68,7 +74,7 @@ def test_proposed_adapter_rejects_wrong_digest_and_records_service_only_independ
     conn = _adapter(tmp_path / "candidate.db")
     _seed(conn)
     with pytest.raises(sqlite3.IntegrityError):
-        conn.execute("INSERT INTO workflow_review_receipts VALUES ('bad','q-founder','s','wrong',1,X'61','proof-bad','approved',NULL,'now')")
+        conn.execute("INSERT INTO workflow_review_receipts VALUES ('bad','q-founder','submission-9','wrong',7,'wrong',X'61','proof-bad','approved',NULL,'now')")
     with pytest.raises(ValueError, match="historical_maker"):
         _assert_service_validation(conn, principal="maker-a", digest="digest-r1")
     with pytest.raises(ValueError, match="wrong_submission"):
@@ -79,14 +85,109 @@ def test_proposed_adapter_rejects_wrong_digest_and_records_service_only_independ
 def test_proposed_final_join_revalidates_all_current_signatures_and_exactly_once_effect(tmp_path: Path) -> None:
     conn = _adapter(tmp_path / "join.db")
     _seed(conn)
-    assert accept_current_join(conn, operation_key="join-1", body=b"same", final_principal="operator") == "effect-0967115f2813"
+    conn.commit()
+    kwargs = dict(instance_id="instance-9", round_id="round-9")
+    assert accept_current_join(conn, operation_key="join-1", body=b"same", final_principal="operator", **kwargs) == "effect-0967115f2813"
     assert conn.execute("SELECT count(*) FROM workflow_events WHERE event_kind='joined'").fetchone() == (1,)
-    assert accept_current_join(conn, operation_key="join-1", body=b"same", final_principal="operator") == "effect-0967115f2813"
+    assert accept_current_join(conn, operation_key="join-1", body=b"same", final_principal="operator", **kwargs) == "effect-0967115f2813"
     with pytest.raises(ValueError, match="body_conflict"):
-        accept_current_join(conn, operation_key="join-1", body=b"changed", final_principal="operator")
-    conn.execute("UPDATE workflow_review_requests SET assignment_generation=2 WHERE id='q-test'")
+        accept_current_join(conn, operation_key="join-1", body=b"changed", final_principal="operator", **kwargs)
+    conn.execute("UPDATE workflow_review_requests SET assignment_generation=8 WHERE id='q-test'")
+    conn.commit()
+    with pytest.raises(ValueError, match="instance_not_joinable"):
+        accept_current_join(conn, operation_key="join-2", body=b"next", final_principal="operator", **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("sql", "needle"),
+    [
+        ("UPDATE workflow_review_receipts SET assignment_generation=8 WHERE id='receipt-founder'", "three_signature"),
+        ("UPDATE workflow_review_receipts SET outcome='changes_requested' WHERE id='receipt-implementation'", "three_signature"),
+        ("UPDATE workflow_review_receipts SET request_scope_digest='wrong' WHERE id='receipt-test'", "three_signature"),
+        ("UPDATE workflow_submissions SET submission_bytes=X'62' WHERE id='submission-9'", "submitted_bytes_digest"),
+        ("UPDATE workflow_rounds SET state='superseded'", "binding_authority"),
+        ("UPDATE workflow_instances SET status='cancelled'", "instance_not_joinable"),
+        ("DELETE FROM workflow_active_authorizations", "binding_authority"),
+        ("INSERT INTO workflow_instance_contributors VALUES ('instance-9','operator','old','old','old','maker')", "historical_contributor"),
+    ],
+)
+def test_proposed_join_rejects_each_invalid_signature_or_currentness_without_residue(tmp_path: Path, sql: str, needle: str) -> None:
+    conn = _adapter(tmp_path / "negative.db")
+    _seed(conn)
+    conn.execute(sql)
+    conn.commit()
+    with pytest.raises(ValueError, match=needle):
+        accept_current_join(conn, operation_key="negative", body=b"body", final_principal="operator", instance_id="instance-9", round_id="round-9")
+    assert conn.execute("SELECT count(*) FROM workflow_events WHERE event_kind='joined'").fetchone() == (0,)
+    assert conn.execute("SELECT count(*) FROM workflow_operation_replays").fetchone() == (0,)
+    assert conn.execute("SELECT status FROM workflow_instances WHERE id='instance-9'").fetchone() != ("complete",)
+
+
+def test_proposed_join_begins_before_every_authorizing_select_and_refuses_caller_transaction(tmp_path: Path) -> None:
+    conn = _adapter(tmp_path / "trace.db")
+    _seed(conn)
+    conn.commit()
+    trace: list[str] = []
+    conn.set_trace_callback(trace.append)
+    accept_current_join(conn, operation_key="trace", body=b"trace", final_principal="operator", instance_id="instance-9", round_id="round-9")
+    authorizing = [line for line in trace if "workflow_instances" in line or "workflow_operation_replays" in line or "workflow_review_requests" in line]
+    assert trace.index("BEGIN IMMEDIATE") < min(trace.index(line) for line in authorizing)
+    other = _adapter(tmp_path / "caller.db")
+    _seed(other)
+    other.commit()
+    other.execute("BEGIN")
+    with pytest.raises(ValueError, match="caller_transaction"):
+        accept_current_join(other, operation_key="x", body=b"x", final_principal="operator", instance_id="instance-9", round_id="round-9")
+    other.rollback()
+
+
+def test_proposed_join_serializes_final_contenders_and_mutation_orders(tmp_path: Path) -> None:
+    path = tmp_path / "race.db"
+    setup = _adapter(path)
+    _seed(setup)
+    setup.commit()
+    setup.close()
+    reached, release = threading.Event(), threading.Event()
+
+    class HoldAfterBegin:
+        def after_begin(self) -> None:
+            reached.set()
+            assert release.wait(3)
+
+    winner: list[object] = []
+    def join(key: str, hooks: HoldAfterBegin | None = None) -> None:
+        conn = sqlite3.connect(path, timeout=3)
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            winner.append(accept_current_join(conn, operation_key=key, body=key.encode(), final_principal="operator", instance_id="instance-9", round_id="round-9", hooks=hooks))
+        except Exception as exc:
+            winner.append(exc)
+        finally:
+            conn.close()
+
+    first = threading.Thread(target=join, args=("winner", HoldAfterBegin()))
+    first.start()
+    assert reached.wait(3)
+    second = threading.Thread(target=join, args=("loser",))
+    second.start()
+    release.set()
+    first.join(3)
+    second.join(3)
+    assert not first.is_alive() and not second.is_alive()
+    assert sum(isinstance(item, str) for item in winner) == 1
+    assert sum(isinstance(item, ValueError) for item in winner) == 1
+    check = sqlite3.connect(path)
+    assert check.execute("SELECT count(*) FROM workflow_events WHERE event_kind='joined'").fetchone() == (1,)
+    assert check.execute("SELECT status FROM workflow_instances WHERE id='instance-9'").fetchone() == ("complete",)
+    # A mutation committed before the serialized join is seen and causes clean rejection.
+    check.close()
+    before = _adapter(tmp_path / "before.db")
+    _seed(before)
+    before.execute("UPDATE workflow_review_requests SET status='superseded' WHERE id='q-founder'")
+    before.commit()
     with pytest.raises(ValueError, match="three_signature"):
-        accept_current_join(conn, operation_key="join-2", body=b"next", final_principal="operator")
+        accept_current_join(before, operation_key="before", body=b"before", final_principal="operator", instance_id="instance-9", round_id="round-9")
+    assert before.execute("SELECT count(*) FROM workflow_events WHERE event_kind='joined'").fetchone() == (0,)
 
 
 def test_historical_source_inventory_is_explicit_and_corruption_stops_before_adapter(tmp_path: Path) -> None:
