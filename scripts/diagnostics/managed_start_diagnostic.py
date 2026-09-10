@@ -458,9 +458,11 @@ def _read_bounded(source: Path, limit: int) -> tuple[bytes | None, bool, bool]:
     return None, True, False
 
 
-def _canonical_observation(value: object) -> bool:
+def _canonical_observation(value: object, *, expected_phase: str | None = None) -> bool:
     """Recognize precisely the collector's secret-free output grammar."""
     if not isinstance(value, dict) or set(value) != {"phase", "units", "paths", "jobs", "journal"} or not isinstance(value.get("phase"), str) or value["phase"] not in PHASES:
+        return False
+    if expected_phase is not None and value["phase"] != expected_phase:
         return False
     units, paths, jobs, journal = value["units"], value["paths"], value["jobs"], value["journal"]
     if not isinstance(units, dict) or set(units) != set(UNITS) or not isinstance(paths, dict) or set(paths) != set(PATHS) or not isinstance(jobs, dict) or set(jobs) != set(UNITS):
@@ -490,7 +492,7 @@ def _canonical_observation(value: object) -> bool:
             if set(item) != {"availability", "reason"} or not isinstance(item["reason"], str) or item["reason"] not in {"no_record", "query_failed", "window_unavailable", "deadline_expired", "read_failed"}: return False
         elif item.get("availability") == "available":
             if set(item) != {"availability", "records"} or not isinstance(item["records"], list) or len(item["records"]) > MAX_RECORDS: return False
-            if any(not isinstance(record, dict) or set(record) != {"availability", "unit", "id", "result"} or record["availability"] != "available" or record["unit"] != unit or not isinstance(record["id"], int) or isinstance(record["id"], bool) or record["id"] < 0 or record["id"] > 2**63 - 1 or not isinstance(record["result"], str) or record["result"] not in {"done", "failed", "canceled", "timeout", "dependency", "skipped"} for record in item["records"]): return False
+            if any(not isinstance(record, dict) or set(record) != {"availability", "unit", "id", "result"} or record["availability"] != "available" or record["unit"] != unit or not isinstance(record["id"], int) or isinstance(record["id"], bool) or record["id"] < 0 or record["id"] > 99_999_999_999_999_999_999 or not isinstance(record["result"], str) or record["result"] not in {"done", "failed", "canceled", "timeout", "dependency", "skipped"} for record in item["records"]): return False
         else: return False
     return (isinstance(journal, dict) and set(journal) == {"availability", "reason"} and journal["availability"] == "unavailable" and isinstance(journal["reason"], str) and journal["reason"] in {"window_unavailable", "deadline_expired", "read_failed"} or isinstance(journal, list) and len(journal) <= MAX_JOURNAL_RECORDS and all(isinstance(item, dict) and set(item) == {"unit", "cause", "timestamp"} and isinstance(item["unit"], str) and item["unit"] in UNITS and isinstance(item["cause"], str) and item["cause"] in CAUSES and isinstance(item["timestamp"], int) and not isinstance(item["timestamp"], bool) and 0 <= item["timestamp"] <= 2**63 - 1 for item in journal))
 
@@ -543,7 +545,8 @@ def publish(diagnostics: Path, destination: Path, *, identities: dict[str, str |
                 key not in values or (re.fullmatch(r"[0-9]{1,3}", values[key]) and 0 <= int(values[key]) <= 255)
                 for key in statuses
             )
-            if len(values) == len(lines) and set(values) <= allowed and values.get("schema") == "managed-start-diagnostic-receipt-v1" and all(re.fullmatch(r"[0-9]{1,20}", values[key]) for key in {"run_id", "run_attempt"} & set(values)) and valid_statuses:
+            identities_valid = ("run_id" not in values or re.fullmatch(r"[0-9]{1,20}", values["run_id"])) and ("run_attempt" not in values or re.fullmatch(r"[0-9]{1,4}", values["run_attempt"]))
+            if len(values) == len(lines) and set(values) <= allowed and values.get("schema") == "managed-start-diagnostic-receipt-v1" and identities_valid and valid_statuses:
                 (destination / "receipt.txt").write_text("\n".join(f"{key}={values[key]}" for key in sorted(values)) + "\n", encoding="ascii")
         except (OSError, UnicodeError, ValueError, TypeError):
             complete = False
@@ -571,7 +574,7 @@ def publish(diagnostics: Path, destination: Path, *, identities: dict[str, str |
             value = json.loads(payload.decode("utf-8", errors="strict"))
             # The collector's only accepted artifact shape has exact top-level
             # keys. This rejects opaque/nested additions before reserialization.
-            if not _canonical_observation(value):
+            if not _canonical_observation(value, expected_phase=phase):
                 _write_document(destination / f"{phase}-observation.json", _unavailable_observation(phase)); continue
             _write_document(destination / f"{phase}-observation.json", value)
         except (OSError, UnicodeError, ValueError, TypeError):

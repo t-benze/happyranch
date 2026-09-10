@@ -53,7 +53,33 @@ jobs:
           if [[ -f "$publisher" ]]; then
             if ! python "$publisher" --publish --diagnostics "$diagnostics" --output "$publish" --identity "shipping=$(git_id shipping)" --identity "diagnostic=$(git_id diagnostic)" --identity "workflow=$(sha diagnostic/.github/workflows/managed-start-diagnostic.yml)" --identity "script=$(sha diagnostic/scripts/diagnostics/managed_start_diagnostic.py)" --identity "tests=$(sha diagnostic/tests/diagnostics/test_managed_start_diagnostic.py)" --identity "package=$(sha "$package_tmp/happyranch-linux-amd64.tar")" --identity "run_id=${GITHUB_RUN_ID:-}" --identity "run_attempt=${GITHUB_RUN_ATTEMPT:-}" --identity "runner_image=${ImageOS:-}" --identity "image_version=${ImageVersion:-}" --identity "systemd=$systemd" 2>/dev/null; then printf '%s\n' 'diagnostic_publication_failed' >&2; exit 3; fi
           else
-            python -c 'import json,pathlib,re,sys; d=pathlib.Path(sys.argv[1]); p=(r"[0-9a-f]{40}",r"[0-9a-f]{40}",r"[0-9a-f]{64}",r"[0-9a-f]{64}",r"[0-9a-f]{64}",r"[0-9a-f]{64}",r"[0-9]{1,20}",r"[0-9]{1,4}",r"ubuntu24|ubuntu-24\.04",r"[0-9]{8}\.[0-9]+\.[0-9]+",r"255"); v=[x if len(x)<=1048576 and re.fullmatch(q,x) else "unavailable" for x,q in zip(sys.argv[2:13],p)]; d.mkdir(parents=True,exist_ok=True); (d/"provenance.json").write_text(json.dumps(dict(zip(("shipping","diagnostic","workflow","script","tests","package","run_id","run_attempt","runner_image","image_version","systemd"),v))|{"schema":"managed-start-diagnostic-provenance-v1"},sort_keys=True)+"\n",encoding="ascii"); r=pathlib.Path(sys.argv[13]); x=(r/"receipt.txt").read_bytes()[:1048577] if (r/"receipt.txt").is_file() else b""; q=dict(z.split("=",1) for z in x.decode("ascii","strict").splitlines() if z.count("=")==1); ok=len(x)<=1048576 and len(q)==len(x.decode("ascii","strict").splitlines()) and set(q)<={"schema","run_id","run_attempt","build_status","harness_status"} and all(re.fullmatch(r"[0-9]{1,20}|managed-start-diagnostic-receipt-v1",z) for z in q.values()); (d/"receipt.txt").write_text("".join(f"{k}={q[k]}\\n" for k in sorted(q)),encoding="ascii") if ok else None; c=(r/"diagnostic-cleanup.json").read_bytes()[:1048577] if (r/"diagnostic-cleanup.json").is_file() else b""; z=json.loads(c.decode("utf-8","strict")) if len(c)<=1048576 and c else None; (d/"diagnostic-cleanup.json").write_text(json.dumps(z,sort_keys=True)+"\n",encoding="ascii") if z in ({"cleanup":"complete"},{"cleanup":"failed"}) else None' "$publish" "$(git_id shipping)" "$(git_id diagnostic)" "$(sha diagnostic/.github/workflows/managed-start-diagnostic.yml)" "$(sha diagnostic/scripts/diagnostics/managed_start_diagnostic.py)" "$(sha diagnostic/tests/diagnostics/test_managed_start_diagnostic.py)" "$(sha "$package_tmp/happyranch-linux-amd64.tar")" "${GITHUB_RUN_ID:-}" "${GITHUB_RUN_ATTEMPT:-}" "${ImageOS:-}" "${ImageVersion:-}" "$systemd" "$diagnostics" 2>/dev/null || { printf '%s\n' 'diagnostic_publication_failed' >&2; exit 3; }
+            python - "$publish" "$(git_id shipping)" "$(git_id diagnostic)" "$(sha diagnostic/.github/workflows/managed-start-diagnostic.yml)" "$(sha diagnostic/scripts/diagnostics/managed_start_diagnostic.py)" "$(sha diagnostic/tests/diagnostics/test_managed_start_diagnostic.py)" "$(sha "$package_tmp/happyranch-linux-amd64.tar")" "${GITHUB_RUN_ID:-}" "${GITHUB_RUN_ATTEMPT:-}" "${ImageOS:-}" "${ImageVersion:-}" "$systemd" "$diagnostics" 2>/dev/null <<'PY' || { printf '%s\n' 'diagnostic_publication_failed' >&2; exit 3; }
+          import json, pathlib, re, sys
+          output = pathlib.Path(sys.argv[1]); diagnostics = pathlib.Path(sys.argv[13]); cap = 1048576
+          names = ("shipping", "diagnostic", "workflow", "script", "tests", "package", "run_id", "run_attempt", "runner_image", "image_version", "systemd")
+          patterns = (r"[0-9a-f]{40}", r"[0-9a-f]{40}", r"[0-9a-f]{64}", r"[0-9a-f]{64}", r"[0-9a-f]{64}", r"[0-9a-f]{64}", r"[0-9]{1,20}", r"[0-9]{1,4}", r"ubuntu24|ubuntu-24\.04", r"[0-9]{8}\.[0-9]+\.[0-9]+", r"255")
+          values = {key: value if len(value) <= cap and re.fullmatch(pattern, value) else "unavailable" for key, value, pattern in zip(names, sys.argv[2:13], patterns)}
+          output.mkdir(parents=True, exist_ok=True)
+          (output / "provenance.json").write_text(json.dumps({"schema": "managed-start-diagnostic-provenance-v1", **values}, sort_keys=True) + "\n", encoding="ascii")
+          def bounded(name):
+              try:
+                  with (diagnostics / name).open("rb") as stream: return stream.read(cap + 1)
+              except FileNotFoundError: return None
+              except OSError: return b""
+          receipt = bounded("receipt.txt")
+          if receipt is not None and len(receipt) <= cap:
+              try:
+                  lines = receipt.decode("ascii", "strict").splitlines(); fields = dict(line.split("=", 1) for line in lines if line.count("=") == 1)
+                  valid = len(fields) == len(lines) and set(fields) <= {"schema", "run_id", "run_attempt", "build_status", "harness_status"} and fields.get("schema") == "managed-start-diagnostic-receipt-v1" and ("run_id" not in fields or re.fullmatch(r"[0-9]{1,20}", fields["run_id"])) and ("run_attempt" not in fields or re.fullmatch(r"[0-9]{1,4}", fields["run_attempt"])) and all(key not in fields or re.fullmatch(r"[0-9]{1,3}", fields[key]) and 0 <= int(fields[key]) <= 255 for key in ("build_status", "harness_status"))
+                  if valid: (output / "receipt.txt").write_text("".join(f"{key}={fields[key]}\n" for key in sorted(fields)), encoding="ascii")
+              except (UnicodeError, ValueError): pass
+          cleanup = bounded("diagnostic-cleanup.json")
+          if cleanup is not None and len(cleanup) <= cap:
+              try:
+                  value = json.loads(cleanup.decode("utf-8", "strict"))
+                  if value in ({"cleanup": "complete"}, {"cleanup": "failed"}): (output / "diagnostic-cleanup.json").write_text(json.dumps(value, sort_keys=True) + "\n", encoding="ascii")
+              except (UnicodeError, ValueError): pass
+          PY
           fi
       - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         if: always()
