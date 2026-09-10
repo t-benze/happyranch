@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { test, expect } from 'vitest';
@@ -52,7 +52,7 @@ test('root with no orgs redirects to the get-started onboarding surface', async 
   );
 });
 
-test('prototype threads detail keeps its fixture-assisted shell, inbox navigation, theme, and exit controls', async () => {
+test('prototype threads index reaches its inbox and selected detail before the shell inbox destination', async () => {
   const requests: string[] = [];
   const record = ({ request }: { request: Request }) => {
     const url = new URL(request.url);
@@ -66,8 +66,9 @@ test('prototype threads detail keeps its fixture-assisted shell, inbox navigatio
   server.use(
     http.get('/api/v1/auth/bootstrap', () => HttpResponse.json({ token: 'prototype-test-token' })),
     http.get('/api/v1/orgs/demo-org/tokens', () => HttpResponse.json({ rollup: [] })),
+    http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [] })),
   );
-  renderWithProviders(<AppRoutes />, { route: '/__prototypes/threads-v2/THR-001' });
+  renderWithProviders(<AppRoutes />, { route: '/__prototypes' });
   const user = userEvent.setup();
 
   try {
@@ -77,19 +78,39 @@ test('prototype threads detail keeps its fixture-assisted shell, inbox navigatio
       expect(screen.getByRole('navigation', { name: 'Primary navigation' })).toBeInTheDocument();
       expect(screen.queryByLabelText('Open assistant')).not.toBeInTheDocument();
       expect(screen.getByLabelText(/Switch to (light|dark) theme/i)).toBeInTheDocument();
-      expect(screen.getByText('Q4 venue research — Macau pavilions')).toBeInTheDocument();
-      expect(screen.getByRole('link', { name: 'Threads' })).toHaveAttribute('href', '/__prototypes/threads-v2');
+      expect(screen.getByRole('heading', { name: 'Prototypes' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: '/__prototypes/threads-v2' })).toBeInTheDocument();
     });
     await user.click(screen.getByLabelText(/Switch to (light|dark) theme/i));
-    expect(screen.getByLabelText(/Switch to (light|dark) theme/i)).toBeInTheDocument();
-    await user.click(screen.getByRole('link', { name: 'Threads' }));
-    await waitFor(() => expect(screen.getByText('Prototype sandbox')).toBeInTheDocument());
-    await waitFor(() =>
-      expect(requests).toEqual([
-        '/api/v1/auth/bootstrap',
-        '/api/v1/orgs/demo-org/tokens?group_by=thread&thread_id=THR-001',
-      ]),
-    );
+    expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+    expect(screen.getByLabelText('Switch to light theme')).toBeInTheDocument();
+    await user.click(screen.getByRole('link', { name: '/__prototypes/threads-v2' }));
+    await waitFor(() => {
+      expect(screen.getByText('Q4 venue research — Macau pavilions')).toBeInTheDocument();
+    });
+    const selectedThread = screen.getByText('Q4 venue research — Macau pavilions').closest('a');
+    expect(selectedThread).toHaveAttribute('href', '/__prototypes/threads-v2/THR-001');
+    await user.click(selectedThread!);
+    await waitFor(() => expect(screen.getByText(/Short-list draft attached/)).toBeInTheDocument());
+    // This is the complete selected-detail phase, before navigation/Exit. The
+    // synthetic bootstrap/token fixtures above keep this boundary explicit;
+    // they do not imply auth isolation or a zero-network prototype.
+    expect(requests).toEqual([
+      '/api/v1/auth/bootstrap',
+      '/api/v1/orgs/demo-org/tokens?group_by=thread&thread_id=THR-001',
+    ]);
+    const primaryNavigation = screen.getByRole('navigation', { name: 'Primary navigation' });
+    const threadsNavigation = within(primaryNavigation).getByRole('link', { name: 'Threads' });
+    expect(threadsNavigation).toHaveAttribute('href', '/__prototypes/threads-v2');
+    await user.click(threadsNavigation);
+    await waitFor(() => expect(screen.getByRole('heading', { name: /Conversations across the org/i })).toBeInTheDocument());
+    expect(screen.queryByText(/Short-list draft attached/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('link', { name: 'Exit' }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: /Connect your agentic CLI/i })).toBeInTheDocument());
+    expect(screen.queryByText('Prototype sandbox')).not.toBeInTheDocument();
+    // The root redirect legitimately reads orgs after Exit; it is outside the
+    // selected-detail request array asserted above.
+    expect(requests.slice(2)).toEqual(['/api/v1/orgs']);
   } finally {
     server.events.removeListener('request:start', record);
   }

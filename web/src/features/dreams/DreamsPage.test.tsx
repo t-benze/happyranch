@@ -357,6 +357,35 @@ describe('DreamsPage', () => {
     expect(screen.getByText('product_lead · 2026-06-18')).toBeDefined();
     // Candidate should be visible
     expect(screen.getByText('Spanish after-hours routing')).toBeDefined();
+
+    const detail = screen.getByRole('dialog');
+    expect(within(detail).getByText('Completed')).toHaveClass(
+      'text-overline',
+      'text-accent-text',
+    );
+  });
+
+  it.each([
+    [DREAM_WITH_CANDIDATES, 'Completed', 'text-accent-text'],
+    [FAILED_DREAM, 'Failed', 'text-feedback-danger'],
+    [MISSED_DREAM, 'Missed', 'text-text-muted'],
+  ])('renders the real detail badge with approved %s status typography', (dream, label, colour) => {
+    mockDreamsList.mockReturnValue(loaded({ dreams: [dream] }));
+    mockDream.mockReturnValue(loaded({ ...DREAM_DETAIL_RESPONSE, ...dream }));
+    renderPage(<DreamsPage />);
+
+    fireEvent.click(screen.getByText(dream.dream_id).closest('button')!);
+
+    expect(within(screen.getByRole('dialog')).getByText(label)).toHaveClass('text-overline', colour);
+  });
+
+  it('renders list badges in the approved accent, danger, and neutral families', () => {
+    mockDreamsList.mockReturnValue(loaded({ dreams: [QUIET_DREAM, FAILED_DREAM, MISSED_DREAM] }));
+    renderPage(<DreamsPage />);
+
+    expect(screen.getByText('Completed')).toHaveClass('text-overline', 'text-accent-text');
+    expect(screen.getByText('Failed')).toHaveClass('text-overline', 'text-feedback-danger');
+    expect(screen.getByText('Missed')).toHaveClass('text-overline', 'text-text-muted');
   });
 
   it('closes detail drawer on second click of same card', () => {

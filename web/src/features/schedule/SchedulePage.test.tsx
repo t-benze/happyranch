@@ -2,8 +2,10 @@ import { screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
+import { Route, Routes } from 'react-router-dom';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
+import { SchedulePage } from './SchedulePage';
 import type { WorkHourRecord } from '@/lib/api/types';
 
 const SLUG = 'alpha';
@@ -88,6 +90,47 @@ function defaultEntries(): WorkHourRecord[] {
 }
 
 describe('THR-035: wake-execution list (consolidated into Work Hours Wakes view)', () => {
+  test('directly mounts the retired SchedulePage and retains all three status-pill families', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedWorkHours([
+      ...defaultEntries(),
+      { ...defaultEntries()[0], work_hour_id: 'WORKHOUR-DANGER', status: 'failed', error: 'long retained failure detail' },
+      { ...defaultEntries()[0], work_hour_id: 'WORKHOUR-NEUTRAL', status: 'skipped' },
+    ]);
+    renderWithProviders(
+      <Routes>
+        <Route path="/orgs/:slug/schedule" element={<SchedulePage />} />
+      </Routes>,
+      { route: `/orgs/${SLUG}/schedule` },
+    );
+
+    await waitFor(() => {
+      screen.getAllByText('Completed').forEach((badge) => {
+        expect(badge).toHaveClass('text-overline', 'text-accent-text');
+      });
+      expect(screen.getByText('Failed')).toHaveClass('text-overline', 'text-feedback-danger');
+      expect(screen.getByText('Skipped')).toHaveClass('text-overline', 'text-text-muted');
+    });
+  });
+
+  test('live Work Hours Wakes route retains all three status-pill families', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    seedWorkHours([
+      ...defaultEntries(),
+      { ...defaultEntries()[0], work_hour_id: 'WORKHOUR-DANGER', status: 'timeout', error: 'long retained timeout detail' },
+      { ...defaultEntries()[0], work_hour_id: 'WORKHOUR-NEUTRAL', status: 'skipped' },
+    ]);
+    mountAt(`/orgs/${SLUG}/work-hours?view=wakes`);
+
+    await waitFor(() => {
+      screen.getAllByText('Completed').forEach((badge) => {
+        expect(badge).toHaveClass('text-overline', 'text-accent-text');
+      });
+      expect(screen.getByText('Timed out')).toHaveClass('text-overline', 'text-feedback-danger');
+      expect(screen.getByText('Skipped')).toHaveClass('text-overline', 'text-text-muted');
+    });
+  });
+
   test('/schedule redirects to work-hours Wakes view (no 404)', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     seedWorkHours();
