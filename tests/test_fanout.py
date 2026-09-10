@@ -1894,11 +1894,16 @@ class TestMutatingFanout:
         )
         _enqueue_parent_if_waiting(orch, second_leg_id)
 
-        # Chain should complete → mutating child completes (via carrier-complete)
+        # A decision-capable fan-out child is an owner, not a passive pipeline
+        # carrier.  A successful inline chain returns it to its own decision
+        # step; it must not silently complete and settle the outer barrier.
         mutating_child = db.get_task(mutating_child_id)
-        assert mutating_child.status == TaskStatus.COMPLETED, (
-            f"mutating child should be COMPLETED after chain finishes, got {mutating_child.status}"
+        assert mutating_child.status == TaskStatus.IN_PROGRESS, (
+            f"mutating child should wake for its own decision after chain finishes, got {mutating_child.status}"
         )
+        assert mutating_child.block_kind == BlockKind.DELEGATED
+        assert mutating_child.active_chain is None
+        assert q.get_nowait() == ("test", mutating_child_id)
 
     # ── Test 3: fan-out parent waits for mutating child ──
 
