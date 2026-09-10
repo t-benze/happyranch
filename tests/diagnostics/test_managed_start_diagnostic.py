@@ -360,8 +360,8 @@ def test_structured_job_fields_are_retained_per_unit_and_not_inferred_from_resul
             return diagnostic.RunResult(0, b"")
         return diagnostic.RunResult(0, b"ENOENT\n")
     document = diagnostic.collect("positive_failure", tmp_path / "observation.json", 99, runner, window=(1, 2), now=lambda: 0)
-    assert document["jobs"]["happyranch-connector.service"] == {"availability": "available", "unit": "happyranch-connector.service", "id": 42, "result": "failed"}
-    assert document["jobs"]["happyranch-managed.target"] == {"availability": "available", "unit": "happyranch-managed.target", "id": 43, "result": "done"}
+    assert document["jobs"]["happyranch-connector.service"] == {"availability": "available", "records": [{"availability": "available", "unit": "happyranch-connector.service", "id": 42, "result": "failed"}]}
+    assert document["jobs"]["happyranch-managed.target"] == {"availability": "available", "records": [{"availability": "available", "unit": "happyranch-managed.target", "id": 43, "result": "done"}]}
     assert document["jobs"]["happyranch-tsnet-sidecar.service"] == {"availability": "unavailable", "reason": "no_record"}
     assert document["journal"] == [{"unit": "happyranch-connector.service", "cause": "main_exited", "timestamp": 9}]
 
@@ -384,7 +384,11 @@ print('Result=success\\nActiveState=inactive\\nSubState=dead\\nMainPID=0')
     (bin_dir / "journalctl").write_text("""#!/usr/bin/env python3
 import json, sys
 unit = next(item[7:] for item in sys.argv if item.startswith('--unit='))
-if unit != 'init.scope': print(json.dumps({'JOB_UNIT':unit,'JOB_ID':str(len(unit)),'JOB_RESULT':'done'}))
+if unit == 'happyranch-managed.target':
+    for job_id in ('41', '42', '42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53', '54', '55', '56', '57', '58'):
+        print(json.dumps({'JOB_UNIT':unit,'JOB_ID':job_id,'JOB_RESULT':'done'}))
+elif unit != 'init.scope':
+    print(json.dumps({'JOB_UNIT':unit,'JOB_ID':str(len(unit)),'JOB_RESULT':'done'}))
 print(json.dumps({'_SYSTEMD_UNIT':unit if unit != 'init.scope' else 'happyranch-managed.target','__MONOTONIC_TIMESTAMP':'9','MESSAGE':'credential missing SECRET_CANARY'}))
 """)
     (bin_dir / "sudo").write_text("""#!/usr/bin/env python3
@@ -394,17 +398,51 @@ print('ENOENT')
     return bin_dir
 
 
-def test_capture_cli_runs_collector_and_persists_all_three_jobs_without_canaries(tmp_path: Path) -> None:
+def test_capture_cli_positive_success_persists_bounded_distinct_jobs_without_canaries(tmp_path: Path) -> None:
     artifact = tmp_path / "artifact.json"
     bin_dir = _observer_commands(tmp_path)
     env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
-    command = [sys.executable, str(SCRIPT), "--capture", "--phase", "positive_failure", "--window-start", "1", "--window-end", "3", "--budget-seconds", "5", "--output", str(artifact)]
+    command = [sys.executable, str(SCRIPT), "--capture", "--phase", "positive_success", "--window-start", "1", "--window-end", "3", "--budget-seconds", "5", "--output", str(artifact)]
     result = subprocess.run(command, env=env, check=False, capture_output=True, text=True)
     assert result.returncode == 0
     document = json.loads(artifact.read_text())
     assert set(document["jobs"]) == set(diagnostic.UNITS)
     assert all(item["availability"] == "available" for item in document["jobs"].values())
+    target = document["jobs"]["happyranch-managed.target"]["records"]
+    assert [record["id"] for record in target] == list(range(41, 57))
+    assert len({record["id"] for record in target}) == len(target) == diagnostic.MAX_RECORDS
     assert "SECRET_CANARY" not in artifact.read_text() + result.stdout + result.stderr
+
+
+def test_collector_preserves_earlier_job_when_later_unit_query_fails(tmp_path: Path) -> None:
+    calls = 0
+    def runner(command: Sequence[str], _deadline: float) -> diagnostic.RunResult:
+        nonlocal calls
+        if command[0] == "systemctl":
+            return diagnostic.RunResult(0, b"Result=exit-code\nActiveState=failed\n")
+        if command[0] == "sudo":
+            return diagnostic.RunResult(0, b"ENOENT\n")
+        calls += 1
+        if calls == 1:
+            return diagnostic.RunResult(0, b'{"JOB_UNIT":"happyranch-connector.service","JOB_ID":"7","JOB_RESULT":"failed"}\n')
+        if calls == 2:
+            return diagnostic.RunResult(1, b"LATER_QUERY_CANARY")
+        return diagnostic.RunResult(0, b"")
+    artifact = tmp_path / "observation.json"
+    document = diagnostic.collect("positive_failure", artifact, 99, runner, window=(1, 2), now=lambda: 0)
+    persisted = artifact.read_text()
+    assert document["jobs"]["happyranch-connector.service"] == {"availability": "available", "records": [{"availability": "available", "unit": "happyranch-connector.service", "id": 7, "result": "failed"}]}
+    assert document["jobs"]["happyranch-tsnet-sidecar.service"] == {"availability": "unavailable", "reason": "query_failed"}
+    assert "LATER_QUERY_CANARY" not in persisted
+
+
+def test_collector_marks_all_failed_queries_and_missing_records_explicitly(tmp_path: Path) -> None:
+    def runner(command: Sequence[str], _deadline: float) -> diagnostic.RunResult:
+        if command[0] == "systemctl": return diagnostic.RunResult(0, b"Result=success\n")
+        if command[0] == "sudo": return diagnostic.RunResult(0, b"ENOENT\n")
+        return diagnostic.RunResult(1)
+    document = diagnostic.collect("positive_success", tmp_path / "observation.json", 99, runner, window=(1, 2), now=lambda: 0)
+    assert document["jobs"] == {unit: {"availability": "unavailable", "reason": "query_failed"} for unit in diagnostic.UNITS}
 
 
 @pytest.mark.parametrize("arguments", [

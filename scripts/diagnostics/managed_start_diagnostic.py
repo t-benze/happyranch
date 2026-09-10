@@ -20,7 +20,7 @@ FIRST_POSITIVE = "sudo systemctl start happyranch-managed.target\n"
 # current tree.  Refuse even boundary-preserving substitutions.
 FROZEN_SHIPPING_SHA256 = "f63c0e5eef23468a454b896a24515a6db62fdf674cb8bffd250ca7a0477d2301"
 UNITS = ("happyranch-managed.target", "happyranch-tsnet-sidecar.service", "happyranch-connector.service")
-PHASES = frozenset(("negative", "prepositive", "positive_failure"))
+PHASES = frozenset(("negative", "prepositive", "positive_failure", "positive_success"))
 MAX_BYTES = 4096
 MAX_LINES = 32
 MAX_RECORDS = 16
@@ -276,7 +276,7 @@ def _job_records(raw: bytes) -> list[dict[str, object]]:
     if len(raw) > MAX_BYTES or raw.count(b"\n") > MAX_LINES:
         return []
     records: list[dict[str, object]] = []
-    for line in raw.splitlines()[:MAX_RECORDS]:
+    for line in raw.splitlines()[:MAX_LINES]:
         try:
             item = json.loads(line)
         except (TypeError, ValueError):
@@ -286,7 +286,7 @@ def _job_records(raw: bytes) -> list[dict[str, object]]:
         unit, job_id, result = item.get("JOB_UNIT") or item.get("UNIT"), item.get("JOB_ID"), item.get("JOB_RESULT")
         if unit in UNITS and isinstance(job_id, str) and (number := _integer(job_id)) is not None and isinstance(result, str) and result in {"done", "failed", "canceled", "timeout", "dependency", "skipped"}:
             record = {"availability": "available", "unit": unit, "id": number, "result": result}
-            if record not in records:
+            if record not in records and len(records) < MAX_RECORDS:
                 records.append(record)
     return records
 
@@ -316,11 +316,16 @@ def collect(phase: str, output: Path, deadline: float, runner: Runner = run_boun
         journal = runner(("journalctl", "--no-pager", "--output=json", f"--lines={MAX_RECORDS}", f"--since=@{window[0]}", f"--until=@{window[1]}", f"--unit={unit}"), deadline)
         if journal.returncode == 0 and not journal.timed_out and not journal.truncated:
             for job in _job_records(journal.stdout):
-                document["jobs"][job["unit"]] = job
+                jobs = document["jobs"]
+                existing = jobs[job["unit"]]
+                records = [] if existing["availability"] == "unavailable" else existing["records"]
+                if job not in records and len(records) < MAX_RECORDS:
+                    records.append(job)
+                jobs[job["unit"]] = {"availability": "available", "records": records}
             for record in _journal_records(journal.stdout):
                 if record not in document["journal"]:
                     document["journal"].append(record)
-        elif unit in UNITS and document["jobs"][unit]["reason"] == "no_record":
+        elif unit in UNITS and document["jobs"][unit]["availability"] == "unavailable" and document["jobs"][unit]["reason"] == "no_record":
             document["jobs"][unit] = {"availability": "unavailable", "reason": "query_failed"}
     _write_document(output, document)
     return document
