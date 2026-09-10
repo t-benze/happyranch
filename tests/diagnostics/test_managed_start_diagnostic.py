@@ -668,7 +668,7 @@ def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, 
     # makes `cd` fail before builder37 and produces false evidence.
     (shipping_checkout / "app/linux/tsnet-sidecar").mkdir(parents=True)
     effect_log = tmp_path / "effects.log"
-    image_version = "20260907." + "9" * 10_000 + ".0" if case == "metadata-overlong" else "20260907.1.0"
+    image_version = "20260907." + "9" * 10_000 + ".0" if case in {"metadata-overlong", "fallback-metadata-overlong"} else "20260907.1.0"
     env = dict(os.environ, PATH=str(bin_dir), RUNNER_TEMP=str(tmp_path), GITHUB_WORKSPACE=str(tmp_path), GITHUB_ENV=str(tmp_path / "github-env"), GITHUB_RUN_ID="1234", GITHUB_RUN_ATTEMPT="1", ImageOS="ubuntu24", ImageVersion=image_version, SHIPPING_SHA="2147c5c6edb5d847e4c0ca855a044fa850fd7e11", CANDIDATE_SHA="672b584b891e1375802f0e907b3276569badcff3", PYTHONDONTWRITEBYTECODE="1", EFFECT_LOG=str(effect_log))
     traces: dict[str, str] = {}
     def run(name: str, cwd: Path = tmp_path) -> int:
@@ -695,6 +695,10 @@ def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, 
             (diagnostics_dir / "receipt.txt").write_bytes(b"\xff")
         elif case == "fallback-cleanup-oversized":
             (diagnostics_dir / "diagnostic-cleanup.json").write_bytes(b" " * 4097)
+        elif case == "fallback-metadata-overlong":
+            # The actual fallback must independently retain valid diagnostic
+            # records when runner metadata is unavailable.
+            pass
         elif case == "fallback-receipt-valid":
             (diagnostics_dir / "receipt.txt").write_text("schema=managed-start-diagnostic-receipt-v1\nrun_id=20\nrun_attempt=4\nbuild_status=255\nharness_status=0\n")
         elif case.startswith("fallback-receipt-invalid-"):
@@ -1045,6 +1049,31 @@ def test_actual_yaml_f2_initializer_env_failure_skips_normal_steps_but_runs_alwa
     assert not (occupied_publish / "provenance.json").exists()
 
 
+def test_actual_yaml_initializer_env_failure_has_independent_writable_inline_fallback(tmp_path: Path) -> None:
+    """A failed GITHUB_ENV append still permits only the truthful always fallback."""
+    blocks = _diagnostic_workflow_blocks()
+    github_env = tmp_path / "github-env"; github_env.mkdir()
+    bin_dir = tmp_path / "bin"; bin_dir.mkdir(); fake = _write_workflow_adapter(tmp_path)
+    for name in ("git", "systemctl", "uv", "bash", "go"): (bin_dir / name).symlink_to(fake)
+    for name in ("mkdir", "sha256sum", "awk", "grep", "sed", "cp", "find"): (bin_dir / name).symlink_to(Path("/usr/bin") / name)
+    (bin_dir / "python").symlink_to("/usr/bin/python3")
+    effect_log = tmp_path / "effects.log"
+    env = dict(os.environ, PATH=str(bin_dir), RUNNER_TEMP=str(tmp_path), GITHUB_WORKSPACE=str(tmp_path), GITHUB_ENV=str(github_env), GITHUB_RUN_ID="1234", GITHUB_RUN_ATTEMPT="1", ImageOS="ubuntu24", ImageVersion="20260907.1.0", EFFECT_LOG=str(effect_log), PYTHONDONTWRITEBYTECODE="1")
+    init = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", blocks["Initialize failure-safe diagnostic receipt"]], cwd=tmp_path, env=env, check=False, capture_output=True, text=True)
+    assert init.returncode != 0
+    # No checkout, package, cleanup, or ordinary-step fixture is supplied:
+    # this is the exact missing-checkout inline fallback, not helper evidence.
+    always = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", blocks["Record provenance"]], cwd=tmp_path, env=env, check=False, capture_output=True, text=True)
+    published = tmp_path / "managed-start-publish"
+    assert always.returncode == 0
+    assert effect_log.read_text().splitlines() == ["systemctl --version"]
+    assert (published / "receipt.txt").read_bytes() == b"run_attempt=1\nrun_id=1234\nschema=managed-start-diagnostic-receipt-v1\n"
+    provenance = json.loads((published / "provenance.json").read_text())
+    assert provenance == {"schema": "managed-start-diagnostic-provenance-v1", "shipping": "unavailable", "diagnostic": "unavailable", "workflow": "unavailable", "script": "unavailable", "tests": "unavailable", "package": "unavailable", "run_id": "1234", "run_attempt": "1", "runner_image": "ubuntu24", "image_version": "20260907.1.0", "systemd": "255"}
+    assert not (published / "diagnostic-cleanup.json").exists()
+    assert sorted(path.name for path in published.iterdir()) == ["provenance.json", "receipt.txt"]
+
+
 def test_actual_yaml_f3_nonfinal_sync37_records_original_status(tmp_path: Path) -> None:
     exits, published, _env_bytes, traces = _actual_yaml_case(tmp_path, "f5")
     # Re-run the exact build block with only its first admitted effect failing;
@@ -1112,7 +1141,13 @@ def test_actual_yaml_inline_fallback_rejects_genuine_input_errors(tmp_path: Path
     assert exits["provenance"] == 3
     assert traces["Record provenance"].count("diagnostic_publication_failed") == 1
     assert (published / "provenance.json").is_file()
-    assert not (published / "receipt.txt").exists() if "receipt" in case else (published / "receipt.txt").is_file()
+    if "receipt" in case:
+        assert not (published / "receipt.txt").exists()
+        assert (published / "diagnostic-cleanup.json").read_bytes() == b'{"cleanup": "complete"}\n'
+    else:
+        assert (published / "receipt.txt").read_bytes() == b"run_attempt=1\nrun_id=1234\nschema=managed-start-diagnostic-receipt-v1\n"
+        assert not (published / "diagnostic-cleanup.json").exists()
+    assert sorted(path.name for path in published.iterdir()) == (["diagnostic-cleanup.json", "provenance.json"] if "receipt" in case else ["provenance.json", "receipt.txt"])
 
 
 @pytest.mark.parametrize(
@@ -1130,7 +1165,50 @@ def test_actual_yaml_inline_fallback_isolates_each_destination_write(
     assert exits["provenance"] == 3
     assert traces["Record provenance"].count("diagnostic_publication_failed") == 1
     assert (published / blocked).is_dir()
+    expected = {"provenance.json", "receipt.txt", "diagnostic-cleanup.json"} - {blocked}
+    assert {path.name for path in published.iterdir()} == expected | {blocked}
     assert (published / retained).is_file()
+    for sibling in expected:
+        assert (published / sibling).is_file()
+    if "receipt.txt" in expected:
+        assert (published / "receipt.txt").read_bytes() == b"run_attempt=1\nrun_id=1234\nschema=managed-start-diagnostic-receipt-v1\n"
+    if "diagnostic-cleanup.json" in expected:
+        assert (published / "diagnostic-cleanup.json").read_bytes() == b'{"cleanup": "complete"}\n'
+    if "provenance.json" in expected:
+        assert json.loads((published / "provenance.json").read_text())["shipping"] == "2147c5c6edb5d847e4c0ca855a044fa850fd7e11"
+
+
+def test_actual_yaml_inline_fallback_child_path_reads_are_bounded_and_independent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Trace the inline child itself; the helper's in-process main is absent."""
+    trace = tmp_path / "inline-open.log"
+    (tmp_path / "sitecustomize.py").write_text("""import os, pathlib
+target = pathlib.Path(os.environ['TRACE_DIAGNOSTICS'])
+log = os.environ['INLINE_OPEN_LOG']
+original = pathlib.Path.open
+class Stream:
+    def __init__(self, stream, path): self.stream, self.path = stream, path
+    def __enter__(self): return self
+    def __exit__(self, *args): self.stream.close()
+    def read(self, size=-1):
+        with open(log, 'a', encoding='ascii') as output: output.write(self.path.name + ':' + str(size) + '\\n')
+        return self.stream.read(size)
+def traced(path, *args, **kwargs):
+    stream = original(path, *args, **kwargs)
+    return Stream(stream, path) if path.parent == target else stream
+pathlib.Path.open = traced
+""")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path) + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    monkeypatch.setenv("TRACE_DIAGNOSTICS", str(tmp_path / "managed-start-diagnostic"))
+    monkeypatch.setenv("INLINE_OPEN_LOG", str(trace))
+    exits, published, _env, traces = _actual_yaml_case(tmp_path, "fallback-metadata-overlong")
+    assert exits["provenance"] == 0
+    assert "diagnostic_publication_failed" not in traces["Record provenance"]
+    requests = [line.split(":", 1) for line in trace.read_text().splitlines()]
+    assert requests and {name for name, _size in requests} == {"receipt.txt", "diagnostic-cleanup.json"}
+    assert all(0 < int(size) <= 4097 for _name, size in requests)
+    assert json.loads((published / "provenance.json").read_text())["image_version"] == "unavailable"
+    assert (published / "receipt.txt").is_file()
+    assert (published / "diagnostic-cleanup.json").is_file()
 
 
 def test_actual_yaml_inline_fallback_canonicalizes_valid_raw_receipt_bytes(tmp_path: Path) -> None:
