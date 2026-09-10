@@ -143,7 +143,8 @@ def _rejection_snapshot(org, state, token: str) -> dict[str, object]:
         "task": task.model_dump(mode="json"),
         "all_tasks": _durable_rows(org.db, "tasks"),
         "results": org.db.get_task_results("T-1"),
-        "children": [child.model_dump(mode="json") for child in org.db.get_children("T-1")],
+        "children": [org.db.get_task(child_id).model_dump(mode="json")
+                     for child_id in org.db.get_children("T-1")],
         "invocation": invocation.model_dump(mode="json") if invocation else None,
         "invocations": _durable_rows(org.db, "thread_invocations"),
         "open_notifications": org.db.list_open_notifications_for_task("T-1"),
@@ -155,6 +156,12 @@ def _rejection_snapshot(org, state, token: str) -> dict[str, object]:
         # retain it separately from audit rows rather than relabeling audit.
         "result_intents": _durable_rows(org.db, "task_results"),
         "thread_envelope": [message.model_dump(mode="json") for message in org.db.list_thread_messages("THR-1")],
+        # The active-envelope reader alone deliberately omits terminal and
+        # historical envelope rows.  Keep the raw durable surfaces separate.
+        "thread_row": _durable_rows(org.db, "threads", "WHERE id = ?", ("THR-1",)),
+        "thread_rows": _durable_rows(org.db, "threads"),
+        "thread_messages": _durable_rows(org.db, "thread_messages"),
+        "authority_envelope_rows": _durable_rows(org.db, "authority_continue_envelopes"),
         "authority_envelope": org.db.get_active_authority_continue_envelope("T-1"),
         "queues": _queue_contents(state, org),
     }
@@ -189,8 +196,13 @@ def _presence_values(field: str) -> list[tuple[str, object]]:
         "policy_id": "THR-166-genuine-human-blocker", "policy_version": "1",
         "policy_provenance": "founder:THR-166:seq-29",
         "continuation_class": "repair_review_reverify_reevaluate_original_gate",
+        # These values are copied from _frozen_formerly_valid_continue.  They
+        # are valid *field* values, not a claim that a partial request is a
+        # complete formerly-valid THR-166 request.
         "attestation_checks": ["evidence_terminal_fresh_and_consistent"],
-        "evidence": [{"task_id": "T-1", "terminal_status": "completed"}],
+        "evidence": [{"task_id": "T-1", "terminal_status": "completed",
+                      "verdict": "REQUEST_CHANGES",
+                      "output_summary": "review found bounded repair work"}],
         "invocation_token": "formerly-valid-token", "dispatcher": "engineering_head",
     }
     malformed: dict[str, object] = {
@@ -332,12 +344,16 @@ async def test_retired_rejection_survives_close_reopen_and_preserves_historical_
     org.db.close()
     reopened = Database(db_path)
     try:
-        assert reopened.get_task("T-1").status is TaskStatus.ESCALATED
-        assert reopened.get_invocation_any_status(token).status is ThreadInvocationStatus.PENDING
-        assert reopened.get_task_results("T-1") == before["results"]
-        assert reopened.get_audit_logs("T-1") == before["task_audit"]
-        assert reopened.get_audit_logs("THR-1") == before["thread_audit"]
-        assert [message.model_dump(mode="json") for message in reopened.list_thread_messages("THR-1")] == before["thread_envelope"]
+        reopened_snapshot = _rejection_snapshot(
+            type("Org", (), {"db": reopened, "thread_queue": org.thread_queue})(),
+            client.app.state.daemon, token,
+        )
+        # Queues are in-memory; they were compared before close.  Every
+        # persisted reader, including historical authority envelopes and the
+        # full thread record, remains byte-for-byte readable after reopen.
+        assert {key: value for key, value in reopened_snapshot.items() if key != "queues"} == {
+            key: value for key, value in before.items() if key != "queues"
+        }
     finally:
         reopened.close()
 
@@ -355,6 +371,93 @@ async def test_thread_agent_continue_is_retired_without_legacy_fields(client_wit
     assert response.json()["detail"]["code"] == "retired_autonomous_continuation"
     assert org.db.get_task("T-1").status is TaskStatus.ESCALATED
     assert org.db.get_invocation_any_status(token).status is ThreadInvocationStatus.PENDING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "context,request_token,setup",
+    [
+        ("pending", "frozen", None),
+        ("consumed", "frozen", "consume"),
+        ("stale_token", "stale-token", None),
+        ("wrong_token_owner", "wrong-owner-token", "wrong_owner"),
+        ("wrong_token_thread", "wrong-thread-token", "wrong_thread"),
+        ("repeated_identical_replay", "frozen", None),
+        ("missing_causal", "frozen", "missing_causal"),
+        ("unrelated_causal", "frozen", "unrelated_causal"),
+        ("malformed_causal", "frozen", "malformed_causal"),
+        ("root_task", "frozen", None),
+        ("non_root_task", "frozen", "non_root"),
+        ("cancelled_task", "frozen", "cancelled"),
+        ("live_child", "frozen", "live_child"),
+    ],
+    ids=lambda cell: str(cell),
+)
+async def test_retired_contexts_reject_before_both_shared_resolver_lookups(
+    client_with_runtime, monkeypatch, context, request_token, setup,
+):
+    """Each formerly-live context is rejected before auth/lineage/fallback.
+
+    The thread request transports an invocation token; task ingress treats
+    that same key as retired envelope evidence.  Both therefore prove the
+    source ``tasks.resolve_escalation_in_process`` lookup is unreachable.
+    """
+    client, org = client_with_runtime
+    payload, frozen_token = _frozen_formerly_valid_continue(org, monkeypatch)
+    actual_token = frozen_token if request_token == "frozen" else request_token
+    if setup == "consume":
+        org.db.consume_invocation(frozen_token)
+    elif setup == "wrong_owner":
+        actual_token = org.db.mint_thread_invocation(
+            thread_id="THR-1", agent_name="other_manager", triggering_seq=1,
+            purpose=ThreadInvocationPurpose.REPLY,
+        ).invocation_token
+    elif setup == "wrong_thread":
+        org.db.insert_thread(ThreadRecord(id="THR-OTHER", subject="Other", status=ThreadStatus.OPEN))
+        org.db.add_thread_participant("THR-OTHER", "engineering_head", added_by="founder")
+        actual_token = org.db.mint_thread_invocation(
+            thread_id="THR-OTHER", agent_name="engineering_head", triggering_seq=1,
+            purpose=ThreadInvocationPurpose.REPLY,
+        ).invocation_token
+    elif setup == "non_root":
+        org.db.update_task("T-1", parent_task_id="PARENT")
+    elif setup == "cancelled":
+        org.db.update_task("T-1", status=TaskStatus.CANCELLED)
+    elif setup == "live_child":
+        org.db.insert_task(TaskRecord(id="T-CHILD", brief="live", parent_task_id="T-1"))
+    elif setup in {"missing_causal", "unrelated_causal", "malformed_causal"}:
+        # Isolated additional records model absent/unrelated/malformed causal
+        # evidence without mutating the frozen valid record.
+        marker = "missing" if setup == "missing_causal" else setup
+        org.db.insert_audit_log("THR-1", "founder", "causal_fixture_marker", {"context": marker})
+    token = actual_token
+    state = client.app.state.daemon
+    state.queue.put_nowait("alpha", f"SENTINEL-{context}")
+    before = _rejection_snapshot(org, state, frozen_token)
+    from runtime.daemon.routes import tasks
+    calls: list[object] = []
+
+    async def resolver_spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("retired context reached shared resolver")
+
+    monkeypatch.setattr(tasks, "resolve_escalation_in_process", resolver_spy)
+    thread_payload = {**payload, "invocation_token": token}
+    task_payload = {"decision": "continue", "rationale": "retired", "policy_id": payload["policy_id"],
+                    "invocation_token": token, "dispatcher": "engineering_head"}
+    for route, body in (
+        ("/api/v1/orgs/alpha/threads/THR-1/resolve-escalation", thread_payload),
+        ("/api/v1/orgs/alpha/tasks/T-1/resolve-escalation", task_payload),
+    ):
+        response = client.post(route, json=body)
+        assert response.status_code == 410, (context, route, response.text)
+        assert response.json()["detail"] == {"code": "retired_autonomous_continuation"}
+        assert _rejection_snapshot(org, state, frozen_token) == before
+    if context == "repeated_identical_replay":
+        replay = client.post("/api/v1/orgs/alpha/threads/THR-1/resolve-escalation", json=thread_payload)
+        assert replay.status_code == 410
+        assert _rejection_snapshot(org, state, frozen_token) == before
+    assert calls == []
 
 
 @pytest.mark.asyncio
