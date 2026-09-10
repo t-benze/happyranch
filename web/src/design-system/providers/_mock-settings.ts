@@ -1,9 +1,8 @@
 /**
  * Mock implementation of `SettingsApi` for the prototype sandbox.
  *
- * Returns a static, realistic fixture so the TopBar-mounted SettingsDialog
- * can render without a real daemon. Prototype users see a read-only
- * preview — no backend calls, no org routing.
+ * Retained for direct SettingsDialog tests; no application or prototype route
+ * mounts that dialog. The fixture remains read-only and makes no backend calls.
  */
 import { vi } from 'vitest';
 import type { SettingsApi, QueryLike } from './DataContext';

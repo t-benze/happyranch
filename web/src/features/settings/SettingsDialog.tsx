@@ -2,7 +2,7 @@
  * Settings dialog — System (read-only) + Org (editable in Phase 2)
  * + System Assistant (read-only status glance).
  *
- * Opened from a button in the TopBar. Renders three sections:
+ * Retained unmounted/test-only compatibility component. Renders three sections:
  * - System Assistant: read-only status glance + a link to the one place that
  *   configures the assistant (Settings → Assistant). All setup/register/repair
  *   logic lives in features/settings/sections/AssistantSection.tsx — the dialog
@@ -480,7 +480,7 @@ function BooleanToggle({
 }
 
 // ----------------------------------------------------------------
-// TopBar trigger button
+// Prototype settings trigger button
 // ----------------------------------------------------------------
 
 export function SettingsTriggerButton({

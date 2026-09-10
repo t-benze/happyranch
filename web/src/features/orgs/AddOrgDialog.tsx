@@ -1,5 +1,5 @@
 /**
- * Add Org dialog — opened from the TopBar.
+ * Add Org dialog — retained for its existing standalone callers.
  *
  * Slug-only form, posts to POST /api/v1/orgs. On success the orgs list
  * query is invalidated and the user navigates to `/orgs/<new>/threads`.

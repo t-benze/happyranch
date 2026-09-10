@@ -5,7 +5,7 @@
  * inside `routes.tsx`). Called by compositions through
  * `@/hooks/threads.useThreadRoutes()`.
  *
- * Uses the **optional** slug variant so layout chrome (`TopBar`) can call us
+ * Uses the **optional** slug variant so layout chrome can call us
  * from above the `<OrgProvider>` boundary — e.g. on the `/` index route
  * before redirect — without throwing. When no slug is in scope, `inbox` and
  * `detail` return `'#'`, which renders the NavLink as inert.

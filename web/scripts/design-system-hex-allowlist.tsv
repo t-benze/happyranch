@@ -1,6 +1,4 @@
 # path<TAB>line<TAB>column<TAB>value<TAB>specific temporary reason
-design-system/layouts/AppShell/TopBar.tsx	90	28	#4ade80	Retired TopBar Brandmark residue preserved until the later approved cleanup unit
-design-system/layouts/AppShell/TopBar.tsx	113	34	#4ade80	Retired TopBar Happy wordmark residue preserved until the later approved cleanup unit
 design-system/patterns/KbdChip.tsx	19	210	rgba(0,0,0,0.4)	Existing inset-key shadow residue frozen pending a separately reviewed token migration
 design-system/primitives/Dialog.tsx	38	27	bg-black/60	Existing modal scrim palette utility frozen pending a separately reviewed semantic-token migration
 features/settings/SettingsDialog.tsx	474	59	bg-white	Existing checked-control foreground utility frozen pending a separately reviewed semantic-token migration

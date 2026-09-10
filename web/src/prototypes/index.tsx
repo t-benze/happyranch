@@ -14,7 +14,8 @@
  */
 import { lazy, Suspense } from 'react';
 import { Link, Outlet, Route } from 'react-router-dom';
-import { TopBar } from '@/design-system/layouts/AppShell/TopBar';
+import { AppBar } from '@/design-system/layouts/AppShell/AppBar';
+import { Sidebar } from '@/design-system/layouts/AppShell/Sidebar';
 import { PrototypeProvider } from '@/design-system/providers/PrototypeProvider';
 
 const ThreadsV2Screen = lazy(() =>
@@ -63,12 +64,15 @@ export function prototypeRoutes(): JSX.Element {
 function PrototypesLayout(): JSX.Element {
   return (
     <PrototypeProvider>
-      <div className="flex h-full flex-col">
-        <PrototypeBanner />
-        <TopBar />
-        <main className="flex-1 overflow-hidden">
-          <Outlet />
-        </main>
+      <div className="flex h-full min-w-0">
+        <Sidebar />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <PrototypeBanner />
+          <AppBar showAssistantControl={false} />
+          <main className="min-h-0 flex-1 overflow-hidden">
+            <Outlet />
+          </main>
+        </div>
       </div>
     </PrototypeProvider>
   );

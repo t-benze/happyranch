@@ -41,7 +41,7 @@ import { useGlobalJump } from '@/hooks/global-jump';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 
 /**
- * IA-1: Grouped left sidebar + desktop window chrome, retiring the ~9-tab TopBar.
+ * IA-1: Grouped left sidebar + desktop window chrome, retiring the legacy tab bar.
  *
  * THR-030 chrome alignment (BUG-01..08):
  *  - Top: context header (wordmark + org context line + caret) doubling as the
@@ -81,7 +81,7 @@ export function Sidebar(): JSX.Element {
   const summary = useDashboardSummary().data;
   const orgAgeDays = summary?.org_age_days;
 
-  // Global jump chords — reused from TopBar verbatim
+  // Global jump chords retained with the sidebar navigation.
   useGlobalJump('d', () => {
     if (activeSlug && !isPrototype) navigate(`/orgs/${activeSlug}/dashboard`);
   });
@@ -202,7 +202,7 @@ export function Sidebar(): JSX.Element {
         </SidebarNavItem>
         <SidebarNavItem
           to={routes.inboxForOrg(activeSlug ?? '')}
-          enabled={!!activeSlug && !isPrototype}
+          enabled={!!activeSlug}
           icon={MessageSquare}
         >
           Threads

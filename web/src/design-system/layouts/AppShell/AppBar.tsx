@@ -42,7 +42,12 @@ function pageTitleFromPath(pathname: string): string {
   return (section && SECTION_TITLES[section]) || 'Home';
 }
 
-export function AppBar(): JSX.Element {
+export interface AppBarProps {
+  /** Prototypes have no AssistantDockHost, so they omit its unavailable control. */
+  showAssistantControl?: boolean;
+}
+
+export function AppBar({ showAssistantControl = true }: AppBarProps): JSX.Element {
   const location = useLocation();
   const title = pageTitleFromPath(location.pathname);
 
@@ -50,15 +55,17 @@ export function AppBar(): JSX.Element {
     <div className="border-border bg-bg-subtle flex h-12 shrink-0 items-center gap-4 border-b px-5">
       <span className="text-fg text-sm font-medium">{title}</span>
       <div className="ml-auto flex items-center gap-2">
-        <button
-          type="button"
-          data-assistant-open="true"
-          aria-label="Open assistant"
-          title="Open assistant"
-          className="bg-accent text-accent-fg hover:bg-accent-hover focus-visible:ring-accent inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:outline-none"
-        >
-          <Bot size={16} aria-hidden="true" />
-        </button>
+        {showAssistantControl && (
+          <button
+            type="button"
+            data-assistant-open="true"
+            aria-label="Open assistant"
+            title="Open assistant"
+            className="bg-accent text-accent-fg hover:bg-accent-hover focus-visible:ring-accent inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:outline-none"
+          >
+            <Bot size={16} aria-hidden="true" />
+          </button>
+        )}
         <ThemeToggle />
       </div>
     </div>
