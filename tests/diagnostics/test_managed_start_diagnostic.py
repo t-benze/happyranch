@@ -22,11 +22,20 @@ spec.loader.exec_module(diagnostic)
 def test_literal_extraction_retains_pinned_setup_helpers_and_startup() -> None:
     source = SHIPPING.read_text()
     assert hashlib.sha256(source.encode()).hexdigest() == diagnostic.FROZEN_SHIPPING_SHA256
+    literal = diagnostic.extract_literal_startup(source)
     rendered = diagnostic.extract_startup(source)
     start = source.index(diagnostic.START)
     probe = source.index(diagnostic.PROBE, start)
     positive = source.index(diagnostic.FIRST_POSITIVE, probe)
-    assert rendered == source[:start] + source[start : positive + len(diagnostic.FIRST_POSITIVE)]
+    literal_startup = source[:start] + source[start : positive + len(diagnostic.FIRST_POSITIVE)]
+    assert literal == literal_startup
+    assert 'python "$evidence_driver" finalize' not in rendered
+    assert 'python "$evidence_driver" validate "$evidence_artifact"' not in rendered
+    assert 'diagnostic_capture negative || true' in rendered
+    assert 'diagnostic_capture prepositive || true' in rendered
+    assert 'diagnostic_capture positive_success || true' in rendered
+    assert 'diagnostic_capture positive_failure || true' in rendered
+    assert 'trap diagnostic_exit EXIT' in rendered
     for required in ("capture_denial_matrix() {", "reset_shipping_unit() {", "shipping_cleanup() {", "validate-denial-matrix", "socket.AF_NETLINK", "socket.SOCK_RAW", "/dev/net/tun", "create_connection"):
         assert required in rendered
     assert '[[ "$(systemctl show happyranch-tsnet-sidecar.service -p MainPID --value)" == 0 ]]' in rendered
@@ -71,6 +80,17 @@ def test_cli_writes_literal_shell_and_bash_parses_it(tmp_path: Path) -> None:
     assert output.read_text() == diagnostic.extract_startup(SHIPPING.read_text())
     result = subprocess.run(["bash", "-n", str(output)], check=False, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_emitted_shell_uses_absolute_observer_and_preserves_first_start_status(tmp_path: Path) -> None:
+    rendered = diagnostic.extract_startup(SHIPPING.read_text())
+    assert str(SCRIPT.resolve()) in rendered
+    assert 'set +e\nsudo systemctl start happyranch-managed.target\ndiagnostic_first_positive_status=$?' in rendered
+    assert 'exit "$diagnostic_first_positive_status"' in rendered
+    assert 'diagnostic_cleanup_done=0' in rendered
+    assert 'diagnostic_cleanup "$status"' in rendered
+    assert 'diagnostic-cleanup.json' in rendered
+    assert 'diagnostics="${N3_DIAGNOSTICS_DIR:-$(mktemp -d)}"' in rendered
 
 
 def _shipping_function(source: str, name: str, successor: str) -> str:

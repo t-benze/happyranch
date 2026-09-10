@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import selectors
+import shlex
 import signal
 import subprocess
 import time
@@ -41,8 +42,8 @@ class ExtractionError(ValueError):
     """The immutable subject is not the expected shipping harness."""
 
 
-def extract_startup(source: str, *, expected_digest: str = FROZEN_SHIPPING_SHA256) -> str:
-    """Return literal setup/helpers plus startup through the first real start."""
+def extract_literal_startup(source: str, *, expected_digest: str = FROZEN_SHIPPING_SHA256) -> str:
+    """Return the digest-pinned shipping setup through its first real start."""
     if hashlib.sha256(source.encode()).hexdigest() != expected_digest:
         raise ExtractionError("unexpected shipping source digest")
     if source.count(START) != 1 or source.count(PROBE) != 1:
@@ -53,6 +54,67 @@ def extract_startup(source: str, *, expected_digest: str = FROZEN_SHIPPING_SHA25
     if first < 0 or source.find(FIRST_POSITIVE, first + len(FIRST_POSITIVE)) < 0:
         raise ExtractionError("missing or ambiguous first positive start")
     return source[:start] + source[start : first + len(FIRST_POSITIVE)]
+
+
+def extract_startup(source: str, *, expected_digest: str = FROZEN_SHIPPING_SHA256) -> str:
+    """Insert only the diagnostic observation/cleanup envelope in pinned bytes."""
+    literal = extract_literal_startup(source, expected_digest=expected_digest)
+    start = source.index(START)
+    first = source.find(FIRST_POSITIVE, source.index(PROBE, start) + len(PROBE))
+    trap_anchor = "trap cleanup EXIT INT TERM\n"
+    finalize_anchor = '''  if (( original_status == 0 && cleanup_failed == 0 )); then
+    python "$evidence_driver" finalize "$evidence_artifact" || cleanup_failed=1
+    python "$evidence_driver" validate "$evidence_artifact" --expected-subject "$PROOF_SUBJECT_SHA" --expected-run "$run_id" || cleanup_failed=1
+  fi
+'''
+    exit_anchor = '''  trap - EXIT INT TERM
+  (( original_status != 0 )) && exit "$original_status"
+  exit "$cleanup_failed"
+'''
+    if source.count(trap_anchor) != 1 or source.count(finalize_anchor) != 1 or source.count(exit_anchor) != 1:
+        raise ExtractionError("unexpected cleanup anchors")
+    prefix = literal[:start]
+    prefix = prefix.replace("  local original_status=$? cleanup_failed=0", "  local cleanup_failed=0", 1)
+    prefix = prefix.replace(finalize_anchor, "", 1).replace(exit_anchor, "  return \"$cleanup_failed\"\n", 1)
+    observer = shlex.quote(str(Path(__file__).resolve()))
+    envelope = f'''\n# diagnostic-only envelope: this never finalizes/validates full N3 evidence.
+diagnostic_capture() {{
+  local phase="$1" status=0 now
+  now="$(date +%s)"
+  "$DIAGNOSTIC_OBSERVER" --capture --phase "$phase" --window-start "$now" --window-end "$now" --budget-seconds 5 --output "$diagnostics/$phase-observation.json" >/dev/null 2>&1 || status=$?
+  return "$status"
+}}
+diagnostic_cleanup() {{
+  local original_status="$1" cleanup_status=0
+  (( diagnostic_cleanup_done == 0 )) || return 0
+  diagnostic_cleanup_done=1
+  cleanup || cleanup_status=$?
+  printf '{{"cleanup":"%s"}}\\n' "$([[ $cleanup_status == 0 ]] && printf complete || printf failed)" >"$diagnostics/diagnostic-cleanup.json" || cleanup_status=1
+  (( original_status != 0 )) && return "$original_status"
+  return "$cleanup_status"
+}}
+diagnostic_exit() {{ local status=$?; trap - EXIT INT TERM; diagnostic_cleanup "$status"; exit $?; }}
+diagnostic_signal() {{ trap - INT TERM; exit 130; }}
+DIAGNOSTIC_OBSERVER={observer}
+diagnostic_cleanup_done=0
+trap diagnostic_exit EXIT
+trap diagnostic_signal INT TERM
+'''
+    startup = literal[start : first + len(FIRST_POSITIVE)]
+    startup = startup.replace(FIRST_POSITIVE, '''set +e
+sudo systemctl start happyranch-managed.target
+diagnostic_first_positive_status=$?
+set -e
+if (( diagnostic_first_positive_status == 0 )); then
+  diagnostic_capture positive_success || true
+else
+  diagnostic_capture positive_failure || true
+fi
+exit "$diagnostic_first_positive_status"
+''', 1)
+    startup = startup.replace("sudo systemctl start happyranch-managed.target || true\nsleep 2", "sudo systemctl start happyranch-managed.target || true\nsleep 2\ndiagnostic_capture negative || true", 1)
+    startup = startup.replace("capture_denial_matrix shipping-unit\n", "capture_denial_matrix shipping-unit\ndiagnostic_capture prepositive || true\n", 1)
+    return prefix.replace(trap_anchor, envelope, 1) + startup
 
 
 def write_extraction(source: Path, output: Path) -> None:
