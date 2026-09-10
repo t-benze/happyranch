@@ -3028,15 +3028,12 @@ def test_fanout_mixed_outcome_wakes_owner_not_escalate(runtime, db, monkeypatch)
     assert tid == "T-MIXED"
 
 
-def test_per_slice_retry_ceiling_escalates_on_second_failure(runtime, db, monkeypatch):
+def test_per_slice_retry_ceiling_returns_second_failure_to_owner(runtime, db, monkeypatch):
     """THR-078: per-slice retry ceiling = 1.  A slice that fails, gets
     re-dispatched by the owner (revisit_of_task_id set), and fails again
-    forces escalation to founder — even when the TOTAL failed sibling
-    count is only 1 (the original slice succeeded or was a different
-    status).
-
-    This is a RED test pre-impl: the old code wakes the owner (count=1 <
-    _FAILURE_ROUND_BOUND=2) but the new per-slice design escalates."""
+    wakes the owning manager exactly once — even when the TOTAL failed
+    sibling count is only 1. The manager, not the runtime, owns any later
+    THR-181 escalation proposal."""
     import asyncio
     from runtime.orchestrator.orchestrator import Orchestrator
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
@@ -3098,42 +3095,30 @@ def test_per_slice_retry_ceiling_escalates_on_second_failure(runtime, db, monkey
     _enqueue_parent_if_waiting(orch, "T-RETRY2-C1-R")
 
     parent = db.get_task("T-RETRY2")
-    # Ceiling exhausted → escalated to founder, NOT woken.
-    assert parent.status == TaskStatus.ESCALATED, (
-        f"per-slice ceiling exhausted should escalate; got status {parent.status}"
-    )
-    assert parent.block_kind is None
-    assert "T-RETRY2-C1-R" in (parent.note or "")
+    assert parent.status == TaskStatus.IN_PROGRESS
+    assert parent.block_kind == BlockKind.DELEGATED
+    assert orch._queue.qsize() == 1
+    assert orch._queue.get_nowait() == ("test", "T-RETRY2")
 
-    # No queue entries — escalation is not waking the parent.
-    assert orch._queue.qsize() == 0
-
-    # THR-181 Track A denominator: this runtime-raised escalation is not an
-    # authority decision, but it still needs one explicit auditable outcome.
+    # The retry ceiling never performs a runtime escalation or creates an
+    # authority-hook side effect; both FAILED child rows remain durable.
     rows = db.get_audit_logs("T-RETRY2")
     escalations = [row for row in rows if row["action"] == "escalation"]
     outcomes = [row for row in rows if row["action"] == "authority_hook"]
-    assert len(escalations) == 1
-    assert len(outcomes) == 1
-    assert outcomes[0]["payload"] == {
-        "outcome": "not_applicable",
-        "reason_code": "runtime_retry_ceiling",
-        "reason": "runtime-raised escalation is not an authority decision",
-        "causal_escalation_audit_id": escalations[0]["id"],
-    }
+    assert not escalations
+    assert not outcomes
+    assert db.get_task("T-RETRY2-C1").status == TaskStatus.FAILED
+    assert db.get_task("T-RETRY2-C1-R").status == TaskStatus.FAILED
 
-    # Startup/recovery re-entry sees the already-escalated parent and loses
-    # the commit CAS: neither half of the durable pair is duplicated.
+    # Recovery re-entry can enqueue again, but does not make an escalation.
     _enqueue_parent_if_waiting(orch, "T-RETRY2-C1-R")
     replay_rows = db.get_audit_logs("T-RETRY2")
-    assert len([row for row in replay_rows if row["action"] == "escalation"]) == 1
-    assert len([row for row in replay_rows if row["action"] == "authority_hook"]) == 1
+    assert not [row for row in replay_rows if row["action"] == "escalation"]
+    assert not [row for row in replay_rows if row["action"] == "authority_hook"]
 
 
-def test_runtime_retry_ceiling_audit_failure_rolls_back_whole_commit(
-    runtime, db, monkeypatch,
-):
-    """The production retry seam cannot leave an escalation or orphan audit."""
+def test_runtime_retry_ceiling_never_enters_escalation_audit_commit(runtime, db):
+    """The retry routing seam keeps fanout state and has no escalation audit."""
     from runtime.orchestrator.orchestrator import Orchestrator
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
 
@@ -3158,20 +3143,12 @@ def test_runtime_retry_ceiling_audit_failure_rolls_back_whole_commit(
     ))
     db.update_task("T-RETRY-ROLLBACK-B", status=TaskStatus.FAILED)
 
-    real_insert = db.insert_audit_log_uncommitted
-    def fail_denominator(*args, **kwargs):
-        if kwargs.get("action") == "authority_hook":
-            raise RuntimeError("injected denominator append failure")
-        return real_insert(*args, **kwargs)
-    monkeypatch.setattr(db, "insert_audit_log_uncommitted", fail_denominator)
-
     orch = Orchestrator(
         db=db, settings=Settings(), paths=runtime, slug="test",
         teams=TeamsRegistry.load(runtime.root),
     )
     orch._queue = _SlugQueue()
-    with pytest.raises(RuntimeError, match="denominator append failure"):
-        _enqueue_parent_if_waiting(orch, "T-RETRY-ROLLBACK-B")
+    _enqueue_parent_if_waiting(orch, "T-RETRY-ROLLBACK-B")
 
     parent = db.get_task("T-RETRY-ROLLBACK")
     assert parent.status == TaskStatus.IN_PROGRESS
@@ -3181,6 +3158,7 @@ def test_runtime_retry_ceiling_audit_failure_rolls_back_whole_commit(
         row for row in db.get_audit_logs("T-RETRY-ROLLBACK")
         if row["action"] in {"escalation", "authority_hook"}
     ]
+    assert orch._queue.get_nowait() == ("test", "T-RETRY-ROLLBACK")
 
 
 def test_runtime_escalation_write_failure_has_no_audit_residue(db):
@@ -3481,8 +3459,57 @@ def test_delegate_with_invalid_revisit_link_is_rejected(runtime, db, monkeypatch
     assert orch._queue.qsize() == 1
 
 
+@pytest.mark.parametrize("invalid_link, target_agent", [
+    ("T-OTHER-FAILED", "dev_agent"),
+    ("T-BADLINK-C1", "qa_engineer"),
+])
+def test_delegate_rejects_wrong_parent_or_agent_retry_link(
+    runtime, db, monkeypatch, invalid_link, target_agent,
+):
+    """Retry provenance must be this parent's failed child for that agent."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    for name in ("dev_agent", "qa_engineer", "engineering_head"):
+        (runtime.workspaces_dir / name).mkdir(parents=True, exist_ok=True)
+    db.insert_task(TaskRecord(
+        id="T-BADLINK", brief="parent", assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    db.insert_task(TaskRecord(
+        id="T-BADLINK-C1", brief="failed child", assigned_agent="dev_agent",
+        parent_task_id="T-BADLINK", task_type="subtask",
+    ))
+    db.insert_task(TaskRecord(
+        id="T-OTHER", brief="other parent", assigned_agent="engineering_head", task_type="task",
+    ))
+    db.insert_task(TaskRecord(
+        id="T-OTHER-FAILED", brief="foreign failure", assigned_agent="dev_agent",
+        parent_task_id="T-OTHER", task_type="subtask",
+    ))
+    for task_id in ("T-BADLINK-C1", "T-OTHER-FAILED"):
+        db.update_task(task_id, status=TaskStatus.FAILED)
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+    monkeypatch.setattr(orch, "_run_agent", lambda *args, **kwargs: (
+        _make_result(), _make_report(output_summary=json.dumps({
+            "action": "delegate", "agent": target_agent, "prompt": "bad retry",
+            "revisit_of_task_id": invalid_link,
+        })),
+    ))
+
+    orch.run_step("T-BADLINK")
+    assert db.get_children("T-BADLINK") == ["T-BADLINK-C1"]
+    assert db.get_task("T-BADLINK").status == TaskStatus.PENDING
+    assert orch._queue.qsize() == 1
+
+
 def test_fanout_retry_link_reaches_second_failure_escalation(runtime, db, monkeypatch):
-    """THR-078: retrying a failed fanout slice links its second failure."""
+    """A live sibling blocks the linked-second-failure owner wake.
+
+    Once that sibling settles, the real claim/prompt seam runs exactly once
+    and carries the failed leaf's durable context to the decision owner.
+    """
     import json
     from runtime.orchestrator.orchestrator import Orchestrator
     from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
@@ -3515,14 +3542,19 @@ def test_fanout_retry_link_reaches_second_failure_escalation(runtime, db, monkey
             ],
             "width_cap_ack": 2,
         },
+        {"action": "done", "summary": "owner handled linked failure"},
     ]
     orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
                         slug="test", teams=TeamsRegistry.load(runtime.root))
     orch._queue = _SlugQueue()
 
+    prompts: list[str] = []
+
     def fake_run_agent(task_id, agent, prompt, on_session_started=None):
         response = responses.pop(0)
-        if response["children"][0].get("revisit_of_task_id"):
+        if task_id == "T-FANOUT-RETRY":
+            prompts.append(prompt)
+        if response.get("children") and response["children"][0].get("revisit_of_task_id"):
             response["children"][0]["revisit_of_task_id"] = failed_slice_id
         return _make_result(), _make_report(output_summary=json.dumps(response))
 
@@ -3549,21 +3581,36 @@ def test_fanout_retry_link_reaches_second_failure_escalation(runtime, db, monkey
     )
     assert retry_slice.revisit_of_task_id == failed_slice.id
 
-    db.update_task(retry_slice.id, status=TaskStatus.FAILED)
+    db.update_task(retry_slice.id, status=TaskStatus.FAILED, note="terminal linked failure")
+    db.insert_task_result(
+        task_id=retry_slice.id, agent="dev_agent", session_id="fanout-retry",
+        status="failed", confidence_score=0, output_summary="terminal linked failure",
+        verdict="FAIL",
+    )
+    # The linked retry has failed, but its second-round sibling is still live:
+    # the barrier must not wake the owner prematurely.
+    queued_before_live_barrier = orch._queue.qsize()
+    _enqueue_parent_if_waiting(orch, retry_slice.id)
+    assert orch._queue.qsize() == queued_before_live_barrier
+
     db.update_task(second_round_qa.id, status=TaskStatus.COMPLETED)
     _enqueue_parent_if_waiting(orch, retry_slice.id)
+    orch.run_step("T-FANOUT-RETRY")
 
     parent = db.get_task("T-FANOUT-RETRY")
-    assert parent.status == TaskStatus.ESCALATED
-    assert parent.block_kind is None
-    assert orch._queue.qsize() == 4  # two rounds' children; no parent wake on escalation
+    assert parent.status == TaskStatus.COMPLETED
+    final_prompt = prompts[-1]
+    assert f"task_id={retry_slice.id}" in final_prompt
+    assert "status=failed" in final_prompt
+    assert "verdict=FAIL" in final_prompt
+    assert "reason=terminal linked failure" in final_prompt
 
 
-def test_delegate_with_revisit_of_task_id_e2e_ceiling_fires(runtime, db, monkeypatch):
+def test_delegate_with_revisit_of_task_id_e2e_ceiling_wakes_owner(runtime, db, monkeypatch):
     """THR-078 Fix 2: end-to-end.  Parent with a failed slice + uncleared
     active_fanout wakes → join context is injected.  Simulate the second
     phase: the retry child (which carries revisit_of_task_id pointing at the
-    FAILED predecessor) itself fails → ceiling fires, parent escalates.
+    FAILED predecessor) itself fails → the owner is woken.
 
     This validates the real _enqueue_parent_if_waiting path: the revisited
     FAILED ancestor under the same parent triggers the ceiling."""
@@ -3615,11 +3662,9 @@ def test_delegate_with_revisit_of_task_id_e2e_ceiling_fires(runtime, db, monkeyp
     _enqueue_parent_if_waiting(orch, "T-E2E-C1-R")
 
     parent = db.get_task("T-E2E")
-    # Ceiling exhausted → escalated (T-E2E is root).
-    assert parent.status == TaskStatus.ESCALATED, (
-        f"second failure should escalate; got status {parent.status}"
-    )
-    assert parent.block_kind is None
+    assert parent.status == TaskStatus.IN_PROGRESS
+    assert parent.block_kind == BlockKind.DELEGATED
+    assert orch._queue.qsize() == 1
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -3811,13 +3856,16 @@ def test_thr183_recovered_lineage_does_not_re_escalate_on_startup_style_ancestor
     assert orch._queue.get_nowait() == ("test", "T-REC2")
 
 
-def test_thr183_genuine_unresolved_second_failure_escalates_once_using_leaf(
-    runtime, db,
+def test_thr183_genuine_unresolved_second_failure_wakes_owner_without_escalation(
+    runtime, db, monkeypatch,
 ):
-    """A true unresolved second failure escalates exactly once and the reason
-    identifies the causal leaf task (not a stale ancestor note)."""
+    """A true unresolved second failure wakes its owner without a runtime
+    escalation; the durable leaf report remains the causal context."""
     from runtime.orchestrator.orchestrator import Orchestrator
-    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+    from runtime.orchestrator.run_step import (
+        _build_prior_steps_from_db,
+        _enqueue_parent_if_waiting,
+    )
 
     db.insert_task(TaskRecord(
         id="T-GENU", brief="parent", assigned_agent="engineering_head",
@@ -3853,28 +3901,241 @@ def test_thr183_genuine_unresolved_second_failure_escalates_once_using_leaf(
                         slug="test", teams=TeamsRegistry.load(runtime.root))
     orch._queue = _SlugQueue()
 
+    # The manager's shipping prompt history carries the causal leaf's durable
+    # identity, terminal status, verdict, reason, and mechanical revisit link.
+    leaf_history = _build_prior_steps_from_db(orch, "T-GENU")[-1]
+    assert leaf_history.action.startswith("delegate [T-GENU-A-R]:")
+    assert "task_id=T-GENU-A-R" in leaf_history.result_summary
+    assert "status=failed" in leaf_history.result_summary
+    assert "verdict=FAIL" in leaf_history.result_summary
+    assert "revisit_of_task_id=T-GENU-A" in leaf_history.result_summary
+    assert "reason=review rejected" in leaf_history.result_summary
+
     _enqueue_parent_if_waiting(orch, "T-GENU-A-R")
 
     parent = db.get_task("T-GENU")
-    assert parent.status == TaskStatus.ESCALATED
-    assert parent.block_kind is None
-    assert "T-GENU-A-R" in (parent.note or "")
-    assert "review rejected" in (parent.note or "")
-    assert "quota exceeded" not in (parent.note or "")
-    assert "T-GENU-A" not in (parent.note or "") or "T-GENU-A-R" in (parent.note or "")
+    assert parent.status == TaskStatus.IN_PROGRESS
+    assert parent.block_kind == BlockKind.DELEGATED
+    assert db.get_task("T-GENU-A-R").note == "review rejected"
+    assert _escalation_audit_rows(db, "T-GENU") == []
+    assert orch._queue.qsize() == 1
 
-    audits = _escalation_audit_rows(db, "T-GENU")
-    assert len(audits) == 1
-    reason = audits[0]["payload"].get("reason", "")
-    assert "T-GENU-A-R" in reason
-    assert "review rejected" in reason
-    assert "quota exceeded" not in reason
-    assert orch._queue.qsize() == 0
-
-    # Duplicate evaluation must be a no-op (try_escalate CAS).
+    # A duplicate terminal/recovery callback may legitimately leave a second
+    # queue delivery.  Consume both through the real run_step claim seam: the
+    # first claims the parked manager and the second must be a harmless stale
+    # delivery, not a second manager invocation or decision side effect.
     _enqueue_parent_if_waiting(orch, "T-GENU-A-R")
-    assert len(_escalation_audit_rows(db, "T-GENU")) == 1
-    assert db.get_task("T-GENU").note == parent.note
+    assert orch._queue.qsize() == 2
+    manager_calls: list[str] = []
+    monkeypatch.setattr(orch, "_run_agent", lambda task_id, *args, **kwargs: (
+        manager_calls.append(task_id),
+        _make_result(),
+        _make_report(output_summary=json.dumps({"action": "done", "summary": "handled"})),
+    )[1:])
+    orch.run_step(orch._queue.get_nowait()[1])
+    orch.run_step(orch._queue.get_nowait()[1])
+    assert manager_calls == ["T-GENU"]
+    assert db.get_task("T-GENU").status == TaskStatus.COMPLETED
+    assert len([row for row in db.get_audit_logs("T-GENU")
+                if row["action"] == "orchestration_step"]) == 1
+    assert _escalation_audit_rows(db, "T-GENU") == []
+
+
+def test_fanout_dispatched_manager_owns_failed_child_not_carrier(runtime, db, monkeypatch):
+    """A fanout-dispatched manager owns linked failures locally, not as a carrier."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    for name in ("engineering_head", "dev_agent"):
+        (runtime.workspaces_dir / name).mkdir(parents=True, exist_ok=True)
+    db.insert_task(TaskRecord(id="T-OWNER-ROOT", brief="root", assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+    owner_turns = 0
+
+    def run(task_id, *args, **kwargs):
+        nonlocal owner_turns
+        if task_id == "T-OWNER-ROOT":
+            decision = {"action": "fanout", "width_cap_ack": 2, "children": [
+                {"agent": "engineering_head", "prompt": "nested decision owner"},
+                {"agent": "dev_agent", "prompt": "live sibling"},
+            ]}
+        elif db.get_task(task_id).task_type == "task":
+            owner_turns += 1
+            if owner_turns == 1:
+                decision = {"action": "delegate", "agent": "dev_agent", "prompt": "bounded child"}
+            elif owner_turns == 2:
+                decision = {
+                    "action": "delegate", "agent": "dev_agent", "prompt": "linked recovery",
+                    "revisit_of_task_id": db.get_children(task_id)[-1],
+                }
+            else:
+                decision = {"action": "done", "summary": "local manager decision"}
+        else:
+            return _make_result(success=False), None
+        return _make_result(), _make_report(output_summary=json.dumps(decision))
+
+    monkeypatch.setattr(orch, "_run_agent", run)
+    orch.run_step("T-OWNER-ROOT")
+    owner = next(db.get_task(cid) for cid in db.get_children("T-OWNER-ROOT") if db.get_task(cid).task_type == "task")
+    orch.run_step(owner.id)
+    leaf = db.get_children(owner.id)[0]
+    orch.run_step(leaf)
+
+    assert db.get_task(leaf).status == TaskStatus.FAILED
+    assert db.get_task(owner.id).status == TaskStatus.IN_PROGRESS
+    assert db.get_task(owner.id).block_kind == BlockKind.DELEGATED
+    orch.run_step(owner.id)
+    retry = db.get_children(owner.id)[-1]
+    assert db.get_task(retry).revisit_of_task_id == leaf
+    orch.run_step(retry)
+    assert db.get_task(retry).status == TaskStatus.FAILED
+    orch.run_step(owner.id)
+    assert owner_turns == 3
+    assert db.get_task(owner.id).status == TaskStatus.COMPLETED
+    outer = db.get_task("T-OWNER-ROOT")
+    assert outer.status == TaskStatus.IN_PROGRESS
+    assert outer.block_kind == BlockKind.DELEGATED
+
+
+def test_serial_second_failure_wakes_owner_with_real_terminal_and_revised_dispatch(
+    runtime, db, monkeypatch,
+):
+    """A real terminal sequence keeps both failed rows and returns control.
+
+    This is intentionally a shipping-seam test rather than seeded FAILED
+    rows: the first delegated child fails through ``run_step``, the owner
+    consumes that wake and dispatches a valid linked revision, and that child
+    also fails through ``run_step``.  The final owner prompt therefore proves
+    the durable causal id/status/verdict/reason/revisit context available to
+    the manager, while duplicate delivery cannot invoke it twice.
+    """
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    (runtime.workspaces_dir / "engineering_head").mkdir(parents=True, exist_ok=True)
+    (runtime.workspaces_dir / "dev_agent").mkdir(parents=True, exist_ok=True)
+    db.insert_task(TaskRecord(
+        id="T-SERIAL", brief="root", assigned_agent="engineering_head",
+        task_type="task",
+    ))
+    orch = Orchestrator(
+        db=db, settings=Settings(), paths=runtime, slug="test",
+        teams=TeamsRegistry.load(runtime.root),
+    )
+    orch._queue = _SlugQueue()
+    prompts: list[str] = []
+    owner_turns = 0
+
+    def run(task_id, agent, prompt, **kwargs):
+        nonlocal owner_turns
+        if task_id == "T-SERIAL":
+            owner_turns += 1
+            prompts.append(prompt)
+            if owner_turns == 1:
+                decision = {"action": "delegate", "agent": "dev_agent", "prompt": "original"}
+            elif owner_turns == 2:
+                original = db.get_children("T-SERIAL")[0]
+                decision = {
+                    "action": "delegate", "agent": "dev_agent", "prompt": "revised",
+                    "revisit_of_task_id": original,
+                }
+            else:
+                # This is the post-second-failure owner turn.  It must be a
+                # real linked recovery decision, not an early ``done``.
+                decision = {
+                    "action": "delegate", "agent": "dev_agent", "prompt": "third revision",
+                    "revisit_of_task_id": db.get_children("T-SERIAL")[-1],
+                }
+            return _make_result(), _make_report(output_summary=json.dumps(decision))
+        ordinal = len(db.get_children("T-SERIAL"))
+        return _make_result(), _make_report(
+            output_summary=f"terminal failure {ordinal}", status="blocked", verdict="FAIL",
+        )
+
+    monkeypatch.setattr(orch, "_run_agent", run)
+    orch.run_step("T-SERIAL")
+    original = db.get_children("T-SERIAL")[0]
+    orch.run_step(original)
+    assert db.get_task(original).status is TaskStatus.FAILED
+    db.insert_task_result(
+        task_id=original, agent="dev_agent", session_id="serial-original",
+        status="failed", confidence_score=0, output_summary="terminal failure 1",
+        verdict="FAIL",
+    )
+    original_note = db.get_task(original).note
+
+    # Consume the first manager wake and dispatch a linked, revised child.
+    orch.run_step("T-SERIAL")
+    revised = db.get_children("T-SERIAL")[-1]
+    assert db.get_task(revised).revisit_of_task_id == original
+    orch.run_step(revised)
+    assert db.get_task(revised).status is TaskStatus.FAILED
+    db.insert_task_result(
+        task_id=revised, agent="dev_agent", session_id="serial-revised",
+        status="failed", confidence_score=0, output_summary="terminal failure 2",
+        verdict="FAIL",
+    )
+    revised_note = db.get_task(revised).note
+
+    # A duplicate terminal callback may enqueue a stale delivery; the real
+    # claim seam admits only one manager invocation.
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+    _enqueue_parent_if_waiting(orch, revised)
+    orch.run_step("T-SERIAL")
+    orch.run_step("T-SERIAL")
+
+    children = db.get_children("T-SERIAL")
+    third = children[-1]
+    assert owner_turns == 3
+    assert len(children) == 3
+    assert db.get_task(third).revisit_of_task_id == revised
+    assert db.get_task(original).status is TaskStatus.FAILED
+    assert db.get_task(revised).status is TaskStatus.FAILED
+    assert db.get_task(original).note == original_note
+    assert db.get_task(revised).note == revised_note
+    final_prompt = prompts[-1]
+    assert f"task_id={revised}" in final_prompt
+    assert "status=failed" in final_prompt
+    assert "verdict=FAIL" in final_prompt
+    assert "reason=self-blocked: terminal failure 2" in final_prompt
+    assert f"revisit_of_task_id={original}" in final_prompt
+    assert not [
+        row for row in db.get_audit_logs("T-SERIAL")
+        if row["action"] in {"escalation", "authority_hook"}
+    ]
+
+
+def test_passive_carrier_join_keeps_causal_leaf_details(runtime, db, monkeypatch):
+    """The actual outer-manager prompt names both carrier and causal leaf."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    for name in ("engineering_head", "dev_agent", "qa_engineer"):
+        (runtime.workspaces_dir / name).mkdir(parents=True, exist_ok=True)
+    db.insert_task(TaskRecord(id="T-CARRIER-ROOT", brief="root", assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+    decision = {"action": "fanout", "width_cap_ack": 2, "children": [
+        {"agent": "dev_agent", "prompt": "pipeline", "then": [{"agent": "qa_engineer", "prompt": "qa", "expect_verdict": "PASS"}]},
+        {"agent": "dev_agent", "prompt": "live sibling"},
+    ]}
+    monkeypatch.setattr(orch, "_run_agent", lambda *a, **kw: (_make_result(), _make_report(output_summary=json.dumps(decision))))
+    orch.run_step("T-CARRIER-ROOT")
+    carrier = next(db.get_task(cid) for cid in db.get_children("T-CARRIER-ROOT") if db.get_task(cid).active_chain)
+    leaf = db.get_children(carrier.id)[0]
+    db.update_task(leaf, status=TaskStatus.FAILED, note="causal leaf diagnostic XYZ")
+    db.insert_task_result(task_id=leaf, agent="dev_agent", session_id="leaf-session", status="completed", confidence_score=80, output_summary="causal leaf diagnostic XYZ", verdict="FAIL")
+    _enqueue_parent_if_waiting(orch, leaf)
+    sibling = next(cid for cid in db.get_children("T-CARRIER-ROOT") if cid != carrier.id)
+    db.update_task(sibling, status=TaskStatus.COMPLETED, note="unrelated successful sibling")
+    _enqueue_parent_if_waiting(orch, sibling)
+    prompts: list[str] = []
+    monkeypatch.setattr(orch, "_run_agent", lambda task_id, agent, prompt, **kw: (prompts.append(prompt), _make_result(), _make_report(output_summary=json.dumps({"action": "done", "summary": "handled"})))[1:])
+    orch.run_step("T-CARRIER-ROOT")
+    assert len(prompts) == 1
+    assert f"carrier chain leg {leaf} failed" in prompts[0]
+    assert "causal_leaf_id=" + leaf in prompts[0]
+    assert "causal leaf diagnostic XYZ" in prompts[0]
+    assert "causal_verdict=FAIL" in prompts[0]
 
 
 def test_thr183_stale_lineage_does_not_escalate_a_fresh_failure(

@@ -1783,11 +1783,18 @@ def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
         if child is None:
             continue
         success = child.status == TaskStatus.COMPLETED
+        report = orch._db.get_latest_completion_report(child.id)
+        verdict = report.verdict if report is not None and report.verdict else "(none)"
+        revisit = child.revisit_of_task_id or "(none)"
         steps.append(StepRecord(
             step_number=i,
             agent=child.assigned_agent or "unknown",
-            action=f"delegate: {(child.brief or '')[:100]}",
-            result_summary=child.note or "(no summary)",
+            action=f"delegate [{child.id}]: {(child.brief or '')[:100]}",
+            result_summary=(
+                f"task_id={child.id}; status={child.status.value}; "
+                f"verdict={verdict}; revisit_of_task_id={revisit}; "
+                f"reason={child.note or '(no summary)'}"
+            ),
             success=success,
         ))
     # Append chain summary if a chain ran since the last manager wake.
@@ -2184,14 +2191,29 @@ def _advance_chain_for_completed_child(
 
 
 def _is_carrier(orch: "Orchestrator", parent: "TaskRecord") -> bool:
-    """True if ``parent`` is a pipeline carrier — its own parent has active_fanout set.
-    Carrier detection is schema-free: a carrier is any task whose id is in its
-    parent's active_fanout.children_ids and which has (or had) an active_chain.
-    We detect it by checking if the grandparent has active_fanout."""
+    """True only for a passive pipeline carrier in an enclosing fan-out.
+
+    A fan-out can also dispatch a decision-capable manager.  Both are direct
+    children of the fan-out parent, but the former retains the existing
+    ``subtask`` type while the latter is minted as ``task`` and owns its own
+    failure/revision decision.  Do not infer carrier status from ancestry
+    alone: doing so would fail a real manager upward on its first child
+    failure.
+    """
     if parent.parent_task_id is None:
         return False
     grandparent = orch._db.get_task(parent.parent_task_id)
-    return grandparent is not None and grandparent.active_fanout is not None
+    if parent.task_type != "subtask" or grandparent is None:
+        return False
+    if grandparent.active_fanout is None:
+        return False
+    try:
+        from runtime.orchestrator.fanout import FanoutState
+        return parent.id in FanoutState.deserialize(
+            grandparent.active_fanout
+        ).children_ids
+    except Exception:
+        return False
 
 
 def _carrier_fail_on_verdict_mismatch(
@@ -2278,8 +2300,27 @@ def _carrier_fail_immediate(
     False for non-carriers."""
     if not _is_carrier(orch, parent):
         return False
-    _fail(orch, parent.id,
-           note=f"carrier chain leg {child_task_id} failed")
+    child = orch._db.get_task(child_task_id)
+    report = orch._db.get_latest_completion_report(child_task_id)
+    verdict = report.verdict if report is not None and report.verdict else "(none)"
+    revisit = child.revisit_of_task_id if child is not None else None
+    reason = child.note if child is not None and child.note else "(no summary)"
+    # The carrier retains its own terminal outcome, while its existing note
+    # truthfully carries the leaf that caused it.  Fan-out join context reads
+    # direct child rows, so this preserves causal provenance without a new
+    # stored field or accidentally selecting an unrelated sibling.
+    _fail(
+        orch,
+        parent.id,
+        note=(
+            f"carrier chain leg {child_task_id} failed; "
+            f"causal_leaf_id={child_task_id}; causal_status="
+            f"{child.status.value if child is not None else '(unknown)'}; "
+            f"causal_verdict={verdict}; "
+            f"causal_revisit_of_task_id={revisit or '(none)'}; "
+            f"causal_reason={reason}"
+        ),
+    )
     # Feed carrier failure into the fan-out parent's barrier.
     _enqueue_parent_if_waiting(orch, parent.id)
     return True
@@ -2305,25 +2346,21 @@ def _carrier_complete_on_chain_complete(
     return True
 
 
-# THR-078: per-slice retry ceiling = 1.  When a fan-out owner re-dispatches a
-# failed slice (revisit_of_task_id on the new child points to the failed
-# predecessor), the orchestrator can derive retry count from existing DB
-# lineage — no schema migration.
-_FAILURE_ROUND_BOUND = 2  # kept as doc-only reference (historical failure-recovery design)
-_SLICE_RETRY_CEILING = 1  # per-slice retry ceiling; 2nd failure escalates
+# Historical THR-078 lineage utility retained for old records and diagnostic
+# readers. Current failure routing does not call it: a valid retry link is
+# mechanical provenance and every unresolved failed leaf returns to its owner.
+_FAILURE_ROUND_BOUND = 2  # historical failure-recovery design reference
+_SLICE_RETRY_CEILING = 1  # historical diagnostic label; not a routing guard
 
 
 def _is_slice_retry_exhausted(
     orch: "Orchestrator", child: "TaskRecord", parent: "TaskRecord",
 ) -> bool:
-    """Return True if ``child`` is a retry of a previously-FAILED slice
-    under the same ``parent``, meaning the per-slice ceiling (_SLICE_RETRY_CEILING)
-    of 1 has been exhausted.
+    """Classify legacy retry lineage for diagnostic readers only.
 
-    Ceiling=1 means: exactly ONE retry is allowed AFTER a slice's FIRST
-    FAILURE; the SAME slice's SECOND failure escalates.  A retry of a
-    previously COMPLETED (successful) slice must NOT escalate on its first
-    failure — the ceiling only fires after a predecessor FAILED.
+    Current failure routing does not call this helper. A valid
+    ``revisit_of_task_id`` is mechanical provenance; an unresolved failed
+    leaf returns to its owner regardless of this historical classification.
 
     Derivation: follow the child's ``revisit_of_task_id`` chain.  A FAILED
     ancestor under the same parent counts toward the ceiling, but a COMPLETED
@@ -2528,31 +2565,18 @@ def _enqueue_parent_if_waiting(
     Per-slice revisit-lineage rule (THR-078, TASK-573 bounded failure-recovery):
       - every subtask COMPLETED → enqueue parent for its next manager
         decision step (unchanged happy path).
-      - a subtask FAILED, and no other failed child in this delegation
-        slot has exhausted its retry ceiling → clear any active chain,
-        enqueue the parent for a bounded manager-wake decision step. The
-        parent receives the failed subtask's reason so it can author an
-        updated brief.
-      - a subtask FAILED and its per-slice retry ceiling is exhausted
-        (this slice was already retried once — its ``revisit_of_task_id``
-        ancestor is a FAILED child of this same parent) → escalate a root
-        parent to ``escalated`` via ``try_escalate``, using the causal
-        terminal event: the current unresolved FAILED leaf of the logical
-        retry lineage, naming its task id, terminal status, verdict, and
-        note; or, for a non-root parent, fail it and recurse upward
-        (THR-033 root-only escalation). The parent does NOT
-        cascade-fail — the founder or upstream manager resolves the
-        termination per existing routes. The ceiling is
-        ``_SLICE_RETRY_CEILING = 1`` (exactly one retry after a slice's
-        first failure), evaluated per-slice via ``_is_slice_retry_exhausted``
-        from the failing child's ``revisit_of_task_id`` lineage (no schema
-        migration).
+      - a subtask FAILED → retain the current unresolved FAILED leaf, clear
+        any active chain, and enqueue the owning manager for a bounded
+        decision step. The parent receives the failed subtask's reason so it
+        can decide whether to re-dispatch unchanged work or issue a revised
+        assignment. A linked historical retry failure is causal context only;
+        it does not cause a runtime escalation or upward failure cascade.
 
     ``root_auto_revisit_spawned`` is a retained compatibility/bookkeeping
     input. All current production callers (opaque-failure branches and
     startup sweep) pass ``False`` — no daemon auto-successor exists
     (TASK-3604). The boolean preserves call-site symmetry for the bounded
-    parent wake / per-slice escalation contract; it does not signal that a
+    parent wake / per-slice ownership contract; it does not signal that a
     root has been auto-revisited. See the retired spec
     2026-05-25-session-timeout-auto-route-design.md §6 for historical context.
 
@@ -2658,13 +2682,10 @@ def _enqueue_parent_if_waiting(
 
     failed = [s for s in siblings if s.status == TaskStatus.FAILED]
     if failed:
-        # THR-078: per-slice retry ceiling (replaces old count-based
-        # _FAILURE_ROUND_BOUND).  THR-183: ceiling evaluation MUST use the
-        # current unresolved FAILED leaf of each logical retry lineage, not
-        # every historical FAILED sibling.  A later COMPLETED/SUPERSEDED
-        # descendant retires earlier failures in the same lineage, so a normal
-        # parent wake initiated by a completed child cannot select a stale
-        # failed sibling.
+        # THR-183: use the current unresolved FAILED leaf of each logical
+        # retry lineage, not every historical FAILED sibling. A later
+        # COMPLETED/SUPERSEDED descendant retires earlier failures in that
+        # lineage, so a normal parent wake cannot select a stale reason.
 
         unresolved_leaves = _current_unresolved_failed_leaves(orch, failed, parent)
         if unresolved_leaves:
@@ -2674,34 +2695,19 @@ def _enqueue_parent_if_waiting(
             if parent.active_chain is not None:
                 orch._db.update_task_active_chain(parent.id, None)
             if _is_carrier(orch, parent):
-                _carrier_fail_immediate(orch, parent, task_id)
+                causal_leaf = next(
+                    (leaf for leaf in unresolved_leaves if leaf.id == task_id),
+                    unresolved_leaves[-1],
+                )
+                _carrier_fail_immediate(orch, parent, causal_leaf.id)
                 return  # carrier failure feeds the fan-out parent's barrier
 
-            # Per-slice ceiling check: escalate if any unresolved leaf has
-            # exhausted its retry ceiling.
-            for leaf in unresolved_leaves:
-                if _is_slice_retry_exhausted(orch, leaf, parent):
-                    reason = _format_slice_retry_exhausted_reason(orch, leaf)
-                    if is_root(parent):
-                        if orch._db.try_escalate_runtime(
-                            parent.id,
-                            reason=reason,
-                            agent="orchestrator",
-                            reason_code="runtime_retry_ceiling",
-                            clear_active_fanout=parent.active_fanout is not None,
-                        ):
-                            _maybe_post_thread_escalation(
-                                orch, parent.id, reason=reason,
-                            )
-                    else:
-                        # THR-033 Change A lock-in: a non-root parent never
-                        # escalates directly.  Fail it and recurse upward.
-                        _fail(orch, parent.id, note=reason)
-                        _enqueue_parent_if_waiting(orch, parent.id)
-                    return
-
-            # No per-slice ceiling hit: enqueue parent for a fresh manager
-            # decision step.  Do NOT cascade-fail.
+            # A linked historical retry remains truthful causal context in the
+            # child's durable row/lineage. It is not a daemon escalation or
+            # upward failure cascade: the owning manager decides whether to
+            # re-dispatch, revise work, or propose escalation through THR-181.
+            # Enqueue the parent for that fresh decision step. Do NOT
+            # cascade-fail.
             # NOTE: active_fanout is NOT cleared here — the CAS-winner needs
             # it to inject structured join context (child verdict, confidence,
             # output_dir, failure note) via _inject_fanout_join_context.  The
@@ -3108,7 +3114,7 @@ def _maybe_post_thread_followup(
     # Find the original dispatched root via the revisit chain.
     # walk_revisit_chain returns [task, predecessor, ..., original].
     # Use a hop bound large enough to cover any realistic revisit chain
-    # (200 hops, matching the bound in _is_slice_retry_exhausted), and
+    # (200 hops, matching the historical retry-lineage diagnostic bound), and
     # handle LineageTooDeep defensively rather than crashing and silently
     # discarding the followup without any audit trail.
     from runtime.infrastructure.database import LineageTooDeep  # local: avoid cycle
