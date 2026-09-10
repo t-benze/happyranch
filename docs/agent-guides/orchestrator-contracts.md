@@ -311,13 +311,12 @@ Contract (founder-approved in THR-028, refined in THR-078):
    ceiling, and a later COMPLETED or SUPERSEDED descendant in the same lineage
    retires earlier FAILED ancestors for ceiling evaluation (THR-183).
 
-3. **Escalation on exhaustion.** When a slice's retry ceiling is exhausted
-   (its 2nd failure), a root parent transitions to `escalated` via
-   `try_escalate()`, carrying the causal terminal event — the current
-   unresolved FAILED leaf of the slice's lineage — in the escalation reason;
-   a completed-child wake cannot select a stale sibling reason. A non-root
-   parent fails and recurses upward (THR-033 root-only escalation). The parent
-   does NOT cascade-fail.
+3. **Manager ownership on exhaustion.** When a slice's retry ceiling is
+   exhausted (its 2nd failure), its durable FAILED lineage remains available
+   and the owning parent is woken for a manager decision. The runtime neither
+   commits `runtime_retry_ceiling` escalation nor fails a nested decision owner
+   upward. A manager-proposed escalation uses the existing THR-181 hook and
+   its configured outcome; committed escalations remain human-resolved.
 
 4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
    COMPLETED) clears the active chain and hands the parent back to its
@@ -335,13 +334,12 @@ Traps:
 
 - Retry ceiling is per-slice: `_is_slice_retry_exhausted` walks the failing
   child's `revisit_of_task_id` chain; only a FAILED predecessor under the
-  same parent triggers escalation. COMPLETED/SUPERSEDED predecessors retire
+  same parent exhausts the slice. COMPLETED/SUPERSEDED predecessors retire
   earlier FAILED ancestors for ceiling evaluation (THR-183).
 - Ceiling constant: `_SLICE_RETRY_CEILING = 1` (one retry after a slice's
   first failure).
-- The exhaustion escalation uses `try_escalate` (atomic CAS under Database
-  RLock) for roots and names the current unresolved FAILED leaf, not a stale
-  sibling reason; non-root parents fail and hand upward.
+- A retry-ceiling hit is causal context, not a runtime escalation trigger:
+  the owner decides revised recovery or a THR-181 escalation proposal.
 - Chain-advance in `_enqueue_parent_if_waiting` handles FAILED subtasks:
   failed chain legs clear the chain and fall through to bounded-wake.
 - Self-block (`status=blocked` + empty `waiting_on_job_ids`) is a malformed

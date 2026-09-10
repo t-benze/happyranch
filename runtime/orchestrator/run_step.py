@@ -1783,11 +1783,18 @@ def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
         if child is None:
             continue
         success = child.status == TaskStatus.COMPLETED
+        report = orch._db.get_latest_completion_report(child.id)
+        verdict = report.verdict if report is not None and report.verdict else "(none)"
+        revisit = child.revisit_of_task_id or "(none)"
         steps.append(StepRecord(
             step_number=i,
             agent=child.assigned_agent or "unknown",
-            action=f"delegate: {(child.brief or '')[:100]}",
-            result_summary=child.note or "(no summary)",
+            action=f"delegate [{child.id}]: {(child.brief or '')[:100]}",
+            result_summary=(
+                f"task_id={child.id}; status={child.status.value}; "
+                f"verdict={verdict}; revisit_of_task_id={revisit}; "
+                f"reason={child.note or '(no summary)'}"
+            ),
             success=success,
         ))
     # Append chain summary if a chain ran since the last manager wake.
@@ -2310,7 +2317,7 @@ def _carrier_complete_on_chain_complete(
 # predecessor), the orchestrator can derive retry count from existing DB
 # lineage — no schema migration.
 _FAILURE_ROUND_BOUND = 2  # kept as doc-only reference (historical failure-recovery design)
-_SLICE_RETRY_CEILING = 1  # per-slice retry ceiling; 2nd failure escalates
+_SLICE_RETRY_CEILING = 1  # per-slice retry ceiling; ownership stays with manager
 
 
 def _is_slice_retry_exhausted(
@@ -2318,12 +2325,14 @@ def _is_slice_retry_exhausted(
 ) -> bool:
     """Return True if ``child`` is a retry of a previously-FAILED slice
     under the same ``parent``, meaning the per-slice ceiling (_SLICE_RETRY_CEILING)
-    of 1 has been exhausted.
+    of 1 has been exhausted. Exhaustion is causal context for the owner; it
+    never commits a runtime escalation or suppresses the manager wake.
 
     Ceiling=1 means: exactly ONE retry is allowed AFTER a slice's FIRST
-    FAILURE; the SAME slice's SECOND failure escalates.  A retry of a
-    previously COMPLETED (successful) slice must NOT escalate on its first
-    failure — the ceiling only fires after a predecessor FAILED.
+    FAILURE; the SAME slice's SECOND failure returns a bounded decision to
+    its owner.  A retry of a previously COMPLETED (successful) slice does
+    not exhaust the ceiling on its first failure — the ceiling only fires
+    after a predecessor FAILED.
 
     Derivation: follow the child's ``revisit_of_task_id`` chain.  A FAILED
     ancestor under the same parent counts toward the ceiling, but a COMPLETED
@@ -2422,6 +2431,7 @@ def _current_unresolved_failed_leaves(
         if leaf is not None and leaf.id not in seen:
             seen.add(leaf.id)
             leaves.append(leaf)
+    return leaves
     return leaves
 
 
@@ -2535,24 +2545,19 @@ def _enqueue_parent_if_waiting(
         updated brief.
       - a subtask FAILED and its per-slice retry ceiling is exhausted
         (this slice was already retried once — its ``revisit_of_task_id``
-        ancestor is a FAILED child of this same parent) → escalate a root
-        parent to ``escalated`` via ``try_escalate``, using the causal
-        terminal event: the current unresolved FAILED leaf of the logical
-        retry lineage, naming its task id, terminal status, verdict, and
-        note; or, for a non-root parent, fail it and recurse upward
-        (THR-033 root-only escalation). The parent does NOT
-        cascade-fail — the founder or upstream manager resolves the
-        termination per existing routes. The ceiling is
-        ``_SLICE_RETRY_CEILING = 1`` (exactly one retry after a slice's
-        first failure), evaluated per-slice via ``_is_slice_retry_exhausted``
-        from the failing child's ``revisit_of_task_id`` lineage (no schema
-        migration).
+        ancestor is a FAILED child of this same parent) → retain the current
+        unresolved FAILED leaf and wake the owning manager. The ceiling is
+        ``_SLICE_RETRY_CEILING = 1`` (exactly one retry after a slice's first
+        failure), evaluated per-slice via ``_is_slice_retry_exhausted`` from
+        the failing child's ``revisit_of_task_id`` lineage (no schema
+        migration). Exhaustion is context for the owner's decision; it does
+        not cause a runtime escalation or upward failure cascade.
 
     ``root_auto_revisit_spawned`` is a retained compatibility/bookkeeping
     input. All current production callers (opaque-failure branches and
     startup sweep) pass ``False`` — no daemon auto-successor exists
     (TASK-3604). The boolean preserves call-site symmetry for the bounded
-    parent wake / per-slice escalation contract; it does not signal that a
+    parent wake / per-slice ownership contract; it does not signal that a
     root has been auto-revisited. See the retired spec
     2026-05-25-session-timeout-auto-route-design.md §6 for historical context.
 
@@ -2674,34 +2679,19 @@ def _enqueue_parent_if_waiting(
             if parent.active_chain is not None:
                 orch._db.update_task_active_chain(parent.id, None)
             if _is_carrier(orch, parent):
-                _carrier_fail_immediate(orch, parent, task_id)
+                causal_leaf = next(
+                    (leaf for leaf in unresolved_leaves if leaf.id == task_id),
+                    unresolved_leaves[-1],
+                )
+                _carrier_fail_immediate(orch, parent, causal_leaf.id)
                 return  # carrier failure feeds the fan-out parent's barrier
 
-            # Per-slice ceiling check: escalate if any unresolved leaf has
-            # exhausted its retry ceiling.
-            for leaf in unresolved_leaves:
-                if _is_slice_retry_exhausted(orch, leaf, parent):
-                    reason = _format_slice_retry_exhausted_reason(orch, leaf)
-                    if is_root(parent):
-                        if orch._db.try_escalate_runtime(
-                            parent.id,
-                            reason=reason,
-                            agent="orchestrator",
-                            reason_code="runtime_retry_ceiling",
-                            clear_active_fanout=parent.active_fanout is not None,
-                        ):
-                            _maybe_post_thread_escalation(
-                                orch, parent.id, reason=reason,
-                            )
-                    else:
-                        # THR-033 Change A lock-in: a non-root parent never
-                        # escalates directly.  Fail it and recurse upward.
-                        _fail(orch, parent.id, note=reason)
-                        _enqueue_parent_if_waiting(orch, parent.id)
-                    return
-
-            # No per-slice ceiling hit: enqueue parent for a fresh manager
-            # decision step.  Do NOT cascade-fail.
+            # A retry-ceiling hit remains truthful causal context in the
+            # child's durable row/lineage. It is not a daemon escalation or
+            # upward failure cascade: the owning manager decides whether to
+            # revise work or propose escalation through THR-181.
+            # Enqueue the parent for that fresh decision step. Do NOT
+            # cascade-fail.
             # NOTE: active_fanout is NOT cleared here — the CAS-winner needs
             # it to inject structured join context (child verdict, confidence,
             # output_dir, failure note) via _inject_fanout_join_context.  The

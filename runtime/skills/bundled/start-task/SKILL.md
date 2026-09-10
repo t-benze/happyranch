@@ -235,7 +235,9 @@ Parameters:
      `children[].revisit_of_task_id`: the FAILED child of this parent assigned
      to the same agent. A missing or invalid link rejects the WHOLE fanout
      before any child is spawned. A retrying `delegate` likewise supplies the
-     failed child's id as `revisit_of_task_id`.
+     failed child's id as `revisit_of_task_id`. A repeated failed slice wakes
+     its owning manager for a revised-work or escalation decision; no runtime
+     retry-ceiling successor is created.
    - `done` — the task is complete; requires `summary` of the outcome.
    - `escalate` — the task needs founder intervention; requires `reason`.
 

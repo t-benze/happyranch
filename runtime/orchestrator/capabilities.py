@@ -114,7 +114,8 @@ def build_capabilities_prompt(
         "",
         "Omitting `revisit_of_task_id` when there is a FAILED child for that",
         "agent is a HARD REJECT — the delegate will be denied and you will be",
-        "asked to retry with the field set. This prevents silent ceiling resets.\n",
+        "asked to retry with the field set. This prevents silent ceiling resets; "
+        "the manager, not the runtime, decides revised work or any escalation.\n",
         "Or, to declare a multi-leg workflow chain (auto-advances without consuming",
         "orchestration steps):",
         "",

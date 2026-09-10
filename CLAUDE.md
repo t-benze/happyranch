@@ -175,6 +175,13 @@ Every browser-callable daemon route maps to one TS function in `web/src/lib/api/
 
 Before editing, declare the expected files and symbols, their direct callers, importers, call sites, and config consumers, the affected behavior, and the risk tier. Inspect the relevant definitions, importers, call sites, and config consumers with targeted `rg` searches and record the results.
 
+**Delegated retry failures.** An exhausted per-slice retry lineage is durable
+causal context for the owning manager, not a runtime `runtime_retry_ceiling`
+escalation or automatic successor. The manager may dispatch revised work with
+the mechanically required failed-child `revisit_of_task_id`, or propose
+escalation through the existing THR-181 path; completed/superseded descendants
+retire historical failed ancestors.
+
 Run focused behavior tests for every changed domain. Before committing, run `git diff --check`, `git diff --stat`, and inspect the final diff. The reviewer must compare the changed files and symbols against the declared radius and investigate every addition outside it.
 
 Stop and escalate before touching permission-model generation, auth or credentials, schema migrations or overloaded-column semantics, v0/v1 compatibility, or HIGH/CRITICAL and other load-bearing work. Do not waive these checks because a graph tool is unavailable.
