@@ -5,6 +5,8 @@ rejection coverage. Retained manual supersede behavior remains covered here.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from runtime.infrastructure.audit_logger import AuditLogger
@@ -128,6 +130,23 @@ def _rejection_snapshot(org, state, token: str) -> dict[str, object]:
     }
 
 
+def _causal_transition_snapshot(org, state, token: str) -> dict[str, object]:
+    """Compact diagnostic emitted when the immutable baseline remains live."""
+    task = org.db.get_task("T-1")
+    invocation = org.db.get_invocation_any_status(token)
+    return {
+        "fixture_db_path": str(org.db.db_path),
+        "task_status": task.status.value if task else None,
+        "task_note": task.note if task else None,
+        "invocation_status": invocation.status.value if invocation else None,
+        "escalation_resolved_audits": [
+            row for row in org.db.get_audit_logs("T-1")
+            if row["action"] == "escalation_resolved"
+        ],
+        "queue_depth": state.queue._queue.qsize(),
+    }
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field,value", [
     ("policy_id", "THR-166-genuine-human-blocker"), ("policy_version", ""),
@@ -182,7 +201,12 @@ async def test_thread_rejects_frozen_formerly_valid_causal_lifecycle_before_shar
 
     monkeypatch.setattr(tasks, "resolve_escalation_in_process", must_not_enter)
     response = client.post("/api/v1/orgs/alpha/threads/THR-1/resolve-escalation", json=payload)
-    assert response.status_code == 410
+    assert response.status_code == 410, json.dumps({
+        "response": {"status": response.status_code, "body": response.json()},
+        "causal_transition": _causal_transition_snapshot(
+            org, client.app.state.daemon, token,
+        ),
+    }, sort_keys=True)
     assert response.json()["detail"] == {"code": "retired_autonomous_continuation"}
     assert _rejection_snapshot(org, client.app.state.daemon, token) == before
 
