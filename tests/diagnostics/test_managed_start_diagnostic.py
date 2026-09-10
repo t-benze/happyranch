@@ -780,6 +780,18 @@ def test_actual_yaml_f1_bool_and_negative_job_are_sanitized_without_losing_later
     ]
 
 
+def test_present_zero_is_not_the_absent_boolean_and_later_phase_survives(tmp_path: Path) -> None:
+    """The typed consumer rejects numeric zero without dropping a sibling."""
+    bad = diagnostic.collect("positive_failure", tmp_path / "bad.json", 9999999999, runner=_collector_runner(), window=(1, 2), now=lambda: 0)
+    bad["paths"][diagnostic.PATHS[0]] = {"present": 0}
+    good = diagnostic.collect("positive_success", tmp_path / "good.json", 9999999999, runner=_collector_runner(), window=(1, 2), now=lambda: 0)
+    (tmp_path / "positive_failure-observation.json").write_text(json.dumps(bad))
+    (tmp_path / "positive_success-observation.json").write_text(json.dumps(good))
+    assert diagnostic.publish(tmp_path, tmp_path / "published", identities={})
+    assert json.loads((tmp_path / "published" / "positive_failure-observation.json").read_text()) == diagnostic._unavailable_observation("positive_failure")
+    assert json.loads((tmp_path / "published" / "positive_success-observation.json").read_text()) == good
+
+
 @pytest.mark.parametrize("absence", ["baseline", "diagnostic", "shipping", "both"], ids=["F2-baseline", "F2-missing-diagnostic", "F2-missing-shipping", "F2-missing-both"])
 def test_actual_yaml_f2_checkout_absence_preserves_independent_provenance(tmp_path: Path, absence: str) -> None:
     """The always provenance block has independent fields, not all-or-nothing fallback."""

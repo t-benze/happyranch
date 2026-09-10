@@ -55,7 +55,7 @@ jobs:
           else
             python - "$publish" "$(git_id shipping)" "$(git_id diagnostic)" "$(sha diagnostic/.github/workflows/managed-start-diagnostic.yml)" "$(sha diagnostic/scripts/diagnostics/managed_start_diagnostic.py)" "$(sha diagnostic/tests/diagnostics/test_managed_start_diagnostic.py)" "$(sha "$package_tmp/happyranch-linux-amd64.tar")" "${GITHUB_RUN_ID:-}" "${GITHUB_RUN_ATTEMPT:-}" "${ImageOS:-}" "${ImageVersion:-}" "$systemd" "$diagnostics" 2>/dev/null <<'PY' || { printf '%s\n' 'diagnostic_publication_failed' >&2; exit 3; }
           import json, pathlib, re, sys
-          output = pathlib.Path(sys.argv[1]); diagnostics = pathlib.Path(sys.argv[13]); cap = 1048576
+          output = pathlib.Path(sys.argv[1]); diagnostics = pathlib.Path(sys.argv[13]); cap = 4096
           names = ("shipping", "diagnostic", "workflow", "script", "tests", "package", "run_id", "run_attempt", "runner_image", "image_version", "systemd")
           patterns = (r"[0-9a-f]{40}", r"[0-9a-f]{40}", r"[0-9a-f]{64}", r"[0-9a-f]{64}", r"[0-9a-f]{64}", r"[0-9a-f]{64}", r"[0-9]{1,20}", r"[0-9]{1,4}", r"ubuntu24|ubuntu-24\.04", r"[0-9]{8}\.[0-9]+\.[0-9]+", r"255")
           values = {key: value if len(value) <= cap and re.fullmatch(pattern, value) else "unavailable" for key, value, pattern in zip(names, sys.argv[2:13], patterns)}

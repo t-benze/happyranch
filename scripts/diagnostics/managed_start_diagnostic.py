@@ -394,12 +394,12 @@ def collect(phase: str, output: Path, deadline: float, runner: Runner = run_boun
     The later shell envelope owns when this is called.  This collector never
     starts, stops, waits for, or changes a shipping service.
     """
-    if not isinstance(phase, str) or phase not in PHASES or deadline <= now():
-        document: dict[str, object] = _unavailable_observation(phase if isinstance(phase, str) and phase in PHASES else "unavailable", reason="deadline_expired")
+    if phase not in PHASES or deadline <= now():
+        document: dict[str, object] = {"phase": phase if phase in PHASES else "unavailable", "availability": "unavailable"}
         _write_document(output, document)
         return document
     if window is None or not all(isinstance(item, int) and 0 <= item <= 2**63 - 1 for item in window) or window[0] > window[1]:
-        document = _unavailable_observation(phase, reason="window_unavailable")
+        document = {"phase": phase, "units": {}, "paths": {}, "jobs": {unit: {"availability": "unavailable", "reason": "window_unavailable"} for unit in UNITS}, "journal": {"availability": "unavailable", "reason": "window_unavailable"}}
         _write_document(output, document); return document
     document = {"phase": phase, "units": {}, "paths": {}, "jobs": {unit: {"availability": "unavailable", "reason": "no_record"} for unit in UNITS}, "journal": []}
     for unit in UNITS:
@@ -460,6 +460,8 @@ def _read_bounded(source: Path, limit: int) -> tuple[bytes | None, bool, bool]:
 
 def _canonical_observation(value: object, *, expected_phase: str | None = None) -> bool:
     """Recognize precisely the collector's secret-free output grammar."""
+    if isinstance(value, dict) and set(value) == {"phase", "availability"}:
+        return expected_phase is not None and value.get("phase") == expected_phase and value.get("availability") == "unavailable"
     if not isinstance(value, dict) or set(value) != {"phase", "units", "paths", "jobs", "journal"} or not isinstance(value.get("phase"), str) or value["phase"] not in PHASES:
         return False
     if expected_phase is not None and value["phase"] != expected_phase:
@@ -483,7 +485,7 @@ def _canonical_observation(value: object, *, expected_phase: str | None = None) 
             return False
     for item in paths.values():
         if not isinstance(item, dict): return False
-        if item == {"availability": "unavailable"} or item == {"present": False}: continue
+        if item == {"availability": "unavailable"} or (set(item) == {"present"} and item.get("present") is False): continue
         custody = item.get("custody") if item.get("present") is True and set(item) == {"present", "custody"} else None
         if not isinstance(custody, dict) or set(custody) != {"owner_uid", "owner_gid", "mode_hex"} or not all(isinstance(custody[key], int) and not isinstance(custody[key], bool) and 0 <= custody[key] <= 2**63 - 1 for key in ("owner_uid", "owner_gid")) or not isinstance(custody["mode_hex"], str) or not re.fullmatch(r"[0-9a-f]{1,8}", custody["mode_hex"]): return False
     for unit, item in jobs.items():
@@ -526,12 +528,11 @@ def publish(diagnostics: Path, destination: Path, *, identities: dict[str, str |
         "image_version": _safe_identity(identities.get("image_version"), r"[0-9]{8}\.[0-9]+\.[0-9]+"),
         "systemd": _safe_identity(identities.get("systemd"), r"255"),
     }
+    complete = True
     try:
         _write_document(destination / "provenance.json", provenance)
     except (OSError, TypeError, ValueError):
-        return False
-
-    complete = True
+        complete = False
     receipt, receipt_excessive, receipt_unreadable = _read_bounded(diagnostics / "receipt.txt", MAX_BYTES)
     if receipt_excessive or receipt_unreadable:
         complete = False
@@ -547,7 +548,10 @@ def publish(diagnostics: Path, destination: Path, *, identities: dict[str, str |
             )
             identities_valid = ("run_id" not in values or re.fullmatch(r"[0-9]{1,20}", values["run_id"])) and ("run_attempt" not in values or re.fullmatch(r"[0-9]{1,4}", values["run_attempt"]))
             if len(values) == len(lines) and set(values) <= allowed and values.get("schema") == "managed-start-diagnostic-receipt-v1" and identities_valid and valid_statuses:
-                (destination / "receipt.txt").write_text("\n".join(f"{key}={values[key]}" for key in sorted(values)) + "\n", encoding="ascii")
+                try:
+                    (destination / "receipt.txt").write_text("\n".join(f"{key}={values[key]}" for key in sorted(values)) + "\n", encoding="ascii")
+                except OSError:
+                    complete = False
         except (OSError, UnicodeError, ValueError, TypeError):
             complete = False
 
@@ -560,7 +564,10 @@ def publish(diagnostics: Path, destination: Path, *, identities: dict[str, str |
         try:
             value = json.loads(cleanup.decode("utf-8", errors="strict"))
             if value in ({"cleanup": "complete"}, {"cleanup": "failed"}):
-                _write_document(destination / "diagnostic-cleanup.json", value)
+                try:
+                    _write_document(destination / "diagnostic-cleanup.json", value)
+                except (OSError, TypeError, ValueError):
+                    complete = False
         except (OSError, UnicodeError, ValueError, TypeError):
             complete = False
 
