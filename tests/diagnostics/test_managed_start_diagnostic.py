@@ -686,6 +686,16 @@ def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, 
         doc = diagnostic.collect("positive_failure", diagnostics_dir / "positive_failure-observation.json", 99, runner=lambda *_: diagnostic.RunResult(0, b""), window=(1, 2), now=lambda: 0)
         doc["paths"][diagnostic.PATHS[0]] = "PATH_SCALAR_CANARY"
         (diagnostics_dir / "positive_failure-observation.json").write_text(json.dumps(doc))
+    if case == "f1-bool-job":
+        # Start with the real collector grammar, then corrupt two independent
+        # producer fields.  The YAML publisher, rather than a helper call,
+        # must refuse the whole malformed observation while retaining later
+        # independently-produced evidence.
+        bad = diagnostic.collect("positive_failure", diagnostics_dir / "positive_failure-observation.json", 9999999999, runner=_collector_runner(), window=(1, 2), now=lambda: 0)
+        bad["units"][diagnostic.UNITS[0]]["MainPID"] = True
+        bad["jobs"][diagnostic.UNITS[0]] = {"availability": "available", "records": [{"availability": "available", "unit": diagnostic.UNITS[0], "id": -1, "result": "failed"}]}
+        (diagnostics_dir / "positive_failure-observation.json").write_text(json.dumps(bad))
+        diagnostic.collect("positive_success", diagnostics_dir / "positive_success-observation.json", 9999999999, runner=_collector_runner(), window=(1, 2), now=lambda: 0)
     if case in {"f2", "f2-diagnostic"}: shutil.rmtree(diagnostic_checkout)
     if case in {"f2", "f2-shipping"}: shutil.rmtree(shipping_checkout)
     if case == "f3":
@@ -702,14 +712,12 @@ def _actual_yaml_case(tmp_path: Path, case: str) -> tuple[dict[str, int], Path, 
         (bin_dir / "python").unlink(); (bin_dir / "python").symlink_to("/usr/bin/python3")
     if case == "f4": (diagnostics_dir / "diagnostic-cleanup.json").write_text(" " * 1_200_000 + '{"cleanup":"complete"}')
     if case == "f6":
-        # Do not copy the corrupt result into the later producer document.
-        units = {unit: {"Result": "exit-code", "ActiveState": "failed", "SubState": "failed", "MainPID": 7, "NRestarts": 0, "InvocationID": "0" * 32, "ExecStartPre": [{"code": "exited", "status": 126}], "ExecMainCode": 1, "ExecMainStatus": 7} for unit in diagnostic.UNITS}
-        valid = {"phase": "positive_success", "units": units, "paths": {path: {"present": False} for path in diagnostic.PATHS}, "jobs": {unit: {"availability": "available", "records": [{"availability": "available", "unit": unit, "id": 42, "result": "failed"}]} for unit in diagnostic.UNITS}, "journal": [{"unit": diagnostic.UNITS[0], "cause": "main_exited", "timestamp": 100}]}
-        assert diagnostic._canonical_observation(valid)
-        malformed = json.loads(json.dumps(valid)); malformed["phase"] = "positive_failure"
+        # Obtain both documents from the real bounded collector; never copy a
+        # malformed record into the independent later producer fixture.
+        malformed = diagnostic.collect("positive_failure", diagnostics_dir / "positive_failure-observation.json", 9999999999, runner=_collector_runner(), window=(1, 2), now=lambda: 0)
         malformed["units"][diagnostic.UNITS[0]]["Result"] = {"wrong": "type"}
         (diagnostics_dir / "positive_failure-observation.json").write_text(json.dumps(malformed))
-        (diagnostics_dir / "positive_success-observation.json").write_text(json.dumps(valid))
+        diagnostic.collect("positive_success", diagnostics_dir / "positive_success-observation.json", 9999999999, runner=_collector_runner(), window=(1, 2), now=lambda: 0)
     exits["provenance"] = run("Record provenance")
     return exits, publish_dir, (tmp_path / "github-env").read_text() + "\nEFFECTS:\n" + (effect_log.read_text() if effect_log.exists() else ""), traces
 
@@ -747,6 +755,20 @@ def test_actual_yaml_regression_requirements_are_not_helper_only(tmp_path: Path,
     if case == "f6":
         retained = json.loads((published / "positive_success-observation.json").read_text())
         assert retained["phase"] == "positive_success" and retained["units"][diagnostic.UNITS[0]]["Result"] == "exit-code"
+
+
+def test_actual_yaml_f1_bool_and_negative_job_are_sanitized_without_losing_later_record(tmp_path: Path) -> None:
+    """Typed producer corruption is exercised through the literal YAML publisher."""
+    exits, published, _env_bytes, _traces = _actual_yaml_case(tmp_path, "f1-bool-job")
+    assert exits["provenance"] == 0
+    rejected = json.loads((published / "positive_failure-observation.json").read_text())
+    retained = json.loads((published / "positive_success-observation.json").read_text())
+    assert rejected == diagnostic._unavailable_observation("positive_failure")
+    assert retained["phase"] == "positive_success"
+    assert sorted(path.name for path in published.iterdir()) == [
+        "diagnostic-cleanup.json", "positive_failure-observation.json",
+        "positive_success-observation.json", "provenance.json", "receipt.txt",
+    ]
 
 
 @pytest.mark.parametrize("absence", ["baseline", "diagnostic", "shipping", "both"], ids=["F2-baseline", "F2-missing-diagnostic", "F2-missing-shipping", "F2-missing-both"])
