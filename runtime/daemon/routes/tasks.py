@@ -937,7 +937,15 @@ def _has_live_children(org, task_id: str) -> bool:
     return False
 
 
-@router.post("/tasks/{task_id}/resolve-escalation")
+@router.post(
+    "/tasks/{task_id}/resolve-escalation",
+    responses={410: {"description": (
+        "Retired autonomous continuation (`retired_autonomous_continuation`): "
+        "any presence of policy_id, policy_version, policy_provenance, "
+        "continuation_class, attestation_checks, evidence, invocation_token, "
+        "or dispatcher is rejected before human actor fallback or resolution."
+    )}},
+)
 async def resolve_escalation(
     task_id: str, body: ResolveEscalationBody, org: OrgDep, request: Request,
 ) -> dict:

@@ -1752,7 +1752,15 @@ def _reject_retired_th166_envelope(body: BaseModel) -> None:
         raise HTTPException(status_code=410, detail={"code": "retired_autonomous_continuation"})
 
 
-@router.post("/threads/{thread_id}/resolve-escalation")
+@router.post(
+    "/threads/{thread_id}/resolve-escalation",
+    responses={410: {"description": (
+        "Retired autonomous continuation (`retired_autonomous_continuation`): "
+        "any presence of policy_id, policy_version, policy_provenance, "
+        "continuation_class, attestation_checks, or evidence is rejected; "
+        "an agent thread continue is retired even without those fields."
+    )}},
+)
 async def resolve_escalation_from_thread(
     slug: str, thread_id: str, body: ThreadResolveEscalationBody,
     org: OrgDep, request: Request,

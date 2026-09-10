@@ -496,3 +496,17 @@ later obligation.
 ## Feishu Notifications (REMOVED)
 
 Feishu was removed in TASK-302 (THR-022). The web UI and threads are the sole control path for dispatch / revisit / resolve-escalation. Legacy `feishu_notifications` config blocks are tolerated on load but ignored. Database correlation tables (`escalation_notifications`, `processed_event_ids`) remain dormant in place.
+
+## Retired autonomous thread continuation
+
+Both served resolution contracts — `POST /tasks/{task_id}/resolve-escalation`
+and `POST /threads/{thread_id}/resolve-escalation` — return the stable `410`
+error code `retired_autonomous_continuation` when a former THR-166 envelope is
+present. Presence includes null, empty, malformed, and otherwise valid values
+for `policy_id`, `policy_version`, `policy_provenance`,
+`continuation_class`, `attestation_checks`, or `evidence`; the task route also
+rejects the former autonomous identity markers `invocation_token` and
+`dispatcher`. Rejection happens before actor fallback, invocation consumption,
+or the shared human resolver. A field-free agent thread `continue` is also
+retired. Ordinary human task resolution and thread `supersede` remain
+unchanged.
