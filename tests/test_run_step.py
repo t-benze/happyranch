@@ -3872,6 +3872,74 @@ def test_thr183_genuine_unresolved_second_failure_wakes_owner_without_escalation
     assert _escalation_audit_rows(db, "T-GENU") == []
 
 
+def test_fanout_dispatched_manager_owns_failed_child_not_carrier(runtime, db, monkeypatch):
+    """A decision-capable fanout ``task`` is not a passive pipeline carrier."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    for name in ("engineering_head", "dev_agent"):
+        (runtime.workspaces_dir / name).mkdir(parents=True, exist_ok=True)
+    db.insert_task(TaskRecord(id="T-OWNER-ROOT", brief="root", assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+
+    def run(task_id, *args, **kwargs):
+        if task_id == "T-OWNER-ROOT":
+            decision = {"action": "fanout", "width_cap_ack": 2, "children": [
+                {"agent": "engineering_head", "prompt": "nested decision owner"},
+                {"agent": "dev_agent", "prompt": "live sibling"},
+            ]}
+        elif db.get_task(task_id).task_type == "task":
+            decision = {"action": "delegate", "agent": "dev_agent", "prompt": "bounded child"}
+        else:
+            return _make_result(success=False), None
+        return _make_result(), _make_report(output_summary=json.dumps(decision))
+
+    monkeypatch.setattr(orch, "_run_agent", run)
+    orch.run_step("T-OWNER-ROOT")
+    owner = next(db.get_task(cid) for cid in db.get_children("T-OWNER-ROOT") if db.get_task(cid).task_type == "task")
+    orch.run_step(owner.id)
+    leaf = db.get_children(owner.id)[0]
+    orch.run_step(leaf)
+
+    assert db.get_task(leaf).status == TaskStatus.FAILED
+    assert db.get_task(owner.id).status == TaskStatus.IN_PROGRESS
+    assert db.get_task(owner.id).block_kind == BlockKind.DELEGATED
+
+
+def test_passive_carrier_join_keeps_causal_leaf_details(runtime, db, monkeypatch):
+    """The actual outer-manager prompt names both carrier and causal leaf."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+
+    for name in ("engineering_head", "dev_agent", "qa_engineer"):
+        (runtime.workspaces_dir / name).mkdir(parents=True, exist_ok=True)
+    db.insert_task(TaskRecord(id="T-CARRIER-ROOT", brief="root", assigned_agent="engineering_head"))
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._queue = _SlugQueue()
+    decision = {"action": "fanout", "width_cap_ack": 2, "children": [
+        {"agent": "dev_agent", "prompt": "pipeline", "then": [{"agent": "qa_engineer", "prompt": "qa", "expect_verdict": "PASS"}]},
+        {"agent": "dev_agent", "prompt": "live sibling"},
+    ]}
+    monkeypatch.setattr(orch, "_run_agent", lambda *a, **kw: (_make_result(), _make_report(output_summary=json.dumps(decision))))
+    orch.run_step("T-CARRIER-ROOT")
+    carrier = next(db.get_task(cid) for cid in db.get_children("T-CARRIER-ROOT") if db.get_task(cid).active_chain)
+    leaf = db.get_children(carrier.id)[0]
+    db.update_task(leaf, status=TaskStatus.FAILED, note="causal leaf diagnostic XYZ")
+    db.insert_task_result(task_id=leaf, agent="dev_agent", session_id="leaf-session", status="completed", confidence_score=80, output_summary="causal leaf diagnostic XYZ", verdict="FAIL")
+    _enqueue_parent_if_waiting(orch, leaf)
+    sibling = next(cid for cid in db.get_children("T-CARRIER-ROOT") if cid != carrier.id)
+    db.update_task(sibling, status=TaskStatus.COMPLETED, note="unrelated successful sibling")
+    _enqueue_parent_if_waiting(orch, sibling)
+    prompts: list[str] = []
+    monkeypatch.setattr(orch, "_run_agent", lambda task_id, agent, prompt, **kw: (prompts.append(prompt), _make_result(), _make_report(output_summary=json.dumps({"action": "done", "summary": "handled"})))[1:])
+    orch.run_step("T-CARRIER-ROOT")
+    assert len(prompts) == 1
+    assert f"carrier chain leg {leaf} failed" in prompts[0]
+    assert "causal_leaf_id=" + leaf in prompts[0]
+    assert "causal leaf diagnostic XYZ" in prompts[0]
+    assert "causal_verdict=FAIL" in prompts[0]
+
+
 def test_thr183_stale_lineage_does_not_escalate_a_fresh_failure(
     runtime, db,
 ):

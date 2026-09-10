@@ -2191,14 +2191,29 @@ def _advance_chain_for_completed_child(
 
 
 def _is_carrier(orch: "Orchestrator", parent: "TaskRecord") -> bool:
-    """True if ``parent`` is a pipeline carrier — its own parent has active_fanout set.
-    Carrier detection is schema-free: a carrier is any task whose id is in its
-    parent's active_fanout.children_ids and which has (or had) an active_chain.
-    We detect it by checking if the grandparent has active_fanout."""
+    """True only for a passive pipeline carrier in an enclosing fan-out.
+
+    A fan-out can also dispatch a decision-capable manager.  Both are direct
+    children of the fan-out parent, but the former retains the existing
+    ``subtask`` type while the latter is minted as ``task`` and owns its own
+    failure/revision decision.  Do not infer carrier status from ancestry
+    alone: doing so would fail a real manager upward on its first child
+    failure.
+    """
     if parent.parent_task_id is None:
         return False
     grandparent = orch._db.get_task(parent.parent_task_id)
-    return grandparent is not None and grandparent.active_fanout is not None
+    if parent.task_type != "subtask" or grandparent is None:
+        return False
+    if grandparent.active_fanout is None:
+        return False
+    try:
+        from runtime.orchestrator.fanout import FanoutState
+        return parent.id in FanoutState.deserialize(
+            grandparent.active_fanout
+        ).children_ids
+    except Exception:
+        return False
 
 
 def _carrier_fail_on_verdict_mismatch(
@@ -2285,8 +2300,27 @@ def _carrier_fail_immediate(
     False for non-carriers."""
     if not _is_carrier(orch, parent):
         return False
-    _fail(orch, parent.id,
-           note=f"carrier chain leg {child_task_id} failed")
+    child = orch._db.get_task(child_task_id)
+    report = orch._db.get_latest_completion_report(child_task_id)
+    verdict = report.verdict if report is not None and report.verdict else "(none)"
+    revisit = child.revisit_of_task_id if child is not None else None
+    reason = child.note if child is not None and child.note else "(no summary)"
+    # The carrier retains its own terminal outcome, while its existing note
+    # truthfully carries the leaf that caused it.  Fan-out join context reads
+    # direct child rows, so this preserves causal provenance without a new
+    # stored field or accidentally selecting an unrelated sibling.
+    _fail(
+        orch,
+        parent.id,
+        note=(
+            f"carrier chain leg {child_task_id} failed; "
+            f"causal_leaf_id={child_task_id}; causal_status="
+            f"{child.status.value if child is not None else '(unknown)'}; "
+            f"causal_verdict={verdict}; "
+            f"causal_revisit_of_task_id={revisit or '(none)'}; "
+            f"causal_reason={reason}"
+        ),
+    )
     # Feed carrier failure into the fan-out parent's barrier.
     _enqueue_parent_if_waiting(orch, parent.id)
     return True

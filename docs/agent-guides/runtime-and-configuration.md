@@ -484,17 +484,16 @@ Contract (founder-approved in THR-028, refined in THR-078):
    in the same lineage retires earlier FAILED ancestors for ceiling evaluation
    (THR-183).
 
-3. **Escalation on exhaustion.** When a slice's retry ceiling is exhausted
-   (its 2nd failure), a root parent transitions to `escalated` via
-   `try_escalate()`, carrying the causal terminal event (the current
-   unresolved FAILED leaf) in the escalation reason; a completed-child wake
-   cannot select a stale sibling reason. A non-root parent fails and recurses
-   upward (THR-033 root-only escalation). The parent does NOT cascade-fail —
-   the founder or upstream manager resolves the termination per existing routes.
+3. **Manager ownership on exhaustion.** A retried slice's second failure keeps
+   its durable causal lineage and wakes the owning manager. It is not a runtime
+   escalation or upward cascade. Any later manager-proposed escalation follows
+   the configured THR-181 hook; inactive/static policy is not evaluator
+   CONTINUE, and committed escalations remain human-resolved.
 
-4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
-   COMPLETED) clears the active chain and hands the parent back to its
-   bounded-wake path (same per-slice ceiling + escalation).
+4. **Chain-leg failure.** A failed chain leg clears the chain and returns a
+   decision owner to bounded wake. Passive pipeline carriers instead fail
+   closed and settle through their outer fan-out barrier with causal-leaf
+   context intact.
 
 5. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
    next decision step. REVISE-verdict auto-advance in chains is unchanged.

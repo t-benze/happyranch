@@ -304,7 +304,7 @@ Contract (founder-approved in THR-028, refined in THR-078):
    author an updated brief.
 
 2. **Per-slice retry ceiling (THR-078).** A delegated slot gets exactly one
-   retry: the Ceiling is `_SLICE_RETRY_CEILING = 1` — a slice that already had a
+   linked retry: the ceiling is `_SLICE_RETRY_CEILING = 1` — a slice that already had a
    FAILED predecessor under the same parent (tracked via `revisit_of_task_id`
    lineage, evaluated by `_is_slice_retry_exhausted`) and fails again exhausts
    the ceiling. Retry of a COMPLETED predecessor does not count toward the
@@ -318,9 +318,10 @@ Contract (founder-approved in THR-028, refined in THR-078):
    upward. A manager-proposed escalation uses the existing THR-181 hook and
    its configured outcome; committed escalations remain human-resolved.
 
-4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
-   COMPLETED) clears the active chain and hands the parent back to its
-   bounded-wake path (same per-slice ceiling + escalation).
+4. **Chain-leg failure.** A failed workflow chain leg clears the active chain
+   and returns its decision owner to bounded wake. A passive fan-out pipeline
+   carrier instead fails closed and preserves its causal leaf for the outer
+   fan-out barrier; a fanout-dispatched `task` manager remains its local owner.
 
 5. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
    next decision step. REVISE-verdict auto-advance in chains is unchanged.
@@ -340,6 +341,10 @@ Traps:
   first failure).
 - A retry-ceiling hit is causal context, not a runtime escalation trigger:
   the owner decides revised recovery or a THR-181 escalation proposal.
+- Retry links are mechanical provenance, never a semantic brief comparison:
+  unchanged assignment re-execution and manager-directed revised work both
+  require an explicit valid predecessor link, and the daemon creates neither
+  retry nor successor loops.
 - Chain-advance in `_enqueue_parent_if_waiting` handles FAILED subtasks:
   failed chain legs clear the chain and fall through to bounded-wake.
 - Self-block (`status=blocked` + empty `waiting_on_job_ids`) is a malformed
