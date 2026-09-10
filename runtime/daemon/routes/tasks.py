@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from runtime.daemon.auth import require_token
@@ -749,6 +749,11 @@ async def submit_progress(task_id: str, body: ProgressBody, org: OrgDep) -> dict
 
 
 class ResolveEscalationBody(BaseModel):
+    # Preserve retired-envelope keys long enough to reject them by presence.
+    # The prior default extra-ignore behavior could silently turn an old agent
+    # continuation request into a founder-style human continuation.
+    model_config = ConfigDict(extra="allow")
+
     decision: str  # "supersede" | "continue"
     rationale: str = ""
     # For supersede: the brief for the successor task.
@@ -756,6 +761,22 @@ class ResolveEscalationBody(BaseModel):
     # Caller-declared actor for attribution. Advisory only — founder and agents
     # share one bearer token. Omitted/blank → "founder".
     actor: str | None = None
+
+
+_RETIRED_THR166_INGRESS_FIELDS = frozenset({
+    "policy_id", "policy_version", "policy_provenance", "continuation_class",
+    "attestation_checks", "evidence", "invocation_token", "dispatcher",
+})
+
+
+def _reject_retired_th166_task_envelope(body: ResolveEscalationBody) -> None:
+    """Reject a former autonomous envelope before human fallback.
+
+    This is deliberately a presence check, so null, empty, malformed, and
+    valid legacy values have identical non-reflective retirement behavior.
+    """
+    if _RETIRED_THR166_INGRESS_FIELDS.intersection(body.model_extra or {}):
+        raise HTTPException(status_code=410, detail={"code": "retired_autonomous_continuation"})
 
 
 async def resolve_escalation_in_process(
@@ -921,6 +942,7 @@ async def resolve_escalation(
     task_id: str, body: ResolveEscalationBody, org: OrgDep, request: Request,
 ) -> dict:
     state: DaemonState = request.app.state.daemon
+    _reject_retired_th166_task_envelope(body)
     actor = (body.actor or "").strip() or "founder"
     new_status = await resolve_escalation_in_process(
         org, state,
