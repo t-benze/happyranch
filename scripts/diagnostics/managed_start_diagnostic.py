@@ -26,6 +26,7 @@ PHASES = frozenset(("negative", "prepositive", "positive_failure", "positive_suc
 MAX_BYTES = 4096
 MAX_LINES = 32
 MAX_RECORDS = 16
+MAX_JOURNAL_RECORDS = 64
 MAX_WINDOW_SECONDS = 3600
 MAX_BUDGET_SECONDS = 60
 ALLOWED_RESULT = frozenset(("success", "exit-code", "signal", "timeout", "resources", "protocol", "unknown"))
@@ -440,9 +441,23 @@ def _canonical_observation(value: object) -> bool:
     if not isinstance(units, dict) or set(units) != set(UNITS) or not isinstance(paths, dict) or set(paths) != set(PATHS) or not isinstance(jobs, dict) or set(jobs) != set(UNITS):
         return False
     for item in units.values():
-        if not isinstance(item, dict) or any(not isinstance(key, str) or key not in {"Result", "ActiveState", "SubState", "MainPID", "NRestarts", "InvocationID", "ActiveEnterTimestampMonotonic", "ExecStartPre", "ExecMainCode", "ExecMainStatus", "availability"} for key in item): return False
+        if not isinstance(item, dict) or not item: return False
+        if item == {"availability": "unavailable"}: continue
+        if "availability" in item or not set(item) <= {"Result", "ActiveState", "SubState", "MainPID", "NRestarts", "InvocationID", "ActiveEnterTimestampMonotonic", "ExecStartPre", "ExecMainCode", "ExecMainStatus"}: return False
+        for key, field in item.items():
+            if field == {"availability": "not_applicable"} and key in OPTIONAL_PROPERTIES: continue
+            if key == "Result" and field in ALLOWED_RESULT: continue
+            if key == "ActiveState" and field in ALLOWED_ACTIVE: continue
+            if key == "SubState" and field in ALLOWED_SUB: continue
+            if key == "InvocationID" and isinstance(field, str) and re.fullmatch(r"[0-9a-f]{32}", field): continue
+            if key in {"MainPID", "NRestarts", "ActiveEnterTimestampMonotonic", "ExecMainStatus"} and isinstance(field, int) and not isinstance(field, bool) and 0 <= field <= 2**63 - 1: continue
+            if key == "ExecMainCode" and isinstance(field, int) and not isinstance(field, bool) and field in {0, 1, 2, 3}: continue
+            if key == "ExecStartPre" and isinstance(field, list) and len(field) <= MAX_RECORDS and all(isinstance(row, dict) and set(row) == {"code", "status"} and row["code"] in {"exited", "killed", "dumped"} and isinstance(row["status"], int) and not isinstance(row["status"], bool) and 0 <= row["status"] <= 2**63 - 1 for row in field): continue
+            return False
     for item in paths.values():
-        if not isinstance(item, dict) or not (item == {"availability": "unavailable"} or item == {"present": False} or (set(item) == {"present", "custody"} and item["present"] is True and isinstance(item["custody"], dict) and set(item["custody"]) == {"owner_uid", "owner_gid", "mode_hex"})): return False
+        if not isinstance(item, dict) or item == {"availability": "unavailable"} or item == {"present": False}: continue
+        custody = item.get("custody") if item.get("present") is True and set(item) == {"present", "custody"} else None
+        if not isinstance(custody, dict) or set(custody) != {"owner_uid", "owner_gid", "mode_hex"} or not all(isinstance(custody[key], int) and not isinstance(custody[key], bool) and 0 <= custody[key] <= 2**63 - 1 for key in ("owner_uid", "owner_gid")) or not isinstance(custody["mode_hex"], str) or not re.fullmatch(r"[0-9a-f]{1,8}", custody["mode_hex"]): return False
     for unit, item in jobs.items():
         if not isinstance(item, dict): return False
         if item.get("availability") == "unavailable":
@@ -451,7 +466,11 @@ def _canonical_observation(value: object) -> bool:
             if set(item) != {"availability", "records"} or not isinstance(item["records"], list) or len(item["records"]) > MAX_RECORDS: return False
             if any(not isinstance(record, dict) or set(record) != {"availability", "unit", "id", "result"} or record["availability"] != "available" or record["unit"] != unit or not isinstance(record["id"], int) or record["result"] not in {"done", "failed", "canceled", "timeout", "dependency", "skipped"} for record in item["records"]): return False
         else: return False
-    return isinstance(journal, list) and len(journal) <= MAX_RECORDS and all(isinstance(item, dict) and set(item) == {"unit", "cause", "timestamp"} and item["unit"] in UNITS and item["cause"] in CAUSES and isinstance(item["timestamp"], int) for item in journal)
+    return (journal == {"availability": "unavailable", "reason": "window_unavailable"} or isinstance(journal, list) and len(journal) <= MAX_JOURNAL_RECORDS and all(isinstance(item, dict) and set(item) == {"unit", "cause", "timestamp"} and item["unit"] in UNITS and item["cause"] in CAUSES and isinstance(item["timestamp"], int) and not isinstance(item["timestamp"], bool) and 0 <= item["timestamp"] <= 2**63 - 1 for item in journal))
+
+
+def _unavailable_observation(phase: str) -> dict[str, object]:
+    return {"phase": phase, "units": {unit: {"availability": "unavailable"} for unit in UNITS}, "paths": {path: {"availability": "unavailable"} for path in PATHS}, "jobs": {unit: {"availability": "unavailable", "reason": "query_failed"} for unit in UNITS}, "journal": {"availability": "unavailable", "reason": "window_unavailable"}}
 
 
 def publish(diagnostics: Path, destination: Path, *, identities: dict[str, str | None]) -> bool:
@@ -474,7 +493,8 @@ def publish(diagnostics: Path, destination: Path, *, identities: dict[str, str |
         "package": _safe_identity(identities.get("package"), r"[0-9a-f]{64}"),
         "run_id": _safe_identity(identities.get("run_id"), r"[0-9]{1,20}"),
         "run_attempt": _safe_identity(identities.get("run_attempt"), r"[0-9]{1,4}"),
-        "runner_image": _safe_identity(identities.get("runner_image"), r"ubuntu-24\.04"),
+        "runner_image": _safe_identity(identities.get("runner_image"), r"ubuntu24|ubuntu-24\.04"),
+        "image_version": _safe_identity(identities.get("image_version"), r"[0-9]{8}\.[0-9]+\.[0-9]+"),
         "systemd": _safe_identity(identities.get("systemd"), r"255"),
     }
     try:
@@ -484,6 +504,8 @@ def publish(diagnostics: Path, destination: Path, *, identities: dict[str, str |
             if name == "receipt.txt" and source.is_file():
                 # Receipt has only fixed keys and numeric statuses; malformed
                 # content is represented by the fixed unavailable record.
+                if source.stat().st_size > MAX_BYTES:
+                    continue
                 lines = source.read_text(encoding="ascii", errors="strict").splitlines()
                 allowed = {"schema", "run_id", "run_attempt", "build_status", "harness_status"}
                 values = dict(line.split("=", 1) for line in lines if line.count("=") == 1)
@@ -493,13 +515,21 @@ def publish(diagnostics: Path, destination: Path, *, identities: dict[str, str |
                 value = json.loads(source.read_text(encoding="utf-8"))
                 if value in ({"cleanup": "complete"}, {"cleanup": "failed"}):
                     _write_document(destination / name, value)
-        for source in diagnostics.glob("*-observation.json"):
-            value = json.loads(source.read_text(encoding="utf-8"))
+        for phase in sorted(PHASES):
+            source = diagnostics / f"{phase}-observation.json"
+            if not source.is_file():
+                continue
+            if source.stat().st_size > MAX_BYTES * 32:
+                _write_document(destination / f"{phase}-observation.json", _unavailable_observation(phase)); continue
+            try:
+                value = json.loads(source.read_text(encoding="utf-8"))
+            except (UnicodeError, ValueError):
+                _write_document(destination / f"{phase}-observation.json", _unavailable_observation(phase)); continue
             # The collector's only accepted artifact shape has exact top-level
             # keys. This rejects opaque/nested additions before reserialization.
             if not _canonical_observation(value):
-                continue
-            _write_document(destination / source.name, value)
+                _write_document(destination / f"{phase}-observation.json", _unavailable_observation(phase)); continue
+            _write_document(destination / f"{phase}-observation.json", value)
     except (OSError, UnicodeError, ValueError, TypeError):
         return False
     return True

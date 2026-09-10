@@ -288,7 +288,9 @@ def test_publication_consumer_rejects_opaque_json_and_sanitizes_metadata(tmp_pat
     assert diagnostic.publish(diagnostics, published, identities={"run_id": "12", "run_attempt": "1", "runner_image": "ubuntu-24.04", "systemd": "255", "shipping": "a" * 40, "diagnostic": "b" * 40, "workflow": "c" * 64, "script": "d" * 64, "tests": "e" * 64, "package": "f" * 64})
     output = "".join(path.read_text() for path in published.iterdir())
     assert canary not in output
-    assert not (published / "positive_failure-observation.json").exists()
+    fallback = json.loads((published / "positive_failure-observation.json").read_text())
+    assert fallback["phase"] == "positive_failure"
+    assert all(item == {"availability": "unavailable"} for item in fallback["units"].values())
     assert not (published / "diagnostic-cleanup.json").exists()
     assert not (published / "receipt.txt").exists()
     provenance = json.loads((published / "provenance.json").read_text())
@@ -303,6 +305,21 @@ def test_publication_consumer_retains_only_canonical_observation_and_cleanup(tmp
     assert diagnostic.publish(diagnostics, published, identities={})
     assert json.loads((published / "positive_failure-observation.json").read_text()) == document
     assert json.loads((published / "diagnostic-cleanup.json").read_text()) == {"cleanup": "failed"}
+
+
+def test_publication_strictly_types_nested_fields_and_retains_four_query_journal(tmp_path: Path) -> None:
+    diagnostics, published = tmp_path / "diagnostics", tmp_path / "published"
+    diagnostics.mkdir()
+    document = diagnostic.collect("positive_failure", diagnostics / "positive_failure-observation.json", 9999999999, _collector_runner(), window=(1, 2), now=lambda: 0)
+    document["units"][diagnostic.UNITS[0]]["MainPID"] = True
+    (diagnostics / "positive_failure-observation.json").write_text(json.dumps(document))
+    assert diagnostic.publish(diagnostics, published, identities={})
+    assert json.loads((published / "positive_failure-observation.json").read_text())["units"][diagnostic.UNITS[0]] == {"availability": "unavailable"}
+    document = diagnostic.collect("positive_failure", diagnostics / "positive_failure-observation.json", 9999999999, _collector_runner(), window=(1, 2), now=lambda: 0)
+    document["journal"] = [{"unit": diagnostic.UNITS[0], "cause": "credential_missing", "timestamp": item} for item in range(64)]
+    (diagnostics / "positive_failure-observation.json").write_text(json.dumps(document))
+    assert diagnostic.publish(diagnostics, published, identities={})
+    assert len(json.loads((published / "positive_failure-observation.json").read_text())["journal"]) == 64
 
 
 def test_actual_shipping_denial_validator_accepts_complete_matrix_and_rejects_invalid(tmp_path: Path) -> None:
