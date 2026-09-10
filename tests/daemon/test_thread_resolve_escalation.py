@@ -131,7 +131,7 @@ def _durable_rows(db, table: str, where: str = "", values: tuple = ()) -> list[d
     return [dict(row) for row in db.execute(f"SELECT * FROM {table} {where} ORDER BY 1", values)]
 
 
-def _rejection_snapshot(org, state, token: str) -> dict[str, object]:
+def _rejection_snapshot(org, state, token: str, request_token: str | None = None) -> dict[str, object]:
     """All causal lifecycle state a retired request must leave untouched.
 
     Each named reader is deliberately separate: ``audit`` and ``intent`` are
@@ -146,6 +146,13 @@ def _rejection_snapshot(org, state, token: str) -> dict[str, object]:
         "children": [org.db.get_task(child_id).model_dump(mode="json")
                      for child_id in org.db.get_children("T-1")],
         "invocation": invocation.model_dump(mode="json") if invocation else None,
+        # The request token can differ from the formerly-valid causal token.
+        # Keep both readers explicit for stale/wrong-owner/wrong-thread cases.
+        "request_invocation": (
+            request_invocation.model_dump(mode="json")
+            if (request_invocation := org.db.get_invocation_any_status(request_token or token))
+            else None
+        ),
         "invocations": _durable_rows(org.db, "thread_invocations"),
         "open_notifications": org.db.list_open_notifications_for_task("T-1"),
         "notification_history": _durable_rows(org.db, "escalation_notifications"),
@@ -165,6 +172,64 @@ def _rejection_snapshot(org, state, token: str) -> dict[str, object]:
         "authority_envelope": org.db.get_active_authority_continue_envelope("T-1"),
         "queues": _queue_contents(state, org),
     }
+
+
+def _configure_retired_context(org, frozen_token: str, context: str) -> str:
+    """Make each retired-request context a real isolated fixture state."""
+    if context == "pending":
+        assert org.db.get_invocation_any_status(frozen_token).status is ThreadInvocationStatus.PENDING
+        return frozen_token
+    if context == "consumed":
+        assert org.db.consume_invocation(frozen_token)
+        assert org.db.get_invocation_any_status(frozen_token).status is ThreadInvocationStatus.CONSUMED
+        return frozen_token
+    if context == "stale_token":
+        assert org.db.get_invocation_any_status("stale-token") is None
+        return "stale-token"
+    if context == "wrong_token_owner":
+        token = org.db.mint_thread_invocation(
+            thread_id="THR-1", agent_name="other_manager", triggering_seq=1,
+            purpose=ThreadInvocationPurpose.REPLY,
+        ).invocation_token
+        assert org.db.get_invocation_any_status(token).agent_name == "other_manager"
+        return token
+    if context == "wrong_token_thread":
+        org.db.insert_thread(ThreadRecord(id="THR-OTHER", subject="Other", status=ThreadStatus.OPEN))
+        org.db.add_thread_participant("THR-OTHER", "engineering_head", added_by="founder")
+        token = org.db.mint_thread_invocation(
+            thread_id="THR-OTHER", agent_name="engineering_head", triggering_seq=1,
+            purpose=ThreadInvocationPurpose.REPLY,
+        ).invocation_token
+        assert org.db.get_invocation_any_status(token).thread_id == "THR-OTHER"
+        return token
+    if context == "missing_causal":
+        # The task-escalated message retains a result id whose actual causal
+        # task-result row is now absent, rather than adding an unrelated marker.
+        org.db.execute("DELETE FROM task_results WHERE task_id = ?", ("T-1",))
+        assert org.db.get_task_results("T-1") == []
+    elif context == "unrelated_causal":
+        org.db.execute("UPDATE task_results SET task_id = ? WHERE task_id = ?", ("T-UNRELATED", "T-1"))
+        assert org.db.get_task_results("T-1") == []
+    elif context == "malformed_causal":
+        org.db.execute("UPDATE task_results SET verdict = NULL WHERE task_id = ?", ("T-1",))
+        assert org.db.get_task_results("T-1")[0]["verdict"] is None
+    elif context == "root_task":
+        assert org.db.get_task("T-1").parent_task_id is None
+    elif context == "non_root_task":
+        org.db.insert_task(TaskRecord(id="T-PARENT", brief="parent"))
+        # parent_task_id is immutable to ordinary lifecycle callers; this is
+        # isolated fixture construction of an already-persisted non-root row.
+        org.db.execute("UPDATE tasks SET parent_task_id = ? WHERE id = ?", ("T-PARENT", "T-1"))
+        assert org.db.get_task("T-1").parent_task_id == "T-PARENT"
+    elif context == "cancelled_task":
+        org.db.update_task("T-1", status=TaskStatus.CANCELLED)
+        assert org.db.get_task("T-1").status is TaskStatus.CANCELLED
+    elif context == "live_child":
+        org.db.insert_task(TaskRecord(id="T-CHILD", brief="live", parent_task_id="T-1"))
+        assert org.db.get_children("T-1") == ["T-CHILD"]
+    elif context != "repeated_identical_replay":
+        raise AssertionError(f"unmapped context: {context}")
+    return frozen_token
 
 
 def _causal_transition_snapshot(org, state, token: str) -> dict[str, object]:
@@ -338,6 +403,16 @@ async def test_retired_rejection_survives_close_reopen_and_preserves_historical_
     client, org = client_with_runtime
     payload, token = _frozen_formerly_valid_continue(org, monkeypatch)
     before = _rejection_snapshot(org, client.app.state.daemon, token)
+    # These are actual historical causal fixture records, not an assertion
+    # that the current task alone is a "legacy" proxy.
+    assert before["results"] and before["results"][0]["task_id"] == "T-1"
+    assert any(row["action"] == "escalation" for row in before["task_audit"])
+    assert any(row["action"] == "thread_dispatch" for row in before["thread_audit"])
+    assert any(
+        (message.get("system_payload") or {}).get("kind_tag") == "task_escalated"
+        for message in before["thread_envelope"]
+    )
+    assert any(row["purpose"] == ThreadInvocationPurpose.TASK_FOLLOWUP.value for row in before["invocations"])
     response = client.post("/api/v1/orgs/alpha/threads/THR-1/resolve-escalation", json=payload)
     assert response.status_code == 410
     db_path = Path(org.db.db_path)
@@ -375,26 +450,16 @@ async def test_thread_agent_continue_is_retired_without_legacy_fields(client_wit
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "context,request_token,setup",
+    "context",
     [
-        ("pending", "frozen", None),
-        ("consumed", "frozen", "consume"),
-        ("stale_token", "stale-token", None),
-        ("wrong_token_owner", "wrong-owner-token", "wrong_owner"),
-        ("wrong_token_thread", "wrong-thread-token", "wrong_thread"),
-        ("repeated_identical_replay", "frozen", None),
-        ("missing_causal", "frozen", "missing_causal"),
-        ("unrelated_causal", "frozen", "unrelated_causal"),
-        ("malformed_causal", "frozen", "malformed_causal"),
-        ("root_task", "frozen", None),
-        ("non_root_task", "frozen", "non_root"),
-        ("cancelled_task", "frozen", "cancelled"),
-        ("live_child", "frozen", "live_child"),
+        "pending", "consumed", "stale_token", "wrong_token_owner",
+        "wrong_token_thread", "repeated_identical_replay", "missing_causal",
+        "unrelated_causal", "malformed_causal", "root_task", "non_root_task",
+        "cancelled_task", "live_child",
     ],
-    ids=lambda cell: str(cell),
 )
 async def test_retired_contexts_reject_before_both_shared_resolver_lookups(
-    client_with_runtime, monkeypatch, context, request_token, setup,
+    client_with_runtime, monkeypatch, context,
 ):
     """Each formerly-live context is rejected before auth/lineage/fallback.
 
@@ -404,36 +469,10 @@ async def test_retired_contexts_reject_before_both_shared_resolver_lookups(
     """
     client, org = client_with_runtime
     payload, frozen_token = _frozen_formerly_valid_continue(org, monkeypatch)
-    actual_token = frozen_token if request_token == "frozen" else request_token
-    if setup == "consume":
-        org.db.consume_invocation(frozen_token)
-    elif setup == "wrong_owner":
-        actual_token = org.db.mint_thread_invocation(
-            thread_id="THR-1", agent_name="other_manager", triggering_seq=1,
-            purpose=ThreadInvocationPurpose.REPLY,
-        ).invocation_token
-    elif setup == "wrong_thread":
-        org.db.insert_thread(ThreadRecord(id="THR-OTHER", subject="Other", status=ThreadStatus.OPEN))
-        org.db.add_thread_participant("THR-OTHER", "engineering_head", added_by="founder")
-        actual_token = org.db.mint_thread_invocation(
-            thread_id="THR-OTHER", agent_name="engineering_head", triggering_seq=1,
-            purpose=ThreadInvocationPurpose.REPLY,
-        ).invocation_token
-    elif setup == "non_root":
-        org.db.update_task("T-1", parent_task_id="PARENT")
-    elif setup == "cancelled":
-        org.db.update_task("T-1", status=TaskStatus.CANCELLED)
-    elif setup == "live_child":
-        org.db.insert_task(TaskRecord(id="T-CHILD", brief="live", parent_task_id="T-1"))
-    elif setup in {"missing_causal", "unrelated_causal", "malformed_causal"}:
-        # Isolated additional records model absent/unrelated/malformed causal
-        # evidence without mutating the frozen valid record.
-        marker = "missing" if setup == "missing_causal" else setup
-        org.db.insert_audit_log("THR-1", "founder", "causal_fixture_marker", {"context": marker})
-    token = actual_token
+    token = _configure_retired_context(org, frozen_token, context)
     state = client.app.state.daemon
     state.queue.put_nowait("alpha", f"SENTINEL-{context}")
-    before = _rejection_snapshot(org, state, frozen_token)
+    before = _rejection_snapshot(org, state, frozen_token, token)
     from runtime.daemon.routes import tasks
     calls: list[object] = []
 
@@ -445,18 +484,20 @@ async def test_retired_contexts_reject_before_both_shared_resolver_lookups(
     thread_payload = {**payload, "invocation_token": token}
     task_payload = {"decision": "continue", "rationale": "retired", "policy_id": payload["policy_id"],
                     "invocation_token": token, "dispatcher": "engineering_head"}
-    for route, body in (
+    requests = (
         ("/api/v1/orgs/alpha/threads/THR-1/resolve-escalation", thread_payload),
         ("/api/v1/orgs/alpha/tasks/T-1/resolve-escalation", task_payload),
-    ):
+    )
+    for route, body in requests:
         response = client.post(route, json=body)
         assert response.status_code == 410, (context, route, response.text)
         assert response.json()["detail"] == {"code": "retired_autonomous_continuation"}
-        assert _rejection_snapshot(org, state, frozen_token) == before
+        assert _rejection_snapshot(org, state, frozen_token, token) == before
     if context == "repeated_identical_replay":
-        replay = client.post("/api/v1/orgs/alpha/threads/THR-1/resolve-escalation", json=thread_payload)
-        assert replay.status_code == 410
-        assert _rejection_snapshot(org, state, frozen_token) == before
+        for route, body in requests:
+            replay = client.post(route, json=body)
+            assert replay.status_code == 410, (context, route, replay.text)
+            assert _rejection_snapshot(org, state, frozen_token, token) == before
     assert calls == []
 
 
