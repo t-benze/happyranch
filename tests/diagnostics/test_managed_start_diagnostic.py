@@ -91,6 +91,39 @@ def test_emitted_shell_uses_absolute_observer_and_preserves_first_start_status(t
     assert 'diagnostic_cleanup "$status"' in rendered
     assert 'diagnostic-cleanup.json' in rendered
     assert 'diagnostics="${N3_DIAGNOSTICS_DIR:-$(mktemp -d)}"' in rendered
+    assert 'DIAGNOSTIC_PYTHON=' in rendered
+    assert '"$DIAGNOSTIC_PYTHON" "$DIAGNOSTIC_OBSERVER" --capture' in rendered
+    assert 'window_start=$((now - 60))' in rendered
+    assert 'diagnostic_signal_term() { trap - INT TERM; exit 143; }' in rendered
+
+
+def test_actual_emitted_shell_cleans_partial_setup_without_host_effects(tmp_path: Path) -> None:
+    """The emitted bytes, not a shell surrogate, own early failure cleanup."""
+    generated = tmp_path / "generated.sh"
+    write = subprocess.run(
+        [sys.executable, str(SCRIPT), "--extract", "--shipping", str(SHIPPING), "--output", str(generated)],
+        check=False, capture_output=True, text=True,
+    )
+    assert write.returncode == 0, write.stderr
+    fake_bin = tmp_path / "fake-bin"; fake_bin.mkdir()
+    (fake_bin / "ps").write_text("#!/bin/sh\necho systemd\n")
+    (fake_bin / "systemctl").write_text("#!/bin/sh\nexit 0\n")
+    # Never forward a privileged-looking command: this is a finite fake-effect
+    # seam and records no host service, package, or filesystem mutation.
+    (fake_bin / "sudo").write_text("#!/bin/sh\nexit 0\n")
+    (fake_bin / "curl").write_text("#!/bin/sh\nexit 7\n")
+    (fake_bin / "sha256sum").write_text("#!/bin/sh\nexit 0\n")
+    for executable in fake_bin.iterdir(): executable.chmod(0o755)
+    package = tmp_path / "package.tar"; package.write_bytes(b"package")
+    diagnostics = tmp_path / "diagnostics"
+    env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", PACKAGE_TAR=str(package),
+               PROOF_SUBJECT_SHA="2147c5c6edb5d847e4c0ca855a044fa850fd7e11", N3_DIAGNOSTICS_DIR=str(diagnostics))
+    result = subprocess.run(["bash", str(generated)], cwd=ROOT, env=env, check=False, capture_output=True, text=True, timeout=10)
+    receipt = diagnostics / "diagnostic-cleanup.json"
+    assert result.returncode == 7
+    assert receipt.exists()
+    assert receipt.read_text() == '{"cleanup":"complete"}\n'
+    assert "synthetic-daemon-token" not in result.stdout + result.stderr + receipt.read_text()
 
 
 def _shipping_function(source: str, name: str, successor: str) -> str:

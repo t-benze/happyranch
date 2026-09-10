@@ -77,28 +77,39 @@ def extract_startup(source: str, *, expected_digest: str = FROZEN_SHIPPING_SHA25
     prefix = prefix.replace("  local original_status=$? cleanup_failed=0", "  local cleanup_failed=0", 1)
     prefix = prefix.replace(finalize_anchor, "", 1).replace(exit_anchor, "  return \"$cleanup_failed\"\n", 1)
     observer = shlex.quote(str(Path(__file__).resolve()))
+    interpreter = shlex.quote(os.path.realpath(os.sys.executable))
     envelope = f'''\n# diagnostic-only envelope: this never finalizes/validates full N3 evidence.
 diagnostic_capture() {{
-  local phase="$1" status=0 now
+  local phase="$1" status=0 now window_start
   now="$(date +%s)"
-  "$DIAGNOSTIC_OBSERVER" --capture --phase "$phase" --window-start "$now" --window-end "$now" --budget-seconds 5 --output "$diagnostics/$phase-observation.json" >/dev/null 2>&1 || status=$?
+  # A finite lookback retains events recorded within this wall-clock second
+  # (including journal's fractional timestamps) without adding a wait.
+  window_start=$((now - 60))
+  "$DIAGNOSTIC_PYTHON" "$DIAGNOSTIC_OBSERVER" --capture --phase "$phase" --window-start "$window_start" --window-end "$now" --budget-seconds 5 --output "$diagnostics/$phase-observation.json" >/dev/null 2>&1 || status=$?
   return "$status"
 }}
 diagnostic_cleanup() {{
   local original_status="$1" cleanup_status=0
   (( diagnostic_cleanup_done == 0 )) || return 0
   diagnostic_cleanup_done=1
-  cleanup || cleanup_status=$?
+  if declare -F cleanup >/dev/null; then
+    cleanup || cleanup_status=$?
+  elif [[ -n "${{work:-}}" ]]; then
+    rm -rf "$work" || cleanup_status=1
+  fi
   printf '{{"cleanup":"%s"}}\\n' "$([[ $cleanup_status == 0 ]] && printf complete || printf failed)" >"$diagnostics/diagnostic-cleanup.json" || cleanup_status=1
   (( original_status != 0 )) && return "$original_status"
   return "$cleanup_status"
 }}
 diagnostic_exit() {{ local status=$?; trap - EXIT INT TERM; diagnostic_cleanup "$status"; exit $?; }}
-diagnostic_signal() {{ trap - INT TERM; exit 130; }}
+diagnostic_signal_int() {{ trap - INT TERM; exit 130; }}
+diagnostic_signal_term() {{ trap - INT TERM; exit 143; }}
 DIAGNOSTIC_OBSERVER={observer}
+DIAGNOSTIC_PYTHON={interpreter}
 diagnostic_cleanup_done=0
 trap diagnostic_exit EXIT
-trap diagnostic_signal INT TERM
+trap diagnostic_signal_int INT
+trap diagnostic_signal_term TERM
 '''
     startup = literal[start : first + len(FIRST_POSITIVE)]
     startup = startup.replace(FIRST_POSITIVE, '''set +e
@@ -114,7 +125,10 @@ exit "$diagnostic_first_positive_status"
 ''', 1)
     startup = startup.replace("sudo systemctl start happyranch-managed.target || true\nsleep 2", "sudo systemctl start happyranch-managed.target || true\nsleep 2\ndiagnostic_capture negative || true", 1)
     startup = startup.replace("capture_denial_matrix shipping-unit\n", "capture_denial_matrix shipping-unit\ndiagnostic_capture prepositive || true\n", 1)
-    return prefix.replace(trap_anchor, envelope, 1) + startup
+    # Install the diagnostic trap before the frozen setup creates ``work`` or
+    # initializes evidence.  The fallback above removes an already-created
+    # work directory if that initialization fails before ``cleanup`` exists.
+    return envelope + prefix.replace(trap_anchor, "", 1) + startup
 
 
 def write_extraction(source: Path, output: Path) -> None:
