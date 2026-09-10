@@ -13,11 +13,12 @@ jobs:
       - name: Initialize failure-safe diagnostic receipt
         run: |
           set -euo pipefail
-          diagnostics="${RUNNER_TEMP}/managed-start-diagnostic"; package_tmp="${RUNNER_TEMP}/managed-start-package"
-          mkdir -p "$diagnostics" "$package_tmp"
-          printf 'schema=managed-start-diagnostic-receipt-v1\nrun_id=%s\nrun_attempt=%s\nrunner_image=%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "${ImageOS:-unavailable}" > "$diagnostics/receipt.txt"
+          diagnostics="${RUNNER_TEMP}/managed-start-diagnostic"; package_tmp="${RUNNER_TEMP}/managed-start-package"; publish="${RUNNER_TEMP}/managed-start-publish"
+          mkdir -p "$diagnostics" "$package_tmp" "$publish"
+          printf 'schema=managed-start-diagnostic-receipt-v1\nrun_id=%s\nrun_attempt=%s\nrunner_image=%s\n' "${GITHUB_RUN_ID//[^0-9]/unavailable}" "${GITHUB_RUN_ATTEMPT//[^0-9]/unavailable}" "${ImageOS:-unavailable}" > "$diagnostics/receipt.txt"
           echo "DIAGNOSTICS=$diagnostics" >> "$GITHUB_ENV"
           echo "PACKAGE_TMP=$package_tmp" >> "$GITHUB_ENV"
+          echo "PUBLISH=$publish" >> "$GITHUB_ENV"
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with: {path: diagnostic}
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -27,32 +28,28 @@ jobs:
       - name: Build pinned shipping package
         working-directory: shipping
         run: |
-          set -euo pipefail
+          set -uo pipefail
           package_tmp="$PACKAGE_TMP"
-          uv sync --frozen --group build
-          (cd app/linux/tsnet-sidecar && go test ./... && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$package_tmp/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
-          uv build --wheel --out-dir "$package_tmp"
-          wheel="$(find "$package_tmp" -maxdepth 1 -name 'happyranch-*.whl' -print -quit)"
-          uv run python app/linux/package/build_connector.py --wheel "$wheel" --output "$package_tmp/happyranch-connector"
-          uv run python app/linux/package/build_package.py --sidecar "$package_tmp/happyranch-tsnet-sidecar" --connector "$package_tmp/happyranch-connector" --wheel "$wheel" --version ci --output "$package_tmp/happyranch-linux-amd64.tar"
-          sha256sum "$package_tmp/happyranch-linux-amd64.tar" | tee "$GITHUB_STEP_SUMMARY"
+          { uv sync --frozen --group build && (cd app/linux/tsnet-sidecar && go test ./... && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$package_tmp/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar) && uv build --wheel --out-dir "$package_tmp" && wheel="$(find "$package_tmp" -maxdepth 1 -name 'happyranch-*.whl' -print -quit)" && uv run python app/linux/package/build_connector.py --wheel "$wheel" --output "$package_tmp/happyranch-connector" && uv run python app/linux/package/build_package.py --sidecar "$package_tmp/happyranch-tsnet-sidecar" --connector "$package_tmp/happyranch-connector" --wheel "$wheel" --version ci --output "$package_tmp/happyranch-linux-amd64.tar"; } >"$package_tmp/build.raw" 2>&1
+          status=$?; printf 'build_status=%s\n' "$status" >> "$DIAGNOSTICS/receipt.txt"; exit "$status"
       - name: Reuse pinned setup through first start
         working-directory: shipping
         run: |
-          set -euo pipefail
+          set -uo pipefail
           diagnostics="$DIAGNOSTICS"
-          python "$GITHUB_WORKSPACE/diagnostic/scripts/diagnostics/managed_start_diagnostic.py" --extract --shipping app/linux/package/real_systemd_n3.sh --output "$PACKAGE_TMP/diagnostic-harness.sh"
-          PACKAGE_TAR="$PACKAGE_TMP/happyranch-linux-amd64.tar" PROOF_SUBJECT_SHA=2147c5c6edb5d847e4c0ca855a044fa850fd7e11 N3_DIAGNOSTICS_DIR="$diagnostics" bash "$PACKAGE_TMP/diagnostic-harness.sh"
+          { python "$GITHUB_WORKSPACE/diagnostic/scripts/diagnostics/managed_start_diagnostic.py" --extract --shipping app/linux/package/real_systemd_n3.sh --output "$PACKAGE_TMP/diagnostic-harness.sh" && PACKAGE_TAR="$PACKAGE_TMP/happyranch-linux-amd64.tar" PROOF_SUBJECT_SHA=2147c5c6edb5d847e4c0ca855a044fa850fd7e11 N3_DIAGNOSTICS_DIR="$diagnostics" bash "$PACKAGE_TMP/diagnostic-harness.sh"; } >"$PACKAGE_TMP/harness.raw" 2>&1
+          status=$?; printf 'harness_status=%s\n' "$status" >> "$DIAGNOSTICS/receipt.txt"; exit "$status"
       - name: Record provenance
         if: always()
         run: |
           set -euo pipefail
-          for item in "shipping:git -C shipping rev-parse HEAD" "diagnostic:git -C diagnostic rev-parse HEAD" "workflow:sha256sum diagnostic/.github/workflows/managed-start-diagnostic.yml" "script:sha256sum diagnostic/scripts/diagnostics/managed_start_diagnostic.py" "tests:sha256sum diagnostic/tests/diagnostics/test_managed_start_diagnostic.py" "package:sha256sum $PACKAGE_TMP/happyranch-linux-amd64.tar" "runner:uname -a" "systemd:systemctl --version"; do
-            key="${item%%:*}"; command="${item#*:}"; value="$(bash -c "$command" 2>/dev/null | head -1 || true)"; printf '%s=%s\n' "$key" "${value:-unavailable}" >> "$DIAGNOSTICS/provenance.txt"
-          done
+          sha() { value="$(sha256sum "$1" 2>/dev/null | awk '{print $1}')"; [[ $value =~ ^[0-9a-f]{64}$ ]] || value=unavailable; printf '%s=%s\n' "$2" "$value"; }
+          { printf 'shipping=%s\ndiagnostic=%s\n' "$(git -C shipping rev-parse HEAD 2>/dev/null | grep -Ex '[0-9a-f]{40}' || echo unavailable)" "$(git -C diagnostic rev-parse HEAD 2>/dev/null | grep -Ex '[0-9a-f]{40}' || echo unavailable)"; sha diagnostic/.github/workflows/managed-start-diagnostic.yml workflow; sha diagnostic/scripts/diagnostics/managed_start_diagnostic.py script; sha diagnostic/tests/diagnostics/test_managed_start_diagnostic.py tests; sha "$PACKAGE_TMP/happyranch-linux-amd64.tar" package; printf 'runner_image=%s\nsystemd=%s\n' "${ImageOS:-unavailable}" "$(systemctl --version 2>/dev/null | sed -nE '1s/^systemd ([0-9]+).*/\\1/p' || echo unavailable)"; } >> "$DIAGNOSTICS/provenance.txt"
+          cp "$DIAGNOSTICS/receipt.txt" "$DIAGNOSTICS/provenance.txt" "$PUBLISH/" || true
+          find "$DIAGNOSTICS" -maxdepth 1 -type f -name '*-observation.json' -print0 | while IFS= read -r -d '' item; do if python -c 'import json,sys; x=json.load(open(sys.argv[1])); assert isinstance(x,dict) and x.get("phase") in {"negative","prepositive","positive_failure","positive_success","exceptional_exit"}' "$item"; then cp "$item" "$PUBLISH/" || true; fi; done || true
       - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         if: always()
         with:
           name: managed-start-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.DIAGNOSTICS }}
+          path: ${{ env.PUBLISH }}
           if-no-files-found: warn

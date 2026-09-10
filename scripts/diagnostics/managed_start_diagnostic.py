@@ -80,12 +80,14 @@ def extract_startup(source: str, *, expected_digest: str = FROZEN_SHIPPING_SHA25
     interpreter = shlex.quote(os.path.realpath(os.sys.executable))
     envelope = f'''\n# diagnostic-only envelope: this never finalizes/validates full N3 evidence.
 diagnostic_capture() {{
-  local phase="$1" status=0 now window_start
+  local phase="$1" status=0 now window_start window_end
   now="$(date +%s)"
-  # A finite lookback retains events recorded within this wall-clock second
-  # (including journal's fractional timestamps) without adding a wait.
+  # journalctl's inclusive integer endpoint would otherwise exclude a record
+  # stamped later in this same second. The one-second enclosing endpoint is
+  # still bounded and does not wait or reorder startup.
   window_start=$((now - 60))
-  "$DIAGNOSTIC_PYTHON" "$DIAGNOSTIC_OBSERVER" --capture --phase "$phase" --window-start "$window_start" --window-end "$now" --budget-seconds 5 --output "$diagnostics/$phase-observation.json" >/dev/null 2>&1 || status=$?
+  window_end=$((now + 1))
+  "$DIAGNOSTIC_PYTHON" "$DIAGNOSTIC_OBSERVER" --capture --phase "$phase" --window-start "$window_start" --window-end "$window_end" --budget-seconds 5 --output "$diagnostics/$phase-observation.json" >/dev/null 2>&1 || status=$?
   return "$status"
 }}
 diagnostic_cleanup() {{
@@ -97,7 +99,12 @@ diagnostic_cleanup() {{
   elif [[ -n "${{work:-}}" ]]; then
     rm -rf "$work" || cleanup_status=1
   fi
-  printf '{{"cleanup":"%s"}}\\n' "$([[ $cleanup_status == 0 ]] && printf complete || printf failed)" >"$diagnostics/diagnostic-cleanup.json" || cleanup_status=1
+  # A setup failure can precede diagnostics assignment or its mkdir. Preserve
+  # the original status and clean all created state; receipt writing is best
+  # effort only when the directory actually exists.
+  if [[ -n "${{diagnostics:-}}" && -d "$diagnostics" ]]; then
+    printf '{{"cleanup":"%s"}}\\n' "$([[ $cleanup_status == 0 ]] && printf complete || printf failed)" >"$diagnostics/diagnostic-cleanup.json" || cleanup_status=1
+  fi
   (( original_status != 0 )) && return "$original_status"
   return "$cleanup_status"
 }}

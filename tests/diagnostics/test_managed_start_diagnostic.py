@@ -96,6 +96,8 @@ def test_emitted_shell_uses_absolute_observer_and_preserves_first_start_status(t
     assert 'DIAGNOSTIC_PYTHON=' in rendered
     assert '"$DIAGNOSTIC_PYTHON" "$DIAGNOSTIC_OBSERVER" --capture' in rendered
     assert 'window_start=$((now - 60))' in rendered
+    assert 'window_end=$((now + 1))' in rendered
+    assert '--window-start "$window_start" --window-end "$window_end"' in rendered
     assert 'diagnostic_signal_term() { trap - INT TERM; exit 143; }' in rendered
 
 
@@ -268,6 +270,11 @@ def test_workflow_uses_extractor_not_second_startup_program() -> None:
     assert "app/linux/package/real_systemd_n3.sh" in workflow
     assert "DENIAL_PROGRAM" not in SCRIPT.read_text()
     assert "peer-visible" not in SCRIPT.read_text()
+    assert ' >"$package_tmp/build.raw" 2>&1' in workflow
+    assert ' >"$PACKAGE_TMP/harness.raw" 2>&1' in workflow
+    assert 'path: ${{ env.PUBLISH }}' in workflow
+    assert 'path: ${{ env.DIAGNOSTICS }}' not in workflow
+    assert 'find "$DIAGNOSTICS" -maxdepth 1 -type f -name \'*-observation.json\'' in workflow
 
 
 def test_actual_shipping_denial_validator_accepts_complete_matrix_and_rejects_invalid(tmp_path: Path) -> None:
@@ -375,6 +382,21 @@ print('PRESENT:81a4:0:0')
     assert document["units"]["happyranch-tsnet-sidecar.service"]["ExecMainStatus"] == 1
     assert document["journal"] and document["journal"][0]["cause"] == "credential_missing"
     assert "ADAPTER_CANARY" not in text
+
+
+def test_emitted_shell_encloses_fractional_same_second_journal_event() -> None:
+    rendered = diagnostic.extract_startup(SHIPPING.read_text())
+    # For now=100, @40..@101 encloses an event stamped 100.999 without wait.
+    assert 'window_start=$((now - 60))' in rendered
+    assert 'window_end=$((now + 1))' in rendered
+    assert '--window-start "$window_start" --window-end "$window_end"' in rendered
+
+
+def test_emitted_shell_partial_initialization_guards_unbound_diagnostics() -> None:
+    rendered = diagnostic.extract_startup(SHIPPING.read_text())
+    assert '[[ -n "${diagnostics:-}" && -d "$diagnostics" ]]' in rendered
+    for boundary in ('diagnostics="${N3_DIAGNOSTICS_DIR:-$(mktemp -d)}"', 'mkdir -p "$diagnostics"', 'work="$(mktemp -d)"'):
+        assert rendered.index('trap diagnostic_exit EXIT') < rendered.index(boundary)
 
 
 def test_expired_deadline_starts_no_process_and_calls_cannot_renew(tmp_path: Path) -> None:
