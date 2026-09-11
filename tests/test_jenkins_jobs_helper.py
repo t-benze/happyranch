@@ -31,7 +31,7 @@ class Fake(BaseHTTPRequestHandler):
             queues=self.states.get("queues")
             if isinstance(queues,list) and queues:return self.reply(200,queues.pop(0))
             if self.states.get("queue_404"):return self.reply(404)
-            return self.reply(200,self.states.get("queue",{"executable":{"number":1}}))
+            return self.reply(200,self.states.get("queue",{"id":7,"executable":{"number":1}}))
         if self.path.endswith("consoleText"):return self.reply(200,self.states.get("log",b"log"))
         if "/artifact/" in self.path:return self.reply(self.states.get("artifact_status",200),self.states.get("artifact",b"bytes"))
         return self.reply(404)
@@ -41,7 +41,7 @@ class Fake(BaseHTTPRequestHandler):
         if self.path.endswith("/build") or self.path.endswith("/buildWithParameters"):
             if self.states.get("submit_status"):return self.reply(int(self.states["submit_status"]),b"",{"Location":str(self.states.get("location",""))})
             return self.reply(201,b"",{"Location":str(self.states.get("location","/jenkins/queue/item/7/"))})
-        if self.path.endswith("/queue/cancelItem"):self.states["queue"]={"cancelled":True};return self.reply(200)
+        if self.path.endswith("/queue/cancelItem"):self.states["queue"]={"id":7,"cancelled":True};return self.reply(200)
         if self.path.endswith("/stop"):self.states["result"]="ABORTED";return self.reply(200)
         return self.reply(404)
 @pytest.fixture
@@ -72,7 +72,7 @@ def test_03_context_folder_and_identity_refusal()->None:
     for u in ("https://x.test/jenkins/job/a/lastBuild","https://x.test/jenkins/job/a/1/%2e%2e/config","https://x.test/jenkins/job/a/job/b/2"):
         with pytest.raises(jj.ValidationError):c.checked(u,"build","a",1)
 def test_04_queue_build_success_collect(fake:tuple[str,Fake],tmp_path:Path)->None:
-    b,f=fake;f.states["artifacts"]=[{"relativePath":"a.txt"}];f.states["queues"]=[{"executable":{"number":1,"url":b+"/job/folder/job/demo/1/"}}];f.states["builds"]=[{"building":True},{"building":False,"result":"SUCCESS","artifacts":[{"relativePath":"a.txt"}]}]
+    b,f=fake;f.states["artifacts"]=[{"relativePath":"a.txt"}];f.states["queues"]=[{"id":7,"executable":{"number":1,"url":b+"/job/folder/job/demo/1/"}}];f.states["builds"]=[{"building":True},{"building":False,"result":"SUCCESS","artifacts":[{"relativePath":"a.txt"}]}]
     p=tmp_path/"r";assert cli(b,p,"submit").returncode==0;assert cli(b,p,"--poll",".01","wait").returncode==0;assert cli(b,p,"collect","--output",str(tmp_path/"o")).returncode==0
     assert (tmp_path/"o"/"a.txt").read_bytes()==b"bytes";x=json.loads(p.read_text());assert x["build_number"]==1 and x["jenkins_result"]=="SUCCESS"
 @pytest.mark.parametrize("result",["FAILURE","UNSTABLE","ABORTED"])
@@ -155,7 +155,7 @@ def test_08b_reconcile_requires_complete_exact_observation(fake:tuple[str,Fake],
         assert not [seen for seen in f.seen if seen[0]=="POST"]
 def test_09_cancel_queue_race(fake:tuple[str,Fake],tmp_path:Path)->None:
     b,f=fake;p=tmp_path/"r";x=jj.open_receipt(p,b,"folder/demo");x.update(phase="queued",queue_id=7);jj.save_receipt(p,x)
-    f.states["queues"]=[{"executable":{"number":1,"url":b+"/job/folder/job/demo/1/"}}]
+    f.states["queues"]=[{"id":7,"executable":{"number":1,"url":b+"/job/folder/job/demo/1/"}}]
     assert cli(b,p,"--deadline","1","cancel").returncode==2
     paths=[x[1] for x in f.seen];assert "/jenkins/queue/cancelItem" in paths and "/jenkins/job/folder/job/demo/1/stop" in paths
     x=json.loads(p.read_text());assert x["build_number"]==1 and x["jenkins_result"]=="ABORTED"
@@ -163,7 +163,7 @@ def test_09_cancel_queue_race(fake:tuple[str,Fake],tmp_path:Path)->None:
 def test_09b_two_process_lifecycle_contention_preserves_identity(fake:tuple[str,Fake],tmp_path:Path)->None:
     """A stale waiter/canceller must not erase an observed exact build identity."""
     b,f=fake;p=tmp_path/"r";x=jj.open_receipt(p,b,"folder/demo");x.update(phase="queued",queue_id=7);jj.save_receipt(p,x)
-    f.states["queues"]=[{"executable":{"number":1,"url":b+"/job/folder/job/demo/1/"}},{"executable":{"number":1,"url":b+"/job/folder/job/demo/1/"}}]
+    f.states["queues"]=[{"id":7,"executable":{"number":1,"url":b+"/job/folder/job/demo/1/"}},{"id":7,"executable":{"number":1,"url":b+"/job/folder/job/demo/1/"}}]
     f.states["builds"]=[{"building":False,"result":"SUCCESS"},{"building":False,"result":"ABORTED"}]
     common=[sys.executable,str(HELPER),"--controller",b,"--allow-http","--job","folder/demo","--receipt",str(p),"--deadline","1","--poll",".001"]
     waiter=subprocess.Popen([*common,"wait"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
@@ -184,7 +184,7 @@ def test_10_two_server_refusal_no_forward(fake:tuple[str,Fake],tmp_path:Path)->N
     other=ThreadingHTTPServer(("127.0.0.1",0),Other);thread=threading.Thread(target=other.serve_forever);thread.start()
     try:
         p=tmp_path/"r";x=jj.open_receipt(p,b,"folder/demo");x.update(phase="queued",queue_id=7);jj.save_receipt(p,x)
-        f.states["queues"]=[{"executable":{"number":1,"url":f"http://127.0.0.1:{other.server_port}/job/folder/job/demo/1/"}}]
+        f.states["queues"]=[{"id":7,"executable":{"number":1,"url":f"http://127.0.0.1:{other.server_port}/job/folder/job/demo/1/"}}]
         r=cli(b,p,"wait",env={"JENKINS_USERNAME":"u","JENKINS_API_TOKEN":"real-secret"})
         assert r.returncode==3 and other_seen==[] and "real-secret" not in r.stderr
     finally:other.shutdown();thread.join();other.server_close()
@@ -279,8 +279,8 @@ class residual_Handler(BaseHTTPRequestHandler):
   if '/queue/' in self.path:
    residual_qcount+=1
    if residual_mode=='expired':return self.send(b'',404)
-   if residual_mode=='delayed_cancel' and residual_qcount==1:return self.send({})
-   return self.send({'executable':{'number':1,'url':('http://evil.invalid/job/other/1/' if residual_mode=='wrong_queue' else residual_base+'/job/demo/1/')}})
+   if residual_mode=='delayed_cancel' and residual_qcount==1:return self.send({'id':7})
+   return self.send({'id':7,'executable':{'number':1,'url':('http://evil.invalid/job/other/1/' if residual_mode=='wrong_queue' else residual_base+'/job/demo/1/')}})
   if self.path.endswith('consoleText'):return self.send(b'log')
   if '/artifact/' in self.path:return self.send(b'x'*20 if residual_mode=='aggregate' else b'bytes')
   if residual_mode=='slow':
@@ -297,7 +297,8 @@ class residual_Handler(BaseHTTPRequestHandler):
    except OSError:pass
    print('slow headers server streaming seconds',round(time.monotonic()-started,3));return
   if residual_mode=='incomplete':
-   self.send_response(200);self.send_header('Content-Length','100');self.end_headers();self.wfile.write(b'{"building":false,"result":"SUCCESS"}');return
+   raw=json.dumps({'number':1,'url':residual_base+'/job/demo/1/','building':False,'result':'SUCCESS'}).encode()
+   self.send_response(200);self.send_header('Content-Length',str(len(raw)+10));self.end_headers();self.wfile.write(raw);return
   if residual_mode=='reconcile_incomplete':return self.send({'number':1,'url':residual_base+'/job/demo/1/'})
   if residual_mode=='reconcile_valid':return self.send({'number':1,'url':residual_base+'/job/demo/1/','building':False,'result':'SUCCESS'})
   if residual_mode=='property':return self.send({'property':42,'url':residual_base+'/job/demo/'})
@@ -413,8 +414,13 @@ def test_residual_collection(residual_receipt,tmp_path,m):
   assert all('bytes' in a and 'reason' in a for a in x['collection']['artifacts'] if a['status']=='error')
  if m=='traversal':assert not [a for a in residual_seen if '/artifact/' in a[1]]
 @pytest.mark.usefixtures("residual_reset")
-def test_residual_receipt_schema(residual_receipt):
- p=residual_receipt();x=residual_saved(p);x.update(request_id='',phase='terminal',jenkins_result='SUCCESS',collection={'status':'complete','artifacts':[42]});p.write_text(json.dumps(x));assert residual_cli(p,'show').returncode==3 and not residual_seen
+@pytest.mark.parametrize('malformation',['terminal_without_build','artifact_not_object','empty_request'])
+def test_residual_receipt_schema(residual_receipt,malformation):
+ p=residual_receipt(build_number=1,phase='terminal',jenkins_result='SUCCESS');x=residual_saved(p)
+ if malformation=='terminal_without_build':x['build_number']=None
+ elif malformation=='artifact_not_object':x['collection']={'status':'partial','artifacts':[42]}
+ else:x['request_id']=''
+ p.write_text(json.dumps(x));assert residual_cli(p,'show').returncode==3 and not residual_seen
 
 @pytest.mark.usefixtures("residual_reset")
 def test_residual_actual_failed_bytes(residual_receipt,tmp_path):
@@ -493,7 +499,7 @@ def test_case6_persisted_expiry_resume_and_offline_show(fake,tmp_path):
 
 def test_case9_local_interruption_no_remote_cancel(fake,tmp_path):
     b,f=fake;p=tmp_path/'r';x=jj.open_receipt(p,b,'folder/demo');x.update(phase='queued',queue_id=7);jj.save_receipt(p,x)
-    f.states['queue']={}
+    f.states['queue']={'id':7}
     proc=subprocess.Popen([sys.executable,str(HELPER),'--controller',b,'--allow-http','--job','folder/demo','--receipt',str(p),'--poll','.005','wait'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     try:
         end=time.monotonic()+2
@@ -533,7 +539,7 @@ def test_case10_two_servers_no_forwarding(fake,tmp_path,monkeypatch,boundary):
         if boundary=='location':f.states['location']=evil
         elif boundary=='queue_url':
             x=jj.open_receipt(p,b,'folder/demo');x.update(phase='queued',queue_id=7);jj.save_receipt(p,x)
-            f.states['queue']={'executable':{'number':1,'url':evil}};command=['wait']
+            f.states['queue']={'id':7,'executable':{'number':1,'url':evil}};command=['wait']
         elif boundary=='build_redirect':
             x=jj.open_receipt(p,b,'folder/demo');x.update(phase='building',build_number=1);jj.save_receipt(p,x);command=['wait']
         elif boundary=='artifact_redirect':
@@ -547,7 +553,7 @@ def test_case10_two_servers_no_forwarding(fake,tmp_path,monkeypatch,boundary):
 @pytest.mark.parametrize('url',['/wrong/job/folder/job/demo/1/','/jenkins/job/folder/job/other/1/','/jenkins/job/folder/job/demo/2/','/jenkins/job/folder/job/demo/%2e%2e/1/'])
 def test_case10_queue_identity_ingress(fake,tmp_path,url):
     b,f=fake;p=tmp_path/'r';x=jj.open_receipt(p,b,'folder/demo');x.update(phase='queued',queue_id=7);jj.save_receipt(p,x)
-    f.states['queue']={'executable':{'number':1,'url':b.removesuffix('/jenkins')+url}}
+    f.states['queue']={'id':7,'executable':{'number':1,'url':b.removesuffix('/jenkins')+url}}
     assert cli(b,p,'wait').returncode==3
     assert [r[:2] for r in f.seen]==[('GET','/jenkins/queue/item/7/api/json')]
     assert json.loads(p.read_text())['build_number'] is None
@@ -618,18 +624,23 @@ def test_case7_atomic_replacement_fault_retains_receipt(fake,tmp_path,monkeypatc
     assert p.read_bytes()==original and not list(tmp_path.glob('.receipt-*')) and not f.seen
 
 def test_case11_collection_metadata_timeout_preserves_terminal(fake,tmp_path,monkeypatch):
-    b,f=fake;p=tmp_path/'r';terminal(p,b)
+    b,f=fake;p=tmp_path/'r';terminal(p,b);sent=[]
+    raw=json.dumps({'number':1,'url':b+'/job/folder/job/demo/1/','building':False,'result':'SUCCESS','artifacts':[]}).encode()
     def slow(self):
         self.seen.append(('GET',self.path,self.headers.get('Authorization',''),b''))
-        self.send_response(200);self.send_header('Content-Length','100');self.end_headers()
-        for _ in range(100):
-            try:self.wfile.write(b' ');self.wfile.flush();time.sleep(.01)
+        self.send_response(200);self.send_header('Content-Length',str(len(raw)));self.end_headers()
+        for byte in raw:
+            try:self.wfile.write(bytes([byte]));self.wfile.flush();sent.append(byte);time.sleep(.05)
             except OSError:break
     monkeypatch.setattr(Fake,'do_GET',slow)
-    begin=time.monotonic();run=cli(b,p,'--deadline','.04','collect','--output',str(tmp_path/'out'))
-    assert run.returncode==3 and time.monotonic()-begin<.5
+    # One second admits receipt/fsync/network setup under suite contention;
+    # a valid body takes over five seconds, so only the absolute deadline
+    # ends this continuously progressing stream (socket timeout is 3s).
+    begin=time.monotonic();run=cli(b,p,'--deadline','1','--timeout','3','collect','--output',str(tmp_path/'out'))
+    elapsed=time.monotonic()-begin
+    assert run.returncode==3 and elapsed<3
     saved=json.loads(p.read_text());assert saved['jenkins_result']=='SUCCESS' and saved['build_number']==1 and saved['collection']=={'status':'partial','artifacts':[]}
-    assert len(f.seen)==1 and f.seen[0][0]=='GET'
+    assert 0<len(sent)<len(raw) and len(f.seen)==1 and f.seen[0][1].endswith('/1/api/json')
 
 @pytest.mark.parametrize('metadata',[{'building':False,'result':'NOT_BUILT'},{'building':1,'result':'SUCCESS'},{'building':True,'result':'SUCCESS'}])
 def test_case5_complete_identity_malformed_result(fake,tmp_path,metadata):
@@ -638,3 +649,31 @@ def test_case5_complete_identity_malformed_result(fake,tmp_path,metadata):
     run=cli(b,p,'wait');assert run.returncode==3
     saved=json.loads(p.read_text());assert saved['phase']=='building' and saved['jenkins_result'] is None and saved['build_number']==1
     assert len(f.seen)==1 and f.seen[0][1].endswith('/1/api/json') and not [r for r in f.seen if r[0]=='POST']
+
+@pytest.mark.parametrize('event',['executable','cancelled'])
+@pytest.mark.parametrize('identity',['missing',None,8,0,-1,True,'7',7.0,{},7])
+def test_case10_queue_complete_returned_identity(fake,tmp_path,event,identity):
+    b,f=fake;p=tmp_path/'r';x=jj.open_receipt(p,b,'folder/demo');x.update(phase='queued',queue_id=7);jj.save_receipt(p,x)
+    q={'executable':{'number':1,'url':b+'/job/folder/job/demo/1/'}} if event=='executable' else {'cancelled':True}
+    if identity!='missing':q['id']=identity
+    f.states['queue']=q
+    run=cli(b,p,'--poll','.001','wait');saved=json.loads(p.read_text())
+    valid=type(identity) is int and identity==7
+    assert run.returncode==((0 if event=='executable' else 2) if valid else 3)
+    assert saved['request_id']==x['request_id'] and saved['queue_id']==7
+    if not valid:
+        assert saved['phase']=='queued' and saved['build_number'] is None and saved['jenkins_result'] is None
+        assert len(f.seen)==1 and f.seen[0][1].endswith('/queue/item/7/api/json')
+    assert not [r for r in f.seen if r[0]=='POST']
+
+@pytest.mark.parametrize('short',[False,True])
+def test_case6_complete_identity_content_length(fake,tmp_path,monkeypatch,short):
+    b,f=fake;p=tmp_path/'r';x=jj.open_receipt(p,b,'folder/demo');x.update(phase='building',build_number=1);jj.save_receipt(p,x)
+    def respond(self):
+        self.seen.append(('GET',self.path,'',b''))
+        body=json.dumps({'number':1,'url':b+'/job/folder/job/demo/1/','building':False,'result':'SUCCESS'}).encode()
+        self.send_response(200);self.send_header('Content-Length',str(len(body)+(10 if short else 0)));self.end_headers();self.wfile.write(body);self.close_connection=True
+    monkeypatch.setattr(Fake,'do_GET',respond)
+    run=cli(b,p,'wait');saved=json.loads(p.read_text())
+    assert run.returncode==(3 if short else 0) and saved['jenkins_result']==(None if short else 'SUCCESS')
+    assert saved['build_number']==1 and len(f.seen)==1 and f.seen[0][0]=='GET'

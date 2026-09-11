@@ -377,7 +377,7 @@ def wait(c:Client,p:Path,j:str,deadline:float,poll:float)->dict[str,Any]:
                 if o!="BUILDING":x.update(phase="terminal",jenkins_result=o);save_receipt(p,x);return x
             elif x.get("queue_id") is not None:
                 q=c.api_get(queue(c.controller,x["queue_id"])+"/api/json")
-                if "id" in q and (not positive(q["id"]) or q["id"]!=x["queue_id"]):raise TransportError("queue identity mismatch")
+                if not positive(q.get("id")) or q["id"]!=x["queue_id"]:raise TransportError("queue identity mismatch")
                 if "url" in q:c.controller.checked(q["url"],"queue",ident=x["queue_id"])
                 if "cancelled" in q and not isinstance(q["cancelled"],bool):raise TransportError("malformed queue cancellation")
                 e=q.get("executable")
