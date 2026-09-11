@@ -63,15 +63,24 @@ The plain-fanout join control now executes both ordinary child completion
 orders with two real `TaskQueue.start_workers` workers on one event loop. It
 holds original child publication immediately after `try_delegate_many` has
 committed, then holds both external executor callbacks after their real
-contained launches. The selected callback's persisted completion report is
-observed while the parent remains delegated and no `fanout_join` exists; after
-the other callback and owned worker join, one parent revisit consumes the
-shipping join context and clears `active_fanout`. The test captures exceptions
+contained launches. The selected callback's exact persisted result row is
+correlated with the original `_consume_completion_report` call, then the
+transparent original `Dispatcher.run_step` observer signals only after that
+child is terminal. At that barrier the other child is live, the parent remains
+delegated with its serialized `FanoutState`, and no join exists. The harness
+records actual admission/request/handle task identity for every launch,
+verifies source-derived step counts (parent two, each child one), clean
+balanced receipts and current-generation PID absence, and compares task,
+result, audit, attachment, canonical/team/archive/workspace,
+queue/session/control/chain/fanout surfaces at publication, first-terminal,
+and final boundaries. The actual parent revisit prompt contains the original
+child IDs/reports represented by the parent-owned join audit; the shipping
+owner clears `active_fanout` with no active chain. The test captures exceptions
 at the original `Dispatcher.run_step` boundary before queue logging can hide
 them, and its error control proves that boundary error remains visible after
-all gates are released and workers stop. This is only ordinary plain-fanout
-join evidence: fanout cancellation, serialization/pipeline-carrier schedules,
-and the remaining R1–R5 obligations are residual.
+all gates are released and workers stop. This is only executed ordinary
+plain-fanout join evidence: fanout cancellation, serialization/pipeline-carrier
+schedules, and the remaining R1–R5 obligations are residual.
 
 The three currently observed authority cases are deliberately narrower than a
 general revocation protocol. Before `_validate_delegate`, supported
@@ -174,8 +183,26 @@ zero survivors, and there is no queue, session, or control residue. The
 harness separately proves its dispatcher-error collector rejects a
 queue-swallowed error. This is test-only evidence and does not alter
 transaction, queue, error-policy, schema, or production chain behavior.
-Cancellation, fanout, serialization and all remaining R1–R5/package
-obligations are still outside this control.
+The concurrent plain-fanout harness separately records four distinct
+boundaries: pre-spawn, postcommit/prepublication, both child launches, first
+child terminalization, and final drain. It compares only named source-owned
+deltas at those boundaries: parent parking/fanout serialization and the
+initial parent report at postcommit; two live children without results after
+launch; then exactly one completed child/result while the parent remains
+parked; and finally the source-owned join/revisit completion. The first and
+final task/result/audit observations are also read through a separate SQLite
+connection. It binds every one of the four actual launch
+`(task, agent, session)` tuples to a distinct consumed immutable result row,
+including the two otherwise-identical parent summaries, and then to the
+row's original verdict and summary. The parent revisit prompt contains the
+exact parent-owned `fanout_join` context, whose ordered child entries contain
+the persisted original IDs, agents, PASS verdicts, and summaries; the parent
+brief remains outside that injected section. This is test-only, bounded
+current-generation evidence: it does not claim a general cross-process
+serialization proof or all-surface equality.
+
+Cancellation, fanout serialization/pipeline-carrier behavior and all remaining
+R1–R5/package obligations are still outside this control.
 
 Current control and corrupt/partial adapter inputs fail closed before any
 proposed adapter write. R5's decision packet

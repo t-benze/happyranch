@@ -153,6 +153,24 @@ def _receipt_evidence(receipts) -> list[dict[str, object]]:
     ]
 
 
+def _u0_independent_sqlite_readback(db, task_ids: tuple[str, ...]) -> dict[str, object]:
+    """Read the persisted fanout history through a second SQLite connection."""
+    placeholders = ", ".join("?" for _ in task_ids)
+    connection = sqlite3.connect(str(db.db_path))
+    connection.row_factory = sqlite3.Row
+    try:
+        return {
+            "tasks": [dict(row) for row in connection.execute(
+                f"SELECT * FROM tasks WHERE id IN ({placeholders}) ORDER BY id", task_ids)],
+            "results": [dict(row) for row in connection.execute(
+                f"SELECT * FROM task_results WHERE task_id IN ({placeholders}) ORDER BY id", task_ids)],
+            "audits": [dict(row) for row in connection.execute(
+                f"SELECT * FROM audit_log WHERE task_id IN ({placeholders}) ORDER BY id", task_ids)],
+        }
+    finally:
+        connection.close()
+
+
 def _assert_cancelled_task_delta(before: dict[str, object], observed: dict[str, object]) -> None:
     """Check the exact task-row fields written by the shipping cancel route."""
     changed = {key for key in before if before[key] != observed[key]}
@@ -2257,9 +2275,10 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     backend = _FakeBackend(auto_exit_after=0)
     orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
     paths, receipts, launches, errors = orch._paths, [], [], []
+    consumed_reports, parent_revisit_prompts, shipping_join_prompts = [], [], []
     publication_reached, release_publication = threading.Event(), threading.Event()
     both_launched, permit_callbacks = threading.Event(), threading.Event()
-    first_consumed, release_final, done = threading.Event(), threading.Event(), threading.Event()
+    first_terminal, release_final, done = threading.Event(), threading.Event(), threading.Event()
 
     class EventSink:
         async def publish(self, task_id, event):
@@ -2274,7 +2293,14 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         def run(self, **kwargs):
             try:
                 task_id, agent, session_id = self.context["task_id"], self.context["agent"], kwargs["session_id"]
-                launches.append((task_id, agent, session_id, kwargs["running"].request_id, tracker.get_pid(task_id, agent)))
+                launches.append({
+                    "task_id": task_id, "agent": agent, "session_id": session_id,
+                    "request_id": kwargs["running"].request_id,
+                    "pid": tracker.get_pid(task_id, agent),
+                    "running": kwargs["running"],
+                    "context": self.context.copy(),
+                    "prompt": kwargs["prompt"],
+                })
                 children = db.get_children(parent_id)
                 if task_id == parent_id and not children:
                     decision, verdict = NextStep(action="fanout", children=[
@@ -2282,11 +2308,12 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
                         FanoutChild(agent="dev_agent", prompt="plain one"),
                     ], width_cap_ack=2, join_summary="join exact reports"), None
                 elif task_id == parent_id:
+                    parent_revisit_prompts.append(kwargs["prompt"])
                     decision, verdict = NextStep(action="done", summary="joined"), None
                 else:
                     assert len(children) == 2
                     index = children.index(task_id)
-                    if {entry[0] for entry in launches if entry[0] in children} == set(children):
+                    if {entry["task_id"] for entry in launches if entry["task_id"] in children} == set(children):
                         both_launched.set()
                     assert permit_callbacks.wait(5), "both real launches were not released"
                     if index != completion_order[0]:
@@ -2295,8 +2322,6 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
                 body = CompletionBody(session_id=session_id, agent=agent, status="completed", confidence=100,
                                       verdict=verdict, output_summary=f"report:{task_id}", decision=decision.model_dump())
                 assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
-                if task_id in db.get_children(parent_id) and db.get_children(parent_id).index(task_id) == completion_order[0]:
-                    first_consumed.set()
                 kwargs["running"].process.terminate()
                 return dataclasses.replace(super().run(**kwargs), session_id=session_id)
             except BaseException as exc:
@@ -2319,15 +2344,44 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         return original_put(slug, task_id, *args, **kwargs)
     monkeypatch.setattr(state.queue, "put_nowait", held_publication)
     dispatcher = Dispatcher(state)
+    import runtime.orchestrator.run_step as run_step_module
+    original_prompt_builder = run_step_module._build_agent_prompt
+    def observed_prompt_builder(prompt_orch, task, agent):
+        prompt = original_prompt_builder(prompt_orch, task, agent)
+        if task.id == parent_id and db.get_children(parent_id):
+            shipping_join_prompts.append(prompt)
+        return prompt
+    monkeypatch.setattr(run_step_module, "_build_agent_prompt", observed_prompt_builder)
+    original_consume = run_step_module._consume_completion_report
+    def observed_consume(consume_orch, task_id, report, *, result_row_id=None):
+        result = original_consume(consume_orch, task_id, report, result_row_id=result_row_id)
+        row = db.execute("SELECT * FROM task_results WHERE id = ?", (result_row_id,)).fetchone()
+        consumed_reports.append({
+            "task_id": task_id, "agent": db.get_task(task_id).assigned_agent,
+            "session_id": row["session_id"] if row else None,
+            "result_row_id": result_row_id, "persisted_id": row["id"] if row else None,
+            "verdict": report.verdict,
+            "summary": report.output_summary,
+        })
+        return result
+    monkeypatch.setattr(run_step_module, "_consume_completion_report", observed_consume)
     original_dispatch = dispatcher.run_step
     def observed_dispatch(*args, **kwargs):
         try:
-            return original_dispatch(*args, **kwargs)
+            result = original_dispatch(*args, **kwargs)
+            task_id = args[1]
+            children = db.get_children(parent_id)
+            if (task_id in children and children.index(task_id) == completion_order[0]
+                    and db.get_task(task_id).status == TaskStatus.COMPLETED):
+                first_terminal.set()
+            return result
         except BaseException as exc:
             errors.append((exc, traceback.format_exc()))
             raise
     monkeypatch.setattr(dispatcher, "run_step", observed_dispatch)
     db.insert_task(TaskRecord(id=parent_id, team="engineering", brief="fanout", assigned_agent="engineering_head", task_type="task"))
+    pre_spawn = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
+                             task_ids=(parent_id,), agent_names=("engineering_head",))
     state.queue.enqueue("test", parent_id)
     def workers() -> None:
         async def run() -> None:
@@ -2351,20 +2405,43 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         assert len(children) == 2 and fanout["children_ids"] == children and fanout["status"] == "spawned"
         assert held_spawn["tasks"][parent_id]["status"] == TaskStatus.IN_PROGRESS.value and held_spawn["tasks"][parent_id]["block_kind"] == "delegated"
         assert all(held_spawn["tasks"][child]["parent_task_id"] == parent_id for child in children)
+        assert held_spawn["tasks"][parent_id]["orchestration_step_count"] == pre_spawn["tasks"][parent_id]["orchestration_step_count"] + 1
+        assert held_spawn["results"][parent_id] and held_spawn["results"][parent_id][0]["output_summary"] == f"report:{parent_id}"
+        assert held_spawn["queue"] == []  # first original child publication is still held.
+        assert all(held_spawn[key] == _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))[key]
+                   for key in ("attachments", "canonical_agents", "archived_agents", "workspaces", "archived_workspaces", "teams_bytes", "controls"))
         assert not [row for row in held_spawn["audits"][parent_id] if row["action"] == "fanout_join"]
         release_publication.set()
         assert both_launched.wait(3), "both plain children did not make actual contained launches"
-        assert all(entry[2] and entry[3] and entry[4] for entry in launches if entry[0] in children)
+        both_launched_snapshot = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
+        assert all(both_launched_snapshot["tasks"][child]["status"] == TaskStatus.IN_PROGRESS.value for child in children)
+        assert all(both_launched_snapshot["results"][child] == [] for child in children)
+        assert held_spawn["active_fanout"] == both_launched_snapshot["active_fanout"]
+        assert len(launches) == 3
+        assert {(entry["task_id"], entry["agent"], entry["context"]["task_id"])
+                for entry in launches} == {(parent_id, "engineering_head", parent_id), *{(child, "dev_agent", child) for child in children}}
+        assert all(entry["session_id"] and entry["request_id"] == entry["task_id"] and entry["pid"] is not None
+                   and entry["running"].request_id == entry["task_id"] for entry in launches)
+        assert {(request.org, request.invocation_kind, request.logical_id)
+                for request in backend.requests} == {("test", "task", parent_id), *{("test", "task", child) for child in children}}
         permit_callbacks.set()
-        assert first_consumed.wait(3), "chosen first callback was not consumed"
+        assert first_terminal.wait(3), "chosen first callback did not terminalize through original Dispatcher.run_step"
         held_first = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
         first, last = children[completion_order[0]], children[completion_order[1]]
-        # The real route has durably consumed the callback/result; task-row
-        # terminalization remains executor-owned until that invocation returns.
-        assert held_first["tasks"][first]["status"] == TaskStatus.IN_PROGRESS.value
+        assert held_first["tasks"][first]["status"] == TaskStatus.COMPLETED.value
         assert held_first["tasks"][last]["status"] == TaskStatus.IN_PROGRESS.value
         assert len(held_first["results"][first]) == 1 and held_first["results"][last] == []
-        assert held_first["tasks"][parent_id]["block_kind"] == "delegated" and not [row for row in held_first["audits"][parent_id] if row["action"] == "fanout_join"]
+        assert held_first["tasks"][parent_id]["block_kind"] == "delegated" and held_first["active_fanout"][parent_id] == held_spawn["active_fanout"][parent_id] and not [row for row in held_first["audits"][parent_id] if row["action"] == "fanout_join"]
+        first_row = held_first["results"][first][0]
+        assert next(item for item in consumed_reports if item["task_id"] == first) == {
+            "task_id": first, "agent": "dev_agent", "session_id": first_row["session_id"],
+            "result_row_id": first_row["id"], "persisted_id": first_row["id"],
+            "verdict": "PASS", "summary": f"report:{first}",
+        }
+        independent_first = _u0_independent_sqlite_readback(db, (parent_id, *children))
+        assert {row["id"] for row in independent_first["results"]} == {
+            row["id"] for task_rows in held_first["results"].values() for row in task_rows
+        }
         if boundary_failure is not None:
             raise boundary_failure
     except BaseException as exc:
@@ -2380,14 +2457,22 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     joins = [row for row in final["audits"][parent_id] if row["action"] == "fanout_join"]
     assert len(joins) == 1 and joins[0]["payload"]["children_ids"] == children
     join_context = joins[0]["payload"]["context_markdown"]
-    assert all(
-        f"{child} (dev_agent)" in join_context
-        and "Verdict: PASS" in join_context
-        and "Summary: report:" in join_context
-        for child in children
-    )
+    assert len(parent_revisit_prompts) == 1
+    parent_revisit = next(entry for entry in launches if entry["task_id"] == parent_id and entry["session_id"] != launches[0]["session_id"])
+    assert parent_revisit["prompt"] == parent_revisit_prompts[0]
+    assert "fanout" in parent_revisit_prompts[0], "unrelated parent brief remains present"
+    assert len(shipping_join_prompts) == 1
+    assert join_context in shipping_join_prompts[0]
+    expected_join_entries = [
+        f"[{index}/2] {child} (dev_agent)\n       Status: completed\n       Verdict: PASS\n       Confidence: 100\n       Summary: report:{child}"
+        for index, child in enumerate(children, start=1)
+    ]
+    assert all(entry in join_context for entry in expected_join_entries)
+    assert join_context.index(expected_join_entries[0]) < join_context.index(expected_join_entries[1])
     assert final["active_fanout"][parent_id] is None and final["active_chain"][parent_id] is None
     assert all(final["tasks"][task_id]["status"] == TaskStatus.COMPLETED.value for task_id in (parent_id, *children))
+    assert final["tasks"][parent_id]["orchestration_step_count"] == 2
+    assert all(final["tasks"][child]["orchestration_step_count"] == 1 for child in children)
     assert len(final["results"][parent_id]) == 2 and all(len(final["results"][child]) == 1 for child in children)
     assert [(row["task_id"], row["agent"], row["output_summary"])
             for row in final["results"][parent_id]] == [
@@ -2402,7 +2487,23 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     ]
     assert state.queue._queue._unfinished_tasks == 0 and final["queue"] == []
     assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == len(receipts) == 4
-    assert all(tracker.get_pid(task_id, agent) is None for task_id, agent, *_rest in launches)
+    assert len(consumed_reports) == 4 and all(item["result_row_id"] == item["persisted_id"] for item in consumed_reports)
+    persisted_by_id = {row["id"]: row for task_rows in final["results"].values() for row in task_rows}
+    launch_bindings = [(entry["task_id"], entry["agent"], entry["session_id"]) for entry in launches]
+    report_bindings = [(item["task_id"], item["agent"], item["session_id"]) for item in consumed_reports]
+    assert len(launch_bindings) == len(set(launch_bindings)) == len(report_bindings) == len(set(report_bindings)) == 4
+    assert set(launch_bindings) == set(report_bindings)
+    for report in consumed_reports:
+        persisted = persisted_by_id[report["persisted_id"]]
+        assert (persisted["task_id"], persisted["agent"], persisted["session_id"], persisted["verdict"], persisted["output_summary"]) == (
+            report["task_id"], report["agent"], report["session_id"], report["verdict"], report["summary"],
+        )
+    assert all(receipt["cleanup_status"] == "clean" and receipt["quiescent"] and receipt["survivors"] == 0
+               for receipt in _receipt_evidence(receipts))
+    assert all(tracker.get_pid(entry["task_id"], entry["agent"]) is None for entry in launches)
+    independent_final = _u0_independent_sqlite_readback(db, (parent_id, *children))
+    assert {row["id"] for row in independent_final["results"]} == set(persisted_by_id)
+    assert [row["id"] for row in independent_final["tasks"]] == sorted((parent_id, *children))
 
 
 def test_r1_plain_fanout_real_workers_retain_dispatcher_and_boundary_errors(tmp_path, monkeypatch) -> None:
