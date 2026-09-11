@@ -387,7 +387,7 @@ def _compute_report(
         report["decision_detail"] = reason
         return report
 
-    def valid_rows(rows: list[dict], *, impression: bool) -> bool:
+    def valid_rows(rows: list[dict], *, event: str) -> bool:
         """Reject malformed diagnostic inputs before they reach set arithmetic."""
         for row in rows:
             if not isinstance(row, dict):
@@ -400,7 +400,16 @@ def _compute_report(
                     return False
             if not isinstance(payload, dict):
                 return False
-            if impression:
+            timestamp = row.get("timestamp")
+            if not isinstance(timestamp, str):
+                return False
+            try:
+                parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            if parsed.tzinfo is None:
+                return False
+            if event == "impression":
                 if not isinstance(payload.get("session_id"), str):
                     return False
                 if not isinstance(payload.get("agent", row.get("agent", "")), str):
@@ -410,30 +419,34 @@ def _compute_report(
                 digest_ids = payload.get("digest_ids")
                 if not isinstance(digest_ids, list) or not all(isinstance(mid, str) for mid in digest_ids):
                     return False
-                timestamp = row.get("timestamp")
-                if not isinstance(timestamp, str):
+            elif event == "read":
+                if not all(isinstance(payload.get(key), str)
+                           for key in ("id", "source", "session_id", "task_id")):
                     return False
-                try:
-                    parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                except ValueError:
+                if not isinstance(row.get("agent"), str) or not isinstance(row.get("task_id"), str):
                     return False
-                if parsed.tzinfo is None:
+                payload_agent = payload.get("agent", row["agent"])
+                if not isinstance(payload_agent, str):
                     return False
             else:
-                for key in ("id", "source", "session_id", "task_id", "agent"):
-                    value = payload.get(key)
-                    if value is not None and not isinstance(value, str):
-                        return False
-                for key in ("agent", "task_id"):
-                    value = row.get(key)
-                    if value is not None and not isinstance(value, str):
-                        return False
+                if not all(isinstance(payload.get(key), str) for key in ("session_id", "task_id")):
+                    return False
+                if not isinstance(row.get("agent"), str) or not isinstance(row.get("task_id"), str):
+                    return False
+                memory_ids = payload.get("memory_ids")
+                if not isinstance(memory_ids, list) or not all(isinstance(mid, str) for mid in memory_ids):
+                    return False
+                if any(not isinstance(payload.get(key), int) or isinstance(payload.get(key), bool)
+                       for key in ("hit_count", "kb_hit_count")):
+                    return False
         return True
 
     if current_time is None:
         current_time = datetime.now(timezone.utc)
 
-    if not valid_rows(impression_rows, impression=True) or not valid_rows(read_rows + search_rows, impression=False):
+    if (not valid_rows(impression_rows, event="impression")
+            or not valid_rows(read_rows, event="read")
+            or not valid_rows(search_rows, event="search")):
         return fail_closed({"observation_period": {}, "aggregate": {}, "by_role": {}, "decision": "insufficient_sample"})
 
     if not impression_rows:

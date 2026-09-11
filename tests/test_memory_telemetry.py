@@ -1253,11 +1253,11 @@ def test_compute_report_roles_unavailable_warning(db):
         " WHERE action = 'memory_digest_impression'",
     )]
     read_rows = [dict(r) for r in db.fetch_all_readonly(
-        "SELECT agent, task_id, payload FROM audit_log"
+            "SELECT timestamp, agent, task_id, payload FROM audit_log"
         " WHERE action = 'memory_read'",
     )]
     search_rows = [dict(r) for r in db.fetch_all_readonly(
-        "SELECT agent, task_id, payload FROM audit_log"
+            "SELECT timestamp, agent, task_id, payload FROM audit_log"
         " WHERE action = 'memory_search'",
     )]
     report = _compute_report(
@@ -1310,11 +1310,11 @@ def test_compute_report_partial_role_map_warning(db):
         " WHERE action = 'memory_digest_impression'",
     )]
     read_rows = [dict(r) for r in db.fetch_all_readonly(
-        "SELECT agent, task_id, payload FROM audit_log"
+            "SELECT timestamp, agent, task_id, payload FROM audit_log"
         " WHERE action = 'memory_read'",
     )]
     search_rows = [dict(r) for r in db.fetch_all_readonly(
-        "SELECT agent, task_id, payload FROM audit_log"
+            "SELECT timestamp, agent, task_id, payload FROM audit_log"
         " WHERE action = 'memory_search'",
     )]
     report = _compute_report(
@@ -1379,11 +1379,11 @@ def test_cli_compute_report_matching_impressions_not_excluded(db):
         " WHERE action = 'memory_digest_impression'",
     )]
     read_rows = [dict(r) for r in db.fetch_all_readonly(
-        "SELECT agent, task_id, payload FROM audit_log"
+            "SELECT timestamp, agent, task_id, payload FROM audit_log"
         " WHERE action = 'memory_read'",
     )]
     search_rows = [dict(r) for r in db.fetch_all_readonly(
-        "SELECT agent, task_id, payload FROM audit_log"
+            "SELECT timestamp, agent, task_id, payload FROM audit_log"
         " WHERE action = 'memory_search'",
     )]
     report = _compute_report(
@@ -1452,7 +1452,7 @@ def test_cli_compute_report_mismatched_task_id_excluded(db):
         " WHERE action = 'memory_digest_impression'",
     )]
     read_rows = [dict(r) for r in db.fetch_all_readonly(
-        "SELECT agent, task_id, payload FROM audit_log"
+            "SELECT timestamp, agent, task_id, payload FROM audit_log"
         " WHERE action = 'memory_read'",
     )]
     search_rows = [dict(r) for r in db.fetch_all_readonly(

@@ -1219,33 +1219,59 @@ class AuditLogger:
                 "decision": "insufficient_sample",
             })
 
-        # Collect memory_read events for pull-through.
+        # Collect all report-consumed event streams before diagnostic arithmetic.
         # Include agent and task_id columns so we can verify read rows
         # match the impression's (agent, task_id, session_id) tuple.
         read_rows = self._db.fetch_all_readonly(
-            "SELECT agent, task_id, payload FROM audit_log"
+            "SELECT timestamp, agent, task_id, payload FROM audit_log"
             " WHERE action = 'memory_read'",
             (),
         )
         read_rows = [dict(row) for row in read_rows]
 
-        def valid_read_rows() -> bool:
-            for row in read_rows:
+        search_rows = [dict(row) for row in self._db.fetch_all_readonly(
+            "SELECT timestamp, agent, task_id, payload FROM audit_log"
+            " WHERE action = 'memory_search'", (),
+        )]
+
+        def valid_event_rows(event_rows: list[dict], *, event: str) -> bool:
+            for row in event_rows:
                 try:
                     payload = json.loads(row.get("payload"))
                 except (TypeError, ValueError):
                     return False
                 if not isinstance(payload, dict):
                     return False
-                for key in ("id", "source", "session_id", "task_id", "agent"):
-                    value = payload.get(key)
-                    if value is not None and not isinstance(value, str):
-                        return False
-                if any(not isinstance(row.get(key), str) for key in ("agent", "task_id")):
+                timestamp = row.get("timestamp")
+                if not isinstance(timestamp, str):
                     return False
+                try:
+                    parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                except ValueError:
+                    return False
+                if parsed.tzinfo is None:
+                    return False
+                if not all(isinstance(row.get(key), str) for key in ("agent", "task_id")):
+                    return False
+                if event == "read":
+                    if not all(isinstance(payload.get(key), str)
+                               for key in ("id", "source", "session_id", "task_id")):
+                        return False
+                    if not isinstance(payload.get("agent", row["agent"]), str):
+                        return False
+                else:
+                    if not all(isinstance(payload.get(key), str) for key in ("session_id", "task_id")):
+                        return False
+                    memory_ids = payload.get("memory_ids")
+                    if not isinstance(memory_ids, list) or not all(isinstance(mid, str) for mid in memory_ids):
+                        return False
+                    if any(not isinstance(payload.get(key), int) or isinstance(payload.get(key), bool)
+                           for key in ("hit_count", "kb_hit_count")):
+                        return False
             return True
 
-        if not valid_read_rows():
+        if (not valid_event_rows(read_rows, event="read")
+                or not valid_event_rows(search_rows, event="search")):
             return fail_closed({"observation_period": {}, "aggregate": {}, "by_role": {}, "decision": "insufficient_sample"})
 
         # Compute per-session pull-through.
