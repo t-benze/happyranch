@@ -818,8 +818,13 @@ def test_completion_old_origin_stays_fenced_after_later_recovery_episode(
               "confidence": 90, "output_summary": "recovered"}, headers=auth_headers,
     )
     assert accepted.status_code == 200
+    recovery_result = org_state.db.get_latest_task_result(
+        task_id, "dev_agent", "recovery-old",
+    )
+    assert recovery_result is not None
     org_state.db.mark_task_completion_recovery_callback_consumed(
         task_id=task_id, agent="dev_agent", session_id="recovery-old",
+        result_row_id=recovery_result["id"],
         settled_at="2026-01-01T00:01:00+00:00",
     )
     org_state.db.update_task(task_id, current_session_id="origin-new")
