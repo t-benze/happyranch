@@ -59,15 +59,18 @@ delegation calls self-committing `Database.try_delegate` then queues a child;
 callback and cancellation are distinct routes. R2's historical runtime
 inventory remains subsequent work.
 
-The two currently observed authority cases are deliberately narrower than a
+The three currently observed authority cases are deliberately narrower than a
 general revocation protocol. Before `_validate_delegate`, supported
 `manage_agent terminate` archives the disposable worker and removes team
 membership; the real validator then denies delegation, with no child or child
-launch. After the real `try_delegate` commit and original queue insertion, but
-before the held dispatcher dequeues the child, an independent SQLite connection
-reads the admitted child and the same writer is refused with
-`409 agent_not_quiescent`; releasing the queue then records the contained child
-callback and parent revisit. Each case snapshots task rows,
+launch. Schedule B pauses after the real `try_delegate` commit but before its
+queue notification, so the independent SQLite connection sees the admitted
+child while the shipping queue is empty; the same writer is refused with
+`409 agent_not_quiescent`. Separate Schedule C first calls original queue
+insertion, then pauses before the held dispatcher dequeues the child; its
+readback therefore sees the same admitted child and the exact queued item.
+Releasing either held boundary records the contained child callback and parent
+revisit. Each case snapshots task rows,
 chain/fanout fields, attachments, audits, queue, assigned-agent session/control
 bindings, results, canonical/workspace archive residue, and recorded host
 supervisor receipts; proposed workflow relations are explicitly **NOT PRESENT

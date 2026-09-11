@@ -459,8 +459,198 @@ def test_r1_termination_before_validate_denies_real_contained_delegation(tmp_pat
     }]
 
 
-def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypatch) -> None:
-    """C: pause the original queue handoff after committed child admission.
+def test_r1_termination_after_try_delegate_before_enqueue_refuses_quiescence(tmp_path, monkeypatch) -> None:
+    """B: hold after the real committed admission, before original enqueue.
+
+    This is intentionally distinct from Schedule C below.  The wrapper calls
+    the original ``Database.try_delegate`` first, then blocks before
+    ``run_step_impl`` can reach its real ``TaskQueue.put_nowait`` call.
+    """
+    import threading
+
+    from runtime.daemon.dispatcher import Dispatcher
+    from runtime.daemon.routes.agents import ManageAgentBody, manage_agent
+    from runtime.daemon.routes.tasks import CompletionBody, submit_completion
+    from runtime.daemon.state import DaemonState
+    from runtime.models import NextStep, TaskRecord, TaskStatus
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+    from tests.daemon.test_task_producer_containment import _FakeBackend, _RecordingExecutor, _make_orch
+
+    backend = _FakeBackend()
+    orch, _supervisor, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
+    paths = orch._paths
+
+    class EventSink:
+        async def publish(self, task_id, event) -> None:
+            return None
+
+    org = SimpleNamespace(root=paths.root, slug="test", db=db, teams=orch._teams,
+                          sessions=tracker, settings=orch._settings,
+                          teams_lock=asyncio.Lock(), db_lock=asyncio.Lock(),
+                          event_bus=EventSink())
+    db.insert_task(TaskRecord(id="TASK-U0-AUTH", team="engineering", brief="authority writer",
+                              assigned_agent="engineering_head", task_type="task"))
+    tracker.set_active("TASK-U0-AUTH", "engineering_head", "sess-authority")
+    reached, release, writer_done = threading.Event(), threading.Event(), threading.Event()
+    observed: dict[str, object] = {}
+    writer_errors: list[BaseException] = []
+    drain_errors: list[BaseException] = []
+    owned_threads: list[threading.Thread] = []
+    real_try_delegate = db.try_delegate
+
+    def authority_writer() -> None:
+        async def terminate() -> None:
+            body = ManageAgentBody(action="terminate", name="dev_agent",
+                                   task_id="TASK-U0-AUTH", session_id="sess-authority")
+            with pytest.raises(HTTPException) as raised:
+                await manage_agent("test", body, org)
+            observed["termination"] = raised.value.detail
+            assert raised.value.status_code == 409
+            assert raised.value.detail["code"] == "agent_not_quiescent"
+        try:
+            asyncio.run(terminate())
+        except BaseException as exc:
+            writer_errors.append(exc)
+        finally:
+            writer_done.set()
+
+    def pause_after_real_commit(parent_id, child, **kwargs):
+        committed = real_try_delegate(parent_id, child, **kwargs)
+        if not committed or parent_id != "TASK-U0-PARENT":
+            return committed
+        observed["boundary_child"] = child.id
+        import sqlite3
+        with sqlite3.connect(paths.db_path) as reader:
+            row = reader.execute(
+                "SELECT parent_task_id, assigned_agent, status FROM tasks WHERE id = ?",
+                (child.id,),
+            ).fetchone()
+        assert row == (parent_id, "dev_agent", TaskStatus.PENDING.value)
+        observed["independent_readback"] = row
+        reached.set()
+        assert release.wait(2), "post-commit pre-enqueue boundary was not released"
+        return committed
+
+    class CallbackExecutor(_RecordingExecutor):
+        def set_invocation_context(self, **kwargs):
+            self.context = kwargs
+        def run(self, **kwargs):
+            task_id = self.context["task_id"]
+            invocation = (task_id, self.context["agent"], kwargs["session_id"])
+            self.invocations = getattr(self, "invocations", []) + [invocation]
+            self.callback_sessions = getattr(self, "callback_sessions", []) + [invocation]
+            prior = getattr(self, "runs", {}).get(task_id, 0)
+            self.runs = {**getattr(self, "runs", {}), task_id: prior + 1}
+            decision = (NextStep(action="delegate", agent="dev_agent", prompt="admitted child")
+                        if task_id == "TASK-U0-PARENT" and prior == 0
+                        else NextStep(action="done", summary="contained child completed"))
+            body = CompletionBody(session_id=kwargs["session_id"], agent=self.context["agent"],
+                status="completed", confidence=100, output_summary="contained callback",
+                decision=decision.model_dump())
+            assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
+            return super().run(**kwargs)
+
+    executor = CallbackExecutor()
+    monkeypatch.setattr(orch, "_build_executor", lambda _provider: executor)
+    receipts = []
+    orch.attach_host_supervisor(HostSessionSupervisor(
+        backend=backend, policy=canary_policy(sample_interval_seconds=0.0), publisher=receipts.append,
+    ))
+    db.insert_task(TaskRecord(id="TASK-U0-PARENT", team="engineering", brief="parent",
+                              assigned_agent="engineering_head", task_type="task"))
+    state = DaemonState.idle(orch._settings)
+    state.orgs["test"] = SimpleNamespace(orchestrator=orch)
+    orch.attach_queue(state.queue)
+    before = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
+                          task_ids=("TASK-U0-PARENT",))
+    state.queue.enqueue("test", "TASK-U0-PARENT")
+    monkeypatch.setattr(db, "try_delegate", pause_after_real_commit)
+
+    def drain_queue() -> None:
+        try:
+            asyncio.run(state.queue.drain_sync(Dispatcher(state)))
+        except BaseException as exc:
+            drain_errors.append(exc)
+
+    drain_thread = threading.Thread(target=drain_queue, daemon=True)
+    writer_thread = threading.Thread(target=authority_writer, daemon=True)
+    owned_threads.extend((drain_thread, writer_thread))
+    drain_thread.start()
+    try:
+        assert reached.wait(2), "child did not reach the post-commit boundary"
+        writer_thread.start()
+        assert writer_done.wait(2), "termination writer did not return"
+        if writer_errors:
+            raise writer_errors[0]
+        child_id = observed["boundary_child"]
+        observed["boundary"] = _r1_snapshot(
+            db=db, tracker=tracker, paths=paths, queue=state.queue,
+            task_ids=("TASK-U0-PARENT", child_id),
+        )
+        observed["backend_boundary"] = {
+            "requests": [(request.org, request.invocation_kind, request.logical_id,
+                          request.retry_attempt) for request in backend.requests],
+            "launch": backend.calls["launch"], "finish": backend.calls["finish"],
+            "receipts": [_receipt_evidence(receipts)],
+        }
+    finally:
+        release.set()
+        for thread in owned_threads:
+            if thread.ident is not None:
+                thread.join(timeout=2)
+            assert not thread.is_alive(), "owned test thread did not finish"
+    if writer_errors:
+        raise writer_errors[0]
+    if drain_errors:
+        raise drain_errors[0]
+    child_id = observed["boundary_child"]
+    after = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
+                         task_ids=("TASK-U0-PARENT", child_id))
+
+    detail = observed["termination"]
+    assert reached.is_set() and release.is_set()
+    assert detail["name"] == "dev_agent"
+    assert any(child_id in str(item) for item in detail["conflicts"])
+    assert observed["independent_readback"] == ("TASK-U0-PARENT", "dev_agent", TaskStatus.PENDING.value)
+    boundary = observed["boundary"]
+    assert boundary["tasks"][child_id]["status"] == TaskStatus.PENDING.value
+    assert boundary["tasks"][child_id]["parent_task_id"] == "TASK-U0-PARENT"
+    assert boundary["tasks"][child_id]["assigned_agent"] == "dev_agent"
+    assert boundary["queue"] == []
+    assert boundary["results"][child_id] == []
+    assert boundary["sessions"][child_id] is None and not boundary["controls"][child_id]
+    assert observed["backend_boundary"] == {
+        "requests": [("test", "task", "TASK-U0-PARENT", 0)], "launch": 1, "finish": 1,
+        "receipts": [[{"invocation_kind": "", "executor_profile": "", "terminal_reason": "success",
+                       "cleanup_status": "clean", "quiescent": True, "survivors": 0}]],
+    }
+    assert boundary["active_chain"]["TASK-U0-PARENT"] == before["active_chain"]["TASK-U0-PARENT"]
+    assert boundary["active_fanout"]["TASK-U0-PARENT"] == before["active_fanout"]["TASK-U0-PARENT"]
+    assert boundary["attachments"]["TASK-U0-PARENT"] == before["attachments"]["TASK-U0-PARENT"]
+    assert boundary["canonical_agents"]["dev_agent"] and not boundary["archived_agents"].get("dev_agent", False)
+    assert boundary["workspaces"]["dev_agent"] and not boundary["archived_workspaces"].get("dev_agent", False)
+    assert after["queue"] == [] and after["proposed_workflow_relations"] == "NOT PRESENT IN SHIPPING SCHEMA"
+    child_results, parent_results = after["results"][child_id], after["results"]["TASK-U0-PARENT"]
+    assert len(child_results) == 1 and len(parent_results) == 2
+    expected = [
+        ("TASK-U0-PARENT", "engineering_head", parent_results[0]["session_id"]),
+        (child_id, "dev_agent", child_results[0]["session_id"]),
+        ("TASK-U0-PARENT", "engineering_head", parent_results[1]["session_id"]),
+    ]
+    assert executor.invocations == expected and executor.callback_sessions == expected
+    assert [(request.org, request.logical_id, request.retry_attempt) for request in backend.requests] == [
+        ("test", "TASK-U0-PARENT", 0), ("test", child_id, 0), ("test", "TASK-U0-PARENT", 0),
+    ]
+    assert after["sessions"][child_id] is None and not after["controls"][child_id]
+    assert after["sessions"]["TASK-U0-PARENT"] is None and not after["controls"]["TASK-U0-PARENT"]
+    assert _receipt_evidence(receipts) == [
+        {"invocation_kind": "", "executor_profile": "", "terminal_reason": "success",
+         "cleanup_status": "clean", "quiescent": True, "survivors": 0},
+    ] * 3
+
+
+def test_r1_termination_after_original_enqueue_refuses_quiescence(tmp_path, monkeypatch) -> None:
+    """C: pause after original queue insertion and before dispatcher consumption.
 
     The authority writer runs in its own live event-loop thread while the
     queue worker is stopped at the observed post-commit boundary.  Thus the
@@ -531,8 +721,9 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
             return
         try:
             observed["boundary_child"] = task_id
-            # Independent SQLite readback proves the real try_delegate commit
-            # is visible before queue notification, not merely in db's cache.
+            # Independent SQLite readback proves the real try_delegate commit.
+            # Original enqueue has already run; this is deliberately the
+            # post-enqueue, pre-dispatch boundary (not before notification).
             import sqlite3
             with sqlite3.connect(paths.db_path) as reader:
                 row = reader.execute(
