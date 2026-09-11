@@ -221,12 +221,14 @@ knows), decline.
 **Escalation variant:** If the dispatched task **escalated** to the founder instead
 of finishing, the thread gets a `task_escalated` system message (with the escalation
 reason). Reply with the precise founder decision needed, or decline if there is nothing
-substantive to add. Do not dispatch repair work from this turn. Autonomous escalation
-continuation is retired.
+substantive to add.
 
-**What you may NOT do:** Dispatch a new task from this turn. The runtime rejects
-dispatch with purpose `task_followup` (HTTP 400 `wrong_invocation_purpose`). If a
-new action is warranted, mention it in your reply and let the founder loop in.
+**Optional replacement dispatch:** A team manager may dispatch one self-targeted
+replacement from this turn before the terminal callback, using the ordinary dispatch
+payload and omitting `resolves`. The runtime validates the terminal event, its lineage
+and dispatch provenance, and the causal root's one-replacement budget; a fresh token
+does not create another replacement. This path does not end the turn: reply or decline
+afterwards as usual.
 
 Callback shapes are unchanged: same `reply` / `decline` payload schema as a normal
 reply turn.
