@@ -21,7 +21,8 @@ class Fake(BaseHTTPRequestHandler):
         if self.path.endswith("/api/json") and "/queue/" not in self.path:
             builds=self.states.get("builds")
             if isinstance(builds,list) and builds:return self.reply(200,builds.pop(0))
-            return self.reply(200,{"property":self.states.get("properties",[]),"building":False,"result":self.states.get("result","SUCCESS"),"artifacts":self.states.get("artifacts",[])})
+            url=self.states.get("url",f"http://{self.headers['Host']}/jenkins/job/folder/job/demo/1/")
+            return self.reply(200,{"number":self.states.get("number",1),"url":url,"property":self.states.get("properties",[]),"building":False,"result":self.states.get("result","SUCCESS"),"artifacts":self.states.get("artifacts",[])})
         if "/queue/item/" in self.path:
             queues=self.states.get("queues")
             if isinstance(queues,list) and queues:return self.reply(200,queues.pop(0))
@@ -133,6 +134,17 @@ def test_08_reconcile_no_resubmit(fake:tuple[str,Fake],tmp_path:Path)->None:
     assert cli(b,p,"reconcile","--build-number","1").returncode==0
     assert any(x[0]=="GET" and x[1].endswith("/job/folder/job/demo/1/api/json") for x in f.seen)
     assert not [x for x in f.seen if x[0]=="POST"] and json.loads(p.read_text())["build_number"]==1
+def test_08b_reconcile_requires_complete_exact_observation(fake:tuple[str,Fake],tmp_path:Path)->None:
+    b,f=fake
+    for key,value in (("number",2),("url",b+"/job/folder/job/other/1/"),("url",None)):
+        p=tmp_path/f"r-{key}-{value is None}"
+        x=jj.open_receipt(p,b,"folder/demo");x.update(phase="submission_uncertain");jj.save_receipt(p,x)
+        f.states.clear();f.states[key]=value
+        r=cli(b,p,"reconcile","--build-number","1")
+        assert r.returncode==3
+        saved=json.loads(p.read_text())
+        assert saved["build_number"] is None and saved["phase"]=="submission_uncertain"
+        assert not [seen for seen in f.seen if seen[0]=="POST"]
 def test_09_cancel_queue_race(fake:tuple[str,Fake],tmp_path:Path)->None:
     b,f=fake;p=tmp_path/"r";x=jj.open_receipt(p,b,"folder/demo");x.update(phase="queued",queue_id=7);jj.save_receipt(p,x)
     f.states["queues"]=[{"executable":{"number":1,"url":b+"/job/folder/job/demo/1/"}}]

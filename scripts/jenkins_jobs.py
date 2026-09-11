@@ -224,7 +224,14 @@ def reconcile(c:Client,p:Path,j:str,n:int)->dict[str,Any]:
     if not positive(n) or x.get("build_number") is not None:raise ReceiptError("exact reconciliation is unavailable for this receipt")
     target=c.controller.checked(build(c.controller,j,n),"build",j,n)
     # Reconciliation is an observation, never a blind local identity claim.
-    c.api_get(target+"/api/json");x.update(phase="building",build_number=n);save_receipt(p,x);return x
+    observed=c.api_get(target+"/api/json")
+    # A number alone is not enough: the remote observation must attest the
+    # exact controller/job/build URL before the receipt gains that identity.
+    if observed.get("number")!=n or not isinstance(observed.get("url"),str):
+        raise ReceiptError("reconciliation response identity mismatch")
+    c.controller.checked(observed["url"],"build",j,n)
+    outcome(observed)
+    x.update(phase="building",build_number=n);save_receipt(p,x);return x
 def wait(c:Client,p:Path,j:str,deadline:float,poll:float)->dict[str,Any]:
     x=load_receipt(p);bind(x,c.controller,j)
     if c.end is None:c.end=time.monotonic()+finite(deadline,"deadline")
