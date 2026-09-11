@@ -63,10 +63,11 @@ The two currently observed authority cases are deliberately narrower than a
 general revocation protocol. Before `_validate_delegate`, supported
 `manage_agent terminate` archives the disposable worker and removes team
 membership; the real validator then denies delegation, with no child or child
-launch. After the real `try_delegate` commit but before queue notification, an
-independent SQLite connection reads the admitted child and the same writer is
-refused with `409 agent_not_quiescent`; releasing the queue then records the
-contained child callback and parent revisit. Each case snapshots task rows,
+launch. After the real `try_delegate` commit and original queue insertion, but
+before the held dispatcher dequeues the child, an independent SQLite connection
+reads the admitted child and the same writer is refused with
+`409 agent_not_quiescent`; releasing the queue then records the contained child
+callback and parent revisit. Each case snapshots task rows,
 chain/fanout fields, attachments, audits, queue, assigned-agent session/control
 bindings, results, canonical/workspace archive residue, and recorded host
 supervisor receipts; proposed workflow relations are explicitly **NOT PRESENT

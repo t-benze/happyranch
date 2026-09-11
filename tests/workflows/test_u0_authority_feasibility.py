@@ -81,7 +81,12 @@ def _r1_snapshot(*, db, tracker, paths, queue, task_ids: tuple[str, ...],
                      if agents[task_id] else None for task_id in task_ids},
         "controls": {task_id: tracker.get_cancel_control(task_id, agents[task_id])
                      is not None if agents[task_id] else False for task_id in task_ids},
-        "queue": list(queue._queue._queue),
+        # Convert the private deque observation to JSON-safe values.  It is a
+        # snapshot only; queue mutation remains exclusively the shipping API.
+        "queue": [
+            {"org": slug, "task_id": task_id, "metadata": metadata}
+            for slug, task_id, metadata in list(queue._queue._queue)
+        ],
         "canonical_agents": {name: (paths.agents_dir / f"{name}.md").exists()
                              for name in identities},
         "archived_agents": {name: (paths.agents_dir / "_terminated" / f"{name}.md").exists()
@@ -96,6 +101,28 @@ def _r1_snapshot(*, db, tracker, paths, queue, task_ids: tuple[str, ...],
         "active_fanout": {task_id: rows[task_id]["active_fanout"] if rows[task_id] else None
                           for task_id in task_ids},
     }
+
+
+def _receipt_evidence(receipts) -> list[dict[str, object]]:
+    """Serialize the receipt fields that actually exist at this seam.
+
+    A ``Receipt`` deliberately has bounded invocation/profile attribution but
+    no logical-task, agent, session, or retry-attempt field.  The contained
+    fake backend used here emits its honest empty attribution, so callers must
+    join those identities through the request, executor callback, and durable
+    task-result surfaces instead of manufacturing a receipt identity.
+    """
+    return [
+        {
+            "invocation_kind": receipt.invocation_kind,
+            "executor_profile": receipt.executor_profile,
+            "terminal_reason": receipt.terminal_reason,
+            "cleanup_status": receipt.cleanup_status.value,
+            "quiescent": receipt.quiescent,
+            "survivors": len(receipt.survivors),
+        }
+        for receipt in receipts
+    ]
 
 
 def test_actual_prior_leg_context_is_immediate_report_only_not_authority_snapshot() -> None:
@@ -424,12 +451,16 @@ def test_r1_termination_before_validate_denies_real_contained_delegation(tmp_pat
     assert terminated["boundary"]["archived_agents"]["dev_agent"]
     assert terminated["boundary"]["archived_workspaces"]["dev_agent"]
     assert any(row["action"] == "agent_managed" for row in db.get_audit_logs("TASK-U0-AUTH"))
-    assert len(receipts) == 1
-    assert [request.logical_id for request in backend.requests] == ["TASK-U0-PARENT"]
+    assert [(request.org, request.logical_id, request.retry_attempt)
+            for request in backend.requests] == [("test", "TASK-U0-PARENT", 0)]
+    assert _receipt_evidence(receipts) == [{
+        "invocation_kind": "", "executor_profile": "", "terminal_reason": "success",
+        "cleanup_status": "clean", "quiescent": True, "survivors": 0,
+    }]
 
 
 def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypatch) -> None:
-    """B: pause the real committed admission before its real queue notification.
+    """C: pause the original queue handoff after committed child admission.
 
     The authority writer runs in its own live event-loop thread while the
     queue worker is stopped at the observed post-commit boundary.  Thus the
@@ -464,7 +495,8 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
     reached, release, writer_done = threading.Event(), threading.Event(), threading.Event()
     observed: dict[str, object] = {}
     writer_errors: list[BaseException] = []
-    real_try_delegate = db.try_delegate
+    owned_threads: list[threading.Thread] = []
+    drain_errors: list[BaseException] = []
 
     def authority_writer() -> None:
         async def terminate() -> None:
@@ -481,49 +513,49 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
             writer_errors.append(exc)
         finally:
             writer_done.set()
-            release.set()
 
-    def pause_after_real_commit(parent_id, child, **kwargs):
-        committed = real_try_delegate(parent_id, child, **kwargs)
-        if committed and parent_id == "TASK-U0-PARENT":
-            observed["boundary_child"] = child.id
-            observed["boundary_parent"] = db.get_task(parent_id)
-            observed["boundary_child_row"] = db.get_task(child.id)
+    original_enqueue = None
+
+    def pause_after_original_enqueue(slug, task_id, *, metadata=None):
+        """Observe original queue insertion before holding the dispatcher.
+
+        ``run_step_impl`` has already committed through ``try_delegate`` when
+        it reaches ``put_nowait``.  Calling the original enqueue first makes
+        the child admission visible through the actual queue API; holding this
+        call prevents the current dispatcher from returning to drain the child.
+        """
+        assert original_enqueue is not None
+        original_enqueue(slug, task_id, metadata=metadata)
+        queued = db.get_task(task_id)
+        if queued is None or queued.parent_task_id != "TASK-U0-PARENT":
+            return
+        try:
+            observed["boundary_child"] = task_id
             # Independent SQLite readback proves the real try_delegate commit
             # is visible before queue notification, not merely in db's cache.
             import sqlite3
             with sqlite3.connect(paths.db_path) as reader:
                 row = reader.execute(
                     "SELECT parent_task_id, assigned_agent, status FROM tasks WHERE id = ?",
-                    (child.id,),
+                    (task_id,),
                 ).fetchone()
-            assert row == (parent_id, "dev_agent", TaskStatus.PENDING.value)
+            assert row == ("TASK-U0-PARENT", "dev_agent", TaskStatus.PENDING.value)
             observed["independent_readback"] = row
             reached.set()
-            thread = threading.Thread(target=authority_writer, daemon=True)
-            thread.start()
-            assert writer_done.wait(2), "termination writer did not reach post-commit boundary"
-            assert not writer_errors, writer_errors
-            assert release.wait(1), "post-commit boundary was not released"
-            thread.join(timeout=1)
-            assert not thread.is_alive(), "termination writer did not finish"
-            if writer_errors:
-                raise writer_errors[0]
-            # This is after the real writer returns its 409 but still before
-            # try_delegate returns to queue notification/launch.
-            observed["boundary"] = _r1_snapshot(
-                db=db, tracker=tracker, paths=paths, queue=state.queue,
-                task_ids=(parent_id, child.id),
-            )
-        return committed
-
-    monkeypatch.setattr(db, "try_delegate", pause_after_real_commit)
+            assert release.wait(2), "post-writer queue boundary was not released"
+        finally:
+            # The outer owner always releases and joins the writer/drain
+            # threads. This wrapper only retains the shipping queue boundary.
+            pass
 
     class CallbackExecutor(_RecordingExecutor):
         def set_invocation_context(self, **kwargs):
             self.context = kwargs
         def run(self, **kwargs):
             task_id = self.context["task_id"]
+            self.invocations = getattr(self, "invocations", []) + [
+                (task_id, self.context["agent"], kwargs["session_id"]),
+            ]
             self.callback_sessions = getattr(self, "callback_sessions", []) + [
                 (task_id, self.context["agent"], kwargs["session_id"])
             ]
@@ -549,14 +581,62 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
     state = DaemonState.idle(orch._settings)
     state.orgs["test"] = SimpleNamespace(orchestrator=orch)
     orch.attach_queue(state.queue)
+    original_enqueue = state.queue.enqueue
     before = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
                           task_ids=("TASK-U0-PARENT",))
     state.queue.enqueue("test", "TASK-U0-PARENT")
-    asyncio.run(state.queue.drain_sync(Dispatcher(state)))
+    monkeypatch.setattr(state.queue, "enqueue", pause_after_original_enqueue)
+
+    def drain_queue() -> None:
+        try:
+            asyncio.run(state.queue.drain_sync(Dispatcher(state)))
+        except BaseException as exc:
+            drain_errors.append(exc)
+
+    drain_thread = threading.Thread(target=drain_queue, daemon=True)
+    writer_thread = threading.Thread(target=authority_writer, daemon=True)
+    owned_threads.extend((drain_thread, writer_thread))
+    drain_thread.start()
+    try:
+        assert reached.wait(2), "child did not reach the post-enqueue boundary"
+        writer_thread.start()
+        assert writer_done.wait(2), "termination writer did not reach post-commit boundary"
+        if writer_errors:
+            raise writer_errors[0]
+        # The supported writer has returned its 409 while the held dispatcher
+        # has not yet dequeued or dispatched the admitted child.
+        child_at_boundary = observed["boundary_child"]
+        observed["boundary"] = _r1_snapshot(
+            db=db, tracker=tracker, paths=paths, queue=state.queue,
+            task_ids=("TASK-U0-PARENT", child_at_boundary),
+        )
+        observed["backend_boundary"] = {
+            "requests": [
+                (request.org, request.invocation_kind, request.logical_id,
+                 request.retry_attempt)
+                for request in backend.requests
+            ],
+            "launch": backend.calls["launch"],
+            "finish": backend.calls["finish"],
+            "receipts": [
+                _receipt_evidence(receipts),
+            ],
+        }
+    finally:
+        release.set()
+        for owned_thread in owned_threads:
+            if owned_thread.ident is not None:
+                owned_thread.join(timeout=2)
+            assert not owned_thread.is_alive(), "owned test thread did not finish"
+    if writer_errors:
+        raise writer_errors[0]
+    if drain_errors:
+        raise drain_errors[0]
     after = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
                          task_ids=("TASK-U0-PARENT", observed["boundary_child"]))
 
     assert reached.is_set()
+    assert release.is_set()
     assert observed["boundary_child"] == db.get_children("TASK-U0-PARENT")[0]
     detail = observed["termination"]
     assert detail["name"] == "dev_agent"
@@ -577,8 +657,22 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
     assert boundary["tasks"][child_id]["status"] == TaskStatus.PENDING.value
     assert boundary["tasks"][child_id]["parent_task_id"] == "TASK-U0-PARENT"
     assert boundary["tasks"][child_id]["assigned_agent"] == "dev_agent"
-    assert boundary["queue"] == []
+    assert boundary["queue"] == [{"org": "test", "task_id": child_id, "metadata": None}]
     assert boundary["sessions"][child_id] is None and not boundary["controls"][child_id]
+    assert boundary["results"][child_id] == []
+    assert len(boundary["results"]["TASK-U0-PARENT"]) == 1
+    assert observed["backend_boundary"] == {
+        "requests": [("test", "task", "TASK-U0-PARENT", 0)],
+        "launch": 1,
+        "finish": 1,
+        # The fake backend returns the shipping Receipt's default empty
+        # attribution; task/session identity is available only on request and
+        # callback/result surfaces in this test.
+        "receipts": [[{
+            "invocation_kind": "", "executor_profile": "", "terminal_reason": "success",
+            "cleanup_status": "clean", "quiescent": True, "survivors": 0,
+        }]],
+    }
     assert boundary["active_chain"]["TASK-U0-PARENT"] == before["active_chain"]["TASK-U0-PARENT"]
     assert boundary["active_fanout"]["TASK-U0-PARENT"] == before["active_fanout"]["TASK-U0-PARENT"]
     assert boundary["attachments"]["TASK-U0-PARENT"] == before["attachments"]["TASK-U0-PARENT"]
@@ -603,8 +697,30 @@ def test_r1_termination_after_try_delegate_refuses_quiescence(tmp_path, monkeypa
         ("TASK-U0-PARENT", "engineering_head", parent_results[1]["session_id"]),
     ]
     assert after["sessions"][child_id] is None and not after["controls"][child_id]
-    assert len(receipts) == 3
-    assert [request.logical_id for request in backend.requests] == [
-        "TASK-U0-PARENT", child_id, "TASK-U0-PARENT",
+    assert after["sessions"]["TASK-U0-PARENT"] is None
+    assert not after["controls"]["TASK-U0-PARENT"]
+    # Receipts do not carry task/agent/session/attempt identity.  The fake
+    # backend's intentionally empty bounded attribution is asserted below;
+    # each invocation's durable identity is instead joined through the real
+    # request, executor context/callback, and persisted result row.
+    assert [(request.org, request.logical_id, request.retry_attempt)
+            for request in backend.requests] == [
+        ("test", "TASK-U0-PARENT", 0), ("test", child_id, 0),
+        ("test", "TASK-U0-PARENT", 0),
+    ]
+    expected_invocations = [
+        ("TASK-U0-PARENT", "engineering_head", parent_results[0]["session_id"]),
+        (child_id, "dev_agent", child_results[0]["session_id"]),
+        ("TASK-U0-PARENT", "engineering_head", parent_results[1]["session_id"]),
+    ]
+    assert executor.invocations == expected_invocations
+    assert executor.callback_sessions == expected_invocations
+    assert _receipt_evidence(receipts) == [
+        {"invocation_kind": "", "executor_profile": "", "terminal_reason": "success",
+         "cleanup_status": "clean", "quiescent": True, "survivors": 0},
+        {"invocation_kind": "", "executor_profile": "", "terminal_reason": "success",
+         "cleanup_status": "clean", "quiescent": True, "survivors": 0},
+        {"invocation_kind": "", "executor_profile": "", "terminal_reason": "success",
+         "cleanup_status": "clean", "quiescent": True, "survivors": 0},
     ]
     assert not writer_errors
