@@ -5843,18 +5843,29 @@ class Database:
     def list_thread_participant_names_for_threads(
         self, thread_ids: list[str],
     ) -> dict[str, list[str]]:
-        """Batch-read current participant names for an already bounded list."""
+        """Batch-read current participant names for a list projection.
+
+        The public list endpoint deliberately preserves SQLite's historical
+        negative-limit behaviour (``LIMIT -1`` means unbounded).  Therefore
+        this *new* projection must not assume its input is capped: keep every
+        returned id, but issue finite IN batches so one legacy response cannot
+        exceed SQLite's parameter ceiling.  Ordering within each membership is
+        still the real ``added_at`` order, and the result keys retain the
+        caller's row order.
+        """
         if not thread_ids:
             return {}
-        placeholders = ", ".join("?" for _ in thread_ids)
-        cursor = self._conn.execute(
-            "SELECT thread_id, agent_name FROM thread_participants "
-            f"WHERE thread_id IN ({placeholders}) ORDER BY thread_id, added_at",
-            tuple(thread_ids),
-        )
         result = {thread_id: [] for thread_id in thread_ids}
-        for row in cursor.fetchall():
-            result[row["thread_id"]].append(row["agent_name"])
+        for start in range(0, len(thread_ids), 500):
+            batch = thread_ids[start:start + 500]
+            placeholders = ", ".join("?" for _ in batch)
+            cursor = self._conn.execute(
+                "SELECT thread_id, agent_name FROM thread_participants "
+                f"WHERE thread_id IN ({placeholders}) ORDER BY thread_id, added_at",
+                tuple(batch),
+            )
+            for row in cursor.fetchall():
+                result[row["thread_id"]].append(row["agent_name"])
         return result
 
     @_synchronized

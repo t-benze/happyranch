@@ -357,10 +357,17 @@ export function ThreadsPage(): JSX.Element {
   const queryClient = useQueryClient();
   const { slug, thread_id: threadId } = useParams<{ slug: string; thread_id: string }>();
   const composerFocusRef = useRef<(() => void) | null>(null);
+  const listScrollRef = useRef<HTMLDivElement>(null);
 
   // Inbox state — segmented status filter (THREADS-02).
   const [bucket, setBucket] = useState<InboxBucket>('open');
   const [filter, setFilter] = useState('');
+  const scrollKey = `threads:list-scroll:${slug ?? ''}:${bucket}:${filter}`;
+  const rememberListScroll = () => {
+    // Route-local, keyed state avoids leaking a position across orgs, buckets,
+    // or search terms while leaving router ownership untouched.
+    sessionStorage.setItem(scrollKey, String(listScrollRef.current?.scrollTop ?? 0));
+  };
   useThreadsInboxSSE();
   const agentsQuery = useAgentsList();
   const agents = useMemo(() => agentsQuery.data?.agents ?? [], [agentsQuery.data]);
@@ -420,6 +427,22 @@ export function ThreadsPage(): JSX.Element {
         t.thread_id.toLowerCase().includes(needle),
     );
   }, [bucket, openQuery.data, archivedQuery.data, filter]);
+  useEffect(() => {
+    if (threadId) return;
+    const saved = Number(sessionStorage.getItem(scrollKey));
+    if (!Number.isFinite(saved) || saved <= 0) return;
+    const frame = requestAnimationFrame(() => {
+      if (listScrollRef.current) listScrollRef.current.scrollTop = saved;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [threadId, scrollKey, threads.length]);
+  useEffect(() => {
+    // The list ContentWrap is conditional on the detail route. Persist from
+    // its cleanup too, so browser history and the detail's ordinary Back link
+    // have the same route-local restoration point as an anchor activation.
+    if (threadId) return;
+    return () => rememberListScroll();
+  }, [threadId, scrollKey]);
   // THR-209 msg 9 (TASK-5976): the Pinned section is an OPEN-list concept
   // only. The server returns the open bucket pinned-first, ordered by
   // immutable numeric thread id DESC (THR-10 above THR-2) then unpinned in
@@ -713,7 +736,7 @@ export function ThreadsPage(): JSX.Element {
             `max-w-content` cap with 26px padding. The flex sizer owns the
             height; ContentWrap owns the scroll. */}
         <div className="min-h-0 flex-1">
-          <ContentWrap>
+          <ContentWrap scrollRef={listScrollRef}>
           {/* Loading skeleton */}
           {bucketLoading && <InboxSkeleton />}
 
@@ -781,7 +804,7 @@ export function ThreadsPage(): JSX.Element {
                       </span>
                     }
                     href={path}
-                    onSelect={() => navigate(path)}
+                    onSelect={() => { rememberListScroll(); navigate(path); }}
                     pinControl={
                       <RowPinControl thread={t} onError={setPinError} />
                     }
@@ -814,7 +837,7 @@ export function ThreadsPage(): JSX.Element {
                       </span>
                     }
                     href={path}
-                    onSelect={() => navigate(path)}
+                    onSelect={() => { rememberListScroll(); navigate(path); }}
                     pinControl={
                       <RowPinControl thread={t} onError={setPinError} />
                     }

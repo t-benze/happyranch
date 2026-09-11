@@ -96,10 +96,10 @@ export function InboxRow({
     onSelect();
   };
 
-  const shellCls = `group relative block w-full rounded-sm border px-3 py-2 text-left no-underline transition-colors ${
+  const shellCls = `group relative block w-full ${layout === 'thread' ? 'px-3 py-2' : 'rounded-sm border px-3 py-2'} text-left no-underline transition-colors ${
     active
-      ? 'bg-accent-muted border-accent-muted shadow-pasture-sm'
-      : 'bg-surface border-border-default shadow-pasture-sm hover:border-border-strong'
+      ? `bg-accent-muted ${layout === 'thread' ? '' : 'border-accent-muted shadow-pasture-sm'}`
+      : `bg-surface ${layout === 'thread' ? '' : 'border-border-default shadow-pasture-sm hover:border-border-strong'}`
   }`;
   const activeMarker = active && (
     <span
@@ -157,15 +157,15 @@ export function InboxRow({
             </span>
           )}
         </div>
-        <div className="text-caption text-text-muted mt-1 truncate font-mono">
+        <div className="text-caption text-text-muted mt-1 ml-[18px] truncate font-mono">
           {participants.join(' · ')}
         </div>
       </a>
     );
     return pinControl ? (
-      <div className="flex items-center gap-1">
-        <div className="min-w-0 flex-1">{rowEl}</div>
-        {pinControl}
+      <div className="relative">
+        <div className="min-w-0 pr-10">{rowEl}</div>
+        <div className="absolute right-2 top-2">{pinControl}</div>
       </div>
     ) : (
       rowEl

@@ -229,6 +229,37 @@ def test_list_threads_batches_current_participants_without_transcript_reads(
     assert not any("transcript" in statement.lower() for statement in selects)
 
 
+def test_list_threads_negative_limit_preserves_rows_in_500_id_membership_batches(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Legacy ``limit=-1`` stays unlimited, while the added projection is finite.
+
+    501 returned rows must mean exactly ceil(501 / 500) membership statements,
+    never one oversized IN list and never one detail/transcript query per row.
+    """
+    client = TestClient(app)
+    for _ in range(501):
+        thread_id = org_state.db.next_thread_id()
+        org_state.db.insert_thread(ThreadRecord(id=thread_id, subject=thread_id))
+        org_state.db.add_thread_participant(thread_id, "alpha", added_by="founder")
+
+    statements: list[str] = []
+    org_state.db._conn.set_trace_callback(statements.append)
+    try:
+        response = client.get("/api/v1/orgs/alpha/threads?limit=-1", headers=auth_headers)
+    finally:
+        org_state.db._conn.set_trace_callback(None)
+
+    assert response.status_code == 200, response.text
+    rows = response.json()["threads"]
+    assert len(rows) == 501
+    assert all(row["participants"] == ["alpha"] for row in rows)
+    membership = [s for s in statements if "FROM thread_participants" in s]
+    assert len(membership) == 2
+    # Trace output has substituted values; a 500-ID batch has 499 commas in IN.
+    assert max(s.split(" IN (", 1)[-1].split(")", 1)[0].count(",") + 1 for s in membership) == 500
+
+
 def test_get_thread_returns_messages_and_participants(tmp_home, app, org_state, auth_headers):
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")

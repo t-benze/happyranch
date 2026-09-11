@@ -1216,7 +1216,7 @@ describe('ThreadsPage — abort replies', () => {
     mountThreadWithResponders([]);
 
     // Wait for detail to render.
-    await screen.findAllByText('Test thread');
+    await screen.findByText('Test thread');
     // With no queued/working responder there is no replying row, so the inline
     // "Abort reply" control is absent entirely (it is no longer a persistent,
     // disabled footer button).
@@ -1242,7 +1242,7 @@ describe('ThreadsPage — abort replies', () => {
 
     mountThreadWithResponders([]);
 
-    await screen.findAllByText('Test thread');
+    await screen.findByText('Test thread');
     // No replying row → no abort control → the POST can never fire.
     expect(screen.queryByRole('button', { name: /Abort reply/i })).toBeNull();
     expect(abortHit).toBe(false);
@@ -1819,7 +1819,7 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
       ],
     );
 
-    expect((await screen.findAllByText('Test thread')).length).toBeGreaterThan(0);
+    expect(await screen.findByText('Test thread')).toBeInTheDocument();
     // The system-row replied marker is visible; no fabricated in-flight row.
     expect(screen.getByText('replied')).toBeInTheDocument();
     expect(screen.queryByLabelText('investment_advisor is replying')).not.toBeInTheDocument();
@@ -1830,7 +1830,7 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
     sessionStorage.setItem('happyranch.token', 'tok');
     mountThreadWithReplyDelivery([]);
 
-    expect((await screen.findAllByText('Test thread')).length).toBeGreaterThan(0);
+    expect(await screen.findByText('Test thread')).toBeInTheDocument();
     expect(screen.queryByText('Reply delivery')).not.toBeInTheDocument();
   });
 

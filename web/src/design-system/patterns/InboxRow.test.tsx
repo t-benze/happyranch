@@ -184,4 +184,14 @@ describe('InboxRow — thread layout (THR-099 id-first row)', () => {
     );
     expect(screen.getByText('engineering_manager · dev_agent')).toBeInTheDocument();
   });
+
+  test('uses flush grouped-row geometry while the default consumer keeps its card shell', () => {
+    const { rerender } = render(
+      <InboxRow threadId="THR-007" subject="Long grouped row" status="open" needsYou={false} active={false} layout="thread" href="#" participants={['agent']} />,
+    );
+    expect(screen.getByRole('link')).not.toHaveClass('rounded-sm', 'border', 'shadow-pasture-sm');
+    expect(screen.getByText('agent')).toHaveClass('ml-[18px]');
+    rerender(<InboxRow threadId="THR-008" subject="Default row" status="open" needsYou={false} active={false} href="#" />);
+    expect(screen.getByRole('link')).toHaveClass('rounded-sm', 'border', 'shadow-pasture-sm');
+  });
 });
