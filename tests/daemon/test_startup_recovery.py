@@ -3151,14 +3151,14 @@ def test_sweep_orphaned_result_malformed_local_ci_does_not_crash(tmp_path):
     )
 
 
-def test_terminal_job_backstop_serializes_cleanup_before_shipping_startup_cutover(
+def test_terminal_job_backstop_serializes_cleanup_before_shipping_startup_update_commit(
     tmp_path, monkeypatch, request,
 ):
-    """The terminal cleanup helper owns its UPDATE/commit before startup locks.
+    """The terminal cleanup helper owns its UPDATE/commit before startup.
 
     This is intentionally a real shared SQLite connection test.  The proxy
     stops the owned-RUNNING UPDATE immediately before its actual commit; a
-    concurrent shipping cutover then demonstrably attempts the same database
+    concurrent shipping startup sweep then demonstrably attempts the same database
     lock and cannot acquire it until the cleanup commit is released.
     """
     from runtime.daemon import jobs_runner
@@ -3208,6 +3208,14 @@ def test_terminal_job_backstop_serializes_cleanup_before_shipping_startup_cutove
         def release(self):
             return original_lock.release()
 
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.release()
+            return False
+
     def tracked_thread(*args, **kwargs):
         target = kwargs.get("target")
         if target is not None:
@@ -3241,13 +3249,16 @@ def test_terminal_job_backstop_serializes_cleanup_before_shipping_startup_cutove
     run_step._kill_jobs_for_terminating_task(orch, "TASK-TERMINAL")
     assert update_at_boundary.wait(2), "cleanup never reached UPDATE-to-commit"
 
-    def startup_cutover() -> None:
+    def startup_sweep() -> None:
         try:
-            db.cutover_thread_reply_delivery_state("THR-NO-PARTICIPANTS")
+            # Use the actual startup entrypoint.  Its final raw orphan-reap
+            # UPDATE-to-commit is the previously unprotected shared-connection
+            # window; it must wait behind the owned-job terminal backstop.
+            _sweep_on_startup(db, TaskQueue(), "test", orch)
         except BaseException as exc:  # worker errors must reach the test
             errors.append(exc)
 
-    contender = original_thread(target=startup_cutover)
+    contender = original_thread(target=startup_sweep)
     contender.start()
     assert startup_attempted_lock.wait(2), "startup did not attempt DB lock"
     assert contender.is_alive(), "startup acquired the lock before cleanup commit"
