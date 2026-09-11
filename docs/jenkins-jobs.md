@@ -8,11 +8,11 @@ After PR review, use its immutable repository commit and verify the published fi
 
 ~~~sh
 REPO=https://github.com/t-benze/happyranch.git
-COMMIT=3d92adbc07f040beee9330c18ee668e0e35a04c2
+COMMIT=45cc7765806af615997e0aeef47b2a22695ed241
 TOOL_DIR="$HOME/.local/share/happyranch-tools"
 git clone "$REPO" /tmp/happyranch-jenkins-source
 git -C /tmp/happyranch-jenkins-source show "$COMMIT:scripts/jenkins_jobs.py" > /tmp/jenkins_jobs.py
-sha256sum /tmp/jenkins_jobs.py # must be 394b271c99d27bb0503c45a744141bbb4b99de4daa8571869e8301f4ac7b0059
+sha256sum /tmp/jenkins_jobs.py # must be a0a2eb68491fd9bf0dc2569b015ee9399f334bc7c233940b83c0dd49c6569753
 install -d -m 700 "$TOOL_DIR"
 install -m 700 /tmp/jenkins_jobs.py "$TOOL_DIR/jenkins_jobs.py"
 python "$TOOL_DIR/jenkins_jobs.py" --help
