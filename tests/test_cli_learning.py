@@ -440,6 +440,66 @@ def test_memory_compact_requires_one_mode(monkeypatch):
         ])
 
 
+# ── Memory report ──
+
+def test_memory_report_paginates_and_prints_guarded_status(monkeypatch, capsys):
+    """The canonical report command exhausts audit pages and stays guarded."""
+    from argparse import Namespace
+    from cli.commands.learning import cmd_memory_report
+
+    class FakeResp:
+        status_code = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    calls = []
+    rows = {
+        "memory_digest_impression": [
+            {"timestamp": "2026-01-01T00:00:00+00:00", "agent": "dev_agent",
+             "task_id": "TASK-1", "payload": '{"session_id":"sess-1","digest_ids":["MEM-1"]}'},
+        ],
+        "memory_read": [
+            {"agent": "dev_agent", "task_id": "TASK-1",
+             "payload": '{"session_id":"sess-1","id":"MEM-1"}'},
+        ],
+        "memory_search": [],
+    }
+
+    class FakeClient:
+        @staticmethod
+        def from_env():
+            return FakeClient()
+
+        def get(self, path, params=None):
+            if path.endswith("/agents"):
+                return FakeResp({"agents": []})
+            assert path.endswith("/audit")
+            action = params["action"]
+            cursor = params.get("cursor")
+            calls.append((action, cursor))
+            if cursor is None:
+                return FakeResp({"entries": rows[action], "next_cursor": f"{action}-next"})
+            assert cursor == f"{action}-next"
+            return FakeResp({"entries": [], "next_cursor": None})
+
+    monkeypatch.setattr("cli.commands.learning.OpcClient", FakeClient)
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
+    cmd_memory_report(Namespace(org="o", json=False))
+
+    assert calls == [
+        ("memory_digest_impression", None), ("memory_digest_impression", "memory_digest_impression-next"),
+        ("memory_read", None), ("memory_read", "memory_read-next"),
+        ("memory_search", None), ("memory_search", "memory_search-next"),
+    ]
+    rendered = capsys.readouterr().out
+    assert "DECISION: insufficient_instrumentation" in rendered
+    assert "unversioned and invalid" in rendered
+
+
 # ── Search with new flags ──
 
 def _fake_client_for_search(monkeypatch, captured: dict):
