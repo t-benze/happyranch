@@ -1,322 +1,240 @@
 #!/usr/bin/env python3
-"""Submit, reattach to, collect from, or cancel an existing Jenkins job safely.
-
-This is deliberately standalone: Python 3.12+ standard library only, with no
-HappyRanch import or runtime integration.  See docs/jenkins-jobs.md.
-"""
+"""Safely operate an already-authorized Jenkins job; standard library only."""
 from __future__ import annotations
-
-import argparse
-import json
-import os
-import secrets
-import signal
-import sys
-import time
-from dataclasses import dataclass
+import argparse, base64, fcntl, json, math, os, secrets, sys, tempfile, time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-VERSION = "1"
-DEFAULT_TIMEOUT = 15.0
-DEFAULT_DEADLINE = 900.0
-DEFAULT_POLL = 2.0
-DEFAULT_API_BYTES = 1_000_000
-DEFAULT_LOG_BYTES = 1_000_000
-DEFAULT_ARTIFACT_BYTES = 10_000_000
-DEFAULT_ARTIFACT_TOTAL = 50_000_000
-DEFAULT_ARTIFACT_COUNT = 32
-SUPPORTED_PARAMETERS = {
-    "hudson.model.StringParameterDefinition", "hudson.model.TextParameterDefinition",
-    "hudson.model.BooleanParameterDefinition", "hudson.model.ChoiceParameterDefinition",
-    "hudson.model.PasswordParameterDefinition", "StringParameterDefinition",
-    "TextParameterDefinition", "BooleanParameterDefinition", "ChoiceParameterDefinition",
-}
-
-
+VERSION="2"; TERMINAL={"SUCCESS","FAILURE","UNSTABLE","ABORTED"}
+SUPPORTED={"hudson.model.StringParameterDefinition","hudson.model.TextParameterDefinition","hudson.model.BooleanParameterDefinition","hudson.model.ChoiceParameterDefinition","hudson.model.PasswordParameterDefinition","StringParameterDefinition","TextParameterDefinition","BooleanParameterDefinition","ChoiceParameterDefinition"}
 class JenkinsError(Exception): pass
 class ValidationError(JenkinsError): pass
 class ReceiptError(JenkinsError): pass
 class TransportError(JenkinsError): pass
-
-
-def _bad_component(value: str) -> bool:
-    lower = value.lower()
-    return not value or value in {".", ".."} or "%2f" in lower or "%5c" in lower or "\\" in value or "/" in value
-
-
-def job_path(name: str) -> str:
-    parts = name.split("/")
-    if not parts or any(_bad_component(part) for part in parts):
-        raise ValidationError("job name must be nonempty folder/name components without traversal or encoded separators")
-    return "".join("/job/" + quote(part, safe="") for part in parts)
-
-
-def validate_controller(url: str, allow_http: bool = False) -> str:
-    parsed = urlsplit(url)
-    if parsed.scheme not in ({"https", "http"} if allow_http else {"https"}) or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ValidationError("controller must be a credential-free HTTPS origin (HTTP requires explicit --allow-http)")
-    if any(piece in {".", ".."} or "%2f" in piece.lower() or "%5c" in piece.lower() for piece in parsed.path.split("/")):
-        raise ValidationError("controller context must not contain traversal or encoded separators")
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
-
-
-def controller_url(controller: str, name: str) -> str:
-    return validate_controller(controller, allow_http=True) + job_path(name)
-
-
-@dataclass(frozen=True)
+def finite(x:float,n:str)->float:
+    if not math.isfinite(x) or x<=0: raise ValidationError(f"{n} must be finite and positive")
+    return x
+def bad(s:str)->bool:
+    return not s or s in {".",".."} or "\\" in s or any(x in s.lower() for x in ("%2f","%5c","%2e"))
+def job_path(n:str)->str:
+    ps=n.split("/")
+    if any(bad(p) for p in ps): raise ValidationError("unsafe job name")
+    return "".join("/job/"+quote(p,safe="") for p in ps)
+def validate_controller(u:str,allow_http:bool=False)->str:
+    p=urlsplit(u)
+    if p.scheme not in ({"https","http"} if allow_http else {"https"}) or not p.netloc or p.username or p.password or p.query or p.fragment or any(bad(x) for x in p.path.split("/") if x): raise ValidationError("controller must be a credential-free safe HTTPS URL")
+    return urlunsplit((p.scheme,p.netloc,p.path.rstrip("/"),"",""))
+def controller_url(c:str,j:str)->str:return validate_controller(c,True)+job_path(j)
 class Controller:
-    base: str
-    def __post_init__(self) -> None: object.__setattr__(self, "base", validate_controller(self.base, allow_http=True))
-    @property
-    def parsed(self) -> Any: return urlsplit(self.base)
-    def checked(self, url: str, expected_path: str) -> str:
-        parsed = urlsplit(url)
-        if parsed.scheme != self.parsed.scheme or parsed.netloc != self.parsed.netloc or parsed.username or parsed.password or parsed.fragment:
-            raise ValidationError("Jenkins returned an off-origin or credential-bearing URL")
-        root = self.parsed.path.rstrip("/")
-        path = parsed.path
-        if not path.startswith(root + "/") or not path[len(root):].startswith(expected_path):
-            raise ValidationError("Jenkins returned a URL outside expected controller context or identity")
-        if any(x in {".", ".."} or "%2f" in x.lower() or "%5c" in x.lower() for x in path.split("/")):
-            raise ValidationError("Jenkins returned unsafe path")
-        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, ""))
-
-
+    def __init__(self,b:str):self.base=validate_controller(b,True);self.p=urlsplit(self.base)
+    def checked(self,u:str,kind:str,job:str|None=None,ident:int|None=None)->str:
+        q=urlsplit(u); root=self.p.path.rstrip("/")
+        if q.scheme!=self.p.scheme or q.netloc!=self.p.netloc or q.username or q.password or q.query or q.fragment or not q.path.startswith(root+"/") or any(bad(x) for x in q.path.split("/") if x):raise ValidationError("untrusted Jenkins URL")
+        tail=q.path[len(root):].rstrip("/")
+        ok=(kind=="queue" and tail==f"/queue/item/{ident}") or (kind=="build" and job is not None and tail==job_path(job)+f"/{ident}") or (kind=="job" and job is not None and tail==job_path(job))
+        if not ok:raise ValidationError("Jenkins URL does not match exact identity")
+        return urlunsplit((q.scheme,q.netloc,q.path,"",""))
 class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req: Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None: return None
-
-
+    def redirect_request(self,*a:Any,**k:Any)->None:return None
 class Client:
-    def __init__(self, controller: Controller, token: str | None, timeout: float, max_bytes: int) -> None:
-        self.controller, self.token, self.timeout, self.max_bytes = controller, token, timeout, max_bytes
-        self.opener = build_opener(NoRedirect)
-    def request(self, method: str, url: str, data: bytes | None = None, limit: int | None = None) -> tuple[int, dict[str, str], bytes]:
-        headers = {"Accept": "application/json"}
-        if self.token: headers["Authorization"] = "Bearer " + self.token
-        request = Request(url, data=data, headers=headers, method=method)
+    def __init__(self,c:Controller,user:str|None,token:str|None,timeout:float,api:int):
+        self.controller,self.timeout,self.api,self.end=c,finite(timeout,"timeout"),api,None;self.opener=build_opener(NoRedirect)
+        if bool(user)!=bool(token):raise ValidationError("both Jenkins username and API token references are required")
+        if user and any("\n" in x or "\r" in x for x in (user,token or "")):raise ValidationError("unsafe credential header input")
+        self.auth="Basic "+base64.b64encode(f"{user}:{token}".encode()).decode() if user else None
+    def remaining(self)->float:
+        if self.end is None:return self.timeout
+        r=self.end-time.monotonic()
+        if r<=0:raise TimeoutError
+        return min(r,self.timeout)
+    def request(self,m:str,u:str,data:bytes|None=None,limit:int|None=None)->tuple[int,dict[str,str],bytes]:
+        cap=self.api if limit is None else limit
+        if not isinstance(cap,int) or cap<=0:raise ValidationError("invalid response bound")
+        h={"Accept":"application/json"}
+        if self.auth:h["Authorization"]=self.auth
+        try:r=self.opener.open(Request(u,data=data,headers=h,method=m),timeout=self.remaining())
+        except HTTPError as e:
+            try:b=e.read(cap+1)
+            except Exception:b=b""
+            return e.code,dict(e.headers.items()),b
+        except (URLError,OSError,ValueError,TimeoutError) as e:raise TransportError("transport failed; identity retained") from e
+        chunks=[];size=0
         try:
-            response = self.opener.open(request, timeout=self.timeout)
-        except HTTPError as exc:
-            if exc.code in {301, 302, 303, 307, 308}:
-                return exc.code, dict(exc.headers.items()), b""
-            return exc.code, dict(exc.headers.items()), exc.read(min(limit or self.max_bytes, self.max_bytes))
-        except (URLError, OSError, TimeoutError) as exc:
-            raise TransportError("transport failed without a safe retry guarantee") from exc
-        cap = min(limit or self.max_bytes, self.max_bytes)
-        chunks: list[bytes] = []; size = 0
-        with response:
-            while True:
-                part = response.read(min(65536, cap - size + 1))
-                if not part: break
-                chunks.append(part); size += len(part)
-                if size > cap: raise TransportError("response exceeded configured bound")
-        return response.status, dict(response.headers.items()), b"".join(chunks)
-    def api(self, url: str) -> dict[str, Any]:
-        status, _, body = self.request("GET", url)
-        if status != 200: raise TransportError(f"Jenkins API returned HTTP {status}")
-        try: value = json.loads(body)
-        except json.JSONDecodeError as exc: raise TransportError("Jenkins API returned invalid JSON") from exc
-        if not isinstance(value, dict): raise TransportError("Jenkins API response was not an object")
-        return value
-
-
-def prepare_parameters(metadata: dict[str, Any], supplied: dict[str, str]) -> dict[str, str]:
-    definitions: list[dict[str, Any]] = []
-    for prop in metadata.get("property", []) or []:
-        definitions.extend(prop.get("parameterDefinitions", []) or [])
-    allowed: dict[str, str] = {}
-    for definition in definitions:
-        name, kind = definition.get("name"), definition.get("type")
-        if not isinstance(name, str) or not isinstance(kind, str): raise ValidationError("malformed Jenkins parameter definition")
-        if kind not in SUPPORTED_PARAMETERS: raise ValidationError(f"unsupported declared Jenkins parameter type: {kind}")
-        allowed[name] = kind
-    unknown = set(supplied) - set(allowed)
-    if unknown: raise ValidationError("parameters are not declared by this job: " + ", ".join(sorted(unknown)))
-    return dict(supplied)
-
-
-def _safe_receipt_path(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and path.is_symlink(): raise ReceiptError("receipt path may not be a symlink")
-    if path.parent.is_symlink(): raise ReceiptError("receipt directory may not be a symlink")
-
-
-def _write_json(path: Path, data: dict[str, Any], create: bool = False) -> None:
-    _safe_receipt_path(path)
-    flags = os.O_WRONLY | os.O_CREAT | (os.O_EXCL if create else os.O_TRUNC)
-    try: fd = os.open(path, flags, 0o600)
-    except FileExistsError as exc: raise ReceiptError("receipt already exists; reattach rather than submit") from exc
+            with r:
+                while True:
+                    self.remaining();b=r.read(min(65536,cap-size+1))
+                    if not b:break
+                    size+=len(b)
+                    if size>cap:raise TransportError("response exceeded configured bound")
+                    chunks.append(b)
+        except (OSError,ValueError,TimeoutError) as e:raise TransportError("bounded response read failed") from e
+        return r.status,dict(r.headers.items()),b"".join(chunks)
+    def api_get(self,u:str)->dict[str,Any]:
+        s,_,b=self.request("GET",u)
+        if s!=200:raise TransportError(f"Jenkins API returned HTTP {s}")
+        try:x=json.loads(b)
+        except (UnicodeDecodeError,json.JSONDecodeError) as e:raise TransportError("invalid Jenkins JSON") from e
+        if not isinstance(x,dict):raise TransportError("Jenkins API was not an object")
+        return x
+def params(meta:dict[str,Any],given:dict[str,str])->dict[str,str]:
+    ds=[d for p in (meta.get("property") or []) if isinstance(p,dict) for d in (p.get("parameterDefinitions") or [])]
+    names=set()
+    for d in ds:
+        if not isinstance(d,dict) or not isinstance(d.get("name"),str) or d.get("type") not in SUPPORTED:raise ValidationError("unsupported/malformed Jenkins parameter definition")
+        names.add(d["name"])
+    if set(given)-names:raise ValidationError("parameter is not declared by this job")
+    return given
+prepare_parameters=params
+def valid_receipt(x:Any)->dict[str,Any]:
+    if not isinstance(x,dict) or x.get("version")!=VERSION or not isinstance(x.get("controller"),str) or not isinstance(x.get("job"),str) or x.get("phase") not in {"intent","submission_uncertain","queued","building","terminal","cancel_requested"}:raise ReceiptError("malformed receipt")
+    validate_controller(x["controller"],True);job_path(x["job"]);return x
+def safe_parent(p:Path)->None:
+    cur=Path(p.anchor) if p.is_absolute() else Path(".")
+    for x in p.parent.parts[1 if p.is_absolute() else 0:]:
+        cur=cur/x
+        if cur.exists() and cur.is_symlink():raise ReceiptError("symlink ancestor refused")
+    p.parent.mkdir(parents=True,exist_ok=True)
+@contextmanager
+def locked(p:Path):
+    safe_parent(p);l=Path(str(p)+".lock")
+    if l.is_symlink():raise ReceiptError("unsafe receipt lock")
+    fd=os.open(l,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600);fcntl.flock(fd,fcntl.LOCK_EX)
+    try:yield
+    finally:fcntl.flock(fd,fcntl.LOCK_UN);os.close(fd)
+def write_receipt(p:Path,x:dict[str,Any],create:bool=False)->None:
+    valid_receipt(x);safe_parent(p)
+    with locked(p):
+        if create:
+            try:fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+            except FileExistsError as e:raise ReceiptError("receipt exists; reattach rather than resubmit") from e
+            try:os.write(fd,(json.dumps(x,sort_keys=True)+"\n").encode());os.fsync(fd)
+            finally:os.close(fd)
+        else:
+            fd,tmp=tempfile.mkstemp(prefix=".receipt-",dir=p.parent);os.fchmod(fd,0o600)
+            try:
+                with os.fdopen(fd,"w") as h:json.dump(x,h,sort_keys=True);h.write("\n");h.flush();os.fsync(h.fileno())
+                os.replace(tmp,p);d=os.open(p.parent,os.O_RDONLY);os.fsync(d);os.close(d)
+            except BaseException:
+                try:os.unlink(tmp)
+                except OSError:pass
+                raise
+def open_receipt(p:Path,c:str,j:str)->dict[str,Any]:
+    x={"version":VERSION,"request_id":secrets.token_hex(16),"controller":validate_controller(c,True),"job":j,"phase":"intent","queue_id":None,"build_number":None,"jenkins_result":None,"collection":{"status":"not_started","artifacts":[]}};write_receipt(p,x,True);return x
+def load_receipt(p:Path)->dict[str,Any]:
+    safe_parent(p)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, sort_keys=True); handle.write("\n"); handle.flush(); os.fsync(handle.fileno())
-    except BaseException:
-        try: os.close(fd)
-        except OSError: pass
-        raise
-
-
-def open_receipt(path: Path, controller: str, name: str) -> dict[str, Any]:
-    data = {"version": VERSION, "request_id": secrets.token_hex(16), "controller": validate_controller(controller, allow_http=True), "job": name, "phase": "intent", "submitted_at": time.time(), "queue_url": None, "build_url": None, "jenkins_result": None, "collection": {"status": "not_started", "artifacts": []}}
-    _write_json(path, data, create=True); return data
-
-
-def load_receipt(path: Path) -> dict[str, Any]:
-    try: value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc: raise ReceiptError("receipt is unreadable") from exc
-    if not isinstance(value, dict) or value.get("version") != VERSION: raise ReceiptError("unsupported receipt")
-    return value
-
-
-def save_receipt(path: Path, receipt: dict[str, Any]) -> None: _write_json(path, receipt)
-
-
-def outcome(build: dict[str, Any]) -> str:
-    if build.get("building") is True: return "BUILDING"
-    result = build.get("result")
-    if result in {"SUCCESS", "FAILURE", "UNSTABLE", "ABORTED"}: return str(result)
-    return "UNSUPPORTED_RESULT:" + (str(result) if result is not None else "missing")
-
-
-def submit(client: Client, receipt_path: Path, job: str, params: dict[str, str]) -> dict[str, Any]:
-    receipt = open_receipt(receipt_path, client.controller.base, job)
-    job_url = controller_url(client.controller.base, job)
-    metadata = client.api(job_url + "/api/json")
-    declared = prepare_parameters(metadata, params)
-    endpoint = "/buildWithParameters" if any((p.get("parameterDefinitions") or []) for p in metadata.get("property", []) or []) else "/build"
-    body = urlencode(declared).encode() if endpoint.endswith("Parameters") else None
-    status, headers, _ = client.request("POST", job_url + endpoint, body)
-    location = headers.get("Location") or headers.get("location")
-    if status not in {200, 201, 202} or not location:
-        receipt["phase"] = "submission_uncertain"; receipt["submission_status"] = status; save_receipt(receipt_path, receipt)
-        raise ReceiptError("submission outcome is uncertain; do not submit again; reconcile this receipt")
-    receipt["queue_url"] = client.controller.checked(urljoin(job_url, location), "/queue/item/")
-    receipt["phase"] = "queued"; save_receipt(receipt_path, receipt); return receipt
-
-
-def _deadline(deadline: float, start: float) -> None:
-    if time.monotonic() - start >= deadline: raise TimeoutError
-
-
-def wait_for_terminal(client: Client, receipt_path: Path, deadline: float, poll: float) -> dict[str, Any]:
-    receipt = load_receipt(receipt_path); start = time.monotonic()
+        if p.is_symlink():raise ReceiptError("receipt symlink refused")
+        return valid_receipt(json.loads(p.read_text()))
+    except (OSError,json.JSONDecodeError) as e:raise ReceiptError("receipt unreadable") from e
+def save_receipt(p:Path,x:dict[str,Any])->None:write_receipt(p,x)
+def bind(x:dict[str,Any],c:Controller,j:str)->None:
+    if x["controller"]!=c.base or x["job"]!=j:raise ReceiptError("receipt does not bind this controller/job")
+def queue(c:Controller,n:int)->str:return c.base+f"/queue/item/{n}"
+def build(c:Controller,j:str,n:int)->str:return c.base+job_path(j)+f"/{n}"
+def outcome(x:dict[str,Any])->str:
+    if x.get("building") is True:return "BUILDING"
+    if x.get("building") is not False:return "TRANSPORT_UNKNOWN"
+    return x["result"] if x.get("result") in TERMINAL else "UNSUPPORTED_RESULT"
+def submit(c:Client,p:Path,j:str,given:dict[str,str])->dict[str,Any]:
+    x=open_receipt(p,c.controller.base,j);m=c.api_get(controller_url(c.controller.base,j)+"/api/json");g=params(m,given);parameterized=any(isinstance(a,dict) and a.get("parameterDefinitions") for a in (m.get("property") or []));u=controller_url(c.controller.base,j)+("/buildWithParameters" if parameterized else "/build");s,h,_=c.request("POST",u,urlencode(g).encode() if parameterized else None);loc=h.get("Location") or h.get("location")
+    if s not in {200,201,202} or not loc:x.update(phase="submission_uncertain",submission_status=s);save_receipt(p,x);raise ReceiptError("submission uncertain; reconcile an exact build without resubmit")
+    q=urlsplit(urljoin(u,loc))
+    try:n=int(q.path.rstrip("/").split("/")[-1])
+    except ValueError:x.update(phase="submission_uncertain");save_receipt(p,x);raise ReceiptError("Location lacks numeric queue identity")
+    c.controller.checked(urlunsplit((q.scheme,q.netloc,q.path,"","")),"queue",ident=n);x.update(phase="queued",queue_id=n);save_receipt(p,x);return x
+def reconcile(c:Client,p:Path,j:str,n:int)->dict[str,Any]:
+    x=load_receipt(p);bind(x,c.controller,j)
+    if n<=0 or x.get("queue_id") is not None or x.get("build_number") is not None:raise ReceiptError("exact reconciliation is unavailable for this receipt")
+    c.controller.checked(build(c.controller,j,n),"build",j,n);x.update(phase="building",build_number=n);save_receipt(p,x);return x
+def wait(c:Client,p:Path,j:str,deadline:float,poll:float)->dict[str,Any]:
+    x=load_receipt(p);bind(x,c.controller,j);c.end=time.monotonic()+finite(deadline,"deadline");finite(poll,"poll")
     try:
         while True:
-            _deadline(deadline, start)
-            if receipt.get("build_url"):
-                build_url = client.controller.checked(str(receipt["build_url"]), job_path(str(receipt["job"])) + "/")
-                build = client.api(build_url.rstrip("/") + "/api/json")
-                state = outcome(build)
-                if state != "BUILDING":
-                    receipt["jenkins_result"] = state; receipt["phase"] = "terminal"; save_receipt(receipt_path, receipt); return receipt
-            elif receipt.get("queue_url"):
-                queue_url = client.controller.checked(str(receipt["queue_url"]), "/queue/item/")
-                try: queue = client.api(queue_url.rstrip("/") + "/api/json")
-                except TransportError: raise
-                if queue.get("cancelled"):
-                    receipt["jenkins_result"] = "QUEUE_CANCELLED"; receipt["phase"] = "terminal"; save_receipt(receipt_path, receipt); return receipt
-                executable = queue.get("executable")
-                if isinstance(executable, dict) and isinstance(executable.get("url"), str):
-                    receipt["build_url"] = client.controller.checked(executable["url"], job_path(str(receipt["job"])) + "/"); receipt["phase"] = "building"; save_receipt(receipt_path, receipt)
-            time.sleep(poll)
-    except TimeoutError:
-        receipt["collection"]["status"] = "timeout"; save_receipt(receipt_path, receipt); raise ReceiptError("operation deadline reached; identity retained; no remote cancellation was sent")
-    except (TransportError, ValidationError) as exc:
-        receipt["collection"]["status"] = "transport_unknown"; save_receipt(receipt_path, receipt); raise ReceiptError("transport/identity failure; identity retained") from exc
-
-
-def cancel(client: Client, receipt_path: Path) -> dict[str, Any]:
-    receipt = load_receipt(receipt_path)
-    target = receipt.get("build_url") or receipt.get("queue_url")
-    if not target: raise ReceiptError("no recorded Jenkins identity to cancel")
-    expected = job_path(str(receipt["job"])) + "/" if receipt.get("build_url") else "/queue/item/"
-    target = client.controller.checked(str(target), expected)
-    endpoint = target.rstrip("/") + ("/stop" if receipt.get("build_url") else "/cancelQueue")
-    status, _, _ = client.request("POST", endpoint)
-    receipt["cancel_requested_status"] = status; receipt["phase"] = "cancel_requested"; save_receipt(receipt_path, receipt)
-    if status not in {200, 201, 202, 302}: raise ReceiptError("Jenkins did not accept cancellation; receipt retained")
-    return receipt
-
-
-def _output_file(root: Path, relative: str) -> Path:
-    if not relative or relative.startswith("/") or ".." in Path(relative).parts:
-        raise ValidationError("artifact path is unsafe")
-    root.mkdir(parents=True, exist_ok=True)
-    if root.is_symlink(): raise ValidationError("output directory may not be a symlink")
-    target = root / relative
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.parent.is_symlink() or target.is_symlink(): raise ValidationError("artifact output may not traverse symlinks")
-    return target
-
-
-def collect(client: Client, receipt_path: Path, output: Path, log_bytes: int, per_file: int, total_bytes: int, count: int) -> dict[str, Any]:
-    receipt = load_receipt(receipt_path)
-    if not receipt.get("build_url") or not receipt.get("jenkins_result"):
-        raise ReceiptError("collect requires a recorded terminal exact build")
-    build_url = client.controller.checked(str(receipt["build_url"]), job_path(str(receipt["job"])) + "/")
-    build = client.api(build_url.rstrip("/") + "/api/json")
-    manifest: list[dict[str, Any]] = []
-    log_status, _, log = client.request("GET", build_url.rstrip("/") + "/consoleText", limit=log_bytes)
-    log_target = _output_file(output, "console.log")
-    if log_status == 200: log_target.write_bytes(log); manifest.append({"path": "console.log", "status": "downloaded", "bytes": len(log)})
-    else: manifest.append({"path": "console.log", "status": "error", "http_status": log_status})
-    used = 0
-    artifacts = build.get("artifacts", [])
-    if not isinstance(artifacts, list): raise TransportError("malformed artifacts list")
-    for artifact in artifacts[:count]:
-        if not isinstance(artifact, dict) or not isinstance(artifact.get("relativePath"), str):
-            raise TransportError("malformed artifact metadata")
-        relative = artifact["relativePath"]
-        if used >= total_bytes: manifest.append({"path": relative, "status": "skipped", "reason": "aggregate_limit"}); continue
-        url = client.controller.checked(build_url.rstrip("/") + "/artifact/" + "/".join(quote(p, safe="") for p in relative.split("/")), job_path(str(receipt["job"])) + "/")
+            if x.get("build_number") is not None:
+                b=c.api_get(build(c.controller,j,x["build_number"])+"/api/json");o=outcome(b)
+                if o!="BUILDING":x.update(phase="terminal",jenkins_result=o);save_receipt(p,x);return x
+            elif x.get("queue_id") is not None:
+                q=c.api_get(queue(c.controller,x["queue_id"])+"/api/json")
+                if q.get("cancelled") is True:x.update(phase="terminal",jenkins_result="QUEUE_CANCELLED");save_receipt(p,x);return x
+                e=q.get("executable")
+                if isinstance(e,dict) and isinstance(e.get("number"),int):x.update(phase="building",build_number=e["number"]);save_receipt(p,x)
+            else:raise ReceiptError("uncertain submit requires explicit exact-build reconciliation")
+            time.sleep(min(poll,c.remaining()))
+    except TimeoutError:x["collection"]={"status":"timeout","artifacts":[]};save_receipt(p,x);raise ReceiptError("deadline reached; remote cancellation was not sent")
+    except (TransportError,ValidationError) as e:x["collection"]={"status":"transport_unknown","artifacts":[]};save_receipt(p,x);raise ReceiptError("transport/identity failure; identity retained") from e
+def cancel(c:Client,p:Path,j:str,d:float)->dict[str,Any]:
+    x=load_receipt(p);bind(x,c.controller,j);c.end=time.monotonic()+finite(d,"deadline")
+    if x.get("build_number") is not None:u=build(c.controller,j,x["build_number"])+"/stop";data=None
+    elif x.get("queue_id") is not None:u=c.controller.base+"/queue/cancelItem";data=urlencode({"id":x["queue_id"]}).encode()
+    else:raise ReceiptError("no identity to cancel")
+    s,_,_=c.request("POST",u,data);x.update(phase="cancel_requested",cancel_requested_status=s);save_receipt(p,x)
+    if s not in {200,201,202}:raise ReceiptError("Jenkins did not accept cancellation")
+    return wait(c,p,j,max(.001,c.remaining()),.05)
+def output_file(root:Path,rel:str)->Path:
+    if not rel or rel.startswith("/") or any(bad(x) for x in rel.split("/")):raise ValidationError("unsafe artifact path")
+    root.mkdir(parents=True,exist_ok=True)
+    if root.is_symlink():raise ValidationError("output symlink refused")
+    cur=root
+    for part in rel.split("/")[:-1]:
+        cur=cur/part
+        if cur.exists() and cur.is_symlink():raise ValidationError("artifact symlink traversal refused")
+        cur.mkdir(exist_ok=True)
+    t=cur/rel.split("/")[-1]
+    if t.exists() or t.is_symlink():raise ValidationError("artifact collision refused")
+    return t
+def store(p:Path,b:bytes)->None:
+    fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    try:os.write(fd,b);os.fsync(fd)
+    finally:os.close(fd)
+def collect(c:Client,p:Path,j:str,out:Path,log:int,per:int,total:int,count:int,d:float)->dict[str,Any]:
+    if any(not isinstance(v,int) or v<=0 for v in (log,per,total,count)):raise ValidationError("collection bounds must be positive")
+    x=load_receipt(p);bind(x,c.controller,j)
+    if x.get("jenkins_result") is None or x.get("build_number") is None:raise ReceiptError("collection needs terminal exact build")
+    c.end=time.monotonic()+finite(d,"deadline");base=build(c.controller,j,x["build_number"]);man=[];failed=False
+    def get(label:str,u:str,cap:int,rel:str)->None:
+        nonlocal failed
         try:
-            status, _, data = client.request("GET", url, limit=min(per_file, total_bytes - used))
-            if status != 200: manifest.append({"path": relative, "status": "error", "http_status": status}); continue
-            target = _output_file(output, relative); target.write_bytes(data); used += len(data); manifest.append({"path": relative, "status": "downloaded", "bytes": len(data)})
-        except (JenkinsError, OSError): manifest.append({"path": relative, "status": "error"})
-    for artifact in artifacts[count:]:
-        if isinstance(artifact, dict): manifest.append({"path": artifact.get("relativePath", "unknown"), "status": "skipped", "reason": "count_limit"})
-    receipt["collection"] = {"status": "complete", "artifacts": manifest}; save_receipt(receipt_path, receipt); return receipt
-
-
-def parse_parameters(values: list[str]) -> dict[str, str]:
-    output: dict[str, str] = {}
-    for item in values:
-        if "=" not in item: raise ValidationError("--parameter needs NAME=VALUE")
-        key, value = item.split("=", 1)
-        if not key or key in output: raise ValidationError("parameter names must be unique and nonempty")
-        output[key] = value
-    return output
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--controller", required=True); parser.add_argument("--job", required=True); parser.add_argument("--receipt", type=Path, required=True)
-    parser.add_argument("--token-env", default="JENKINS_API_TOKEN"); parser.add_argument("--allow-http", action="store_true")
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT); parser.add_argument("--deadline", type=float, default=DEFAULT_DEADLINE); parser.add_argument("--poll", type=float, default=DEFAULT_POLL); parser.add_argument("--api-bytes", type=int, default=DEFAULT_API_BYTES)
-    sub = parser.add_subparsers(dest="command", required=True)
-    submit_p = sub.add_parser("submit"); submit_p.add_argument("--parameter", action="append", default=[]); sub.add_parser("wait"); sub.add_parser("cancel"); sub.add_parser("show")
-    collect_p = sub.add_parser("collect"); collect_p.add_argument("--output", type=Path, required=True); collect_p.add_argument("--log-bytes", type=int, default=DEFAULT_LOG_BYTES); collect_p.add_argument("--artifact-bytes", type=int, default=DEFAULT_ARTIFACT_BYTES); collect_p.add_argument("--artifact-total-bytes", type=int, default=DEFAULT_ARTIFACT_TOTAL); collect_p.add_argument("--artifact-count", type=int, default=DEFAULT_ARTIFACT_COUNT)
-    args = parser.parse_args(argv)
-    if args.timeout <= 0 or args.deadline <= 0 or args.poll <= 0 or args.api_bytes <= 0: parser.error("all bounds must be positive")
+            s,_,b=c.request("GET",u,limit=cap)
+            if s!=200:man.append({"path":label,"status":"error","http_status":s});failed=True;return
+            store(output_file(out,rel),b);man.append({"path":label,"status":"downloaded","bytes":len(b)})
+        except (JenkinsError,OSError,TimeoutError):man.append({"path":label,"status":"error"});failed=True
+    try:meta=c.api_get(base+"/api/json")
+    except JenkinsError:x["collection"]={"status":"partial","artifacts":man};save_receipt(p,x);raise
+    get("console.log",base+"/consoleText",log,"console.log");used=0;arts=meta.get("artifacts",[])
+    if not isinstance(arts,list):raise TransportError("malformed artifact metadata")
+    for idx,a in enumerate(arts):
+        rel=a.get("relativePath") if isinstance(a,dict) else None
+        if not isinstance(rel,str):man.append({"path":"unknown","status":"error"});failed=True;continue
+        if idx>=count:man.append({"path":rel,"status":"skipped","reason":"count_limit"});continue
+        cap=min(per,total-used)
+        if cap<=0:man.append({"path":rel,"status":"skipped","reason":"aggregate_limit"});continue
+        get(rel,base+"/artifact/"+"/".join(quote(z,safe="") for z in rel.split("/")),cap,rel)
+        if man[-1]["status"]=="downloaded":used+=man[-1]["bytes"]
+    x["collection"]={"status":"partial" if failed else "complete","artifacts":man};save_receipt(p,x);return x
+def main(argv:list[str]|None=None)->int:
+    p=argparse.ArgumentParser();p.add_argument("--controller",required=True);p.add_argument("--job",required=True);p.add_argument("--receipt",type=Path,required=True);p.add_argument("--username-env",default="JENKINS_USERNAME");p.add_argument("--token-env",default="JENKINS_API_TOKEN");p.add_argument("--allow-http",action="store_true");p.add_argument("--timeout",type=float,default=15);p.add_argument("--deadline",type=float,default=900);p.add_argument("--poll",type=float,default=2);p.add_argument("--api-bytes",type=int,default=1_000_000);s=p.add_subparsers(dest="command",required=True);z=s.add_parser("submit");z.add_argument("--parameter",action="append",default=[]);s.add_parser("wait");s.add_parser("cancel");z=s.add_parser("reconcile");z.add_argument("--build-number",type=int,required=True);s.add_parser("show");z=s.add_parser("collect");z.add_argument("--output",type=Path,required=True);z.add_argument("--log-bytes",type=int,default=1_000_000);z.add_argument("--artifact-bytes",type=int,default=10_000_000);z.add_argument("--artifact-total-bytes",type=int,default=50_000_000);z.add_argument("--artifact-count",type=int,default=32);a=p.parse_args(argv)
     try:
-        controller = Controller(validate_controller(args.controller, args.allow_http)); client = Client(controller, os.environ.get(args.token_env), args.timeout, args.api_bytes)
-        if args.command == "submit": receipt = submit(client, args.receipt, args.job, parse_parameters(args.parameter))
-        elif args.command == "wait": receipt = wait_for_terminal(client, args.receipt, args.deadline, args.poll)
-        elif args.command == "cancel": receipt = cancel(client, args.receipt)
-        elif args.command == "collect":
-            if min(args.log_bytes, args.artifact_bytes, args.artifact_total_bytes, args.artifact_count) <= 0: parser.error("collection bounds must be positive")
-            receipt = collect(client, args.receipt, args.output, args.log_bytes, args.artifact_bytes, args.artifact_total_bytes, args.artifact_count)
-        else: receipt = load_receipt(args.receipt)
-        print(json.dumps({"request_id": receipt["request_id"], "phase": receipt["phase"], "jenkins_result": receipt.get("jenkins_result"), "receipt": str(args.receipt)}))
-        return 0 if receipt.get("jenkins_result") == "SUCCESS" or args.command in {"submit", "show", "cancel"} else 2
-    except (JenkinsError, ValidationError) as exc:
-        print(f"jenkins-jobs: {exc}", file=sys.stderr); return 3
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        finite(a.timeout,"timeout");finite(a.deadline,"deadline");finite(a.poll,"poll")
+        if a.api_bytes<=0:raise ValidationError("api-bytes must be positive")
+        c=Client(Controller(validate_controller(a.controller,a.allow_http)),os.environ.get(a.username_env),os.environ.get(a.token_env),a.timeout,a.api_bytes)
+        if a.command=="submit":
+            g={}
+            for v in a.parameter:
+                if "=" not in v:raise ValidationError("--parameter needs NAME=VALUE")
+                k,val=v.split("=",1)
+                if not k or k in g:raise ValidationError("invalid parameter names")
+                g[k]=val
+            x=submit(c,a.receipt,a.job,g)
+        elif a.command=="wait":x=wait(c,a.receipt,a.job,a.deadline,a.poll)
+        elif a.command=="cancel":x=cancel(c,a.receipt,a.job,a.deadline)
+        elif a.command=="reconcile":x=reconcile(c,a.receipt,a.job,a.build_number)
+        elif a.command=="collect":x=collect(c,a.receipt,a.job,a.output,a.log_bytes,a.artifact_bytes,a.artifact_total_bytes,a.artifact_count,a.deadline)
+        else:x=load_receipt(a.receipt);bind(x,c.controller,a.job)
+        print(json.dumps({"request_id":x["request_id"],"phase":x["phase"],"jenkins_result":x.get("jenkins_result"),"collection":x["collection"]["status"]}))
+        return 0 if (a.command in {"submit","show","reconcile"} or (x.get("jenkins_result")=="SUCCESS" and (a.command=="wait" or x["collection"]["status"]=="complete"))) else 2
+    except (JenkinsError,ValueError,OverflowError) as e:print("jenkins-jobs: "+str(e)[:240],file=sys.stderr);return 3
+if __name__=="__main__":raise SystemExit(main())
