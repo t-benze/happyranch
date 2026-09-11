@@ -106,8 +106,10 @@ cancellation/audit state independently visible before it invokes only the
 opaque contained control and clears its owned binding. A late callback is
 observed against the source-derived terminal gate; it is not reclassified as
 accepted business completion or a revisit. All owned barriers are released
-before every started thread is joined, with aggregate liveness/errors reported
-afterward. The retained legacy-chain pair observes two more bounded schedules:
+before every started thread is joined; the test-local aggregation then retains
+original worker traceback(s), boundary assertion(s), and any liveness failure
+together rather than allowing cleanup ordering to mask a dispatcher error. The
+retained legacy-chain pair observes two more bounded schedules:
 the first contained chain child is held after launch before its real callback,
 then parent cascade cancellation durably stamps both nonterminal rows and exact
 `task_cancelled` audits are independently read at entry to the retrieved
@@ -124,7 +126,10 @@ request, current session, and diagnostic PID to their durable result where one
 exists, then assert current-generation `get_pid(task, agent) is None` after
 their own release/join/drain. They compare every captured attachment,
 canonical/archive/team/workspace, fanout, queue/session/control, result/history,
-chain, and audit surface against its source-derived allowed delta; empty
+chain, and audit surface at both the held post-cancel and final-drain
+boundaries against its source-derived allowed delta (the released late callback
+adds only its source-owned `session_end` audit; the cancelled-publication
+schedule is otherwise exact equality with its held snapshot); empty
 attachments remain only empty observations. Their transparent dispatcher
 observers retain an original exception and traceback through release-all and
 join-all, with focused injected-error controls for both distinct cancellation

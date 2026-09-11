@@ -153,6 +153,35 @@ def _receipt_evidence(receipts) -> list[dict[str, object]]:
     ]
 
 
+def _assert_cancelled_task_delta(before: dict[str, object], observed: dict[str, object]) -> None:
+    """Check the exact task-row fields written by the shipping cancel route."""
+    changed = {key for key in before if before[key] != observed[key]}
+    assert changed <= {"status", "block_kind", "note", "cancelled_at", "completed_at", "updated_at"}
+    assert observed["status"] == "cancelled"
+    assert observed["block_kind"] is None
+    assert observed["cancelled_at"] and observed["completed_at"]
+
+
+def _raise_cancel_harness_failures(*, worker_errors, assertion, thread, done) -> None:
+    """Retain all observed worker traces, boundary failures, and cleanup state.
+
+    The callers release every barrier and join their owned worker *before*
+    calling this seam.  ``drain_sync`` logs dispatcher errors instead of
+    rethrowing them, so retaining the captured traceback on the original error
+    is necessary for a boundary/liveness assertion not to conceal it.
+    """
+    failures = []
+    for error, original_traceback in worker_errors:
+        error.add_note(f"original worker traceback:\n{original_traceback}")
+        failures.append(error)
+    if assertion is not None:
+        failures.append(assertion)
+    if thread.is_alive() or not done.is_set():
+        failures.append(AssertionError("owned worker did not join"))
+    if failures:
+        raise BaseExceptionGroup("cancellation harness failures", failures)
+
+
 def test_r1_cancelled_pending_subtree_is_durable_before_queue_drain(tmp_path, monkeypatch) -> None:
     """Cancel an actually delegated child after original enqueue, before launch."""
     import sqlite3
@@ -1743,6 +1772,24 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
             {"rationale": "chain callback race", "cascade": True},
             {"rationale": "chain callback race", "cascade": True},
         ]
+        # This is the held post-cancel boundary, before the late callback is
+        # released.  The route changes only its documented terminal fields and
+        # appends cancellation audits; all captured residue is already fixed.
+        assert db.get_children(parent_id) == [first]
+        for task_id in (parent_id, first):
+            _assert_cancelled_task_delta(before["tasks"][task_id], after_cancel["tasks"][task_id])
+            assert after_cancel["results"][task_id] == before["results"][task_id]
+            assert after_cancel["audits"][task_id][:len(before["audits"][task_id])] == before["audits"][task_id]
+            assert [row["action"] for row in after_cancel["audits"][task_id]].count("task_cancelled") == 1
+        for surface in ("attachments", "canonical_agents", "archived_agents", "workspaces",
+                        "archived_workspaces", "teams_bytes", "active_fanout", "active_chain",
+                        "queue"):
+            assert after_cancel[surface] == before[surface]
+        # The invoked opaque control ends the one active child generation;
+        # cancellation does not create a replacement binding or queue item.
+        assert after_cancel["sessions"] == {parent_id: None, first: None}
+        assert after_cancel["controls"] == {parent_id: False, first: False}
+        assert after_cancel["pids"] == {parent_id: None, first: None}
         assert len(after_cancel["audits"][parent_id]) > len(before["audits"][parent_id])
         assert len(after_cancel["audits"][first]) > len(before["audits"][first])
         assert after_cancel["results"][first] == [] and after_cancel["active_chain"][parent_id] == before["active_chain"][parent_id]
@@ -1751,17 +1798,27 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
     finally:
         release_child.set()
         thread.join(8)
-    assert not thread.is_alive() and done.is_set()
-    if errors:
-        raise BaseExceptionGroup("worker failures", [error for error, _trace in errors])
-    if assertion:
-        raise assertion
+    _raise_cancel_harness_failures(worker_errors=errors, assertion=assertion, thread=thread, done=done)
     final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, first), agent_names=("engineering_head", "dev_agent"))
+    # Releasing the rejected callback changes no captured route surface except
+    # the held child's shipping ``session_end`` audit.  Its task/result/chain
+    # state remains terminally identical to the held cancellation boundary.
+    assert {key: value for key, value in final.items() if key != "audits"} == {
+        key: value for key, value in after_cancel.items() if key != "audits"
+    }
+    assert final["audits"][parent_id] == after_cancel["audits"][parent_id]
+    assert final["audits"][first][:-1] == after_cancel["audits"][first]
+    assert final["audits"][first][-1]["action"] == "session_end"
+    assert final["audits"][first][-1]["task_id"] == first
+    assert final["audits"][first][-1]["agent"] == "dev_agent"
     assert late_statuses == [(409, {"code": "task_not_active", "task_id": first,
                                    "status": TaskStatus.CANCELLED.value, "cancelled": True})]
     assert [task_id for task_id, *_rest in launches] == [parent_id, first]
     assert set(final["tasks"]) == {parent_id, first} and len(db.get_children(parent_id)) == 1
     assert all(final["tasks"][task_id]["status"] == TaskStatus.CANCELLED.value for task_id in (parent_id, first))
+    assert db.get_children(parent_id) == [first]
+    for task_id in (parent_id, first):
+        _assert_cancelled_task_delta(before["tasks"][task_id], final["tasks"][task_id])
     assert final["results"][first] == [] and final["queue"] == [] and state.queue._queue._unfinished_tasks == 0
     # Every captured residue surface has a source-derived allowed delta: task
     # and cancellation-audit terminal fields change; no archive/team/workspace
@@ -1918,17 +1975,36 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
         assert durable[parent_id]["status"] == durable[second]["status"] == TaskStatus.CANCELLED.value
         assert durable[parent_id]["cancelled_at"] and durable[second]["cancelled_at"]
         assert durable[first]["status"] == TaskStatus.COMPLETED.value
+        after_cancel = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
+                                    task_ids=(parent_id, first, second),
+                                    agent_names=("engineering_head", "dev_agent"))
+        # At the held publication boundary the completed first child is fully
+        # immutable.  Cancellation changes precisely the source-written
+        # parent/second task fields and appends only their cancellation audits.
+        assert db.get_children(parent_id) == [first, second]
+        assert after_cancel["tasks"][first] == before["tasks"][first]
+        assert after_cancel["results"][first] == before["results"][first]
+        assert after_cancel["audits"][first] == before["audits"][first]
+        for task_id in (parent_id, second):
+            _assert_cancelled_task_delta(before["tasks"][task_id], after_cancel["tasks"][task_id])
+            assert after_cancel["results"][task_id] == before["results"][task_id]
+            assert after_cancel["audits"][task_id][:len(before["audits"][task_id])] == before["audits"][task_id]
+            assert [row["action"] for row in after_cancel["audits"][task_id]].count("task_cancelled") == 1
+        for surface in ("attachments", "canonical_agents", "archived_agents", "workspaces",
+                        "archived_workspaces", "teams_bytes", "active_fanout", "active_chain",
+                        "queue", "sessions", "controls"):
+            assert after_cancel[surface] == before[surface]
+        assert after_cancel["pids"] == {parent_id: None, first: None, second: None}
     except BaseException as exc:
         assertion = exc
     finally:
         release_publication.set()
         thread.join(8)
-    assert not thread.is_alive() and done.is_set()
-    if errors:
-        raise BaseExceptionGroup("worker failures", [error for error, _trace in errors])
-    if assertion:
-        raise assertion
+    _raise_cancel_harness_failures(worker_errors=errors, assertion=assertion, thread=thread, done=done)
     final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, first, second), agent_names=("engineering_head", "dev_agent"))
+    # The released cancelled queue item is observed by Dispatcher and skipped;
+    # it has no remaining allowed mutation after the held cancellation state.
+    assert final == after_cancel
     assert [task_id for task_id, *_rest in launches] == [parent_id, first]
     assert [(task_id, agent, request_id) for task_id, agent, _session, request_id, _pid in launches] == [
         (parent_id, "engineering_head", parent_id), (first, "dev_agent", first)]
@@ -1950,6 +2026,10 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
     ]
     assert final["tasks"][parent_id]["status"] == final["tasks"][second]["status"] == TaskStatus.CANCELLED.value
     assert final["tasks"][first]["status"] == TaskStatus.COMPLETED.value and len(final["results"][first]) == 1
+    assert db.get_children(parent_id) == [first, second]
+    assert final["tasks"][first] == before["tasks"][first]
+    for task_id in (parent_id, second):
+        _assert_cancelled_task_delta(before["tasks"][task_id], final["tasks"][task_id])
     assert final["results"][first] == before["results"][first]
     assert (first_result["task_id"], first_result["agent"], first_result["session_id"]) in {
         (task_id, agent, session_id) for task_id, agent, session_id, _request_id, _pid in launches
@@ -1957,6 +2037,7 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
     for surface in ("attachments", "canonical_agents", "archived_agents", "workspaces",
                     "archived_workspaces", "teams_bytes", "active_fanout"):
         assert final[surface] == before[surface]
+    assert final["active_chain"] == before["active_chain"]
     assert final["results"][parent_id] == before["results"][parent_id]
     assert final["audits"][first] == before["audits"][first]
     assert [row for row in final["audits"][parent_id] if row["action"] == "chain_auto_advance"] == advance
@@ -1993,7 +2074,7 @@ def test_r1_chain_cancel_harness_propagates_dispatcher_error(tmp_path, monkeypat
         return result
 
     monkeypatch.setattr(Dispatcher, "run_step", injected)
-    with pytest.raises(BaseExceptionGroup, match="worker failures") as raised:
+    with pytest.raises(BaseExceptionGroup, match="cancellation harness failures") as raised:
         test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, monkeypatch)
     assert any("U0_CANCEL_DISPATCH_ERROR_CONTROL" in str(error)
                for error in raised.value.exceptions)
@@ -2015,7 +2096,35 @@ def test_r1_chain_cancel_publication_harness_propagates_dispatcher_error(tmp_pat
         return result
 
     monkeypatch.setattr(Dispatcher, "run_step", injected)
-    with pytest.raises(BaseExceptionGroup, match="worker failures") as raised:
+    with pytest.raises(BaseExceptionGroup, match="cancellation harness failures") as raised:
         test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeypatch)
     assert any("U0_CANCEL_PUBLICATION_DISPATCH_ERROR_CONTROL" in str(error)
                for error in raised.value.exceptions)
+
+
+def test_r1_chain_cancel_harness_aggregates_worker_and_boundary_failure() -> None:
+    """The exact cleanup seam retains worker, boundary, and liveness failures."""
+    class UnjoinedWorker:
+        def is_alive(self) -> bool:
+            return True
+
+    done = threading.Event()
+    captured_worker_errors = []
+    try:
+        raise RuntimeError("U0_CANCEL_COMBINED_WORKER_ERROR")
+    except RuntimeError as error:
+        captured_worker_errors.append(error)
+        original_traceback = traceback.format_exc()
+    worker_error = captured_worker_errors[0]
+    boundary_error = AssertionError("U0_CANCEL_COMBINED_BOUNDARY_ERROR")
+    with pytest.raises(BaseExceptionGroup, match="cancellation harness failures") as raised:
+        _raise_cancel_harness_failures(
+            worker_errors=[(worker_error, original_traceback)],
+            assertion=boundary_error,
+            thread=UnjoinedWorker(),
+            done=done,
+        )
+    assert raised.value.exceptions[:2] == (worker_error, boundary_error)
+    assert str(raised.value.exceptions[2]) == "owned worker did not join"
+    assert any("RuntimeError: U0_CANCEL_COMBINED_WORKER_ERROR" in note
+               for note in worker_error.__notes__)
