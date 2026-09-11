@@ -97,6 +97,51 @@ def test_completion_claim_before_waiting_origin_callback_rejects_origin(db):
     assert db.get_task_results("TASK-RECOVERY") == []
 
 
+def test_completion_callback_and_claim_compete_concurrently_for_one_winner(db):
+    """Real SQLite admission and claim race; neither worker is a sequential probe."""
+    _recovery_task(db)
+    gate = threading.Barrier(2, timeout=2)
+    done = threading.Barrier(2, timeout=2)
+    outcomes: list[tuple[str, bool]] = []
+    errors: list[BaseException] = []
+
+    def callback() -> None:
+        try:
+            gate.wait()
+            outcomes.append(("callback", db.admit_task_completion_callback(
+                task_id="TASK-RECOVERY", agent="dev_agent", session_id="origin",
+                output_summary="raced", confidence_score=90,
+            )))
+            done.wait()
+        except BaseException as exc:  # captured worker failures are test failures
+            errors.append(exc)
+
+    def claim() -> None:
+        try:
+            gate.wait()
+            outcomes.append(("claim", db.claim_task_completion_recovery(
+                task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+                recovery_session_id="recovery", provider_session_id="provider",
+                claimed_at="2026-01-01T00:00:00+00:00", expires_at="2026-01-01T00:02:00+00:00",
+            )))
+            done.wait()
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=callback), threading.Thread(target=claim)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+    assert errors == []
+    assert sorted(won for _kind, won in outcomes) == [False, True]
+    # The durable rows identify the same sole winner observed by the callers.
+    assert bool(db.get_task_results("TASK-RECOVERY")) != bool(
+        db.execute("SELECT COUNT(*) FROM task_completion_recoveries").fetchone()[0]
+    )
+
+
 def test_completion_accepted_identity_survives_reopen_and_expiry_loses(db, monkeypatch):
     """Acceptance stores an immutable result id independently of settlement."""
     import runtime.infrastructure.database as database_module

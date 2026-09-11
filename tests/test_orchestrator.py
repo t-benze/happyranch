@@ -1208,12 +1208,26 @@ def test_run_step_codex_ineligible_origin_never_claims_or_launches_recovery(
             created_at="2026-09-12T00:00:00+00:00",
         ))
     cleanup_calls: list[tuple[str, tuple[str, ...]]] = []
+    signals: list[tuple[int, int]] = []
 
-    async def terminate_owned_only(task_id, *, inflight_to_task=None, grace_seconds=5.0):
-        del grace_seconds
-        targets = tuple(job_id for job_id, owner in (inflight_to_task or {}).items() if owner == task_id)
-        cleanup_calls.append((task_id, targets))
-        return list(targets)
+    class ObservableProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid, self.returncode = pid, 0
+
+    real_terminate = jobs_runner.terminate_jobs_for_task
+    jobs_runner._INFLIGHT.clear()
+    jobs_runner._INFLIGHT[owned_id] = ObservableProcess(101)
+    jobs_runner._INFLIGHT[unrelated_id] = ObservableProcess(202)
+
+    async def observe_real_terminate(task_id, *, inflight_to_task=None, grace_seconds=5.0):
+        result = await real_terminate(
+            task_id, inflight_to_task=inflight_to_task, grace_seconds=grace_seconds,
+        )
+        cleanup_calls.append((task_id, tuple(result)))
+        return result
+
+    async def no_wait(_seconds: float) -> None:
+        return None
 
     class JoinedCleanupThread:
         def __init__(self, *, target, daemon):
@@ -1222,7 +1236,9 @@ def test_run_step_codex_ineligible_origin_never_claims_or_launches_recovery(
         def start(self):
             self.target()
 
-    monkeypatch.setattr(jobs_runner, "terminate_jobs_for_task", terminate_owned_only)
+    monkeypatch.setattr(jobs_runner, "terminate_jobs_for_task", observe_real_terminate)
+    monkeypatch.setattr(jobs_runner.os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(jobs_runner.asyncio, "sleep", no_wait)
     monkeypatch.setattr(threading, "Thread", JoinedCleanupThread)
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "origin")
     org = SimpleNamespace(
@@ -1263,6 +1279,9 @@ def test_run_step_codex_ineligible_origin_never_claims_or_launches_recovery(
     task = orchestrator._db.get_task(task_id)
     assert task.status == (TaskStatus.CANCELLED if origin_outcome == "cancelled" else TaskStatus.FAILED)
     assert cleanup_calls == [(task_id, (owned_id,))]
+    # Exercise the shipping termination helper: it signalled only the owned
+    # observable process, never the unrelated live control.
+    assert signals and {pid for pid, _sig in signals} == {101}
     assert orchestrator._db.get_job(owned_id).reason == "task_ended"
     assert orchestrator._db.get_job(unrelated_id).status == JobStatus.RUNNING
     assert dict(orchestrator._db.get_latest_task_result(task_id, agent, "older-session")) == older_before

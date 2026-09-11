@@ -117,11 +117,13 @@ replacement or cancellation during preparation cannot overwrite its newer
 generation; PID publication is likewise current-generation guarded. Failure/
 second omission without an accepted exact callback falls through to fail-closed
 owned-job cleanup. Both scratch fallback
-and contained launch paths pass the provider resume id through. The accepted
-completed transaction, including a manager DONE result, now atomically records its completion and
-delegated-verdict audits, terminal row, and exact consumed result; startup
-re-entry proves rollback at its terminal boundary and does not select an
-unrelated latest result. Manager recovery reuses the accepted result's already
+and contained launch paths pass the provider resume id through. A leaf
+completion atomically records its terminal row, delegated-verdict audit and
+exact consumed result. A manager DONE has deliberately separate boundaries:
+the final owner CAS commits its terminal row and ordinary receipt, while its
+marker follows only after post-commit cleanup/delivery reconciliation. Startup
+therefore reconciles terminal-before-marker only for the exact owner/result and
+never selects an unrelated latest result. Manager recovery reuses the accepted result's already
 durable orchestration-step audit when re-entering after a crash before its
 ordinary decision effects. Its completion-report receipt is keyed by its
 recovery session and immutable accepted result id, not an older task/agent
@@ -178,21 +180,26 @@ this PR candidate is not merged or deployed.
 
 The executable regression suite is the acceptance source of truth. The
 `test_run_step_codex_*` families prove clean-omission claim and callback
-arbitration, callback-before-claim and claim-before-old-callback winners,
-duplicate/lost-response/late/stale rejection, cancellation and newer-binding
-winners at the final transaction, accepted-result races, the shared 120-second
-budget, and no recovery re-admission after a recovery 429. The real route,
-SQLite, and tracker interleavings are barrier-controlled concurrent calls, not
-sequential probes.
+arbitration, duplicate/lost-response/late/stale rejection, cancellation and
+newer-binding winners at the final transaction, accepted-result races, the
+shared 120-second budget, and no recovery re-admission after a recovery 429.
+Only named route/SQLite/tracker race tests with finite barriers establish
+concurrent admission; ordered setup cases establish only their stated order.
 
-`test_startup_recovery.py`, `test_database.py`, and the accepted manager/leaf
-families cover accepted and unaccepted crash/restart, durable row settlement,
-leaf/manager DONE, root and non-root escalation, authority continuation, and
-terminal-before-marker rollback. D3a covers zero/nonzero terminal jobs before
+`tests/daemon/test_startup_recovery.py::test_manager_done_postcommit_cleanup_pending_restarts_once`
+proves terminal-before-marker restart reconciliation, and
+`tests/daemon/test_startup_recovery.py::test_accepted_manager_done_recovery_final_owner_and_receipt_fences`
+proves rejected final-CAS owners cause no stale cleanup or parent delivery.
+`test_database.py` and accepted manager/leaf families cover durable row
+settlement, leaf atomicity, root/non-root escalation, and authority continuation.
+D3a covers zero/nonzero terminal jobs before
 and after blocked callbacks, ordinary resume, and absence of stale timeout
 reuse. D3b covers the second omission, provider failure/timeout/launch failure
 cleanup, exact old-session result preservation, and timeout/error/missing-
 provider/cancelled ineligible origins with owned-only cleanup. Route tests
 cover the recovery-purpose admission surface; contained-launch and supervisor
-tests cover preparation/launch fences and owned process cleanup. These tests
+tests cover preparation/launch fences and owned process cleanup. A recovery
+turn uses its supplied fresh runtime binding only to report already-performed
+work or observe an actual owned-job wait; it creates no ordinary work or new
+job. Ordinary resumes retain ordinary policy. These tests
 do not assert deployment, provider replay, or a broader retry authority.

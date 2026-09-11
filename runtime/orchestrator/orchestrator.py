@@ -1189,7 +1189,11 @@ class Orchestrator:
                     # configured executor 429 retries.  Resume identity alone is
                     # not sufficient: ordinary resumes retain their policy.
                     throttle_backoff_seconds=() if recovery else None,
-                    recovery_deadline_monotonic=recovery_deadline_monotonic,
+                    # This is a recovery-only Codex contract extension.  The
+                    # other concrete executors deliberately retain their
+                    # ordinary run signatures.
+                    **({"recovery_deadline_monotonic": recovery_deadline_monotonic}
+                       if recovery else {}),
                 )
             finally:
                 # The contained supervisor invokes its terminal hook before
@@ -1346,7 +1350,10 @@ class Orchestrator:
                 running=running if contained else None,
                 throttle_backoff_seconds=() if not contained else None,
                 resume_session_id=resume_session_id,
-                recovery_deadline_monotonic=recovery_deadline_monotonic,
+                # Keep recovery fencing at the producer boundary; ordinary
+                # provider adapters must not receive a recovery-only kwarg.
+                **({"recovery_deadline_monotonic": recovery_deadline_monotonic}
+                   if recovery else {}),
             )
             return LaunchResult(
                 success=result.success,

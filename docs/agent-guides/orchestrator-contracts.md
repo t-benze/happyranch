@@ -359,7 +359,14 @@ settled fail-closed in its dedicated ledger transaction when its durable
 origin or recovery binding is still current. This spends the episode,
 terminalizes the task, and invokes ordinary owned-job `task_ended` cleanup;
 it never launches a second recovery or uses a persisted PID as containment.
-An accepted callback, cancellation, or newer binding wins unchanged. If an
+An accepted callback, cancellation, or newer binding wins unchanged. A manager
+DONE whose terminal owner CAS committed before its recovery marker is
+reconciled only for the exact task/agent/runtime-session/result receipt; its
+post-commit cleanup and delivery are not part of that terminal transaction, so
+a competing completed owner receives no stale recovery effects. The live
+120-second deadline ends at callback admission, not descendant work,
+settlement, or cleanup. This is a partial purpose gate: it makes no deployment
+claim and retains the accepted bearer/sessionless/shell residual powers. If an
 accepted root-manager escalation is instead committed by the existing
 authority hook as `CONTINUE_SAME_ROOT`, the completion receipt is reconciled
 only from that committed causal result/candidate/envelope tuple and current

@@ -590,9 +590,17 @@ def _consume_accepted_completion_recovery(
         # parent delivery; recovery must not replay those effects.  A durable
         # completed manager-DONE effect, including crash re-entry, remains
         # reconstructible here.
+        accepted = db.get_accepted_task_completion_recovery_result(
+            task_id=task_id, agent=agent,
+        )
         if (
             current.task_type == "task" and settled is not None
             and settled.status is TaskStatus.COMPLETED
+            # A terminal row alone is not this recovery's authority.  A
+            # competing owner may have completed after the final CAS lost.
+            and settled.assigned_agent == agent
+            and settled.current_session_id == session_id
+            and accepted is not None and accepted["id"] == result_row_id
         ):
             _kill_jobs_for_terminating_task(orch, task_id)
             _enqueue_parent_if_waiting(orch, task_id)

@@ -359,27 +359,31 @@ def _sweep_on_startup(
     # delivery-state ownership slot (orphan legacy receipts — e.g. archived
     # threads cutover does not reach). Never touch the governed queued wakes
     # retained above.
-    db._conn.execute(
-        "UPDATE thread_invocations SET status = 'failed', "
-        "decline_reason = ?, consumed_at = ? "
-        "WHERE status = 'pending' AND purpose = 'reply' "
-        "AND invocation_token NOT IN "
-        "(SELECT queued_invocation_token FROM thread_reply_delivery_state "
-        " WHERE queued_invocation_token IS NOT NULL) "
-        "AND invocation_token NOT IN "
-        "(SELECT running_invocation_token FROM thread_reply_delivery_state "
-        " WHERE running_invocation_token IS NOT NULL)",
-        ("daemon_restart", _now),
-    )
+    # Cleanup backstops run asynchronously but use this same connection.
+    # Own the whole raw UPDATE-to-commit transaction; never carry the lock
+    # into process termination/waits above.
+    with db._lock:
+        db._conn.execute(
+            "UPDATE thread_invocations SET status = 'failed', "
+            "decline_reason = ?, consumed_at = ? "
+            "WHERE status = 'pending' AND purpose = 'reply' "
+            "AND invocation_token NOT IN "
+            "(SELECT queued_invocation_token FROM thread_reply_delivery_state "
+            " WHERE queued_invocation_token IS NOT NULL) "
+            "AND invocation_token NOT IN "
+            "(SELECT running_invocation_token FROM thread_reply_delivery_state "
+            " WHERE running_invocation_token IS NOT NULL)",
+            ("daemon_restart", _now),
+        )
 
-    # 6d. Preserve the generic reaper for BOOTSTRAP and TASK_FOLLOWUP exactly.
-    cursor = db._conn.execute(
-        "UPDATE thread_invocations SET status = 'failed', "
-        "decline_reason = ?, consumed_at = ? "
-        "WHERE status = 'pending' AND purpose IN ('bootstrap', 'task_followup')",
-        ("daemon_restart", _now),
-    )
-    db._conn.commit()
+        # 6d. Preserve the generic reaper for BOOTSTRAP and TASK_FOLLOWUP exactly.
+        cursor = db._conn.execute(
+            "UPDATE thread_invocations SET status = 'failed', "
+            "decline_reason = ?, consumed_at = ? "
+            "WHERE status = 'pending' AND purpose IN ('bootstrap', 'task_followup')",
+            ("daemon_restart", _now),
+        )
+        db._conn.commit()
     logger.debug(
         "startup sweep: reaped %d orphaned pending BOOTSTRAP/TASK_FOLLOWUP "
         "invocations; recovered %d reply-delivery tokens",

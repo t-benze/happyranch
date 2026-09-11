@@ -5,6 +5,13 @@ description: Run a script in the background or request founder review; manage th
 
 # jobs
 
+## THR-247 recovery-turn exception
+
+A server-designated completion-recovery binding must not submit a new job. It
+may only observe an already-owned task job, including its actual wait result,
+for the recovery report. A normal resumed turn is not a recovery turn and uses
+the ordinary rules below.
+
 You want to run a script that either takes longer than your session can wait for, doesn't return at all (a dev server, a watcher), or needs permissions you don't have. Submit a job, fill in the form, and the framework handles the rest.
 
 ## When to use
