@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { toneClass } from '@/design-system/patterns/semanticTone';
 import { cn } from '@/lib/utils';
 import type { KBEntry } from '@/lib/api/types';
+import type { KBEntrySummary } from '@/hooks/kb';
 import { KB_STRINGS } from './strings';
 
 type Density = 'comfortable' | 'compact';
@@ -37,7 +38,8 @@ function relativeAge(iso: string): string {
 }
 
 export interface KbEntryCardProps {
-  entry: KBEntry;
+  entry: KBEntrySummary | KBEntry;
+  snippet?: string;
   to: string;
   active?: boolean;
   density?: Density;
@@ -47,6 +49,7 @@ export interface KbEntryCardProps {
 
 export function KbEntryCard({
   entry,
+  snippet,
   to,
   active,
   density = 'comfortable',
@@ -82,6 +85,7 @@ export function KbEntryCard({
         </span>
         <span className="text-text-muted font-mono text-xs tabular-nums">· {relativeAge(entry.updated_at)}</span>
       </div>
+      {snippet && <p className="text-text-muted mt-1.5 text-sm">{snippet}</p>}
       {density === 'comfortable' && entry.tags.length > 0 && (
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           {entry.tags.map((t) => (
