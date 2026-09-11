@@ -103,6 +103,69 @@ def test_scalar_tags_stay_whole_through_list_search_and_duplicate_consumers(stor
     assert scalar_path.read_text() == scalar_source
 
 
+@pytest.mark.parametrize(
+    ("slug", "tags_line", "expected_tags"),
+    [
+        ("array", "tags: [policy, finance]", ["policy", "finance"]),
+        ("scalar", "tags: whole scalar", ["whole scalar"]),
+        ("delimiter", "tags: policy, finance", ["policy, finance"]),
+        ("absent", None, []),
+        ("null-tags", "tags: null", []),
+        ("empty", "tags: ''", []),
+        ("numeric", "tags: 42", []),
+        ("boolean", "tags: true", []),
+        ("mapping", "tags: {unexpected: mapping}", []),
+        ("mixed", "tags: [string, 7]", []),
+    ],
+)
+def test_real_store_tag_projection_matrix_preserves_hand_authored_source(
+    store: KBStore, slug: str, tags_line: str | None, expected_tags: list[str],
+):
+    """Every legacy YAML shape has one read/list/reindex projection contract."""
+    tags = f"{tags_line}\n" if tags_line else ""
+    source = (
+        f"---\nslug: {slug}\ntitle: {slug} title\ntype: reference\ntopic: matrix\n"
+        f"{tags}---\n\n# {slug}\n"
+    )
+    path = store.path_for(slug)
+    path.write_text(source)
+
+    assert store.read_entry(slug).tags == expected_tags
+    assert next(item for item in store.list_entries() if item.slug == slug).tags == expected_tags
+    store.regenerate_index()
+    assert store.read_entry(slug).tags == expected_tags
+    assert next(item for item in store.list_entries() if item.slug == slug).tags == expected_tags
+    # Index generation is its own expected output; it must not rewrite source entries.
+    assert path.read_text() == source
+
+
+def test_real_store_tag_search_and_duplicate_dtos_keep_tags_out_of_their_shapes(store: KBStore):
+    scalar_source = (
+        "---\nslug: scalar-search\ntitle: Unrelated title\ntype: reference\n"
+        "topic: unrelated\ntags: policy, finance\n---\n\nNo query in this body.\n"
+    )
+    scalar_path = store.path_for("scalar-search")
+    scalar_path.write_text(scalar_source)
+    store.path_for("array-duplicate").write_text(
+        "---\nslug: array-duplicate\ntitle: Entirely unrelated heading\ntype: reference\n"
+        "topic: unrelated\ntags: [policy, finance]\n---\n\nNo query in this body.\n"
+    )
+
+    hits = store.search("policy, finance")
+    assert [(hit.slug, hit.snippet, hit.score) for hit in hits] == [
+        ("scalar-search", "topic=unrelated tags=['policy, finance']", 2),
+    ]
+    assert not hasattr(hits[0], "tags")
+    assert [item.slug for item in store.find_near_duplicates(
+        title="Completely distinct", tags=["policy", "finance"], min_tag_overlap=2,
+    )] == ["array-duplicate"]
+    assert store.find_near_duplicates(
+        title="Completely distinct", tags=["policy, finance"], min_tag_overlap=2,
+    ) == []
+    store.regenerate_index()
+    assert scalar_path.read_text() == scalar_source
+
+
 def test_write_entry_rejects_slug_mismatch(store: KBStore):
     entry = KBEntry(
         slug="good-slug",
