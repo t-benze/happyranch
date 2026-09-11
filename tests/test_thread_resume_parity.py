@@ -1212,20 +1212,31 @@ async def test_mixed_executors_resume_their_own_sessions(tmp_path, monkeypatch):
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def test_orchestrator_task_path_keeps_ordinary_and_recovery_resume_separate():
-    """Ordinary task runs retain no provider continuity; the narrowly
-    authorized recovery path carries a separately bound provider identity."""
-    import inspect
-    from runtime.orchestrator.orchestrator import Orchestrator
+def test_ordinary_task_style_executor_runs_never_resume(tmp_path, monkeypatch):
+    """Task-style provider launches are behavioral fresh starts.
 
-    run_src = inspect.getsource(Orchestrator._run_agent)
-    contained_src = inspect.getsource(Orchestrator._run_agent_launch_contained)
-    assert "resume_session_id" in run_src
-    assert "resume_session_id" in contained_src
-    # The recovery predicate is the gate for the provider-continuity value;
-    # an ordinary task gets a fresh runtime session without a resume id.
-    assert "if recovery" in contained_src
-    assert "resume_session_id=resume_session_id" in contained_src
+    This deliberately executes the real Codex and Pi executor bodies at the
+    subprocess boundary.  The thread recovery tests above separately exercise
+    their provider-resume/runtime binding; a normal task must never inherit it.
+    """
+    from runtime.orchestrator import executors as executor_mod
+    from runtime.orchestrator.executors import CodexExecutor, PiExecutor, ExecutorResult
+
+    _patch_resolve_binary(monkeypatch)
+    seen: list[tuple[tuple, dict]] = []
+
+    def fake_run_command(*_args, **kwargs):
+        seen.append((_args, kwargs))
+        return ExecutorResult(success=True, duration_seconds=1, session_id="runtime-task")
+
+    monkeypatch.setattr(executor_mod, "_run_command", fake_run_command)
+    for executor in (CodexExecutor("codex", "workspace-write"), PiExecutor("pi")):
+        result = executor.run(workspace=tmp_path, prompt="ordinary task", session_id="runtime-task")
+        assert result.success
+    assert len(seen) == 2
+    assert all(args[2] == "runtime-task" for args, _kwargs in seen)
+    assert all(kwargs.get("resume_session_id") is None for _args, kwargs in seen)
+    assert all(kwargs.get("recovery_deadline_monotonic") is None for _args, kwargs in seen)
 
 
 def test_executor_run_default_never_resumes_across_providers():
