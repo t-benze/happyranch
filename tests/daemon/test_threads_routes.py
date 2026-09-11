@@ -260,6 +260,33 @@ def test_list_threads_negative_limit_preserves_rows_in_500_id_membership_batches
     assert max(s.split(" IN (", 1)[-1].split(")", 1)[0].count(",") + 1 for s in membership) == 500
 
 
+def test_list_threads_limit_boundaries_preserve_list_and_projection_cardinality(
+    tmp_home, app, org_state, auth_headers,
+):
+    """The production route keeps its historical limit semantics at every boundary."""
+    client = TestClient(app)
+    for _ in range(501):
+        thread_id = org_state.db.next_thread_id()
+        org_state.db.insert_thread(ThreadRecord(id=thread_id, subject=thread_id))
+        org_state.db.add_thread_participant(thread_id, "alpha", added_by="founder")
+
+    for limit, expected_rows, expected_batches in ((0, 0, 0), (1, 1, 1), (500, 500, 1), (999, 500, 1), (-1, 501, 2)):
+        statements: list[str] = []
+        org_state.db._conn.set_trace_callback(statements.append)
+        try:
+            response = client.get(f"/api/v1/orgs/alpha/threads?limit={limit}", headers=auth_headers)
+        finally:
+            org_state.db._conn.set_trace_callback(None)
+
+        assert response.status_code == 200, response.text
+        assert len(response.json()["threads"]) == expected_rows
+        selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+        membership = [s for s in selects if "FROM thread_participants" in s]
+        assert len(membership) == expected_batches
+        assert not any("transcript" in s.lower() or "thread_messages" in s.lower() for s in membership)
+        assert all(s.split(" IN (", 1)[-1].split(")", 1)[0].count(",") + 1 <= 500 for s in membership)
+
+
 def test_get_thread_returns_messages_and_participants(tmp_home, app, org_state, auth_headers):
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")

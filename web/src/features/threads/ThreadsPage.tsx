@@ -12,7 +12,7 @@
  *
  * Composer: BROADCAST-ONLY ("Message the thread — all participants see it").
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/design-system/primitives/Button';
@@ -358,6 +358,16 @@ export function ThreadsPage(): JSX.Element {
   const { slug, thread_id: threadId } = useParams<{ slug: string; thread_id: string }>();
   const composerFocusRef = useRef<(() => void) | null>(null);
   const listScrollRef = useRef<HTMLDivElement>(null);
+  const lastListScrollTopRef = useRef(0);
+  const setListScrollRef = useCallback((node: HTMLDivElement | null) => {
+    // React clears a conditional ref before effect cleanup. Capture the last
+    // attached owner's position at that boundary so route cleanup cannot turn
+    // a real offset into a synthetic zero.
+    if (node === null && listScrollRef.current) {
+      lastListScrollTopRef.current = listScrollRef.current.scrollTop;
+    }
+    listScrollRef.current = node;
+  }, []);
 
   // Inbox state — segmented status filter (THREADS-02).
   const [bucket, setBucket] = useState<InboxBucket>('open');
@@ -365,8 +375,12 @@ export function ThreadsPage(): JSX.Element {
   const scrollKey = `threads:list-scroll:${slug ?? ''}:${bucket}:${filter}`;
   const rememberListScroll = () => {
     // Route-local, keyed state avoids leaking a position across orgs, buckets,
-    // or search terms while leaving router ownership untouched.
-    sessionStorage.setItem(scrollKey, String(listScrollRef.current?.scrollTop ?? 0));
+    // or search terms while leaving router ownership untouched. The route
+    // cleanup runs after React has detached the conditional ContentWrap ref;
+    // do not turn that absent owner into a destructive zero write.
+    const owner = listScrollRef.current;
+    const scrollTop = owner ? owner.scrollTop : lastListScrollTopRef.current;
+    sessionStorage.setItem(scrollKey, String(scrollTop));
   };
   useThreadsInboxSSE();
   const agentsQuery = useAgentsList();
@@ -429,10 +443,13 @@ export function ThreadsPage(): JSX.Element {
   }, [bucket, openQuery.data, archivedQuery.data, filter]);
   useEffect(() => {
     if (threadId) return;
-    const saved = Number(sessionStorage.getItem(scrollKey));
-    if (!Number.isFinite(saved) || saved <= 0) return;
+    const stored = sessionStorage.getItem(scrollKey);
+    // A missing key must reset the reused scroll owner. A stored zero is a
+    // valid saved position, so neither case may be treated as "leave it be".
+    const saved = stored === null ? 0 : Number(stored);
+    const target = Number.isFinite(saved) && saved >= 0 ? saved : 0;
     const frame = requestAnimationFrame(() => {
-      if (listScrollRef.current) listScrollRef.current.scrollTop = saved;
+      if (listScrollRef.current) listScrollRef.current.scrollTop = target;
     });
     return () => cancelAnimationFrame(frame);
   }, [threadId, scrollKey, threads.length]);
@@ -736,7 +753,7 @@ export function ThreadsPage(): JSX.Element {
             `max-w-content` cap with 26px padding. The flex sizer owns the
             height; ContentWrap owns the scroll. */}
         <div className="min-h-0 flex-1">
-          <ContentWrap scrollRef={listScrollRef}>
+          <ContentWrap scrollRef={setListScrollRef}>
           {/* Loading skeleton */}
           {bucketLoading && <InboxSkeleton />}
 

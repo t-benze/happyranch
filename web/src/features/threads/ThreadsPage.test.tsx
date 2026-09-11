@@ -1,13 +1,20 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
 import { QueryClient } from '@tanstack/react-query';
+import { http, HttpResponse } from 'msw';
+import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
+import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 
 const SLUG = 'alpha';
+const NativeRequest = globalThis.Request;
+
+afterEach(() => {
+  globalThis.Request = NativeRequest;
+});
 
 function mountAt(route: string) {
   server.use(
@@ -19,6 +26,29 @@ function mountAt(route: string) {
     ),
   );
   return renderWithProviders(<AppRoutes />, { route });
+}
+
+function mountRouteHistory(route: string) {
+  server.use(
+    http.get('/api/v1/orgs', () =>
+      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+    ),
+    http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+      HttpResponse.json({ agents: [] }),
+    ),
+  );
+  // The data-memory router creates a jsdom AbortSignal that Node's undici
+  // Request rejects. This app has no route loaders, so tests can omit it.
+  globalThis.Request = class RouterTestRequest extends NativeRequest {
+    constructor(input: RequestInfo | URL, init?: RequestInit) {
+      super(input, init ? { ...init, signal: undefined } : init);
+    }
+  };
+  const router = createMemoryRouter(
+    [{ path: '*', element: <AppProvider client={makeQueryClient()}><AppRoutes /></AppProvider> }],
+    { initialEntries: [route] },
+  );
+  return { router, ...render(<RouterProvider router={router} />) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -121,6 +151,69 @@ function setupThreadWithMessages(
     http.get(`/api/v1/orgs/${SLUG}/tokens`, () => HttpResponse.json({ rollup: [] })),
   );
 }
+
+describe('ThreadsPage — route-local list scroll restoration', () => {
+  function setupScrollThread() {
+    const thread = mkThread('THR-SCROLL', 'Long verification scroll target');
+    setupThreadWithMessages('THR-SCROLL', []);
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () => HttpResponse.json({ threads: [thread] })),
+    );
+  }
+
+  test('keeps the live ContentWrap position through browser history and the real All threads link', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupScrollThread();
+    const user = userEvent.setup();
+    const { router } = mountRouteHistory(`/orgs/${SLUG}/threads`);
+
+    const row = await screen.findByRole('link', { name: /THR-SCROLL/i });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+    expect(scroller).not.toBeNull();
+    scroller.scrollTop = 350;
+
+    await user.click(row);
+    expect(sessionStorage.getItem(`threads:list-scroll:${SLUG}:open:`)).toBe('350');
+
+    // This is the actual route history transition used by browser Back, not a
+    // storage-helper test. The list ref has detached while the detail route is
+    // mounted, so restoration proves the captured owner snapshot survives it.
+    await router.navigate(-1);
+    const browserBackRow = await screen.findByRole('link', { name: /THR-SCROLL/i });
+    const browserBackScroller = browserBackRow.closest('.overflow-y-auto') as HTMLDivElement;
+    await waitFor(() => expect(browserBackScroller.scrollTop).toBe(350));
+
+    await user.click(browserBackRow);
+    const allThreads = await screen.findByRole('link', { name: /all threads/i });
+
+    await user.click(allThreads);
+    const restoredRow = await screen.findByRole('link', { name: /THR-SCROLL/i });
+    const restoredScroller = restoredRow.closest('.overflow-y-auto') as HTMLDivElement;
+    await waitFor(() => expect(restoredScroller.scrollTop).toBe(350));
+  });
+
+  test('resets a newly selected bucket and filter to zero without erasing a valid saved zero', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupScrollThread();
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/threads`);
+
+    const row = await screen.findByRole('link', { name: /THR-SCROLL/i });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+    scroller.scrollTop = 350;
+
+    await user.click(screen.getByRole('tab', { name: /archived/i }));
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    expect(sessionStorage.getItem(`threads:list-scroll:${SLUG}:open:`)).toBe('350');
+
+    sessionStorage.setItem(`threads:list-scroll:${SLUG}:done:`, '0');
+    await user.click(screen.getByRole('tab', { name: /open/i }));
+    await user.click(screen.getByRole('tab', { name: /archived/i }));
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+  });
+});
 
 /* ------------------------------------------------------------------ */
 /*  List tests                                                         */
