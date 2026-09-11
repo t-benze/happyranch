@@ -93,9 +93,13 @@ publication-process requirements.
 
 **Policy constraints:**
 - `git push --no-verify` remains **prohibited** by engineering policy.
-- **GitHub CI is authoritative** — it runs the full Python 3.12/3.13/3.14
-  matrix and nightly integration on clean Ubuntu runners and is the
-  only merge gate. Local-CI is pre-push feedback only.
+- **GitHub CI is authoritative.** PR CI runs Python units on 3.14 plus Web
+  CI; after merges and pushes to main, the same tests run across
+  Python 3.12/3.13/3.14. Nightly integration is separate. Local-CI is
+  pre-push feedback only.
+- When repository delivery guidance requires a `local_ci` receipt, record the
+  exact command from the targets above and its actual exit status; do not claim
+  a command that was not run.
 
 ## Caveats
 

@@ -8,7 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from runtime.config import Settings
-from runtime.orchestrator.workspace_adapters import _compute_dir_hash
+from runtime.orchestrator.workspace_adapters import (
+    _compute_dir_hash,
+    materialize_workspace_skills,
+)
 from runtime.skills.sources import bundled_skills_dir
 from runtime.skills.system_contracts import list_system_contracts
 
@@ -57,6 +60,39 @@ def test_nondefault_legacy_source_requires_explicit_migration(
 
 def test_explicit_legacy_default_is_inert() -> None:
     assert Settings(protocol_dir="protocol").get_bundled_skills_dir() == bundled_skills_dir()
+
+
+def test_start_task_source_is_generic_and_preserves_callback_contract(
+    tmp_path: Path,
+) -> None:
+    """The real projected generic skill keeps callback mechanics, not engineering policy."""
+    source = bundled_skills_dir() / "start-task" / "SKILL.md"
+    workspace = tmp_path / "workspace"
+    settings = Settings()
+    materialize_workspace_skills(
+        workspace,
+        settings,
+        slug="test",
+        context="task",
+        provider="codex",
+        agent_name="dev_agent",
+        team="engineering",
+        skills_root=tmp_path / "no-managed-skills",
+    )
+    body = (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").read_text()
+
+    assert body == source.read_text()
+    assert "Follow applicable task and role instructions for verification and review." in body
+    assert "Report incomplete work and blockers with concrete evidence" in body
+    assert "After the initial scope/progress checkpoint" in body
+    assert "Include verification evidence fields when the applicable task or role" in body
+    assert "happyranch report-completion --org {ORG_SLUG} --from-file" in body
+    assert '"session_id": "<session_id>"' in body
+    assert '"decision": {"action": "delegate"' in body
+    assert "Engineering frontend readiness gate" not in body
+    assert "After initial Native Impact Evidence" not in body
+    assert "scripts/local_ci.sh all" not in body
+    assert "reviewer APPROVE + qa PASS" not in body
 
 
 def test_source_relocation_preserves_hash_but_member_mutation_does_not(tmp_path: Path) -> None:

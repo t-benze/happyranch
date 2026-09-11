@@ -60,19 +60,9 @@ Parameters:
 
 4. **Plan and execute.** Treat `role_guidance` as your primary instruction when present; otherwise treat `brief` as the full instruction. If repo writes are needed, invoke the **make-worktree** skill first.
 
-   **Engineering frontend readiness gate.** Before handing a frontend PR to a
-   reviewer or QA, include a concise evidence block that maps every acceptance
-   criterion/spec requirement to proof; covers loading, empty, error, and
-   populated states plus auth/permission where applicable; provides a
-   screenshot or deterministic test result; and states exactly what changed
-   since any prior review. The manager or reviewer must return an incomplete
-   handoff for completion, rather than discovering absent proof one item at a
-   time. Reuse the existing `doc-sweep-after-behavioral-change` and
-   `adversarial-browser-evidence-harness-requirements` KB checklists; this gate
-   does not replace them. At a third fix-forward round, stop and surface a
-   structural diagnosis/escalation per KB
-   `fix-forward-cascade-prevention-checklist` — never silently attempt a
-   fourth retry.
+   Follow applicable task and role instructions for verification and review.
+   Report incomplete work and blockers with concrete evidence, and use the
+   daemon's supported completion and decision actions.
 
    If the task produces a standalone document (report, plan, analysis), write its files under `output/<task_id>/` in your workspace root — **not** inside any repo or worktree. Capture the relative path (e.g. `output/TASK-001`) and include it as `output_dir` in your completion payload so future sessions can retrieve it via `happyranch recall --org {ORG_SLUG} <task_id>`.
 
@@ -95,9 +85,9 @@ Parameters:
    more than a few minutes, emit a concise progress receipt at these points —
    milestones only, never chain of thought, reasoning, or command stdout:
 
-   1. **After initial Native Impact Evidence** (before the first edit), one
-      line naming the declared radius, e.g. `Impact: routes/tasks.py +
-      cli/commands/tasks.py + web TaskDetailPage — additive envelope key`.
+   1. **After the initial scope/progress checkpoint** (before the first edit),
+      one line naming the work underway, e.g. `Implementing the assigned
+      task scope in the declared repository`.
    2. **Immediately before a command expected to exceed one minute** (long
       test suite, large build/install, migration), one line naming the
       command intent, e.g. `Running full web suite`.
@@ -167,27 +157,13 @@ Parameters:
      "risks": ["<concern>"],
      "dependencies": ["<assumption>"],
      "reviewer_focus": ["<where to look hardest>"],
-     "output_dir": "output/<task_id>",
-     "local_ci": {
-       "command": "scripts/local_ci.sh all",
-       "exit_code": 0
-     }
+     "output_dir": "output/<task_id>"
    }
    ```
 
-   **Local-CI evidence.** Any completion report for a task that pushed a PR
-   MUST include the `local_ci` field with the exact command (normally
-   `scripts/local_ci.sh all`) and a zero exit status. Engineering managers
-   reject a PR completion missing this evidence. If the local-CI hook ran
-   the full real suite, state its exact command and exit code; do not claim
-   it without output. Tasks that do not push a PR may omit `local_ci`.
-
-   **GitHub CI is authoritative.** Local pre-push hooks provide feedforward
-   signal only. The full Python 3.12/3.13/3.14 matrix and nightly
-   integration runs on clean Ubuntu runners in GitHub Actions are the only
-   merge gate. Local-CI hooks CANNOT prevent `git push --no-verify` —
-   `--no-verify` bypasses hooks entirely and remains prohibited by
-   engineering policy.
+   Include verification evidence fields when the applicable task or role
+   instructions require them. Report actual commands and exit statuses
+   truthfully; do not label skipped or incomplete verification as passing.
 
    For a blocker, set `"status": "blocked"`, `"confidence": 0`, and put the
    reason in `summary`. Optional keys (`risks`, `dependencies`,
@@ -226,8 +202,8 @@ Parameters:
      children targeted at regular **workers** are read-only (structured decisions ignored,
      complete with a summary). NO fan-out review gate at any width — the width cap (8)
      is a machine-resource limit only; control over what lands is the per-PR merge gate
-     (each mutating child opens its own PR needing reviewer APPROVE + qa PASS +
-     CI + founder/EM merge). Children own DISJOINT file sets; shared-file convergence
+     (each mutating child follows the applicable task and team review/approval
+     requirements). Children own DISJOINT file sets; shared-file convergence
      routes through a serial follow-up delegate after join, never a fan-out child.
      Team-manager gated. The parent parks in `in_progress(delegated)` with `active_fanout`
      metadata and wakes once when all children are terminal.

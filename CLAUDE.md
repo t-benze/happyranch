@@ -149,12 +149,14 @@ Integration tests spawn a real daemon and fake CLIs. Run them before changes tou
   re-dispatch an edit-forbidden CI-only brief unchanged after mainline drift.
   The `jobs` skill defines the full gate and the existing external-job terminal
   verdict still controls completion.
-- **Frontend handoff:** Before review/QA, supply acceptance/spec mapping,
-  relevant state coverage, screenshot or deterministic-test evidence, and
+- **Frontend handoff:** Before review/QA, supply acceptance/spec mapping;
+  loading, empty, error, and populated-state coverage; auth/permission
+  coverage when applicable; screenshot or deterministic-test evidence; and
   changes since prior review. Return incomplete handoffs rather than discovering
-  missing proof piecemeal. Reuse the behavioral doc-sweep and adversarial
-  evidence checklists; a third fix-forward round requires structural
-  diagnosis/escalation, not a fourth retry.
+  missing proof piecemeal. Reuse the canonical behavioral doc-sweep and
+  adversarial evidence checklists. A third fix-forward round requires a
+  manager/reviewer structural-diagnosis checkpoint, while actual authority
+  boundaries remain controlling.
 
 ## Code Conventions
 
