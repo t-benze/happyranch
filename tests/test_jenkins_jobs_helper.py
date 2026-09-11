@@ -300,9 +300,9 @@ class residual_Handler(BaseHTTPRequestHandler):
    self.send_response(200);self.send_header('Content-Length','100');self.end_headers();self.wfile.write(b'{"building":false,"result":"SUCCESS"}');return
   if residual_mode=='reconcile_incomplete':return self.send({'number':1,'url':residual_base+'/job/demo/1/'})
   if residual_mode=='reconcile_valid':return self.send({'number':1,'url':residual_base+'/job/demo/1/','building':False,'result':'SUCCESS'})
-  if residual_mode=='property':return self.send({'property':42})
-  if residual_mode=='missing_building':return self.send({'result':'SUCCESS'})
-  if residual_mode=='missing_result':return self.send({'building':False})
+  if residual_mode=='property':return self.send({'property':42,'url':residual_base+'/job/demo/'})
+  if residual_mode=='missing_building':return self.send({'number':1,'url':residual_base+'/job/demo/1/','result':'SUCCESS'})
+  if residual_mode=='missing_result':return self.send({'number':1,'url':residual_base+'/job/demo/1/','building':False})
   if residual_mode=='list_result':return self.send({'number':1,'url':residual_base+self.path.removesuffix('api/json'),'building':False,'result':['secret-value']})
   if residual_mode=='reconcile_wrong':return self.send({'url':'http://evil.invalid/job/other/999/','number':999,'building':False,'result':'SUCCESS'})
   arts=None if residual_mode=='null_artifacts' else [{'relativePath':str(i)} for i in range(4)] if residual_mode=='aggregate' else [{'relativePath':'a'},{'relativePath':'b'}] if residual_mode=='count' else [{'relativePath':'../../config.xml'}] if residual_mode=='traversal' else []
@@ -630,3 +630,11 @@ def test_case11_collection_metadata_timeout_preserves_terminal(fake,tmp_path,mon
     assert run.returncode==3 and time.monotonic()-begin<.5
     saved=json.loads(p.read_text());assert saved['jenkins_result']=='SUCCESS' and saved['build_number']==1 and saved['collection']=={'status':'partial','artifacts':[]}
     assert len(f.seen)==1 and f.seen[0][0]=='GET'
+
+@pytest.mark.parametrize('metadata',[{'building':False,'result':'NOT_BUILT'},{'building':1,'result':'SUCCESS'},{'building':True,'result':'SUCCESS'}])
+def test_case5_complete_identity_malformed_result(fake,tmp_path,metadata):
+    b,f=fake;p=tmp_path/'r';x=jj.open_receipt(p,b,'folder/demo');x.update(phase='building',build_number=1);jj.save_receipt(p,x)
+    f.states['builds']=[metadata]
+    run=cli(b,p,'wait');assert run.returncode==3
+    saved=json.loads(p.read_text());assert saved['phase']=='building' and saved['jenkins_result'] is None and saved['build_number']==1
+    assert len(f.seen)==1 and f.seen[0][1].endswith('/1/api/json') and not [r for r in f.seen if r[0]=='POST']
