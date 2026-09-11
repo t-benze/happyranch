@@ -944,18 +944,22 @@ def _consume_completion_report(
         # If False: founder cancellation landed between Guard B's re-fetch and
         # here. Drop the escalate silently — the founder's terminal state wins.
         recovery_escalation = recovery_owner is not None
-        if not db.try_escalate(
-            task_id, reason=reason,
-            recovery_owner=recovery_owner,
-            recovery_result_id=result_row_id if recovery_escalation else None,
-            recovery_completion_payload=(
-                {**report.model_dump(), "_recovery_session_id": recovery_owner[1],
-                 "_result_row_id": result_row_id}
-                if recovery_escalation else None
-            ),
-            recovery_settled_at=datetime.now(timezone.utc).isoformat()
-                if recovery_escalation else None,
-        ):
+        # Keep the ordinary Database contract (task_id + reason) intact.
+        # Recovery metadata is a separate, server-authorized transaction
+        # extension and must never leak into ordinary callers or their
+        # wrappers.
+        escalate_kwargs: dict = {"reason": reason}
+        if recovery_escalation:
+            escalate_kwargs.update(
+                recovery_owner=recovery_owner,
+                recovery_result_id=result_row_id,
+                recovery_completion_payload={
+                    **report.model_dump(), "_recovery_session_id": recovery_owner[1],
+                    "_result_row_id": result_row_id,
+                },
+                recovery_settled_at=datetime.now(timezone.utc).isoformat(),
+            )
+        if not db.try_escalate(task_id, **escalate_kwargs):
             logger.debug(
                 "run_step %s: cancelled between re-check and escalate, dropping",
                 task_id,

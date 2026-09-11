@@ -1212,20 +1212,20 @@ async def test_mixed_executors_resume_their_own_sessions(tmp_path, monkeypatch):
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def test_orchestrator_task_path_source_never_references_resume():
-    """Regression (TASK-5977): the orchestrator's task-execution surfaces
-    must never pass a resume id. thread_runner.run_invocation is the ONLY
-    production caller that wires resume_session_id; a task run that starts
-    referencing it must update this pin + the protocol docs together."""
+def test_orchestrator_task_path_keeps_ordinary_and_recovery_resume_separate():
+    """Ordinary task runs retain no provider continuity; the narrowly
+    authorized recovery path carries a separately bound provider identity."""
     import inspect
     from runtime.orchestrator.orchestrator import Orchestrator
 
-    for member in ("_run_agent", "_run_agent_launch_contained"):
-        src = inspect.getsource(getattr(Orchestrator, member))
-        assert "resume_session_id" not in src, (
-            f"Orchestrator.{member} must not reference resume_session_id — "
-            f"task execution never resumes provider sessions."
-        )
+    run_src = inspect.getsource(Orchestrator._run_agent)
+    contained_src = inspect.getsource(Orchestrator._run_agent_launch_contained)
+    assert "resume_session_id" in run_src
+    assert "resume_session_id" in contained_src
+    # The recovery predicate is the gate for the provider-continuity value;
+    # an ordinary task gets a fresh runtime session without a resume id.
+    assert "if recovery" in contained_src
+    assert "resume_session_id=resume_session_id" in contained_src
 
 
 def test_executor_run_default_never_resumes_across_providers():
