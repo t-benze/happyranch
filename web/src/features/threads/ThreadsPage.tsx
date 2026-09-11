@@ -97,7 +97,8 @@ function threadStatusOrFallback(status: string): 'open' | 'archived' {
  * TaskCard / DashboardPage — no date library added. Pure over an injected
  * `nowMs` so it stays testable. Returns "just now" under a minute (no "ago").
  * `started_at` is always present on the thread-LIST payload (ThreadRecord);
- * per-row participants/preview/count are NOT and stay omitted (honesty fence).
+ * Per-row participant names come from the bounded list projection; previews
+ * and counts remain omitted because the list payload does not back them.
  */
 function relativeStartLabel(iso: string, nowMs: number): string {
   const min = Math.round((nowMs - new Date(iso).getTime()) / 60000);
@@ -754,7 +755,7 @@ export function ThreadsPage(): JSX.Element {
               presentation effect there — while every row keeps its per-row
               pin toggle and the active query/filter still governs inclusion. */}
           {!bucketLoading && !bucketError && threads.length > 0 && (
-            <div className="flex flex-col gap-1">
+            <div className="overflow-hidden rounded-sm border border-border-default divide-y divide-border-default">
               {pinnedThreads.length > 0 && (
                 <h2 className="text-text-muted px-1 pt-2 pb-1 text-xs font-semibold tracking-wider uppercase">
                   {S.pinnedSection}
@@ -784,6 +785,7 @@ export function ThreadsPage(): JSX.Element {
                     pinControl={
                       <RowPinControl thread={t} onError={setPinError} />
                     }
+                    participants={t.participants}
                   />
                 );
               })}
@@ -816,6 +818,7 @@ export function ThreadsPage(): JSX.Element {
                     pinControl={
                       <RowPinControl thread={t} onError={setPinError} />
                     }
+                    participants={t.participants}
                   />
                 );
               })}
@@ -829,9 +832,6 @@ export function ThreadsPage(): JSX.Element {
   return (
     <>
       {threadId ? (
-        // Transcript-focus view (THREADDET-01): the list column collapses and
-        // the detail column (transcript + composer + right rail) takes the full
-        // width. The back link returns to the single-column list.
         <DetailColumn
           loading={activeThread.isLoading}
           errored={activeThread.isError || !activeThread.data}

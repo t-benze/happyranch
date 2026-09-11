@@ -148,6 +148,85 @@ def test_list_threads_returns_recent(tmp_home, app, org_state, auth_headers):
     data = resp.json()
     assert len(data["threads"]) == 2
     assert data["threads"][0]["subject"] in {"a", "b"}
+    assert data["threads"][0]["participants"] == ["dev_agent"]
+
+
+def test_list_threads_participants_are_bounded_to_returned_rows(tmp_home, app, org_state, auth_headers):
+    client = TestClient(app)
+    _seed_agent(org_state, "alpha")
+    _seed_agent(org_state, "bravo")
+    first = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "first", "recipients": ["alpha"], "body_markdown": "x"},
+        headers=auth_headers,
+    ).json()["thread_id"]
+    second = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "second", "recipients": ["bravo"], "body_markdown": "x"},
+        headers=auth_headers,
+    ).json()["thread_id"]
+
+    response = client.get("/api/v1/orgs/alpha/threads?limit=1", headers=auth_headers)
+    assert response.status_code == 200
+    rows = response.json()["threads"]
+    assert len(rows) == 1
+    assert rows[0]["thread_id"] == second
+    assert rows[0]["participants"] == ["bravo"]
+    assert first != second
+
+
+def test_list_threads_batches_current_participants_without_transcript_reads(
+    tmp_home, app, org_state, auth_headers,
+):
+    """The list projection adds one bounded membership query, never N rows.
+
+    ``list_threads`` itself has two scalar message subqueries for existing
+    last-speaker/activity fields.  The assertion below pins the route-level
+    statement count: one list statement plus one participant batch, regardless
+    of how many returned rows there are.  It deliberately does not fetch a
+    transcript/detail endpoint for any row.
+    """
+    client = TestClient(app)
+    _seed_agent(org_state, "alpha")
+    _seed_agent(org_state, "bravo")
+    thread_ids = []
+    for index in range(8):
+        thread_ids.append(
+            client.post(
+                "/api/v1/orgs/alpha/threads",
+                json={
+                    "subject": f"thread {index}",
+                    "recipients": ["alpha", "bravo"],
+                    "body_markdown": "x",
+                },
+                headers=auth_headers,
+            ).json()["thread_id"]
+        )
+    # A removed member must not remain in the list projection; an empty
+    # membership remains an honest empty list rather than a fabricated name.
+    org_state.db.remove_thread_participant(thread_ids[0], "bravo")
+    org_state.db.remove_thread_participant(thread_ids[0], "alpha")
+
+    statements: list[str] = []
+    org_state.db._conn.set_trace_callback(statements.append)
+    try:
+        response = client.get("/api/v1/orgs/alpha/threads?limit=8", headers=auth_headers)
+    finally:
+        org_state.db._conn.set_trace_callback(None)
+
+    assert response.status_code == 200, response.text
+    rows = response.json()["threads"]
+    assert len(rows) == 8
+    assert next(row for row in rows if row["thread_id"] == thread_ids[0])["participants"] == []
+    assert all(
+        row["participants"] == ["alpha", "bravo"]
+        for row in rows
+        if row["thread_id"] != thread_ids[0]
+    )
+    selects = [statement for statement in statements if statement.lstrip().upper().startswith("SELECT")]
+    assert len(selects) == 2
+    assert sum("FROM thread_participants" in statement for statement in selects) == 1
+    assert not any("transcript" in statement.lower() for statement in selects)
 
 
 def test_get_thread_returns_messages_and_participants(tmp_home, app, org_state, auth_headers):

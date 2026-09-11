@@ -5840,6 +5840,24 @@ class Database:
         ]
 
     @_synchronized
+    def list_thread_participant_names_for_threads(
+        self, thread_ids: list[str],
+    ) -> dict[str, list[str]]:
+        """Batch-read current participant names for an already bounded list."""
+        if not thread_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in thread_ids)
+        cursor = self._conn.execute(
+            "SELECT thread_id, agent_name FROM thread_participants "
+            f"WHERE thread_id IN ({placeholders}) ORDER BY thread_id, added_at",
+            tuple(thread_ids),
+        )
+        result = {thread_id: [] for thread_id in thread_ids}
+        for row in cursor.fetchall():
+            result[row["thread_id"]].append(row["agent_name"])
+        return result
+
+    @_synchronized
     def remove_thread_participant(
         self, thread_id: str, agent_name: str
     ) -> bool:

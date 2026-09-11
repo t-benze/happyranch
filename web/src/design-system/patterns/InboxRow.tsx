@@ -21,9 +21,8 @@
  *     mono thread id, the serif subject, the status BADGE routed through the
  *     shared `semanticTone` vocabulary (open→info/blue, archived→neutral/grey),
  *     an inline `from dream` pill, and `last <last_speaker>`; the relative
- *     timestamp (`meta`) is right-aligned. Line-2 (multi-participant list) is
- *     intentionally omitted — `participants` is not on the thread-LIST payload
- *     (honesty fence); only the backed `last_speaker` is shown.
+ *     timestamp (`meta`) is right-aligned. Line-2 renders backed current
+ *     participant names supplied by the bounded list response.
  *
  * The finer Direction-A states (waiting-on-you / review / merged / live / idle)
  * are intentionally absent — no field on the thread-list payload backs them.
@@ -67,6 +66,7 @@ interface InboxRowProps {
    * inside interactive is invalid HTML and breaks assistive tech.
    */
   pinControl?: ReactNode;
+  participants?: string[];
 }
 
 const FROM_DREAM_PILL =
@@ -85,6 +85,7 @@ export function InboxRow({
   href,
   onSelect,
   pinControl,
+  participants = [],
 }: InboxRowProps): JSX.Element {
   const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     if (e.defaultPrevented) return;
@@ -155,6 +156,9 @@ export function InboxRow({
               {meta}
             </span>
           )}
+        </div>
+        <div className="text-caption text-text-muted mt-1 truncate font-mono">
+          {participants.join(' · ')}
         </div>
       </a>
     );

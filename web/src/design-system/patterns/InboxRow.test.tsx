@@ -168,4 +168,20 @@ describe('InboxRow — thread layout (THR-099 id-first row)', () => {
     // Additive: the status badge still renders alongside the dream pill.
     expect(screen.getByText('open')).toHaveClass('text-info', 'bg-info-soft');
   });
+
+  test('renders the bounded list participant projection on its second line', () => {
+    render(
+      <InboxRow
+        threadId="THR-006"
+        subject="Participant visibility"
+        status="open"
+        needsYou={false}
+        active={false}
+        layout="thread"
+        participants={['engineering_manager', 'dev_agent']}
+        href="#"
+      />,
+    );
+    expect(screen.getByText('engineering_manager · dev_agent')).toBeInTheDocument();
+  });
 });

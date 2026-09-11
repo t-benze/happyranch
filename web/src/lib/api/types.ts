@@ -256,6 +256,8 @@ export interface ThreadRecord {
    *  the wire (THR-209 msg 9: pinned ranking uses the immutable numeric
    *  thread ID, not activity). */
   last_activity_at: string | null;
+  /** Current participant names, projected only on bounded list rows. */
+  participants: string[];
 }
 
 export interface ThreadDetailResponse extends ThreadRecord {
