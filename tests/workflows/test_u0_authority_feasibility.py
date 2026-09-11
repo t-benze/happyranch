@@ -2753,6 +2753,8 @@ def test_r1_plain_fanout_cancel_harness_retains_dispatcher_and_boundary_errors(t
 @pytest.mark.parametrize("completed_index", (0, 1))
 def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
     tmp_path, monkeypatch, completed_index: int,
+    dispatcher_failure: BaseException | None = None,
+    boundary_failure: BaseException | None = None,
 ) -> None:
     """Cancel only the live fanout sibling after the other real callback commits.
 
@@ -2772,6 +2774,7 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
     backend = _FakeBackend(auto_exit_after=0)
     orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
     paths, receipts, launches, errors, late = orch._paths, [], [], [], []
+    consumed_reports = []
     first_done, first_terminal, live_held, release_live, done = (threading.Event() for _ in range(5))
 
     class EventSink:
@@ -2786,7 +2789,13 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
         def run(self, **kwargs):
             try:
                 task_id, agent, session_id = self.context["task_id"], self.context["agent"], kwargs["session_id"]
-                launches.append((task_id, agent, session_id, kwargs["running"].request_id, tracker.get_pid(task_id, agent)))
+                launches.append({
+                    "task_id": task_id, "agent": agent, "session_id": session_id,
+                    "request_id": kwargs["running"].request_id,
+                    "pid": tracker.get_pid(task_id, agent),
+                    "active_session": tracker.get_active(task_id, agent),
+                    "running": kwargs["running"], "context": self.context.copy(),
+                })
                 children = db.get_children(parent_id)
                 if task_id == parent_id:
                     decision, verdict = NextStep(action="fanout", children=[
@@ -2834,11 +2843,24 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
         for agent, control in original_controls(task_id):
             def invoke(agent=agent, control=control):
                 rows = _u0_independent_sqlite_readback(db, tuple([parent_id, *db.get_children(parent_id)]))
-                control_entries.append((task_id, agent, rows))
+                control_entries.append((task_id, agent, tracker.get_active(task_id, agent), rows))
                 return control()
             wrapped.append((agent, invoke))
         return wrapped
     monkeypatch.setattr(tracker, "iter_task_cancel_controls", observed_controls)
+    import runtime.orchestrator.run_step as run_step_module
+    original_consume = run_step_module._consume_completion_report
+    def observed_consume(consume_orch, task_id, report, *, result_row_id=None):
+        result = original_consume(consume_orch, task_id, report, result_row_id=result_row_id)
+        row = db.execute("SELECT * FROM task_results WHERE id = ?", (result_row_id,)).fetchone()
+        consumed_reports.append({
+            "task_id": task_id, "agent": db.get_task(task_id).assigned_agent,
+            "session_id": row["session_id"] if row else None,
+            "result_row_id": result_row_id, "persisted_id": row["id"] if row else None,
+            "verdict": report.verdict, "summary": report.output_summary,
+        })
+        return result
+    monkeypatch.setattr(run_step_module, "_consume_completion_report", observed_consume)
     dispatcher = Dispatcher(state)
     original_dispatch = dispatcher.run_step
     def observed_dispatch(*args, **kwargs):
@@ -2846,6 +2868,8 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
             result = original_dispatch(*args, **kwargs)
             if args[1] in db.get_children(parent_id) and db.get_task(args[1]).status == TaskStatus.COMPLETED:
                 first_terminal.set()
+            if dispatcher_failure is not None and args[1] in db.get_children(parent_id):
+                raise dispatcher_failure
             return result
         except BaseException as exc:
             errors.append((exc, traceback.format_exc()))
@@ -2878,6 +2902,24 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
         assert held["tasks"][parent_id]["block_kind"] == "delegated"
         assert len(held["results"][completed]) == 1 and held["results"][live] == []
         assert not [row for row in held["audits"][parent_id] if row["action"] == "fanout_join"]
+        completed_row = held["results"][completed][0]
+        completed_report = next(report for report in consumed_reports if report["task_id"] == completed)
+        assert completed_report == {
+            "task_id": completed, "agent": "dev_agent", "session_id": completed_row["session_id"],
+            "result_row_id": completed_row["id"], "persisted_id": completed_row["id"],
+            "verdict": "PASS", "summary": f"report:{completed}",
+        }
+        assert len(launches) == 3
+        assert {(entry["task_id"], entry["agent"], entry["session_id"] ) for entry in launches} == {
+            (parent_id, "engineering_head", next(entry["session_id"] for entry in launches if entry["task_id"] == parent_id)),
+            *{(child, "dev_agent", next(entry["session_id"] for entry in launches if entry["task_id"] == child)) for child in children},
+        }
+        assert all(entry["pid"] is not None and entry["active_session"] == entry["session_id"]
+                   and entry["request_id"] == entry["task_id"]
+                   and entry["running"].request_id == entry["task_id"]
+                   and entry["context"]["task_id"] == entry["task_id"] for entry in launches)
+        assert [(request.org, request.invocation_kind, request.logical_id, request.retry_attempt)
+                for request in backend.requests] == [("test", "task", entry["task_id"], 0) for entry in launches]
         cancelled = asyncio.run(cancel_task(parent_id, CancelBody(rationale="live sibling", cascade=True), org))
         assert cancelled["cancelled"] == [parent_id, live]
         after = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
@@ -2885,8 +2927,18 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
         assert after["tasks"][completed] == held["tasks"][completed]
         assert after["results"][completed] == held["results"][completed]
         assert after["tasks"][parent_id]["status"] == after["tasks"][live]["status"] == TaskStatus.CANCELLED.value
-        assert len(control_entries) == 1 and control_entries[0][0] == live
-        assert all(row["status"] == TaskStatus.CANCELLED.value for row in control_entries[0][2]["tasks"] if row["id"] in (parent_id, live))
+        assert len(control_entries) == 1 and control_entries[0][:3] == (live, "dev_agent", next(entry["session_id"] for entry in launches if entry["task_id"] == live))
+        assert all(row["status"] == TaskStatus.CANCELLED.value for row in control_entries[0][3]["tasks"] if row["id"] in (parent_id, live))
+        assert all(any(audit["action"] == "task_cancelled" for audit in control_entries[0][3]["audits"] if audit["task_id"] == task_id)
+                   for task_id in (parent_id, live))
+        for task_id in (parent_id, live):
+            _assert_cancelled_task_delta(held["tasks"][task_id], after["tasks"][task_id])
+            assert after["results"][task_id] == held["results"][task_id]
+            assert after["audits"][task_id][:len(held["audits"][task_id])] == held["audits"][task_id]
+        for surface in ("attachments", "canonical_agents", "archived_agents", "workspaces", "archived_workspaces", "teams_bytes", "active_fanout", "active_chain", "queue"):
+            assert after[surface] == held[surface]
+        if boundary_failure is not None:
+            raise boundary_failure
     except BaseException as exc:
         assertion = exc
     finally:
@@ -2900,8 +2952,39 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
     assert late == [(live, 409, {"code": "task_not_active", "task_id": live,
                                  "status": TaskStatus.CANCELLED.value, "cancelled": True})]
     assert final["results"][completed] == held["results"][completed] and final["results"][live] == []
+    assert final["tasks"][completed] == held["tasks"][completed]
+    assert all(final["tasks"][task_id]["status"] == TaskStatus.CANCELLED.value for task_id in (parent_id, live))
+    for task_id in (parent_id, *children):
+        changed = {key for key in final["tasks"][task_id] if final["tasks"][task_id][key] != after["tasks"][task_id][key]}
+        assert changed <= {"updated_at", "last_heartbeat"}
+        appended_audits = final["audits"][task_id][len(after["audits"][task_id]):]
+        assert final["audits"][task_id][:len(after["audits"][task_id])] == after["audits"][task_id]
+        assert appended_audits == ([] if task_id != live else [
+            audit for audit in appended_audits if audit["action"] == "session_end"
+        ])
+    for surface in ("attachments", "results", "sessions", "pids", "controls", "queue", "canonical_agents", "archived_agents", "workspaces", "archived_workspaces", "teams_bytes", "active_fanout", "active_chain"):
+        assert final[surface] == after[surface]
     assert not [row for row in final["audits"][parent_id] if row["action"] == "fanout_join"]
     assert final["queue"] == [] and state.queue._queue._unfinished_tasks == 0
-    assert len(launches) == 3 and {row[0] for row in launches} == {parent_id, *children}
+    assert len(launches) == 3 and {row["task_id"] for row in launches} == {parent_id, *children}
     assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == len(receipts) == 3
-    assert all(tracker.get_pid(task_id, agent) is None for task_id, agent, *_ in launches)
+    assert all(tracker.get_pid(entry["task_id"], entry["agent"]) is None for entry in launches)
+    assert all(receipt["cleanup_status"] == "clean" and receipt["quiescent"] and receipt["survivors"] == 0
+               for receipt in _receipt_evidence(receipts))
+    assert len(consumed_reports) == 2 and {report["task_id"] for report in consumed_reports} == {parent_id, completed}
+    independent_final = _u0_independent_sqlite_readback(db, (parent_id, *children))
+    assert {row["id"] for row in independent_final["results"]} == {
+        row["id"] for rows in final["results"].values() for row in rows
+    }
+
+
+def test_r1_plain_fanout_live_cancel_harness_retains_dispatcher_and_boundary_errors(tmp_path, monkeypatch) -> None:
+    """The live-sibling cancellation harness retains both original failures."""
+    with pytest.raises(BaseExceptionGroup, match="cancellation harness failures") as raised:
+        test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
+            tmp_path, monkeypatch, 0,
+            dispatcher_failure=RuntimeError("U0_PLAIN_LIVE_CANCEL_DISPATCH_ERROR"),
+            boundary_failure=AssertionError("U0_PLAIN_LIVE_CANCEL_BOUNDARY_ERROR"),
+        )
+    assert any("U0_PLAIN_LIVE_CANCEL_DISPATCH_ERROR" in str(error) for error in raised.value.exceptions)
+    assert any("U0_PLAIN_LIVE_CANCEL_BOUNDARY_ERROR" in str(error) for error in raised.value.exceptions)

@@ -214,7 +214,14 @@ then preserves the completed child's full task/result/audit history, cancels
 only the parent and live sibling, and makes those durable cancellation rows
 visible at the original opaque-control entry.  The released live callback gets
 the source `task_not_active` 409 with no result, resurrection, join, or revisit;
-all workers drain with balanced clean receipts and no current tracker PID.
+all workers drain with balanced clean receipts and no current tracker PID. Its
+transparent completion observer binds each accepted immutable result row to the
+actual submitted task/agent/current-session launch tuple; the opaque-control
+observer records the exact live task, agent, and session only after the parent
+and live-child cancellation audits are durable. Full completed-child
+task/result/audit preservation and the named non-task surfaces are compared
+from the held boundary through final drain. A paired injected dispatcher plus
+boundary failure releases every gate and preserves both original failures.
 
 Cancellation prepublication and live-sibling schedules are bounded evidence;
 fanout serialization/pipeline-carrier behavior and all remaining R1–R5/package
