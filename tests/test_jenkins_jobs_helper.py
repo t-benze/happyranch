@@ -78,39 +78,45 @@ def test_06_deadline_and_nonfinite(fake:tuple[str,Fake],tmp_path:Path)->None:
     # A response which continuously makes progress must still consume the one
     # absolute operation budget; socket inactivity timeouts are insufficient.
     f.states["builds"]=[{"building":True}]
-    original=Fake.reply
+    original=Fake.reply; sent: list[int]=[]
     def dribble(self:Fake,status:int,body:object=b"",headers:dict[str,str]|None=None)->None:
         if self.path.endswith("/api/json") and "/queue/" not in self.path:
             raw=json.dumps({"building":True}).encode();self.send_response(200);self.send_header("Content-Length",str(len(raw)));self.end_headers()
             for byte in raw:
                 try:self.wfile.write(bytes([byte]));self.wfile.flush()
                 except OSError:break
+                sent.append(1)
                 time.sleep(.008)
             return
         original(self,status,body,headers)
     Fake.reply=dribble
     try:
-        started=time.monotonic();r=cli(b,p,"--deadline",".04","--timeout","1","wait")
-        assert r.returncode==3 and time.monotonic()-started<.25
+        r=cli(b,p,"--deadline",".04","--timeout","1","wait")
+        # The subprocess startup cost is host-dependent.  The server-side
+        # observation is not: a 17-byte stream at 8ms/byte is still incomplete
+        # when the helper returns, proving the absolute deadline stopped a
+        # continuously progressing response rather than an inactivity timer.
+        assert r.returncode==3 and len(sent)<len(json.dumps({"building":True}).encode())
         assert json.loads(p.read_text())["build_number"]==1
     finally:Fake.reply=original
 def test_06b_deadline_also_bounds_dribbling_http_error(fake:tuple[str,Fake],tmp_path:Path)->None:
     """The HTTPError body is a stream too, so it cannot evade the budget."""
     b,f=fake;p=tmp_path/"r";terminal(p,b)
-    original=Fake.reply
+    original=Fake.reply; sent: list[int]=[]
     def slow_error(self:Fake,status:int,body:object=b"",headers:dict[str,str]|None=None)->None:
         if self.path.endswith("/api/json") and "/queue/" not in self.path:
             raw=b"x"*64;self.send_response(500);self.send_header("Content-Length",str(len(raw)));self.end_headers()
             for byte in raw:
                 try:self.wfile.write(bytes([byte]));self.wfile.flush()
                 except OSError:break
+                sent.append(1)
                 time.sleep(.008)
             return
         original(self,status,body,headers)
     Fake.reply=slow_error
     try:
-        started=time.monotonic();r=cli(b,p,"--deadline",".04","--timeout","1","wait")
-        assert r.returncode==3 and time.monotonic()-started<.25
+        r=cli(b,p,"--deadline",".04","--timeout","1","wait")
+        assert r.returncode==3 and len(sent)<64
         receipt=json.loads(p.read_text())
         assert receipt["build_number"]==1 and receipt["jenkins_result"]=="SUCCESS"
         assert receipt["collection"]["status"]=="timeout"
