@@ -19,7 +19,22 @@ while a legacy scalar frontmatter value is one tag (never an iterable of
 characters). Missing, empty, or unsupported tag shapes project as no tags. The
 Knowledge index is `/orgs/:slug/kb`; detail selection is only the explicit
 `/orgs/:slug/kb/:entrySlug/...` route segment, so an enclosing router wildcard
-must never open a detail drawer on the index.
+must never open a detail drawer on the index. Detail Retry invalidates the
+active org-and-entry query so the same slug can recover without navigation.
+Escape or outside dismissal clears the selected URL; late responses must not
+reopen the drawer. The shared drawer currently has no close-button control.
+
+KB search consumes the server's `hits[{slug,title,snippet,score}]` in ranked order.
+The UI joins the existing unfiltered list summaries by slug for type, whole tags,
+and update time; it never casts a hit to a full entry or invents missing metadata.
+Cards show the hit title/snippet. Type and tag facets intersect after the join,
+preserving rank. Pending input/search or metadata refresh hides stale results;
+metadata errors or missing hit metadata show the existing recoverable Knowledge
+error, never successful-empty. Retry refreshes search and list metadata. Clearing
+search restores the list immediately, and old query settlements cannot replace
+the current query. Narrow 390px clipping remains an existing desktop-only
+limitation; shared App/Drawer layout is unchanged.
+
 
 Generic remote jobs remain dormant. `runtime/remote_jobs/` provides contextual
 v1 models and canonical validation. `remote_job_schema.py` installs the six
