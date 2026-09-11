@@ -8,17 +8,17 @@ After PR review, use its immutable repository commit and verify the published fi
 
 ~~~sh
 REPO=https://github.com/t-benze/happyranch.git
-COMMIT=<PR852-reviewed-commit>
+COMMIT=3d92adbc07f040beee9330c18ee668e0e35a04c2
 TOOL_DIR="$HOME/.local/share/happyranch-tools"
 git clone "$REPO" /tmp/happyranch-jenkins-source
 git -C /tmp/happyranch-jenkins-source show "$COMMIT:scripts/jenkins_jobs.py" > /tmp/jenkins_jobs.py
-sha256sum /tmp/jenkins_jobs.py # compare with the PR handoff helper SHA-256
+sha256sum /tmp/jenkins_jobs.py # must be 394b271c99d27bb0503c45a744141bbb4b99de4daa8571869e8301f4ac7b0059
 install -d -m 700 "$TOOL_DIR"
 install -m 700 /tmp/jenkins_jobs.py "$TOOL_DIR/jenkins_jobs.py"
 python "$TOOL_DIR/jenkins_jobs.py" --help
 ~~~
 
-Set only existing authorized credential references: `JENKINS_USERNAME` and `JENKINS_API_TOKEN`. The helper sends preemptive HTTP Basic authentication (username plus API token), does not print/store/provision/rotate either value, and refuses newline header input. HTTPS is default; private HTTP needs explicit authorization and `--allow-http`. Jenkins documents this at [Authenticating scripted clients](https://www.jenkins.io/doc/book/system-administration/authenticating-scripted-clients/) and [User API tokens](https://www.jenkins.io/doc/book/using/using-credentials/).
+Set only existing authorized credential references: `JENKINS_USERNAME` and `JENKINS_API_TOKEN`. The helper sends preemptive HTTP Basic authentication (username plus API token), does not print/store/provision/rotate either value, and refuses newline header input. HTTPS is default; private HTTP needs explicit authorization and `--allow-http`. This pinned source is a candidate pending independent review, QA, and exact-head CI; it is not an accepted distribution or evidence of a live Jenkins run. Jenkins documents this at [Authenticating scripted clients](https://www.jenkins.io/doc/book/system-administration/authenticating-scripted-clients/) and [User API tokens](https://www.jenkins.io/doc/book/using/using-credentials/).
 
 ## Submit, recover, wait, collect, cancel
 
