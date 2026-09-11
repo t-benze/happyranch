@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -435,6 +437,165 @@ def test_completion_recovery_claim_rejects_late_origin_callback(
     )
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "recovery_callback_not_admissible"
+
+
+@pytest.mark.parametrize("first", ["callback", "claim"])
+def test_completion_callback_and_recovery_claim_arbitrate_at_real_sqlite_boundary(
+    tmp_home, app, org_state, auth_headers, monkeypatch, first,
+) -> None:
+    """The real route callback and claim overlap at the synchronized transaction.
+
+    The connection observer pauses *after* the selected operation has acquired
+    SQLite's ``BEGIN IMMEDIATE`` boundary.  The opposing operation must then
+    be observed attempting the same shipping Database lock before release.
+    This is deliberately stronger than merely releasing two worker threads at
+    once: both route admission and durable claiming are in flight at the real
+    serialization point, while their normal admission/claim decisions remain
+    unmodified.
+    """
+    from runtime.models import TaskStatus
+
+    client = TestClient(app)
+    task_id = client.post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "arbitrate"}, headers=auth_headers,
+    ).json()["task_id"]
+    origin = "origin-runtime-binding"
+    recovery = "recovery-runtime-binding"
+    provider_conversation = "provider-conversation-id"
+    org_state.db.update_task(
+        task_id, status=TaskStatus.IN_PROGRESS, assigned_agent="dev_agent",
+        current_session_id=origin,
+    )
+    org_state.sessions.set_active(task_id, "dev_agent", origin)
+
+    entered_transaction = threading.Event()
+    contender_waiting = threading.Event()
+    release_transaction = threading.Event()
+    errors: list[BaseException] = []
+    callback_response: list[object] = []
+    claim_outcome: list[bool] = []
+    original_connection = org_state.db._conn
+    original_lock = org_state.db._lock
+
+    class ObservedConnection:
+        def execute(self, sql, *args, **kwargs):
+            result = original_connection.execute(sql, *args, **kwargs)
+            if sql == "BEGIN IMMEDIATE" and not entered_transaction.is_set():
+                entered_transaction.set()
+                assert release_transaction.wait(timeout=2), "transaction gate was not released"
+            return result
+
+        def __getattr__(self, name):
+            return getattr(original_connection, name)
+
+    class ObservedRLock:
+        def acquire(self, *args, **kwargs):
+            if entered_transaction.is_set():
+                contender_waiting.set()
+            return original_lock.acquire(*args, **kwargs)
+
+        def release(self):
+            return original_lock.release()
+
+        def __getattr__(self, name):
+            return getattr(original_lock, name)
+
+    monkeypatch.setattr(org_state.db, "_conn", ObservedConnection())
+    monkeypatch.setattr(org_state.db, "_lock", ObservedRLock())
+
+    def callback() -> None:
+        try:
+            response = TestClient(app).post(
+                f"/api/v1/orgs/alpha/tasks/{task_id}/completion", headers=auth_headers,
+                json={"session_id": origin, "agent": "dev_agent", "status": "completed",
+                      "confidence": 90, "output_summary": "origin exact callback"},
+            )
+            callback_response.append(response)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def claim() -> None:
+        try:
+            claim_outcome.append(org_state.db.claim_task_completion_recovery(
+                task_id=task_id, agent="dev_agent", origin_session_id=origin,
+                recovery_session_id=recovery, provider_session_id=provider_conversation,
+                claimed_at="2026-01-01T00:00:00+00:00",
+                expires_at="2999-01-01T00:02:00+00:00",
+            ))
+        except BaseException as exc:
+            errors.append(exc)
+
+    owner = callback if first == "callback" else claim
+    contender = claim if first == "callback" else callback
+    owner_worker = threading.Thread(target=owner, name=f"f4-{first}-owner")
+    contender_worker = threading.Thread(target=contender, name=f"f4-{first}-contender")
+    contender_started = False
+    try:
+        owner_worker.start()
+        assert entered_transaction.wait(timeout=2), "owner never reached BEGIN IMMEDIATE"
+        contender_worker.start()
+        contender_started = True
+        assert contender_waiting.wait(timeout=2), "contender never waited on the real Database lock"
+        release_transaction.set()
+        owner_worker.join(timeout=2)
+        if contender_started:
+            contender_worker.join(timeout=2)
+        assert not owner_worker.is_alive()
+        assert not contender_worker.is_alive()
+    finally:
+        release_transaction.set()
+        owner_worker.join(timeout=2)
+        contender_worker.join(timeout=2)
+    assert errors == []
+    assert len(callback_response) == 1 and len(claim_outcome) == 1
+
+    if first == "callback":
+        assert callback_response[0].status_code == 200
+        assert claim_outcome == [False]
+        results = org_state.db.get_task_results(task_id)
+        assert len(results) == 1 and results[0]["session_id"] == origin
+        assert org_state.db.execute(
+            "SELECT COUNT(*) FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+        ).fetchone()[0] == 0
+        assert org_state.sessions.get_active(task_id, "dev_agent") is None
+        # The connected origin-winner launch assertion remains
+        # test_run_step_codex_origin_callback_winning_claim_is_consumed.
+        return
+
+    assert claim_outcome == [True]
+    assert callback_response[0].status_code == 409
+    assert callback_response[0].json()["detail"]["code"] == "recovery_callback_not_admissible"
+    assert org_state.db.get_task_results(task_id) == []
+    # A rejected origin callback must not clear either the original owner or
+    # the newly published recovery owner.
+    assert org_state.sessions.get_active(task_id, "dev_agent") == origin
+    assert org_state.db.publish_task_completion_recovery_binding(
+        task_id=task_id, agent="dev_agent", origin_session_id=origin,
+        recovery_session_id=recovery,
+    )
+    org_state.sessions.register_recovery_session(task_id, "dev_agent", recovery)
+    assert org_state.sessions.get_active(task_id, "dev_agent") == recovery
+    accepted = client.post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion", headers=auth_headers,
+        json={"session_id": recovery, "agent": "dev_agent", "status": "completed",
+              "confidence": 90, "output_summary": "fresh recovery callback"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    accepted_result = org_state.db.get_latest_task_result(task_id, "dev_agent", recovery)
+    assert accepted_result is not None
+    ledger = org_state.db.execute(
+        "SELECT accepted_result_id, accepted_result_session_id FROM task_completion_recoveries WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    assert (ledger["accepted_result_id"], ledger["accepted_result_session_id"]) == (
+        accepted_result["id"], recovery,
+    )
+    assert not org_state.db.claim_task_completion_recovery(
+        task_id=task_id, agent="dev_agent", origin_session_id=origin,
+        recovery_session_id="second-recovery", provider_session_id="second-provider-conversation",
+        claimed_at="2026-01-01T00:00:00+00:00", expires_at="2999-01-01T00:02:00+00:00",
+    )
+    assert len(org_state.db.get_task_results(task_id)) == 1
 
 
 @pytest.mark.parametrize("decision", [

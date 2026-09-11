@@ -183,8 +183,16 @@ The executable regression suite is the acceptance source of truth. The
 arbitration, duplicate/lost-response/late/stale rejection, cancellation and
 newer-binding winners at the final transaction, accepted-result races, the
 shared 120-second budget, and no recovery re-admission after a recovery 429.
-Only named route/SQLite/tracker race tests with finite barriers establish
-concurrent admission; ordered setup cases establish only their stated order.
+`tests/daemon/test_routes_tasks.py::test_completion_callback_and_recovery_claim_arbitrate_at_real_sqlite_boundary`
+parameterizes the two actual transaction owners with finite events: callback
+first accepts the exact origin HTTP callback, persists one result, leaves zero
+claims, and clears that tracker generation; claim first records one claim,
+rejects the waiting origin callback with 409 without clearing its owner,
+publishes/registers the fresh recovery through shipping helpers, and accepts
+its exact ledger-bound result.  In each order the selected real SQLite
+`BEGIN IMMEDIATE` transaction is paused only after ownership and the other
+operation is observed waiting on the real synchronized Database lock before
+release.  Ordered setup cases establish only their stated order.
 
 `tests/daemon/test_startup_recovery.py::test_manager_done_postcommit_cleanup_pending_restarts_once`
 proves terminal-before-marker restart reconciliation, and
