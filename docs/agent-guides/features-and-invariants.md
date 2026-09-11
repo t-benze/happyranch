@@ -214,6 +214,9 @@ diagnostic ratios are observation-only and must never select tuning. This guard
 does not start collection or change memory get/search behavior, audit rows, or
 ranking. The frozen next-phase measurement definitions are in
 `docs/superpowers/specs/2026-09-11-memory-telemetry-corrective-guard.md`.
+Fail-closed output explicitly marks thresholds as not met and collection as not
+started; malformed diagnostic rows also remain ineligible rather than being
+credited or crashing the report.
 
 Per-agent memory lives under `<runtime>/orgs/<slug>/workspaces/<agent>/memory/`, one `MEM-NNN-<slug>.md` per entry. CLI: `happyranch memory list|get|search|add|update|promote|reindex`.
 

@@ -4,6 +4,12 @@
 > Current Source: `docs/agent-guides/features-and-invariants.md` and `docs/agent-guides/web-and-cli.md`
 > Notes: TASK-7767 is a guard-only serial merge unit; collection and tuning remain unshipped.
 
+> Guard repair note (TASK-7781): current/invalid and malformed diagnostic input
+> must fail closed before arithmetic. Counts remain explicitly observation-only,
+> threshold readiness is false, and canary-gated collection has not started.
+> Tuning-decision branch tests remain deferred to the independently reviewed
+> versioned implementation.
+
 ## Frozen follow-on definitions (not yet shipped)
 
 The intended population is runtime task sessions, including root and child

@@ -1051,7 +1051,16 @@ class AuditLogger:
                 "evidence are required before tuning can be evaluated."
             )
             observation = dict(report.get("observation_period", {}))
-            observation.update({"status": "insufficient_instrumentation", "reason": reason})
+            observation.update({
+                "status": "insufficient_instrumentation",
+                "reason": reason,
+                "thresholds_met": False,
+                "days_met": False,
+                "sessions_met": False,
+                "diagnostics_valid_for_collection": False,
+                "diagnostic_note": "Counts and elapsed time are observation-only.",
+                "trigger": "Canary-gated collection has NOT started.",
+            })
             report["observation_period"] = observation
             report["decision"] = "insufficient_instrumentation"
             report["decision_detail"] = reason
@@ -1069,6 +1078,7 @@ class AuditLogger:
             " ORDER BY timestamp ASC",
             (),
         )
+        rows = [dict(row) for row in rows]
         if not rows:
             return fail_closed({
                 "observation_period": {
@@ -1082,6 +1092,34 @@ class AuditLogger:
                 "by_role": {},
                 "decision": "insufficient_sample",
             })
+
+        def valid_impression_rows() -> bool:
+            for row in rows:
+                try:
+                    payload = json.loads(row.get("payload"))
+                except (TypeError, ValueError):
+                    return False
+                if not isinstance(payload, dict):
+                    return False
+                if not isinstance(payload.get("session_id"), str):
+                    return False
+                if not isinstance(payload.get("agent", row.get("agent", "")), str):
+                    return False
+                digest_ids = payload.get("digest_ids")
+                if not isinstance(digest_ids, list) or not all(isinstance(mid, str) for mid in digest_ids):
+                    return False
+                if not isinstance(row.get("task_id"), str) or not isinstance(row.get("timestamp"), str):
+                    return False
+                try:
+                    parsed = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
+                except ValueError:
+                    return False
+                if parsed.tzinfo is None:
+                    return False
+            return True
+
+        if not valid_impression_rows():
+            return fail_closed({"observation_period": {}, "aggregate": {}, "by_role": {}, "decision": "insufficient_sample"})
 
         # Parse impressions
         impressions: list[dict] = []
@@ -1189,6 +1227,26 @@ class AuditLogger:
             " WHERE action = 'memory_read'",
             (),
         )
+        read_rows = [dict(row) for row in read_rows]
+
+        def valid_read_rows() -> bool:
+            for row in read_rows:
+                try:
+                    payload = json.loads(row.get("payload"))
+                except (TypeError, ValueError):
+                    return False
+                if not isinstance(payload, dict):
+                    return False
+                for key in ("id", "source", "session_id", "task_id", "agent"):
+                    value = payload.get(key)
+                    if value is not None and not isinstance(value, str):
+                        return False
+                if any(not isinstance(row.get(key), str) for key in ("agent", "task_id")):
+                    return False
+            return True
+
+        if not valid_read_rows():
+            return fail_closed({"observation_period": {}, "aggregate": {}, "by_role": {}, "decision": "insufficient_sample"})
 
         # Compute per-session pull-through.
         # Build a validated (agent, task_id, session_id) tuple map from

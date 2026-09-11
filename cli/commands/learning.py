@@ -372,14 +372,69 @@ def _compute_report(
             "evidence are required before tuning can be evaluated."
         )
         observation = dict(report.get("observation_period", {}))
-        observation.update({"status": "insufficient_instrumentation", "reason": reason})
+        observation.update({
+            "status": "insufficient_instrumentation",
+            "reason": reason,
+            "thresholds_met": False,
+            "days_met": False,
+            "sessions_met": False,
+            "diagnostics_valid_for_collection": False,
+            "diagnostic_note": "Counts and elapsed time are observation-only.",
+            "trigger": "Canary-gated collection has NOT started.",
+        })
         report["observation_period"] = observation
         report["decision"] = "insufficient_instrumentation"
         report["decision_detail"] = reason
         return report
 
+    def valid_rows(rows: list[dict], *, impression: bool) -> bool:
+        """Reject malformed diagnostic inputs before they reach set arithmetic."""
+        for row in rows:
+            if not isinstance(row, dict):
+                return False
+            payload = row.get("payload", {})
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except (TypeError, ValueError):
+                    return False
+            if not isinstance(payload, dict):
+                return False
+            if impression:
+                if not isinstance(payload.get("session_id"), str):
+                    return False
+                if not isinstance(payload.get("agent", row.get("agent", "")), str):
+                    return False
+                if not isinstance(row.get("task_id", ""), str):
+                    return False
+                digest_ids = payload.get("digest_ids")
+                if not isinstance(digest_ids, list) or not all(isinstance(mid, str) for mid in digest_ids):
+                    return False
+                timestamp = row.get("timestamp")
+                if not isinstance(timestamp, str):
+                    return False
+                try:
+                    parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                except ValueError:
+                    return False
+                if parsed.tzinfo is None:
+                    return False
+            else:
+                for key in ("id", "source", "session_id", "task_id", "agent"):
+                    value = payload.get(key)
+                    if value is not None and not isinstance(value, str):
+                        return False
+                for key in ("agent", "task_id"):
+                    value = row.get(key)
+                    if value is not None and not isinstance(value, str):
+                        return False
+        return True
+
     if current_time is None:
         current_time = datetime.now(timezone.utc)
+
+    if not valid_rows(impression_rows, impression=True) or not valid_rows(read_rows + search_rows, impression=False):
+        return fail_closed({"observation_period": {}, "aggregate": {}, "by_role": {}, "decision": "insufficient_sample"})
 
     if not impression_rows:
         return fail_closed({

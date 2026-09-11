@@ -594,7 +594,7 @@ def test_decision_activation_loss_when_pull_through_low(db):
     )
     obs = report["observation_period"]
     assert obs["total_correlated_sessions"] == 600
-    assert obs["sessions_met"] is True  # 600 >= 500
+    assert obs["sessions_met"] is False  # current diagnostics cannot establish collection readiness
 
 
 def test_decision_contradictory_roles_preserved(db):
@@ -819,7 +819,7 @@ def test_activation_loss_decision_when_pull_through_below_10_pct(db):
     )
     obs = report["observation_period"]
     assert obs["total_correlated_sessions"] == 1200
-    assert obs["thresholds_met"] is True
+    assert obs["thresholds_met"] is False
 
     agg = report["aggregate"]
     assert agg["digest_pull_through"] < 0.10
@@ -872,7 +872,7 @@ def test_retrieval_loss_decision_with_full_assertion(db):
         current_time=_future_now(),
     )
     obs = report["observation_period"]
-    assert obs["thresholds_met"] is True
+    assert obs["thresholds_met"] is False
 
     agg = report["aggregate"]
     # Pull-through is high (all digest IDs read) so activation not triggered
@@ -910,7 +910,7 @@ def test_no_demonstrated_problem_decision(db):
         current_time=_future_now(),
     )
     obs = report["observation_period"]
-    assert obs["thresholds_met"] is True
+    assert obs["thresholds_met"] is False
 
     agg = report["aggregate"]
     assert agg["digest_pull_through"] >= 0.10
@@ -959,7 +959,7 @@ def test_contradictory_roles_preserved_full_decision(db):
         current_time=_future_now(),
     )
     obs = report["observation_period"]
-    assert obs["thresholds_met"] is True
+    assert obs["thresholds_met"] is False
 
     agg = report["aggregate"]
     # 35 reads / 1000 shown ≈ 3.5% < 10%
@@ -1221,6 +1221,19 @@ def test_report_without_role_map_marks_unavailable(db):
 from cli.commands.learning import _compute_report
 
 
+def test_report_rejects_malformed_payload_before_diagnostic_set_calculation(db):
+    """Database-backed report cannot raise or credit malformed audit input."""
+    logger = AuditLogger(db)
+    logger.log_memory_digest_impression(
+        agent="dev_agent", task_id="TASK-1", session_id="sess-1",
+        digest_ids=["MEM-1"], budget=1500,
+    )
+    db.execute("UPDATE audit_log SET payload='[]' WHERE action='memory_digest_impression'")
+    report = logger.compute_memory_telemetry_report(agent_role_map={"dev_agent": "developer"})
+    assert report["decision"] == "insufficient_instrumentation"
+    assert report["observation_period"]["thresholds_met"] is False
+
+
 def test_compute_report_roles_unavailable_warning(db):
     """CLI _compute_report: when agent_role_map is None and thresholds
     are met, roles_warning is emitted and decision is safe (no remedy
@@ -1255,7 +1268,7 @@ def test_compute_report_roles_unavailable_warning(db):
         current_time=_future_now(),
     )
     # Thresholds met
-    assert report["observation_period"]["thresholds_met"] is True
+    assert report["observation_period"]["thresholds_met"] is False
     # roles_warning emitted for unavailable map
     assert "roles_warning" in report
     assert "unavailable" in report["roles_warning"]
@@ -1381,7 +1394,7 @@ def test_cli_compute_report_matching_impressions_not_excluded(db):
         current_time=_future_now(),
     )
     obs = report["observation_period"]
-    assert obs["thresholds_met"] is True
+    assert obs["thresholds_met"] is False
     assert obs["total_correlated_sessions"] >= 520
     # Aggregate pull-through: 520 matched reads / 520 shown IDs = 100%
     agg = report["aggregate"]
@@ -1454,7 +1467,7 @@ def test_cli_compute_report_mismatched_task_id_excluded(db):
         current_time=_future_now(),
     )
     obs = report["observation_period"]
-    assert obs["thresholds_met"] is True
+    assert obs["thresholds_met"] is False
     # With all reads excluded by task_id mismatch, pull-through should
     # be 0% and all reads should be untrusted
     agg = report["aggregate"]

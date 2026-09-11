@@ -207,6 +207,8 @@ There is no CLI flag or input that can override the invalid current/unversioned
 epoch. Existing explicit `--session-id` get/search behavior remains unchanged;
 the report neither begins collection nor recommends push, alias, embedding, or
 ranking changes.
+Its cursor pages are exhausted before report calculation; malformed diagnostic
+rows fail closed, with text never presenting the observation thresholds as met.
 
 ### PR CI wait / guarded merge entrypoints
 
