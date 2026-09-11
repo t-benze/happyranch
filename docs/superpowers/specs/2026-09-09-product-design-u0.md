@@ -83,7 +83,16 @@ schedule holds the first original child publication after the real
 ``try_delegate_many`` commit, cancels the parked parent and both pending
 children through the shipping route, then releases both original publications
 to prove their ordinary cancelled-task skips. It observes no active opaque
-control at that boundary, so it does not manufacture one. This is still only
+control at that boundary, so it does not manufacture one. It records both
+original child `put_nowait` calls and each original dispatcher entry/return,
+asserting the cancelled status at both points and zero child admissions,
+launches, callbacks, results, joins, or revisits. The initial parent launch has
+a non-null diagnostic PID and its submitted, persisted, and consumed immutable
+result-row identity/content are one binding; final PID absence and the one
+clean, quiescent, zero-survivor receipt are separately asserted. The full
+serialized `FanoutState`, exact `fanout_spawned` payload, and exact ordered
+per-row cancellation audit payloads are observed after `try_delegate_many`
+(the spawn audit is outside that transaction). This is still only
 executed ordinary plain-fanout evidence: serialization/pipeline-carrier
 schedules, and the remaining R1–R5 obligations are residual.
 
@@ -218,7 +227,12 @@ all workers drain with balanced clean receipts and no current tracker PID. Its
 transparent completion observer binds each accepted immutable result row to the
 actual submitted task/agent/current-session launch tuple; the opaque-control
 observer records the exact live task, agent, and session only after the parent
-and live-child cancellation audits are durable. Full completed-child
+and live-child cancellation audits are durable, including exact ordered payload
+and cardinality. Both callback orders assert the source-derived held counter
+vector (parent/children `1/1/1`), full serialized fanout state, three distinct
+admission-request identities, and a bijection between accepted callbacks,
+persisted rows, and original consumptions; the rejected late callback adds no
+row. Full completed-child
 task/result/audit preservation and the named non-task surfaces are compared
 from the held boundary through final drain. A paired injected dispatcher plus
 boundary failure releases every gate and preserves both original failures.

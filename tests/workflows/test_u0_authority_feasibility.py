@@ -2556,7 +2556,7 @@ def test_r1_plain_fanout_cancel_after_commit_before_original_child_publication(
     parent_id = "TASK-U0-PLAIN-CANCEL"
     backend = _FakeBackend(auto_exit_after=0)
     orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
-    paths, receipts, launches, callbacks, errors = orch._paths, [], [], [], []
+    paths, receipts, launches, callbacks, consumed_reports, errors = orch._paths, [], [], [], [], []
     publication_reached, release_publication, done = threading.Event(), threading.Event(), threading.Event()
 
     class EventSink:
@@ -2575,6 +2575,7 @@ def test_r1_plain_fanout_cancel_after_commit_before_original_child_publication(
                 "task_id": task_id, "agent": agent, "session_id": session_id,
                 "request_id": kwargs["running"].request_id,
                 "running": kwargs["running"],
+                "pid": tracker.get_pid(task_id, agent),
                 "active_session": tracker.get_active(task_id, agent),
             })
             if task_id == parent_id:
@@ -2601,8 +2602,11 @@ def test_r1_plain_fanout_cancel_after_commit_before_original_child_publication(
     state.orgs["test"] = SimpleNamespace(orchestrator=orch, db=db)
     orch.attach_queue(state.queue)
     original_put = state.queue.put_nowait
+    original_puts, child_dispatches = [], []
 
     def held_original_publication(slug, task_id, *args, **kwargs):
+        if task_id != parent_id:
+            original_puts.append((slug, task_id))
         if task_id != parent_id and len(db.get_children(parent_id)) == 2 and not publication_reached.is_set():
             publication_reached.set()
             assert release_publication.wait(5), "cancelled child publications were not released"
@@ -2612,15 +2616,32 @@ def test_r1_plain_fanout_cancel_after_commit_before_original_child_publication(
     dispatcher = Dispatcher(state)
     original_dispatch = dispatcher.run_step
     def observed_dispatch(*args, **kwargs):
+        task_id = args[1]
+        if task_id != parent_id:
+            child_dispatches.append(("entry", task_id, db.get_task(task_id).status.value))
         try:
             result = original_dispatch(*args, **kwargs)
-            if dispatcher_failure is not None and args[1] == parent_id:
+            if task_id != parent_id:
+                child_dispatches.append(("return", task_id, db.get_task(task_id).status.value))
+            if dispatcher_failure is not None and task_id == parent_id:
                 raise dispatcher_failure
             return result
         except BaseException as exc:
             errors.append((exc, traceback.format_exc()))
             raise
     monkeypatch.setattr(dispatcher, "run_step", observed_dispatch)
+    import runtime.orchestrator.run_step as run_step_module
+    original_consume = run_step_module._consume_completion_report
+    def observed_consume(consume_orch, task_id, report, *, result_row_id=None):
+        result = original_consume(consume_orch, task_id, report, result_row_id=result_row_id)
+        row = db.execute("SELECT * FROM task_results WHERE id = ?", (result_row_id,)).fetchone()
+        consumed_reports.append({
+            "task_id": task_id, "agent": db.get_task(task_id).assigned_agent,
+            "session_id": row["session_id"] if row else None, "result_row_id": result_row_id,
+            "persisted_id": row["id"] if row else None, "summary": report.output_summary,
+        })
+        return result
+    monkeypatch.setattr(run_step_module, "_consume_completion_report", observed_consume)
     db.insert_task(TaskRecord(id=parent_id, team="engineering", brief="fanout", assigned_agent="engineering_head", task_type="task"))
     before = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id,), agent_names=("engineering_head",))
     assert before["tasks"][parent_id]["status"] == TaskStatus.PENDING.value
@@ -2660,7 +2681,16 @@ def test_r1_plain_fanout_cancel_after_commit_before_original_child_publication(
                 for field, value in held["tasks"][task_id].items()
             }
             assert {field: held_rows[task_id][field] for field in snapshot_row} == snapshot_row
-        assert json.loads(held["active_fanout"][parent_id])["children_ids"] == children
+        expected_fanout = {
+            "children_ids": children,
+            "children_details": [
+                {"agent": "dev_agent", "prompt": "plain zero"},
+                {"agent": "dev_agent", "prompt": "plain one"},
+            ],
+            "width": 2, "manager_agent": "engineering_head", "join_summary": None,
+            "status": "spawned",
+        }
+        assert json.loads(held["active_fanout"][parent_id]) == expected_fanout
         assert held["queue"] == [] and len(launches) == 1
         parent_launch = launches[0]
         assert {key: parent_launch[key] for key in ("task_id", "agent", "request_id")} == {
@@ -2670,13 +2700,17 @@ def test_r1_plain_fanout_cancel_after_commit_before_original_child_publication(
         # session.  It is deliberately absent at the held post-callback
         # boundary, which is why cancellation has no opaque control to send.
         assert parent_launch["active_session"] == parent_launch["session_id"]
+        assert parent_launch["pid"] is not None
         assert parent_launch["running"].request_id == parent_id
         assert [(request.org, request.invocation_kind, request.logical_id, request.retry_attempt)
                 for request in backend.requests] == [("test", "task", parent_id, 0)]
         assert tracker.iter_task_cancel_controls(parent_id) == []
         # fanout_spawned is deliberately outside try_delegate_many: it is
         # already durable at this post-commit/pre-publication boundary.
-        assert len([row for row in held["audits"][parent_id] if row["action"] == "fanout_spawned"]) == 1
+        spawn_audits = [row for row in held["audits"][parent_id] if row["action"] == "fanout_spawned"]
+        assert [(row["agent"], row["payload"]) for row in spawn_audits] == [
+            ("engineering_head", {"agent": "engineering_head", "width": 2, "children_ids": children})
+        ]
         cancelled = asyncio.run(cancel_task(parent_id, CancelBody(rationale="held fanout", cascade=True), org))
         assert cancelled["cancelled"] == [parent_id, *reversed(children)]
         assert cancelled["killed"] == []  # no session existed at the held publication boundary
@@ -2686,7 +2720,10 @@ def test_r1_plain_fanout_cancel_after_commit_before_original_child_publication(
                    for row in independent_cancel["tasks"])
         assert all(held_cancel["tasks"][task_id]["status"] == TaskStatus.CANCELLED.value for task_id in (parent_id, *children))
         assert all(held_cancel["controls"][task_id] is False and held_cancel["sessions"][task_id] is None for task_id in (parent_id, *children))
-        assert all(any(row["action"] == "task_cancelled" for row in held_cancel["audits"][task_id]) for task_id in (parent_id, *children))
+        assert all([(row["agent"], row["payload"]) for row in held_cancel["audits"][task_id]
+                    if row["action"] == "task_cancelled"] == [
+                       ("founder", {"rationale": "held fanout", "cascade": True})
+                   ] for task_id in (parent_id, *children))
         for task_id in (parent_id, *children):
             previous = held["tasks"][task_id]
             _assert_cancelled_task_delta(previous, held_cancel["tasks"][task_id])
@@ -2715,11 +2752,22 @@ def test_r1_plain_fanout_cancel_after_commit_before_original_child_publication(
             for row in final["results"][parent_id]] == [
         (parent_id, "engineering_head", launches[0]["session_id"], "fanout parent"),
     ]
+    parent_row = final["results"][parent_id][0]
+    assert consumed_reports == [{
+        "task_id": parent_id, "agent": "engineering_head", "session_id": launches[0]["session_id"],
+        "result_row_id": parent_row["id"], "persisted_id": parent_row["id"], "summary": "fanout parent",
+    }]
     assert final["tasks"][parent_id]["orchestration_step_count"] == 1
     assert all(final["tasks"][task_id]["status"] == TaskStatus.CANCELLED.value for task_id in (parent_id, *children))
     assert all(final["results"][child] == [] for child in children)
     assert not [row for row in final["audits"][parent_id] if row["action"] == "fanout_join"]
     assert final["active_fanout"][parent_id] == held["active_fanout"][parent_id]
+    assert original_puts == [("test", child) for child in children]
+    assert len(child_dispatches) == 4
+    assert sorted(child_dispatches) == sorted(
+        (phase, child, TaskStatus.CANCELLED.value)
+        for child in children for phase in ("entry", "return")
+    )
     # Original child puts are released into actual workers.  Their cancelled
     # task skip may stamp only dispatcher heartbeat/updated timestamps; it
     # cannot reopen a task, create a result/session, or alter fanout history.
@@ -2736,6 +2784,10 @@ def test_r1_plain_fanout_cancel_after_commit_before_original_child_publication(
     assert final["queue"] == [] and state.queue._queue._unfinished_tasks == 0
     assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == len(receipts) == 1
     assert tracker.get_pid(parent_id, "engineering_head") is None
+    assert _receipt_evidence(receipts) == [{
+        "invocation_kind": "", "executor_profile": "", "terminal_reason": "success",
+        "cleanup_status": "clean", "quiescent": True, "survivors": 0,
+    }]
 
 
 def test_r1_plain_fanout_cancel_harness_retains_dispatcher_and_boundary_errors(tmp_path, monkeypatch) -> None:
@@ -2774,7 +2826,7 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
     backend = _FakeBackend(auto_exit_after=0)
     orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
     paths, receipts, launches, errors, late = orch._paths, [], [], [], []
-    consumed_reports = []
+    consumed_reports, accepted_callbacks = [], []
     first_done, first_terminal, live_held, release_live, done = (threading.Event() for _ in range(5))
 
     class EventSink:
@@ -2815,6 +2867,10 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
                                       verdict=verdict, output_summary=f"report:{task_id}", decision=decision.model_dump())
                 try:
                     assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
+                    accepted_callbacks.append({
+                        "task_id": task_id, "agent": agent, "session_id": session_id,
+                        "verdict": verdict, "summary": body.output_summary,
+                    })
                     if task_id in children and children.index(task_id) == completed_index:
                         first_done.set()
                 except HTTPException as exc:
@@ -2900,6 +2956,16 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
         assert held["tasks"][completed]["status"] == TaskStatus.COMPLETED.value
         assert held["tasks"][live]["status"] == TaskStatus.IN_PROGRESS.value
         assert held["tasks"][parent_id]["block_kind"] == "delegated"
+        assert [held["tasks"][task_id]["orchestration_step_count"] for task_id in (parent_id, *children)] == [1, 1, 1]
+        assert json.loads(held["active_fanout"][parent_id]) == {
+            "children_ids": children,
+            "children_details": [
+                {"agent": "dev_agent", "prompt": "zero"},
+                {"agent": "dev_agent", "prompt": "one"},
+            ],
+            "width": 2, "manager_agent": "engineering_head", "join_summary": "must not join",
+            "status": "spawned",
+        }
         assert len(held["results"][completed]) == 1 and held["results"][live] == []
         assert not [row for row in held["audits"][parent_id] if row["action"] == "fanout_join"]
         completed_row = held["results"][completed][0]
@@ -2918,19 +2984,28 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
                    and entry["request_id"] == entry["task_id"]
                    and entry["running"].request_id == entry["task_id"]
                    and entry["context"]["task_id"] == entry["task_id"] for entry in launches)
-        assert [(request.org, request.invocation_kind, request.logical_id, request.retry_attempt)
-                for request in backend.requests] == [("test", "task", entry["task_id"], 0) for entry in launches]
+        request_bindings = [(request.org, request.invocation_kind, request.logical_id, request.retry_attempt)
+                            for request in backend.requests]
+        assert len(request_bindings) == len(set(request_bindings)) == 3
+        assert set(request_bindings) == {("test", "task", entry["task_id"], 0) for entry in launches}
         cancelled = asyncio.run(cancel_task(parent_id, CancelBody(rationale="live sibling", cascade=True), org))
         assert cancelled["cancelled"] == [parent_id, live]
         after = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
                              task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
         assert after["tasks"][completed] == held["tasks"][completed]
         assert after["results"][completed] == held["results"][completed]
+        # The completed sibling is independently terminal before the route
+        # forwards the live task's real opaque control.  Its complete history,
+        # including shipping audit rows, cannot be changed by that control.
+        assert after["audits"][completed] == held["audits"][completed]
         assert after["tasks"][parent_id]["status"] == after["tasks"][live]["status"] == TaskStatus.CANCELLED.value
         assert len(control_entries) == 1 and control_entries[0][:3] == (live, "dev_agent", next(entry["session_id"] for entry in launches if entry["task_id"] == live))
         assert all(row["status"] == TaskStatus.CANCELLED.value for row in control_entries[0][3]["tasks"] if row["id"] in (parent_id, live))
-        assert all(any(audit["action"] == "task_cancelled" for audit in control_entries[0][3]["audits"] if audit["task_id"] == task_id)
-                   for task_id in (parent_id, live))
+        assert [(audit["task_id"], audit["agent"], json.loads(audit["payload"]))
+                for audit in control_entries[0][3]["audits"] if audit["action"] == "task_cancelled"] == [
+            (parent_id, "founder", {"rationale": "live sibling", "cascade": True}),
+            (live, "founder", {"rationale": "live sibling", "cascade": True}),
+        ]
         for task_id in (parent_id, live):
             _assert_cancelled_task_delta(held["tasks"][task_id], after["tasks"][task_id])
             assert after["results"][task_id] == held["results"][task_id]
@@ -2973,9 +3048,21 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
                for receipt in _receipt_evidence(receipts))
     assert len(consumed_reports) == 2 and {report["task_id"] for report in consumed_reports} == {parent_id, completed}
     independent_final = _u0_independent_sqlite_readback(db, (parent_id, *children))
-    assert {row["id"] for row in independent_final["results"]} == {
-        row["id"] for rows in final["results"].values() for row in rows
+    persisted_by_id = {row["id"]: row for row in independent_final["results"]}
+    assert len(accepted_callbacks) == len(consumed_reports) == len(persisted_by_id) == 2
+    assert {(item["task_id"], item["agent"], item["session_id"], item["verdict"], item["summary"])
+            for item in accepted_callbacks} == {
+        (item["task_id"], item["agent"], item["session_id"], item["verdict"], item["summary"])
+        for item in consumed_reports
     }
+    for report in consumed_reports:
+        persisted = persisted_by_id[report["persisted_id"]]
+        assert report["result_row_id"] == report["persisted_id"]
+        assert (persisted["task_id"], persisted["agent"], persisted["session_id"],
+                persisted["verdict"], persisted["output_summary"]) == (
+            report["task_id"], report["agent"], report["session_id"],
+            report["verdict"], report["summary"],
+        )
 
 
 def test_r1_plain_fanout_live_cancel_harness_retains_dispatcher_and_boundary_errors(tmp_path, monkeypatch) -> None:
