@@ -1393,12 +1393,13 @@ def test_r1_real_delegate_then_chain_publication_and_fail_closed_wake(
     from runtime.models import ChainLeg, NextStep, TaskRecord, TaskStatus
     from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
     from runtime.orchestrator import chain
+    from runtime.orchestrator import run_step as run_step_module
     from tests.daemon.test_task_producer_containment import _FakeBackend, _RecordingExecutor, _make_orch
 
     parent_id = "TASK-U0-CHAIN"
     backend = _FakeBackend(auto_exit_after=0)
     orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
-    paths, receipts, launches, errors, publications = orch._paths, [], [], [], []
+    paths, receipts, launches, errors, publications, consumptions = orch._paths, [], [], [], [], []
     reached, release, done = threading.Event(), threading.Event(), threading.Event()
     compute_outcomes: list[object] = []
 
@@ -1413,6 +1414,17 @@ def test_r1_real_delegate_then_chain_publication_and_fail_closed_wake(
         compute_outcomes.append(outcome)
         return outcome
     monkeypatch.setattr(chain, "compute_advance_action", observed_compute)
+    original_consume = run_step_module._consume_completion_report
+    def observed_consume(consume_orch, task_id, report, result_row_id=None):
+        """Observe the original consumption call without changing its result."""
+        consumptions.append({
+            "task_id": task_id,
+            "agent": report.agent,
+            "result_row_id": result_row_id,
+            "current_session_id": db.get_task(task_id).current_session_id,
+        })
+        return original_consume(consume_orch, task_id, report, result_row_id=result_row_id)
+    monkeypatch.setattr(run_step_module, "_consume_completion_report", observed_consume)
 
     class Executor(_RecordingExecutor):
         def set_invocation_context(self, **kwargs) -> None:
@@ -1515,6 +1527,7 @@ def test_r1_real_delegate_then_chain_publication_and_fail_closed_wake(
             assert tasks[second]["status"] == TaskStatus.PENDING.value and chain["step_index"] == 1
             assert len(advance_audits) == 1
             payload = json.loads(advance_audits[0]["payload"])
+            assert advance_audits[0]["task_id"] == parent_id
             assert payload == {"leg_index": 1, "spawned_child_id": second, "triggering_child_id": first, "triggering_verdict": "PASS", "chain_origin_step_audit_id": chain["step_audit_id"]}
             assert not attachments
         else:
@@ -1539,12 +1552,28 @@ def test_r1_real_delegate_then_chain_publication_and_fail_closed_wake(
     assert len({entry[0] for entry in launches}) == len(expected_launches)
     assert len({entry[1] for entry in launches}) == len(expected_launches)
     assert len({entry[4] for entry in launches}) == len(expected_launches)
+    assert [(request.org, request.logical_id, request.retry_attempt) for request in backend.requests] == [
+        ("test", task_id, 0) for task_id in expected_launches
+    ]
+    assert [request.logical_id for request in backend.requests] == [entry[5] for entry in launches]
     assert publications == [*children, parent_id]
     assert backend.calls["launch"] == backend.calls["finish"] == len(receipts) == len(expected_launches)
     assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == len(expected_launches)
     assert all(final["tasks"][task_id]["status"] == TaskStatus.COMPLETED.value for task_id in final["tasks"])
     assert db.get_task(parent_id).active_chain is None and db.get_task(parent_id).orchestration_step_count == 2
     assert len(final["results"][parent_id]) == 2 and all(len(final["results"][child]) == 1 for child in children)
+    result_rows = [row for task_rows in final["results"].values() for row in task_rows]
+    assert len(consumptions) == len(expected_launches) == len(result_rows)
+    observed_by_result_id = {observation["result_row_id"]: observation for observation in consumptions}
+    assert None not in observed_by_result_id and len(observed_by_result_id) == len(consumptions)
+    launch_identities = {(task_id, agent, session_id) for _, _, task_id, agent, session_id, _ in launches}
+    for row in result_rows:
+        observation = observed_by_result_id[row["id"]]
+        identity = (row["task_id"], row["agent"], row["session_id"])
+        assert identity in launch_identities
+        assert (observation["task_id"], observation["agent"], observation["current_session_id"]) == identity
+    receipt_rows = _receipt_evidence(receipts)
+    assert all(row["cleanup_status"] == "clean" and row["quiescent"] and row["survivors"] == 0 for row in receipt_rows)
     assert final["queue"] == [] and state.queue._queue._unfinished_tasks == 0
     assert all(session is None for session in final["sessions"].values()) and not any(final["controls"].values())
 

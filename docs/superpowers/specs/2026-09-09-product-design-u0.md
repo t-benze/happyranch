@@ -115,12 +115,16 @@ and queue seams for three first-leg reports against expected `PASS`: `PASS`
 commits the next pending child and its exact `chain_auto_advance` audit before
 the held original child publication; `None` and `REVISE` preserve their exact
 persisted report values, clear the chain, and hold the original parent wake
-publication instead. Independent read-only SQLite observations join each result
-to its task, worker, authenticated current session, callback consumption, and
-the actual `RunningHandle`/admission identity. After release, the observed
-launches are respectively parent/first/second/parent and parent/first/parent;
-each path has one parent revisit, balanced contained fake admission/finish
-receipts, and no live queue/session/control residue. The harness separately
+publication instead. A transparent wrapper around the original consumption
+call observes every non-null immutable result-row ID and joins it to the exact
+persisted task/worker/current-session callback row (both parent turns and each
+child). Each actual fake-backend `AdmissionRequest` is joined to its launch and
+`RunningHandle.request_id` (`test`, logical task ID, retry attempt zero); the
+PASS audit is owned by the parent as well as carrying its exact payload. After
+release, the observed launches are respectively parent/first/second/parent and
+parent/first/parent; each path has one parent revisit, each child has one
+orchestration step, fake receipts are clean/quiescent with zero survivors, and
+there is no live tracker PID, queue, session, or control residue. The harness separately
 proves its dispatcher-error collector rejects a queue-swallowed error. This is
 test-only evidence and does not alter transaction, queue, error-policy, schema,
 or production chain behavior. Cancellation, fanout, serialization and all
