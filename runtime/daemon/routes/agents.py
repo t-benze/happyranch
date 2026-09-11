@@ -351,6 +351,8 @@ def _require_team_manager_auth(body: ManageAgentBody, org: OrgState) -> tuple[st
             continue
         active = org.sessions.get_active(body.task_id, candidate)
         if active is not None and active == body.session_id:
+            if org.sessions.is_recovery_session(body.task_id, candidate, body.session_id):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"code": "recovery_purpose_forbidden"})
             manager_team = org.teams.team_for_manager(candidate)
             assert manager_team is not None
             return candidate, manager_team
@@ -2217,6 +2219,11 @@ async def append_learning(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
+        )
+    if org.sessions.is_recovery_session(body.task_id, agent_name, body.session_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "recovery_purpose_forbidden"},
         )
 
     learnings_path = workspace / "learnings.md"

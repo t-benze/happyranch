@@ -1,6 +1,8 @@
 """Route tests for POST /threads/compose-as-agent (agent-initiated threads)."""
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 
 from runtime.models import TaskRecord, TaskStatus
@@ -213,6 +215,59 @@ def test_compose_as_agent_task_path_rejects_session_mismatch(tmp_home, app, org_
     )
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "session_mismatch"
+
+
+def test_recovery_session_cannot_compose_thread_before_thread_insert(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+    org_state.db.insert_task(TaskRecord(
+        id="TASK-RECOVERY-THREAD", brief="x", team="engineering", assigned_agent="engineering_head",
+    ))
+    daemon_state.orgs["alpha"].sessions.register_recovery_session(
+        "TASK-RECOVERY-THREAD", "engineering_head", "sess-recovery-thread",
+    )
+    before = org_state.db._conn.execute("SELECT count(*) FROM threads").fetchone()[0]
+    response = TestClient(app).post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent", headers=auth_headers,
+        json={"composer": "engineering_head", "subject": "blocked", "recipients": ["payment_agt"],
+              "body_markdown": "blocked", "task_id": "TASK-RECOVERY-THREAD",
+              "session_id": "sess-recovery-thread"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "recovery_purpose_forbidden"
+    assert org_state.db._conn.execute("SELECT count(*) FROM threads").fetchone()[0] == before
+
+
+def test_recovery_session_multipart_compose_is_denied_before_attachment_write(
+    tmp_home, app, org_state, auth_headers, daemon_state,
+):
+    """The multipart parse path reaches the same purpose gate before storage."""
+    _seed_agent(org_state, "engineering_head")
+    _seed_agent(org_state, "payment_agt")
+    task_id, session_id = "TASK-RECOVERY-MULTIPART", "sess-recovery-multipart"
+    org_state.db.insert_task(TaskRecord(
+        id=task_id, brief="x", team="engineering", assigned_agent="engineering_head",
+        status=TaskStatus.IN_PROGRESS,
+    ))
+    daemon_state.orgs["alpha"].sessions.register_recovery_session(
+        task_id, "engineering_head", session_id,
+    )
+    before_threads = org_state.db._conn.execute("SELECT count(*) FROM threads").fetchone()[0]
+    response = TestClient(app).post(
+        "/api/v1/orgs/alpha/threads/compose-as-agent", headers=auth_headers,
+        data={"body": json.dumps({
+            "composer": "engineering_head", "subject": "blocked",
+            "recipients": ["payment_agt"], "body_markdown": "blocked",
+            "task_id": task_id, "session_id": session_id,
+        })},
+        files=[("files", ("blocked.txt", b"blocked", "text/plain"))],
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "recovery_purpose_forbidden"
+    assert org_state.db._conn.execute("SELECT count(*) FROM threads").fetchone()[0] == before_threads
+    assert org_state.db._conn.execute("SELECT count(*) FROM thread_scoped_attachments").fetchone()[0] == 0
 
 
 def test_compose_as_agent_task_path_rejects_completed_task(
@@ -483,5 +538,3 @@ def test_compose_as_agent_single_recipient_mints_one_invocation(
     invs = org_state.db.list_thread_invocations(body["thread_id"])
     assert len(invs) == 1
     assert invs[0].agent_name == "payment_agt"
-
-

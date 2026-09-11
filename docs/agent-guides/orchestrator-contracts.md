@@ -354,6 +354,16 @@ Inline traps:
 ## Daemon-Restart Sweep (THR-064)
 
 On daemon restart, `_sweep_on_startup` recovers tasks that were killed mid-flight.
+Before Branch 1, a claimed but unaccepted THR-247 completion recovery is
+settled fail-closed in its dedicated ledger transaction when its durable
+origin or recovery binding is still current. This spends the episode,
+terminalizes the task, and invokes ordinary owned-job `task_ended` cleanup;
+it never launches a second recovery or uses a persisted PID as containment.
+An accepted callback, cancellation, or newer binding wins unchanged. If an
+accepted root-manager escalation is instead committed by the existing
+authority hook as `CONTINUE_SAME_ROOT`, the completion receipt is reconciled
+only from that committed causal result/candidate/envelope tuple and current
+owner; restart never reruns the evaluator or guesses from `pending` alone.
 Branch 1 (in_progress + block_kind IS NULL — a live subprocess killed by the restart):
 
 1. **Mark failed with restart context.** The killed child's note is enriched to

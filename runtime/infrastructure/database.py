@@ -1144,6 +1144,28 @@ class Database:
                 created_at TEXT NOT NULL
             );
 
+            -- THR-247: an additive, one-shot recovery fence.  Runtime
+            -- invocation identity, provider continuity, and the recovered
+            -- invocation deliberately remain distinct values.
+            CREATE TABLE IF NOT EXISTS task_completion_recoveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                origin_session_id TEXT NOT NULL,
+                recovery_session_id TEXT NOT NULL UNIQUE,
+                provider_session_id TEXT NOT NULL,
+                claimed_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'claimed',
+                accepted_result_id INTEGER,
+                accepted_result_session_id TEXT,
+                settled_at TEXT,
+                UNIQUE(task_id, agent, origin_session_id),
+                FOREIGN KEY(task_id) REFERENCES tasks(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_completion_recoveries_task
+                ON task_completion_recoveries(task_id, agent, origin_session_id);
+
             CREATE TABLE IF NOT EXISTS dreams (
                 id TEXT PRIMARY KEY,
                 agent_name TEXT NOT NULL,
@@ -3560,7 +3582,14 @@ class Database:
         return cursor.rowcount == 1
 
     @_synchronized
-    def try_escalate(self, task_id: str, *, reason: str) -> bool:
+    def try_escalate(
+        self, task_id: str, *, reason: str,
+        recovery_owner: tuple[str, str] | None = None,
+        recovery_result_id: int | None = None,
+        recovery_completion_payload: dict | None = None,
+        recovery_settled_at: str | None = None,
+        recovery_fault_hook=None,
+    ) -> bool:
         """Atomic CAS: transition task to ESCALATED (Path B top-level status,
         block_kind cleared) only if it isn't cancelled or already terminal.
 
@@ -3579,16 +3608,70 @@ class Database:
         (Codex review of PR #34 surfaced the residual race).
         """
         now = datetime.now(timezone.utc).isoformat()
-        cursor = self._conn.execute(
-            """UPDATE tasks
-               SET status = ?, block_kind = NULL, note = ?, updated_at = ?
-               WHERE id = ?
-                 AND cancelled_at IS NULL
-                 AND status NOT IN ('completed', 'failed', 'superseded', 'cancelled')""",
-            (TaskStatus.ESCALATED.value, reason, now, task_id),
-        )
-        self._conn.commit()
-        return cursor.rowcount == 1
+        if recovery_owner is None:
+            cursor = self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = NULL, note = ?, updated_at = ?
+                   WHERE id = ?
+                     AND cancelled_at IS NULL
+                     AND status NOT IN ('completed', 'failed', 'superseded', 'cancelled')""",
+                (TaskStatus.ESCALATED.value, reason, now, task_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
+
+        # Recovery owns an immutable accepted result, not merely a task status.
+        # Keep its final root escalation, both durable receipts, and consumption
+        # marker in one transaction so a replacement immediately before this
+        # shipping CAS cannot escalate (or notify for) the newer owner.
+        if recovery_result_id is None or recovery_completion_payload is None:
+            raise ValueError("recovery escalation requires its accepted result receipt")
+        agent, session_id = recovery_owner
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            if recovery_fault_hook is not None:
+                recovery_fault_hook("before_effect")
+            cursor = self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = NULL, note = ?, updated_at = ?
+                   WHERE id = ? AND assigned_agent = ? AND current_session_id = ?
+                     AND cancelled_at IS NULL AND status = ?
+                     AND EXISTS (
+                       SELECT 1 FROM task_completion_recoveries
+                       WHERE task_id = ? AND agent = ? AND recovery_session_id = ?
+                         AND accepted_result_id = ? AND state = 'callback_accepted'
+                     )""",
+                (TaskStatus.ESCALATED.value, reason, now, task_id, agent, session_id,
+                 TaskStatus.IN_PROGRESS.value, task_id, agent, session_id,
+                 recovery_result_id),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                return False
+            if recovery_fault_hook is not None:
+                recovery_fault_hook("after_effect_before_ledger")
+            self.insert_audit_log_uncommitted(
+                task_id, agent, "completion_report", recovery_completion_payload,
+            )
+            self.insert_audit_log_uncommitted(
+                task_id, agent, "escalation", {"reason": reason},
+            )
+            marker = self._conn.execute(
+                """UPDATE task_completion_recoveries
+                   SET state='callback_consumed', accepted_result_session_id=?, settled_at=?
+                   WHERE task_id=? AND agent=? AND recovery_session_id=?
+                     AND accepted_result_id=? AND state='callback_accepted'""",
+                (session_id, recovery_settled_at or now, task_id, agent, session_id,
+                 recovery_result_id),
+            )
+            if marker.rowcount != 1:
+                self._conn.rollback()
+                return False
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def try_escalate_runtime(
@@ -4534,6 +4617,667 @@ class Database:
     # --- Task Results ---
 
     @_synchronized
+    def claim_task_completion_recovery(
+        self, *, task_id: str, agent: str, origin_session_id: str,
+        recovery_session_id: str, provider_session_id: str,
+        claimed_at: str, expires_at: str,
+    ) -> bool:
+        """Durably spend the sole THR-247 recovery opportunity.
+
+        This is intentionally a database transaction rather than a tracker
+        lock: completion callbacks arrive on the event loop while the task
+        runner executes on a worker thread.  A pre-existing exact origin
+        result wins; after this claim an origin callback is no longer
+        admissible and only the fresh recovery binding may report.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            task = self._conn.execute(
+                "SELECT status, cancelled_at, assigned_agent, current_session_id "
+                "FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if task is None or task["cancelled_at"] is not None or task["status"] != TaskStatus.IN_PROGRESS.value \
+                    or task["assigned_agent"] != agent or task["current_session_id"] != origin_session_id:
+                self._conn.rollback()
+                return False
+            existing = self._conn.execute(
+                "SELECT 1 FROM task_results WHERE task_id = ? AND agent = ? AND session_id = ?",
+                (task_id, agent, origin_session_id),
+            ).fetchone()
+            if existing is not None:
+                self._conn.rollback()
+                return False
+            prior = self._conn.execute(
+                "SELECT 1 FROM task_completion_recoveries "
+                "WHERE task_id = ? AND agent = ? AND origin_session_id = ?",
+                (task_id, agent, origin_session_id),
+            ).fetchone()
+            live_episode = self._conn.execute(
+                "SELECT 1 FROM task_completion_recoveries "
+                "WHERE task_id = ? AND agent = ? AND state = 'claimed'",
+                (task_id, agent),
+            ).fetchone()
+            if prior is not None or live_episode is not None:
+                self._conn.rollback()
+                return False
+            self._conn.execute(
+                """INSERT INTO task_completion_recoveries
+                   (task_id, agent, origin_session_id, recovery_session_id,
+                    provider_session_id, claimed_at, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (task_id, agent, origin_session_id, recovery_session_id,
+                 provider_session_id, claimed_at, expires_at),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def publish_task_completion_recovery_binding(
+        self, *, task_id: str, agent: str, origin_session_id: str,
+        recovery_session_id: str,
+    ) -> bool:
+        """Publish a claimed recovery only while its origin still owns the task."""
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            cursor = self._conn.execute(
+                """UPDATE tasks SET assigned_agent = ?, current_session_id = ?
+                   WHERE id = ? AND status = ? AND cancelled_at IS NULL
+                     AND assigned_agent = ? AND current_session_id = ?
+                     AND EXISTS (
+                       SELECT 1 FROM task_completion_recoveries
+                       WHERE task_id = ? AND agent = ?
+                         AND origin_session_id = ?
+                         AND recovery_session_id = ? AND state = 'claimed'
+                     )""",
+                (agent, recovery_session_id, task_id, TaskStatus.IN_PROGRESS.value,
+                 agent, origin_session_id, task_id, agent, origin_session_id,
+                 recovery_session_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def task_completion_recovery_launch_allowed(
+        self, *, task_id: str, agent: str, recovery_session_id: str,
+    ) -> bool:
+        """Whether a claimed recovery still owns the durable launch binding.
+
+        This is deliberately a fresh, synchronous launch-time check rather
+        than an earlier claim/publication observation.  It is called from the
+        executor's per-attempt pre-launch seam (and the supervisor's matching
+        pre-prepare seam), after any preparation/admission wait.  Cancellation
+        and ordinary newer-generation publication therefore make a stale
+        recovery fail closed before it can create a new subprocess.
+        """
+        row = self._conn.execute(
+            """SELECT 1
+               FROM tasks AS t
+               JOIN task_completion_recoveries AS r
+                 ON r.task_id = t.id AND r.agent = ?
+               WHERE t.id = ? AND t.assigned_agent = ?
+                 AND t.current_session_id = ?
+                 AND t.status = ? AND t.cancelled_at IS NULL
+                 AND r.recovery_session_id = ? AND r.state = 'claimed'""",
+            (agent, task_id, agent, recovery_session_id,
+             TaskStatus.IN_PROGRESS.value, recovery_session_id),
+        ).fetchone()
+        return row is not None
+
+    @_synchronized
+    def set_task_executor_pid_if_current(
+        self, *, task_id: str, agent: str, session_id: str, pid: int,
+    ) -> bool:
+        """Publish a PID only for the still-current invocation generation."""
+        cursor = self._conn.execute(
+            """UPDATE tasks SET executor_pid = ?
+               WHERE id = ? AND assigned_agent = ? AND current_session_id = ?
+                 AND status = ? AND cancelled_at IS NULL""",
+            (pid, task_id, agent, session_id, TaskStatus.IN_PROGRESS.value),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def completion_recovery_callback_allowed(
+        self, *, task_id: str, agent: str, session_id: str, now: str,
+    ) -> bool:
+        """Return whether a callback session remains the atomic winner.
+
+        The caller holds the org route lock while it validates the payload and
+        immediately persists it.  The durable ledger prevents an old origin
+        callback from overtaking a spent recovery claim and closes admission at
+        the persisted absolute deadline.
+        """
+        rows = self._conn.execute(
+            """SELECT origin_session_id, recovery_session_id, expires_at, state
+               FROM task_completion_recoveries
+               WHERE task_id = ? AND agent = ?""",
+            (task_id, agent),
+        ).fetchall()
+        if not rows:
+            return True
+        # Every historical origin/recovery binding remains fenced.  A fresh
+        # ordinary generation is allowed once no episode is still claimed.
+        for row in rows:
+            if session_id == row["origin_session_id"]:
+                return False
+            if session_id == row["recovery_session_id"]:
+                return row["state"] == "claimed" and now < row["expires_at"]
+        return not any(row["state"] == "claimed" for row in rows)
+
+    @_synchronized
+    def mark_task_completion_recovery_callback_consumed(
+        self, *, task_id: str, agent: str, session_id: str, result_row_id: int,
+        settled_at: str,
+    ) -> bool:
+        """Spend only the still-current exact manager recovery receipt."""
+        cursor = self._conn.execute(
+            """UPDATE task_completion_recoveries
+               SET state = 'callback_consumed', accepted_result_session_id = ?,
+                   settled_at = ?
+               WHERE task_id = ? AND agent = ? AND recovery_session_id = ?
+                 AND accepted_result_id=? AND state = 'callback_accepted'
+                 AND EXISTS (
+                     SELECT 1 FROM tasks WHERE id=? AND assigned_agent=?
+                       AND current_session_id=? AND cancelled_at IS NULL AND status=?
+                 )""",
+            (session_id, settled_at, task_id, agent, session_id, result_row_id,
+             task_id, agent, session_id, TaskStatus.COMPLETED.value),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def reconcile_accepted_recovery_continued_same_root(
+        self, *, task_id: str, agent: str, session_id: str, result_row_id: int,
+        completion_payload: dict, settled_at: str,
+    ) -> bool:
+        """Settle a recovery receipt after its exact authority continuation.
+
+        The authority continuation is already a committed, fenced transaction.
+        This narrow recovery consumer only recognizes its immutable causal
+        result/candidate/envelope tuple; it never evaluates policy or infers a
+        continuation from ``pending`` alone.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            current = self._conn.execute(
+                """SELECT status, assigned_agent, current_session_id, cancelled_at
+                   FROM tasks WHERE id=?""", (task_id,),
+            ).fetchone()
+            continuation = self._conn.execute(
+                """SELECT 1 FROM authority_candidates c
+                   JOIN authority_continue_envelopes e ON e.candidate_id=c.id
+                   WHERE c.root_task_id=? AND c.manager_session_id=?
+                     AND c.causal_event_id=? AND c.lifecycle_state='consumed'
+                     AND e.root_task_id=? AND e.manager_agent=?
+                     AND e.manager_session_id=?""",
+                (task_id, session_id, f"result:{result_row_id}", task_id, agent, session_id),
+            ).fetchone()
+            if not (
+                current is not None and current["status"] == TaskStatus.PENDING.value
+                and current["assigned_agent"] == agent
+                and current["current_session_id"] == session_id
+                and current["cancelled_at"] is None and continuation is not None
+            ):
+                self._conn.rollback()
+                return False
+            receipt = self._conn.execute(
+                """SELECT 1 FROM audit_log WHERE task_id=? AND agent=?
+                   AND action='completion_report'
+                     AND json_extract(payload, '$._recovery_session_id')=?
+                     AND json_extract(payload, '$._result_row_id')=?""",
+                (task_id, agent, session_id, result_row_id),
+            ).fetchone()
+            if receipt is None:
+                self.insert_audit_log_uncommitted(
+                    task_id, agent, "completion_report", completion_payload,
+                )
+            marker = self._conn.execute(
+                """UPDATE task_completion_recoveries
+                   SET state='callback_consumed', accepted_result_session_id=?, settled_at=?
+                   WHERE task_id=? AND agent=? AND recovery_session_id=?
+                     AND accepted_result_id=? AND state='callback_accepted'""",
+                (session_id, settled_at, task_id, agent, session_id, result_row_id),
+            )
+            if marker.rowcount != 1:
+                self._conn.rollback()
+                return False
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def has_task_completion_report_audit(self, *, task_id: str, agent: str, session_id: str, result_row_id: int) -> bool:
+        """Whether recovery re-entry already has a completion-report receipt."""
+        row = self._conn.execute(
+            """SELECT 1 FROM audit_log WHERE task_id=? AND agent=?
+               AND action='completion_report'
+               AND json_extract(payload, '$._recovery_session_id')=?
+               AND json_extract(payload, '$._result_row_id')=? LIMIT 1""",
+            (task_id, agent, session_id, result_row_id),
+        ).fetchone()
+        return row is not None
+
+    @_synchronized
+    def has_orchestration_step_audit(self, *, task_id: str, step_number: int) -> bool:
+        """Return whether this durable manager step was already recorded.
+
+        Recovery has one immutable accepted result but the ordinary manager
+        consumer records its step audit before applying its decision.  A
+        process loss in that gap must re-enter the decision without minting a
+        second step audit; the task's already-incremented step number is the
+        established durable key for that audit.
+        """
+        row = self._conn.execute(
+            """SELECT 1 FROM audit_log WHERE task_id=? AND agent='orchestrator'
+               AND action='orchestration_step'
+               AND json_extract(payload, '$.step_number')=? LIMIT 1""",
+            (task_id, step_number),
+        ).fetchone()
+        return row is not None
+
+    @_synchronized
+    def complete_task_if_current_recovery_owner(
+        self, *, task_id: str, agent: str, session_id: str, note: str,
+        output_dir: str | None, completed_at: str, result_row_id: int,
+    ) -> bool:
+        """Complete only the still-current accepted recovery generation.
+
+        This is deliberately a final effect CAS, rather than an entry check:
+        another generation may replace the recovery owner while ordinary
+        manager parsing/auditing is in progress.
+        """
+        cursor = self._conn.execute(
+            """UPDATE tasks SET status=?, block_kind=NULL, note=?,
+               final_output_dir=?, completed_at=?
+               WHERE id=? AND assigned_agent=? AND current_session_id=?
+                 AND cancelled_at IS NULL AND status=?
+                 AND EXISTS (
+                     SELECT 1 FROM task_completion_recoveries
+                     WHERE task_id=? AND agent=? AND recovery_session_id=?
+                       AND accepted_result_id=? AND state='callback_accepted'
+                 )""",
+            (TaskStatus.COMPLETED.value, note, output_dir, completed_at,
+             task_id, agent, session_id, TaskStatus.IN_PROGRESS.value,
+             task_id, agent, session_id, result_row_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
+    def consume_accepted_blocked_task_completion_recovery(
+        self, *, task_id: str, agent: str, session_id: str, result_row_id: int,
+        blocked_on_job_ids: list[str], note: str, completion_payload: dict,
+        settled_at: str,
+    ) -> bool:
+        """Atomically apply the accepted blocked-recovery durable effects.
+
+        ``AuditLogger`` and ``update_task`` normally commit independently.
+        That is correct for ordinary reports, but an accepted recovery callback
+        needs one durable receipt boundary: completion audit, parked carrier,
+        blocked audit, and ledger consumption either all persist or all roll
+        back.  Queue delivery remains deliberately outside this transaction;
+        startup can reconstruct it from the parked carrier.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            recovery = self._conn.execute(
+                """SELECT 1 FROM task_completion_recoveries
+                   WHERE task_id=? AND agent=? AND recovery_session_id=?
+                     AND accepted_result_id=? AND state='callback_accepted'""",
+                (task_id, agent, session_id, result_row_id),
+            ).fetchone()
+            task = self._conn.execute(
+                """SELECT 1 FROM tasks WHERE id=? AND assigned_agent=?
+                   AND current_session_id=? AND cancelled_at IS NULL
+                   AND status=?""",
+                (task_id, agent, session_id, TaskStatus.IN_PROGRESS.value),
+            ).fetchone()
+            if recovery is None or task is None:
+                self._conn.rollback()
+                return False
+            self.insert_audit_log_uncommitted(
+                task_id, agent, "completion_report", completion_payload,
+            )
+            self._conn.execute(
+                """UPDATE tasks SET status=?, block_kind=?, blocked_on_job_ids=?, note=?
+                   WHERE id=?""",
+                (TaskStatus.IN_PROGRESS.value, BlockKind.BLOCKED_ON_JOB.value,
+                 json.dumps(blocked_on_job_ids), note, task_id),
+            )
+            self.insert_audit_log_uncommitted(
+                task_id, agent, "task_blocked_on_jobs",
+                {
+                    "agent": agent,
+                    "blocking_job_ids": blocked_on_job_ids,
+                    "output_summary_excerpt": (note or "")[:200],
+                },
+            )
+            self._conn.execute(
+                """UPDATE task_completion_recoveries
+                   SET state='callback_consumed', accepted_result_session_id=?, settled_at=?
+                   WHERE task_id=? AND agent=? AND recovery_session_id=?
+                     AND accepted_result_id=? AND state='callback_accepted'""",
+                (session_id, settled_at, task_id, agent, session_id, result_row_id),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def consume_accepted_completed_task_completion_recovery(
+        self, *, task_id: str, agent: str, session_id: str, result_row_id: int,
+        note: str, output_dir: str | None, completion_payload: dict, settled_at: str,
+        reviewer: str | None, verdict: str | None,
+    ) -> bool:
+        """Atomically apply the durable completed-recovery receipt.
+
+        This is intentionally the small recovery-only counterpart of the
+        blocked carrier transaction: the completion audit, delegated verdict,
+        terminal task row, and exact accepted ledger marker must never be
+        independently durable.  ``verdict`` is derived from this immutable
+        accepted completion result, never a task-wide latest-result lookup.
+        Post-commit in-memory delivery/cleanup remains reconstructible by the
+        ordinary startup machinery.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            recovery = self._conn.execute(
+                """SELECT 1 FROM task_completion_recoveries
+                   WHERE task_id=? AND agent=? AND recovery_session_id=?
+                     AND accepted_result_id=? AND state='callback_accepted'""",
+                (task_id, agent, session_id, result_row_id),
+            ).fetchone()
+            task = self._conn.execute(
+                """SELECT 1 FROM tasks WHERE id=? AND assigned_agent=?
+                   AND current_session_id=? AND cancelled_at IS NULL
+                   AND status=?""",
+                (task_id, agent, session_id, TaskStatus.IN_PROGRESS.value),
+            ).fetchone()
+            if recovery is None or task is None:
+                self._conn.rollback()
+                return False
+            self.insert_audit_log_uncommitted(task_id, agent, "completion_report", completion_payload)
+            if reviewer is not None and verdict is not None:
+                self.insert_audit_log_uncommitted(
+                    task_id, reviewer, "review_verdict", {
+                        "verdict": verdict,
+                        "feedback": note,
+                        "reviewed_agent": agent,
+                    },
+                )
+            self._conn.execute(
+                """UPDATE tasks SET status=?, block_kind=NULL, note=?, final_output_dir=?,
+                   completed_at=? WHERE id=?""",
+                (TaskStatus.COMPLETED.value, note, output_dir, settled_at, task_id),
+            )
+            self._conn.execute(
+                """UPDATE task_completion_recoveries
+                   SET state='callback_consumed', accepted_result_session_id=?, settled_at=?
+                   WHERE task_id=? AND agent=? AND recovery_session_id=?
+                     AND accepted_result_id=? AND state='callback_accepted'""",
+                (session_id, settled_at, task_id, agent, session_id, result_row_id),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def consume_accepted_nonroot_escalation_recovery(
+        self, *, task_id: str, agent: str, session_id: str, result_row_id: int,
+        note: str, completion_payload: dict, settled_at: str,
+    ) -> bool:
+        """Fail a non-root manager escalation with its exact recovery receipt."""
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            recovery = self._conn.execute(
+                """SELECT 1 FROM task_completion_recoveries
+                   WHERE task_id=? AND agent=? AND recovery_session_id=?
+                     AND accepted_result_id=? AND state='callback_accepted'""",
+                (task_id, agent, session_id, result_row_id),
+            ).fetchone()
+            task = self._conn.execute(
+                """SELECT 1 FROM tasks WHERE id=? AND assigned_agent=?
+                   AND current_session_id=? AND cancelled_at IS NULL
+                   AND status=? AND parent_task_id IS NOT NULL""",
+                (task_id, agent, session_id, TaskStatus.IN_PROGRESS.value),
+            ).fetchone()
+            if recovery is None or task is None:
+                self._conn.rollback()
+                return False
+            self.insert_audit_log_uncommitted(task_id, agent, "completion_report", completion_payload)
+            self._conn.execute(
+                """UPDATE tasks SET status=?, block_kind=NULL, note=?, completed_at=?
+                   WHERE id=?""",
+                (TaskStatus.FAILED.value, note, settled_at, task_id),
+            )
+            marker = self._conn.execute(
+                """UPDATE task_completion_recoveries
+                   SET state='callback_consumed', accepted_result_session_id=?, settled_at=?
+                   WHERE task_id=? AND agent=? AND recovery_session_id=?
+                     AND accepted_result_id=? AND state='callback_accepted'""",
+                (session_id, settled_at, task_id, agent, session_id, result_row_id),
+            )
+            if marker.rowcount != 1:
+                self._conn.rollback()
+                return False
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def get_consumed_completed_task_completion_recovery_task_ids(self) -> list[str]:
+        """Return only exact-current-owner completed recovery receipts.
+
+        The startup cleanup consumer acts on a terminal task's jobs.  A
+        historical consumed receipt is therefore not enough: its immutable
+        accepted result, recovery generation, and current task owner must all
+        still agree.  Otherwise a cancelled or reassigned task could cause an
+        old recovery receipt to touch a newer winner's jobs.
+        """
+        rows = self._conn.execute(
+            """SELECT r.task_id
+               FROM task_completion_recoveries AS r
+               JOIN task_results AS tr ON tr.id = r.accepted_result_id
+               JOIN tasks AS t ON t.id = r.task_id
+               WHERE r.state='callback_consumed'
+                 AND t.status=? AND t.task_type IN ('subtask', 'task')
+                 AND t.cancelled_at IS NULL
+                 AND tr.task_id = r.task_id AND tr.agent = r.agent
+                 AND tr.session_id = r.recovery_session_id
+                 AND t.assigned_agent = r.agent
+                 AND t.current_session_id = r.recovery_session_id
+               ORDER BY r.id""",
+            (TaskStatus.COMPLETED.value,),
+        ).fetchall()
+        return [row["task_id"] for row in rows]
+
+    @_synchronized
+    def get_consumed_nonroot_escalation_recovery_task_ids(self) -> list[str]:
+        """Return exact-current-owner non-root manager recovery receipts.
+
+        These rows are terminal only after the recovery transaction commits.
+        Startup reconstructs their owned-job cleanup and parent wake; it does
+        not re-run the ordinary manager authority path.
+        """
+        rows = self._conn.execute(
+            """SELECT r.task_id
+               FROM task_completion_recoveries AS r
+               JOIN task_results AS tr ON tr.id = r.accepted_result_id
+               JOIN tasks AS t ON t.id = r.task_id
+               WHERE r.state='callback_consumed'
+                 AND t.status=? AND t.task_type='task'
+                 AND t.parent_task_id IS NOT NULL AND t.cancelled_at IS NULL
+                 AND tr.task_id=r.task_id AND tr.agent=r.agent
+                 AND tr.session_id=r.recovery_session_id
+                 AND t.assigned_agent=r.agent
+                 AND t.current_session_id=r.recovery_session_id
+               ORDER BY r.id""",
+            (TaskStatus.FAILED.value,),
+        ).fetchall()
+        return [row["task_id"] for row in rows]
+
+    @_synchronized
+    def settle_expired_task_completion_recovery(
+        self, *, task_id: str, agent: str, session_id: str, settled_at: str,
+    ) -> bool:
+        """Spend an unaccepted episode once its persisted deadline has passed.
+
+        This is deliberately narrower than later startup/process cleanup.  It
+        only arbitrates the durable callback winner: an accepted callback has
+        already changed state and wins; otherwise settlement fences the
+        recovery binding permanently.  It never changes the immutable result
+        row or makes the origin eligible again.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            cursor = self._conn.execute(
+                """UPDATE task_completion_recoveries
+                   SET state = 'expired', settled_at = ?
+                   WHERE task_id = ? AND agent = ? AND recovery_session_id = ?
+                     AND state = 'claimed' AND expires_at <= ?""",
+                (settled_at, task_id, agent, session_id, settled_at),
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def settle_interrupted_task_completion_recovery(
+        self, *, task_id: str, agent: str, settled_at: str, note: str,
+    ) -> bool:
+        """Fail closed an unaccepted recovery found after daemon restart.
+
+        This is one transaction because the startup process has no trustworthy
+        in-memory containment control.  It deliberately does not inspect or
+        signal ``executor_pid``: a recovery PID can be unpublished or
+        recycled.  An accepted callback, cancellation, or a newer binding
+        wins by making the guarded update match no row.
+        """
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            recovery = self._conn.execute(
+                """SELECT origin_session_id, recovery_session_id
+                   FROM task_completion_recoveries
+                   WHERE task_id=? AND agent=? AND state='claimed'""",
+                (task_id, agent),
+            ).fetchone()
+            if recovery is None:
+                self._conn.rollback()
+                return False
+            cursor = self._conn.execute(
+                """UPDATE tasks SET status=?, block_kind=NULL, note=?, completed_at=?
+                   WHERE id=? AND assigned_agent=? AND status=?
+                     AND cancelled_at IS NULL
+                     AND current_session_id IN (?, ?)""",
+                (TaskStatus.FAILED.value, note, settled_at, task_id, agent,
+                 TaskStatus.IN_PROGRESS.value, recovery["origin_session_id"],
+                 recovery["recovery_session_id"]),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                return False
+            self._conn.execute(
+                """UPDATE task_completion_recoveries
+                   SET state='restart_settled', settled_at=?
+                   WHERE task_id=? AND agent=? AND state='claimed'""",
+                (settled_at, task_id, agent),
+            )
+            # A restart may interrupt the ordinary fire-and-forget runner
+            # cleanup after this terminal transition.  Reconcile only durable
+            # rows for this terminal task here; without a live owned control,
+            # row bookkeeping is safe but signalling a persisted PID is not.
+            self._conn.execute(
+                """UPDATE jobs
+                   SET status='failed', reason='task_ended', finished_at=?,
+                       duration_ms=COALESCE(duration_ms, 0)
+                   WHERE task_id=? AND status='running'""",
+                (settled_at, task_id),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def get_claimed_task_completion_recovery(self, *, task_id: str, agent: str) -> dict | None:
+        """Return the sole unaccepted episode, if any, for restart routing."""
+        row = self._conn.execute(
+            """SELECT * FROM task_completion_recoveries
+               WHERE task_id=? AND agent=? AND state='claimed'""",
+            (task_id, agent),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    @_synchronized
+    def get_accepted_task_completion_recovery_result(
+        self, *, task_id: str, agent: str,
+    ) -> dict | None:
+        """Return the ledger-selected recovery result, never a session latest row.
+
+        Recovery callback admission records the immutable ``task_results.id`` in
+        the same transaction as ``callback_accepted``.  Consumers must use that
+        identity: a prior or later result from the same task is not a substitute.
+        """
+        row = self._conn.execute(
+            """SELECT tr.*
+               FROM task_completion_recoveries AS r
+               JOIN task_results AS tr ON tr.id = r.accepted_result_id
+               JOIN tasks AS t ON t.id = r.task_id
+               WHERE r.task_id = ? AND r.agent = ?
+                 AND r.state = 'callback_accepted'
+                 AND tr.task_id = r.task_id AND tr.agent = r.agent
+                 AND tr.session_id = r.recovery_session_id
+                 AND t.assigned_agent = r.agent
+                 AND t.current_session_id = r.recovery_session_id
+               ORDER BY r.id DESC LIMIT 1""",
+            (task_id, agent),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    @_synchronized
+    def get_accepted_task_completion_recovery_task_ids(self) -> list[str]:
+        """Return exact-owner accepted recovery rows, including terminal tasks.
+
+        A crash after the completion effects commit can make the task terminal
+        before the recovery marker commits.  Those rows are intentionally not
+        returned by the ordinary nonterminal startup iterator, but must be
+        reconciled through the same exact ledger/result binding.
+        """
+        rows = self._conn.execute(
+            """SELECT r.task_id
+               FROM task_completion_recoveries AS r
+               JOIN task_results AS tr ON tr.id = r.accepted_result_id
+               JOIN tasks AS t ON t.id = r.task_id
+               WHERE r.state = 'callback_accepted'
+                 AND tr.task_id = r.task_id AND tr.agent = r.agent
+                 AND tr.session_id = r.recovery_session_id
+                 AND t.assigned_agent = r.agent
+                 AND t.current_session_id = r.recovery_session_id
+                 AND t.cancelled_at IS NULL
+               ORDER BY r.id"""
+        ).fetchall()
+        return [row["task_id"] for row in rows]
+
+    @_synchronized
     def insert_task_result(
         self,
         task_id: str,
@@ -4553,6 +5297,29 @@ class Database:
         verdict: str | None = None,
         local_ci_json: str | None = None,
     ) -> None:
+        self._insert_task_result(
+            task_id=task_id, agent=agent, session_id=session_id,
+            output_summary=output_summary, confidence_score=confidence_score,
+            status=status, risks_flagged=risks_flagged, learnings=learnings,
+            duration_seconds=duration_seconds, token_count=token_count,
+            estimated_cost=estimated_cost, output_dir=output_dir,
+            decision_json=decision_json, waiting_on_job_ids=waiting_on_job_ids,
+            verdict=verdict, local_ci_json=local_ci_json,
+        )
+        self._conn.commit()
+
+    def _insert_task_result(
+        self,
+        task_id: str, agent: str, session_id: str, output_summary: str,
+        confidence_score: int, status: str = "completed",
+        risks_flagged: list[str] | None = None, learnings: str | None = None,
+        duration_seconds: int | None = None, token_count: int | None = None,
+        estimated_cost: float | None = None, output_dir: str | None = None,
+        decision_json: str | None = None,
+        waiting_on_job_ids: list[str] | None = None,
+        verdict: str | None = None, local_ci_json: str | None = None,
+    ) -> None:
+        """Insert a result without committing; caller owns any transaction."""
         self._conn.execute(
             """INSERT INTO task_results
                (task_id, agent, session_id, status, output_summary, decision_json,
@@ -4580,7 +5347,103 @@ class Database:
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
-        self._conn.commit()
+
+    @_synchronized
+    def admit_task_completion_callback(
+        self, *, task_id: str, agent: str, session_id: str,
+        output_summary: str, confidence_score: int, status: str = "completed",
+        risks_flagged: list[str] | None = None, output_dir: str | None = None,
+        decision_json: str | None = None, waiting_on_job_ids: list[str] | None = None,
+        verdict: str | None = None, local_ci_json: str | None = None,
+        recovery_deadline_monotonic: float | None = None,
+    ) -> bool:
+        """Atomically admit, persist, and ledger-accept one completion callback."""
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            task = self._conn.execute(
+                "SELECT status, cancelled_at, assigned_agent, current_session_id "
+                "FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if task is None or task["cancelled_at"] is not None or task["status"] in {
+                "completed", "failed", "cancelled", "superseded",
+            }:
+                self._conn.rollback()
+                return False
+            # ``assigned_agent`` is selected when a task is submitted, before
+            # any runtime invocation exists.  ``current_session_id`` is the
+            # shipping publication seam: _run_agent writes it immediately
+            # before SessionTracker.set_active().  Retain the established
+            # tracker-only ordinary callback path until that session binding
+            # exists; once it does, require the complete durable identity.
+            if task["current_session_id"] is not None and (
+                task["assigned_agent"] != agent or task["current_session_id"] != session_id
+            ):
+                self._conn.rollback()
+                return False
+            # Monotonic time is meaningful only in this process and is passed
+            # from the server-owned active recovery binding.  Check it here,
+            # after BEGIN IMMEDIATE, so DB-lock delay cannot extend admission.
+            if recovery_deadline_monotonic is not None and _time.monotonic() >= recovery_deadline_monotonic:
+                self._conn.rollback()
+                return False
+            now = _now().isoformat()
+            if not self.completion_recovery_callback_allowed(
+                task_id=task_id, agent=agent, session_id=session_id, now=now,
+            ):
+                # A recovery claim fences its origin and its own replacement,
+                # not an ordinary generation that has since atomically taken
+                # the task's durable binding.  Retire the displaced recovery
+                # in this same callback transaction before accepting the
+                # newer exact owner, so its stale launch cannot later run and
+                # it cannot leave the newer callback permanently inadmissible.
+                recovery = self._conn.execute(
+                    """SELECT origin_session_id, recovery_session_id
+                       FROM task_completion_recoveries
+                       WHERE task_id=? AND agent=? AND state='claimed'""",
+                    (task_id, agent),
+                ).fetchone()
+                if (
+                    recovery is None
+                    or session_id in {
+                        recovery["origin_session_id"],
+                        recovery["recovery_session_id"],
+                    }
+                ):
+                    self._conn.rollback()
+                    return False
+                self._conn.execute(
+                    """UPDATE task_completion_recoveries
+                       SET state='superseded', settled_at=?
+                       WHERE task_id=? AND agent=? AND state='claimed'""",
+                    (now, task_id, agent),
+                )
+            existing = self._conn.execute(
+                "SELECT 1 FROM task_results WHERE task_id=? AND agent=? AND session_id=?",
+                (task_id, agent, session_id),
+            ).fetchone()
+            if existing is not None:
+                self._conn.rollback()
+                return True
+            self._insert_task_result(
+                task_id=task_id, agent=agent, session_id=session_id,
+                output_summary=output_summary, confidence_score=confidence_score,
+                status=status, risks_flagged=risks_flagged, output_dir=output_dir,
+                decision_json=decision_json, waiting_on_job_ids=waiting_on_job_ids,
+                verdict=verdict, local_ci_json=local_ci_json,
+            )
+            accepted_result_id = self._conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            self._conn.execute(
+                """UPDATE task_completion_recoveries
+                   SET state='callback_accepted', accepted_result_id=?,
+                       accepted_result_session_id=?, settled_at=?
+                   WHERE task_id=? AND agent=? AND recovery_session_id=? AND state='claimed'""",
+                (accepted_result_id, session_id, now, task_id, agent, session_id),
+            )
+            self._conn.commit()
+            return True
+        except Exception:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def get_task_results(self, task_id: str) -> list[dict]:
@@ -5470,6 +6333,30 @@ class Database:
             "SELECT task_id FROM jobs WHERE id = ?", (job_id,)
         ).fetchone()
         return row["task_id"] if row is not None else None
+
+    @_synchronized
+    def get_running_job_task_ids(self) -> dict[str, str]:
+        """Snapshot running jobs for terminal cleanup under the DB lock."""
+        rows = self._conn.execute(
+            "SELECT id, task_id FROM jobs WHERE status='running'"
+        ).fetchall()
+        return {row["id"]: row["task_id"] for row in rows}
+
+    @_synchronized
+    def backstop_terminated_task_jobs(self, task_id: str, *, finished_at: str) -> int:
+        """Atomically settle only still-running jobs owned by a terminal task.
+
+        The runner/process termination happens outside this short critical
+        section.  This is solely the durable SQLite backstop for a runner that
+        did not reach its own terminal write.
+        """
+        cursor = self._conn.execute(
+            "UPDATE jobs SET status='failed', reason='task_ended', finished_at=? "
+            "WHERE task_id=? AND status='running'",
+            (finished_at, task_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount
 
     @_synchronized
     def list_jobs_db(

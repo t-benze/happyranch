@@ -964,6 +964,27 @@ def test_founder_send_appends_and_enqueues(tmp_home, app, org_state, auth_header
     assert by_agent["qa_engineer"].through_seq == 2
 
 
+def test_synthetic_bearer_can_create_and_control_unbound_thread(
+    tmp_home, app, org_state, auth_headers,
+):
+    """The accepted bearer-only residual is deliberately outside recovery binding."""
+    _seed_agent(org_state, "dev_agent")
+    client = TestClient(app)
+    created = client.post(
+        "/api/v1/orgs/alpha/threads",
+        json={"subject": "bearer residual", "recipients": ["dev_agent"], "body_markdown": "open"},
+        headers=auth_headers,
+    )
+    assert created.status_code == 200, created.text
+    thread_id = created.json()["thread_id"]
+    controlled = client.post(
+        f"/api/v1/orgs/alpha/threads/{thread_id}/send",
+        json={"body_markdown": "unbound bearer control"}, headers=auth_headers,
+    )
+    assert controlled.status_code == 200, controlled.text
+    assert [m.body_markdown for m in org_state.db.list_thread_messages(thread_id)] == ["open", "unbound bearer control"]
+
+
 def test_thread_send_accepts_attachment_only(client, auth_headers, org_state) -> None:
     _artifact_store(org_state).put("THR-001-report.pdf", b"pdf")
     thread_id = _seed_open_thread(org_state, participants=["dev_agent"])
@@ -2687,6 +2708,31 @@ def test_post_as_agent_appends_and_mints_to_other_participants(
         (tid, data["seq"]),
     ).fetchone()
     assert row["sent_from_task_id"] == "TASK-900"
+
+
+def test_recovery_bound_send_and_post_as_agent_leave_existing_thread_unchanged(
+    tmp_home, app, org_state, auth_headers,
+):
+    """Both existing-thread write forms enforce recovery purpose before append."""
+    client = TestClient(app)
+    tid = _seed_open_thread(org_state, participants=["dev_agent", "qa_engineer"])
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-RECOVERY-SEND", sid="recovery-send")
+    org_state.sessions.register_recovery_session("TASK-RECOVERY-SEND", "dev_agent", "recovery-send")
+    before = len(org_state.db.list_thread_messages(tid))
+    payload = {"composer": "dev_agent", "task_id": "TASK-RECOVERY-SEND",
+               "session_id": "recovery-send", "body_markdown": "must not append"}
+    for suffix in ("send", "post-as-agent"):
+        denied = client.post(f"/api/v1/orgs/alpha/threads/{tid}/{suffix}", json=payload, headers=auth_headers)
+        assert denied.status_code == 403, denied.text
+        assert denied.json()["detail"]["code"] == "recovery_purpose_forbidden"
+        assert len(org_state.db.list_thread_messages(tid)) == before
+
+    _bind_task_session(org_state, agent="dev_agent", task_id="TASK-ORDINARY-SEND", sid="ordinary-send")
+    ordinary = {**payload, "task_id": "TASK-ORDINARY-SEND", "session_id": "ordinary-send", "body_markdown": "allowed"}
+    for suffix in ("send", "post-as-agent"):
+        allowed = client.post(f"/api/v1/orgs/alpha/threads/{tid}/{suffix}", json=ordinary, headers=auth_headers)
+        assert allowed.status_code == 200, allowed.text
+    assert len(org_state.db.list_thread_messages(tid)) == before + 2
 
 
 def test_post_as_agent_rejects_non_participant(tmp_home, app, org_state, auth_headers):

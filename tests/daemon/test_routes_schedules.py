@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from runtime.models import ScheduleKind, ScheduleStatus
+from runtime.models import TaskRecord
 from runtime.orchestrator.schedule_rules import next_weekly_occurrence
 from runtime.orchestrator.schedule_service import ScheduleService
 
@@ -76,6 +77,27 @@ def test_list_empty(client, org_state) -> None:
     r = client.get(f"/api/v1/orgs/{org_state.slug}/schedules")
     assert r.status_code == 200
     assert r.json() == {"schedules": []}
+
+
+def test_recovery_session_cannot_create_schedule_before_service_mutation(
+    client, org_state,
+) -> None:
+    """The server-owned recovery marker rejects the real create route first."""
+    task_id, session_id = "TASK-RECOVERY-SCHEDULE", "sess-recovery-schedule"
+    org_state.db.insert_task(TaskRecord(
+        id=task_id, brief="recover", team="engineering", assigned_agent="dev_agent",
+    ))
+    org_state.sessions.register_recovery_session(task_id, "dev_agent", session_id)
+    before = org_state.db._conn.execute("SELECT count(*) FROM schedules").fetchone()[0]
+    response = client.post(
+        f"/api/v1/orgs/{org_state.slug}/schedules",
+        json={"task_id": task_id, "session_id": session_id, "agent": "dev_agent",
+              "source_instruction": "remind", "normalized_brief": "remind",
+              "kind": "one_shot", "fire_at": "2026-12-01T00:00:00+00:00"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "recovery_purpose_forbidden"
+    assert org_state.db._conn.execute("SELECT count(*) FROM schedules").fetchone()[0] == before
 
 
 def test_list_with_schedules(client, org_state, frozen_clock) -> None:

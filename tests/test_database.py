@@ -27,6 +27,279 @@ def test_insert_and_get_task(db):
     assert retrieved.status == TaskStatus.PENDING
 
 
+def _recovery_task(db: Database, task_id: str = "TASK-RECOVERY") -> None:
+    db.insert_task(TaskRecord(
+        id=task_id, brief="recovery", status=TaskStatus.IN_PROGRESS,
+        assigned_agent="dev_agent", current_session_id="origin",
+    ))
+
+
+def test_completion_recovery_claim_requires_current_assigned_origin_and_one_winner(db):
+    """Concurrent same-origin claimers cannot mint two recovery episodes."""
+    _recovery_task(db)
+    gate = threading.Barrier(2, timeout=2)
+    results: list[bool] = []
+
+    def claim() -> None:
+        gate.wait(timeout=2)
+        results.append(db.claim_task_completion_recovery(
+            task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+            recovery_session_id="recovery", provider_session_id="provider",
+            claimed_at="2026-01-01T00:00:00+00:00",
+            expires_at="2999-01-01T00:02:00+00:00",
+        ))
+
+    threads = [threading.Thread(target=claim) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+    assert sorted(results) == [False, True]
+    assert db.execute("SELECT COUNT(*) FROM task_completion_recoveries").fetchone()[0] == 1
+    assert not db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="foreign",
+        recovery_session_id="second", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2999-01-01T00:02:00+00:00",
+    )
+
+
+def test_completion_callback_before_claim_is_the_only_winner(db):
+    """A committed origin callback prevents a later recovery claim."""
+    _recovery_task(db)
+    assert db.admit_task_completion_callback(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="origin",
+        output_summary="landed", confidence_score=90,
+    )
+    assert not db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2026-01-01T00:02:00+00:00",
+    )
+    assert len(db.get_task_results("TASK-RECOVERY")) == 1
+
+
+def test_completion_claim_before_waiting_origin_callback_rejects_origin(db):
+    """A durable claim fences an origin callback that was waiting to commit."""
+    _recovery_task(db)
+    assert db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2999-01-01T00:02:00+00:00",
+    )
+    assert not db.admit_task_completion_callback(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="origin",
+        output_summary="late", confidence_score=90,
+    )
+    assert db.get_task_results("TASK-RECOVERY") == []
+
+
+def test_completion_accepted_identity_survives_reopen_and_expiry_loses(db, monkeypatch):
+    """Acceptance stores an immutable result id independently of settlement."""
+    import runtime.infrastructure.database as database_module
+
+    _recovery_task(db)
+    assert db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2026-01-01T00:02:00+00:00",
+    )
+    db.update_task("TASK-RECOVERY", current_session_id="recovery")
+    monkeypatch.setattr(database_module, "_now", lambda: database_module._parse_dt("2026-01-01T00:01:59+00:00"))
+    assert db.admit_task_completion_callback(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+        output_summary="accepted", confidence_score=90,
+    )
+    row = db.execute(
+        "SELECT accepted_result_id, state FROM task_completion_recoveries"
+    ).fetchone()
+    assert row["accepted_result_id"] is not None and row["state"] == "callback_accepted"
+    assert not db.settle_expired_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+        settled_at="2026-01-01T00:02:01+00:00",
+    )
+    db.close()
+    reopened = Database(db.db_path)
+    try:
+        preserved = reopened.execute(
+            "SELECT accepted_result_id, state FROM task_completion_recoveries"
+        ).fetchone()
+        result = reopened.get_latest_task_result("TASK-RECOVERY", "dev_agent", "recovery")
+        assert preserved["accepted_result_id"] == result["id"]
+        assert preserved["state"] == "callback_accepted"
+    finally:
+        reopened.close()
+
+
+def test_completion_callback_rechecks_injectable_clock_after_db_lock_delay(db, monkeypatch):
+    """A callback queued on the DB lock cannot use its pre-wait time."""
+    import runtime.infrastructure.database as database_module
+
+    _recovery_task(db)
+    assert db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2026-01-01T00:02:00+00:00",
+    )
+    db.update_task("TASK-RECOVERY", current_session_id="recovery")
+    entered = threading.Event()
+    result: list[bool] = []
+
+    def callback() -> None:
+        entered.set()
+        result.append(db.admit_task_completion_callback(
+            task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+            output_summary="late after lock", confidence_score=90,
+        ))
+
+    with db._lock:
+        worker = threading.Thread(target=callback)
+        worker.start()
+        assert entered.wait(timeout=2)
+        monkeypatch.setattr(
+            database_module, "_now",
+            lambda: database_module._parse_dt("2026-01-01T00:02:01+00:00"),
+        )
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert result == [False]
+    assert db.get_task_results("TASK-RECOVERY") == []
+
+
+def test_completion_callback_rechecks_live_monotonic_deadline_after_db_lock_delay(db, monkeypatch):
+    """A live recovery deadline is checked only after the admission lock wins."""
+    import runtime.infrastructure.database as database_module
+
+    _recovery_task(db)
+    assert db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2999-01-01T00:02:00+00:00",
+    )
+    db.update_task("TASK-RECOVERY", current_session_id="recovery")
+    entered = threading.Event()
+    result: list[bool] = []
+    now = [9.0]
+    monkeypatch.setattr(database_module._time, "monotonic", lambda: now[0])
+
+    def callback() -> None:
+        entered.set()
+        result.append(db.admit_task_completion_callback(
+            task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+            output_summary="late after lock", confidence_score=90,
+            recovery_deadline_monotonic=10.0,
+        ))
+
+    with db._lock:
+        worker = threading.Thread(target=callback)
+        worker.start()
+        assert entered.wait(timeout=2)
+        now[0] = 10.0
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert result == [False]
+    assert db.get_task_results("TASK-RECOVERY") == []
+
+
+def test_completion_admission_rollback_leaves_no_result_or_accepted_identity(db, monkeypatch):
+    """The ledger cannot claim an accepted callback when result insertion fails."""
+    _recovery_task(db)
+    assert db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2999-01-01T00:02:00+00:00",
+    )
+    db.update_task("TASK-RECOVERY", current_session_id="recovery")
+
+    real_insert = db._insert_task_result
+
+    def fail_after_insert(**kwargs) -> None:
+        real_insert(**kwargs)
+        raise RuntimeError("injected after result insertion")
+
+    monkeypatch.setattr(db, "_insert_task_result", fail_after_insert)
+    with pytest.raises(RuntimeError, match="injected"):
+        db.admit_task_completion_callback(
+            task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+            output_summary="x", confidence_score=90,
+        )
+    assert db.get_task_results("TASK-RECOVERY") == []
+    row = db.execute(
+        "SELECT state, accepted_result_id, accepted_result_session_id FROM task_completion_recoveries"
+    ).fetchone()
+    assert tuple(row) == ("claimed", None, None)
+
+
+def test_completion_recovery_claim_requires_in_progress_task(db):
+    _recovery_task(db)
+    db.update_task("TASK-RECOVERY", status=TaskStatus.PENDING)
+    assert not db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2026-01-01T00:02:00+00:00",
+    )
+
+
+def test_recovery_publication_cas_never_overwrites_replaced_origin(db):
+    """A claimed recovery is not authority to overwrite a newer binding."""
+    _recovery_task(db)
+    assert db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2026-01-01T00:02:00+00:00",
+    )
+    db.update_task("TASK-RECOVERY", current_session_id="replacement")
+    assert not db.publish_task_completion_recovery_binding(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery",
+    )
+    assert db.get_task("TASK-RECOVERY").current_session_id == "replacement"
+
+
+def test_completion_admission_requires_published_durable_binding(db):
+    _recovery_task(db)
+    assert not db.admit_task_completion_callback(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="other",
+        output_summary="late", confidence_score=90,
+    )
+    assert db.get_task_results("TASK-RECOVERY") == []
+
+
+def test_recovery_expiry_settlement_and_acceptance_have_one_durable_winner(db):
+    _recovery_task(db)
+    assert db.claim_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="provider",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2026-01-01T00:02:00+00:00",
+    )
+    db.update_task("TASK-RECOVERY", current_session_id="recovery")
+    assert db.settle_expired_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+        settled_at="2026-01-01T00:02:00+00:00",
+    )
+    assert not db.admit_task_completion_callback(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+        output_summary="too late", confidence_score=90,
+    )
+    assert not db.settle_expired_task_completion_recovery(
+        task_id="TASK-RECOVERY", agent="dev_agent", session_id="recovery",
+        settled_at="2026-01-01T00:03:00+00:00",
+    )
+    assert tuple(db.execute(
+        "SELECT state, accepted_result_id FROM task_completion_recoveries"
+    ).fetchone()) == ("expired", None)
+
+
 def test_get_nonexistent_task_returns_none(db):
     assert db.get_task("TASK-999") is None
 

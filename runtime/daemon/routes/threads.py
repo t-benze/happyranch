@@ -757,6 +757,10 @@ async def _compose_agent_thread_multipart(
             status_code=409,
             detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
         )
+    # Multipart follows the same purpose boundary as JSON compose. This must
+    # precede attachment storage and inline thread creation below.
+    if org.sessions.is_recovery_session(body.task_id, body.composer, body.session_id):
+        raise HTTPException(status_code=403, detail={"code": "recovery_purpose_forbidden"})
 
     # Dedupe recipients.
     seen_rcpt: set[str] = set()
@@ -969,6 +973,8 @@ async def compose_thread_as_agent(
             status_code=409,
             detail={"code": "session_mismatch", "active": active_sid, "got": body.session_id},
         )
+    if org.sessions.is_recovery_session(body.task_id, body.composer, body.session_id):
+        raise HTTPException(status_code=403, detail={"code": "recovery_purpose_forbidden"})
 
     # Dedupe recipients (preserve order).
     seen: set[str] = set()
@@ -1935,6 +1941,8 @@ def _validate_task_session_binding(
         raise _SendThreadError(
             409, "session_mismatch", active=active_sid, got=session_id,
         )
+    if org.sessions.is_recovery_session(task_id, composer, session_id):
+        raise _SendThreadError(403, "recovery_purpose_forbidden")
 
 
 async def _send_thread_message_inprocess(

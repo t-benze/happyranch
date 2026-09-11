@@ -963,6 +963,7 @@ def _run_command(
     org_slug: str | None = None,
     running: "RunningHandle | None" = None,
     throttle_backoff_seconds: Sequence[float] | None = None,
+    recovery_deadline_monotonic: float | None = None,
 ) -> ExecutorResult:
     """Run one agent subprocess under the per-provider throttle (issue #85).
 
@@ -1050,11 +1051,26 @@ def _run_command(
             # identity. Raises PlatformIsolationError on unsupported platform
             # — fail-closed before any subprocess.
             isolation = detect_platform_isolation()
+            launch_env = _callee_env(org_slug=org_slug, workspace=workspace)
+            # A completion-recovery deadline is absolute and server-owned.
+            # Check it at the actual self-launch boundary, after throttle,
+            # validation, isolation lookup, and environment preparation.
+            if (
+                recovery_deadline_monotonic is not None
+                and time.monotonic() >= recovery_deadline_monotonic
+            ):
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    error="completion recovery live budget expired before provider launch",
+                    failure_category="pre_launch",
+                )
             try:
                 proc = isolation.launch_executor(
                     cmd,
                     cwd=workspace,
-                    env=_callee_env(org_slug=org_slug, workspace=workspace),
+                    env=launch_env,
                     stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -1070,8 +1086,30 @@ def _run_command(
                 )
             if on_started is not None:
                 on_started(proc.pid)
+        communicate_timeout: float = timeout_seconds
+        if recovery_deadline_monotonic is not None:
+            # Launch/on_started can consume the remaining budget. Never round
+            # a fractional remainder upward. If it is gone, retain launch
+            # evidence and execute existing process cleanup before returning.
+            communicate_timeout = recovery_deadline_monotonic - time.monotonic()
+            if communicate_timeout <= 0:
+                try:
+                    proc.kill()
+                finally:
+                    try:
+                        proc.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                return ExecutorResult(
+                    success=False,
+                    duration_seconds=int(time.monotonic() - start_time),
+                    session_id=sid,
+                    error="completion recovery live budget expired after provider launch",
+                    failure_category="provider_timeout",
+                    provider_launched=True,
+                )
         try:
-            stdout, stderr = proc.communicate(input=input_text, timeout=timeout_seconds)
+            stdout, stderr = proc.communicate(input=input_text, timeout=communicate_timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
             # Drain pipes so we don't leak FDs on the retry-free path.
@@ -1083,7 +1121,7 @@ def _run_command(
                 success=False,
                 duration_seconds=int(time.monotonic() - start_time),
                 session_id=sid,
-                error=f"Session timed out after {timeout_seconds} seconds",
+                error=f"Session timed out after {communicate_timeout} seconds",
                 failure_category="provider_timeout",
                 provider_launched=True,
             )
@@ -1535,6 +1573,7 @@ class CodexExecutor:
         org_slug: str | None = None,
         running: "RunningHandle | None" = None,
         throttle_backoff_seconds: Sequence[float] | None = None,
+        recovery_deadline_monotonic: float | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(model=model, resume_session_id=resume_session_id)
@@ -1553,6 +1592,7 @@ class CodexExecutor:
             org_slug=org_slug,
             running=running,
             throttle_backoff_seconds=throttle_backoff_seconds,
+            recovery_deadline_monotonic=recovery_deadline_monotonic,
         )
 
     def build_launch_spec(
