@@ -188,7 +188,7 @@ zero survivors, and there is no queue, session, or control residue. The
 harness separately proves its dispatcher-error collector rejects a
 queue-swallowed error. This is test-only evidence and does not alter
 transaction, queue, error-policy, schema, or production chain behavior.
-The concurrent plain-fanout harness separately records four distinct
+The concurrent plain-fanout harness separately records five distinct
 boundaries: pre-spawn, postcommit/prepublication, both child launches, first
 child terminalization, and final drain. It compares only named source-owned
 deltas at those boundaries: parent parking/fanout serialization and the
@@ -206,8 +206,19 @@ brief remains outside that injected section. This is test-only, bounded
 current-generation evidence: it does not claim a general cross-process
 serialization proof or all-surface equality.
 
-Cancellation, fanout serialization/pipeline-carrier behavior and all remaining
-R1–R5/package obligations are still outside this control.
+The paired live-sibling cancellation control parameterizes which of the two
+actual child callbacks completes first.  Two real queue workers launch both
+children; after the original completed child's dispatcher turn has returned,
+the other is held before its original callback.  Parent cascade cancellation
+then preserves the completed child's full task/result/audit history, cancels
+only the parent and live sibling, and makes those durable cancellation rows
+visible at the original opaque-control entry.  The released live callback gets
+the source `task_not_active` 409 with no result, resurrection, join, or revisit;
+all workers drain with balanced clean receipts and no current tracker PID.
+
+Cancellation prepublication and live-sibling schedules are bounded evidence;
+fanout serialization/pipeline-carrier behavior and all remaining R1–R5/package
+obligations are still outside this control.
 
 Current control and corrupt/partial adapter inputs fail closed before any
 proposed adapter write. R5's decision packet

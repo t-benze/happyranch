@@ -2748,3 +2748,160 @@ def test_r1_plain_fanout_cancel_harness_retains_dispatcher_and_boundary_errors(t
         )
     assert any("U0_PLAIN_FANOUT_CANCEL_DISPATCH_ERROR" in str(error) for error in raised.value.exceptions)
     assert any("U0_PLAIN_FANOUT_CANCEL_BOUNDARY_ERROR" in str(error) for error in raised.value.exceptions)
+
+
+@pytest.mark.parametrize("completed_index", (0, 1))
+def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
+    tmp_path, monkeypatch, completed_index: int,
+) -> None:
+    """Cancel only the live fanout sibling after the other real callback commits.
+
+    Two shipping queue workers run concurrently.  The executor is the sole
+    external double: it submits the first child's real callback, holds the
+    other immediately before its real callback, then submits that late callback
+    after the route has durably cancelled the parent and live child.
+    """
+    from runtime.daemon.dispatcher import Dispatcher
+    from runtime.daemon.routes.tasks import CancelBody, CompletionBody, cancel_task, submit_completion
+    from runtime.daemon.state import DaemonState
+    from runtime.models import FanoutChild, NextStep, TaskRecord, TaskStatus
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+    from tests.daemon.test_task_producer_containment import _FakeBackend, _RecordingExecutor, _make_orch
+
+    parent_id = f"TASK-U0-PLAIN-LIVE-CANCEL-{completed_index}"
+    backend = _FakeBackend(auto_exit_after=0)
+    orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
+    paths, receipts, launches, errors, late = orch._paths, [], [], [], []
+    first_done, first_terminal, live_held, release_live, done = (threading.Event() for _ in range(5))
+
+    class EventSink:
+        async def publish(self, task_id, event):
+            return None
+    org = SimpleNamespace(db=db, sessions=tracker, db_lock=asyncio.Lock(), event_bus=EventSink(), orchestrator=orch)
+
+    class Executor(_RecordingExecutor):
+        def set_invocation_context(self, **kwargs):
+            self.context = kwargs.copy()
+
+        def run(self, **kwargs):
+            try:
+                task_id, agent, session_id = self.context["task_id"], self.context["agent"], kwargs["session_id"]
+                launches.append((task_id, agent, session_id, kwargs["running"].request_id, tracker.get_pid(task_id, agent)))
+                children = db.get_children(parent_id)
+                if task_id == parent_id:
+                    decision, verdict = NextStep(action="fanout", children=[
+                        FanoutChild(agent="dev_agent", prompt="zero"), FanoutChild(agent="dev_agent", prompt="one"),
+                    ], width_cap_ack=2, join_summary="must not join"), None
+                else:
+                    index = children.index(task_id)
+                    if index == completed_index:
+                        decision, verdict = NextStep(action="done", summary=f"complete:{task_id}"), "PASS"
+                    else:
+                        assert first_done.wait(5), "completed child did not submit its original callback"
+                        assert first_terminal.wait(5), "completed child Dispatcher.run_step did not finish"
+                        live_held.set()
+                        assert release_live.wait(5), "late live callback was not released"
+                        decision, verdict = NextStep(action="done", summary=f"late:{task_id}"), "PASS"
+                body = CompletionBody(session_id=session_id, agent=agent, status="completed", confidence=100,
+                                      verdict=verdict, output_summary=f"report:{task_id}", decision=decision.model_dump())
+                try:
+                    assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
+                    if task_id in children and children.index(task_id) == completed_index:
+                        first_done.set()
+                except HTTPException as exc:
+                    late.append((task_id, exc.status_code, exc.detail))
+                    assert task_id in children and exc.status_code == 409
+                kwargs["running"].process.terminate()
+                return dataclasses.replace(super().run(**kwargs), session_id=session_id)
+            except BaseException as exc:
+                errors.append((exc, traceback.format_exc()))
+                raise
+            finally:
+                kwargs["running"].process.terminate()
+
+    monkeypatch.setattr(orch, "_build_executor", lambda _provider: Executor())
+    supervisor = HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0), publisher=receipts.append)
+    orch.attach_host_supervisor(supervisor)
+    state = DaemonState.idle(orch._settings)
+    state.orgs["test"] = SimpleNamespace(orchestrator=orch, db=db)
+    orch.attach_queue(state.queue)
+    # The observer wraps the actual registered opaque control and proves that
+    # the route's DB/audit transition precedes its invocation.
+    control_entries = []
+    original_controls = tracker.iter_task_cancel_controls
+    def observed_controls(task_id):
+        wrapped = []
+        for agent, control in original_controls(task_id):
+            def invoke(agent=agent, control=control):
+                rows = _u0_independent_sqlite_readback(db, tuple([parent_id, *db.get_children(parent_id)]))
+                control_entries.append((task_id, agent, rows))
+                return control()
+            wrapped.append((agent, invoke))
+        return wrapped
+    monkeypatch.setattr(tracker, "iter_task_cancel_controls", observed_controls)
+    dispatcher = Dispatcher(state)
+    original_dispatch = dispatcher.run_step
+    def observed_dispatch(*args, **kwargs):
+        try:
+            result = original_dispatch(*args, **kwargs)
+            if args[1] in db.get_children(parent_id) and db.get_task(args[1]).status == TaskStatus.COMPLETED:
+                first_terminal.set()
+            return result
+        except BaseException as exc:
+            errors.append((exc, traceback.format_exc()))
+            raise
+    monkeypatch.setattr(dispatcher, "run_step", observed_dispatch)
+    db.insert_task(TaskRecord(id=parent_id, team="engineering", brief="fanout", assigned_agent="engineering_head", task_type="task"))
+    state.queue.enqueue("test", parent_id)
+    def workers():
+        try:
+            async def run():
+                state.queue.start_workers(dispatcher, n=2)
+                await state.queue._queue.join()
+                await state.queue.stop()
+            asyncio.run(run())
+        except BaseException as exc:
+            errors.append((exc, traceback.format_exc()))
+        finally:
+            done.set()
+    worker = threading.Thread(target=workers, name="u0-plain-live-cancel", daemon=False)
+    worker.start()
+    assertion = None
+    try:
+        assert live_held.wait(5), "live sibling never reached its original callback"
+        children = db.get_children(parent_id)
+        completed, live = children[completed_index], children[1 - completed_index]
+        held = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
+                            task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
+        assert held["tasks"][completed]["status"] == TaskStatus.COMPLETED.value
+        assert held["tasks"][live]["status"] == TaskStatus.IN_PROGRESS.value
+        assert held["tasks"][parent_id]["block_kind"] == "delegated"
+        assert len(held["results"][completed]) == 1 and held["results"][live] == []
+        assert not [row for row in held["audits"][parent_id] if row["action"] == "fanout_join"]
+        cancelled = asyncio.run(cancel_task(parent_id, CancelBody(rationale="live sibling", cascade=True), org))
+        assert cancelled["cancelled"] == [parent_id, live]
+        after = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
+                             task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
+        assert after["tasks"][completed] == held["tasks"][completed]
+        assert after["results"][completed] == held["results"][completed]
+        assert after["tasks"][parent_id]["status"] == after["tasks"][live]["status"] == TaskStatus.CANCELLED.value
+        assert len(control_entries) == 1 and control_entries[0][0] == live
+        assert all(row["status"] == TaskStatus.CANCELLED.value for row in control_entries[0][2]["tasks"] if row["id"] in (parent_id, live))
+    except BaseException as exc:
+        assertion = exc
+    finally:
+        release_live.set()
+        worker.join(10)
+    _raise_cancel_harness_failures(worker_errors=errors, assertion=assertion, thread=worker, done=done)
+    children = db.get_children(parent_id)
+    completed, live = children[completed_index], children[1 - completed_index]
+    final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
+                         task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
+    assert late == [(live, 409, {"code": "task_not_active", "task_id": live,
+                                 "status": TaskStatus.CANCELLED.value, "cancelled": True})]
+    assert final["results"][completed] == held["results"][completed] and final["results"][live] == []
+    assert not [row for row in final["audits"][parent_id] if row["action"] == "fanout_join"]
+    assert final["queue"] == [] and state.queue._queue._unfinished_tasks == 0
+    assert len(launches) == 3 and {row[0] for row in launches} == {parent_id, *children}
+    assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == len(receipts) == 3
+    assert all(tracker.get_pid(task_id, agent) is None for task_id, agent, *_ in launches)
