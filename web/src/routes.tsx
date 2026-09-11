@@ -107,7 +107,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="todos" element={<TodosPage />} />
           <Route path="todos/:scheduleId" element={<TodosPage />} />
           <Route path="kb" element={<KbPage />} />
-          <Route path="kb/*" element={<KbPage />} />
+          <Route path="kb/:entrySlug/*" element={<KbPage />} />
 
           <Route path="audit" element={<AuditPage />} />
           <Route path="skills" element={<SkillsPage />} />

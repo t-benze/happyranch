@@ -355,12 +355,24 @@ class KBStore:
             raise InvalidEntry("missing_frontmatter", "malformed frontmatter")
         fm = yaml.safe_load(parts[1]) or {}
         body = parts[2].lstrip("\n")
+        raw_tags = fm.get("tags")
+        # The writer and API contract produce a list of strings. Some older
+        # hand-authored frontmatter uses a scalar instead; it denotes one tag,
+        # not an iterable of characters. Unsupported YAML shapes remain an
+        # empty tag set so list/search projections stay safe for malformed
+        # historical documents.
+        if isinstance(raw_tags, str):
+            tags = [raw_tags] if raw_tags else []
+        elif isinstance(raw_tags, list) and all(isinstance(tag, str) for tag in raw_tags):
+            tags = raw_tags
+        else:
+            tags = []
         return KBEntry(
             slug=fm.get("slug", ""),
             title=fm.get("title", ""),
             type=fm.get("type", ""),
             topic=fm.get("topic", ""),
-            tags=list(fm.get("tags") or []),
+            tags=tags,
             source_task=fm.get("source_task"),
             supersedes=fm.get("supersedes"),
             authored_by=fm.get("authored_by"),

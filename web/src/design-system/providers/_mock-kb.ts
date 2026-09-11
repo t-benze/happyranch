@@ -29,13 +29,10 @@ export const mockKbApi: KbApi = {
     }),
   useKBSearch: (q) =>
     ok({
-      entries: q
-        ? MOCK_KB_ENTRIES.filter(
-            (e) =>
-              e.title.toLowerCase().includes(q.toLowerCase()) ||
-              e.body.toLowerCase().includes(q.toLowerCase()),
-          )
-        : MOCK_KB_ENTRIES,
+      hits: MOCK_KB_ENTRIES.filter(
+        (e) => e.title.toLowerCase().includes(q.toLowerCase()) ||
+          e.body.toLowerCase().includes(q.toLowerCase()),
+      ).map((e) => ({ slug: e.slug, title: e.title, snippet: e.body.slice(0, 160), score: 1 })),
     }),
   useKBEntry: (entrySlug) =>
     ok(

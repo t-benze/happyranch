@@ -233,11 +233,11 @@ export type AddKBEntryResult = Awaited<ReturnType<typeof kbApi.addKBEntry>>;
 export interface KbApi {
   useKBList: (params?: {
     type?: string;
-  }) => QueryLike<{ entries: KBEntry[] }>;
+  }) => QueryLike<Awaited<ReturnType<typeof kbApi.listKB>>> & { isFetching?: boolean };
   useKBSearch: (
     q: string,
     params?: { limit?: number },
-  ) => QueryLike<{ entries: KBEntry[] }>;
+  ) => QueryLike<Awaited<ReturnType<typeof kbApi.searchKB>>> & { isFetching?: boolean };
   useKBEntry: (entrySlug: string | undefined) => QueryLike<KBEntry>;
   useKBStats: () => QueryLike<{ entries: import('@/lib/api/kb').KBViewStat[] }>;
   /** Mutation is wired only under the real provider; mocks no-op. */
