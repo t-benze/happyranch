@@ -2,11 +2,12 @@
 
 A dependency-light local CI wrapper (`scripts/local_ci.sh`) mirrors GitHub
 Actions commands as closely as practical. Use it for pre-push feedback;
-**GitHub CI remains authoritative**. GitHub PR CI runs Python unit tests
-on 3.14 plus Web CI. After merges and pushes to main, GitHub CI runs the
-full Python 3.12/3.13/3.14 matrix. Nightly integration remains a separate
-job. A local pass is
-feedforward signal, not a substitute.
+**GitHub CI remains authoritative**. GitHub PR CI runs Python units on 3.14,
+Web CI on Node 24, Linux Canonical Store Validation (Ubuntu), and macOS
+Canonical Store Validation (macOS 15). After merges and pushes to main,
+GitHub CI runs the full Python 3.12/3.13/3.14 matrix. Nightly integration
+remains a separate job. A local pass is feedforward signal, not a substitute
+for the named hosted checks.
 
 ## Prerequisites
 
@@ -25,10 +26,11 @@ feedforward signal, not a substitute.
 
 ## Usage
 
-Run from the repo root:
+Run from the repo root. The local `all` target covers the Python and Web
+commands only; the canonical-store validations remain hosted PR checks.
 
 ```bash
-scripts/local_ci.sh              # default: python + web (mirrors GitHub PR CI)
+scripts/local_ci.sh              # default: python + web (local PR-command coverage)
 scripts/local_ci.sh python       # Python unit tests only
 scripts/local_ci.sh web          # Web CI (lint + typecheck + build + vitest run)
 scripts/local_ci.sh integration  # Python integration tests (spawns daemon + fake CLIs)
@@ -46,15 +48,17 @@ scripts/local_ci.sh help         # List targets and caveats
 
 Local commands run the same test commands as the corresponding GitHub Actions job
 on your installed Python interpreter (3.12+). They **cannot** select or replace
-the hosted version matrix. GitHub PR CI runs `python-unit` on Python **3.14**
-(plus `web`); push-to-main runs the same test commands across **3.12/3.13/3.14**.
-GitHub CI is authoritative.
+the hosted version matrix or canonical-store validation. GitHub PR CI runs
+`python-unit` on Python **3.14**, `web` on Node 24, and Linux/macOS Canonical
+Store Validation on their named platforms; push-to-main runs the Python tests
+across **3.12/3.13/3.14**. GitHub CI is authoritative.
 
 ### `all` (default)
 
-Runs `python` followed by `web`. This mirrors what the GitHub PR CI checks
-and is the recommended pre-push target. It does **not** run integration
-tests — those are nightly in GitHub and run an isolated daemon (no port conflict with a running production daemon).
+Runs `python` followed by `web` and is the recommended pre-push target. It
+does **not** run the canonical-store validations or integration tests —
+integration is nightly in GitHub and runs an isolated daemon (no port conflict
+with a running production daemon).
 
 ### `python`
 
@@ -93,21 +97,26 @@ publication-process requirements.
 
 **Policy constraints:**
 - `git push --no-verify` remains **prohibited** by engineering policy.
-- **GitHub CI is authoritative.** PR CI runs Python units on 3.14 plus Web
-  CI; after merges and pushes to main, the same tests run across
-  Python 3.12/3.13/3.14. Nightly integration is separate. Local-CI is
-  pre-push feedback only.
-- When repository delivery guidance requires a `local_ci` receipt, record the
-  exact command from the targets above and its actual exit status; do not claim
-  a command that was not run.
+- **GitHub CI is authoritative.** PR CI runs Python units on 3.14, Web CI on
+  Node 24, Linux Canonical Store Validation (Ubuntu), and macOS Canonical
+  Store Validation (macOS 15). After merges and pushes to main, the Python
+  unit matrix runs on 3.12/3.13/3.14; nightly integration is separate.
+  Local-CI is pre-push feedback only and does not replace either canonical-store
+  validation.
+- A pushed-PR completion must include the success-only `local_ci` receipt in
+  exactly this accepted shape: `{"command":"scripts/local_ci.sh all","exit_code":0}`.
+  Report failed, skipped, or other-target outcomes truthfully in normal
+  verification evidence, not in that field.
 
 ## Caveats
 
 - **GitHub CI is authoritative.** The local wrapper gives fast feedback on
-  your machine. GitHub PR CI runs Python units on 3.14 only (plus Web CI);
-  after merges and pushes to main, GitHub CI runs the full Python 3.12/3.13/3.14
-  matrix. Nightly integration remains a separate job. All CI runs on clean
-  Ubuntu runners.
+  your machine. GitHub PR CI runs Python units on 3.14, Web CI on Node 24,
+  Linux Canonical Store Validation (Ubuntu), and macOS Canonical Store
+  Validation (macOS 15). After merges and pushes to main, GitHub CI runs the
+  Python 3.12/3.13/3.14 matrix. Nightly integration remains a separate job.
+  The PR checks run on their named Ubuntu or macOS platforms; local `all` does
+  not replace canonical-store validation.
 - **Single Python version.** `python` and `integration` targets use the
   installed `uv` + Python interpreter. They do not reproduce the GHA
   `python-version` matrix.

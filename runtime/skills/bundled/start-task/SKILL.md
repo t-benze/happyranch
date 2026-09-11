@@ -81,18 +81,18 @@ Parameters:
    happyranch progress --org {ORG_SLUG} --task-id <task_id> --session-id <session_id> --agent <your_agent_name> --message "Phase 3 of 6: tests passing"
    ```
 
-   **Concrete checkpoint policy (TASK-5522):** for any task expected to take
+   **Concrete checkpoint policy:** for any task expected to take
    more than a few minutes, emit a concise progress receipt at these points —
    milestones only, never chain of thought, reasoning, or command stdout:
 
    1. **After the initial scope/progress checkpoint** (before the first edit),
       one line naming the work underway, e.g. `Implementing the assigned
-      task scope in the declared repository`.
+      task scope`.
    2. **Immediately before a command expected to exceed one minute** (long
       test suite, large build/install, migration), one line naming the
-      command intent, e.g. `Running full web suite`.
+      command intent, e.g. `Running required verification`.
    3. **Immediately after that command returns**, one line with the outcome
-      (exit status / pass-fail summary), e.g. `Web suite green (110 tests)`.
+      (exit status / pass-fail summary), e.g. `Verification completed (exit 0)`.
 
    The observer surfaces are honest about noncompliance: a live session whose
    latest receipt (or whose very start) is 5+ minutes old is shown as
@@ -200,11 +200,9 @@ Parameters:
      Duplicate storage keys across siblings are a single invalid fanout.
      Children targeted at a **team manager** are decision-capable (mutating fan-out);
      children targeted at regular **workers** are read-only (structured decisions ignored,
-     complete with a summary). NO fan-out review gate at any width — the width cap (8)
-     is a machine-resource limit only; control over what lands is the per-PR merge gate
-     (each mutating child follows the applicable task and team review/approval
-     requirements). Children own DISJOINT file sets; shared-file convergence
-     routes through a serial follow-up delegate after join, never a fan-out child.
+     complete with a summary). The width cap (8) is a machine-resource limit only.
+     Children own DISJOINT file sets; shared-file convergence routes through a serial
+     follow-up delegate after join, never a fan-out child.
      Team-manager gated. The parent parks in `in_progress(delegated)` with `active_fanout`
      metadata and wakes once when all children are terminal.
      When retrying a failed child, each retrying child MUST include

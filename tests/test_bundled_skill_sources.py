@@ -91,8 +91,37 @@ def test_start_task_source_is_generic_and_preserves_callback_contract(
     assert '"decision": {"action": "delegate"' in body
     assert "Engineering frontend readiness gate" not in body
     assert "After initial Native Impact Evidence" not in body
+    assert "TASK-5522" not in body
+    assert "per-PR merge gate" not in body
     assert "scripts/local_ci.sh all" not in body
     assert "reviewer APPROVE + qa PASS" not in body
+    assert "Running full web suite" not in body
+    assert "Web suite green" not in body
+
+
+def test_repository_scoped_local_ci_guidance_matches_ci_and_receipt_contract() -> None:
+    """Keep engineering CI/receipt policy out of the generic projected skill."""
+    checkout = Path(__file__).resolve().parents[1]
+    guidance = (checkout / "docs" / "local-ci.md").read_text()
+    workflow = (checkout / ".github" / "workflows" / "ci.yml").read_text()
+    normalized_guidance = " ".join(guidance.split())
+
+    assert '{"command":"scripts/local_ci.sh all","exit_code":0}' in guidance
+    assert "failed, skipped, or other-target outcomes" in normalized_guidance
+    for check in (
+        "Python units on 3.14",
+        "Web CI on Node 24",
+        "Linux Canonical Store Validation (Ubuntu)",
+        "macOS Canonical Store Validation (macOS 15)",
+    ):
+        assert check in normalized_guidance
+    assert "Python 3.12/3.13/3.14" in normalized_guidance
+    assert "nightly integration" in normalized_guidance
+    assert "local `all` does not replace canonical-store validation" in normalized_guidance
+    assert "The local `all` target covers the Python and Web commands only" in normalized_guidance
+    assert "does **not** run the canonical-store validations" in guidance
+    assert "Linux Canonical Store Validation (Ubuntu)" in workflow
+    assert "macOS Canonical Store Validation (macOS 15)" in workflow
 
 
 def test_source_relocation_preserves_hash_but_member_mutation_does_not(tmp_path: Path) -> None:
