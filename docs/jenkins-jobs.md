@@ -1,47 +1,126 @@
 # Ordinary Jenkins job helper
 
-`scripts/jenkins_jobs.py` is standalone standard-library Python for one already-authorized existing Freestyle or Pipeline job. It is not HappyRanch runtime/CLI integration, Jenkins provisioning, a plugin, or a credential store.
+This standalone Python helper operates an already-authorized **existing** Freestyle or Pipeline job on Unix (Linux/macOS). It requires standard-library Python 3.12–3.14 and an owner-controlled receipt/output directory. The same ordinary Jenkins APIs work for either job type; no Jenkinsfile, custom parameters, three-hook template, runtime adapter, node setup or plugin installation is needed.
 
-## Pinned installation
+This PR852 distribution is a **candidate pending independent review, QA and exact-head CI**. Do not claim it is accepted or that a live Jenkins run succeeded. The old B2 catalog description saying “reviewed” is premature; this document is the candidate's current acceptance statement.
 
-After PR review, use its immutable repository commit and verify the published file hash before installing an owner-controlled copy. Never run an ephemeral task-worktree copy.
+## Immutable retrieval and copy
 
-~~~sh
-REPO=https://github.com/t-benze/happyranch.git
-COMMIT=ed8a51d77248434dc13b1198229c46416a7bf14d
-TOOL_DIR="$HOME/.local/share/happyranch-tools"
-git clone "$REPO" /tmp/happyranch-jenkins-source
-git -C /tmp/happyranch-jenkins-source show "$COMMIT:scripts/jenkins_jobs.py" > /tmp/jenkins_jobs.py
-sha256sum /tmp/jenkins_jobs.py # must be 22cda9b8d5838ed70feb3d1f8128c1b92ccbdaf215990c717b9621e917fc4439
-install -d -m 700 "$TOOL_DIR"
-install -m 700 /tmp/jenkins_jobs.py "$TOOL_DIR/jenkins_jobs.py"
-python "$TOOL_DIR/jenkins_jobs.py" --help
-~~~
-
-Set only existing authorized credential references: `JENKINS_USERNAME` and `JENKINS_API_TOKEN`. The helper sends preemptive HTTP Basic authentication (username plus API token), does not print/store/provision/rotate either value, and refuses newline header input. HTTPS is default; private HTTP needs explicit authorization and `--allow-http`. This pinned source is a candidate pending independent review, QA, and exact-head CI; it is not an accepted distribution or evidence of a live Jenkins run. Jenkins documents this at [Authenticating scripted clients](https://www.jenkins.io/doc/book/system-administration/authenticating-scripted-clients/) and [User API tokens](https://www.jenkins.io/doc/book/using/using-credentials/).
-
-## Submit, recover, wait, collect, cancel
+Run these commands only after the acceptance gates and normal publication are verified. `SOURCE` is an immutable commit containing the exact helper; the checksum assertion must succeed before installation. A fresh temporary clone avoids reusing another task's checkout. The published PR may contain a later documentation commit with identical helper bytes.
 
 ~~~sh
-TOOL="$HOME/.local/share/happyranch-tools/jenkins_jobs.py"
-RECEIPT="$HOME/.local/state/happyranch/jenkins/release-001.json"
-python "$TOOL" --controller https://ci.example/jenkins --job 'folder/release' --receipt "$RECEIPT" submit --parameter branch=main
-python "$TOOL" --controller https://ci.example/jenkins --job 'folder/release' --receipt "$RECEIPT" --deadline 900 wait
-python "$TOOL" --controller https://ci.example/jenkins --job 'folder/release' --receipt "$RECEIPT" collect --output "$HOME/jenkins-output"
+set -eu
+SOURCE=d9af6208a18719e91b4d4c5760adb26af588857c
+JENKINS_STAGE=$(mktemp -d)
+git clone --no-checkout https://github.com/t-benze/happyranch.git "$JENKINS_STAGE/source"
+git -C "$JENKINS_STAGE/source" fetch origin "$SOURCE"
+git -C "$JENKINS_STAGE/source" show "$SOURCE:scripts/jenkins_jobs.py" > "$JENKINS_STAGE/jenkins_jobs.py"
+python3 -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()=="f40c76ea26daba60c5db882e88146c02c08617fbc90711a989d152dc2c487bb9", "helper checksum mismatch"' "$JENKINS_STAGE/jenkins_jobs.py"
+JENKINS_TOOL_DIR="$HOME/.local/share/happyranch-tools"
+install -d -m 700 "$JENKINS_TOOL_DIR"
+install -m 700 "$JENKINS_STAGE/jenkins_jobs.py" "$JENKINS_TOOL_DIR/jenkins_jobs.py"
 ~~~
 
-The versioned, locked receipt saves intent before POST, then the numeric queue and exact numeric build identity. Reuse it after interruption; never resubmit on transport/5xx/malformed Location/queue 404. For an uncertain submit, use `reconcile --build-number N` only for a separately verified exact build—never `lastBuild`. URLs are exact controller-context/job/numeric identities; redirects, query/userinfo, traversal, off-origin and mismatches are refused before credential forwarding.
+The checksum uses Python on both Linux and macOS. Keep that installed copy and record its hash with each job receipt. Retrieval verification and copied ordinary invocations are tested against fake Jenkins; there is no live-controller acceptance claim.
 
-Terminal observation requires `building` exactly `false` and a result. `SUCCESS`, `FAILURE`, `UNSTABLE`, `ABORTED`, queue cancellation, timeout, transport uncertainty and unsupported result have truthful outcomes. Collection records every downloaded/skipped/error item; error is nonzero even with Jenkins SUCCESS. Defaults independently limit API JSON (1 MB), console (1 MB), each artifact (10 MB), aggregate (50 MB) and count (32), including slow stream reads. Destinations are no-follow, exclusive-write and collision-refusing.
+## Existing job invocation
 
-`cancel` is explicit only: it calls `queue/cancelItem?id=N` or recorded build stop, then observes queue cancellation or a queue-to-build race. Local timeout/interruption is never remote cancellation.
+Configure only the already-authorized controller URL, existing job path, username/API-token **environment references**, and durable local paths. `JENKINS_USERNAME` and `JENKINS_API_TOKEN` are consumed without printing or saving their values. The helper sends preemptive Basic authentication. Use HTTPS; `--allow-http` is only for an explicitly authorized private HTTP endpoint. See Jenkins [scripted-client authentication](https://www.jenkins.io/doc/book/system-administration/authenticating-scripted-clients/) and [ordinary remote API submission](https://www.jenkins.io/doc/book/using/remote-access-api/).
 
-## Ordinary HappyRanch durable job
+For an existing unparameterized Freestyle job:
 
-Use only when existing endpoint/credential authorization permits it:
+~~~sh
+python3 "$HOME/.local/share/happyranch-tools/jenkins_jobs.py" --controller https://ci.example/jenkins --job 'release folder/freestyle smoke' --receipt "$HOME/.local/state/happyranch/jenkins/freestyle-001.json" --deadline 900 submit
+~~~
+
+For an existing Pipeline job whose existing definition already declares the string parameter `branch`:
+
+~~~sh
+python3 "$HOME/.local/share/happyranch-tools/jenkins_jobs.py" --controller https://ci.example/jenkins --job 'release folder/pipeline smoke' --receipt "$HOME/.local/state/happyranch/jenkins/pipeline-001.json" --deadline 900 submit --parameter branch=main
+~~~
+
+Either job type can have declared parameters or none. Omit `--parameter` for none; existing configured defaults remain Jenkins's responsibility. The helper validates supported declarations before POST and uses `/build` or `/buildWithParameters` as appropriate. Undeclared, unsupported, malformed, duplicate, invalid boolean or invalid choice inputs are rejected. File/upload parameters are unsupported. Each distinct authorized submission needs a fresh receipt path; an existing path is never resubmitted.
+
+## Durable observation and recovery
+
+Reuse the **same receipt** for every observation of that submission:
+
+~~~sh
+python3 "$HOME/.local/share/happyranch-tools/jenkins_jobs.py" --controller https://ci.example/jenkins --job 'release folder/pipeline smoke' --receipt "$HOME/.local/state/happyranch/jenkins/pipeline-001.json" wait
+python3 "$HOME/.local/share/happyranch-tools/jenkins_jobs.py" --controller https://ci.example/jenkins --job 'release folder/pipeline smoke' --receipt "$HOME/.local/state/happyranch/jenkins/pipeline-001.json" show
+python3 "$HOME/.local/share/happyranch-tools/jenkins_jobs.py" --controller https://ci.example/jenkins --job 'release folder/pipeline smoke' --receipt "$HOME/.local/state/happyranch/jenkins/pipeline-001.json" collect --output "$HOME/.local/state/happyranch/jenkins/pipeline-001-output"
+~~~
+
+`show` prints the full receipt offline, including exact controller/job/request, numeric queue/build, persisted deadline, remote result and local collection manifest; it works after expiry. `wait` accepts only a complete exact build observation. `SUCCESS`, `FAILURE`, `UNSTABLE`, `ABORTED` and observed `QUEUE_CANCELLED` remain distinct. Missing/unsupported/malformed results are local observation errors, never invented remote terminal results. An observed terminal result is monotonic; later `wait`/`cancel` replay it without another POST.
+
+A lost POST response, 5xx, missing/unsafe Location or queue 404 never causes automatic resubmission. Within the original deadline, after the operator independently identifies the actual numeric build, attach it by verified GET:
+
+~~~sh
+python3 "$HOME/.local/share/happyranch-tools/jenkins_jobs.py" --controller https://ci.example/jenkins --job 'release folder/pipeline smoke' --receipt "$HOME/.local/state/happyranch/jenkins/pipeline-001.json" reconcile --build-number 123
+~~~
+
+The helper validates the returned number, URL and running/result fields before recording build 123. It never uses `lastBuild`. Once the persisted deadline expires, network operations stop; `--deadline` on resume cannot extend it. Use offline `show` and operator-side Jenkins inspection to resolve that expired receipt; do not edit it to reopen submission or extend the budget. Choose the original deadline to cover queue, execution and collection.
+
+Explicit authorized cancellation uses the same common arguments followed by `cancel`. It records cancellation intent, requests queue cancellation or the exact build stop, and carries that intent through delayed queue-to-build races. A cancellation POST being accepted is distinct from observed termination. Lost cancellation responses retain attempted intent without blind replay; inspect the exact build. Local process interruption or timeout sends no cancellation.
+
+The original absolute deadline spans receipt ownership, lock admission and all network phases. Each HTTP exchange also has a finite `--timeout` (default 15 seconds), including headers, ordinary/error bodies and framing. Receipt reads are regular-file-only, bounded to 2 MB, and locks cannot wait indefinitely. Parent/leaf replacement is detected against the owned receipt generation; do not concurrently edit or move the owner's directories.
+
+Collection independently limits API JSON (1 MB), console (1 MB), each artifact (10 MB), aggregate artifact response bytes (50 MB), and artifact count (32; hard manifest ceiling 1024). Failed/error responses consume the aggregate budget too; a single extra byte may be read to detect overflow, after which no further artifact transfer is admitted when the aggregate is exhausted. Count and aggregate omissions are explicit partial results. Paths are validated before GET, including encoded traversal, and publication uses opened no-follow parents and exclusive file creation. Existing output files are not overwritten. Collection persists each attempted transfer's bytes and errors; Jenkins SUCCESS remains SUCCESS even when local collection is partial. `show` exposes the durable manifest after a local failure. A new collection attempt needs a fresh output destination and stays within the original deadline.
+
+Exit 0 means successful admission/inspection/reconciliation, an observed SUCCESS from wait/cancel, or complete collection of SUCCESS. Exit 2 means an observed non-success result or partial collection; exit 3 means a local validation, transport, deadline or persistence failure. Inspect the receipt in all nonzero cases rather than inferring Jenkins's result from the local process exit.
+
+## Persistent HappyRanch job, blocked callback and resume
+
+Run a potentially long `wait` in an ordinary persistent HappyRanch job. Replace `TASK-EXAMPLE` and `ACTIVE_SESSION` with the actual active task/session and adjust only existing authorized job configuration. Save this JSON as `/tmp/jenkins-wait-job.json`:
 
 ~~~json
-{"task_id":"TASK-EXAMPLE","session_id":"ACTIVE_SESSION","title":"wait existing Jenkins release","script":"python $HOME/.local/share/happyranch-tools/jenkins_jobs.py --controller https://ci.example/jenkins --job folder/release --receipt $HOME/.local/state/happyranch/jenkins/release-001.json --deadline 900 wait","interpreter":"bash","review_required":false,"persistent":true,"max_runtime_seconds":960,"max_output_bytes":65536}
+{
+  "task_id": "TASK-EXAMPLE",
+  "session_id": "ACTIVE_SESSION",
+  "title": "Observe existing Jenkins pipeline build",
+  "script": "python3 \"$HOME/.local/share/happyranch-tools/jenkins_jobs.py\" --controller https://ci.example/jenkins --job 'release folder/pipeline smoke' --receipt \"$HOME/.local/state/happyranch/jenkins/pipeline-001.json\" wait",
+  "interpreter": "bash",
+  "review_required": false,
+  "persistent": true,
+  "max_runtime_seconds": 960,
+  "max_output_bytes": 65536
+}
 ~~~
 
-Submit it with `happyranch jobs submit --from-file ... --org happyranch`, then callback with active task/session, `status: "blocked"`, and the returned `waiting_on_job_ids`; do not poll. On resume inspect `happyranch jobs show` and `happyranch jobs output`, verify command/hash/receipt identity/result/collection manifest, and report the actual outcome.
+`review_required:false` applies only under existing endpoint, credential and command authorization. Otherwise follow the delivered jobs approval workflow. Submit with this single-line command:
+
+~~~sh
+happyranch jobs submit --org happyranch --from-file /tmp/jenkins-wait-job.json
+~~~
+
+After obtaining the actual `JOB-NNN`, save `/tmp/jenkins-blocked.json` using your active task/session/agent and the returned job ID:
+
+~~~json
+{
+  "task_id": "TASK-EXAMPLE",
+  "session_id": "ACTIVE_SESSION",
+  "agent": "ASSIGNED_AGENT",
+  "status": "blocked",
+  "confidence": 0,
+  "summary": "Waiting for the durable Jenkins observation job; no remote terminal result claimed.",
+  "waiting_on_job_ids": ["JOB-NNN"]
+}
+~~~
+
+A manager callback must additionally include its task-role-required `decision` object. Submit the callback as your final action; the runtime resumes the task when the job is terminal:
+
+~~~sh
+happyranch report-completion --org happyranch --from-file /tmp/jenkins-blocked.json
+~~~
+
+On the resumed task inspect both durable HappyRanch records, even if the job failed or was rejected:
+
+~~~sh
+happyranch jobs show JOB-NNN --org happyranch
+happyranch jobs output JOB-NNN --org happyranch
+python3 "$HOME/.local/share/happyranch-tools/jenkins_jobs.py" --controller https://ci.example/jenkins --job 'release folder/pipeline smoke' --receipt "$HOME/.local/state/happyranch/jenkins/pipeline-001.json" show
+~~~
+
+Verify the actual job script, installed helper SHA256, interpreter, exit and full output; compare the receipt's controller/job/request/queue/build/deadline/result/manifest with the saved submission. A HappyRanch job failure/rejection is a local execution fact, not Jenkins FAILURE or ABORTED. A successful waiter does not imply artifacts were collected: use the explicit bounded collection operation above, then inspect its manifest. Do not keep the model actively polling while the durable job runs.
+
+The document-only B2 skill `custom:269f9a0b-b6ab-4eb3-a19b-a3cbcbc418c8` remains separate from helper acceptance. A valid successor must match this immutable helper pin. Founder-configured eligibility is still required before materialization; this workflow does not grant eligibility or change credentials. Mac smoke TASK7679 and KB publication TASK7683 are separate evidence, not helper acceptance.

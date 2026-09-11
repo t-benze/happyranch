@@ -26,7 +26,7 @@ class Fake(BaseHTTPRequestHandler):
                 value.setdefault("number",1);value.setdefault("url",f"http://{self.headers['Host']}"+self.path.removesuffix("api/json"))
                 return self.reply(200,value)
             url=self.states.get("url",f"http://{self.headers['Host']}"+self.path.removesuffix("api/json"))
-            return self.reply(200,{"number":self.states.get("number",1),"url":url,"property":self.states.get("properties",[]),"building":False,"result":self.states.get("result","SUCCESS"),"artifacts":self.states.get("artifacts",[])})
+            return self.reply(200,{"_class":self.states.get("class","hudson.model.FreeStyleProject"),"number":self.states.get("number",1),"url":url,"property":self.states.get("properties",[]),"building":False,"result":self.states.get("result","SUCCESS"),"artifacts":self.states.get("artifacts",[])})
         if "/queue/item/" in self.path:
             queues=self.states.get("queues")
             if isinstance(queues,list) and queues:return self.reply(200,queues.pop(0))
@@ -437,7 +437,7 @@ def test_residual_wrong_build_metadata(residual_receipt,tmp_path,command):
 @pytest.mark.parametrize('parameterized',[False,True])
 def test_case12_copied_ordinary_folder_spaces(fake,tmp_path,kind,parameterized):
     """Same copied executable and ordinary endpoints for both existing job types."""
-    b,f=fake
+    b,f=fake;f.states['class']=kind
     if parameterized:f.states['properties']=[{'parameterDefinitions':[{'name':'branch','type':'StringParameterDefinition'}]}]
     copy=tmp_path/'copied-helper.py';copy.write_bytes(HELPER.read_bytes())
     args=[sys.executable,str(copy),'--controller',b,'--allow-http','--job','release folder/existing '+kind.split('.')[-1],'--receipt',str(tmp_path/'r'),'submit']
@@ -616,3 +616,17 @@ def test_case7_atomic_replacement_fault_retains_receipt(fake,tmp_path,monkeypatc
     monkeypatch.setattr(jj.os,'replace',failure)
     with pytest.raises(OSError):jj.save_receipt(p,x)
     assert p.read_bytes()==original and not list(tmp_path.glob('.receipt-*')) and not f.seen
+
+def test_case11_collection_metadata_timeout_preserves_terminal(fake,tmp_path,monkeypatch):
+    b,f=fake;p=tmp_path/'r';terminal(p,b)
+    def slow(self):
+        self.seen.append(('GET',self.path,self.headers.get('Authorization',''),b''))
+        self.send_response(200);self.send_header('Content-Length','100');self.end_headers()
+        for _ in range(100):
+            try:self.wfile.write(b' ');self.wfile.flush();time.sleep(.01)
+            except OSError:break
+    monkeypatch.setattr(Fake,'do_GET',slow)
+    begin=time.monotonic();run=cli(b,p,'--deadline','.04','collect','--output',str(tmp_path/'out'))
+    assert run.returncode==3 and time.monotonic()-begin<.5
+    saved=json.loads(p.read_text());assert saved['jenkins_result']=='SUCCESS' and saved['build_number']==1 and saved['collection']=={'status':'partial','artifacts':[]}
+    assert len(f.seen)==1 and f.seen[0][0]=='GET'
