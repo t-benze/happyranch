@@ -108,6 +108,7 @@ def valid_receipt(x:Any)->dict[str,Any]:
         if x.get(key) is not None and not positive(x[key]):raise ReceiptError("malformed receipt identity")
     col=x.get("collection")
     if not isinstance(col,dict) or col.get("status") not in {"not_started","complete","partial","timeout","transport_unknown"} or not isinstance(col.get("artifacts"),list):raise ReceiptError("malformed receipt collection")
+    if x.get("deadline_at") is not None and (not isinstance(x["deadline_at"],(int,float)) or isinstance(x["deadline_at"],bool) or not math.isfinite(x["deadline_at"])):raise ReceiptError("malformed receipt deadline")
     if x.get("jenkins_result") is not None and x["jenkins_result"] not in TERMINAL|{"QUEUE_CANCELLED","TRANSPORT_UNKNOWN","UNSUPPORTED_RESULT"}:raise ReceiptError("malformed receipt result")
     validate_controller(x["controller"],True);job_path(x["job"]);return x
 def safe_parent(p:Path)->None:
@@ -117,37 +118,87 @@ def safe_parent(p:Path)->None:
         if cur.exists() and cur.is_symlink():raise ReceiptError("symlink ancestor refused")
     p.parent.mkdir(parents=True,exist_ok=True)
 @contextmanager
+def parent_fd(p:Path,create:bool=True):
+    """Open p's parent component-by-component; never follow an ancestor."""
+    parts=p.parent.parts
+    start="/" if p.is_absolute() else "."
+    fd=os.open(start,os.O_RDONLY|os.O_DIRECTORY)
+    skip=1 if p.is_absolute() else 0
+    try:
+        for part in parts[skip:]:
+            if part in {"", ".", ".."}:raise ReceiptError("unsafe parent component")
+            if create:
+                try:os.mkdir(part,0o700,dir_fd=fd)
+                except FileExistsError:pass
+            nxt=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+            os.close(fd);fd=nxt
+        yield fd,p.name
+    finally:os.close(fd)
+def read_at(p:Path)->bytes:
+    with parent_fd(p,False) as (d,n):
+        fd=os.open(n,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=d)
+        try:
+            chunks=[]
+            while True:
+                b=os.read(fd,65536)
+                if not b:break
+                chunks.append(b)
+            return b"".join(chunks)
+        finally:os.close(fd)
+@contextmanager
 def locked(p:Path):
-    safe_parent(p);l=Path(str(p)+".lock")
-    if l.is_symlink():raise ReceiptError("unsafe receipt lock")
-    fd=os.open(l,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600);fcntl.flock(fd,fcntl.LOCK_EX)
-    try:yield
-    finally:fcntl.flock(fd,fcntl.LOCK_UN);os.close(fd)
+    with parent_fd(p) as (d,n):
+        fd=os.open(n+".lock",os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600,dir_fd=d);fcntl.flock(fd,fcntl.LOCK_EX)
+        try:yield
+        finally:fcntl.flock(fd,fcntl.LOCK_UN);os.close(fd)
+@contextmanager
+def operation_lock(p:Path,c:Client,deadline:float):
+    """One receipt owner spans load, remote observation, and durable update."""
+    deadline=finite(deadline,"deadline")
+    try:
+        prior=valid_receipt(json.loads(read_at(p))).get("deadline_at")
+    except FileNotFoundError:prior=None
+    except (OSError,json.JSONDecodeError,UnicodeDecodeError):prior=None
+    left=deadline if prior is None else prior-time.time()
+    if left<=0:raise TimeoutError
+    c.end=time.monotonic()+left
+    with parent_fd(p) as (d,n):
+        fd=os.open(n+".operation.lock",os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600,dir_fd=d)
+        try:
+            while True:
+                try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);break
+                except BlockingIOError:
+                    time.sleep(min(.02,c.remaining()))
+            yield
+        finally:
+            fcntl.flock(fd,fcntl.LOCK_UN);os.close(fd)
 def write_receipt(p:Path,x:dict[str,Any],create:bool=False)->None:
-    valid_receipt(x);safe_parent(p)
+    valid_receipt(x)
     with locked(p):
-        if create:
-            try:fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-            except FileExistsError as e:raise ReceiptError("receipt exists; reattach rather than resubmit") from e
-            try:os.write(fd,(json.dumps(x,sort_keys=True)+"\n").encode());os.fsync(fd)
-            finally:os.close(fd)
-        else:
-            fd,tmp=tempfile.mkstemp(prefix=".receipt-",dir=p.parent);os.fchmod(fd,0o600)
+        with parent_fd(p) as (d,n):
+            data=(json.dumps(x,sort_keys=True)+"\n").encode()
+            if create:
+                try:fd=os.open(n,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=d)
+                except FileExistsError as e:raise ReceiptError("receipt exists; reattach rather than resubmit") from e
+                try:os.write(fd,data);os.fsync(fd);os.fsync(d)
+                finally:os.close(fd)
+                return
+            tmp=".receipt-"+secrets.token_hex(12)
+            fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=d)
             try:
-                with os.fdopen(fd,"w") as h:json.dump(x,h,sort_keys=True);h.write("\n");h.flush();os.fsync(h.fileno())
-                os.replace(tmp,p);d=os.open(p.parent,os.O_RDONLY);os.fsync(d);os.close(d)
+                os.write(fd,data);os.fsync(fd);os.close(fd);fd=-1
+                os.replace(tmp,n,src_dir_fd=d,dst_dir_fd=d);os.fsync(d)
             except BaseException:
-                try:os.unlink(tmp)
+                if fd>=0:os.close(fd)
+                try:os.unlink(tmp,dir_fd=d)
                 except OSError:pass
                 raise
 def open_receipt(p:Path,c:str,j:str)->dict[str,Any]:
-    x={"version":VERSION,"request_id":secrets.token_hex(16),"controller":validate_controller(c,True),"job":j,"phase":"intent","queue_id":None,"build_number":None,"jenkins_result":None,"collection":{"status":"not_started","artifacts":[]}};write_receipt(p,x,True);return x
+    x={"version":VERSION,"request_id":secrets.token_hex(16),"controller":validate_controller(c,True),"job":j,"phase":"intent","queue_id":None,"build_number":None,"jenkins_result":None,"deadline_at":None,"collection":{"status":"not_started","artifacts":[]}};write_receipt(p,x,True);return x
 def load_receipt(p:Path)->dict[str,Any]:
-    safe_parent(p)
     try:
-        if p.is_symlink():raise ReceiptError("receipt symlink refused")
-        return valid_receipt(json.loads(p.read_text()))
-    except (OSError,json.JSONDecodeError) as e:raise ReceiptError("receipt unreadable") from e
+        return valid_receipt(json.loads(read_at(p)))
+    except (OSError,json.JSONDecodeError,UnicodeDecodeError) as e:raise ReceiptError("receipt unreadable") from e
 def save_receipt(p:Path,x:dict[str,Any])->None:write_receipt(p,x)
 def bind(x:dict[str,Any],c:Controller,j:str)->None:
     if x["controller"]!=c.base or x["job"]!=j:raise ReceiptError("receipt does not bind this controller/job")
@@ -159,7 +210,7 @@ def outcome(x:dict[str,Any])->str:
     result=x.get("result")
     return result if isinstance(result,str) and result in TERMINAL else "UNSUPPORTED_RESULT"
 def submit(c:Client,p:Path,j:str,given:dict[str,str])->dict[str,Any]:
-    x=open_receipt(p,c.controller.base,j);m=c.api_get(controller_url(c.controller.base,j)+"/api/json");g=params(m,given);parameterized=any(isinstance(a,dict) and a.get("parameterDefinitions") for a in (m.get("property") or []));u=controller_url(c.controller.base,j)+("/buildWithParameters" if parameterized else "/build");s,h,_=c.request("POST",u,urlencode(g).encode() if parameterized else None);loc=h.get("Location") or h.get("location")
+    x=open_receipt(p,c.controller.base,j);x["deadline_at"]=time.time()+max(0,c.remaining());save_receipt(p,x);m=c.api_get(controller_url(c.controller.base,j)+"/api/json");g=params(m,given);parameterized=any(isinstance(a,dict) and a.get("parameterDefinitions") for a in (m.get("property") or []));u=controller_url(c.controller.base,j)+("/buildWithParameters" if parameterized else "/build");s,h,_=c.request("POST",u,urlencode(g).encode() if parameterized else None);loc=h.get("Location") or h.get("location")
     if s not in {200,201,202} or not loc:x.update(phase="submission_uncertain",submission_status=s);save_receipt(p,x);raise ReceiptError("submission uncertain; reconcile an exact build without resubmit")
     raw=urlsplit(loc)
     if raw.query or raw.fragment or raw.username or raw.password: x.update(phase="submission_uncertain");save_receipt(p,x);raise ReceiptError("Location has unsafe components")
@@ -175,7 +226,9 @@ def reconcile(c:Client,p:Path,j:str,n:int)->dict[str,Any]:
     # Reconciliation is an observation, never a blind local identity claim.
     c.api_get(target+"/api/json");x.update(phase="building",build_number=n);save_receipt(p,x);return x
 def wait(c:Client,p:Path,j:str,deadline:float,poll:float)->dict[str,Any]:
-    x=load_receipt(p);bind(x,c.controller,j);c.end=time.monotonic()+finite(deadline,"deadline");finite(poll,"poll")
+    x=load_receipt(p);bind(x,c.controller,j)
+    if c.end is None:c.end=time.monotonic()+finite(deadline,"deadline")
+    finite(poll,"poll")
     try:
         while True:
             if x.get("build_number") is not None:
@@ -195,7 +248,8 @@ def wait(c:Client,p:Path,j:str,deadline:float,poll:float)->dict[str,Any]:
     except TimeoutError:x["collection"]={"status":"timeout","artifacts":[]};save_receipt(p,x);raise ReceiptError("deadline reached; remote cancellation was not sent")
     except (TransportError,ValidationError) as e:x["collection"]={"status":"transport_unknown","artifacts":[]};save_receipt(p,x);raise ReceiptError("transport/identity failure; identity retained") from e
 def cancel(c:Client,p:Path,j:str,d:float)->dict[str,Any]:
-    x=load_receipt(p);bind(x,c.controller,j);c.end=time.monotonic()+finite(d,"deadline")
+    x=load_receipt(p);bind(x,c.controller,j)
+    if c.end is None:c.end=time.monotonic()+finite(d,"deadline")
     if x.get("build_number") is not None:u=build(c.controller,j,x["build_number"])+"/stop";data=None
     elif x.get("queue_id") is not None:u=c.controller.base+"/queue/cancelItem";data=urlencode({"id":x["queue_id"]}).encode()
     else:raise ReceiptError("no identity to cancel")
@@ -224,21 +278,39 @@ def output_file(root:Path,rel:str)->Path:
 def store(p:Path,b:bytes)->None:
     # Re-check immediately at the write boundary.  This closes the check/use
     # gap for a swapped output-root before the final O_NOFOLLOW create.
-    safe_parent(p)
-    fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-    try:os.write(fd,b);os.fsync(fd)
-    finally:os.close(fd)
+    with parent_fd(p,False) as (d,n):
+        fd=os.open(n,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=d)
+        try:os.write(fd,b);os.fsync(fd);os.fsync(d)
+        finally:os.close(fd)
+def store_artifact(root:Path,rel:str,b:bytes)->None:
+    """Publish an artifact through the opened root, never through a rewalked path."""
+    if not rel or rel.startswith("/") or any(bad(x) for x in rel.split("/")):raise ValidationError("unsafe artifact path")
+    with parent_fd(root/".artifact-anchor") as (rootfd,_):
+        d=os.dup(rootfd)
+        try:
+            for part in rel.split("/")[:-1]:
+                try:os.mkdir(part,0o700,dir_fd=d)
+                except FileExistsError:pass
+                nxt=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=d)
+                os.close(d);d=nxt
+            leaf=rel.split("/")[-1]
+            fd=os.open(leaf,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=d)
+            try:os.write(fd,b);os.fsync(fd);os.fsync(d)
+            finally:os.close(fd)
+        finally:
+            os.close(d)
 def collect(c:Client,p:Path,j:str,out:Path,log:int,per:int,total:int,count:int,d:float)->dict[str,Any]:
     if any(not isinstance(v,int) or v<=0 for v in (log,per,total,count)):raise ValidationError("collection bounds must be positive")
     x=load_receipt(p);bind(x,c.controller,j)
     if x.get("jenkins_result") is None or x.get("build_number") is None:raise ReceiptError("collection needs terminal exact build")
-    c.end=time.monotonic()+finite(d,"deadline");base=build(c.controller,j,x["build_number"]);man=[];failed=False
+    if c.end is None:c.end=time.monotonic()+finite(d,"deadline")
+    base=build(c.controller,j,x["build_number"]);man=[];failed=False
     def get(label:str,u:str,cap:int,rel:str)->None:
         nonlocal failed
         try:
             s,_,b=c.request("GET",u,limit=cap)
             if s!=200:man.append({"path":label,"status":"error","http_status":s});failed=True;return
-            store(output_file(out,rel),b);man.append({"path":label,"status":"downloaded","bytes":len(b)})
+            store_artifact(out,rel,b);man.append({"path":label,"status":"downloaded","bytes":len(b)})
         except (JenkinsError,OSError,TimeoutError):man.append({"path":label,"status":"error"});failed=True
     try:meta=c.api_get(base+"/api/json")
     except JenkinsError:x["collection"]={"status":"partial","artifacts":man};save_receipt(p,x);raise
@@ -260,20 +332,21 @@ def main(argv:list[str]|None=None)->int:
         finite(a.timeout,"timeout");finite(a.deadline,"deadline");finite(a.poll,"poll")
         if a.api_bytes<=0:raise ValidationError("api-bytes must be positive")
         c=Client(Controller(validate_controller(a.controller,a.allow_http)),os.environ.get(a.username_env),os.environ.get(a.token_env),a.timeout,a.api_bytes)
-        if a.command=="submit":
-            g={}
-            for v in a.parameter:
-                if "=" not in v:raise ValidationError("--parameter needs NAME=VALUE")
-                k,val=v.split("=",1)
-                if not k or k in g:raise ValidationError("invalid parameter names")
-                g[k]=val
-            x=submit(c,a.receipt,a.job,g)
-        elif a.command=="wait":x=wait(c,a.receipt,a.job,a.deadline,a.poll)
-        elif a.command=="cancel":x=cancel(c,a.receipt,a.job,a.deadline)
-        elif a.command=="reconcile":x=reconcile(c,a.receipt,a.job,a.build_number)
-        elif a.command=="collect":x=collect(c,a.receipt,a.job,a.output,a.log_bytes,a.artifact_bytes,a.artifact_total_bytes,a.artifact_count,a.deadline)
-        else:x=load_receipt(a.receipt);bind(x,c.controller,a.job)
+        with operation_lock(a.receipt,c,a.deadline):
+            if a.command=="submit":
+                g={}
+                for v in a.parameter:
+                    if "=" not in v:raise ValidationError("--parameter needs NAME=VALUE")
+                    k,val=v.split("=",1)
+                    if not k or k in g:raise ValidationError("invalid parameter names")
+                    g[k]=val
+                x=submit(c,a.receipt,a.job,g)
+            elif a.command=="wait":x=wait(c,a.receipt,a.job,a.deadline,a.poll)
+            elif a.command=="cancel":x=cancel(c,a.receipt,a.job,a.deadline)
+            elif a.command=="reconcile":x=reconcile(c,a.receipt,a.job,a.build_number)
+            elif a.command=="collect":x=collect(c,a.receipt,a.job,a.output,a.log_bytes,a.artifact_bytes,a.artifact_total_bytes,a.artifact_count,a.deadline)
+            else:x=load_receipt(a.receipt);bind(x,c.controller,a.job)
         print(json.dumps({"request_id":x["request_id"],"phase":x["phase"],"jenkins_result":x.get("jenkins_result"),"collection":x["collection"]["status"]}))
         return 0 if (a.command in {"submit","show","reconcile"} or (x.get("jenkins_result")=="SUCCESS" and (a.command=="wait" or x["collection"]["status"]=="complete"))) else 2
-    except (JenkinsError,ValueError,OverflowError) as e:print("jenkins-jobs: "+str(e)[:240],file=sys.stderr);return 3
+    except (JenkinsError,ValueError,OverflowError,TimeoutError) as e:print("jenkins-jobs: "+str(e)[:240],file=sys.stderr);return 3
 if __name__=="__main__":raise SystemExit(main())

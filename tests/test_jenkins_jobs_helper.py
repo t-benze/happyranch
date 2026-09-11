@@ -183,6 +183,47 @@ def test_11b_malformed_collection_persists_partial_observation(fake:tuple[str,Fa
     assert collection["status"]=="partial"
     assert any(entry["path"]=="console.log" and entry["status"]=="downloaded" for entry in collection["artifacts"])
     assert any(entry.get("reason")=="malformed_metadata" for entry in collection["artifacts"])
+
+def test_11c_subprocess_ancestor_swap_never_publishes_outside(tmp_path:Path)->None:
+    """A real competing process swapping the output root cannot redirect writes.
+
+    This deliberately uses the copied standalone helper in a second process,
+    rather than a mocked Path method: the observable is that the adversarial
+    directory remains empty even while the root name changes ownership.
+    """
+    root=tmp_path/"root";outside=tmp_path/"outside";root.mkdir();outside.mkdir()
+    driver=tmp_path/"writer.py"
+    driver.write_text(
+        "import importlib.util,sys\n"
+        "from pathlib import Path\n"
+        f"s=importlib.util.spec_from_file_location('j',{str(HELPER)!r});m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\n"
+        "r=Path(sys.argv[1])\n"
+        "for n in range(800):\n"
+        " try:\n"
+        "  m.store_artifact(r, f'part-{n}/payload', b'x')\n"
+        " except (m.JenkinsError,OSError,ValueError): pass\n"
+    )
+    writer=subprocess.Popen([sys.executable,str(driver),str(root)])
+    try:
+        deadline=time.monotonic()+1.5
+        generation=0
+        while writer.poll() is None and time.monotonic()<deadline:
+            try:
+                if root.is_symlink():
+                    root.unlink();root.mkdir()
+                # Keep each displaced safe directory: the writer can create a
+                # fresh root between these syscalls, which is exactly the
+                # adversarial scheduling this probe is meant to exercise.
+                parked=tmp_path/f"parked-{generation}";generation+=1
+                root.rename(parked);root.symlink_to(outside,target_is_directory=True)
+                time.sleep(.0005);root.unlink()
+            except (FileNotFoundError,FileExistsError):
+                pass
+        writer.wait(timeout=5)
+    finally:
+        if writer.poll() is None:writer.kill();writer.wait()
+    assert writer.returncode==0
+    assert not list(outside.rglob("*"))
 def test_12_copied_standalone_helper(fake:tuple[str,Fake],tmp_path:Path)->None:
     b,_=fake;copy=tmp_path/"tool.py";copy.write_bytes(HELPER.read_bytes())
     r=subprocess.run([sys.executable,str(copy),"--controller",b,"--allow-http","--job","folder/demo","--receipt",str(tmp_path/"r"),"submit"],capture_output=True,text=True,cwd=tmp_path,timeout=5)
