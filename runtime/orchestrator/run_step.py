@@ -219,9 +219,18 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     accepted_recovery_callback = False
     recovery_session_id: str | None = None
     recovery_claimed = False
+    # Resolution normally happened inside ``_run_agent``.  Preserve the
+    # historic fail-closed no-callback outcome for legacy rows/tests whose
+    # executor definition is no longer available: they are simply ineligible
+    # for the Codex-only recovery, not a new invocation error.
+    from runtime.orchestrator.orchestrator import AgentTerminatedError, AgentUnavailableError
+    try:
+        recovery_executor = orch._resolve_executor_name(agent)
+    except (AgentTerminatedError, AgentUnavailableError):
+        recovery_executor = None
     if (
         result.success and report is None
-        and orch._resolve_executor_name(agent) == "codex"
+        and recovery_executor == "codex"
         and bool(result.agent_session_id)
     ):
         origin_session_id = result.session_id
