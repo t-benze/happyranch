@@ -66,6 +66,7 @@ function mkThread(
     composed_from_dream_id: string | null;
     last_speaker: string | null;
     started_at: string;
+    archived_at: string | null;
     pinned: boolean;
     last_activity_at: string | null;
   }>,
