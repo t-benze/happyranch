@@ -109,14 +109,17 @@ accepted business completion or a revisit. All owned barriers are released
 before every started thread is joined, with aggregate liveness/errors reported
 afterward. The retained legacy-chain pair observes two more bounded schedules:
 the first contained chain child is held after launch before its real callback,
-then parent cascade cancellation durably stamps both nonterminal rows before
-the opaque control and the released callback receives HTTP 409 with no result,
+then parent cascade cancellation durably stamps both nonterminal rows and exact
+`task_cancelled` audits are independently read at entry to the retrieved
+original opaque control (the wrapper then invokes that unchanged control). The
+released callback receives the source `task_not_active` HTTP 409 diagnostic with no result,
 second child, parent revisit, or chain-advance audit. In the other schedule,
 the first `PASS` has already committed the second `PENDING` child and its one
 parent-owned advance audit, but the original second-child queue publication is
 held; cascade cancellation stamps only the parent and second child, preserves
 the terminal first child/result/audit, and the released original queue item is
-skipped without admission, launch, or resurrection. These are observed legacy
+observed and skipped by the cancelled shipping queue path without admission,
+launch, or resurrection. These are observed legacy
 route limits, not fanout, cross-process serialization, a production D5
 guarantee, or a claim of complete R1.
 

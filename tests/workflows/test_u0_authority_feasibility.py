@@ -1620,7 +1620,7 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
     parent_id = "TASK-U0-CHAIN-CANCEL-CALLBACK"
     backend = _FakeBackend(auto_exit_after=0)
     orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
-    paths, receipts, launches, errors, late_statuses = orch._paths, [], [], [], []
+    paths, receipts, launches, errors, late_statuses, control_entries = orch._paths, [], [], [], [], []
     child_held, release_child, done = threading.Event(), threading.Event(), threading.Event()
 
     class EventSink:
@@ -1637,7 +1637,8 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
             try:
                 task_id, agent = self.context["task_id"], self.context["agent"]
                 session_id = kwargs["session_id"]
-                launches.append((task_id, agent, session_id))
+                launches.append((task_id, agent, session_id, kwargs["running"].request_id,
+                                 tracker.get_pid(task_id, agent)))
                 if task_id == parent_id:
                     decision, verdict = NextStep(action="delegate", agent="dev_agent", prompt="first", expect_verdict="PASS", then=[ChainLeg(agent="dev_agent", prompt="second")]), None
                 else:
@@ -1648,7 +1649,7 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
                 try:
                     assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
                 except HTTPException as exc:
-                    late_statuses.append(exc.status_code)
+                    late_statuses.append((exc.status_code, exc.detail))
                     assert task_id != parent_id and exc.status_code == 409
                 kwargs["running"].process.terminate()
                 return dataclasses.replace(super().run(**kwargs), session_id=session_id)
@@ -1667,7 +1668,38 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
     parent = TaskRecord(id=parent_id, team="engineering", brief="chain", assigned_agent="engineering_head", task_type="task")
     db.insert_task(parent)
     state.queue.enqueue("test", parent_id)
+    original_controls = tracker.iter_task_cancel_controls
+
+    def observed_controls(task_id):
+        """Observe durable route effects at the original opaque-control boundary."""
+        controls = original_controls(task_id)
+        wrapped = []
+        for agent, original in controls:
+            def invoke(agent=agent, original=original):
+                with sqlite3.connect(f"file:{paths.db_path}?mode=ro", uri=True, timeout=1) as reader:
+                    reader.row_factory = sqlite3.Row
+                    rows = [dict(row) for row in reader.execute(
+                        "SELECT id, status, cancelled_at FROM tasks WHERE id IN (?, ?) ORDER BY id",
+                        (parent_id, first),
+                    )]
+                    audits = [dict(row) for row in reader.execute(
+                        "SELECT task_id, action, payload FROM audit_log WHERE task_id IN (?, ?) AND action = 'task_cancelled' ORDER BY task_id, id",
+                        (parent_id, first),
+                    )]
+                control_entries.append((task_id, agent, rows, audits))
+                return original()
+            wrapped.append((agent, invoke))
+        return wrapped
+    monkeypatch.setattr(tracker, "iter_task_cancel_controls", observed_controls)
     dispatcher = Dispatcher(state)
+    original_dispatch = dispatcher.run_step
+    def observed_dispatch(*args, **kwargs):
+        try:
+            return original_dispatch(*args, **kwargs)
+        except BaseException as exc:
+            errors.append((exc, traceback.format_exc()))
+            raise
+    monkeypatch.setattr(dispatcher, "run_step", observed_dispatch)
     def worker():
         try:
             asyncio.run(state.queue.drain_sync(dispatcher))
@@ -1681,7 +1713,13 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
         assert child_held.wait(3), "first contained child was not admitted/launched"
         first = db.get_children(parent_id)[0]
         before = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, first), agent_names=("engineering_head", "dev_agent"))
-        assert [task_id for task_id, _, _ in launches] == [parent_id, first]
+        assert [(task_id, agent, request_id) for task_id, agent, _session, request_id, _pid in launches] == [
+            (parent_id, "engineering_head", parent_id), (first, "dev_agent", first)]
+        assert all(session_id and request_id and pid
+                   for _task, _agent, session_id, request_id, pid in launches)
+        assert all(pid == 7000 + index for index, (_task, _agent, _session, _request, pid) in enumerate(launches, 1))
+        assert [(request.org, request.logical_id, request.retry_attempt) for request in backend.requests] == [
+            ("test", parent_id, 0), ("test", first, 0)]
         cancelled = asyncio.run(cancel_task(parent_id, CancelBody(rationale="chain callback race", cascade=True), org))
         with sqlite3.connect(f"file:{paths.db_path}?mode=ro", uri=True, timeout=1) as reader:
             reader.row_factory = sqlite3.Row
@@ -1689,6 +1727,16 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
         after_cancel = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, first), agent_names=("engineering_head", "dev_agent"))
         assert cancelled["cancelled"] == [parent_id, first] and cancelled["killed"] == [{"task_id": first, "agent": "dev_agent"}]
         assert all(row["status"] == TaskStatus.CANCELLED.value and row["cancelled_at"] for row in durable)
+        assert len(control_entries) == 1
+        _tid, _agent, entry_rows, entry_audits = control_entries[0]
+        assert [row["id"] for row in entry_rows] == [first, parent_id]
+        assert all(row["status"] == TaskStatus.CANCELLED.value and row["cancelled_at"] for row in entry_rows)
+        assert [row["task_id"] for row in entry_audits] == [first, parent_id]
+        assert all(row["action"] == "task_cancelled" for row in entry_audits)
+        assert [json.loads(row["payload"]) for row in entry_audits] == [
+            {"rationale": "chain callback race", "cascade": True},
+            {"rationale": "chain callback race", "cascade": True},
+        ]
         assert len(after_cancel["audits"][parent_id]) > len(before["audits"][parent_id])
         assert len(after_cancel["audits"][first]) > len(before["audits"][first])
         assert after_cancel["results"][first] == [] and after_cancel["active_chain"][parent_id] == before["active_chain"][parent_id]
@@ -1699,10 +1747,34 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
     if errors:
         raise BaseExceptionGroup("worker failures", [error for error, _trace in errors])
     final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, first), agent_names=("engineering_head", "dev_agent"))
-    assert late_statuses == [409] and [task_id for task_id, _, _ in launches] == [parent_id, first]
+    assert late_statuses == [(409, {"code": "task_not_active", "task_id": first,
+                                   "status": TaskStatus.CANCELLED.value, "cancelled": True})]
+    assert [task_id for task_id, *_rest in launches] == [parent_id, first]
+    assert set(final["tasks"]) == {parent_id, first} and len(db.get_children(parent_id)) == 1
+    assert all(final["tasks"][task_id]["status"] == TaskStatus.CANCELLED.value for task_id in (parent_id, first))
     assert final["results"][first] == [] and final["queue"] == [] and state.queue._queue._unfinished_tasks == 0
+    assert final["active_chain"][parent_id] == before["active_chain"][parent_id]
+    assert not [row for row in final["audits"][parent_id] if row["action"] == "chain_auto_advance"]
+    assert [row["action"] for row in final["audits"][parent_id]].count("task_cancelled") == 1
+    assert [row["action"] for row in final["audits"][first]].count("task_cancelled") == 1
+    cancelled_audits = {
+        task_id: [row for row in final["audits"][task_id] if row["action"] == "task_cancelled"]
+        for task_id in (parent_id, first)
+    }
+    assert {
+        (row["task_id"], row["action"], row["payload"]["cascade"])
+        for rows in cancelled_audits.values() for row in rows
+    } == {(parent_id, "task_cancelled", True), (first, "task_cancelled", True)}
     assert not any(final["controls"].values()) and all(session is None for session in final["sessions"].values())
-    assert all(row["cleanup_status"] == "clean" and row["quiescent"] and row["survivors"] == 0 for row in _receipt_evidence(receipts))
+    assert db.get_task(parent_id).orchestration_step_count == db.get_task(first).orchestration_step_count == 1
+    assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == 2
+    assert len(receipts) == len(launches) == 2
+    receipt_rows = _receipt_evidence(receipts)
+    # Receipt attribution is deliberately empty in this external fake; its
+    # exact cardinality is joined to the nonempty request/running/session
+    # identities above rather than inventing a receipt task identifier.
+    assert [row["invocation_kind"] for row in receipt_rows] == ["", ""]
+    assert all(row["cleanup_status"] == "clean" and row["quiescent"] and row["survivors"] == 0 for row in receipt_rows)
 
 
 def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeypatch) -> None:
@@ -1717,7 +1789,7 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
     parent_id = "TASK-U0-CHAIN-CANCEL-PUBLICATION"
     backend = _FakeBackend(auto_exit_after=0)
     orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
-    paths, receipts, launches, errors = orch._paths, [], [], []
+    paths, receipts, launches, errors, published, dispatches = orch._paths, [], [], [], [], []
     publication_held, release_publication, done = threading.Event(), threading.Event(), threading.Event()
 
     class EventSink:
@@ -1733,7 +1805,8 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
         def run(self, **kwargs):
             try:
                 task_id, agent, session_id = self.context["task_id"], self.context["agent"], kwargs["session_id"]
-                launches.append((task_id, agent, session_id))
+                launches.append((task_id, agent, session_id, kwargs["running"].request_id,
+                                 tracker.get_pid(task_id, agent)))
                 if task_id == parent_id and not db.get_children(parent_id):
                     decision, verdict = NextStep(action="delegate", agent="dev_agent", prompt="first", expect_verdict="PASS", then=[ChainLeg(agent="dev_agent", prompt="second")]), None
                 elif task_id == parent_id:
@@ -1758,6 +1831,7 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
     orch.attach_queue(state.queue)
     original_put = state.queue.put_nowait
     def held_put(slug, task_id, *args, **kwargs):
+        published.append((slug, task_id))
         if task_id != parent_id and len(db.get_children(parent_id)) == 2:
             publication_held.set()
             assert release_publication.wait(5), "held original queue publication was not released"
@@ -1767,6 +1841,22 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
     db.insert_task(parent)
     state.queue.enqueue("test", parent_id)
     dispatcher = Dispatcher(state)
+    original_dispatch = dispatcher.run_step
+    def observed_dispatch(*args, **kwargs):
+        # `drain_sync` has dequeued this real shipping item before it calls the
+        # dispatcher. Capture the durable row at that boundary, so the
+        # released second publication proves the cancelled queue path itself
+        # reached its normal skip gate rather than merely inferring it from no
+        # executor launch.
+        _slug, dispatched_task_id = args[:2]
+        dispatched = db.get_task(dispatched_task_id)
+        dispatches.append((dispatched_task_id, dispatched.status.value if dispatched else None))
+        try:
+            return original_dispatch(*args, **kwargs)
+        except BaseException as exc:
+            errors.append((exc, traceback.format_exc()))
+            raise
+    monkeypatch.setattr(dispatcher, "run_step", observed_dispatch)
     def worker():
         try:
             asyncio.run(state.queue.drain_sync(dispatcher))
@@ -1783,8 +1873,12 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
         assert before["tasks"][first]["status"] == TaskStatus.COMPLETED.value
         assert before["tasks"][second]["status"] == TaskStatus.PENDING.value
         assert len(before["results"][first]) == 1 and before["results"][second] == []
+        first_result = before["results"][first][0]
+        assert (first_result["task_id"], first_result["agent"], first_result["session_id"], first_result["verdict"]) == (
+            first, "dev_agent", before["tasks"][first]["current_session_id"], "PASS")
+        assert json.loads(before["tasks"][parent_id]["active_chain"])["step_index"] == 1
         advance = [row for row in before["audits"][parent_id] if row["action"] == "chain_auto_advance"]
-        assert len(advance) == 1 and advance[0]["payload"]["spawned_child_id"] == second
+        assert len(advance) == 1 and advance[0]["task_id"] == parent_id and advance[0]["payload"]["spawned_child_id"] == second
         cancelled = asyncio.run(cancel_task(parent_id, CancelBody(rationale="chain publication race", cascade=True), org))
         with sqlite3.connect(f"file:{paths.db_path}?mode=ro", uri=True, timeout=1) as reader:
             reader.row_factory = sqlite3.Row
@@ -1800,9 +1894,62 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
     if errors:
         raise BaseExceptionGroup("worker failures", [error for error, _trace in errors])
     final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, first, second), agent_names=("engineering_head", "dev_agent"))
-    assert [task_id for task_id, _, _ in launches] == [parent_id, first]
+    assert [task_id for task_id, *_rest in launches] == [parent_id, first]
+    assert [(task_id, agent, request_id) for task_id, agent, _session, request_id, _pid in launches] == [
+        (parent_id, "engineering_head", parent_id), (first, "dev_agent", first)]
+    assert all(session_id and request_id and pid
+               for _task, _agent, session_id, request_id, pid in launches)
+    assert all(pid == 7000 + index for index, (_task, _agent, _session, _request, pid) in enumerate(launches, 1))
+    assert [(request.org, request.logical_id, request.retry_attempt) for request in backend.requests] == [
+        ("test", parent_id, 0), ("test", first, 0)]
+    # The original shipping `put_nowait` is called only for the two chain
+    # publications; the root uses the explicit test setup enqueue.
+    assert published == [("test", first), ("test", second)]
+    assert dispatches == [
+        (parent_id, TaskStatus.PENDING.value),
+        (first, TaskStatus.PENDING.value),
+        # The released original publication reaches Dispatcher only after the
+        # cancellation route's committed terminal transition; `run_step` then
+        # takes its shipping cancelled-row skip with no third launch.
+        (second, TaskStatus.CANCELLED.value),
+    ]
     assert final["tasks"][parent_id]["status"] == final["tasks"][second]["status"] == TaskStatus.CANCELLED.value
     assert final["tasks"][first]["status"] == TaskStatus.COMPLETED.value and len(final["results"][first]) == 1
+    assert final["results"][first] == before["results"][first]
+    assert [row for row in final["audits"][parent_id] if row["action"] == "chain_auto_advance"] == advance
+    assert [row for row in final["audits"][first] if row["action"] == "task_cancelled"] == []
+    assert [(row["task_id"], row["payload"]["cascade"])
+            for task_id in (parent_id, second)
+            for row in final["audits"][task_id] if row["action"] == "task_cancelled"] == [
+        (parent_id, True), (second, True)]
     assert final["results"][second] == [] and final["queue"] == [] and state.queue._queue._unfinished_tasks == 0
     assert not any(final["controls"].values()) and all(session is None for session in final["sessions"].values())
-    assert all(row["cleanup_status"] == "clean" and row["quiescent"] and row["survivors"] == 0 for row in _receipt_evidence(receipts))
+    assert db.get_task(parent_id).orchestration_step_count == db.get_task(first).orchestration_step_count == 1
+    assert db.get_task(second).orchestration_step_count == 0
+    assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == 2
+    assert len(receipts) == len(launches) == 2
+    receipt_rows = _receipt_evidence(receipts)
+    assert [row["invocation_kind"] for row in receipt_rows] == ["", ""]
+    assert all(row["cleanup_status"] == "clean" and row["quiescent"] and row["survivors"] == 0 for row in receipt_rows)
+
+
+def test_r1_chain_cancel_harness_propagates_dispatcher_error(tmp_path, monkeypatch) -> None:
+    """The new cancellation harness exposes a queue-swallowed dispatcher error."""
+    from runtime.daemon.dispatcher import Dispatcher
+
+    original = Dispatcher.run_step
+    calls = 0
+
+    def injected(self, *args, **kwargs):
+        nonlocal calls
+        result = original(self, *args, **kwargs)
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("U0_CANCEL_DISPATCH_ERROR_CONTROL")
+        return result
+
+    monkeypatch.setattr(Dispatcher, "run_step", injected)
+    with pytest.raises(BaseExceptionGroup, match="worker failures") as raised:
+        test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, monkeypatch)
+    assert any("U0_CANCEL_DISPATCH_ERROR_CONTROL" in str(error)
+               for error in raised.value.exceptions)
