@@ -177,7 +177,7 @@ Every browser-callable daemon route maps to one TS function in `web/src/lib/api/
 
 ## Native Impact Evidence
 
-Before editing, declare the expected files and symbols, their direct callers, importers, call sites, and config consumers, the affected behavior, and the risk tier. Inspect the relevant definitions, importers, call sites, and config consumers with targeted `rg` searches and record the results.
+Before editing code, inspect the relevant definitions and affected callers, imports, and configuration consumers using targeted searches. Briefly summarize the expected files and symbols, affected behavior, material risks, and supporting findings in a progress message. Scale the investigation to the change; documentation-only edits need only a scope statement. Summarize findings rather than raw search output; no separate report file is required. If the scope expands, update the summary before making those edits.
 
 **Delegated retry failures.** An exhausted per-slice retry lineage is durable
 causal context for the owning manager, not a runtime `runtime_retry_ceiling`
@@ -186,6 +186,6 @@ the mechanically required failed-child `revisit_of_task_id`, or propose
 escalation through the existing THR-181 path; completed/superseded descendants
 retire historical failed ancestors.
 
-Run focused behavior tests for every changed domain. Before committing, run `git diff --check`, `git diff --stat`, and inspect the final diff. The reviewer must compare the changed files and symbols against the declared radius and investigate every addition outside it.
+Run focused behavior tests for every changed domain. Before committing, run `git diff --check`, `git diff --stat`, and inspect the final diff. Compare it against the latest scope summary and explain any unexpected changes.
 
-Stop and escalate before touching permission-model generation, auth or credentials, schema migrations or overloaded-column semantics, v0/v1 compatibility, or HIGH/CRITICAL and other load-bearing work. Do not waive these checks because a graph tool is unavailable.
+Stop and escalate before touching permission-model generation, auth or credentials, schema migrations or overloaded-column semantics, v0/v1 compatibility, or other high-risk or load-bearing work.
