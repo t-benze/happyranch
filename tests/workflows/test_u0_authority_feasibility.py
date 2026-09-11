@@ -1561,6 +1561,10 @@ def test_r1_real_delegate_then_chain_publication_and_fail_closed_wake(
     assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == len(expected_launches)
     assert all(final["tasks"][task_id]["status"] == TaskStatus.COMPLETED.value for task_id in final["tasks"])
     assert db.get_task(parent_id).active_chain is None and db.get_task(parent_id).orchestration_step_count == 2
+    expected_child_count = 2 if first_verdict == "PASS" else 1
+    assert len(children) == expected_child_count
+    child_step_counts = {child: db.get_task(child).orchestration_step_count for child in children}
+    assert child_step_counts == {child: 1 for child in children}
     assert len(final["results"][parent_id]) == 2 and all(len(final["results"][child]) == 1 for child in children)
     result_rows = [row for task_rows in final["results"].values() for row in task_rows]
     assert len(consumptions) == len(expected_launches) == len(result_rows)
@@ -1576,6 +1580,9 @@ def test_r1_real_delegate_then_chain_publication_and_fail_closed_wake(
     assert all(row["cleanup_status"] == "clean" and row["quiescent"] and row["survivors"] == 0 for row in receipt_rows)
     assert final["queue"] == [] and state.queue._queue._unfinished_tasks == 0
     assert all(session is None for session in final["sessions"].values()) and not any(final["controls"].values())
+    launched_bindings = {(task_id, agent) for _, _, task_id, agent, _, _ in launches}
+    live_pids = {(task_id, agent): tracker.get_pid(task_id, agent) for task_id, agent in launched_bindings}
+    assert all(pid is None for pid in live_pids.values())
 
 
 def test_r1_chain_harness_propagates_dispatcher_error(tmp_path, monkeypatch) -> None:

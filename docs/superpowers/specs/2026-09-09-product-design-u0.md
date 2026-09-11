@@ -122,13 +122,18 @@ child). Each actual fake-backend `AdmissionRequest` is joined to its launch and
 `RunningHandle.request_id` (`test`, logical task ID, retry attempt zero); the
 PASS audit is owned by the parent as well as carrying its exact payload. After
 release, the observed launches are respectively parent/first/second/parent and
-parent/first/parent; each path has one parent revisit, each child has one
-orchestration step, fake receipts are clean/quiescent with zero survivors, and
-there is no live tracker PID, queue, session, or control residue. The harness separately
-proves its dispatcher-error collector rejects a queue-swallowed error. This is
-test-only evidence and does not alter transaction, queue, error-policy, schema,
-or production chain behavior. Cancellation, fanout, serialization and all
-remaining R1–R5/package obligations are still outside this control.
+parent/first/parent; each path has one parent revisit, the parent has two
+orchestration steps, and every actual child has one. For every distinct
+launched task/agent binding, the harness directly observes
+`SessionTracker.get_pid(task_id, agent)` as `None`; this is current
+live-tracker visibility only, not a claim about historical generation storage
+deletion or real-host process proof. Fake receipts are clean/quiescent with
+zero survivors, and there is no queue, session, or control residue. The
+harness separately proves its dispatcher-error collector rejects a
+queue-swallowed error. This is test-only evidence and does not alter
+transaction, queue, error-policy, schema, or production chain behavior.
+Cancellation, fanout, serialization and all remaining R1–R5/package
+obligations are still outside this control.
 
 Current control and corrupt/partial adapter inputs fail closed before any
 proposed adapter write. R5's decision packet
