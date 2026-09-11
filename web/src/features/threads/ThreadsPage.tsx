@@ -357,7 +357,7 @@ export function ThreadsPage(): JSX.Element {
   const queryClient = useQueryClient();
   const { slug, thread_id: threadId } = useParams<{ slug: string; thread_id: string }>();
   const composerFocusRef = useRef<(() => void) | null>(null);
-  const listScrollRef = useRef<HTMLDivElement>(null);
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
   const lastListScrollTopRef = useRef(0);
   const setListScrollRef = useCallback((node: HTMLDivElement | null) => {
     // React clears a conditional ref before effect cleanup. Capture the last
