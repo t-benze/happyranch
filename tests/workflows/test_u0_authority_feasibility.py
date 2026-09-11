@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import json
+import sqlite3
+import threading
+import traceback
 from types import SimpleNamespace
 
 import pytest
@@ -1375,3 +1380,188 @@ def test_r1_termination_after_child_launch_distinguishes_callback_order(tmp_path
     assert [(request.org, request.logical_id, request.retry_attempt) for request in backend.requests] == [("test", "TASK-U0-PARENT", 0), ("test", child_id, 0), ("test", "TASK-U0-PARENT", 0)]
     assert backend.calls["launch"] == backend.calls["finish"] == 3 and len(receipts) == 3
     assert observed["event_order"] == (["writer_returned", "boundary_observed", "callback_persisted"] if not callback_before_writer else ["callback_persisted", "writer_returned", "boundary_observed"])
+
+
+@pytest.mark.parametrize("first_verdict", ("PASS", None, "REVISE"), ids=("pass", "none", "revise"))
+def test_r1_real_delegate_then_chain_publication_and_fail_closed_wake(
+    tmp_path, monkeypatch, first_verdict: str | None,
+) -> None:
+    """Exercise real completion/consumption/chain/queue seams for all verdict gates."""
+    from runtime.daemon.dispatcher import Dispatcher
+    from runtime.daemon.routes.tasks import CompletionBody, submit_completion
+    from runtime.daemon.state import DaemonState
+    from runtime.models import ChainLeg, NextStep, TaskRecord, TaskStatus
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+    from runtime.orchestrator import chain
+    from tests.daemon.test_task_producer_containment import _FakeBackend, _RecordingExecutor, _make_orch
+
+    parent_id = "TASK-U0-CHAIN"
+    backend = _FakeBackend(auto_exit_after=0)
+    orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
+    paths, receipts, launches, errors, publications = orch._paths, [], [], [], []
+    reached, release, done = threading.Event(), threading.Event(), threading.Event()
+    compute_outcomes: list[object] = []
+
+    class EventSink:
+        async def publish(self, task_id, event):
+            return None
+
+    org = SimpleNamespace(db=db, sessions=tracker, db_lock=asyncio.Lock(), event_bus=EventSink())
+    original_compute = chain.compute_advance_action
+    def observed_compute(*args, **kwargs):
+        outcome = original_compute(*args, **kwargs)
+        compute_outcomes.append(outcome)
+        return outcome
+    monkeypatch.setattr(chain, "compute_advance_action", observed_compute)
+
+    class Executor(_RecordingExecutor):
+        def set_invocation_context(self, **kwargs) -> None:
+            assert not hasattr(self, "context"), "executor was reused across invocations"
+            self.context = kwargs.copy()
+
+        def run(self, **kwargs):
+            try:
+                context = self.context.copy()
+                task_id, agent, session_id = context["task_id"], context["agent"], kwargs["session_id"]
+                assert kwargs["running"].request_id == task_id
+                assert tracker.get_active(task_id, agent) == session_id
+                assert db.get_task(task_id).current_session_id == session_id
+                launches.append((id(self), id(self.context), task_id, agent, session_id, kwargs["running"].request_id))
+                children = db.get_children(parent_id)
+                if task_id == parent_id and not children:
+                    decision = NextStep(action="delegate", agent="dev_agent", prompt="first", expect_verdict="PASS", then=[ChainLeg(agent="dev_agent", prompt="second")])
+                    verdict = None
+                elif task_id == parent_id:
+                    decision, verdict = NextStep(action="done", summary="parent revisit"), None
+                else:
+                    decision = NextStep(action="done", summary="child")
+                    verdict = first_verdict if len(children) == 1 else "PASS"
+                body = CompletionBody(session_id=session_id, agent=agent, status="completed", confidence=100, verdict=verdict, output_summary="chain callback", decision=decision.model_dump())
+                assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
+                kwargs["running"].process.terminate()
+                return dataclasses.replace(super().run(**kwargs), session_id=session_id)
+            except BaseException as exc:
+                errors.append((exc, traceback.format_exc()))
+                raise
+            finally:
+                kwargs["running"].process.terminate()
+
+    executors = []
+    def factory(_provider):
+        executor = Executor()
+        executors.append(executor)
+        return executor
+    monkeypatch.setattr(orch, "_build_executor", factory)
+    supervisor = HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0), publisher=receipts.append)
+    orch.attach_host_supervisor(supervisor)
+    state = DaemonState.idle(orch._settings)
+    state.orgs["test"] = SimpleNamespace(orchestrator=orch)
+    orch.attach_queue(state.queue)
+    original_put = state.queue.put_nowait
+    def held_put(slug, task_id, *args, **kwargs):
+        children = db.get_children(parent_id)
+        expected_publication = task_id != parent_id and len(children) == 2 if first_verdict == "PASS" else task_id == parent_id and len(children) == 1
+        if expected_publication:
+            reached.set()
+            assert release.wait(5), "real queue publication was not released"
+        original_put(slug, task_id, *args, **kwargs)
+        publications.append(task_id)
+    monkeypatch.setattr(state.queue, "put_nowait", held_put)
+
+    parent = TaskRecord(id=parent_id, team="engineering", brief="chain", assigned_agent="engineering_head", task_type="task")
+    db.insert_task(parent)
+    state.queue.enqueue("test", parent_id)
+    dispatcher = Dispatcher(state)
+    original_dispatch = dispatcher.run_step
+    def dispatch(*args, **kwargs):
+        try:
+            return original_dispatch(*args, **kwargs)
+        except BaseException as exc:
+            errors.append((exc, traceback.format_exc()))
+            raise
+    monkeypatch.setattr(dispatcher, "run_step", dispatch)
+    def worker() -> None:
+        try:
+            asyncio.run(state.queue.drain_sync(dispatcher))
+        except BaseException as exc:
+            errors.append((exc, traceback.format_exc()))
+        finally:
+            done.set()
+    worker_thread = threading.Thread(target=worker, name="u0-chain-drain", daemon=False)
+    worker_thread.start()
+    assertion = None
+    try:
+        assert reached.wait(3), "real chain/wake queue boundary was not reached"
+        children = db.get_children(parent_id)
+        first = children[0]
+        with sqlite3.connect(f"file:{paths.db_path}?mode=ro", uri=True, timeout=1) as connection:
+            connection.row_factory = sqlite3.Row
+            tasks = {row["id"]: dict(row) for row in connection.execute("SELECT * FROM tasks")}
+            results = [dict(row) for row in connection.execute("SELECT * FROM task_results")]
+            audits = [dict(row) for row in connection.execute("SELECT * FROM audit_log")]
+            attachments = [dict(row) for row in connection.execute("SELECT * FROM task_attachments")]
+        first_results = [row for row in results if row["task_id"] == first]
+        assert len(first_results) == 1
+        assert (first_results[0]["task_id"], first_results[0]["agent"], first_results[0]["session_id"], first_results[0]["verdict"]) == (first, "dev_agent", launches[1][4], first_verdict)
+        assert tasks[first]["current_session_id"] == first_results[0]["session_id"]
+        assert tasks[parent_id]["status"] == TaskStatus.IN_PROGRESS.value and tasks[parent_id]["block_kind"] == "delegated"
+        assert tasks[parent_id]["orchestration_step_count"] == 1
+        assert not state.queue._queue.qsize() and [entry[2] for entry in launches] == [parent_id, first]
+        advance_audits = [row for row in audits if row["action"] == "chain_auto_advance"]
+        if first_verdict == "PASS":
+            assert len(children) == 2
+            second = children[1]
+            chain = json.loads(tasks[parent_id]["active_chain"])
+            assert tasks[second]["status"] == TaskStatus.PENDING.value and chain["step_index"] == 1
+            assert len(advance_audits) == 1
+            payload = json.loads(advance_audits[0]["payload"])
+            assert payload == {"leg_index": 1, "spawned_child_id": second, "triggering_child_id": first, "triggering_verdict": "PASS", "chain_origin_step_audit_id": chain["step_audit_id"]}
+            assert not attachments
+        else:
+            assert children == [first] and tasks[parent_id]["active_chain"] is None
+            assert not advance_audits and not attachments
+            assert compute_outcomes[-1].kind == "wake" and compute_outcomes[-1].reason == "verdict_mismatch"
+            assert compute_outcomes[-1].actual == first_verdict
+    except BaseException as exc:
+        assertion = exc
+    finally:
+        release.set()
+        worker_thread.join(8)
+    assert not worker_thread.is_alive() and done.is_set(), "owned worker did not join"
+    if errors:
+        raise BaseExceptionGroup("worker failures (including queue-caught dispatcher errors)", [error for error, _trace in errors])
+    if assertion:
+        raise assertion
+    children = db.get_children(parent_id)
+    expected_launches = [parent_id, *children, parent_id]
+    final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, *children), agent_names=("dev_agent", "engineering_head"))
+    assert [entry[2] for entry in launches] == expected_launches
+    assert len({entry[0] for entry in launches}) == len(expected_launches)
+    assert len({entry[1] for entry in launches}) == len(expected_launches)
+    assert len({entry[4] for entry in launches}) == len(expected_launches)
+    assert publications == [*children, parent_id]
+    assert backend.calls["launch"] == backend.calls["finish"] == len(receipts) == len(expected_launches)
+    assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == len(expected_launches)
+    assert all(final["tasks"][task_id]["status"] == TaskStatus.COMPLETED.value for task_id in final["tasks"])
+    assert db.get_task(parent_id).active_chain is None and db.get_task(parent_id).orchestration_step_count == 2
+    assert len(final["results"][parent_id]) == 2 and all(len(final["results"][child]) == 1 for child in children)
+    assert final["queue"] == [] and state.queue._queue._unfinished_tasks == 0
+    assert all(session is None for session in final["sessions"].values()) and not any(final["controls"].values())
+
+
+def test_r1_chain_harness_propagates_dispatcher_error(tmp_path, monkeypatch) -> None:
+    """The local collector refuses a false green if drain_sync logs and swallows."""
+    from runtime.daemon.dispatcher import Dispatcher
+    original = Dispatcher.run_step
+    calls = 0
+    def injected(self, *args, **kwargs):
+        nonlocal calls
+        result = original(self, *args, **kwargs)
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("U0_DISPATCH_ERROR_CONTROL")
+        return result
+    monkeypatch.setattr(Dispatcher, "run_step", injected)
+    with pytest.raises(BaseExceptionGroup, match="worker failures") as raised:
+        test_r1_real_delegate_then_chain_publication_and_fail_closed_wake(tmp_path, monkeypatch, "PASS")
+    assert any("U0_DISPATCH_ERROR_CONTROL" in str(error) for error in raised.value.exceptions)

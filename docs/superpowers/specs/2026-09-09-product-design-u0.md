@@ -110,6 +110,22 @@ before every started thread is joined, with aggregate liveness/errors reported
 afterward. This remains disposable-fixture evidence, not a production D5
 guarantee or a claim of complete R1.
 
+The finite legacy-chain control uses the real completion, consumption, chain,
+and queue seams for three first-leg reports against expected `PASS`: `PASS`
+commits the next pending child and its exact `chain_auto_advance` audit before
+the held original child publication; `None` and `REVISE` preserve their exact
+persisted report values, clear the chain, and hold the original parent wake
+publication instead. Independent read-only SQLite observations join each result
+to its task, worker, authenticated current session, callback consumption, and
+the actual `RunningHandle`/admission identity. After release, the observed
+launches are respectively parent/first/second/parent and parent/first/parent;
+each path has one parent revisit, balanced contained fake admission/finish
+receipts, and no live queue/session/control residue. The harness separately
+proves its dispatcher-error collector rejects a queue-swallowed error. This is
+test-only evidence and does not alter transaction, queue, error-policy, schema,
+or production chain behavior. Cancellation, fanout, serialization and all
+remaining R1–R5/package obligations are still outside this control.
+
 Current control and corrupt/partial adapter inputs fail closed before any
 proposed adapter write. R5's decision packet
 must still classify every writer/reader/compensation participant and receive
