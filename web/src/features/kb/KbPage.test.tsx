@@ -216,10 +216,10 @@ describe('KbPage — folder filtering', () => {
 });
 
 describe('KbPage — App wildcard route regression', () => {
-  test('keeps the KB index closed when mounted below the shipping outer wildcard', async () => {
+  test('keeps the query-bearing KB index usable and closed below the shipping outer wildcard', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubKBStats();
-    let entryRequests = 0;
+    const entryRequests: string[] = [];
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -230,8 +230,10 @@ describe('KbPage — App wildcard route regression', () => {
       http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
         HttpResponse.json({ dreams: [] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/kb/:entrySlug`, ({ params }) => {
-        if (params.entrySlug !== 'stats') entryRequests += 1;
+      // Globally catches the former multi-segment `/kb/orgs/<org>/kb` request.
+      http.get(new RegExp(`/api/v1/orgs/${SLUG}/kb/(.+)$`), ({ request }) => {
+        const path = new URL(request.url).pathname;
+        if (!path.endsWith('/kb/stats')) entryRequests.push(path);
         return HttpResponse.json(ENTRY_A);
       }),
     );
@@ -239,9 +241,10 @@ describe('KbPage — App wildcard route regression', () => {
     renderWithOuterAppRoute(`/orgs/${SLUG}/kb?source=nav`);
 
     await screen.findByText('Refund authority by tier');
-    expect(screen.queryByText('Loading entry...')).not.toBeInTheDocument();
-    expect(screen.queryByText('Could not load entry')).not.toBeInTheDocument();
-    expect(entryRequests).toBe(0);
+    // The shipping shell has its own inert assistant dialog; target the KB
+    // entry drawer role rather than treating every shell dialog as an entry.
+    expect(screen.queryByRole('dialog', { name: 'Loading entry...' })).not.toBeInTheDocument();
+    expect(entryRequests).toEqual([]);
   });
 
   test('uses the explicit entry segment for direct detail URLs below the outer wildcard', async () => {

@@ -78,6 +78,31 @@ def test_parse_normalizes_scalar_or_malformed_frontmatter_tags(
     assert store.read_entry("tags").tags == expected_tags
 
 
+def test_scalar_tags_stay_whole_through_list_search_and_duplicate_consumers(store: KBStore):
+    """A legacy scalar is one tag, including when it contains a delimiter."""
+    scalar_source = (
+        "---\nslug: scalar-tag\ntitle: Scalar tag entry\ntype: precedent\n"
+        "topic: testing\ntags: policy, finance\n---\n\nScalar source body.\n"
+    )
+    scalar_path = store.path_for("scalar-tag")
+    scalar_path.write_text(scalar_source)
+    store.path_for("array-tag").write_text(
+        "---\nslug: array-tag\ntitle: Unrelated entry\ntype: precedent\n"
+        "topic: testing\ntags: [policy, finance]\n---\n\nArray source body.\n"
+    )
+
+    assert store.read_entry("scalar-tag").tags == ["policy, finance"]
+    assert [entry.tags for entry in store.list_entries()] == [
+        ["policy", "finance"], ["policy, finance"],
+    ]
+    assert [hit.slug for hit in store.search("Scalar")] == ["scalar-tag"]
+    assert [candidate.slug for candidate in store.find_near_duplicates(
+        title="Scalar tag entry", tags=["policy, finance"], min_tag_overlap=1,
+    )] == ["scalar-tag"]
+    # Reads and projections never rewrite manually authored frontmatter.
+    assert scalar_path.read_text() == scalar_source
+
+
 def test_write_entry_rejects_slug_mismatch(store: KBStore):
     entry = KBEntry(
         slug="good-slug",
