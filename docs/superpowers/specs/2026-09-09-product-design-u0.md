@@ -215,6 +215,18 @@ brief remains outside that injected section. This is test-only, bounded
 current-generation evidence: it does not claim a general cross-process
 serialization proof or all-surface equality.
 
+For those five JOIN boundaries, the first-terminal and final task/result/audit
+rows are independently read from SQLite and compared as normalized complete
+row content to the corresponding named boundary snapshots; the completed first
+child's full rows are retained through the final drain. The four actual
+admission requests are observed as two ordinary parent launches and one launch
+per child: every source retry-attempt value is zero, so parent multiplicity is
+asserted rather than inventing a retry increment. The audited JOIN context is
+present, in order, in the actual executor prompt after the source prompt
+builder's documented four-space `role_guidance` literal-block indentation;
+the raw unindented context is therefore not claimed to be a byte substring of
+that outer prompt. Unrelated parent brief and role guidance remain present.
+
 The paired live-sibling cancellation control parameterizes which of the two
 actual child callbacks completes first.  Two real queue workers launch both
 children; after the original completed child's dispatcher turn has returned,

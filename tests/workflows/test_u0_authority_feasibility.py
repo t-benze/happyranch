@@ -6,6 +6,7 @@ import json
 import sqlite3
 import threading
 import traceback
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -72,6 +73,13 @@ def _r1_snapshot(*, db, tracker, paths, queue, task_ids: tuple[str, ...],
         return dict(value) if isinstance(value, dict) else value.model_dump()
 
     rows = {task_id: record(db.get_task(task_id)) for task_id in task_ids}
+    # ``TaskRecord`` intentionally omits this persisted terminal column; the
+    # boundary projection includes it so independent reads compare whole rows.
+    for task_id, row in rows.items():
+        if row is not None:
+            row["final_output_summary"] = db.execute(
+                "SELECT final_output_summary FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()["final_output_summary"]
     agents = {
         task_id: rows[task_id]["assigned_agent"] if rows[task_id] else None
         for task_id in task_ids
@@ -169,6 +177,42 @@ def _u0_independent_sqlite_readback(db, task_ids: tuple[str, ...]) -> dict[str, 
         }
     finally:
         connection.close()
+
+
+def _u0_normalize_persisted_rows(rows: dict[str, object]) -> dict[str, list[dict[str, object]]]:
+    """Normalize the source-owned JSON serialization at the SQLite boundary."""
+    def normalize(value):
+        # Pydantic's in-process snapshots retain StrEnum values whereas SQLite
+        # returns their persisted scalar.  Preserve the scalar meaning.
+        if hasattr(value, "value"):
+            return normalize(value.value)
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return value
+            return normalize(parsed)
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        if isinstance(value, dict):
+            return {key: normalize(item) for key, item in value.items()}
+        return value
+    keys = {"tasks": "id", "results": "id", "audits": "id"}
+    return {
+        kind: sorted((normalize(dict(row)) for row in entries), key=lambda row: row[keys[kind]])
+        for kind, entries in rows.items()
+    }
+
+
+def _u0_snapshot_persisted_rows(snapshot: dict[str, object]) -> dict[str, list[dict[str, object]]]:
+    """Project one named in-memory boundary into the persisted row shapes."""
+    return _u0_normalize_persisted_rows({
+        "tasks": list(snapshot["tasks"].values()),
+        "results": [row for task_rows in snapshot["results"].values() for row in task_rows],
+        "audits": [row for task_rows in snapshot["audits"].values() for row in task_rows],
+    })
 
 
 def _assert_cancelled_task_delta(before: dict[str, object], observed: dict[str, object]) -> None:
@@ -2385,8 +2429,11 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
             raise
     monkeypatch.setattr(dispatcher, "run_step", observed_dispatch)
     db.insert_task(TaskRecord(id=parent_id, team="engineering", brief="fanout", assigned_agent="engineering_head", task_type="task"))
+    # Every boundary uses the same identity domain.  In particular, the
+    # pre-spawn observation deliberately includes the future child agent so a
+    # later workspace/agent-file observation is a transition, not a new key.
     pre_spawn = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
-                             task_ids=(parent_id,), agent_names=("engineering_head",))
+                             task_ids=(parent_id,), agent_names=("engineering_head", "dev_agent"))
     state.queue.enqueue("test", parent_id)
     def workers() -> None:
         async def run() -> None:
@@ -2407,14 +2454,41 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         children = db.get_children(parent_id)
         held_spawn = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
         fanout = json.loads(held_spawn["active_fanout"][parent_id])
-        assert len(children) == 2 and fanout["children_ids"] == children and fanout["status"] == "spawned"
+        assert len(children) == 2 and fanout == {
+            "children_ids": children,
+            "children_details": [
+                {"agent": "dev_agent", "prompt": "plain zero"},
+                {"agent": "dev_agent", "prompt": "plain one"},
+            ],
+            "width": 2, "manager_agent": "engineering_head",
+            "join_summary": "join exact reports", "status": "spawned",
+        }
         assert held_spawn["tasks"][parent_id]["status"] == TaskStatus.IN_PROGRESS.value and held_spawn["tasks"][parent_id]["block_kind"] == "delegated"
-        assert all(held_spawn["tasks"][child]["parent_task_id"] == parent_id for child in children)
+        assert all(held_spawn["tasks"][child]["parent_task_id"] == parent_id
+                   and held_spawn["tasks"][child]["status"] == TaskStatus.PENDING.value
+                   and held_spawn["tasks"][child]["orchestration_step_count"] == 0
+                   for child in children)
         assert held_spawn["tasks"][parent_id]["orchestration_step_count"] == pre_spawn["tasks"][parent_id]["orchestration_step_count"] + 1
         assert held_spawn["results"][parent_id] and held_spawn["results"][parent_id][0]["output_summary"] == f"report:{parent_id}"
         assert held_spawn["queue"] == []  # first original child publication is still held.
-        assert all(held_spawn[key] == _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))[key]
-                   for key in ("attachments", "canonical_agents", "archived_agents", "workspaces", "archived_workspaces", "teams_bytes", "controls"))
+        assert not any(entry["task_id"] in children for entry in launches)
+        assert [(row["task_id"], row["agent"], row["payload"])
+                for row in held_spawn["audits"][parent_id] if row["action"] == "fanout_spawned"] == [
+            (parent_id, "engineering_head", {"agent": "engineering_head", "width": 2, "children_ids": children}),
+        ]
+        # These surfaces have no source-owned fanout transition.  Comparing to
+        # the named pre-spawn boundary makes that allowance explicit.
+        assert held_spawn["attachments"] == {**pre_spawn["attachments"], **{child: [] for child in children}}
+        for surface in ("canonical_agents", "archived_agents", "archived_workspaces", "teams_bytes"):
+            assert held_spawn[surface] == pre_spawn[surface]
+        # The parent launch legitimately creates only its task-scratch manifest
+        # and lock; the fanout itself creates no child workspace/archive bytes.
+        assert held_spawn["workspaces"]["dev_agent"] == pre_spawn["workspaces"]["dev_agent"]
+        assert set(held_spawn["workspaces"]["engineering_head"]) == {
+            f".happyranch/task-scratch-manifests/{parent_id}.json",
+            f".happyranch/task-scratch-manifests/{parent_id}.lock",
+        }
+        assert held_spawn["controls"] == {**pre_spawn["controls"], **{child: False for child in children}}
         assert not [row for row in held_spawn["audits"][parent_id] if row["action"] == "fanout_join"]
         release_publication.set()
         assert both_launched.wait(3), "both plain children did not make actual contained launches"
@@ -2427,8 +2501,10 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
                 for entry in launches} == {(parent_id, "engineering_head", parent_id), *{(child, "dev_agent", child) for child in children}}
         assert all(entry["session_id"] and entry["request_id"] == entry["task_id"] and entry["pid"] is not None
                    and entry["running"].request_id == entry["task_id"] for entry in launches)
-        assert {(request.org, request.invocation_kind, request.logical_id)
-                for request in backend.requests} == {("test", "task", parent_id), *{("test", "task", child) for child in children}}
+        request_bindings = [(request.org, request.invocation_kind, request.logical_id, request.retry_attempt)
+                            for request in backend.requests]
+        assert len(request_bindings) == len(set(request_bindings)) == 3
+        assert set(request_bindings) == {("test", "task", parent_id, 0), *{("test", "task", child, 0) for child in children}}
         permit_callbacks.set()
         assert first_terminal.wait(3), "chosen first callback did not terminalize through original Dispatcher.run_step"
         held_first = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
@@ -2444,9 +2520,11 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
             "verdict": "PASS", "summary": f"report:{first}",
         }
         independent_first = _u0_independent_sqlite_readback(db, (parent_id, *children))
-        assert {row["id"] for row in independent_first["results"]} == {
-            row["id"] for task_rows in held_first["results"].values() for row in task_rows
-        }
+        first_history = _u0_normalize_persisted_rows(independent_first)
+        # Compare independent durable rows to the named first-terminal boundary;
+        # a repeated read at the same hold is not transition evidence.
+        expected_first_history = _u0_snapshot_persisted_rows(held_first)
+        assert first_history == expected_first_history
         if boundary_failure is not None:
             raise boundary_failure
     except BaseException as exc:
@@ -2467,7 +2545,12 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     assert parent_revisit["prompt"] == parent_revisit_prompts[0]
     assert "fanout" in parent_revisit_prompts[0], "unrelated parent brief remains present"
     assert len(shipping_join_prompts) == 1
-    assert join_context in shipping_join_prompts[0]
+    # The source builder owns the four-space literal-block indentation.  The
+    # raw audited context therefore is not expected as a byte substring of the
+    # executor's outer prompt; only this documented transformation is allowed.
+    indented_join_context = "\n".join(f"    {line}" for line in join_context.splitlines())
+    assert indented_join_context in parent_revisit["prompt"]
+    assert join_context not in parent_revisit["prompt"]
     expected_join_entries = [
         f"[{index}/2] {child} (dev_agent)\n       Status: completed\n       Verdict: PASS\n       Confidence: 100\n       Summary: report:{child}"
         for index, child in enumerate(children, start=1)
@@ -2507,8 +2590,28 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
                for receipt in _receipt_evidence(receipts))
     assert all(tracker.get_pid(entry["task_id"], entry["agent"]) is None for entry in launches)
     independent_final = _u0_independent_sqlite_readback(db, (parent_id, *children))
-    assert {row["id"] for row in independent_final["results"]} == set(persisted_by_id)
-    assert [row["id"] for row in independent_final["tasks"]] == sorted((parent_id, *children))
+    final_history = _u0_normalize_persisted_rows(independent_final)
+    assert final_history == _u0_snapshot_persisted_rows(final)
+    # The completed first child is immutable across the remaining callback,
+    # join, and revisit; the final comparison retains whole row content.
+    assert [row for row in final_history["tasks"] if row["id"] == first] == [
+        row for row in first_history["tasks"] if row["id"] == first
+    ]
+    assert [row for row in final_history["results"] if row["task_id"] == first] == [
+        row for row in first_history["results"] if row["task_id"] == first
+    ]
+    assert [row for row in final_history["audits"] if row["task_id"] == first] == [
+        row for row in first_history["audits"] if row["task_id"] == first
+    ]
+    final_request_bindings = [
+        (request.org, request.invocation_kind, request.logical_id, request.retry_attempt)
+        for request in backend.requests
+    ]
+    assert len(final_request_bindings) == 4
+    # The shipping retry-attempt remains zero for the ordinary parent revisit;
+    # multiplicity (not a fabricated increment) distinguishes its two launches.
+    assert final_request_bindings.count(("test", "task", parent_id, 0)) == 2
+    assert all(final_request_bindings.count(("test", "task", child, 0)) == 1 for child in children)
 
 
 def test_r1_plain_fanout_real_workers_retain_dispatcher_and_boundary_errors(tmp_path, monkeypatch) -> None:
@@ -2969,6 +3072,7 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
         assert len(held["results"][completed]) == 1 and held["results"][live] == []
         assert not [row for row in held["audits"][parent_id] if row["action"] == "fanout_join"]
         completed_row = held["results"][completed][0]
+        completed_history = _u0_independent_sqlite_readback(db, (parent_id, *children))
         completed_report = next(report for report in consumed_reports if report["task_id"] == completed)
         assert completed_report == {
             "task_id": completed, "agent": "dev_agent", "session_id": completed_row["session_id"],
@@ -3000,6 +3104,23 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
         assert after["audits"][completed] == held["audits"][completed]
         assert after["tasks"][parent_id]["status"] == after["tasks"][live]["status"] == TaskStatus.CANCELLED.value
         assert len(control_entries) == 1 and control_entries[0][:3] == (live, "dev_agent", next(entry["session_id"] for entry in launches if entry["task_id"] == live))
+        control_rows = control_entries[0][3]
+        # This is deliberately the original opaque-control entry, before it
+        # forwards the shipping cancellation control.  The already-completed
+        # sibling must retain the whole independently observed durable history
+        # at that exact boundary, not merely after the eventual drain.
+        assert [row for row in control_rows["tasks"] if row["id"] == completed] == [
+            row for row in completed_history["tasks"]
+            if row["id"] == completed
+        ]
+        assert [row for row in control_rows["results"] if row["task_id"] == completed] == [
+            row for row in completed_history["results"]
+            if row["task_id"] == completed
+        ]
+        assert [row for row in control_rows["audits"] if row["task_id"] == completed] == [
+            row for row in completed_history["audits"]
+            if row["task_id"] == completed
+        ]
         assert all(row["status"] == TaskStatus.CANCELLED.value for row in control_entries[0][3]["tasks"] if row["id"] in (parent_id, live))
         assert [(audit["task_id"], audit["agent"], json.loads(audit["payload"]))
                 for audit in control_entries[0][3]["audits"] if audit["action"] == "task_cancelled"] == [
