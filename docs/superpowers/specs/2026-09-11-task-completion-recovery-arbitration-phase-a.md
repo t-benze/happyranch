@@ -120,8 +120,10 @@ owned-job cleanup. Both scratch fallback
 and contained launch paths pass the provider resume id through. A leaf
 completion atomically records its terminal row, delegated-verdict audit and
 exact consumed result. A manager DONE has deliberately separate boundaries:
-the final owner CAS commits its terminal row and ordinary receipt, while its
-marker follows only after post-commit cleanup/delivery reconciliation. Startup
+the final owner CAS commits only its task UPDATE. The completion-report and
+orchestration-step audits have already committed in ordinary earlier
+transactions; the consumed marker follows post-commit cleanup/delivery
+reconciliation. Startup
 therefore reconciles terminal-before-marker only for the exact owner/result and
 never selects an unrelated latest result. Manager recovery reuses the accepted result's already
 durable orchestration-step audit when re-entering after a crash before its

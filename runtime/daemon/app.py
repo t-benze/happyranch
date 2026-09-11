@@ -165,6 +165,18 @@ async def _lifespan(app: FastAPI):
                 "THR-106 skill-id rename migration error for org %s: %s",
                 org.slug, exc,
             )
+        # A recovery terminal row can commit just before a crash while its
+        # post-commit async cleanup has not yet reached the durable job
+        # backstop.  Settle only ledger-owned terminal tasks before the
+        # generic orphan scan.  There is no live generation-owned control at
+        # restart, so this deliberately performs no process/PID signalling.
+        recovery_terminal_ids = set(
+            org.db.get_accepted_task_completion_recovery_task_ids()
+        ) | set(org.db.get_consumed_completed_task_completion_recovery_task_ids())
+        for task_id in recovery_terminal_ids:
+            task = org.db.get_task(task_id)
+            if task is not None and task.status.value in {"completed", "failed", "cancelled"}:
+                org.db.backstop_terminated_task_jobs(task_id, finished_at=_now_iso)
         recovered = org.db.recover_orphaned_running_jobs(now_iso=_now_iso)
         if recovered:
             _logger.warning(
