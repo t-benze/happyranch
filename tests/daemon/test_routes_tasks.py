@@ -569,11 +569,13 @@ def test_completion_callback_and_recovery_claim_arbitrate_at_real_sqlite_boundar
     # A rejected origin callback must not clear either the original owner or
     # the newly published recovery owner.
     assert org_state.sessions.get_active(task_id, "dev_agent") == origin
-    assert org_state.db.publish_task_completion_recovery_binding(
-        task_id=task_id, agent="dev_agent", origin_session_id=origin,
-        recovery_session_id=recovery,
+    assert org_state.sessions.publish_recovery_session(
+        task_id, "dev_agent", recovery, org_slug="alpha",
+        publish=lambda: org_state.db.publish_task_completion_recovery_binding(
+            task_id=task_id, agent="dev_agent", origin_session_id=origin,
+            recovery_session_id=recovery,
+        ),
     )
-    org_state.sessions.register_recovery_session(task_id, "dev_agent", recovery)
     assert org_state.sessions.get_active(task_id, "dev_agent") == recovery
     accepted = client.post(
         f"/api/v1/orgs/alpha/tasks/{task_id}/completion", headers=auth_headers,
