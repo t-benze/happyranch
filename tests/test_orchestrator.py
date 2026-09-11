@@ -1077,6 +1077,7 @@ def test_run_step_codex_second_omission_failure_spends_once_and_cleans_owned_job
     a task/agent-wide "latest" result.
     """
     from runtime.daemon.sessions import SessionTracker
+    import runtime.daemon.jobs_runner as jobs_runner
     from runtime.models import JobInterpreter, JobRecord, JobStatus
     import threading
 
@@ -1108,6 +1109,26 @@ def test_run_step_codex_second_omission_failure_spends_once_and_cleans_owned_job
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(iter_ids))
     iter_ids = iter((origin_id, recovery_id))
 
+    class ObservableProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid, self.returncode = pid, None
+
+    # Exercise the shipping terminator with live controls, rather than merely
+    # proving its durable backstop can update rows.  Preserve both process
+    # registries even if the parameterized provider assertion fails.
+    prior_inflight = dict(jobs_runner._INFLIGHT)
+    prior_overrides = dict(jobs_runner._KILL_REASON_OVERRIDE)
+    owned, unrelated = ObservableProcess(101), ObservableProcess(202)
+    jobs_runner._INFLIGHT.clear()
+    jobs_runner._INFLIGHT.update({owned_id: owned, unrelated_id: unrelated})
+
+    def killpg(pid: int, _sig: int) -> None:
+        if pid == owned.pid:
+            owned.returncode = -15
+
+    async def no_wait(_seconds: float) -> None:
+        return None
+
     class JoinedCleanupThread:
         """Keep the real cleanup coroutine finite and observable in this test."""
         def __init__(self, *, target, daemon):
@@ -1118,6 +1139,8 @@ def test_run_step_codex_second_omission_failure_spends_once_and_cleans_owned_job
             self.target()
 
     monkeypatch.setattr(threading, "Thread", JoinedCleanupThread)
+    monkeypatch.setattr(jobs_runner.os, "killpg", killpg)
+    monkeypatch.setattr(jobs_runner.asyncio, "sleep", no_wait)
 
     class FakeCodexExecutor:
         def __init__(self):
@@ -1147,30 +1170,38 @@ def test_run_step_codex_second_omission_failure_spends_once_and_cleans_owned_job
             )
 
     fake = FakeCodexExecutor()
-    with patch.object(orchestrator, "_build_executor", return_value=fake):
-        orchestrator.run_step(task_id)
-        # A terminal/restarted task cannot recursively launch a recovery.
-        orchestrator.run_step(task_id)
+    try:
+        with patch.object(orchestrator, "_build_executor", return_value=fake):
+            orchestrator.run_step(task_id)
+            # A terminal/restarted task cannot recursively launch a recovery.
+            orchestrator.run_step(task_id)
 
-    assert len(fake.calls) == 2
-    task = orchestrator._db.get_task(task_id)
-    assert task.status == TaskStatus.FAILED
-    recovery = orchestrator._db.execute(
-        "SELECT state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,),
-    ).fetchall()
-    assert len(recovery) == 1
-    assert recovery[0]["accepted_result_id"] is None
-    assert orchestrator._db.get_job(owned_id).reason == "task_ended"
-    assert orchestrator._db.get_job(unrelated_id).status == JobStatus.RUNNING
-    assert dict(orchestrator._db.get_latest_task_result(task_id, agent, old_id)) == older_before
-    # Both origin and recovery callbacks arrive too late and cannot mint rows.
-    for session_id in (origin_id, recovery_id):
-        assert not orchestrator._db.admit_task_completion_callback(
-            task_id=task_id, agent=agent, session_id=session_id, status="completed",
-            output_summary="late", decision_json=json.dumps({"action": "done"}),
-            confidence_score=100,
-        )
-    assert len(orchestrator._db.get_task_results(task_id)) == 1
+        assert len(fake.calls) == 2
+        task = orchestrator._db.get_task(task_id)
+        assert task.status == TaskStatus.FAILED
+        recovery = orchestrator._db.execute(
+            "SELECT state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+        ).fetchall()
+        assert len(recovery) == 1
+        assert recovery[0]["accepted_result_id"] is None
+        assert orchestrator._db.get_job(owned_id).reason == "task_ended"
+        assert orchestrator._db.get_job(unrelated_id).status == JobStatus.RUNNING
+        assert dict(orchestrator._db.get_latest_task_result(task_id, agent, old_id)) == older_before
+        # Both origin and recovery callbacks arrive too late and cannot mint rows.
+        for session_id in (origin_id, recovery_id):
+            assert not orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=session_id, status="completed",
+                output_summary="late", decision_json=json.dumps({"action": "done"}),
+                confidence_score=100,
+            )
+        assert len(orchestrator._db.get_task_results(task_id)) == 1
+        assert owned.returncode == -15
+        assert unrelated.returncode is None
+    finally:
+        jobs_runner._INFLIGHT.clear()
+        jobs_runner._INFLIGHT.update(prior_inflight)
+        jobs_runner._KILL_REASON_OVERRIDE.clear()
+        jobs_runner._KILL_REASON_OVERRIDE.update(prior_overrides)
 
 
 @pytest.mark.parametrize(
@@ -1212,9 +1243,11 @@ def test_run_step_codex_ineligible_origin_never_claims_or_launches_recovery(
 
     class ObservableProcess:
         def __init__(self, pid: int) -> None:
-            self.pid, self.returncode = pid, 0
+            self.pid, self.returncode = pid, None
 
     real_terminate = jobs_runner.terminate_jobs_for_task
+    prior_inflight = dict(jobs_runner._INFLIGHT)
+    prior_overrides = dict(jobs_runner._KILL_REASON_OVERRIDE)
     jobs_runner._INFLIGHT.clear()
     jobs_runner._INFLIGHT[owned_id] = ObservableProcess(101)
     jobs_runner._INFLIGHT[unrelated_id] = ObservableProcess(202)
@@ -1237,7 +1270,11 @@ def test_run_step_codex_ineligible_origin_never_claims_or_launches_recovery(
             self.target()
 
     monkeypatch.setattr(jobs_runner, "terminate_jobs_for_task", observe_real_terminate)
-    monkeypatch.setattr(jobs_runner.os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+    def killpg(pid, sig):
+        signals.append((pid, sig))
+        if pid == 101:
+            jobs_runner._INFLIGHT[owned_id].returncode = -15
+    monkeypatch.setattr(jobs_runner.os, "killpg", killpg)
     monkeypatch.setattr(jobs_runner.asyncio, "sleep", no_wait)
     monkeypatch.setattr(threading, "Thread", JoinedCleanupThread)
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "origin")
@@ -1269,26 +1306,34 @@ def test_run_step_codex_ineligible_origin_never_claims_or_launches_recovery(
             )
 
     fake = FakeCodexExecutor()
-    with patch.object(orchestrator, "_build_executor", return_value=fake):
-        orchestrator.run_step(task_id)
+    try:
+        with patch.object(orchestrator, "_build_executor", return_value=fake):
+            orchestrator.run_step(task_id)
 
-    assert fake.calls == 1
-    assert orchestrator._db.execute(
-        "SELECT count(*) FROM task_completion_recoveries WHERE task_id=?", (task_id,),
-    ).fetchone()[0] == 0
-    task = orchestrator._db.get_task(task_id)
-    assert task.status == (TaskStatus.CANCELLED if origin_outcome == "cancelled" else TaskStatus.FAILED)
-    assert cleanup_calls == [(task_id, (owned_id,))]
-    # Exercise the shipping termination helper: it signalled only the owned
-    # observable process, never the unrelated live control.
-    assert signals and {pid for pid, _sig in signals} == {101}
-    assert orchestrator._db.get_job(owned_id).reason == "task_ended"
-    assert orchestrator._db.get_job(unrelated_id).status == JobStatus.RUNNING
-    assert dict(orchestrator._db.get_latest_task_result(task_id, agent, "older-session")) == older_before
-    assert not orchestrator._db.admit_task_completion_callback(
-        task_id=task_id, agent=agent, session_id="origin", status="completed",
-        output_summary="late", decision_json=json.dumps({"action": "done"}), confidence_score=100,
-    )
+        assert fake.calls == 1
+        assert orchestrator._db.execute(
+            "SELECT count(*) FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+        ).fetchone()[0] == 0
+        task = orchestrator._db.get_task(task_id)
+        assert task.status == (TaskStatus.CANCELLED if origin_outcome == "cancelled" else TaskStatus.FAILED)
+        assert cleanup_calls == [(task_id, (owned_id,))]
+        # Exercise the shipping termination helper: it signalled only the owned
+        # observable process, never the unrelated live control.
+        assert signals and {pid for pid, _sig in signals} == {101}
+        assert orchestrator._db.get_job(owned_id).reason == "task_ended"
+        assert orchestrator._db.get_job(unrelated_id).status == JobStatus.RUNNING
+        assert dict(orchestrator._db.get_latest_task_result(task_id, agent, "older-session")) == older_before
+        assert not orchestrator._db.admit_task_completion_callback(
+            task_id=task_id, agent=agent, session_id="origin", status="completed",
+            output_summary="late", decision_json=json.dumps({"action": "done"}), confidence_score=100,
+        )
+        assert jobs_runner._INFLIGHT[owned_id].returncode == -15
+        assert jobs_runner._INFLIGHT[unrelated_id].returncode is None
+    finally:
+        jobs_runner._INFLIGHT.clear()
+        jobs_runner._INFLIGHT.update(prior_inflight)
+        jobs_runner._KILL_REASON_OVERRIDE.clear()
+        jobs_runner._KILL_REASON_OVERRIDE.update(prior_overrides)
 
 
 def test_run_step_codex_recovery_cancellation_after_callback_wins(
