@@ -61,18 +61,25 @@ class Client:
             # HTTPError is a response stream too: a peer must not keep an
             # operation alive by dribbling an error body.
             try:b=self._read(e,cap)
-            except (OSError,ValueError,TimeoutError) as exc:raise TransportError("bounded error response read failed") from exc
+            except TimeoutError:raise
+            except (OSError,ValueError) as exc:raise TransportError("bounded error response read failed") from exc
             return e.code,dict(e.headers.items()),b
         except (URLError,OSError,ValueError,TimeoutError) as e:raise TransportError("transport failed; identity retained") from e
         try:
             with r:
                 b=self._read(r,cap)
-        except (OSError,ValueError,TimeoutError) as e:raise TransportError("bounded response read failed") from e
+        except TimeoutError:raise
+        except (OSError,ValueError) as e:raise TransportError("bounded response read failed") from e
         return r.status,dict(r.headers.items()),b
     def _read(self,r:Any,cap:int)->bytes:
         chunks=[];size=0
         while True:
-            self.remaining();b=r.read(min(65536,cap-size+1))
+            # Buffered HTTPResponse.read(n) may wait for all n bytes while a
+            # peer continuously dribbles data.  When an operation deadline is
+            # active, take one byte per admission so that each arriving byte
+            # is charged to the same absolute budget (HTTPError has this
+            # response shape too).
+            self.remaining();b=r.read(1 if self.end is not None else min(65536,cap-size+1))
             if not b:break
             size+=len(b)
             if size>cap:raise TransportError("response exceeded configured bound")

@@ -82,7 +82,10 @@ def test_06_deadline_and_nonfinite(fake:tuple[str,Fake],tmp_path:Path)->None:
     def dribble(self:Fake,status:int,body:object=b"",headers:dict[str,str]|None=None)->None:
         if self.path.endswith("/api/json") and "/queue/" not in self.path:
             raw=json.dumps({"building":True}).encode();self.send_response(200);self.send_header("Content-Length",str(len(raw)));self.end_headers()
-            for byte in raw:self.wfile.write(bytes([byte]));self.wfile.flush();time.sleep(.008)
+            for byte in raw:
+                try:self.wfile.write(bytes([byte]));self.wfile.flush()
+                except OSError:break
+                time.sleep(.008)
             return
         original(self,status,body,headers)
     Fake.reply=dribble
@@ -90,6 +93,27 @@ def test_06_deadline_and_nonfinite(fake:tuple[str,Fake],tmp_path:Path)->None:
         started=time.monotonic();r=cli(b,p,"--deadline",".04","--timeout","1","wait")
         assert r.returncode==3 and time.monotonic()-started<.25
         assert json.loads(p.read_text())["build_number"]==1
+    finally:Fake.reply=original
+def test_06b_deadline_also_bounds_dribbling_http_error(fake:tuple[str,Fake],tmp_path:Path)->None:
+    """The HTTPError body is a stream too, so it cannot evade the budget."""
+    b,f=fake;p=tmp_path/"r";terminal(p,b)
+    original=Fake.reply
+    def slow_error(self:Fake,status:int,body:object=b"",headers:dict[str,str]|None=None)->None:
+        if self.path.endswith("/api/json") and "/queue/" not in self.path:
+            raw=b"x"*64;self.send_response(500);self.send_header("Content-Length",str(len(raw)));self.end_headers()
+            for byte in raw:
+                try:self.wfile.write(bytes([byte]));self.wfile.flush()
+                except OSError:break
+                time.sleep(.008)
+            return
+        original(self,status,body,headers)
+    Fake.reply=slow_error
+    try:
+        started=time.monotonic();r=cli(b,p,"--deadline",".04","--timeout","1","wait")
+        assert r.returncode==3 and time.monotonic()-started<.25
+        receipt=json.loads(p.read_text())
+        assert receipt["build_number"]==1 and receipt["jenkins_result"]=="SUCCESS"
+        assert receipt["collection"]["status"]=="timeout"
     finally:Fake.reply=original
 def test_07_uncertain_and_reuse(fake:tuple[str,Fake],tmp_path:Path)->None:
     b,f=fake;f.states["properties"]=[];p=tmp_path/"r";jj.open_receipt(p,b,"folder/demo");assert cli(b,p,"submit").returncode==3;assert not [x for x in f.seen if x[0]=="POST"]
@@ -150,6 +174,15 @@ def test_11_bounds_symlink_and_secret(fake:tuple[str,Fake],tmp_path:Path)->None:
         except (jj.JenkinsError,OSError,ValueError):pass
         assert not (outside/"a").exists()
     finally:jj.store=original
+def test_11b_malformed_collection_persists_partial_observation(fake:tuple[str,Fake],tmp_path:Path)->None:
+    """A malformed artifact list cannot erase already-observed console state."""
+    b,f=fake;p=tmp_path/"r";terminal(p,b);f.states["artifacts"]=None
+    r=cli(b,p,"collect","--output",str(tmp_path/"o"))
+    assert r.returncode==3
+    collection=json.loads(p.read_text())["collection"]
+    assert collection["status"]=="partial"
+    assert any(entry["path"]=="console.log" and entry["status"]=="downloaded" for entry in collection["artifacts"])
+    assert any(entry.get("reason")=="malformed_metadata" for entry in collection["artifacts"])
 def test_12_copied_standalone_helper(fake:tuple[str,Fake],tmp_path:Path)->None:
     b,_=fake;copy=tmp_path/"tool.py";copy.write_bytes(HELPER.read_bytes())
     r=subprocess.run([sys.executable,str(copy),"--controller",b,"--allow-http","--job","folder/demo","--receipt",str(tmp_path/"r"),"submit"],capture_output=True,text=True,cwd=tmp_path,timeout=5)
