@@ -58,21 +58,26 @@ class Client:
         if self.auth:h["Authorization"]=self.auth
         try:r=self.opener.open(Request(u,data=data,headers=h,method=m),timeout=self.remaining())
         except HTTPError as e:
-            try:b=e.read(cap+1)
-            except Exception:b=b""
+            # HTTPError is a response stream too: a peer must not keep an
+            # operation alive by dribbling an error body.
+            try:b=self._read(e,cap)
+            except (OSError,ValueError,TimeoutError) as exc:raise TransportError("bounded error response read failed") from exc
             return e.code,dict(e.headers.items()),b
         except (URLError,OSError,ValueError,TimeoutError) as e:raise TransportError("transport failed; identity retained") from e
-        chunks=[];size=0
         try:
             with r:
-                while True:
-                    self.remaining();b=r.read(min(65536,cap-size+1))
-                    if not b:break
-                    size+=len(b)
-                    if size>cap:raise TransportError("response exceeded configured bound")
-                    chunks.append(b)
+                b=self._read(r,cap)
         except (OSError,ValueError,TimeoutError) as e:raise TransportError("bounded response read failed") from e
-        return r.status,dict(r.headers.items()),b"".join(chunks)
+        return r.status,dict(r.headers.items()),b
+    def _read(self,r:Any,cap:int)->bytes:
+        chunks=[];size=0
+        while True:
+            self.remaining();b=r.read(min(65536,cap-size+1))
+            if not b:break
+            size+=len(b)
+            if size>cap:raise TransportError("response exceeded configured bound")
+            chunks.append(b)
+        return b"".join(chunks)
     def api_get(self,u:str)->dict[str,Any]:
         s,_,b=self.request("GET",u)
         if s!=200:raise TransportError(f"Jenkins API returned HTTP {s}")
@@ -89,8 +94,14 @@ def params(meta:dict[str,Any],given:dict[str,str])->dict[str,str]:
     if set(given)-names:raise ValidationError("parameter is not declared by this job")
     return given
 prepare_parameters=params
+def positive(v:Any)->bool:return isinstance(v,int) and not isinstance(v,bool) and v>0
 def valid_receipt(x:Any)->dict[str,Any]:
-    if not isinstance(x,dict) or x.get("version")!=VERSION or not isinstance(x.get("controller"),str) or not isinstance(x.get("job"),str) or x.get("phase") not in {"intent","submission_uncertain","queued","building","terminal","cancel_requested"}:raise ReceiptError("malformed receipt")
+    if not isinstance(x,dict) or x.get("version")!=VERSION or not isinstance(x.get("controller"),str) or not isinstance(x.get("job"),str) or not isinstance(x.get("request_id"),str) or x.get("phase") not in {"intent","submission_uncertain","queued","building","terminal","cancel_requested"}:raise ReceiptError("malformed receipt")
+    for key in ("queue_id","build_number"):
+        if x.get(key) is not None and not positive(x[key]):raise ReceiptError("malformed receipt identity")
+    col=x.get("collection")
+    if not isinstance(col,dict) or col.get("status") not in {"not_started","complete","partial","timeout","transport_unknown"} or not isinstance(col.get("artifacts"),list):raise ReceiptError("malformed receipt collection")
+    if x.get("jenkins_result") is not None and x["jenkins_result"] not in TERMINAL|{"QUEUE_CANCELLED","TRANSPORT_UNKNOWN","UNSUPPORTED_RESULT"}:raise ReceiptError("malformed receipt result")
     validate_controller(x["controller"],True);job_path(x["job"]);return x
 def safe_parent(p:Path)->None:
     cur=Path(p.anchor) if p.is_absolute() else Path(".")
@@ -138,18 +149,24 @@ def build(c:Controller,j:str,n:int)->str:return c.base+job_path(j)+f"/{n}"
 def outcome(x:dict[str,Any])->str:
     if x.get("building") is True:return "BUILDING"
     if x.get("building") is not False:return "TRANSPORT_UNKNOWN"
-    return x["result"] if x.get("result") in TERMINAL else "UNSUPPORTED_RESULT"
+    result=x.get("result")
+    return result if isinstance(result,str) and result in TERMINAL else "UNSUPPORTED_RESULT"
 def submit(c:Client,p:Path,j:str,given:dict[str,str])->dict[str,Any]:
     x=open_receipt(p,c.controller.base,j);m=c.api_get(controller_url(c.controller.base,j)+"/api/json");g=params(m,given);parameterized=any(isinstance(a,dict) and a.get("parameterDefinitions") for a in (m.get("property") or []));u=controller_url(c.controller.base,j)+("/buildWithParameters" if parameterized else "/build");s,h,_=c.request("POST",u,urlencode(g).encode() if parameterized else None);loc=h.get("Location") or h.get("location")
     if s not in {200,201,202} or not loc:x.update(phase="submission_uncertain",submission_status=s);save_receipt(p,x);raise ReceiptError("submission uncertain; reconcile an exact build without resubmit")
+    raw=urlsplit(loc)
+    if raw.query or raw.fragment or raw.username or raw.password: x.update(phase="submission_uncertain");save_receipt(p,x);raise ReceiptError("Location has unsafe components")
     q=urlsplit(urljoin(u,loc))
     try:n=int(q.path.rstrip("/").split("/")[-1])
     except ValueError:x.update(phase="submission_uncertain");save_receipt(p,x);raise ReceiptError("Location lacks numeric queue identity")
+    if not positive(n):raise ReceiptError("Location lacks positive queue identity")
     c.controller.checked(urlunsplit((q.scheme,q.netloc,q.path,"","")),"queue",ident=n);x.update(phase="queued",queue_id=n);save_receipt(p,x);return x
 def reconcile(c:Client,p:Path,j:str,n:int)->dict[str,Any]:
     x=load_receipt(p);bind(x,c.controller,j)
-    if n<=0 or x.get("queue_id") is not None or x.get("build_number") is not None:raise ReceiptError("exact reconciliation is unavailable for this receipt")
-    c.controller.checked(build(c.controller,j,n),"build",j,n);x.update(phase="building",build_number=n);save_receipt(p,x);return x
+    if not positive(n) or x.get("build_number") is not None:raise ReceiptError("exact reconciliation is unavailable for this receipt")
+    target=c.controller.checked(build(c.controller,j,n),"build",j,n)
+    # Reconciliation is an observation, never a blind local identity claim.
+    c.api_get(target+"/api/json");x.update(phase="building",build_number=n);save_receipt(p,x);return x
 def wait(c:Client,p:Path,j:str,deadline:float,poll:float)->dict[str,Any]:
     x=load_receipt(p);bind(x,c.controller,j);c.end=time.monotonic()+finite(deadline,"deadline");finite(poll,"poll")
     try:
@@ -161,7 +178,11 @@ def wait(c:Client,p:Path,j:str,deadline:float,poll:float)->dict[str,Any]:
                 q=c.api_get(queue(c.controller,x["queue_id"])+"/api/json")
                 if q.get("cancelled") is True:x.update(phase="terminal",jenkins_result="QUEUE_CANCELLED");save_receipt(p,x);return x
                 e=q.get("executable")
-                if isinstance(e,dict) and isinstance(e.get("number"),int):x.update(phase="building",build_number=e["number"]);save_receipt(p,x)
+                if isinstance(e,dict) and positive(e.get("number")):
+                    number=e["number"]; reported=e.get("url")
+                    if not isinstance(reported,str):raise TransportError("queue executable lacks URL")
+                    c.controller.checked(reported,"build",j,number)
+                    x.update(phase="building",build_number=number);save_receipt(p,x)
             else:raise ReceiptError("uncertain submit requires explicit exact-build reconciliation")
             time.sleep(min(poll,c.remaining()))
     except TimeoutError:x["collection"]={"status":"timeout","artifacts":[]};save_receipt(p,x);raise ReceiptError("deadline reached; remote cancellation was not sent")
@@ -173,6 +194,13 @@ def cancel(c:Client,p:Path,j:str,d:float)->dict[str,Any]:
     else:raise ReceiptError("no identity to cancel")
     s,_,_=c.request("POST",u,data);x.update(phase="cancel_requested",cancel_requested_status=s);save_receipt(p,x)
     if s not in {200,201,202}:raise ReceiptError("Jenkins did not accept cancellation")
+    # Queue cancellation may race Jenkins assigning a build.  Observe once and
+    # issue the build stop using the exact identity before terminal waiting.
+    if x.get("queue_id") is not None and x.get("build_number") is None:
+        q=c.api_get(queue(c.controller,x["queue_id"])+"/api/json");e=q.get("executable")
+        if isinstance(e,dict) and positive(e.get("number")) and isinstance(e.get("url"),str):
+            c.controller.checked(e["url"],"build",j,e["number"]);x.update(build_number=e["number"]);save_receipt(p,x);s,_,_=c.request("POST",build(c.controller,j,e["number"])+"/stop")
+            if s not in {200,201,202}:raise ReceiptError("Jenkins did not accept build cancellation")
     return wait(c,p,j,max(.001,c.remaining()),.05)
 def output_file(root:Path,rel:str)->Path:
     if not rel or rel.startswith("/") or any(bad(x) for x in rel.split("/")):raise ValidationError("unsafe artifact path")
@@ -187,6 +215,9 @@ def output_file(root:Path,rel:str)->Path:
     if t.exists() or t.is_symlink():raise ValidationError("artifact collision refused")
     return t
 def store(p:Path,b:bytes)->None:
+    # Re-check immediately at the write boundary.  This closes the check/use
+    # gap for a swapped output-root before the final O_NOFOLLOW create.
+    safe_parent(p)
     fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
     try:os.write(fd,b);os.fsync(fd)
     finally:os.close(fd)
@@ -205,7 +236,8 @@ def collect(c:Client,p:Path,j:str,out:Path,log:int,per:int,total:int,count:int,d
     try:meta=c.api_get(base+"/api/json")
     except JenkinsError:x["collection"]={"status":"partial","artifacts":man};save_receipt(p,x);raise
     get("console.log",base+"/consoleText",log,"console.log");used=0;arts=meta.get("artifacts",[])
-    if not isinstance(arts,list):raise TransportError("malformed artifact metadata")
+    if not isinstance(arts,list):
+        x["collection"]={"status":"partial","artifacts":man+[{'path':'artifacts','status':'error','reason':'malformed_metadata'}]};save_receipt(p,x);raise TransportError("malformed artifact metadata")
     for idx,a in enumerate(arts):
         rel=a.get("relativePath") if isinstance(a,dict) else None
         if not isinstance(rel,str):man.append({"path":"unknown","status":"error"});failed=True;continue

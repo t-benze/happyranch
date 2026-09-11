@@ -9,24 +9,33 @@ HELPER=Path(__file__).parents[1]/"scripts"/"jenkins_jobs.py"
 spec=importlib.util.spec_from_file_location("jj",HELPER);assert spec and spec.loader
 jj=importlib.util.module_from_spec(spec);sys.modules["jj"]=jj;spec.loader.exec_module(jj)
 class Fake(BaseHTTPRequestHandler):
-    seen:list[tuple[str,str,str]]=[]; states:dict[str,object]={}
+    seen:list[tuple[str,str,str,bytes]]=[]; states:dict[str,object]={}
     def log_message(self,*a:object)->None:pass
     def reply(self,status:int,body:object=b"",headers:dict[str,str]|None=None)->None:
         b=body if isinstance(body,bytes) else json.dumps(body).encode();self.send_response(status)
         for k,v in (headers or {}).items():self.send_header(k,v)
         self.send_header("Content-Length",str(len(b)));self.end_headers();self.wfile.write(b)
     def do_GET(self)->None:
-        self.seen.append(("GET",self.path,self.headers.get("Authorization","")))
+        self.seen.append(("GET",self.path,self.headers.get("Authorization",""),b""))
         if self.states.get("auth") and not self.headers.get("Authorization","").startswith("Basic "):return self.reply(401)
         if self.path.endswith("/api/json") and "/queue/" not in self.path:
+            builds=self.states.get("builds")
+            if isinstance(builds,list) and builds:return self.reply(200,builds.pop(0))
             return self.reply(200,{"property":self.states.get("properties",[]),"building":False,"result":self.states.get("result","SUCCESS"),"artifacts":self.states.get("artifacts",[])})
-        if "/queue/item/" in self.path:return self.reply(200,self.states.get("queue",{"executable":{"number":1}}))
+        if "/queue/item/" in self.path:
+            queues=self.states.get("queues")
+            if isinstance(queues,list) and queues:return self.reply(200,queues.pop(0))
+            if self.states.get("queue_404"):return self.reply(404)
+            return self.reply(200,self.states.get("queue",{"executable":{"number":1}}))
         if self.path.endswith("consoleText"):return self.reply(200,self.states.get("log",b"log"))
         if "/artifact/" in self.path:return self.reply(self.states.get("artifact_status",200),self.states.get("artifact",b"bytes"))
         return self.reply(404)
     def do_POST(self)->None:
-        self.seen.append(("POST",self.path,self.headers.get("Authorization","")))
-        if self.path.endswith("/build") or self.path.endswith("/buildWithParameters"):return self.reply(201,b"",{"Location":"/jenkins/queue/item/7/"})
+        body=self.rfile.read(int(self.headers.get("Content-Length","0")))
+        self.seen.append(("POST",self.path,self.headers.get("Authorization",""),body))
+        if self.path.endswith("/build") or self.path.endswith("/buildWithParameters"):
+            if self.states.get("submit_status"):return self.reply(int(self.states["submit_status"]))
+            return self.reply(201,b"",{"Location":str(self.states.get("location","/jenkins/queue/item/7/"))})
         if self.path.endswith("/queue/cancelItem"):self.states["queue"]={"cancelled":True};return self.reply(200)
         if self.path.endswith("/stop"):self.states["result"]="ABORTED";return self.reply(200)
         return self.reply(404)
@@ -40,32 +49,108 @@ def cli(base:str,p:Path,*args:str,env:dict[str,str]|None=None)->subprocess.Compl
 def terminal(p:Path,base:str)->None:
     x=jj.open_receipt(p,base,"folder/demo");x.update(phase="terminal",build_number=1,jenkins_result="SUCCESS");jj.save_receipt(p,x)
 def test_01_plain_submit_auth(fake:tuple[str,Fake],tmp_path:Path)->None:
-    b,f=fake;f.states["auth"]=True;r=cli(b,tmp_path/"r","submit",env={"JENKINS_USERNAME":"u","JENKINS_API_TOKEN":"t"});assert r.returncode==0 and [x[1] for x in f.seen if x[0]=="POST"]==["/jenkins/job/folder/job/demo/build"] and all(x[2].startswith("Basic ") for x in f.seen)
+    b,f=fake;f.states["auth"]=True;r=cli(b,tmp_path/"r","submit",env={"JENKINS_USERNAME":"u","JENKINS_API_TOKEN":"t"})
+    assert r.returncode==0
+    assert [x[1] for x in f.seen if x[0]=="POST"]==["/jenkins/job/folder/job/demo/build"]
+    assert all(x[2]=="Basic "+base64.b64encode(b"u:t").decode() for x in f.seen)
 def test_02_parameterized_declared_only(fake:tuple[str,Fake],tmp_path:Path)->None:
-    b,f=fake;f.states["properties"]=[{"parameterDefinitions":[{"name":"branch","type":"StringParameterDefinition"}]}];assert cli(b,tmp_path/"r","submit","--parameter","branch=a").returncode==0;assert any("buildWithParameters" in x[1] for x in f.seen);assert cli(b,tmp_path/"x","submit","--parameter","no=x").returncode==3
+    b,f=fake;f.states["properties"]=[{"parameterDefinitions":[{"name":"branch","type":"StringParameterDefinition"}]}]
+    assert cli(b,tmp_path/"r","submit","--parameter","branch=a b&c").returncode==0
+    posts=[x for x in f.seen if x[0]=="POST"]
+    assert len(posts)==1 and posts[0][1].endswith("/buildWithParameters") and posts[0][3]==b"branch=a+b%26c"
+    f.seen=[];assert cli(b,tmp_path/"x","submit","--parameter","no=x").returncode==3;assert not [x for x in f.seen if x[0]=="POST"]
+    f.states["properties"]=[{"parameterDefinitions":[{"name":"bad","type":"UnsupportedParameterDefinition"}]}];f.seen=[]
+    assert cli(b,tmp_path/"y","submit","--parameter","bad=x").returncode==3;assert not [x for x in f.seen if x[0]=="POST"]
 def test_03_context_folder_and_identity_refusal()->None:
     assert jj.job_path("a b/c")=="/job/a%20b/job/c"
     c=jj.Controller("https://x.test/jenkins")
     for u in ("https://x.test/jenkins/job/a/lastBuild","https://x.test/jenkins/job/a/1/%2e%2e/config","https://x.test/jenkins/job/a/job/b/2"):
         with pytest.raises(jj.ValidationError):c.checked(u,"build","a",1)
 def test_04_queue_build_success_collect(fake:tuple[str,Fake],tmp_path:Path)->None:
-    b,f=fake;f.states["artifacts"]=[{"relativePath":"a.txt"}];p=tmp_path/"r";assert cli(b,p,"submit").returncode==0;assert cli(b,p,"--poll",".01","wait").returncode==0;assert cli(b,p,"collect","--output",str(tmp_path/"o")).returncode==0;assert (tmp_path/"o"/"a.txt").read_bytes()==b"bytes"
+    b,f=fake;f.states["artifacts"]=[{"relativePath":"a.txt"}];f.states["queues"]=[{"executable":{"number":1,"url":b+"/job/folder/job/demo/1/"}}];f.states["builds"]=[{"building":True},{"building":False,"result":"SUCCESS","artifacts":[{"relativePath":"a.txt"}]}]
+    p=tmp_path/"r";assert cli(b,p,"submit").returncode==0;assert cli(b,p,"--poll",".01","wait").returncode==0;assert cli(b,p,"collect","--output",str(tmp_path/"o")).returncode==0
+    assert (tmp_path/"o"/"a.txt").read_bytes()==b"bytes";x=json.loads(p.read_text());assert x["build_number"]==1 and x["jenkins_result"]=="SUCCESS"
 @pytest.mark.parametrize("result",["FAILURE","UNSTABLE","ABORTED"])
 def test_05_terminal_results(fake:tuple[str,Fake],tmp_path:Path,result:str)->None:
     b,f=fake;f.states["result"]=result;p=tmp_path/"r";terminal(p,b);assert cli(b,p,"wait").returncode==2
 def test_06_deadline_and_nonfinite(fake:tuple[str,Fake],tmp_path:Path)->None:
-    b,_=fake;p=tmp_path/"r";terminal(p,b);assert cli(b,p,"--deadline","nan","show").returncode==3
+    b,f=fake;p=tmp_path/"r";terminal(p,b);assert cli(b,p,"--deadline","nan","show").returncode==3
+    # A response which continuously makes progress must still consume the one
+    # absolute operation budget; socket inactivity timeouts are insufficient.
+    f.states["builds"]=[{"building":True}]
+    original=Fake.reply
+    def dribble(self:Fake,status:int,body:object=b"",headers:dict[str,str]|None=None)->None:
+        if self.path.endswith("/api/json") and "/queue/" not in self.path:
+            raw=json.dumps({"building":True}).encode();self.send_response(200);self.send_header("Content-Length",str(len(raw)));self.end_headers()
+            for byte in raw:self.wfile.write(bytes([byte]));self.wfile.flush();time.sleep(.008)
+            return
+        original(self,status,body,headers)
+    Fake.reply=dribble
+    try:
+        started=time.monotonic();r=cli(b,p,"--deadline",".04","--timeout","1","wait")
+        assert r.returncode==3 and time.monotonic()-started<.25
+        assert json.loads(p.read_text())["build_number"]==1
+    finally:Fake.reply=original
 def test_07_uncertain_and_reuse(fake:tuple[str,Fake],tmp_path:Path)->None:
     b,f=fake;f.states["properties"]=[];p=tmp_path/"r";jj.open_receipt(p,b,"folder/demo");assert cli(b,p,"submit").returncode==3;assert not [x for x in f.seen if x[0]=="POST"]
+    for status,location in ((500,""),(201,""),(201,"https://elsewhere.invalid/queue/item/7/"),(201,"/jenkins/queue/item/7/?x=1")):
+        f.seen=[];f.states.update(submit_status=status,location=location);q=tmp_path/f"u{status}{len(location)}";r=cli(b,q,"submit")
+        assert r.returncode==3 and len([x for x in f.seen if x[0]=="POST"])==1
+        assert cli(b,q,"submit").returncode==3 and len([x for x in f.seen if x[0]=="POST"])==1
+    f.states.pop("submit_status",None);f.states.pop("location",None)
 def test_08_reconcile_no_resubmit(fake:tuple[str,Fake],tmp_path:Path)->None:
-    b,f=fake;p=tmp_path/"r";x=jj.open_receipt(p,b,"folder/demo");x["phase"]="submission_uncertain";jj.save_receipt(p,x);assert cli(b,p,"reconcile","--build-number","1").returncode==0;assert not f.seen
+    b,f=fake;p=tmp_path/"r";x=jj.open_receipt(p,b,"folder/demo");x.update(phase="submission_uncertain",queue_id=7);jj.save_receipt(p,x);f.states["queue_404"]=True
+    assert cli(b,p,"reconcile","--build-number","1").returncode==0
+    assert any(x[0]=="GET" and x[1].endswith("/job/folder/job/demo/1/api/json") for x in f.seen)
+    assert not [x for x in f.seen if x[0]=="POST"] and json.loads(p.read_text())["build_number"]==1
 def test_09_cancel_queue_race(fake:tuple[str,Fake],tmp_path:Path)->None:
-    b,f=fake;p=tmp_path/"r";x=jj.open_receipt(p,b,"folder/demo");x.update(phase="queued",queue_id=7);jj.save_receipt(p,x);assert cli(b,p,"cancel").returncode==2;assert any(x[1]=="/jenkins/queue/cancelItem" for x in f.seen)
+    b,f=fake;p=tmp_path/"r";x=jj.open_receipt(p,b,"folder/demo");x.update(phase="queued",queue_id=7);jj.save_receipt(p,x)
+    f.states["queues"]=[{"executable":{"number":1,"url":b+"/job/folder/job/demo/1/"}}]
+    assert cli(b,p,"--deadline","1","cancel").returncode==2
+    paths=[x[1] for x in f.seen];assert "/jenkins/queue/cancelItem" in paths and "/jenkins/job/folder/job/demo/1/stop" in paths
+    x=json.loads(p.read_text());assert x["build_number"]==1 and x["jenkins_result"]=="ABORTED"
+
+def test_09b_two_process_lifecycle_contention_preserves_identity(fake:tuple[str,Fake],tmp_path:Path)->None:
+    """A stale waiter/canceller must not erase an observed exact build identity."""
+    b,f=fake;p=tmp_path/"r";x=jj.open_receipt(p,b,"folder/demo");x.update(phase="queued",queue_id=7);jj.save_receipt(p,x)
+    f.states["queues"]=[{"executable":{"number":1,"url":b+"/job/folder/job/demo/1/"}},{"executable":{"number":1,"url":b+"/job/folder/job/demo/1/"}}]
+    f.states["builds"]=[{"building":False,"result":"SUCCESS"},{"building":False,"result":"ABORTED"}]
+    common=[sys.executable,str(HELPER),"--controller",b,"--allow-http","--job","folder/demo","--receipt",str(p),"--deadline","1","--poll",".001"]
+    waiter=subprocess.Popen([*common,"wait"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    canceller=subprocess.Popen([*common,"cancel"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    waiter.communicate(timeout=5);canceller.communicate(timeout=5)
+    receipt=json.loads(p.read_text())
+    assert receipt["build_number"]==1 and receipt["phase"] in {"building","terminal","cancel_requested"}
+    assert not [x for x in f.seen if x[0]=="POST" and x[1].endswith("/build")]
 def test_10_two_server_refusal_no_forward(fake:tuple[str,Fake],tmp_path:Path)->None:
-    b,f=fake;c=jj.Controller(b)
-    with pytest.raises(jj.ValidationError):c.checked("http://127.0.0.2:1/jenkins/queue/item/7","queue",ident=7)
-    assert not f.seen
+    b,f=fake;other_seen:list[str]=[]
+    class Other(BaseHTTPRequestHandler):
+        def log_message(self,*a:object)->None:pass
+        def do_GET(self)->None:other_seen.append(self.headers.get("Authorization",""));self.send_response(200);self.end_headers()
+    other=ThreadingHTTPServer(("127.0.0.1",0),Other);thread=threading.Thread(target=other.serve_forever);thread.start()
+    try:
+        p=tmp_path/"r";x=jj.open_receipt(p,b,"folder/demo");x.update(phase="queued",queue_id=7);jj.save_receipt(p,x)
+        f.states["queues"]=[{"executable":{"number":1,"url":f"http://127.0.0.1:{other.server_port}/job/folder/job/demo/1/"}}]
+        r=cli(b,p,"wait",env={"JENKINS_USERNAME":"u","JENKINS_API_TOKEN":"real-secret"})
+        assert r.returncode==3 and other_seen==[] and "real-secret" not in r.stderr
+    finally:other.shutdown();thread.join();other.server_close()
 def test_11_bounds_symlink_and_secret(fake:tuple[str,Fake],tmp_path:Path)->None:
-    b,f=fake;p=tmp_path/"r";terminal(p,b);d=tmp_path/"o";d.mkdir();(d/"x").symlink_to(tmp_path);f.states["artifacts"]=[{"relativePath":"x/escape"}];assert cli(b,p,"collect","--output",str(d)).returncode==2;assert not (tmp_path/"escape").exists();assert "SECRET" not in cli(b,tmp_path/"n","--token-env","BAD\nSECRET","show").stderr
+    b,f=fake;p=tmp_path/"r";terminal(p,b);d=tmp_path/"o";d.mkdir();(d/"x").symlink_to(tmp_path);f.states["artifacts"]=[{"relativePath":"x/escape"}]
+    assert cli(b,p,"collect","--output",str(d)).returncode==2;assert not (tmp_path/"escape").exists()
+    assert "real-secret" not in cli(b,tmp_path/"n","--token-env","BAD\nSECRET","show",env={"BAD\nSECRET":"real-secret"}).stderr
+    # The root itself may be swapped after preflight; descriptor-relative
+    # traversal must refuse rather than publish outside the output tree.
+    safe=tmp_path/"safe";safe.mkdir();outside=tmp_path/"outside";outside.mkdir();root=tmp_path/"root";root.mkdir()
+    original=jj.store
+    def swap_store(path:Path,data:bytes)->None:
+        root.rename(safe);root.symlink_to(outside,target_is_directory=True);original(path,data)
+    jj.store=swap_store
+    try:
+        try:jj.store(jj.output_file(root,"a"),b"x")
+        except (jj.JenkinsError,OSError,ValueError):pass
+        assert not (outside/"a").exists()
+    finally:jj.store=original
 def test_12_copied_standalone_helper(fake:tuple[str,Fake],tmp_path:Path)->None:
-    b,_=fake;copy=tmp_path/"tool.py";copy.write_bytes(HELPER.read_bytes());r=subprocess.run([sys.executable,str(copy),"--help"],capture_output=True,text=True,cwd=tmp_path);assert r.returncode==0 and "runtime" not in copy.read_text()
+    b,_=fake;copy=tmp_path/"tool.py";copy.write_bytes(HELPER.read_bytes())
+    r=subprocess.run([sys.executable,str(copy),"--controller",b,"--allow-http","--job","folder/demo","--receipt",str(tmp_path/"r"),"submit"],capture_output=True,text=True,cwd=tmp_path,timeout=5)
+    assert r.returncode==0 and "runtime" not in copy.read_text()
