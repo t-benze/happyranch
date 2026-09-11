@@ -2162,7 +2162,7 @@ def test_r1_plain_fanout_joins_only_after_both_original_children_complete(
     parent_id = "TASK-U0-PLAIN-FANOUT"
     backend = _FakeBackend(auto_exit_after=0)
     orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
-    paths, receipts, launches, errors = orch._paths, [], [], []
+    paths, receipts, launches, callbacks, errors = orch._paths, [], [], [], []
     second_held, release_second, done = threading.Event(), threading.Event(), threading.Event()
 
     class EventSink:
@@ -2198,7 +2198,12 @@ def test_r1_plain_fanout_joins_only_after_both_original_children_complete(
                 body = CompletionBody(session_id=session_id, agent=agent, status="completed", confidence=100,
                                       verdict="PASS" if task_id != parent_id else None,
                                       output_summary=f"report:{task_id}", decision=decision.model_dump())
-                assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
+                callback = asyncio.run(submit_completion(task_id, body, org))
+                assert callback == {"ok": True}
+                callbacks.append({
+                    "task_id": task_id, "agent": agent, "session_id": session_id,
+                    "output_summary": body.output_summary, "response": callback,
+                })
                 kwargs["running"].process.terminate()
                 return dataclasses.replace(super().run(**kwargs), session_id=session_id)
             except BaseException as exc:
@@ -2527,3 +2532,219 @@ def test_r1_plain_fanout_real_workers_retain_dispatcher_and_boundary_errors(tmp_
         )
     assert any("U0_PLAIN_FANOUT_DISPATCH_ERROR" in str(error) for error in raised.value.exceptions)
     assert any("U0_PLAIN_FANOUT_BOUNDARY_ERROR" in str(error) for error in raised.value.exceptions)
+
+
+def test_r1_plain_fanout_cancel_after_commit_before_original_child_publication(
+    tmp_path, monkeypatch, dispatcher_failure: BaseException | None = None,
+    boundary_failure: BaseException | None = None,
+) -> None:
+    """A real fanout commit is durably cancelled before either child is queued.
+
+    The gate wraps the original ``TaskQueue.put_nowait`` only.  In particular,
+    it does not replace ``try_delegate_many`` or the cancellation route: the
+    independent SQLite read is therefore an observation of the committed
+    parent/child transition, and releasing the original puts exercises the
+    queue's ordinary cancelled-task skip path.
+    """
+    from runtime.daemon.dispatcher import Dispatcher
+    from runtime.daemon.routes.tasks import CancelBody, CompletionBody, cancel_task, submit_completion
+    from runtime.daemon.state import DaemonState
+    from runtime.models import FanoutChild, NextStep, TaskRecord, TaskStatus
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+    from tests.daemon.test_task_producer_containment import _FakeBackend, _RecordingExecutor, _make_orch
+
+    parent_id = "TASK-U0-PLAIN-CANCEL"
+    backend = _FakeBackend(auto_exit_after=0)
+    orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
+    paths, receipts, launches, callbacks, errors = orch._paths, [], [], [], []
+    publication_reached, release_publication, done = threading.Event(), threading.Event(), threading.Event()
+
+    class EventSink:
+        async def publish(self, task_id, event):
+            return None
+
+    org = SimpleNamespace(db=db, sessions=tracker, db_lock=asyncio.Lock(), event_bus=EventSink(), orchestrator=orch)
+
+    class Executor(_RecordingExecutor):
+        def set_invocation_context(self, **kwargs) -> None:
+            self.context = kwargs.copy()
+
+        def run(self, **kwargs):
+            task_id, agent, session_id = self.context["task_id"], self.context["agent"], kwargs["session_id"]
+            launches.append({
+                "task_id": task_id, "agent": agent, "session_id": session_id,
+                "request_id": kwargs["running"].request_id,
+                "running": kwargs["running"],
+                "active_session": tracker.get_active(task_id, agent),
+            })
+            if task_id == parent_id:
+                body = CompletionBody(
+                    session_id=session_id, agent=agent, status="completed", confidence=100,
+                    output_summary="fanout parent", decision=NextStep(action="fanout", children=[
+                        FanoutChild(agent="dev_agent", prompt="plain zero"),
+                        FanoutChild(agent="dev_agent", prompt="plain one"),
+                    ], width_cap_ack=2).model_dump(),
+                )
+                callback = asyncio.run(submit_completion(task_id, body, org))
+                assert callback == {"ok": True}
+                callbacks.append({
+                    "task_id": task_id, "agent": agent, "session_id": session_id,
+                    "output_summary": body.output_summary, "response": callback,
+                })
+            kwargs["running"].process.terminate()
+            return dataclasses.replace(super().run(**kwargs), session_id=session_id)
+
+    monkeypatch.setattr(orch, "_build_executor", lambda _provider: Executor())
+    supervisor = HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0), publisher=receipts.append)
+    orch.attach_host_supervisor(supervisor)
+    state = DaemonState.idle(orch._settings)
+    state.orgs["test"] = SimpleNamespace(orchestrator=orch, db=db)
+    orch.attach_queue(state.queue)
+    original_put = state.queue.put_nowait
+
+    def held_original_publication(slug, task_id, *args, **kwargs):
+        if task_id != parent_id and len(db.get_children(parent_id)) == 2 and not publication_reached.is_set():
+            publication_reached.set()
+            assert release_publication.wait(5), "cancelled child publications were not released"
+        return original_put(slug, task_id, *args, **kwargs)
+
+    monkeypatch.setattr(state.queue, "put_nowait", held_original_publication)
+    dispatcher = Dispatcher(state)
+    original_dispatch = dispatcher.run_step
+    def observed_dispatch(*args, **kwargs):
+        try:
+            result = original_dispatch(*args, **kwargs)
+            if dispatcher_failure is not None and args[1] == parent_id:
+                raise dispatcher_failure
+            return result
+        except BaseException as exc:
+            errors.append((exc, traceback.format_exc()))
+            raise
+    monkeypatch.setattr(dispatcher, "run_step", observed_dispatch)
+    db.insert_task(TaskRecord(id=parent_id, team="engineering", brief="fanout", assigned_agent="engineering_head", task_type="task"))
+    before = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id,), agent_names=("engineering_head",))
+    assert before["tasks"][parent_id]["status"] == TaskStatus.PENDING.value
+    assert before["results"][parent_id] == before["audits"][parent_id] == []
+    assert before["active_fanout"][parent_id] is None and before["queue"] == []
+    state.queue.enqueue("test", parent_id)
+
+    def workers() -> None:
+        async def run() -> None:
+            state.queue.start_workers(dispatcher, n=2)
+            await state.queue._queue.join()
+            await state.queue.stop()
+        try:
+            asyncio.run(run())
+        except BaseException as exc:
+            errors.append((exc, traceback.format_exc()))
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=workers, name="u0-plain-fanout-cancel-workers", daemon=False)
+    worker.start()
+    assertion = None
+    try:
+        assert publication_reached.wait(3), "real fanout never reached first original publication"
+        children = db.get_children(parent_id)
+        held = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
+        independent_held = _u0_independent_sqlite_readback(db, (parent_id, *children))
+        held_rows = {row["id"]: row for row in independent_held["tasks"]}
+        assert len(children) == 2 and sorted(held_rows) == sorted((parent_id, *children))
+        assert held["tasks"][parent_id]["status"] == TaskStatus.IN_PROGRESS.value and held["tasks"][parent_id]["block_kind"] == "delegated"
+        assert all(held["tasks"][child]["status"] == TaskStatus.PENDING.value and held["tasks"][child]["parent_task_id"] == parent_id for child in children)
+        # The independent connection checks every shipping task field exposed
+        # by the snapshot, rather than merely proving that child IDs exist.
+        for task_id in (parent_id, *children):
+            snapshot_row = {
+                field: value.isoformat() if hasattr(value, "isoformat") else value
+                for field, value in held["tasks"][task_id].items()
+            }
+            assert {field: held_rows[task_id][field] for field in snapshot_row} == snapshot_row
+        assert json.loads(held["active_fanout"][parent_id])["children_ids"] == children
+        assert held["queue"] == [] and len(launches) == 1
+        parent_launch = launches[0]
+        assert {key: parent_launch[key] for key in ("task_id", "agent", "request_id")} == {
+            "task_id": parent_id, "agent": "engineering_head", "request_id": parent_id,
+        }
+        # The launch-time tracker binding is the source-defined current
+        # session.  It is deliberately absent at the held post-callback
+        # boundary, which is why cancellation has no opaque control to send.
+        assert parent_launch["active_session"] == parent_launch["session_id"]
+        assert parent_launch["running"].request_id == parent_id
+        assert [(request.org, request.invocation_kind, request.logical_id, request.retry_attempt)
+                for request in backend.requests] == [("test", "task", parent_id, 0)]
+        assert tracker.iter_task_cancel_controls(parent_id) == []
+        # fanout_spawned is deliberately outside try_delegate_many: it is
+        # already durable at this post-commit/pre-publication boundary.
+        assert len([row for row in held["audits"][parent_id] if row["action"] == "fanout_spawned"]) == 1
+        cancelled = asyncio.run(cancel_task(parent_id, CancelBody(rationale="held fanout", cascade=True), org))
+        assert cancelled["cancelled"] == [parent_id, *reversed(children)]
+        assert cancelled["killed"] == []  # no session existed at the held publication boundary
+        held_cancel = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
+        independent_cancel = _u0_independent_sqlite_readback(db, (parent_id, *children))
+        assert all(row["status"] == TaskStatus.CANCELLED.value and row["cancelled_at"]
+                   for row in independent_cancel["tasks"])
+        assert all(held_cancel["tasks"][task_id]["status"] == TaskStatus.CANCELLED.value for task_id in (parent_id, *children))
+        assert all(held_cancel["controls"][task_id] is False and held_cancel["sessions"][task_id] is None for task_id in (parent_id, *children))
+        assert all(any(row["action"] == "task_cancelled" for row in held_cancel["audits"][task_id]) for task_id in (parent_id, *children))
+        for task_id in (parent_id, *children):
+            previous = held["tasks"][task_id]
+            _assert_cancelled_task_delta(previous, held_cancel["tasks"][task_id])
+            assert held_cancel["results"][task_id] == held["results"][task_id]
+            assert held_cancel["audits"][task_id][:len(held["audits"][task_id])] == held["audits"][task_id]
+            assert [row["action"] for row in held_cancel["audits"][task_id]].count("task_cancelled") == 1
+        for surface in ("attachments", "canonical_agents", "archived_agents", "workspaces",
+                        "archived_workspaces", "teams_bytes", "active_fanout", "active_chain", "queue"):
+            assert held_cancel[surface] == held[surface]
+        if boundary_failure is not None:
+            raise boundary_failure
+    except BaseException as exc:
+        assertion = exc
+    finally:
+        release_publication.set()
+        worker.join(10)
+    _raise_cancel_harness_failures(worker_errors=errors, assertion=assertion, thread=worker, done=done)
+    children = db.get_children(parent_id)
+    final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
+    assert len(launches) == 1 and launches[0]["task_id"] == parent_id
+    assert callbacks == [{
+        "task_id": parent_id, "agent": "engineering_head", "session_id": launches[0]["session_id"],
+        "output_summary": "fanout parent", "response": {"ok": True},
+    }]
+    assert [(row["task_id"], row["agent"], row["session_id"], row["output_summary"])
+            for row in final["results"][parent_id]] == [
+        (parent_id, "engineering_head", launches[0]["session_id"], "fanout parent"),
+    ]
+    assert final["tasks"][parent_id]["orchestration_step_count"] == 1
+    assert all(final["tasks"][task_id]["status"] == TaskStatus.CANCELLED.value for task_id in (parent_id, *children))
+    assert all(final["results"][child] == [] for child in children)
+    assert not [row for row in final["audits"][parent_id] if row["action"] == "fanout_join"]
+    assert final["active_fanout"][parent_id] == held["active_fanout"][parent_id]
+    # Original child puts are released into actual workers.  Their cancelled
+    # task skip may stamp only dispatcher heartbeat/updated timestamps; it
+    # cannot reopen a task, create a result/session, or alter fanout history.
+    for task_id in (parent_id, *children):
+        changed = {key for key in final["tasks"][task_id]
+                   if final["tasks"][task_id][key] != held_cancel["tasks"][task_id][key]}
+        assert changed <= {"updated_at", "last_heartbeat"}
+    for surface in ("attachments", "results", "sessions", "pids", "controls", "queue",
+                    "canonical_agents", "archived_agents", "workspaces", "archived_workspaces",
+                    "teams_bytes", "active_fanout", "active_chain"):
+        assert final[surface] == held_cancel[surface]
+    assert final["audits"][parent_id] == held_cancel["audits"][parent_id]
+    assert all(final["audits"][child] == held_cancel["audits"][child] for child in children)
+    assert final["queue"] == [] and state.queue._queue._unfinished_tasks == 0
+    assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == len(receipts) == 1
+    assert tracker.get_pid(parent_id, "engineering_head") is None
+
+
+def test_r1_plain_fanout_cancel_harness_retains_dispatcher_and_boundary_errors(tmp_path, monkeypatch) -> None:
+    """The cancellation schedule retains its original worker traceback."""
+    with pytest.raises(BaseExceptionGroup, match="cancellation harness failures") as raised:
+        test_r1_plain_fanout_cancel_after_commit_before_original_child_publication(
+            tmp_path, monkeypatch,
+            dispatcher_failure=RuntimeError("U0_PLAIN_FANOUT_CANCEL_DISPATCH_ERROR"),
+            boundary_failure=AssertionError("U0_PLAIN_FANOUT_CANCEL_BOUNDARY_ERROR"),
+        )
+    assert any("U0_PLAIN_FANOUT_CANCEL_DISPATCH_ERROR" in str(error) for error in raised.value.exceptions)
+    assert any("U0_PLAIN_FANOUT_CANCEL_BOUNDARY_ERROR" in str(error) for error in raised.value.exceptions)

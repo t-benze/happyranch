@@ -78,8 +78,13 @@ child IDs/reports represented by the parent-owned join audit; the shipping
 owner clears `active_fanout` with no active chain. The test captures exceptions
 at the original `Dispatcher.run_step` boundary before queue logging can hide
 them, and its error control proves that boundary error remains visible after
-all gates are released and workers stop. This is only executed ordinary
-plain-fanout join evidence: fanout cancellation, serialization/pipeline-carrier
+all gates are released and workers stop. The separate plain-fanout cancellation
+schedule holds the first original child publication after the real
+``try_delegate_many`` commit, cancels the parked parent and both pending
+children through the shipping route, then releases both original publications
+to prove their ordinary cancelled-task skips. It observes no active opaque
+control at that boundary, so it does not manufacture one. This is still only
+executed ordinary plain-fanout evidence: serialization/pipeline-carrier
 schedules, and the remaining R1–R5 obligations are residual.
 
 The three currently observed authority cases are deliberately narrower than a
