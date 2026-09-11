@@ -915,3 +915,126 @@ def test_r1_termination_after_original_enqueue_refuses_quiescence(tmp_path, monk
          "cleanup_status": "clean", "quiescent": True, "survivors": 0},
     ]
     assert not writer_errors
+
+
+@pytest.mark.parametrize("callback_before_writer", (False, True), ids=("writer-before-callback", "callback-before-writer"))
+def test_r1_termination_after_child_launch_distinguishes_callback_order(tmp_path, monkeypatch, callback_before_writer: bool) -> None:
+    """Real post-launch child boundaries distinguish durable callback ordering."""
+    import sqlite3
+    import threading
+    from runtime.daemon.dispatcher import Dispatcher
+    from runtime.daemon.routes.agents import ManageAgentBody, manage_agent
+    from runtime.daemon.routes.tasks import CompletionBody, submit_completion
+    from runtime.daemon.state import DaemonState
+    from runtime.models import NextStep, TaskRecord, TaskStatus
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+    from tests.daemon.test_task_producer_containment import _FakeBackend, _RecordingExecutor, _make_orch
+
+    backend = _FakeBackend()
+    orch, _supervisor, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
+    paths = orch._paths
+
+    class EventSink:
+        async def publish(self, task_id, event) -> None:
+            return None
+
+    org = SimpleNamespace(root=paths.root, slug="test", db=db, teams=orch._teams, sessions=tracker,
+                          settings=orch._settings, teams_lock=asyncio.Lock(), db_lock=asyncio.Lock(), event_bus=EventSink())
+    db.insert_task(TaskRecord(id="TASK-U0-AUTH", team="engineering", brief="writer", assigned_agent="engineering_head", task_type="task"))
+    tracker.set_active("TASK-U0-AUTH", "engineering_head", "sess-authority")
+    reached, writer_done, release = threading.Event(), threading.Event(), threading.Event()
+    observed: dict[str, object] = {"event_order": []}
+    errors: list[BaseException] = []
+
+    def writer() -> None:
+        try:
+            async def terminate() -> None:
+                body = ManageAgentBody(action="terminate", name="dev_agent", task_id="TASK-U0-AUTH", session_id="sess-authority")
+                with pytest.raises(HTTPException) as raised:
+                    await manage_agent("test", body, org)
+                assert raised.value.status_code == 409
+                observed["termination"] = raised.value.detail
+            asyncio.run(terminate())
+            observed["event_order"].append("writer_returned")
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            writer_done.set()
+
+    class CallbackExecutor(_RecordingExecutor):
+        def set_invocation_context(self, **kwargs):
+            self.context = kwargs
+        def run(self, **kwargs):
+            task_id = self.context["task_id"]
+            prior = getattr(self, "runs", {}).get(task_id, 0)
+            self.runs = {**getattr(self, "runs", {}), task_id: prior + 1}
+            decision = NextStep(action="delegate", agent="dev_agent", prompt="child") if task_id == "TASK-U0-PARENT" and prior == 0 else NextStep(action="done", summary="child completed")
+            body = CompletionBody(session_id=kwargs["session_id"], agent=self.context["agent"], status="completed", confidence=100, output_summary="contained callback", decision=decision.model_dump())
+            if task_id != "TASK-U0-PARENT":
+                observed["child_id"], observed["running"] = task_id, backend.last_running
+                if callback_before_writer:
+                    assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
+                    observed["event_order"].append("callback_persisted")
+                with sqlite3.connect(paths.db_path) as reader:
+                    observed["arrival"] = reader.execute("SELECT id, assigned_agent, status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+                    observed["result_count"] = reader.execute("SELECT count(*) FROM task_results WHERE task_id = ?", (task_id,)).fetchone()[0]
+                reached.set()
+                assert release.wait(2), "post-launch executor boundary was not released"
+                if not callback_before_writer:
+                    assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
+                    observed["event_order"].append("callback_persisted")
+            else:
+                assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
+            return super().run(**kwargs)
+
+    executor, receipts = CallbackExecutor(), []
+    monkeypatch.setattr(orch, "_build_executor", lambda _provider: executor)
+    orch.attach_host_supervisor(HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0.0), publisher=receipts.append))
+    db.insert_task(TaskRecord(id="TASK-U0-PARENT", team="engineering", brief="parent", assigned_agent="engineering_head", task_type="task"))
+    state = DaemonState.idle(orch._settings); state.orgs["test"] = SimpleNamespace(orchestrator=orch); orch.attach_queue(state.queue)
+    state.queue.enqueue("test", "TASK-U0-PARENT")
+
+    def drain() -> None:
+        try:
+            asyncio.run(state.queue.drain_sync(Dispatcher(state)))
+        except BaseException as exc:
+            errors.append(exc)
+
+    drain_thread, writer_thread = threading.Thread(target=drain, daemon=True), threading.Thread(target=writer, daemon=True)
+    drain_thread.start()
+    try:
+        assert reached.wait(2), "child did not reach post-launch boundary"
+        child_id, running = observed["child_id"], observed["running"]
+        assert running is not None and running.request_id == child_id
+        assert observed["arrival"] == (child_id, "dev_agent", TaskStatus.IN_PROGRESS.value)
+        assert observed["result_count"] == (1 if callback_before_writer else 0)
+        arrival = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=("TASK-U0-PARENT", child_id), agent_names=("dev_agent",))
+        assert backend.calls["launch"] == 2 and backend.calls["finish"] == 1
+        assert (arrival["sessions"][child_id] is not None and arrival["controls"][child_id]) == (not callback_before_writer)
+        assert len(arrival["results"][child_id]) == (1 if callback_before_writer else 0)
+        writer_thread.start(); assert writer_done.wait(2), "writer did not return"
+        if errors: raise errors[0]
+        boundary = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=("TASK-U0-PARENT", child_id), agent_names=("dev_agent",))
+        detail = observed["termination"]
+        assert detail["code"] == "agent_not_quiescent" and detail["name"] == "dev_agent"
+        assert {item["id"] for item in detail["conflicts"] if item["kind"] == "task"} == {child_id}
+        assert boundary["tasks"][child_id]["status"] == TaskStatus.IN_PROGRESS.value
+        assert (boundary["sessions"][child_id] is not None and boundary["controls"][child_id]) == (not callback_before_writer)
+        assert boundary["canonical_agents"]["dev_agent"] and boundary["workspaces"]["dev_agent"]
+        assert boundary["attachments"][child_id] == [] and boundary["proposed_workflow_relations"] == "NOT PRESENT IN SHIPPING SCHEMA"
+        assert len(boundary["results"][child_id]) == (1 if callback_before_writer else 0)
+        observed["event_order"].append("boundary_observed")
+    finally:
+        release.set()
+        for thread in (writer_thread, drain_thread):
+            if thread.ident is not None: thread.join(timeout=2)
+            assert not thread.is_alive(), "owned test thread did not finish"
+    if errors: raise errors[0]
+    after = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=("TASK-U0-PARENT", child_id), agent_names=("dev_agent",))
+    assert db.get_task(child_id).status is TaskStatus.COMPLETED and db.get_task("TASK-U0-PARENT").status is TaskStatus.COMPLETED
+    assert len(after["results"][child_id]) == 1 and len(after["results"]["TASK-U0-PARENT"]) == 2
+    assert after["sessions"][child_id] is None and not after["controls"][child_id]
+    assert after["sessions"]["TASK-U0-PARENT"] is None and not after["controls"]["TASK-U0-PARENT"] and after["queue"] == []
+    assert [(request.org, request.logical_id, request.retry_attempt) for request in backend.requests] == [("test", "TASK-U0-PARENT", 0), ("test", child_id, 0), ("test", "TASK-U0-PARENT", 0)]
+    assert backend.calls["launch"] == backend.calls["finish"] == 3 and len(receipts) == 3
+    assert observed["event_order"] == (["writer_returned", "boundary_observed", "callback_persisted"] if not callback_before_writer else ["callback_persisted", "writer_returned", "boundary_observed"])

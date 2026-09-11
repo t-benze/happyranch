@@ -84,6 +84,21 @@ the pre-file-enrollment and pre-schema-v2 layouts. They are labelled
 current control or establish an historical upgrade. The next stage must
 construct complete source-pinned whole-runtime layouts and execute their
 supported initializers before claiming historical upgrades.
+The post-launch R1 pair now holds only the bounded external fake executor,
+after real child `backend.launch` returned its `RunningHandle` and the shipping
+session/control registration occurred. In writer-before-callback, independent
+readback sees the launched child with no result and a live session/control; the
+supported terminate writer returns `409 agent_not_quiescent`. In the reverse
+order, the original completion route has durably persisted the child result,
+then clears that live session/control while the task remains `IN_PROGRESS`;
+the same writer still returns that observed refusal. A callback HTTP 200 thus
+proves result persistence, not terminal acceptance or concurrent-writer
+serialization. Result/task visibility comes from independent SQLite readback;
+it does not prove a wider serialization contract. Receipt task/agent/session/
+attempt identity remains absent and is not fabricated. Cancellation/control
+drain, legacy chain/fanout, and the complete D5 writer/reader/transaction/
+compensation/cutover protocol remain explicit residual obligations.
+
 Current control and corrupt/partial adapter inputs fail closed before any
 proposed adapter write. R5's decision packet
 must still classify every writer/reader/compensation participant and receive
