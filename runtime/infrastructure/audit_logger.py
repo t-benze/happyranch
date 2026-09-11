@@ -1043,6 +1043,20 @@ class AuditLogger:
         import json
         from datetime import datetime, timedelta, timezone
 
+        def fail_closed(report: dict) -> dict:
+            """Keep current diagnostic arithmetic observation-only (TASK-7767)."""
+            reason = (
+                "Current telemetry epoch is unversioned and invalid; collection has "
+                "not started. Independent transport and deployed-canary health "
+                "evidence are required before tuning can be evaluated."
+            )
+            observation = dict(report.get("observation_period", {}))
+            observation.update({"status": "insufficient_instrumentation", "reason": reason})
+            report["observation_period"] = observation
+            report["decision"] = "insufficient_instrumentation"
+            report["decision_detail"] = reason
+            return report
+
         if current_time is None:
             current_time = datetime.now(timezone.utc)
 
@@ -1056,7 +1070,7 @@ class AuditLogger:
             (),
         )
         if not rows:
-            return {
+            return fail_closed({
                 "observation_period": {
                     "status": "insufficient_sample",
                     "reason": "No memory_digest_impression rows found —"
@@ -1067,7 +1081,7 @@ class AuditLogger:
                 "aggregate": {},
                 "by_role": {},
                 "decision": "insufficient_sample",
-            }
+            })
 
         # Parse impressions
         impressions: list[dict] = []
@@ -1090,7 +1104,7 @@ class AuditLogger:
                 })
 
         if not impressions:
-            return {
+            return fail_closed({
                 "observation_period": {
                     "status": "insufficient_sample",
                     "reason": "No non-empty correlated digest impressions found.",
@@ -1100,7 +1114,7 @@ class AuditLogger:
                 "aggregate": {},
                 "by_role": {},
                 "decision": "insufficient_sample",
-            }
+            })
 
         # Determine observation start (first impression timestamp)
         first_ts_str = impressions[0]["timestamp"]
@@ -1153,7 +1167,7 @@ class AuditLogger:
         }
 
         if not thresholds_met:
-            return {
+            return fail_closed({
                 "observation_period": {
                     **observation,
                     "status": "insufficient_sample",
@@ -1165,7 +1179,7 @@ class AuditLogger:
                 "aggregate": {},
                 "by_role": {},
                 "decision": "insufficient_sample",
-            }
+            })
 
         # Collect memory_read events for pull-through.
         # Include agent and task_id columns so we can verify read rows
@@ -1461,7 +1475,7 @@ class AuditLogger:
                 f"{len(unknown_agents)} agent(s) have unknown roles"
                 f" and are excluded from role decisions: {unknown_agents}"
             )
-        return result
+        return fail_closed(result)
 
     # NOTE: audit_log.task_id doubles as a generic scope id. Thread events store
     # the thread id (THR-NNN) in that column, matching the talk_* pattern above.

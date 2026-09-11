@@ -364,11 +364,25 @@ def _compute_report(
     """
     from datetime import datetime, timezone
 
+    def fail_closed(report: dict) -> dict:
+        """Keep current diagnostic arithmetic observation-only (TASK-7767)."""
+        reason = (
+            "Current telemetry epoch is unversioned and invalid; collection has "
+            "not started. Independent transport and deployed-canary health "
+            "evidence are required before tuning can be evaluated."
+        )
+        observation = dict(report.get("observation_period", {}))
+        observation.update({"status": "insufficient_instrumentation", "reason": reason})
+        report["observation_period"] = observation
+        report["decision"] = "insufficient_instrumentation"
+        report["decision_detail"] = reason
+        return report
+
     if current_time is None:
         current_time = datetime.now(timezone.utc)
 
     if not impression_rows:
-        return {
+        return fail_closed({
             "observation_period": {
                 "status": "insufficient_sample",
                 "reason": "No memory_digest_impression rows found —"
@@ -379,7 +393,7 @@ def _compute_report(
             "aggregate": {},
             "by_role": {},
             "decision": "insufficient_sample",
-        }
+        })
 
     # Parse impressions
     impressions: list[dict] = []
@@ -404,7 +418,7 @@ def _compute_report(
             })
 
     if not impressions:
-        return {
+        return fail_closed({
             "observation_period": {
                 "status": "insufficient_sample",
                 "reason": "No non-empty correlated digest impressions found.",
@@ -414,7 +428,7 @@ def _compute_report(
             "aggregate": {},
             "by_role": {},
             "decision": "insufficient_sample",
-        }
+        })
 
     # Observation period
     first_ts_str = impressions[0]["timestamp"]
@@ -457,7 +471,7 @@ def _compute_report(
     }
 
     if not (met_days and met_sessions):
-        return {
+        return fail_closed({
             "observation_period": {
                 **observation,
                 "status": "insufficient_sample",
@@ -469,7 +483,7 @@ def _compute_report(
             "aggregate": {},
             "by_role": {},
             "decision": "insufficient_sample",
-        }
+        })
 
     # Session digest maps.
     # Build validated (agent, task_id, session_id) tuples from trusted
@@ -728,7 +742,7 @@ def _compute_report(
             f"{len(unknown_agents)} agent(s) have unknown roles"
             f" and are excluded from role decisions: {unknown_agents}"
         )
-    return result
+    return fail_closed(result)
 
 
 def _print_report(report: dict) -> None:
@@ -746,7 +760,7 @@ def _print_report(report: dict) -> None:
     print()
 
     if obs.get("status") != "thresholds_met":
-        print(f"DECISION: insufficient_sample")
+        print(f"DECISION: {report.get('decision', 'unknown')}")
         print(f"  {obs.get('reason', '')}")
         return
 
@@ -924,4 +938,3 @@ def register(sub) -> None:
     # one-cycle deprecation alias dispatching to the same handlers.
     _register_group(sub, "memory", deprecated=False)
     _register_group(sub, "learning", deprecated=True)
-

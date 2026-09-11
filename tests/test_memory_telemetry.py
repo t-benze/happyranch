@@ -425,13 +425,13 @@ def test_search_does_not_store_query_text(db):
 # ---------------------------------------------------------------------------
 
 
-def test_report_no_impressions_returns_insufficient_sample(db):
-    """Empty audit_log returns insufficient_sample."""
+def test_report_no_impressions_returns_insufficient_instrumentation(db):
+    """Empty audit_log is invalid until versioned collection ships."""
     logger = AuditLogger(db)
     report = logger.compute_memory_telemetry_report(agent_role_map={})
-    assert report["decision"] == "insufficient_sample"
-    assert report["observation_period"]["status"] == "insufficient_sample"
-    assert "No memory_digest_impression" in report["observation_period"]["reason"]
+    assert report["decision"] == "insufficient_instrumentation"
+    assert report["observation_period"]["status"] == "insufficient_instrumentation"
+    assert "unversioned and invalid" in report["observation_period"]["reason"]
 
 
 def test_report_empty_digest_impressions(db):
@@ -445,7 +445,7 @@ def test_report_empty_digest_impressions(db):
         budget=1500,
     )
     report = logger.compute_memory_telemetry_report(agent_role_map={})
-    assert report["decision"] == "insufficient_sample"
+    assert report["decision"] == "insufficient_instrumentation"
 
 
 def test_report_insufficient_days(db):
@@ -459,7 +459,7 @@ def test_report_insufficient_days(db):
         budget=1500,
     )
     report = logger.compute_memory_telemetry_report(agent_role_map={})
-    assert report["decision"] == "insufficient_sample"
+    assert report["decision"] == "insufficient_instrumentation"
     assert report["observation_period"]["days_met"] is False
 
 
@@ -506,7 +506,7 @@ def test_report_role_breakdown_with_map(db):
         agent_role_map={"dev_agent": "developer", "qa_engineer": "qa"},
     )
     # Still insufficient due to days check, but by_role should show 200 total
-    assert report["decision"] == "insufficient_sample"
+    assert report["decision"] == "insufficient_instrumentation"
 
 
 def test_report_search_exclusion_from_digest_tracking(db):
@@ -659,10 +659,7 @@ def test_legacy_rows_without_new_fields_dont_crash_report(db):
         budget=1500,
     )
     report = logger.compute_memory_telemetry_report(agent_role_map={})
-    assert report["decision"] in (
-        "insufficient_sample", "activation_loss",
-        "retrieval_loss", "no_demonstrated_problem",
-    )
+    assert report["decision"] == "insufficient_instrumentation"
 
 
 def test_payload_without_expected_keys_doesnt_crash(db):
@@ -682,7 +679,7 @@ def test_payload_without_expected_keys_doesnt_crash(db):
     )
     assert source == "explicit_or_other"
     report = logger.compute_memory_telemetry_report(agent_role_map={})
-    assert report["decision"] == "insufficient_sample"
+    assert report["decision"] == "insufficient_instrumentation"
 
 
 def test_search_with_null_session_still_works(db):
@@ -834,8 +831,8 @@ def test_activation_loss_decision_when_pull_through_below_10_pct(db):
     assert by_role["qa"]["correlated_sessions"] == 600
     assert by_role["qa"]["digest_pull_through"] < 0.10
 
-    assert report["decision"] == "activation_loss"
-    assert "push tuning" in report["decision_detail"]
+    assert report["decision"] == "insufficient_instrumentation"
+    assert "unversioned and invalid" in report["decision_detail"]
 
 
 def test_retrieval_loss_decision_with_full_assertion(db):
@@ -887,8 +884,8 @@ def test_retrieval_loss_decision_with_full_assertion(db):
     assert by_role["developer"]["eligible"] is True
     assert by_role["developer"]["search_sourced_reads"] == 600
 
-    assert report["decision"] == "retrieval_loss"
-    assert "alias" in report["decision_detail"]
+    assert report["decision"] == "insufficient_instrumentation"
+    assert "unversioned and invalid" in report["decision_detail"]
 
 
 def test_no_demonstrated_problem_decision(db):
@@ -919,7 +916,7 @@ def test_no_demonstrated_problem_decision(db):
     assert agg["digest_pull_through"] >= 0.10
     assert agg["search_absent_fraction"] <= 0.25
 
-    assert report["decision"] == "no_demonstrated_problem"
+    assert report["decision"] == "insufficient_instrumentation"
 
 
 def test_contradictory_roles_preserved_full_decision(db):
@@ -977,8 +974,8 @@ def test_contradictory_roles_preserved_full_decision(db):
     assert by_role["role_b"]["digest_pull_through"] >= 0.10
 
     # Majority (1 of 2) NOT below 10% → no global remedy
-    assert report["decision"] == "no_demonstrated_problem"
-    assert "majority" in report["decision_detail"].lower()
+    assert report["decision"] == "insufficient_instrumentation"
+    assert "unversioned and invalid" in report["decision_detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -1397,8 +1394,24 @@ def test_cli_compute_report_matching_impressions_not_excluded(db):
     assert agg["untrusted_uncorrelated_reads"] >= 20
     # No false activation_loss
     assert report["decision"] != "activation_loss"
-    # Decision should be no_demonstrated_problem (not insufficient_sample)
-    assert report["decision"] == "no_demonstrated_problem"
+    # Current/unversioned telemetry cannot select a tuning decision.
+    assert report["decision"] == "insufficient_instrumentation"
+
+
+def test_cli_text_reports_actual_instrumentation_status(capsys):
+    """Text output must agree with the guarded JSON decision."""
+    from cli.commands.learning import _print_report
+
+    _print_report({
+        "observation_period": {
+            "status": "insufficient_instrumentation",
+            "reason": "Current telemetry epoch is unversioned and invalid.",
+        },
+        "decision": "insufficient_instrumentation",
+    })
+    rendered = capsys.readouterr().out
+    assert "DECISION: insufficient_instrumentation" in rendered
+    assert "DECISION: insufficient_sample" not in rendered
 
 
 def test_cli_compute_report_mismatched_task_id_excluded(db):

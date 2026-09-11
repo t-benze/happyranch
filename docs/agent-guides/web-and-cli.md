@@ -199,6 +199,15 @@ refuses, with existing-control remedies only), and reconciliation limits.
 
 Full founder-facing CLI docs: `skills/happyranch/SKILL.md`.
 
+### Memory report guard
+
+`happyranch memory report` paginates the existing audit read surface but is
+currently fail-closed: JSON and text both return `insufficient_instrumentation`.
+There is no CLI flag or input that can override the invalid current/unversioned
+epoch. Existing explicit `--session-id` get/search behavior remains unchanged;
+the report neither begins collection nor recommends push, alias, embedding, or
+ranking changes.
+
 ### PR CI wait / guarded merge entrypoints
 
 Two CLI entrypoints (invoked as jobs or on task resume, not as `happyranch` subcommands) provide the PR CI polling and guarded-merge mechanisms:
