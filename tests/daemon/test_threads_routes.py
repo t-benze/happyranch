@@ -287,6 +287,73 @@ def test_list_threads_limit_boundaries_preserve_list_and_projection_cardinality(
         assert all(s.split(" IN (", 1)[-1].split(")", 1)[0].count(",") + 1 <= 500 for s in membership)
 
 
+@pytest.mark.parametrize(
+    ("slug", "status", "expected"),
+    [
+        ("alpha", "open", {"THR-OVERLAP-OPEN": ["alpha-current"], "THR-ALPHA-EMPTY": []}),
+        ("alpha", "archived", {"THR-OVERLAP-ARCHIVED": ["alpha-archived"]}),
+        ("beta", "open", {"THR-OVERLAP-OPEN": ["beta-current"], "THR-BETA-EMPTY": []}),
+        ("beta", "archived", {"THR-OVERLAP-ARCHIVED": ["beta-archived"]}),
+    ],
+)
+def test_list_threads_org_dep_status_projection_isolated_and_batched(
+    tmp_home, app, org_state, daemon_state, auth_headers, slug, status, expected,
+):
+    """The real OrgDep route keeps same IDs and current members per org/status.
+
+    This is deliberately a four-cell HTTP matrix: the two stores reuse IDs,
+    but membership and empty/removed rows are independently projected.  Each
+    request stays one list read plus one batch membership read, never a
+    per-row detail or transcript lookup.
+    """
+    from runtime.config import Settings
+    from runtime.daemon.org_state import OrgState
+
+    beta_root = org_state.root.parent / "beta"
+    beta_root.mkdir(parents=True, exist_ok=True)
+    (beta_root / "org").mkdir(exist_ok=True)
+    (beta_root / "org" / "teams.yaml").write_text(
+        "teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent]\n",
+    )
+    beta = OrgState.load(slug="beta", root=beta_root, settings=Settings())
+    daemon_state.orgs["beta"] = beta
+
+    now = datetime.now(timezone.utc)
+    for state, prefix in ((org_state, "alpha"), (beta, "beta")):
+        state.db.insert_thread(ThreadRecord(id="THR-OVERLAP-OPEN", subject=f"{prefix} open"))
+        state.db.add_thread_participant("THR-OVERLAP-OPEN", f"{prefix}-current", added_by="founder")
+        state.db.add_thread_participant("THR-OVERLAP-OPEN", f"{prefix}-removed", added_by="founder")
+        state.db.remove_thread_participant("THR-OVERLAP-OPEN", f"{prefix}-removed")
+        state.db.insert_thread(ThreadRecord(id=f"THR-{prefix.upper()}-EMPTY", subject=f"{prefix} empty"))
+        state.db.insert_thread(ThreadRecord(
+            id="THR-OVERLAP-ARCHIVED",
+            subject=f"{prefix} archived",
+            status=ThreadStatus.ARCHIVED,
+            archived_at=now,
+        ))
+        state.db.add_thread_participant("THR-OVERLAP-ARCHIVED", f"{prefix}-archived", added_by="founder")
+        state.db.add_thread_participant("THR-OVERLAP-ARCHIVED", f"{prefix}-removed-archived", added_by="founder")
+        state.db.remove_thread_participant("THR-OVERLAP-ARCHIVED", f"{prefix}-removed-archived")
+
+    state = daemon_state.orgs[slug]
+    statements: list[str] = []
+    state.db._conn.set_trace_callback(statements.append)
+    try:
+        response = TestClient(app).get(
+            f"/api/v1/orgs/{slug}/threads?status={status}", headers=auth_headers,
+        )
+    finally:
+        state.db._conn.set_trace_callback(None)
+
+    assert response.status_code == 200, response.text
+    assert {row["thread_id"]: row["participants"] for row in response.json()["threads"]} == expected
+    assert not any("removed" in name for row in response.json()["threads"] for name in row["participants"])
+    selects = [statement for statement in statements if statement.lstrip().upper().startswith("SELECT")]
+    assert len(selects) == 2
+    assert sum("FROM thread_participants" in statement for statement in selects) == 1
+    assert not any("SELECT * FROM threads WHERE id" in statement for statement in selects)
+
+
 def test_get_thread_returns_messages_and_participants(tmp_home, app, org_state, auth_headers):
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")

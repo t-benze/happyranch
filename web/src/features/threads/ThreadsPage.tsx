@@ -359,6 +359,7 @@ export function ThreadsPage(): JSX.Element {
   const composerFocusRef = useRef<(() => void) | null>(null);
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   const lastListScrollTopRef = useRef(0);
+  const restoredListScopeRef = useRef<string | null>(null);
   const setListScrollRef = useCallback((node: HTMLDivElement | null) => {
     // React clears a conditional ref before effect cleanup. Capture the last
     // attached owner's position at that boundary so route cleanup cannot turn
@@ -442,17 +443,31 @@ export function ThreadsPage(): JSX.Element {
     );
   }, [bucket, openQuery.data, archivedQuery.data, filter]);
   useEffect(() => {
-    if (threadId) return;
+    // A detail transition ends this list entry. Returning to the list must
+    // restore its saved offset, while ordinary query updates inside the entry
+    // must leave the live scroll owner alone.
+    if (threadId) {
+      restoredListScopeRef.current = null;
+      return;
+    }
+    // A scope enters with its ContentWrap already mounted, but restoration
+    // waits for the active bucket's list data. This keeps an initial delayed
+    // response from losing its route-local saved position and makes refetches
+    // (which do not create a new list entry) harmless.
+    if (bucketLoading || restoredListScopeRef.current === scrollKey) return;
     const stored = sessionStorage.getItem(scrollKey);
     // A missing key must reset the reused scroll owner. A stored zero is a
     // valid saved position, so neither case may be treated as "leave it be".
     const saved = stored === null ? 0 : Number(stored);
     const target = Number.isFinite(saved) && saved >= 0 ? saved : 0;
     const frame = requestAnimationFrame(() => {
-      if (listScrollRef.current) listScrollRef.current.scrollTop = target;
+      if (listScrollRef.current && restoredListScopeRef.current !== scrollKey) {
+        listScrollRef.current.scrollTop = target;
+        restoredListScopeRef.current = scrollKey;
+      }
     });
     return () => cancelAnimationFrame(frame);
-  }, [threadId, scrollKey, threads.length]);
+  }, [threadId, scrollKey, bucketLoading]);
   useEffect(() => {
     // The list ContentWrap is conditional on the detail route. Persist from
     // its cleanup too, so browser history and the detail's ordinary Back link

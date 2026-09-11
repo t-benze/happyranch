@@ -19,9 +19,9 @@ afterEach(() => {
 function mountAt(route: string) {
   server.use(
     http.get('/api/v1/orgs', () =>
-      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }, { slug: 'beta', root: '/y' }] }),
     ),
-    http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+    http.get('/api/v1/orgs/:slug/agents', () =>
       HttpResponse.json({ agents: [] }),
     ),
   );
@@ -31,9 +31,9 @@ function mountAt(route: string) {
 function mountRouteHistory(route: string) {
   server.use(
     http.get('/api/v1/orgs', () =>
-      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }, { slug: 'beta', root: '/y' }] }),
     ),
-    http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+    http.get('/api/v1/orgs/:slug/agents', () =>
       HttpResponse.json({ agents: [] }),
     ),
   );
@@ -44,11 +44,12 @@ function mountRouteHistory(route: string) {
       super(input, init ? { ...init, signal: undefined } : init);
     }
   };
+  const client = makeQueryClient();
   const router = createMemoryRouter(
-    [{ path: '*', element: <AppProvider client={makeQueryClient()}><AppRoutes /></AppProvider> }],
+    [{ path: '*', element: <AppProvider client={client}><AppRoutes /></AppProvider> }],
     { initialEntries: [route] },
   );
-  return { router, ...render(<RouterProvider router={router} />) };
+  return { router, client, ...render(<RouterProvider router={router} />) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -154,19 +155,24 @@ function setupThreadWithMessages(
 
 describe('ThreadsPage — route-local list scroll restoration', () => {
   function setupScrollThread() {
-    const thread = mkThread('THR-SCROLL', 'Long verification scroll target');
+    const archivedThread = mkThread('THR-SCROLL', 'Long verification scroll target', {
+      status: 'archived', archived_at: '2026-05-15T00:00:00Z',
+    });
+    const openThread = mkThread('THR-SCROLL-OPEN', 'Long verification open target');
     setupThreadWithMessages('THR-SCROLL', []);
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/threads`, () => HttpResponse.json({ threads: [thread] })),
-    );
+    server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) =>
+      HttpResponse.json({ threads: new URL(request.url).searchParams.get('status') === 'archived' ? [archivedThread] : [openThread] }),
+    ));
   }
 
-  test('keeps the live ContentWrap position through browser history and the real All threads link', async () => {
+  test('keeps the filtered Archived ContentWrap position through browser history and the real All threads link', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     setupScrollThread();
     const user = userEvent.setup();
     const { router } = mountRouteHistory(`/orgs/${SLUG}/threads`);
 
+    await user.click(await screen.findByRole('tab', { name: /archived/i }));
+    await user.type(screen.getByRole('textbox', { name: /filter threads/i }), 'Long verification');
     const row = await screen.findByRole('link', { name: /THR-SCROLL/i });
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
@@ -174,7 +180,7 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
     scroller.scrollTop = 350;
 
     await user.click(row);
-    expect(sessionStorage.getItem(`threads:list-scroll:${SLUG}:open:`)).toBe('350');
+    expect(sessionStorage.getItem(`threads:list-scroll:${SLUG}:done:Long verification`)).toBe('350');
 
     // This is the actual route history transition used by browser Back, not a
     // storage-helper test. The list ref has detached while the detail route is
@@ -183,6 +189,8 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
     const browserBackRow = await screen.findByRole('link', { name: /THR-SCROLL/i });
     const browserBackScroller = browserBackRow.closest('.overflow-y-auto') as HTMLDivElement;
     await waitFor(() => expect(browserBackScroller.scrollTop).toBe(350));
+    expect(screen.getByRole('textbox', { name: /filter threads/i })).toHaveValue('Long verification');
+    expect(screen.getByRole('tab', { name: /archived/i })).toHaveAttribute('aria-selected', 'true');
 
     await user.click(browserBackRow);
     const allThreads = await screen.findByRole('link', { name: /all threads/i });
@@ -191,6 +199,8 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
     const restoredRow = await screen.findByRole('link', { name: /THR-SCROLL/i });
     const restoredScroller = restoredRow.closest('.overflow-y-auto') as HTMLDivElement;
     await waitFor(() => expect(restoredScroller.scrollTop).toBe(350));
+    expect(screen.getByRole('textbox', { name: /filter threads/i })).toHaveValue('Long verification');
+    expect(screen.getByRole('tab', { name: /archived/i })).toHaveAttribute('aria-selected', 'true');
   });
 
   test('resets a newly selected bucket and filter to zero without erasing a valid saved zero', async () => {
@@ -204,6 +214,12 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
     const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
     scroller.scrollTop = 350;
 
+    const filter = screen.getByRole('textbox', { name: /filter threads/i });
+    await user.type(filter, 'Long verification open target');
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    await user.clear(filter);
+    await waitFor(() => expect(scroller.scrollTop).toBe(350));
+
     await user.click(screen.getByRole('tab', { name: /archived/i }));
     await waitFor(() => expect(scroller.scrollTop).toBe(0));
     expect(sessionStorage.getItem(`threads:list-scroll:${SLUG}:open:`)).toBe('350');
@@ -212,6 +228,76 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
     await user.click(screen.getByRole('tab', { name: /open/i }));
     await user.click(screen.getByRole('tab', { name: /archived/i }));
     await waitFor(() => expect(scroller.scrollTop).toBe(0));
+  });
+
+  test('restores a saved offset after delayed list data arrives at the real ContentWrap owner', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    sessionStorage.setItem(`threads:list-scroll:${SLUG}:open:`, '350');
+    let release!: () => void;
+    let requestPending!: () => void;
+    const delayed = new Promise<void>((resolve) => { release = resolve; });
+    const pending = new Promise<void>((resolve) => { requestPending = resolve; });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
+      if (new URL(request.url).searchParams.get('status') === 'open') {
+        requestPending();
+        await delayed;
+      }
+      return HttpResponse.json({ threads: [mkThread('THR-DELAY', 'Long verification delayed')] });
+    }));
+    mountRouteHistory(`/orgs/${SLUG}/threads`);
+    await pending;
+    expect(document.querySelector('.overflow-y-auto')).not.toBeNull();
+    expect(screen.queryByRole('link', { name: /THR-DELAY/i })).not.toBeInTheDocument();
+    release();
+    const row = await screen.findByRole('link', { name: /THR-DELAY/i });
+    const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+    await waitFor(() => expect(scroller.scrollTop).toBe(350));
+  });
+
+  test('does not reapply stale saved scroll after a mounted list refetch changes cardinality', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    sessionStorage.setItem(`threads:list-scroll:${SLUG}:open:`, '350');
+    let rows = [mkThread('THR-ONE', 'Long verification one')];
+    server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) =>
+      HttpResponse.json({ threads: new URL(request.url).searchParams.get('status') === 'open' ? rows : [] }),
+    ));
+    const { client } = mountRouteHistory(`/orgs/${SLUG}/threads`);
+    const row = await screen.findByRole('link', { name: /THR-ONE/i });
+    const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+    await waitFor(() => expect(scroller.scrollTop).toBe(350));
+    scroller.scrollTop = 121;
+    rows = [...rows, mkThread('THR-TWO', 'Long verification two')];
+    await client.invalidateQueries({ queryKey: ['threads', SLUG, { status: 'open' }] });
+    await screen.findByRole('link', { name: /THR-TWO/i });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await waitFor(() => expect(scroller.scrollTop).toBe(121));
+  });
+
+  test('keeps route-local offsets isolated across actual alpha and beta AppRoutes transitions', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    sessionStorage.setItem('threads:list-scroll:alpha:open:', '350');
+    sessionStorage.setItem('threads:list-scroll:beta:open:', '121');
+    server.use(http.get('/api/v1/orgs/:slug/threads', ({ params, request }) => {
+      const slug = String(params.slug);
+      const status = new URL(request.url).searchParams.get('status');
+      return HttpResponse.json({
+        threads: status === 'open' ? [mkThread(`THR-${slug.toUpperCase()}`, `${slug} route target`)] : [],
+      });
+    }));
+    const { router } = mountRouteHistory('/orgs/alpha/threads');
+    const alphaRow = await screen.findByRole('link', { name: /THR-ALPHA/i });
+    const alphaScroller = alphaRow.closest('.overflow-y-auto') as HTMLDivElement;
+    await waitFor(() => expect(alphaScroller.scrollTop).toBe(350));
+
+    await router.navigate('/orgs/beta/threads');
+    const betaRow = await screen.findByRole('link', { name: /THR-BETA/i });
+    const betaScroller = betaRow.closest('.overflow-y-auto') as HTMLDivElement;
+    await waitFor(() => expect(betaScroller.scrollTop).toBe(121));
+
+    await router.navigate('/orgs/alpha/threads');
+    const restoredAlpha = await screen.findByRole('link', { name: /THR-ALPHA/i });
+    const restoredAlphaScroller = restoredAlpha.closest('.overflow-y-auto') as HTMLDivElement;
+    await waitFor(() => expect(restoredAlphaScroller.scrollTop).toBe(350));
   });
 });
 

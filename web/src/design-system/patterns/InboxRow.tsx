@@ -16,7 +16,7 @@
  *     line-1 with right-pinned status/dream pills; IdBadge + AgentChip on
  *     line-2. Renders the `active`/`done` status pills (THREADS-05).
  *
- *   - `thread`  — THR-099 id-first single-line row (a-threads `.thread`): a
+ *   - `thread`  — THR-099 id-first grouped-list row (a-threads `.thread`): a
  *     leading STATUS-driven dot (open=green accent, archived=grey), then the
  *     mono thread id, the serif subject, the status BADGE routed through the
  *     shared `semanticTone` vocabulary (open→info/blue, archived→neutral/grey),
@@ -27,9 +27,9 @@
  * The finer Direction-A states (waiting-on-you / review / merged / live / idle)
  * are intentionally absent — no field on the thread-list payload backs them.
  *
- * Founder-approved interactive-row mapping: bg-surface border-border-default
- * rounded-sm (8px) with shadow-pasture-sm. Active row uses accent-muted + left
- * marker; nested status/dream pills and indicators retain their own radii.
+ * Default rows retain their rounded bordered shell; thread rows are flush inside
+ * the enclosing bordered, divider-separated list. Active thread rows use the
+ * accent-muted marker; nested status/dream pills retain their own radii.
  */
 import type { ReactNode } from 'react';
 import { AgentChip } from './AgentChip';
@@ -49,7 +49,7 @@ interface InboxRowProps {
   fromDream?: boolean;
   /**
    * Row model. `default` is the historical two-line shape (unchanged);
-   * `thread` is the THR-099 id-first single-line thread-list row.
+   * `thread` is the THR-099 id-first grouped thread-list row.
    */
   layout?: 'default' | 'thread';
   /** Destination URL for the row. Used as the `<a href>`. */
