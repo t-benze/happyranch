@@ -57,9 +57,7 @@ The ledger transitions are `claimed` (the sole opportunity is durably spent),
 `callback_consumed` (its exact effect committed), `expired`,
 `restart_settled`, or `superseded`. Acceptance, expiry, cancellation, and
 replacement have one durable winner; historical origin and recovery bindings
-remain fenced. A fresh ordinary generation is admissible after no episode is
-claimed, so normal job resume is not blocked by this fence.
-A fresh ordinary generation is admissible after all episodes are no longer
+remain fenced. A fresh ordinary generation is admissible after all episodes are no longer
 claimed, so a valid job-resume callback is not made impossible by the fence.
 
 The tracker lease bridges its `get_active()` check through the synchronized DB
@@ -173,5 +171,28 @@ a distinct session remains byte-for-byte unchanged and is never selected as an
 invocation result. Ineligible origins (timeout, provider error, no provider
 resume id, or cancellation before clean return) make no recovery claim or
 launch; cancellation remains the terminal winner. The remaining final
-inventory/parity and publication gates remain deferred to the owning manager
-phases. This checkpoint is unpublished and is not full-feature completion.
+inventory and publication gates remain independent of this implementation;
+this PR candidate is not merged or deployed.
+
+## Acceptance evidence map
+
+The executable regression suite is the acceptance source of truth. The
+`test_run_step_codex_*` families prove clean-omission claim and callback
+arbitration, callback-before-claim and claim-before-old-callback winners,
+duplicate/lost-response/late/stale rejection, cancellation and newer-binding
+winners at the final transaction, accepted-result races, the shared 120-second
+budget, and no recovery re-admission after a recovery 429. The real route,
+SQLite, and tracker interleavings are barrier-controlled concurrent calls, not
+sequential probes.
+
+`test_startup_recovery.py`, `test_database.py`, and the accepted manager/leaf
+families cover accepted and unaccepted crash/restart, durable row settlement,
+leaf/manager DONE, root and non-root escalation, authority continuation, and
+terminal-before-marker rollback. D3a covers zero/nonzero terminal jobs before
+and after blocked callbacks, ordinary resume, and absence of stale timeout
+reuse. D3b covers the second omission, provider failure/timeout/launch failure
+cleanup, exact old-session result preservation, and timeout/error/missing-
+provider/cancelled ineligible origins with owned-only cleanup. Route tests
+cover the recovery-purpose admission surface; contained-launch and supervisor
+tests cover preparation/launch fences and owned process cleanup. These tests
+do not assert deployment, provider replay, or a broader retry authority.
