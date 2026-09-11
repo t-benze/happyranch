@@ -1192,8 +1192,12 @@ class Orchestrator:
                     # This is a recovery-only Codex contract extension.  The
                     # other concrete executors deliberately retain their
                     # ordinary run signatures.
+                    # This is a Codex-only executor extension.  Recovery is
+                    # an orchestrator policy, not a widened provider call
+                    # contract: Claude, Opencode, Pi and custom adapters must
+                    # keep receiving their ordinary signatures.
                     **({"recovery_deadline_monotonic": recovery_deadline_monotonic}
-                       if recovery else {}),
+                       if recovery and provider == "codex" else {}),
                 )
             finally:
                 # The contained supervisor invokes its terminal hook before
@@ -1353,7 +1357,7 @@ class Orchestrator:
                 # Keep recovery fencing at the producer boundary; ordinary
                 # provider adapters must not receive a recovery-only kwarg.
                 **({"recovery_deadline_monotonic": recovery_deadline_monotonic}
-                   if recovery else {}),
+                   if recovery and provider == "codex" else {}),
             )
             return LaunchResult(
                 success=result.success,
