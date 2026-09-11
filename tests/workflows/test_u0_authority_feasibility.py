@@ -59,6 +59,8 @@ def _r1_snapshot(*, db, tracker, paths, queue, task_ids: tuple[str, ...],
     It records empty attachment observations as such rather than treating them
     as evidence that an attachment-cleanup contract ran.
     """
+    import hashlib
+
     def record(value):
         if value is None:
             return None
@@ -70,6 +72,22 @@ def _r1_snapshot(*, db, tracker, paths, queue, task_ids: tuple[str, ...],
         for task_id in task_ids
     }
     identities = set(agent_names) | {agent for agent in agents.values() if agent}
+    def tree_contents(root):
+        if not root.exists():
+            return {}
+        return {
+            str(path.relative_to(root)): bytes_evidence(path)
+            for path in sorted(root.rglob("*")) if path.is_file()
+        }
+
+    def bytes_evidence(path):
+        if not path.exists():
+            return None
+        raw = path.read_bytes()
+        return {"sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
+
+    canonical_paths = {name: paths.agents_dir / f"{name}.md" for name in identities}
+    archived_paths = {name: paths.agents_dir / "_terminated" / f"{name}.md" for name in identities}
     return {
         "tasks": rows,
         "attachments": {task_id: [record(row) for row in db.list_task_attachments(task_id)]
@@ -87,14 +105,14 @@ def _r1_snapshot(*, db, tracker, paths, queue, task_ids: tuple[str, ...],
             {"org": slug, "task_id": task_id, "metadata": metadata}
             for slug, task_id, metadata in list(queue._queue._queue)
         ],
-        "canonical_agents": {name: (paths.agents_dir / f"{name}.md").exists()
-                             for name in identities},
-        "archived_agents": {name: (paths.agents_dir / "_terminated" / f"{name}.md").exists()
-                            for name in identities},
-        "workspaces": {name: (paths.workspaces_dir / name).exists()
-                       for name in identities},
-        "archived_workspaces": {name: (paths.workspaces_dir / "_terminated" / name).exists()
-                                for name in identities},
+        "canonical_agents": {name: bytes_evidence(path) for name, path in canonical_paths.items()},
+        "archived_agents": {name: bytes_evidence(path) for name, path in archived_paths.items()},
+        "workspaces": {name: tree_contents(paths.workspaces_dir / name) for name in identities},
+        "archived_workspaces": {name: tree_contents(paths.workspaces_dir / "_terminated" / name) for name in identities},
+        # The test fixture's canonical team source is evidence too.  Keeping
+        # its bytes lets each schedule compare membership input rather than
+        # infer it from a surviving agent file.
+        "teams_bytes": bytes_evidence(paths.teams_config_path),
         "proposed_workflow_relations": "NOT PRESENT IN SHIPPING SCHEMA",
         "active_chain": {task_id: rows[task_id]["active_chain"] if rows[task_id] else None
                          for task_id in task_ids},
@@ -123,6 +141,318 @@ def _receipt_evidence(receipts) -> list[dict[str, object]]:
         }
         for receipt in receipts
     ]
+
+
+def test_r1_cancelled_pending_subtree_is_durable_before_queue_drain(tmp_path, monkeypatch) -> None:
+    """Cancel an actually delegated child after original enqueue, before launch."""
+    import sqlite3
+    import threading
+    from runtime.daemon.dispatcher import Dispatcher
+    from runtime.daemon.routes.tasks import CancelBody, CompletionBody, cancel_task, submit_completion
+    from runtime.daemon.state import DaemonState
+    from runtime.models import NextStep, TaskRecord, TaskStatus
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+    from tests.daemon.test_task_producer_containment import _FakeBackend, _RecordingExecutor, _make_orch
+
+    backend = _FakeBackend()
+    orch, _supervisor, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
+    paths = orch._paths
+
+    class EventSink:
+        async def publish(self, task_id, event) -> None:
+            return None
+
+    org = SimpleNamespace(root=paths.root, slug="test", db=db, teams=orch._teams, sessions=tracker,
+                          settings=orch._settings, teams_lock=asyncio.Lock(), db_lock=asyncio.Lock(),
+                          event_bus=EventSink(), orchestrator=orch)
+    reached, release = threading.Event(), threading.Event()
+    errors: list[BaseException] = []
+    observed: dict[str, object] = {}
+
+    class CallbackExecutor(_RecordingExecutor):
+        def set_invocation_context(self, **kwargs):
+            self.context = kwargs
+
+        def run(self, **kwargs):
+            body = CompletionBody(session_id=kwargs["session_id"], agent=self.context["agent"],
+                status="completed", confidence=100, output_summary="delegate",
+                decision=NextStep(action="delegate", agent="dev_agent", prompt="child").model_dump())
+            assert asyncio.run(submit_completion(self.context["task_id"], body, org)) == {"ok": True}
+            return super().run(**kwargs)
+
+    executor = CallbackExecutor()
+    monkeypatch.setattr(orch, "_build_executor", lambda _provider: executor)
+    orch.attach_host_supervisor(HostSessionSupervisor(
+        backend=backend, policy=canary_policy(sample_interval_seconds=0.0), publisher=lambda _receipt: None,
+    ))
+    parent = TaskRecord(id="TASK-U0-CANCEL-PARENT", team="engineering", brief="parent", assigned_agent="engineering_head", task_type="task")
+    db.insert_task(parent)
+    state = DaemonState.idle(orch._settings); state.orgs["test"] = SimpleNamespace(orchestrator=orch); orch.attach_queue(state.queue)
+    original_enqueue = state.queue.enqueue
+
+    def hold_child_after_original_enqueue(slug, task_id, *, metadata=None):
+        original_enqueue(slug, task_id, metadata=metadata)
+        child = db.get_task(task_id)
+        if child is None or child.parent_task_id != parent.id:
+            return
+        with sqlite3.connect(paths.db_path) as reader:
+            observed["durable_child"] = reader.execute("SELECT id, parent_task_id, status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        observed["child_id"] = task_id; reached.set()
+        assert release.wait(2), "pending child boundary was not released"
+
+    monkeypatch.setattr(state.queue, "enqueue", hold_child_after_original_enqueue)
+    state.queue.enqueue("test", parent.id)
+
+    def drain() -> None:
+        try:
+            asyncio.run(state.queue.drain_sync(Dispatcher(state)))
+        except BaseException as exc:
+            errors.append(exc)
+
+    drain_thread = threading.Thread(target=drain, daemon=True)
+    before = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent.id,), agent_names=("dev_agent",))
+    drain_thread.start()
+    try:
+        assert reached.wait(2), "real delegation never reached child enqueue"
+        child_id = observed["child_id"]
+        assert observed["durable_child"] == (child_id, parent.id, TaskStatus.PENDING.value)
+        result = asyncio.run(cancel_task(parent.id, CancelBody(rationale="fixture drain", cascade=True), org))
+        with sqlite3.connect(paths.db_path) as reader:
+            durable = reader.execute("SELECT id, status, cancelled_at, note, block_kind FROM tasks WHERE id IN (?, ?) ORDER BY id", (child_id, parent.id)).fetchall()
+        cancelled = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent.id, child_id), agent_names=("dev_agent",))
+        assert result["cancelled"] == [parent.id, child_id] and result["killed"] == []
+        assert all(row[1] == TaskStatus.CANCELLED.value and row[2] and row[3] == "cancelled by founder: fixture drain" and row[4] is None for row in durable)
+        assert backend.calls["launch"] == backend.calls["finish"] == 1
+        assert cancelled["results"][child_id] == [] and cancelled["sessions"][child_id] is None and not cancelled["controls"][child_id]
+        assert any(item["task_id"] == child_id for item in cancelled["queue"])
+        assert len(cancelled["audits"][parent.id]) > len(before["audits"][parent.id])
+        with pytest.raises(HTTPException) as repeated:
+            asyncio.run(cancel_task(parent.id, CancelBody(cascade=True), org))
+        assert repeated.value.status_code == 409 and repeated.value.detail["code"] == "task_already_terminal"
+        unchanged = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent.id, child_id), agent_names=("dev_agent",))
+        assert unchanged["audits"] == cancelled["audits"]
+        assert unchanged["tasks"] == cancelled["tasks"]
+    finally:
+        release.set(); drain_thread.join(timeout=2)
+        assert not drain_thread.is_alive(), "owned drain thread did not finish"
+    assert not errors
+    after = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent.id, child_id), agent_names=("dev_agent",))
+    assert after["queue"] == [] and backend.calls["launch"] == backend.calls["finish"] == 1
+    assert after["tasks"][parent.id]["status"] == after["tasks"][child_id]["status"] == TaskStatus.CANCELLED.value
+
+
+def test_r1_cancelled_launched_child_rejects_late_callback_and_drains(tmp_path, monkeypatch) -> None:
+    """A real opaque control cancels the launched child before its callback."""
+    import threading
+    from runtime.daemon.dispatcher import Dispatcher
+    from runtime.daemon.routes.tasks import CancelBody, CompletionBody, cancel_task, submit_completion
+    from runtime.daemon.state import DaemonState
+    from runtime.models import NextStep, TaskRecord, TaskStatus
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+    from tests.daemon.test_task_producer_containment import _FakeBackend, _RecordingExecutor, _make_orch
+
+    backend = _FakeBackend(auto_exit_after=0)
+    orch, _supervisor, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
+    paths = orch._paths
+
+    class EventSink:
+        async def publish(self, task_id, event) -> None:
+            return None
+
+    org = SimpleNamespace(root=paths.root, slug="test", db=db, teams=orch._teams, sessions=tracker,
+                          settings=orch._settings, teams_lock=asyncio.Lock(), db_lock=asyncio.Lock(),
+                          event_bus=EventSink(), orchestrator=orch)
+    reached, release_late = threading.Event(), threading.Event()
+    control_arrived, release_control = threading.Event(), threading.Event()
+    errors: list[BaseException] = []
+    cancel_errors: list[BaseException] = []
+    observed: dict[str, object] = {}
+
+    class CallbackExecutor(_RecordingExecutor):
+        def set_invocation_context(self, **kwargs):
+            self.context = kwargs
+
+        def run(self, **kwargs):
+            task_id = self.context["task_id"]
+            if task_id == "TASK-U0-CANCEL-LAUNCHED-PARENT":
+                body = CompletionBody(session_id=kwargs["session_id"], agent=self.context["agent"], status="completed", confidence=100, output_summary="delegate", decision=NextStep(action="delegate", agent="dev_agent", prompt="child").model_dump())
+                assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
+                return self._results[0]
+            observed.update(task_id=task_id, agent=self.context["agent"], session_id=kwargs["session_id"], request_id=kwargs["running"].request_id, attempt=0)
+            reached.set()
+            # The opaque shipping control has already been invoked by the
+            # route when this release is permitted; no synthetic control is
+            # substituted for the real contained running handle.
+            assert release_late.wait(2), "late callback boundary was not released"
+            result = super().run(**kwargs)
+            late = CompletionBody(session_id=kwargs["session_id"], agent=self.context["agent"], status="completed", confidence=100, output_summary="late", decision=NextStep(action="done", summary="late").model_dump())
+            with pytest.raises(HTTPException) as rejected:
+                asyncio.run(submit_completion(task_id, late, org))
+            observed["late_detail"] = rejected.value.detail
+            return result
+
+    executor, receipts = CallbackExecutor(), []
+    monkeypatch.setattr(orch, "_build_executor", lambda _provider: executor)
+    orch.attach_host_supervisor(HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0.0), publisher=receipts.append))
+    parent = TaskRecord(id="TASK-U0-CANCEL-LAUNCHED-PARENT", team="engineering", brief="parent", assigned_agent="engineering_head", task_type="task")
+    db.insert_task(parent)
+    state = DaemonState.idle(orch._settings); state.orgs["test"] = SimpleNamespace(orchestrator=orch); orch.attach_queue(state.queue)
+    state.queue.enqueue("test", parent.id)
+    original_controls = tracker.iter_task_cancel_controls
+
+    def held_original_control(task_id):
+        """Hold the route immediately before its original opaque control."""
+        controls = original_controls(task_id)
+        if task_id != observed.get("task_id"):
+            return controls
+
+        def invoke_original(control):
+            control_arrived.set()
+            assert release_control.wait(2), "opaque cancellation control was not released"
+            control()
+
+        return [(agent, lambda control=control: invoke_original(control)) for agent, control in controls]
+
+    monkeypatch.setattr(tracker, "iter_task_cancel_controls", held_original_control)
+
+    def drain() -> None:
+        try:
+            asyncio.run(state.queue.drain_sync(Dispatcher(state)))
+        except BaseException as exc:
+            errors.append(exc)
+
+    drain_thread = threading.Thread(target=drain, daemon=True)
+    cancel_thread: threading.Thread | None = None
+    drain_thread.start()
+    try:
+        assert reached.wait(2), "child did not reach launched pre-callback boundary"
+        child_id = observed["task_id"]
+        arrival = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent.id, child_id), agent_names=("dev_agent",))
+        assert arrival["tasks"][child_id]["status"] == TaskStatus.IN_PROGRESS.value
+        assert arrival["sessions"][child_id] == observed["session_id"] and arrival["controls"][child_id] is True
+        assert observed["request_id"] == child_id and observed["agent"] == "dev_agent" and observed["attempt"] == 0
+        def cancel() -> None:
+            try:
+                observed["cancelled"] = asyncio.run(cancel_task(
+                    parent.id, CancelBody(rationale="late callback", cascade=True), org,
+                ))
+            except BaseException as exc:
+                cancel_errors.append(exc)
+
+        cancel_thread = threading.Thread(target=cancel, daemon=True)
+        cancel_thread.start()
+        assert control_arrived.wait(2), "route never reached the original opaque control"
+        # The route has already written the terminal rows/audits under its
+        # DB lock, but our wrapper has not yet called the original control.
+        # This is an independent reader observation, not a writer-serialization
+        # claim across SQLite connections.
+        import sqlite3
+        with sqlite3.connect(paths.db_path) as reader:
+            durable = reader.execute(
+                "SELECT id, status, cancelled_at, note FROM tasks WHERE id IN (?, ?) ORDER BY id",
+                (child_id, parent.id),
+            ).fetchall()
+        before_control = _r1_snapshot(
+            db=db, tracker=tracker, paths=paths, queue=state.queue,
+            task_ids=(parent.id, child_id), agent_names=("dev_agent",),
+        )
+        assert all(
+            row[1] == TaskStatus.CANCELLED.value and row[2]
+            and row[3] == "cancelled by founder: late callback"
+            for row in durable
+        )
+        assert before_control["sessions"][child_id] == observed["session_id"]
+        assert before_control["controls"][child_id] is True
+        assert any(row["action"] == "task_cancelled" for row in before_control["audits"][child_id])
+        release_control.set()
+        cancel_thread.join(timeout=2)
+        assert not cancel_thread.is_alive(), "owned cancellation thread did not finish"
+        assert not cancel_errors
+        assert observed["cancelled"]["cancelled"] == [parent.id, child_id]
+        assert observed["cancelled"]["killed"] == [{"task_id": child_id, "agent": "dev_agent"}]
+    finally:
+        release_control.set()
+        release_late.set()
+        for owned_thread in (cancel_thread, drain_thread):
+            if owned_thread is not None and owned_thread.ident is not None:
+                owned_thread.join(timeout=2)
+        alive = [thread.name for thread in (cancel_thread, drain_thread)
+                 if thread is not None and thread.is_alive()]
+        assert not alive, f"owned test thread(s) did not finish: {alive}"
+    assert not errors
+    final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent.id, child_id), agent_names=("dev_agent",))
+    assert final["tasks"][parent.id]["status"] == final["tasks"][child_id]["status"] == TaskStatus.CANCELLED.value
+    assert final["results"][child_id] == [] and final["sessions"][child_id] is None and final["controls"][child_id] is False and final["queue"] == []
+    assert observed["late_detail"]["code"] == "task_not_active"
+    assert backend.calls["launch"] == backend.calls["finish"] == 2 and len(receipts) == 2
+
+
+def test_r1_cancel_after_persisted_callback_keeps_history_and_no_control(tmp_path, monkeypatch) -> None:
+    """A callback-first child retains its row, then cancellation stays terminal."""
+    import threading
+    from runtime.daemon.dispatcher import Dispatcher
+    from runtime.daemon.routes.tasks import CancelBody, CompletionBody, cancel_task, submit_completion
+    from runtime.daemon.state import DaemonState
+    from runtime.models import NextStep, TaskRecord, TaskStatus
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+    from tests.daemon.test_task_producer_containment import _FakeBackend, _RecordingExecutor, _make_orch
+
+    backend = _FakeBackend(auto_exit_after=0)
+    orch, _supervisor, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
+    paths = orch._paths
+    class EventSink:
+        async def publish(self, task_id, event) -> None: return None
+    org = SimpleNamespace(root=paths.root, slug="test", db=db, teams=orch._teams, sessions=tracker, settings=orch._settings, teams_lock=asyncio.Lock(), db_lock=asyncio.Lock(), event_bus=EventSink(), orchestrator=orch)
+    reached, release = threading.Event(), threading.Event()
+    errors: list[BaseException] = []
+    observed: dict[str, object] = {}
+    class CallbackExecutor(_RecordingExecutor):
+        def set_invocation_context(self, **kwargs): self.context = kwargs
+        def run(self, **kwargs):
+            task_id = self.context["task_id"]
+            if task_id == "TASK-U0-CANCEL-CALLBACK-PARENT":
+                decision = NextStep(action="delegate", agent="dev_agent", prompt="child")
+            else:
+                decision = NextStep(action="done", summary="child completed")
+            body = CompletionBody(session_id=kwargs["session_id"], agent=self.context["agent"], status="completed", confidence=100, output_summary="callback", decision=decision.model_dump())
+            assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
+            if task_id == "TASK-U0-CANCEL-CALLBACK-PARENT":
+                return self._results[0]
+            if task_id != "TASK-U0-CANCEL-CALLBACK-PARENT":
+                observed.update(task_id=task_id, session_id=kwargs["session_id"], agent=self.context["agent"])
+                reached.set(); assert release.wait(2), "callback-first boundary was not released"
+            return self._results[0]
+    executor = CallbackExecutor()
+    monkeypatch.setattr(orch, "_build_executor", lambda _provider: executor)
+    orch.attach_host_supervisor(HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0.0), publisher=lambda _receipt: None))
+    parent = TaskRecord(id="TASK-U0-CANCEL-CALLBACK-PARENT", team="engineering", brief="parent", assigned_agent="engineering_head", task_type="task")
+    db.insert_task(parent)
+    state = DaemonState.idle(orch._settings); state.orgs["test"] = SimpleNamespace(orchestrator=orch); orch.attach_queue(state.queue); state.queue.enqueue("test", parent.id)
+    def drain() -> None:
+        try: asyncio.run(state.queue.drain_sync(Dispatcher(state)))
+        except BaseException as exc: errors.append(exc)
+    drain_thread = threading.Thread(target=drain, daemon=True); drain_thread.start()
+    try:
+        assert reached.wait(2), "callback-first child did not persist"
+        child_id = observed["task_id"]
+        before_cancel = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent.id, child_id), agent_names=("dev_agent",))
+        assert before_cancel["tasks"][child_id]["status"] == TaskStatus.IN_PROGRESS.value
+        assert len(before_cancel["results"][child_id]) == 1 and before_cancel["sessions"][child_id] is None and before_cancel["controls"][child_id] is False
+        cancelled = asyncio.run(cancel_task(parent.id, CancelBody(rationale="callback already persisted", cascade=True), org))
+        assert cancelled["cancelled"] == [parent.id, child_id] and cancelled["killed"] == []
+        effects = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent.id, child_id), agent_names=("dev_agent",))
+        with pytest.raises(HTTPException) as repeated:
+            asyncio.run(cancel_task(parent.id, CancelBody(cascade=True), org))
+        assert repeated.value.status_code == 409 and repeated.value.detail["code"] == "task_already_terminal"
+        unchanged = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent.id, child_id), agent_names=("dev_agent",))
+        assert unchanged["audits"] == effects["audits"] and unchanged["tasks"] == effects["tasks"]
+    finally:
+        release.set(); drain_thread.join(timeout=2)
+        assert not drain_thread.is_alive(), "owned drain thread did not finish"
+    assert not errors
+    final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent.id, child_id), agent_names=("dev_agent",))
+    assert final["tasks"][parent.id]["status"] == final["tasks"][child_id]["status"] == TaskStatus.CANCELLED.value
+    assert len(final["results"][child_id]) == 1 and final["sessions"][child_id] is None and final["controls"][child_id] is False and final["queue"] == []
 
 
 def test_actual_prior_leg_context_is_immediate_report_only_not_authority_snapshot() -> None:
@@ -598,7 +928,8 @@ def test_r1_termination_after_try_delegate_before_enqueue_refuses_quiescence(tmp
         for thread in owned_threads:
             if thread.ident is not None:
                 thread.join(timeout=2)
-            assert not thread.is_alive(), "owned test thread did not finish"
+        alive = [thread.name for thread in owned_threads if thread.is_alive()]
+        assert not alive, f"owned test thread(s) did not finish: {alive}"
     if writer_errors:
         raise writer_errors[0]
     if drain_errors:
@@ -818,7 +1149,8 @@ def test_r1_termination_after_original_enqueue_refuses_quiescence(tmp_path, monk
         for owned_thread in owned_threads:
             if owned_thread.ident is not None:
                 owned_thread.join(timeout=2)
-            assert not owned_thread.is_alive(), "owned test thread did not finish"
+        alive = [thread.name for thread in owned_threads if thread.is_alive()]
+        assert not alive, f"owned test thread(s) did not finish: {alive}"
     if writer_errors:
         raise writer_errors[0]
     if drain_errors:
@@ -1010,7 +1342,8 @@ def test_r1_termination_after_child_launch_distinguishes_callback_order(tmp_path
         assert observed["result_count"] == (1 if callback_before_writer else 0)
         arrival = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=("TASK-U0-PARENT", child_id), agent_names=("dev_agent",))
         assert backend.calls["launch"] == 2 and backend.calls["finish"] == 1
-        assert (arrival["sessions"][child_id] is not None and arrival["controls"][child_id]) == (not callback_before_writer)
+        assert (arrival["sessions"][child_id] is not None) == (not callback_before_writer)
+        assert arrival["controls"][child_id] is (not callback_before_writer)
         assert len(arrival["results"][child_id]) == (1 if callback_before_writer else 0)
         writer_thread.start(); assert writer_done.wait(2), "writer did not return"
         if errors: raise errors[0]
@@ -1019,16 +1352,20 @@ def test_r1_termination_after_child_launch_distinguishes_callback_order(tmp_path
         assert detail["code"] == "agent_not_quiescent" and detail["name"] == "dev_agent"
         assert {item["id"] for item in detail["conflicts"] if item["kind"] == "task"} == {child_id}
         assert boundary["tasks"][child_id]["status"] == TaskStatus.IN_PROGRESS.value
-        assert (boundary["sessions"][child_id] is not None and boundary["controls"][child_id]) == (not callback_before_writer)
+        assert (boundary["sessions"][child_id] is not None) == (not callback_before_writer)
+        assert boundary["controls"][child_id] is (not callback_before_writer)
         assert boundary["canonical_agents"]["dev_agent"] and boundary["workspaces"]["dev_agent"]
         assert boundary["attachments"][child_id] == [] and boundary["proposed_workflow_relations"] == "NOT PRESENT IN SHIPPING SCHEMA"
         assert len(boundary["results"][child_id]) == (1 if callback_before_writer else 0)
         observed["event_order"].append("boundary_observed")
     finally:
         release.set()
-        for thread in (writer_thread, drain_thread):
-            if thread.ident is not None: thread.join(timeout=2)
-            assert not thread.is_alive(), "owned test thread did not finish"
+        started = (writer_thread, drain_thread)
+        for thread in started:
+            if thread.ident is not None:
+                thread.join(timeout=2)
+        alive = [thread.name for thread in started if thread.is_alive()]
+        assert not alive, f"owned test thread(s) did not finish: {alive}"
     if errors: raise errors[0]
     after = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=("TASK-U0-PARENT", child_id), agent_names=("dev_agent",))
     assert db.get_task(child_id).status is TaskStatus.COMPLETED and db.get_task("TASK-U0-PARENT").status is TaskStatus.COMPLETED

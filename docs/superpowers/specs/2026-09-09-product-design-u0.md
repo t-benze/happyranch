@@ -72,7 +72,8 @@ readback therefore sees the same admitted child and the exact queued item.
 Releasing either held boundary records the contained child callback and parent
 revisit. Each case snapshots task rows,
 chain/fanout fields, attachments, audits, queue, assigned-agent session/control
-bindings, results, canonical/workspace archive residue, and recorded host
+bindings, results, canonical/team source byte digests, resolved workspace/archive
+contents, and recorded host
 supervisor receipts; proposed workflow relations are explicitly **NOT PRESENT
 IN SHIPPING SCHEMA**. Empty attachment snapshots are observations, not claims
 that an attachment-cleanup contract ran. The latter refusal proves only this
@@ -98,6 +99,16 @@ it does not prove a wider serialization contract. Receipt task/agent/session/
 attempt identity remains absent and is not fabricated. Cancellation/control
 drain, legacy chain/fanout, and the complete D5 writer/reader/transaction/
 compensation/cutover protocol remain explicit residual obligations.
+
+R1 cancellation/control-drain evidence is separate from those authority-refusal
+cases. The shipping cancellation route makes parent and child terminal
+cancellation/audit state independently visible before it invokes only the
+opaque contained control and clears its owned binding. A late callback is
+observed against the source-derived terminal gate; it is not reclassified as
+accepted business completion or a revisit. All owned barriers are released
+before every started thread is joined, with aggregate liveness/errors reported
+afterward. This remains disposable-fixture evidence, not a production D5
+guarantee or a claim of complete R1.
 
 Current control and corrupt/partial adapter inputs fail closed before any
 proposed adapter write. R5's decision packet
