@@ -335,8 +335,16 @@ function DreamCandidateRow({
 /* ------------------------------------------------------------------ */
 
 export function KbPage(): JSX.Element {
-  const params = useParams<{ '*'?: string; slug?: string }>();
-  const openSlug = params['*'] && params['*'].length > 0 ? params['*'] : undefined;
+  // Read only this route's explicit entry segment. App mounts AppRoutes below
+  // an outer `*` route, whose inherited splat is the complete location even
+  // on the KB index; using it here would open a bogus detail drawer.
+  const { entrySlug, '*': entryPath } = useParams<{
+    entrySlug?: string;
+    '*'?: string;
+  }>();
+  const openSlug = entrySlug
+    ? [entrySlug, entryPath].filter(Boolean).join('/')
+    : undefined;
   const navigate = useNavigate();
   const [folder, setFolder] = useState<string | null>(null);
   // Dedicated Candidates view: when true (and not searching) the main area

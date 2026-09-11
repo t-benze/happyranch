@@ -5,11 +5,13 @@
  * state transitions (Accept/Dismiss), pending-count tag, error states,
  * and shared candidate state via the merged STEP-1 route.
  */
-import { screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test, beforeEach } from 'vitest';
+import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { AppRoutes } from '@/routes';
+import { AppProvider } from '@/design-system/providers/AppProvider';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 
@@ -20,7 +22,7 @@ const SLUG = 'hk-macau-tourism';
 /* ------------------------------------------------------------------ */
 
 const ENTRY_A = {
-  slug: 'policy/refund-thresholds',
+  slug: 'refund-thresholds',
   title: 'Refund authority by tier',
   type: 'precedent',
   topic: 'finance',
@@ -29,11 +31,11 @@ const ENTRY_A = {
   updated_at: '2026-05-16T09:00:00Z',
   authored_by: 'founder',
   source_task: 'TASK-0042',
-  related_entries: ['intake/spanish-walk-ins'],
+  related_entries: ['spanish-walk-ins'],
 };
 
 const ENTRY_B = {
-  slug: 'intake/spanish-walk-ins',
+  slug: 'spanish-walk-ins',
   title: 'Spanish-speaking walk-in flow',
   type: 'sop',
   topic: 'intake',
@@ -112,6 +114,15 @@ function stubKBStats(stats?: { slug: string; view_count: number; last_viewed_at:
       HttpResponse.json({ entries: stats ?? [] }),
     ),
   );
+}
+
+/** Exercise App's shipping outer wildcard router, not only a bare KB mount. */
+function renderWithOuterAppRoute(route: string) {
+  const router = createMemoryRouter(
+    [{ path: '*', element: <AppProvider><AppRoutes /></AppProvider> }],
+    { initialEntries: [route] },
+  );
+  return render(<RouterProvider router={router} />);
 }
 
 /**
@@ -201,6 +212,62 @@ describe('KbPage — folder filtering', () => {
     await waitFor(() =>
       expect(screen.getByText(/Spanish-speaking walk-in flow/)).toBeInTheDocument(),
     );
+  });
+});
+
+describe('KbPage — App wildcard route regression', () => {
+  test('keeps the KB index closed when mounted below the shipping outer wildcard', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    let entryRequests = 0;
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [ENTRY_A] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb/:entrySlug`, ({ params }) => {
+        if (params.entrySlug !== 'stats') entryRequests += 1;
+        return HttpResponse.json(ENTRY_A);
+      }),
+    );
+
+    renderWithOuterAppRoute(`/orgs/${SLUG}/kb?source=nav`);
+
+    await screen.findByText('Refund authority by tier');
+    expect(screen.queryByText('Loading entry...')).not.toBeInTheDocument();
+    expect(screen.queryByText('Could not load entry')).not.toBeInTheDocument();
+    expect(entryRequests).toBe(0);
+  });
+
+  test('uses the explicit entry segment for direct detail URLs below the outer wildcard', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    const entryRequests: string[] = [];
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [ENTRY_A] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb/:entrySlug`, ({ params }) => {
+        if (params.entrySlug !== 'stats') entryRequests.push(String(params.entrySlug));
+        return HttpResponse.json(ENTRY_A);
+      }),
+    );
+
+    renderWithOuterAppRoute(`/orgs/${SLUG}/kb/${ENTRY_A.slug}`);
+
+    await screen.findByText(/CX Manager may approve refunds/);
+    expect(entryRequests).toEqual([ENTRY_A.slug]);
   });
 });
 
@@ -713,7 +780,7 @@ describe('KbPage — entry detail', () => {
       http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
         HttpResponse.json({ dreams: [] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/kb/policy/refund-thresholds`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/kb/refund-thresholds`, () =>
         HttpResponse.json(ENTRY_A),
       ),
     );
@@ -738,7 +805,7 @@ describe('KbPage — viewed Nx (CLI) usage label', () => {
   test('shows viewed Nx (CLI) for entries with recorded views', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubKBStats([
-      { slug: 'policy/refund-thresholds', view_count: 7, last_viewed_at: '2026-06-17T09:00:00Z' },
+      { slug: 'refund-thresholds', view_count: 7, last_viewed_at: '2026-06-17T09:00:00Z' },
     ]);
     server.use(
       http.get('/api/v1/orgs', () =>
@@ -809,7 +876,7 @@ describe('KbPage — leading glyph on entry cards (KB-04)', () => {
     await screen.findByText(/Refund authority by tier/);
 
     // The entry card is an anchor (Link); locate it via its slug text.
-    const slugEl = screen.getByText('policy/refund-thresholds');
+    const slugEl = screen.getByText('refund-thresholds');
     const card = slugEl.closest('a');
     expect(card).not.toBeNull();
 

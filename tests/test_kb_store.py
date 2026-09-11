@@ -56,6 +56,28 @@ def test_write_entry_round_trips_frontmatter_and_body(store: KBStore):
     assert loaded.authored_by == "dev_agent"
 
 
+@pytest.mark.parametrize(
+    ("frontmatter_tags", "expected_tags"),
+    [
+        ("[policy, finance]", ["policy", "finance"]),
+        ("policy", ["policy"]),
+        ("''", []),
+        ("null", []),
+        ("", []),
+        ("{unexpected: mapping}", []),
+    ],
+)
+def test_parse_normalizes_scalar_or_malformed_frontmatter_tags(
+    store: KBStore, frontmatter_tags: str, expected_tags: list[str]
+):
+    tags_line = f"tags: {frontmatter_tags}\n" if frontmatter_tags else ""
+    (store.root / "tags.md").write_text(
+        "---\nslug: tags\ntitle: Tags\ntype: reference\ntopic: test\n"
+        f"{tags_line}---\n\n# Tags\n"
+    )
+    assert store.read_entry("tags").tags == expected_tags
+
+
 def test_write_entry_rejects_slug_mismatch(store: KBStore):
     entry = KBEntry(
         slug="good-slug",

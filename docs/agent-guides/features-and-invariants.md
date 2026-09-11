@@ -14,6 +14,13 @@ route/store tests exercise the accepted and rejected operations. Long-lived,
 cross-agent relevance and preferring supersession are editorial guidance in task
 and reflection skills, not a server semantic-admission guarantee.
 
+KB tags are projected as strings: the current writer/API contract emits a list,
+while a legacy scalar frontmatter value is one tag (never an iterable of
+characters). Missing, empty, or unsupported tag shapes project as no tags. The
+Knowledge index is `/orgs/:slug/kb`; detail selection is only the explicit
+`/orgs/:slug/kb/:entrySlug/...` route segment, so an enclosing router wildcard
+must never open a detail drawer on the index.
+
 Generic remote jobs remain dormant. `runtime/remote_jobs/` provides contextual
 v1 models and canonical validation. `remote_job_schema.py` installs the six
 runner/workspace/attempt/receipt/observation/frame domain tables, enrollment
