@@ -10,12 +10,12 @@ Run these commands only after the acceptance gates and normal publication are ve
 
 ~~~sh
 set -eu
-SOURCE=d9af6208a18719e91b4d4c5760adb26af588857c
+SOURCE=fae65226ecc14b85aef63d1e7ef3488f6d857edc
 JENKINS_STAGE=$(mktemp -d)
 git clone --no-checkout https://github.com/t-benze/happyranch.git "$JENKINS_STAGE/source"
 git -C "$JENKINS_STAGE/source" fetch origin "$SOURCE"
 git -C "$JENKINS_STAGE/source" show "$SOURCE:scripts/jenkins_jobs.py" > "$JENKINS_STAGE/jenkins_jobs.py"
-python3 -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()=="f40c76ea26daba60c5db882e88146c02c08617fbc90711a989d152dc2c487bb9", "helper checksum mismatch"' "$JENKINS_STAGE/jenkins_jobs.py"
+python3 -c 'import hashlib,sys; assert hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()=="417c208e5b986ae511f1b8bbe88d4ee1cf5cee7d8c83a5346d1e9f0f7f698be4", "helper checksum mismatch"' "$JENKINS_STAGE/jenkins_jobs.py"
 JENKINS_TOOL_DIR="$HOME/.local/share/happyranch-tools"
 install -d -m 700 "$JENKINS_TOOL_DIR"
 install -m 700 "$JENKINS_STAGE/jenkins_jobs.py" "$JENKINS_TOOL_DIR/jenkins_jobs.py"
