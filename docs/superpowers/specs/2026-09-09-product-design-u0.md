@@ -107,8 +107,18 @@ opaque contained control and clears its owned binding. A late callback is
 observed against the source-derived terminal gate; it is not reclassified as
 accepted business completion or a revisit. All owned barriers are released
 before every started thread is joined, with aggregate liveness/errors reported
-afterward. This remains disposable-fixture evidence, not a production D5
-guarantee or a claim of complete R1.
+afterward. The retained legacy-chain pair observes two more bounded schedules:
+the first contained chain child is held after launch before its real callback,
+then parent cascade cancellation durably stamps both nonterminal rows before
+the opaque control and the released callback receives HTTP 409 with no result,
+second child, parent revisit, or chain-advance audit. In the other schedule,
+the first `PASS` has already committed the second `PENDING` child and its one
+parent-owned advance audit, but the original second-child queue publication is
+held; cascade cancellation stamps only the parent and second child, preserves
+the terminal first child/result/audit, and the released original queue item is
+skipped without admission, launch, or resurrection. These are observed legacy
+route limits, not fanout, cross-process serialization, a production D5
+guarantee, or a claim of complete R1.
 
 The finite legacy-chain control uses the real completion, consumption, chain,
 and queue seams for three first-leg reports against expected `PASS`: `PASS`

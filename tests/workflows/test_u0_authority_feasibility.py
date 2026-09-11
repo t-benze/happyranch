@@ -1601,3 +1601,208 @@ def test_r1_chain_harness_propagates_dispatcher_error(tmp_path, monkeypatch) -> 
     with pytest.raises(BaseExceptionGroup, match="worker failures") as raised:
         test_r1_real_delegate_then_chain_publication_and_fail_closed_wake(tmp_path, monkeypatch, "PASS")
     assert any("U0_DISPATCH_ERROR_CONTROL" in str(error) for error in raised.value.exceptions)
+
+
+def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, monkeypatch) -> None:
+    """A real parent cascade wins before the first chain callback is submitted.
+
+    The executor is the only fake boundary.  In particular, cancellation uses
+    the route's durable subtree walk and opaque control, and the delayed
+    callback still enters the real ``submit_completion`` route.
+    """
+    from runtime.daemon.dispatcher import Dispatcher
+    from runtime.daemon.routes.tasks import CancelBody, CompletionBody, cancel_task, submit_completion
+    from runtime.daemon.state import DaemonState
+    from runtime.models import ChainLeg, NextStep, TaskRecord, TaskStatus
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+    from tests.daemon.test_task_producer_containment import _FakeBackend, _RecordingExecutor, _make_orch
+
+    parent_id = "TASK-U0-CHAIN-CANCEL-CALLBACK"
+    backend = _FakeBackend(auto_exit_after=0)
+    orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
+    paths, receipts, launches, errors, late_statuses = orch._paths, [], [], [], []
+    child_held, release_child, done = threading.Event(), threading.Event(), threading.Event()
+
+    class EventSink:
+        async def publish(self, task_id, event):
+            return None
+
+    org = SimpleNamespace(db=db, sessions=tracker, db_lock=asyncio.Lock(), event_bus=EventSink(), orchestrator=orch)
+
+    class Executor(_RecordingExecutor):
+        def set_invocation_context(self, **kwargs) -> None:
+            self.context = kwargs.copy()
+
+        def run(self, **kwargs):
+            try:
+                task_id, agent = self.context["task_id"], self.context["agent"]
+                session_id = kwargs["session_id"]
+                launches.append((task_id, agent, session_id))
+                if task_id == parent_id:
+                    decision, verdict = NextStep(action="delegate", agent="dev_agent", prompt="first", expect_verdict="PASS", then=[ChainLeg(agent="dev_agent", prompt="second")]), None
+                else:
+                    child_held.set()
+                    assert release_child.wait(5), "late callback was not released"
+                    decision, verdict = NextStep(action="done", summary="child"), "PASS"
+                body = CompletionBody(session_id=session_id, agent=agent, status="completed", confidence=100, verdict=verdict, output_summary="chain callback", decision=decision.model_dump())
+                try:
+                    assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
+                except HTTPException as exc:
+                    late_statuses.append(exc.status_code)
+                    assert task_id != parent_id and exc.status_code == 409
+                kwargs["running"].process.terminate()
+                return dataclasses.replace(super().run(**kwargs), session_id=session_id)
+            except BaseException as exc:
+                errors.append((exc, traceback.format_exc()))
+                raise
+            finally:
+                kwargs["running"].process.terminate()
+
+    monkeypatch.setattr(orch, "_build_executor", lambda _provider: Executor())
+    supervisor = HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0), publisher=receipts.append)
+    orch.attach_host_supervisor(supervisor)
+    state = DaemonState.idle(orch._settings)
+    state.orgs["test"] = SimpleNamespace(orchestrator=orch)
+    orch.attach_queue(state.queue)
+    parent = TaskRecord(id=parent_id, team="engineering", brief="chain", assigned_agent="engineering_head", task_type="task")
+    db.insert_task(parent)
+    state.queue.enqueue("test", parent_id)
+    dispatcher = Dispatcher(state)
+    def worker():
+        try:
+            asyncio.run(state.queue.drain_sync(dispatcher))
+        except BaseException as exc:
+            errors.append((exc, traceback.format_exc()))
+        finally:
+            done.set()
+    thread = threading.Thread(target=worker, name="u0-chain-cancel-before-callback", daemon=False)
+    thread.start()
+    try:
+        assert child_held.wait(3), "first contained child was not admitted/launched"
+        first = db.get_children(parent_id)[0]
+        before = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, first), agent_names=("engineering_head", "dev_agent"))
+        assert [task_id for task_id, _, _ in launches] == [parent_id, first]
+        cancelled = asyncio.run(cancel_task(parent_id, CancelBody(rationale="chain callback race", cascade=True), org))
+        with sqlite3.connect(f"file:{paths.db_path}?mode=ro", uri=True, timeout=1) as reader:
+            reader.row_factory = sqlite3.Row
+            durable = [dict(row) for row in reader.execute("SELECT id, status, cancelled_at FROM tasks WHERE id IN (?, ?) ORDER BY id", (first, parent_id))]
+        after_cancel = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, first), agent_names=("engineering_head", "dev_agent"))
+        assert cancelled["cancelled"] == [parent_id, first] and cancelled["killed"] == [{"task_id": first, "agent": "dev_agent"}]
+        assert all(row["status"] == TaskStatus.CANCELLED.value and row["cancelled_at"] for row in durable)
+        assert len(after_cancel["audits"][parent_id]) > len(before["audits"][parent_id])
+        assert len(after_cancel["audits"][first]) > len(before["audits"][first])
+        assert after_cancel["results"][first] == [] and after_cancel["active_chain"][parent_id] == before["active_chain"][parent_id]
+    finally:
+        release_child.set()
+        thread.join(8)
+    assert not thread.is_alive() and done.is_set()
+    if errors:
+        raise BaseExceptionGroup("worker failures", [error for error, _trace in errors])
+    final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, first), agent_names=("engineering_head", "dev_agent"))
+    assert late_statuses == [409] and [task_id for task_id, _, _ in launches] == [parent_id, first]
+    assert final["results"][first] == [] and final["queue"] == [] and state.queue._queue._unfinished_tasks == 0
+    assert not any(final["controls"].values()) and all(session is None for session in final["sessions"].values())
+    assert all(row["cleanup_status"] == "clean" and row["quiescent"] and row["survivors"] == 0 for row in _receipt_evidence(receipts))
+
+
+def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeypatch) -> None:
+    """A committed second leg is cancelled at the real held queue-publication seam."""
+    from runtime.daemon.dispatcher import Dispatcher
+    from runtime.daemon.routes.tasks import CancelBody, CompletionBody, cancel_task, submit_completion
+    from runtime.daemon.state import DaemonState
+    from runtime.models import ChainLeg, NextStep, TaskRecord, TaskStatus
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+    from tests.daemon.test_task_producer_containment import _FakeBackend, _RecordingExecutor, _make_orch
+
+    parent_id = "TASK-U0-CHAIN-CANCEL-PUBLICATION"
+    backend = _FakeBackend(auto_exit_after=0)
+    orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
+    paths, receipts, launches, errors = orch._paths, [], [], []
+    publication_held, release_publication, done = threading.Event(), threading.Event(), threading.Event()
+
+    class EventSink:
+        async def publish(self, task_id, event):
+            return None
+
+    org = SimpleNamespace(db=db, sessions=tracker, db_lock=asyncio.Lock(), event_bus=EventSink(), orchestrator=orch)
+
+    class Executor(_RecordingExecutor):
+        def set_invocation_context(self, **kwargs) -> None:
+            self.context = kwargs.copy()
+
+        def run(self, **kwargs):
+            try:
+                task_id, agent, session_id = self.context["task_id"], self.context["agent"], kwargs["session_id"]
+                launches.append((task_id, agent, session_id))
+                if task_id == parent_id and not db.get_children(parent_id):
+                    decision, verdict = NextStep(action="delegate", agent="dev_agent", prompt="first", expect_verdict="PASS", then=[ChainLeg(agent="dev_agent", prompt="second")]), None
+                elif task_id == parent_id:
+                    decision, verdict = NextStep(action="done", summary="unexpected parent revisit"), None
+                else:
+                    decision, verdict = NextStep(action="done", summary="first"), "PASS"
+                body = CompletionBody(session_id=session_id, agent=agent, status="completed", confidence=100, verdict=verdict, output_summary="chain callback", decision=decision.model_dump())
+                assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
+                kwargs["running"].process.terminate()
+                return dataclasses.replace(super().run(**kwargs), session_id=session_id)
+            except BaseException as exc:
+                errors.append((exc, traceback.format_exc()))
+                raise
+            finally:
+                kwargs["running"].process.terminate()
+
+    monkeypatch.setattr(orch, "_build_executor", lambda _provider: Executor())
+    supervisor = HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0), publisher=receipts.append)
+    orch.attach_host_supervisor(supervisor)
+    state = DaemonState.idle(orch._settings)
+    state.orgs["test"] = SimpleNamespace(orchestrator=orch)
+    orch.attach_queue(state.queue)
+    original_put = state.queue.put_nowait
+    def held_put(slug, task_id, *args, **kwargs):
+        if task_id != parent_id and len(db.get_children(parent_id)) == 2:
+            publication_held.set()
+            assert release_publication.wait(5), "held original queue publication was not released"
+        return original_put(slug, task_id, *args, **kwargs)
+    monkeypatch.setattr(state.queue, "put_nowait", held_put)
+    parent = TaskRecord(id=parent_id, team="engineering", brief="chain", assigned_agent="engineering_head", task_type="task")
+    db.insert_task(parent)
+    state.queue.enqueue("test", parent_id)
+    dispatcher = Dispatcher(state)
+    def worker():
+        try:
+            asyncio.run(state.queue.drain_sync(dispatcher))
+        except BaseException as exc:
+            errors.append((exc, traceback.format_exc()))
+        finally:
+            done.set()
+    thread = threading.Thread(target=worker, name="u0-chain-cancel-before-publication", daemon=False)
+    thread.start()
+    try:
+        assert publication_held.wait(3), "PASS chain did not reach original next-child publication"
+        first, second = db.get_children(parent_id)
+        before = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, first, second), agent_names=("engineering_head", "dev_agent"))
+        assert before["tasks"][first]["status"] == TaskStatus.COMPLETED.value
+        assert before["tasks"][second]["status"] == TaskStatus.PENDING.value
+        assert len(before["results"][first]) == 1 and before["results"][second] == []
+        advance = [row for row in before["audits"][parent_id] if row["action"] == "chain_auto_advance"]
+        assert len(advance) == 1 and advance[0]["payload"]["spawned_child_id"] == second
+        cancelled = asyncio.run(cancel_task(parent_id, CancelBody(rationale="chain publication race", cascade=True), org))
+        with sqlite3.connect(f"file:{paths.db_path}?mode=ro", uri=True, timeout=1) as reader:
+            reader.row_factory = sqlite3.Row
+            durable = {row["id"]: dict(row) for row in reader.execute("SELECT id, status, cancelled_at FROM tasks WHERE id IN (?, ?, ?)", (parent_id, first, second))}
+        assert cancelled["cancelled"] == [parent_id, second] and cancelled["killed"] == []
+        assert durable[parent_id]["status"] == durable[second]["status"] == TaskStatus.CANCELLED.value
+        assert durable[parent_id]["cancelled_at"] and durable[second]["cancelled_at"]
+        assert durable[first]["status"] == TaskStatus.COMPLETED.value
+    finally:
+        release_publication.set()
+        thread.join(8)
+    assert not thread.is_alive() and done.is_set()
+    if errors:
+        raise BaseExceptionGroup("worker failures", [error for error, _trace in errors])
+    final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, first, second), agent_names=("engineering_head", "dev_agent"))
+    assert [task_id for task_id, _, _ in launches] == [parent_id, first]
+    assert final["tasks"][parent_id]["status"] == final["tasks"][second]["status"] == TaskStatus.CANCELLED.value
+    assert final["tasks"][first]["status"] == TaskStatus.COMPLETED.value and len(final["results"][first]) == 1
+    assert final["results"][second] == [] and final["queue"] == [] and state.queue._queue._unfinished_tasks == 0
+    assert not any(final["controls"].values()) and all(session is None for session in final["sessions"].values())
+    assert all(row["cleanup_status"] == "clean" and row["quiescent"] and row["survivors"] == 0 for row in _receipt_evidence(receipts))
