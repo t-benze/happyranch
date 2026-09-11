@@ -2128,3 +2128,301 @@ def test_r1_chain_cancel_harness_aggregates_worker_and_boundary_failure() -> Non
     assert str(raised.value.exceptions[2]) == "owned worker did not join"
     assert any("RuntimeError: U0_CANCEL_COMBINED_WORKER_ERROR" in note
                for note in worker_error.__notes__)
+
+
+def test_r1_plain_fanout_joins_only_after_both_original_children_complete(
+    tmp_path, monkeypatch,
+) -> None:
+    """Plain fanout keeps the parent parked until both real callbacks land."""
+    from runtime.daemon.dispatcher import Dispatcher
+    from runtime.daemon.routes.tasks import CompletionBody, submit_completion
+    from runtime.daemon.state import DaemonState
+    from runtime.models import FanoutChild, NextStep, TaskRecord, TaskStatus
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+    from tests.daemon.test_task_producer_containment import _FakeBackend, _RecordingExecutor, _make_orch
+
+    parent_id = "TASK-U0-PLAIN-FANOUT"
+    backend = _FakeBackend(auto_exit_after=0)
+    orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
+    paths, receipts, launches, errors = orch._paths, [], [], []
+    second_held, release_second, done = threading.Event(), threading.Event(), threading.Event()
+
+    class EventSink:
+        async def publish(self, task_id, event):
+            return None
+
+    org = SimpleNamespace(db=db, sessions=tracker, db_lock=asyncio.Lock(), event_bus=EventSink(), orchestrator=orch)
+
+    class Executor(_RecordingExecutor):
+        def set_invocation_context(self, **kwargs):
+            self.context = kwargs.copy()
+
+        def run(self, **kwargs):
+            try:
+                task_id, agent, session_id = self.context["task_id"], self.context["agent"], kwargs["session_id"]
+                assert kwargs["running"].request_id == task_id
+                assert tracker.get_active(task_id, agent) == session_id
+                launches.append((task_id, agent, session_id, kwargs["running"].request_id))
+                children = db.get_children(parent_id)
+                if task_id == parent_id and not children:
+                    decision = NextStep(action="fanout", children=[
+                        FanoutChild(agent="dev_agent", prompt="plain one"),
+                        FanoutChild(agent="dev_agent", prompt="plain two"),
+                    ], width_cap_ack=2, join_summary="join exact reports")
+                elif task_id == parent_id:
+                    decision = NextStep(action="done", summary="joined")
+                else:
+                    ordered = [children[index] for index in (0, 1)]
+                    if task_id == ordered[1]:
+                        second_held.set()
+                        assert release_second.wait(5), "final child callback was not released"
+                    decision = NextStep(action="done", summary=f"result:{task_id}")
+                body = CompletionBody(session_id=session_id, agent=agent, status="completed", confidence=100,
+                                      verdict="PASS" if task_id != parent_id else None,
+                                      output_summary=f"report:{task_id}", decision=decision.model_dump())
+                assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
+                kwargs["running"].process.terminate()
+                return dataclasses.replace(super().run(**kwargs), session_id=session_id)
+            except BaseException as exc:
+                errors.append((exc, traceback.format_exc()))
+                raise
+            finally:
+                kwargs["running"].process.terminate()
+
+    monkeypatch.setattr(orch, "_build_executor", lambda _provider: Executor())
+    supervisor = HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0), publisher=receipts.append)
+    orch.attach_host_supervisor(supervisor)
+    state = DaemonState.idle(orch._settings)
+    state.orgs["test"] = SimpleNamespace(orchestrator=orch)
+    orch.attach_queue(state.queue)
+    db.insert_task(TaskRecord(id=parent_id, team="engineering", brief="fanout", assigned_agent="engineering_head", task_type="task"))
+    state.queue.enqueue("test", parent_id)
+    dispatcher = Dispatcher(state)
+    worker = threading.Thread(target=lambda: (asyncio.run(state.queue.drain_sync(dispatcher)), done.set()), daemon=False)
+    worker.start()
+    assertion = None
+    try:
+        assert second_held.wait(3), "second plain child was not held at its real callback"
+        children = db.get_children(parent_id)
+        held = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
+                            task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
+        fanout = json.loads(held["active_fanout"][parent_id])
+        assert len(children) == 2 and fanout["children_ids"] == children
+        assert fanout["status"] == "spawned" and held["tasks"][parent_id]["block_kind"] == "delegated"
+        assert held["tasks"][parent_id]["orchestration_step_count"] == 1
+        completed = [child for child in children if held["tasks"][child]["status"] == TaskStatus.COMPLETED.value]
+        assert completed == [children[0]]
+        assert not [row for row in held["audits"][parent_id] if row["action"] == "fanout_join"]
+        assert [task_id for task_id, *_rest in launches].count(parent_id) == 1
+    except BaseException as exc:
+        assertion = exc
+    finally:
+        release_second.set()
+        worker.join(8)
+    _raise_cancel_harness_failures(worker_errors=errors, assertion=assertion, thread=worker, done=done)
+    children = db.get_children(parent_id)
+    final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
+                         task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
+    joins = [row for row in final["audits"][parent_id] if row["action"] == "fanout_join"]
+    assert [task_id for task_id, *_rest in launches] == [parent_id, children[0], children[1], parent_id]
+    assert len(joins) == 1 and joins[0]["payload"]["children_ids"] == children
+    assert final["active_fanout"][parent_id] is None and final["active_chain"][parent_id] is None
+    assert all(final["tasks"][task_id]["status"] == TaskStatus.COMPLETED.value for task_id in final["tasks"])
+    assert len(final["results"][parent_id]) == 2 and all(len(final["results"][child]) == 1 for child in children)
+    assert state.queue._queue._unfinished_tasks == 0 and final["queue"] == []
+    assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == len(receipts) == 4
+    assert all(tracker.get_pid(task_id, agent) is None for task_id, agent, _session, _request in launches)
+
+
+@pytest.mark.parametrize("completion_order", ((0, 1), (1, 0)))
+def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
+    tmp_path, monkeypatch, completion_order: tuple[int, int],
+    boundary_failure: BaseException | None = None,
+) -> None:
+    """Two real queue workers consume both plain children before either callback.
+
+    This deliberately uses ``start_workers`` rather than ``drain_sync``: the
+    gates are at the fake external executor only, while spawn, publication,
+    callback consumption, parent wake, join context, and cleanup remain the
+    shipping algorithms.
+    """
+    from runtime.daemon.dispatcher import Dispatcher
+    from runtime.daemon.routes.tasks import CompletionBody, submit_completion
+    from runtime.daemon.state import DaemonState
+    from runtime.models import FanoutChild, NextStep, TaskRecord, TaskStatus
+    from runtime.orchestrator.host_supervisor import HostSessionSupervisor, canary_policy
+    from tests.daemon.test_task_producer_containment import _FakeBackend, _RecordingExecutor, _make_orch
+
+    parent_id = "TASK-U0-PLAIN-CONCURRENT"
+    backend = _FakeBackend(auto_exit_after=0)
+    orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
+    paths, receipts, launches, errors = orch._paths, [], [], []
+    publication_reached, release_publication = threading.Event(), threading.Event()
+    both_launched, permit_callbacks = threading.Event(), threading.Event()
+    first_consumed, release_final, done = threading.Event(), threading.Event(), threading.Event()
+
+    class EventSink:
+        async def publish(self, task_id, event):
+            return None
+
+    org = SimpleNamespace(db=db, sessions=tracker, db_lock=asyncio.Lock(), event_bus=EventSink(), orchestrator=orch)
+
+    class Executor(_RecordingExecutor):
+        def set_invocation_context(self, **kwargs) -> None:
+            self.context = kwargs.copy()
+
+        def run(self, **kwargs):
+            try:
+                task_id, agent, session_id = self.context["task_id"], self.context["agent"], kwargs["session_id"]
+                launches.append((task_id, agent, session_id, kwargs["running"].request_id, tracker.get_pid(task_id, agent)))
+                children = db.get_children(parent_id)
+                if task_id == parent_id and not children:
+                    decision, verdict = NextStep(action="fanout", children=[
+                        FanoutChild(agent="dev_agent", prompt="plain zero"),
+                        FanoutChild(agent="dev_agent", prompt="plain one"),
+                    ], width_cap_ack=2, join_summary="join exact reports"), None
+                elif task_id == parent_id:
+                    decision, verdict = NextStep(action="done", summary="joined"), None
+                else:
+                    assert len(children) == 2
+                    index = children.index(task_id)
+                    if {entry[0] for entry in launches if entry[0] in children} == set(children):
+                        both_launched.set()
+                    assert permit_callbacks.wait(5), "both real launches were not released"
+                    if index != completion_order[0]:
+                        assert release_final.wait(5), "last callback was not released"
+                    decision, verdict = NextStep(action="done", summary=f"child-{index}"), "PASS"
+                body = CompletionBody(session_id=session_id, agent=agent, status="completed", confidence=100,
+                                      verdict=verdict, output_summary=f"report:{task_id}", decision=decision.model_dump())
+                assert asyncio.run(submit_completion(task_id, body, org)) == {"ok": True}
+                if task_id in db.get_children(parent_id) and db.get_children(parent_id).index(task_id) == completion_order[0]:
+                    first_consumed.set()
+                kwargs["running"].process.terminate()
+                return dataclasses.replace(super().run(**kwargs), session_id=session_id)
+            except BaseException as exc:
+                errors.append((exc, traceback.format_exc()))
+                raise
+            finally:
+                kwargs["running"].process.terminate()
+
+    monkeypatch.setattr(orch, "_build_executor", lambda _provider: Executor())
+    supervisor = HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0), publisher=receipts.append)
+    orch.attach_host_supervisor(supervisor)
+    state = DaemonState.idle(orch._settings)
+    state.orgs["test"] = SimpleNamespace(orchestrator=orch, db=db)
+    orch.attach_queue(state.queue)
+    original_put = state.queue.put_nowait
+    def held_publication(slug, task_id, *args, **kwargs):
+        if task_id != parent_id and len(db.get_children(parent_id)) == 2 and not publication_reached.is_set():
+            publication_reached.set()
+            assert release_publication.wait(5), "post-commit child publication was not released"
+        return original_put(slug, task_id, *args, **kwargs)
+    monkeypatch.setattr(state.queue, "put_nowait", held_publication)
+    dispatcher = Dispatcher(state)
+    original_dispatch = dispatcher.run_step
+    def observed_dispatch(*args, **kwargs):
+        try:
+            return original_dispatch(*args, **kwargs)
+        except BaseException as exc:
+            errors.append((exc, traceback.format_exc()))
+            raise
+    monkeypatch.setattr(dispatcher, "run_step", observed_dispatch)
+    db.insert_task(TaskRecord(id=parent_id, team="engineering", brief="fanout", assigned_agent="engineering_head", task_type="task"))
+    state.queue.enqueue("test", parent_id)
+    def workers() -> None:
+        async def run() -> None:
+            state.queue.start_workers(dispatcher, n=2)
+            await state.queue._queue.join()
+            await state.queue.stop()
+        try:
+            asyncio.run(run())
+        except BaseException as exc:
+            errors.append((exc, traceback.format_exc()))
+        finally:
+            done.set()
+    worker = threading.Thread(target=workers, name="u0-plain-fanout-workers", daemon=False)
+    worker.start()
+    assertion = None
+    try:
+        assert publication_reached.wait(3), "original fanout did not reach post-commit publication"
+        children = db.get_children(parent_id)
+        held_spawn = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
+        fanout = json.loads(held_spawn["active_fanout"][parent_id])
+        assert len(children) == 2 and fanout["children_ids"] == children and fanout["status"] == "spawned"
+        assert held_spawn["tasks"][parent_id]["status"] == TaskStatus.IN_PROGRESS.value and held_spawn["tasks"][parent_id]["block_kind"] == "delegated"
+        assert all(held_spawn["tasks"][child]["parent_task_id"] == parent_id for child in children)
+        assert not [row for row in held_spawn["audits"][parent_id] if row["action"] == "fanout_join"]
+        release_publication.set()
+        assert both_launched.wait(3), "both plain children did not make actual contained launches"
+        assert all(entry[2] and entry[3] and entry[4] for entry in launches if entry[0] in children)
+        permit_callbacks.set()
+        assert first_consumed.wait(3), "chosen first callback was not consumed"
+        held_first = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
+        first, last = children[completion_order[0]], children[completion_order[1]]
+        # The real route has durably consumed the callback/result; task-row
+        # terminalization remains executor-owned until that invocation returns.
+        assert held_first["tasks"][first]["status"] == TaskStatus.IN_PROGRESS.value
+        assert held_first["tasks"][last]["status"] == TaskStatus.IN_PROGRESS.value
+        assert len(held_first["results"][first]) == 1 and held_first["results"][last] == []
+        assert held_first["tasks"][parent_id]["block_kind"] == "delegated" and not [row for row in held_first["audits"][parent_id] if row["action"] == "fanout_join"]
+        if boundary_failure is not None:
+            raise boundary_failure
+    except BaseException as exc:
+        assertion = exc
+    finally:
+        release_publication.set()
+        permit_callbacks.set()
+        release_final.set()
+        worker.join(10)
+    _raise_cancel_harness_failures(worker_errors=errors, assertion=assertion, thread=worker, done=done)
+    children = db.get_children(parent_id)
+    final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
+    joins = [row for row in final["audits"][parent_id] if row["action"] == "fanout_join"]
+    assert len(joins) == 1 and joins[0]["payload"]["children_ids"] == children
+    join_context = joins[0]["payload"]["context_markdown"]
+    assert all(
+        f"{child} (dev_agent)" in join_context
+        and "Verdict: PASS" in join_context
+        and "Summary: report:" in join_context
+        for child in children
+    )
+    assert final["active_fanout"][parent_id] is None and final["active_chain"][parent_id] is None
+    assert all(final["tasks"][task_id]["status"] == TaskStatus.COMPLETED.value for task_id in (parent_id, *children))
+    assert len(final["results"][parent_id]) == 2 and all(len(final["results"][child]) == 1 for child in children)
+    assert [(row["task_id"], row["agent"], row["output_summary"])
+            for row in final["results"][parent_id]] == [
+        (parent_id, "engineering_head", f"report:{parent_id}"),
+        (parent_id, "engineering_head", f"report:{parent_id}"),
+    ]
+    assert [(final["results"][child][0]["task_id"], final["results"][child][0]["agent"],
+             final["results"][child][0]["session_id"], final["results"][child][0]["output_summary"])
+            for child in children] == [
+        (child, "dev_agent", final["tasks"][child]["current_session_id"], f"report:{child}")
+        for child in children
+    ]
+    assert state.queue._queue._unfinished_tasks == 0 and final["queue"] == []
+    assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == len(receipts) == 4
+    assert all(tracker.get_pid(task_id, agent) is None for task_id, agent, *_rest in launches)
+
+
+def test_r1_plain_fanout_real_workers_retain_dispatcher_and_boundary_errors(tmp_path, monkeypatch) -> None:
+    """Queue logging cannot hide a dispatcher failure from this harness."""
+    from runtime.daemon.dispatcher import Dispatcher
+
+    original = Dispatcher.run_step
+    calls = 0
+    def injected(self, *args, **kwargs):
+        nonlocal calls
+        result = original(self, *args, **kwargs)
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("U0_PLAIN_FANOUT_DISPATCH_ERROR")
+        return result
+    monkeypatch.setattr(Dispatcher, "run_step", injected)
+    with pytest.raises(BaseExceptionGroup, match="cancellation harness failures") as raised:
+        test_r1_plain_fanout_real_workers_join_in_each_callback_order(
+            tmp_path, monkeypatch, (0, 1),
+            boundary_failure=AssertionError("U0_PLAIN_FANOUT_BOUNDARY_ERROR"),
+        )
+    assert any("U0_PLAIN_FANOUT_DISPATCH_ERROR" in str(error) for error in raised.value.exceptions)
+    assert any("U0_PLAIN_FANOUT_BOUNDARY_ERROR" in str(error) for error in raised.value.exceptions)

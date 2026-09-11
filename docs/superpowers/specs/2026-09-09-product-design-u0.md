@@ -59,6 +59,20 @@ delegation calls self-committing `Database.try_delegate` then queues a child;
 callback and cancellation are distinct routes. R2's historical runtime
 inventory remains subsequent work.
 
+The plain-fanout join control now executes both ordinary child completion
+orders with two real `TaskQueue.start_workers` workers on one event loop. It
+holds original child publication immediately after `try_delegate_many` has
+committed, then holds both external executor callbacks after their real
+contained launches. The selected callback's persisted completion report is
+observed while the parent remains delegated and no `fanout_join` exists; after
+the other callback and owned worker join, one parent revisit consumes the
+shipping join context and clears `active_fanout`. The test captures exceptions
+at the original `Dispatcher.run_step` boundary before queue logging can hide
+them, and its error control proves that boundary error remains visible after
+all gates are released and workers stop. This is only ordinary plain-fanout
+join evidence: fanout cancellation, serialization/pipeline-carrier schedules,
+and the remaining R1–R5 obligations are residual.
+
 The three currently observed authority cases are deliberately narrower than a
 general revocation protocol. Before `_validate_delegate`, supported
 `manage_agent terminate` archives the disposable worker and removes team
