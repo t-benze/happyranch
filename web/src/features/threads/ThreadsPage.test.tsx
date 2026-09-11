@@ -205,6 +205,31 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
     });
   });
 
+  test('owns the grouped list border and dividers outside flush thread rows', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ threads: [mkThread('THR-001', 'Grouped surface')] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => expect(screen.getByText('Grouped surface')).toBeInTheDocument());
+    const row = screen.getByText('Grouped surface').closest('a');
+    expect(row).not.toBeNull();
+    expect(row).not.toHaveClass('rounded-sm', 'border', 'shadow-pasture-sm');
+    expect(row!.closest('.divide-y')).toHaveClass(
+      'overflow-hidden',
+      'rounded-sm',
+      'border',
+      'border-border-default',
+      'divide-y',
+      'divide-border-default',
+    );
+  });
+
   test('shows a relative start-time per row (THR-061 a-threads .t-time)', async () => {
     // started_at is on the thread-LIST payload (ThreadRecord), so per-row
     // relative age is honest enrichment. Fixed to a far-past date so the label

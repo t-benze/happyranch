@@ -284,13 +284,13 @@ const RADIUS_CONTRACT: readonly RadiusRow[] = [
   {
     id: "inbox-row",
     component: "InboxRow",
-    region: "interactive shell",
+    region: "default interactive shell",
     referenceSelector: ".thread (seq. 61 interactive mapping)",
     expected: "rounded-sm",
     token: "--radius-sm",
     source: "patterns/InboxRow.tsx",
     startPattern: "const\\s+shellCls\\s*=",
-    endPattern: "\\$\\{",
+    endPattern: ";\\n\\s*const\\s+activeMarker",
   },
 ] as const;
 
