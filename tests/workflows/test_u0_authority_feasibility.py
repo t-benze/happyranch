@@ -102,6 +102,11 @@ def _r1_snapshot(*, db, tracker, paths, queue, task_ids: tuple[str, ...],
                     for task_id in task_ids},
         "sessions": {task_id: tracker.get_active(task_id, agents[task_id])
                      if agents[task_id] else None for task_id in task_ids},
+        # PID is diagnostic/current-generation evidence only.  The schedules
+        # prove it was present at launch and absent after their owned drain;
+        # they do not claim historical or real-host process proof.
+        "pids": {task_id: tracker.get_pid(task_id, agents[task_id])
+                 if agents[task_id] else None for task_id in task_ids},
         "controls": {task_id: tracker.get_cancel_control(task_id, agents[task_id])
                      is not None if agents[task_id] else False for task_id in task_ids},
         # Convert the private deque observation to JSON-safe values.  It is a
@@ -1709,6 +1714,7 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
             done.set()
     thread = threading.Thread(target=worker, name="u0-chain-cancel-before-callback", daemon=False)
     thread.start()
+    assertion = None
     try:
         assert child_held.wait(3), "first contained child was not admitted/launched"
         first = db.get_children(parent_id)[0]
@@ -1740,12 +1746,16 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
         assert len(after_cancel["audits"][parent_id]) > len(before["audits"][parent_id])
         assert len(after_cancel["audits"][first]) > len(before["audits"][first])
         assert after_cancel["results"][first] == [] and after_cancel["active_chain"][parent_id] == before["active_chain"][parent_id]
+    except BaseException as exc:
+        assertion = exc
     finally:
         release_child.set()
         thread.join(8)
     assert not thread.is_alive() and done.is_set()
     if errors:
         raise BaseExceptionGroup("worker failures", [error for error, _trace in errors])
+    if assertion:
+        raise assertion
     final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, first), agent_names=("engineering_head", "dev_agent"))
     assert late_statuses == [(409, {"code": "task_not_active", "task_id": first,
                                    "status": TaskStatus.CANCELLED.value, "cancelled": True})]
@@ -1753,6 +1763,15 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
     assert set(final["tasks"]) == {parent_id, first} and len(db.get_children(parent_id)) == 1
     assert all(final["tasks"][task_id]["status"] == TaskStatus.CANCELLED.value for task_id in (parent_id, first))
     assert final["results"][first] == [] and final["queue"] == [] and state.queue._queue._unfinished_tasks == 0
+    # Every captured residue surface has a source-derived allowed delta: task
+    # and cancellation-audit terminal fields change; no archive/team/workspace
+    # input, attachment observation, fanout, result, or chain binding changes.
+    for surface in ("attachments", "canonical_agents", "archived_agents", "workspaces",
+                    "archived_workspaces", "teams_bytes", "active_fanout"):
+        assert final[surface] == before[surface]
+    assert final["results"][parent_id] == before["results"][parent_id]
+    assert final["audits"][parent_id][:len(before["audits"][parent_id])] == before["audits"][parent_id]
+    assert final["audits"][first][:len(before["audits"][first])] == before["audits"][first]
     assert final["active_chain"][parent_id] == before["active_chain"][parent_id]
     assert not [row for row in final["audits"][parent_id] if row["action"] == "chain_auto_advance"]
     assert [row["action"] for row in final["audits"][parent_id]].count("task_cancelled") == 1
@@ -1766,6 +1785,7 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
         for rows in cancelled_audits.values() for row in rows
     } == {(parent_id, "task_cancelled", True), (first, "task_cancelled", True)}
     assert not any(final["controls"].values()) and all(session is None for session in final["sessions"].values())
+    assert {task_id: final["pids"][task_id] for task_id, _agent in {(task_id, agent) for task_id, agent, *_rest in launches}} == {parent_id: None, first: None}
     assert db.get_task(parent_id).orchestration_step_count == db.get_task(first).orchestration_step_count == 1
     assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == 2
     assert len(receipts) == len(launches) == 2
@@ -1866,6 +1886,7 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
             done.set()
     thread = threading.Thread(target=worker, name="u0-chain-cancel-before-publication", daemon=False)
     thread.start()
+    assertion = None
     try:
         assert publication_held.wait(3), "PASS chain did not reach original next-child publication"
         first, second = db.get_children(parent_id)
@@ -1876,9 +1897,19 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
         first_result = before["results"][first][0]
         assert (first_result["task_id"], first_result["agent"], first_result["session_id"], first_result["verdict"]) == (
             first, "dev_agent", before["tasks"][first]["current_session_id"], "PASS")
-        assert json.loads(before["tasks"][parent_id]["active_chain"])["step_index"] == 1
+        chain = json.loads(before["tasks"][parent_id]["active_chain"])
+        assert chain["step_index"] == 1
+        # Shipping active_chain stores the index/origin audit, while child
+        # bindings live in the tasks relation; assert both authoritative
+        # surfaces rather than inventing an ID field in the serialized chain.
+        assert db.get_children(parent_id) == [first, second]
+        assert [(before["tasks"][task_id]["id"], before["tasks"][task_id]["assigned_agent"])
+                for task_id in (first, second)] == [(first, "dev_agent"), (second, "dev_agent")]
         advance = [row for row in before["audits"][parent_id] if row["action"] == "chain_auto_advance"]
-        assert len(advance) == 1 and advance[0]["task_id"] == parent_id and advance[0]["payload"]["spawned_child_id"] == second
+        assert len(advance) == 1 and advance[0]["task_id"] == parent_id
+        assert advance[0]["payload"] == {"leg_index": 1, "spawned_child_id": second,
+                                          "triggering_child_id": first, "triggering_verdict": "PASS",
+                                          "chain_origin_step_audit_id": chain["step_audit_id"]}
         cancelled = asyncio.run(cancel_task(parent_id, CancelBody(rationale="chain publication race", cascade=True), org))
         with sqlite3.connect(f"file:{paths.db_path}?mode=ro", uri=True, timeout=1) as reader:
             reader.row_factory = sqlite3.Row
@@ -1887,12 +1918,16 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
         assert durable[parent_id]["status"] == durable[second]["status"] == TaskStatus.CANCELLED.value
         assert durable[parent_id]["cancelled_at"] and durable[second]["cancelled_at"]
         assert durable[first]["status"] == TaskStatus.COMPLETED.value
+    except BaseException as exc:
+        assertion = exc
     finally:
         release_publication.set()
         thread.join(8)
     assert not thread.is_alive() and done.is_set()
     if errors:
         raise BaseExceptionGroup("worker failures", [error for error, _trace in errors])
+    if assertion:
+        raise assertion
     final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, first, second), agent_names=("engineering_head", "dev_agent"))
     assert [task_id for task_id, *_rest in launches] == [parent_id, first]
     assert [(task_id, agent, request_id) for task_id, agent, _session, request_id, _pid in launches] == [
@@ -1916,6 +1951,14 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
     assert final["tasks"][parent_id]["status"] == final["tasks"][second]["status"] == TaskStatus.CANCELLED.value
     assert final["tasks"][first]["status"] == TaskStatus.COMPLETED.value and len(final["results"][first]) == 1
     assert final["results"][first] == before["results"][first]
+    assert (first_result["task_id"], first_result["agent"], first_result["session_id"]) in {
+        (task_id, agent, session_id) for task_id, agent, session_id, _request_id, _pid in launches
+    }
+    for surface in ("attachments", "canonical_agents", "archived_agents", "workspaces",
+                    "archived_workspaces", "teams_bytes", "active_fanout"):
+        assert final[surface] == before[surface]
+    assert final["results"][parent_id] == before["results"][parent_id]
+    assert final["audits"][first] == before["audits"][first]
     assert [row for row in final["audits"][parent_id] if row["action"] == "chain_auto_advance"] == advance
     assert [row for row in final["audits"][first] if row["action"] == "task_cancelled"] == []
     assert [(row["task_id"], row["payload"]["cascade"])
@@ -1924,6 +1967,7 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
         (parent_id, True), (second, True)]
     assert final["results"][second] == [] and final["queue"] == [] and state.queue._queue._unfinished_tasks == 0
     assert not any(final["controls"].values()) and all(session is None for session in final["sessions"].values())
+    assert {task_id: final["pids"][task_id] for task_id, _agent in {(task_id, agent) for task_id, agent, *_rest in launches}} == {parent_id: None, first: None}
     assert db.get_task(parent_id).orchestration_step_count == db.get_task(first).orchestration_step_count == 1
     assert db.get_task(second).orchestration_step_count == 0
     assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == 2
@@ -1952,4 +1996,26 @@ def test_r1_chain_cancel_harness_propagates_dispatcher_error(tmp_path, monkeypat
     with pytest.raises(BaseExceptionGroup, match="worker failures") as raised:
         test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, monkeypatch)
     assert any("U0_CANCEL_DISPATCH_ERROR_CONTROL" in str(error)
+               for error in raised.value.exceptions)
+
+
+def test_r1_chain_cancel_publication_harness_propagates_dispatcher_error(tmp_path, monkeypatch) -> None:
+    """The distinct publication wrapper also rethrows after release and join."""
+    from runtime.daemon.dispatcher import Dispatcher
+
+    original = Dispatcher.run_step
+    calls = 0
+
+    def injected(self, *args, **kwargs):
+        nonlocal calls
+        result = original(self, *args, **kwargs)
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("U0_CANCEL_PUBLICATION_DISPATCH_ERROR_CONTROL")
+        return result
+
+    monkeypatch.setattr(Dispatcher, "run_step", injected)
+    with pytest.raises(BaseExceptionGroup, match="worker failures") as raised:
+        test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeypatch)
+    assert any("U0_CANCEL_PUBLICATION_DISPATCH_ERROR_CONTROL" in str(error)
                for error in raised.value.exceptions)

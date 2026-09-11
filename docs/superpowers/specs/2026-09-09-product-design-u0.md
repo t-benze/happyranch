@@ -119,7 +119,17 @@ parent-owned advance audit, but the original second-child queue publication is
 held; cascade cancellation stamps only the parent and second child, preserves
 the terminal first child/result/audit, and the released original queue item is
 observed and skipped by the cancelled shipping queue path without admission,
-launch, or resurrection. These are observed legacy
+launch, or resurrection. Both schedules bind each nonempty launched task/agent
+request, current session, and diagnostic PID to their durable result where one
+exists, then assert current-generation `get_pid(task, agent) is None` after
+their own release/join/drain. They compare every captured attachment,
+canonical/archive/team/workspace, fanout, queue/session/control, result/history,
+chain, and audit surface against its source-derived allowed delta; empty
+attachments remain only empty observations. Their transparent dispatcher
+observers retain an original exception and traceback through release-all and
+join-all, with focused injected-error controls for both distinct cancellation
+harnesses. This is test-local current-generation evidence, not historical or
+real-host PID proof. These are observed legacy
 route limits, not fanout, cross-process serialization, a production D5
 guarantee, or a claim of complete R1.
 
