@@ -398,7 +398,10 @@ def _prepare_workspace_cache_dirs(workspace: Path) -> dict[str, str]:
 
 
 def _callee_env(
-    *, org_slug: str | None = None, workspace: Path | None = None,
+    *,
+    org_slug: str | None = None,
+    workspace: Path | None = None,
+    session_id: str | None = None,
 ) -> dict[str, str]:
     """Return a copy of ``os.environ`` suitable for passing as ``env=``
     to ``subprocess.Popen`` so the child inherits the daemon's normalized
@@ -419,12 +422,20 @@ def _callee_env(
     When *org_slug* is provided, ``HAPPYRANCH_ORG_SLUG`` is set so executor
     subprocesses can resolve org context without literal ``{ORG_SLUG}``
     substitution in canonical skill bodies.
+
+    ``HAPPYRANCH_RUNTIME_SESSION_ID`` is a per-invocation hint for the
+    canonical CLI's read-only memory get/search telemetry.  It is always
+    removed from inherited ambient state, then set only from the actual
+    runtime invocation session (never a provider resume id).
     """
     env = apply_task_scratch_environment(_sanitize_child_env(dict(os.environ)))
+    env.pop("HAPPYRANCH_RUNTIME_SESSION_ID", None)
     if workspace is not None:
         env.update(_prepare_workspace_cache_dirs(workspace))
     if org_slug is not None:
         env["HAPPYRANCH_ORG_SLUG"] = org_slug
+    if session_id is not None:
+        env["HAPPYRANCH_RUNTIME_SESSION_ID"] = session_id
     return env
 
 
@@ -1054,7 +1065,10 @@ def _run_command(
                 proc = isolation.launch_executor(
                     cmd,
                     cwd=workspace,
-                    env=_callee_env(org_slug=org_slug, workspace=workspace),
+                    env=_callee_env(
+                        org_slug=org_slug, workspace=workspace,
+                        session_id=session_id,
+                    ),
                     stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -1224,6 +1238,7 @@ def build_command_launch_spec(
     workspace: Path,
     input_text: str | None,
     org_slug: str | None = None,
+    session_id: str | None = None,
 ) -> "LaunchSpec":
     """Assemble the supervisor ``LaunchSpec`` for a ``_run_command``-style
     executor (THR-207 task-producer wiring).
@@ -1245,7 +1260,9 @@ def build_command_launch_spec(
     return LaunchSpec(
         argv=tuple(cmd),
         cwd=str(workspace),
-        env=_callee_env(org_slug=org_slug, workspace=workspace),
+        env=_callee_env(
+            org_slug=org_slug, workspace=workspace, session_id=session_id,
+        ),
         stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1431,6 +1448,7 @@ class ClaudeExecutor:
         )
         return build_command_launch_spec(
             cmd=cmd, workspace=workspace, input_text=prompt, org_slug=org_slug,
+            session_id=session_id,
         )
 
 
@@ -1575,6 +1593,7 @@ class CodexExecutor:
         cmd = self._build_argv(model=model, resume_session_id=resume_session_id)
         return build_command_launch_spec(
             cmd=cmd, workspace=workspace, input_text=prompt, org_slug=org_slug,
+            session_id=session_id,
         )
 
 
@@ -1724,6 +1743,7 @@ class OpencodeExecutor:
         )
         return build_command_launch_spec(
             cmd=cmd, workspace=workspace, input_text=prompt, org_slug=org_slug,
+            session_id=session_id,
         )
 
 
@@ -1845,6 +1865,7 @@ class PiExecutor:
                                resume_session_id=resume_session_id)
         return build_command_launch_spec(
             cmd=cmd, workspace=workspace, input_text=prompt, org_slug=org_slug,
+            session_id=session_id,
         )
 
 
@@ -2030,7 +2051,9 @@ class CustomAdapterExecutor:
         return LaunchSpec(
             argv=(self._adapter_executable,),
             cwd=str(workspace),
-            env=_callee_env(org_slug=org_slug, workspace=workspace),
+            env=_callee_env(
+                org_slug=org_slug, workspace=workspace, session_id=session_id,
+            ),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -2210,7 +2233,9 @@ class CustomAdapterExecutor:
                 # explicitly absolute and hash-pinned/revalidated — the runtime
                 # never selects an agentic CLI from ambient PATH.  Pre-Popen
                 # wrapper/dependency validation is retained exactly.
-                launch_env = _callee_env(workspace=workspace)
+                launch_env = _callee_env(
+                    workspace=workspace, session_id=session_id,
+                )
 
                 try:
                     proc = subprocess.Popen(

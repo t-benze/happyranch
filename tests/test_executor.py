@@ -322,6 +322,22 @@ def test_callee_env_isolates_concurrent_agents(tmp_path):
     assert Path(second_env["UV_CACHE_DIR"]).is_relative_to(second)
 
 
+def test_callee_env_forwards_only_the_current_runtime_session(tmp_path, monkeypatch):
+    """A runtime invocation owns its child hint; ambient stale hints do not."""
+    from runtime.orchestrator.executors import _callee_env
+
+    monkeypatch.setenv("HAPPYRANCH_RUNTIME_SESSION_ID", "sess-stale")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    current = _callee_env(workspace=workspace, session_id="sess-current")
+    absent = _callee_env(workspace=workspace)
+
+    assert current["HAPPYRANCH_RUNTIME_SESSION_ID"] == "sess-current"
+    assert "HAPPYRANCH_RUNTIME_SESSION_ID" not in absent
+    assert os.environ["HAPPYRANCH_RUNTIME_SESSION_ID"] == "sess-stale"
+
+
 def test_callee_env_cache_setup_error_does_not_fall_back_to_tmp(tmp_path):
     from runtime.orchestrator.executors import WorkspaceStorageError, _callee_env
 

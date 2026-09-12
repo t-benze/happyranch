@@ -25,6 +25,13 @@ be compared with intended task-session launches, so missing transport is
 detectable even with zero reads. A concrete health threshold and probe design
 require independent review with transport before collection.
 
+TASK-7864 supplies only the bounded transport prerequisite: executor children
+forward their actual invocation session in a private environment hint consumed
+by canonical memory get/search when no explicit `--session-id` is supplied.
+The hint is stripped for no-context launches and never substitutes a provider
+resume id or server-side route validation; collection, reports, thresholds, and
+tuning remain unshipped.
+
 A clean epoch begins only after deployed production-canary acceptance. Its
 earliest qualifying timestamp is the deterministic minimum, never input order.
 Observation requires 14 complete deployed days and at least 500 valid nonempty
