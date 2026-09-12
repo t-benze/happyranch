@@ -1649,6 +1649,7 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
     """A real accepted callback consumed by startup settles before its async cleanup."""
     import threading
     from runtime.daemon import jobs_runner
+    from runtime.orchestrator import run_step
     from runtime.orchestrator.orchestrator import completion_report_from_result_row
 
     if kind == "leaf":
@@ -1671,6 +1672,7 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
     accepted = db.get_accepted_task_completion_recovery_result(task_id=task_id, agent=agent); assert accepted is not None
     accepted_snapshot = dict(accepted)
     entered, release, errors = threading.Event(), threading.Event(), []
+    parent_effects: list[str] = []
     real_terminate, real_thread, workers = jobs_runner.terminate_jobs_for_task, threading.Thread, []
     async def paused(*args, **kwargs):
         entered.set(); assert release.wait(2); return await real_terminate(*args, **kwargs)
@@ -1699,6 +1701,14 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
     monkeypatch.setattr(db, "settle_consumed_task_completion_recovery_jobs", install_boundary_winner)
     monkeypatch.setattr(jobs_runner, "terminate_jobs_for_task", paused)
     monkeypatch.setattr(threading, "Thread", tracked_thread)
+    real_enqueue_parent = run_step._enqueue_parent_if_waiting
+    def observe_parent_effect(*args, **kwargs):
+        parent_effects.append(args[1])
+        return real_enqueue_parent(*args, **kwargs)
+    monkeypatch.setattr(run_step, "_enqueue_parent_if_waiting", observe_parent_effect)
+    # All startup passes and every worker they acquire share this lifetime.
+    # In particular, a reentry is not evidence until its asynchronous tail is
+    # released and joined before any receipt/owner assertion is evaluated.
     try:
         _sweep_on_startup(db, queue, "test", orch)
         if boundary_winner in {"unchanged", "terminal_cancel_route"}:
@@ -1708,29 +1718,38 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
         else:
             assert not entered.is_set()
             assert db.get_job("JOB-OWNED").status.value == "running"
+        # Capture whole durable rows at the consumed/boundary state.  The
+        # later two real reentries may not mutate these rows or hand the old
+        # receipt to a stale parent effect.
+        immutable_before_reentries = {
+            "accepted": dict(db.execute("SELECT * FROM task_results WHERE id=?", (accepted["id"],)).fetchone()),
+            "ledger": dict(db.execute("SELECT * FROM task_completion_recoveries WHERE task_id=?", (task_id,)).fetchone()),
+            "task": dict(db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()),
+            "jobs": [dict(row) for row in db.execute("SELECT * FROM jobs WHERE task_id=? ORDER BY id", (task_id,)).fetchall()],
+        }
+        release.set()
+        _sweep_on_startup(db, queue, "test", orch)
+        _sweep_on_startup(db, queue, "test", orch)
     finally:
+        # Failure cleanup uses the same complete release/join protocol as the
+        # green path, including workers created by either reentry.
         release.set()
         for worker in workers:
             worker.join(2)
-            assert not worker.is_alive()
-    # Cleanup errors arise only after the held real runner is released.
+            assert not worker.is_alive(), "startup recovery worker leaked"
+    # Worker exceptions are asserted only after every pass's worker has
+    # joined; probes inject into the reentry workers specifically.
     assert not errors
-    _sweep_on_startup(db, queue, "test", orch)
-    _sweep_on_startup(db, queue, "test", orch)
-    # These immutable receipt and owner assertions are deliberately after
-    # both reentries: a later startup must not corrupt already-consumed state.
-    accepted_after = db.execute(
-        "SELECT * FROM task_results WHERE id=?", (accepted["id"],),
-    ).fetchone()
+    accepted_after = db.execute("SELECT * FROM task_results WHERE id=?", (accepted["id"],)).fetchone()
     assert accepted_after is not None and dict(accepted_after) == accepted_snapshot
-    ledger = db.execute(
-        "SELECT state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?",
-        (task_id,),
-    ).fetchone()
-    assert ledger["state"] == "callback_consumed"
-    assert ledger["accepted_result_id"] == accepted["id"]
+    assert dict(accepted_after) == immutable_before_reentries["accepted"]
+    assert dict(db.execute("SELECT * FROM task_completion_recoveries WHERE task_id=?", (task_id,)).fetchone()) == immutable_before_reentries["ledger"]
+    assert dict(db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()) == immutable_before_reentries["task"]
+    assert [dict(row) for row in db.execute("SELECT * FROM jobs WHERE task_id=? ORDER BY id", (task_id,)).fetchall()] == immutable_before_reentries["jobs"]
     task_after = db.get_task(task_id)
     assert task_after is not None
+    expected_status = TaskStatus.FAILED if kind == "nonroot_escalate" else TaskStatus.COMPLETED
+    assert task_after.status is expected_status
     if boundary_winner == "same_agent_new_session":
         assert task_after.current_session_id == "newer-session"
     elif boundary_winner == "changed_agent_same_session":
@@ -1739,11 +1758,18 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
         assert task_after.current_session_id == session_id
     if boundary_winner in {"unchanged", "terminal_cancel_route"}:
         assert db.get_job("JOB-OWNED").reason == "task_ended"
+        # Each startup pass reconstructs the ordinary terminal parent wake;
+        # queue deduplication leaves exactly one pending parent delivery.
+        assert parent_effects == [task_id, task_id, task_id]
+        assert list(queue._queue._queue).count(("test", "TASK-PARENT", None)) == 1
     else:
         assert db.get_job("JOB-OWNED").status.value == "running"
-    # Ordinary orphan reconciliation is intentionally not credited to a
-    # rejected recovery settlement: only the admitted unchanged controls ran
-    # that separate sweep above.
+        # A winner rejects the old recovery handoff.  The one ordinary
+        # startup reconstruction below is intentionally not that handoff.
+        assert parent_effects == []
+        assert list(queue._queue._queue).count(("test", "TASK-PARENT", None)) == 1
+    # Ordinary orphan reconciliation remains deliberately distinct from a
+    # rejected recovery settlement and has no stale parent-handoff credit.
     if boundary_winner in {"unchanged", "terminal_cancel_route"}:
         assert db.get_job("JOB-OTHER").reason == "daemon_crash"
     else:
