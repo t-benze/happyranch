@@ -217,6 +217,10 @@ ranking. The frozen next-phase measurement definitions are in
 Fail-closed output explicitly marks thresholds as not met and collection as not
 started; malformed diagnostic rows also remain ineligible rather than being
 credited or crashing the report.
+The report-local backend and CLI validators intentionally remain separate.
+Observation-only malformed read/search diagnostic parity and the full
+controlled-clock whole-report matrix are frozen acceptance obligations for the
+versioned reporting implementation; this guard does not claim either as passed.
 
 Per-agent memory lives under `<runtime>/orgs/<slug>/workspaces/<agent>/memory/`, one `MEM-NNN-<slug>.md` per entry. CLI: `happyranch memory list|get|search|add|update|promote|reindex`.
 

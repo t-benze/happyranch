@@ -209,6 +209,10 @@ the report neither begins collection nor recommends push, alias, embedding, or
 ranking changes.
 Its cursor pages are exhausted before report calculation; malformed diagnostic
 rows fail closed, with text never presenting the observation thresholds as met.
+The current backend and command use report-local validation, so this guard does
+not assert unchanged shared-helper parity for observation-only malformed
+read/search diagnostics or a full controlled-clock whole-report matrix. Those
+remain frozen obligations of versioned reporting rather than passed guard work.
 
 ### PR CI wait / guarded merge entrypoints
 

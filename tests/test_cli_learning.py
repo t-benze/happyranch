@@ -600,13 +600,16 @@ def test_memory_report_database_parity_exhausts_populated_pages(monkeypatch, cap
     assert cli_json["decision"] == backend["decision"] == "insufficient_instrumentation"
     assert cli_json["decision_detail"] == backend["decision_detail"]
     assert cli_json["observation_period"] == backend["observation_period"]
+    assert cli_json["observation_period"]["thresholds_met"] is False
     assert cli_json["aggregate"] == backend["aggregate"]
 
     cmd_memory_report(Namespace(org="o", json=False))
     rendered = capsys.readouterr().out
     assert "DECISION: insufficient_instrumentation" in rendered
     assert "Thresholds:    NOT MET" in rendered
+    assert "Thresholds:    MET" not in rendered
     assert "Canary-gated collection has NOT started" in rendered
+    assert "Tuning advice" not in rendered
 
 
 @pytest.mark.parametrize(

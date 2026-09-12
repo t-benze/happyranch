@@ -10,6 +10,12 @@
 > Tuning-decision branch tests remain deferred to the independently reviewed
 > versioned implementation.
 
+> Narrowed guard boundary (TASK-7832): the backend and CLI retain separate
+> report-local validators. Observation-only malformed read/search diagnostic
+> parity and the remaining controlled-clock whole-report finite matrix are
+> versioned-reporting acceptance obligations, not assertions passed or closed
+> by this guard-only unit.
+
 ## Frozen follow-on definitions (not yet shipped)
 
 The intended population is runtime task sessions, including root and child
