@@ -32,22 +32,27 @@ def _terminal_ns(value: object) -> int | None:
     return None
 
 
-def _private_evidence_ok(value: _EvidenceObservation, task_id: str) -> tuple[object, int] | None:
+def _private_evidence_ok(value: _EvidenceObservation, task_id: str,
+                         agent_name: str) -> tuple[object, int] | None:
     evidence, snapshot = value.evidence, value.snapshot
     if not evidence.eligible or snapshot is None or evidence.boot_id is None:
         return None
-    tasks = [row[3] for row in snapshot if len(row) > 3 and row[0] == "task"]
-    target = next((task for task in tasks if getattr(task, "id", None) == task_id), None)
-    if target is None or getattr(getattr(target, "status", None), "value", None) not in {"completed", "failed", "cancelled"}:
+    tasks = {row[1]: row[3] for row in snapshot if len(row) > 3 and row[0] == "task"}
+    target = tasks.get(task_id)
+    if (target is None or getattr(target, "assigned_agent", None) != agent_name
+            or getattr(getattr(target, "status", None), "value", None)
+            not in {"completed", "failed", "cancelled"}):
         return None
     terminal = _terminal_ns(getattr(target, "completed_at", None))
     if terminal is None:
         return None
-    # The existing snapshot stores result payloads as representations for the
-    # public collector.  Re-querying is intentionally avoided here: absence is
-    # not promoted to authority; an eligible public observation alone is not a
-    # private-consumption permit.
-    if not any(row[0] == "result" and row[2] != "None" for row in snapshot):
+    # Public evidence intentionally accepts a successful latest-result lookup
+    # returning None.  Private consumption is stricter: each collected
+    # component member needs its own present, matching typed result.
+    results = {row[1]: row[3] for row in snapshot if len(row) > 3 and row[0] == "result"}
+    if any(task_member not in results or results[task_member] is None
+           or results[task_member].get("status") in {"in_progress", "working"}
+           for task_member in tasks):
         return None
     return target, terminal
 
@@ -82,8 +87,8 @@ def collect_revalidate_seal_consume_disposable(*, db: object, sessions: object, 
     c1 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
     e2 = _collect_private_evidence(**kwargs)
     c2 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
-    first = _private_evidence_ok(e1, task_id)
-    second = _private_evidence_ok(e2, task_id)
+    first = _private_evidence_ok(e1, task_id, agent_name)
+    second = _private_evidence_ok(e2, task_id, agent_name)
     if first is None or second is None or not _private_coverage_ok(c1, workspace, task_id) or not _private_coverage_ok(c2, workspace, task_id):
         return None
     if e1.snapshot != e2.snapshot or c1.snapshot != c2.snapshot or e2.evidence.boot_id != c2.observation.boot_id:
@@ -106,7 +111,7 @@ def collect_revalidate_seal_consume_disposable(*, db: object, sessions: object, 
     e3 = _collect_private_evidence(**kwargs)
     c3 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
     e4 = _collect_private_evidence(**kwargs)
-    if (_private_evidence_ok(e3, task_id) is None or _private_evidence_ok(e4, task_id) is None
+    if (_private_evidence_ok(e3, task_id, agent_name) is None or _private_evidence_ok(e4, task_id, agent_name) is None
             or not _private_coverage_ok(c3, workspace, task_id)
             or e2.snapshot != e3.snapshot or c2.snapshot != c3.snapshot or e3.snapshot != e4.snapshot
             or e4.evidence.boot_id != c3.observation.boot_id):

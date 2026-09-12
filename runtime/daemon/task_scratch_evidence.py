@@ -179,7 +179,11 @@ def _snapshot(db: Database, task_id: str, reasons: set[str], deadline: int) -> t
             if _expired(deadline): reasons.add("observation_timeout"); return None
             try:
                 result = db.get_latest_task_result(task.id, task.assigned_agent, task.current_session_id)
-                out.append(("result", task.id, repr(result)))
+                # The report deliberately keeps no result payload.  The
+                # dormant consumer needs this existing typed read, however:
+                # ``None`` must not be silently promoted into a private
+                # consumption permit.
+                out.append(("result", task.id, repr(result), result))
                 # A retained blocked receipt is not itself authority that recovery is
                 # pending: the real consumer may have failed the task and cleared its
                 # block state while retaining that audit/result row.

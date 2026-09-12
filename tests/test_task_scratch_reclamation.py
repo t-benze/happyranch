@@ -7,7 +7,6 @@ import threading
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import runtime.daemon.task_scratch_reclamation as reclamation
@@ -17,6 +16,9 @@ from runtime.daemon.task_scratch_reclamation import (
     ReclamationAssertions, ReclamationError, ZombieRecoveryState, execute_ledger, seal_ledger_row,
 )
 from runtime.orchestrator.task_scratch import prepare_task_scratch
+from runtime.daemon.sessions import SessionTracker
+from runtime.infrastructure.database import Database
+from runtime.models import TaskRecord, TaskStatus
 
 
 def _candidate(tmp_path: Path):
@@ -63,31 +65,71 @@ def test_removes_only_literal_root_and_preserves_sidecars(tmp_path):
     assert sibling.root.is_dir()
 
 
-def test_private_dormant_consumer_seals_and_consumes_only_a_stable_complete_binding(tmp_path, monkeypatch):
-    """The new seam has no caller; its only success path is synchronous here."""
+def test_private_dormant_consumer_collects_real_disposable_sources_before_consuming(tmp_path):
+    """Its only success path uses the real bounded collectors and a temp DB."""
     workspace, contract, _assertions, old = _candidate(tmp_path)
-    from runtime.daemon.task_scratch_coverage import CoverageBucket, TaskScratchCoverageObservation
-    from runtime.daemon.task_scratch_evidence import TaskScratchEvidence
-    terminal = SimpleNamespace(id="TASK-1", status=SimpleNamespace(value="completed"),
-                               completed_at=datetime.fromtimestamp(
-                                   (old + 120_000_000_000) / 1_000_000_000,
-                                   tz=timezone.utc))
-    private_evidence = SimpleNamespace(
-        evidence=TaskScratchEvidence("TASK-1", True, (), "boot-1", 0, 0, 0, 0),
-        snapshot=(("task", "TASK-1", (), terminal), ("result", "TASK-1", "{'status': 'completed'}")),
-    )
-    private_coverage = SimpleNamespace(
-        observation=TaskScratchCoverageObservation(str(workspace), "boot-1", True, True, (),
-                                                    (CoverageBucket(".happyranch/task-tmp/TASK-1",
-                                                                    "canonical_regenerable", 1, 1, 1),),
-                                                    (".happyranch/task-tmp/TASK-1",), 0), snapshot=object())
-    monkeypatch.setattr(reclamation, "_collect_private_evidence", lambda **_kw: private_evidence)
-    monkeypatch.setattr(reclamation, "_collect_private_coverage", lambda **_kw: private_coverage)
-    result = reclamation.collect_revalidate_seal_consume_disposable(
-        db=object(), sessions=object(), workspace=workspace, task_id="TASK-1", agent_name="dev_agent",
-        daemon_started_monotonic=0, monotonic_now=31, now_ns=old + 121_000_000_000)
-    assert result is not None and result.outcome == "completed"
-    assert not contract.root.exists()
+    payload = contract.root / "nested/file"
+    payload.write_bytes(b"x" * 8192)
+    for index in range(50):
+        os.link(payload, contract.root / "nested" / f"payload-link-{index}")
+    for path in (payload, contract.root / "nested", contract.root):
+        os.utime(path, ns=(old, old), follow_symlinks=False)
+    proc = tmp_path / "proc"
+    (proc / "sys/kernel/random").mkdir(parents=True)
+    (proc / "sys/kernel/random/boot_id").write_text("123e4567-e89b-42d3-a456-426614174000\n")
+    process = proc / "42"; (process / "fd").mkdir(parents=True)
+    (process / "stat").write_text("42 (agent) S 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 9 0")
+    (process / "root").symlink_to("/"); (process / "cwd").symlink_to("/")
+    db = Database(tmp_path / "state.db")
+    try:
+        completed_at = datetime.fromtimestamp((old + 120_000_000_000) / 1_000_000_000, tz=timezone.utc)
+        db.insert_task(TaskRecord(id="TASK-1", status=TaskStatus.COMPLETED, brief="x",
+                                  assigned_agent="dev_agent", current_session_id="session",
+                                  completed_at=completed_at))
+        db.insert_task_result("TASK-1", "dev_agent", "session", "done", 1, status="completed")
+        from runtime.daemon.task_scratch_coverage import collect_task_scratch_coverage
+        from runtime.daemon.task_scratch_evidence import collect_task_scratch_evidence
+        assert collect_task_scratch_evidence(
+            db=db, sessions=SessionTracker(), task_id="TASK-1", root=contract.root,
+            proc_root=proc, daemon_started_monotonic=0, monotonic_now=31).eligible
+        coverage = collect_task_scratch_coverage(workspace=workspace, proc_root=proc)
+        assert coverage.coverage_ready, coverage
+        result = reclamation.collect_revalidate_seal_consume_disposable(
+            db=db, sessions=SessionTracker(), workspace=workspace, task_id="TASK-1", agent_name="dev_agent",
+            proc_root=proc, daemon_started_monotonic=0, monotonic_now=31,
+            now_ns=old + 121_000_000_000)
+        assert result is not None and result.outcome == "completed"
+        assert (result.reclaimed_bytes, result.reclaimed_inodes) == (
+            result.before.allocated_bytes, result.before.inodes)
+        assert not contract.root.exists()
+    finally:
+        db.close()
+
+
+def test_private_consumer_refuses_publicly_eligible_absent_result(tmp_path):
+    """A public None-result observation is not authority to consume."""
+    proc = tmp_path / "proc"
+    (proc / "sys/kernel/random").mkdir(parents=True)
+    (proc / "sys/kernel/random/boot_id").write_text("123e4567-e89b-42d3-a456-426614174000\n")
+    process = proc / "42"; (process / "fd").mkdir(parents=True)
+    (process / "stat").write_text("42 (agent) S 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 9 0")
+    (process / "root").symlink_to("/"); (process / "cwd").symlink_to("/")
+    db = Database(tmp_path / "state.db")
+    try:
+        db.insert_task(TaskRecord(id="TASK-1", status=TaskStatus.COMPLETED, brief="x",
+                                  assigned_agent="dev_agent", current_session_id="session",
+                                  completed_at=datetime.now(timezone.utc)))
+        root = tmp_path / "root"; root.mkdir()
+        from runtime.daemon.task_scratch_evidence import collect_task_scratch_evidence
+        assert collect_task_scratch_evidence(
+            db=db, sessions=SessionTracker(), task_id="TASK-1", root=root,
+            proc_root=proc, daemon_started_monotonic=0, monotonic_now=31).eligible
+        private = reclamation._collect_private_evidence(
+            db=db, sessions=SessionTracker(), task_id="TASK-1", root=root,
+            proc_root=proc, daemon_started_monotonic=0, monotonic_now=31)
+        assert reclamation._private_evidence_ok(private, "TASK-1", "dev_agent") is None
+    finally:
+        db.close()
 
 
 @pytest.mark.parametrize("field,value", [
