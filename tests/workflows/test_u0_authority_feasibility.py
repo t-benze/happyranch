@@ -2626,6 +2626,11 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         # a repeated read at the same hold is not transition evidence.
         expected_first_history = _u0_snapshot_persisted_rows(held_first)
         assert first_history == expected_first_history
+        # Keep the complete initial parent history as an immutable baseline.
+        # This is intentionally row-by-ID rather than a selected payload-key
+        # check: the final JOIN/revisit must not silently rewrite the first
+        # parent report or any audit already committed before child completion.
+        initial_history = _u0_snapshot_persisted_rows(held_spawn)
         if boundary_failure is not None:
             raise boundary_failure
     except BaseException as exc:
@@ -2709,6 +2714,38 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     independent_final = _u0_independent_sqlite_readback(db, (parent_id, *children))
     final_history = _u0_normalize_persisted_rows(independent_final)
     assert final_history == _u0_snapshot_persisted_rows(final)
+    # Task rows legitimately transition; already-committed result/audit rows
+    # do not.  Retain the complete initial parent history by ID across JOIN.
+    for kind, key in (("results", "id"), ("audits", "id")):
+        final_by_id = {row[key]: row for row in final_history[kind]}
+        assert all(final_by_id[row[key]] == row for row in initial_history[kind])
+    # Exactly the held last-child completion and the parent revisit append a
+    # result after the first-terminal boundary.  Their complete durable rows
+    # are the same rows observed through the original consumption seam.
+    first_result_ids = {row["id"] for row in first_history["results"]}
+    appended_results = [row for row in final_history["results"] if row["id"] not in first_result_ids]
+    assert [(row["task_id"], row["agent"], row["verdict"], row["output_summary"])
+            for row in appended_results] == [
+        (last, "dev_agent", "PASS", f"report:{last}"),
+        (parent_id, "engineering_head", None, f"report:{parent_id}"),
+    ]
+    appended_by_task = {row["task_id"]: row for row in appended_results}
+    for report in consumed_reports:
+        if report["task_id"] in (last, parent_id) and report["persisted_id"] in {row["id"] for row in appended_results}:
+            row = appended_by_task[report["task_id"]]
+            assert (row["id"], row["session_id"], row["verdict"], row["output_summary"]) == (
+                report["persisted_id"], report["session_id"], report["verdict"], report["summary"],
+            )
+    # The first terminal child is immutable; the only terminal task-row
+    # transitions still available to shipping completion/join/revisit are the
+    # held last child and parent.  Timestamps/session values are deliberately
+    # checked through their independently-read complete rows, not fabricated.
+    first_tasks = {row["id"]: row for row in first_history["tasks"]}
+    final_tasks = {row["id"]: row for row in final_history["tasks"]}
+    assert final_tasks[first] == first_tasks[first]
+    for task_id in (last, parent_id):
+        changed = {key for key in first_tasks[task_id] if first_tasks[task_id][key] != final_tasks[task_id][key]}
+        assert changed <= {"status", "block_kind", "note", "active_fanout", "current_session_id", "executor_pid", "last_heartbeat", "completed_at", "updated_at", "orchestration_step_count", "final_output_summary"}
     # The completed first child is immutable across the remaining callback,
     # join, and revisit; the final comparison retains whole row content.
     assert [row for row in final_history["tasks"] if row["id"] == first] == [
