@@ -47,7 +47,8 @@ contract; no production runner authentication, transport, or execution is implie
 `task_scratch_reclamation.py` remains production-unreferenced. Its private
 `collect_revalidate_seal_consume_disposable` seam is test-only: it retains each
 bounded E1/C1/E2/C2/seal/E3/C3/E4 collector admission, compares stable typed
-lifecycle/session/PID-start and coverage identity fields (not timestamps), and
+lifecycle/session/PID-start and complete public/private coverage projections
+(including bucket classification/accounting and dominance, but not timestamps), and
 binds C3's canonical workspace/root/manifest/census projection to its
 successfully sealed stack-local row. It returns `None` before action on changed,
 malformed/private-identity/boot-mismatched, unavailable, deadline-exhausted, or

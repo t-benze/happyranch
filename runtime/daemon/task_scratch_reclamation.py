@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Mapping
 
 from runtime.orchestrator.task_scratch import TaskScratchError, validate_task_scratch_manifest
-from runtime.daemon.task_scratch_coverage import _CoverageBinding, _collect_private_coverage
+from runtime.daemon.task_scratch_coverage import _CoverageBinding, _collect_private_coverage, _dominant
 from runtime.daemon.task_scratch_evidence import _EvidenceObservation, _collect_private_evidence
 
 MTIME_FLOOR_NS = 60_000_000_000
@@ -67,7 +67,9 @@ def _private_coverage_ok(value: _CoverageBinding, workspace: Path, task_id: str)
         if (not getattr(observation, "complete", False)
                 or not getattr(observation, "coverage_ready", False) or snapshot is None):
             return False
-        return (Path(observation.workspace).resolve(strict=True) == workspace.resolve(strict=True)
+        return (observation.buckets == snapshot.buckets
+                and observation.dominant == tuple(sorted(_dominant(list(snapshot.buckets))))
+                and Path(observation.workspace).resolve(strict=True) == workspace.resolve(strict=True)
                 and any(row.relative_path == f".happyranch/task-tmp/{task_id}"
                         and row.classification == "canonical_regenerable" for row in observation.buckets))
     except (AttributeError, OSError, TypeError):
@@ -89,9 +91,23 @@ def _same_evidence(left: _EvidenceObservation, right: _EvidenceObservation) -> b
 
 
 def _same_coverage(left: _CoverageBinding, right: _CoverageBinding) -> bool:
-    return (isinstance(left, _CoverageBinding) and isinstance(right, _CoverageBinding)
-            and left.snapshot is not None and right.snapshot is not None
-            and left.snapshot == right.snapshot)
+    if (not isinstance(left, _CoverageBinding) or not isinstance(right, _CoverageBinding)
+            or left.snapshot is None or right.snapshot is None):
+        return False
+    try:
+        # ``observed_at_ns`` is collection timing, not a stable binding.  Every
+        # other public projection (including bucket accounting and dominance)
+        # must agree with the private snapshot before a consumer can proceed.
+        left_observation = left.observation
+        right_observation = right.observation
+        return (left.snapshot == right.snapshot
+                and left_observation.__class__ is right_observation.__class__
+                and left_observation.__class__(
+                    **{**left_observation.__dict__, "observed_at_ns": 0})
+                == right_observation.__class__(
+                    **{**right_observation.__dict__, "observed_at_ns": 0}))
+    except (AttributeError, TypeError):
+        return False
 
 
 def _coverage_matches_row(value: _CoverageBinding, row: "LedgerRow", workspace: Path,
@@ -107,36 +123,36 @@ def _coverage_matches_row(value: _CoverageBinding, row: "LedgerRow", workspace: 
         canonical_manifest = workspace / ".happyranch" / "task-scratch-manifests" / f"{task_id}.json"
         canonical_lock = canonical_manifest.with_suffix(".lock")
         workspace_info = workspace.stat()
-    except OSError:
+        if (snapshot.boot != value.observation.boot_id
+                or snapshot.workspace_id != (workspace_info.st_dev, workspace_info.st_ino)
+                or (row.task_id, row.agent_name, Path(row.literal_root), Path(row.manifest_path), Path(row.lock_path))
+                != (task_id, agent_name, canonical_root, canonical_manifest, canonical_lock)
+                or not row.protected
+                or (row.protected[0].device, row.protected[0].inode) != snapshot.workspace_id):
+            return False
+        root_rel = f".happyranch/task-tmp/{task_id}"
+        manifests = {rel: (raw, classification) for rel, raw, classification in snapshot.manifests}
+        raw, classification = manifests.get(root_rel, (None, ""))
+        if classification != "canonical_regenerable" or raw is None or hashlib.sha256(raw).hexdigest() != row.manifest_digest:
+            return False
+        projected = []
+        for item in snapshot.items:
+            if item.rel == root_rel:
+                relative = ""
+            elif item.rel.startswith(root_rel + "/"):
+                relative = item.rel[len(root_rel) + 1:]
+            else:
+                continue
+            projected.append((relative, item.dev, item.ino, item.mode, item.blocks * 512, item.size))
+        expected = [(entry.relative_path, entry.device, entry.inode, entry.mode,
+                     entry.allocated_bytes, entry.apparent_bytes) for entry in row.entries]
+        return (sorted(projected) == sorted(expected)
+                and row.before == Accounting(sum(item[4] for item in projected), sum(item[5] for item in projected), len(projected))
+                and row.root_device == next((item[1] for item in projected if item[0] == ""), None)
+                and row.root_inode == next((item[2] for item in projected if item[0] == ""), None)
+                and row.coverage_digest_assertion == hashlib.sha256(repr(snapshot).encode()).hexdigest())
+    except (AttributeError, OSError, TypeError, ValueError):
         return False
-    if (snapshot.boot != value.observation.boot_id
-            or snapshot.workspace_id != (workspace_info.st_dev, workspace_info.st_ino)
-            or (row.task_id, row.agent_name, Path(row.literal_root), Path(row.manifest_path), Path(row.lock_path))
-            != (task_id, agent_name, canonical_root, canonical_manifest, canonical_lock)
-            or not row.protected
-            or (row.protected[0].device, row.protected[0].inode) != snapshot.workspace_id):
-        return False
-    root_rel = f".happyranch/task-tmp/{task_id}"
-    manifests = {rel: (raw, classification) for rel, raw, classification in snapshot.manifests}
-    raw, classification = manifests.get(root_rel, (None, ""))
-    if classification != "canonical_regenerable" or raw is None or hashlib.sha256(raw).hexdigest() != row.manifest_digest:
-        return False
-    projected = []
-    for item in snapshot.items:
-        if item.rel == root_rel:
-            relative = ""
-        elif item.rel.startswith(root_rel + "/"):
-            relative = item.rel[len(root_rel) + 1:]
-        else:
-            continue
-        projected.append((relative, item.dev, item.ino, item.mode, item.blocks * 512, item.size))
-    expected = [(entry.relative_path, entry.device, entry.inode, entry.mode,
-                 entry.allocated_bytes, entry.apparent_bytes) for entry in row.entries]
-    return (sorted(projected) == sorted(expected)
-            and row.before == Accounting(sum(item[4] for item in projected), sum(item[5] for item in projected), len(projected))
-            and row.root_device == next((item[1] for item in projected if item[0] == ""), None)
-            and row.root_inode == next((item[2] for item in projected if item[0] == ""), None)
-            and row.coverage_digest_assertion == hashlib.sha256(repr(snapshot).encode()).hexdigest())
 def collect_revalidate_seal_consume_disposable(*, db: object, sessions: object, workspace: Path,
                                                 task_id: str, agent_name: str, proc_root: Path = Path("/proc"),
                                                 monotonic_now: float | None = None,

@@ -506,6 +506,67 @@ def test_private_consumer_refuses_actual_c3_projection_substitutions(
     assert _named_membership(source) == membership
 
 
+@pytest.mark.parametrize("mutation", ["snapshot_object", "items_none", "manifests_none"])
+def test_private_consumer_refuses_malformed_nested_c3_snapshot(disposable_consumer, monkeypatch, mutation):
+    """C3 nested projections fail closed after a real successful seal."""
+    source = disposable_consumer
+    original = reclamation._collect_private_coverage
+    calls, sealed, executed = [], [], []
+    before, membership = _refusal_snapshot(source), _named_membership(source)
+
+    def collect(**kwargs):
+        value = original(**kwargs)
+        calls.append(value)
+        if len(calls) != 3:
+            return value
+        snapshot = object() if mutation == "snapshot_object" else replace(
+            value.snapshot, **{mutation.removesuffix("_none"): None})
+        return replace(value, snapshot=snapshot)
+
+    original_seal = reclamation.seal_ledger_row
+    def seal(**kwargs):
+        row = original_seal(**kwargs)
+        sealed.append(row)
+        return row
+
+    monkeypatch.setattr(reclamation, "_collect_private_coverage", collect)
+    monkeypatch.setattr(reclamation, "seal_ledger_row", seal)
+    monkeypatch.setattr(reclamation, "execute_ledger", lambda rows: executed.extend(rows))
+    assert source["consume"]() is None
+    assert len(calls) == 3 and len(sealed) == 1 and not executed
+    assert _refusal_snapshot(source) == before
+    assert _named_membership(source) == membership
+
+
+@pytest.mark.parametrize("mutation", ["bucket_accounting", "dominant_paths"])
+def test_private_consumer_refuses_inconsistent_public_coverage_projection(
+        disposable_consumer, monkeypatch, mutation):
+    """C1/C2/C3 public projections must agree with their private snapshots."""
+    source = disposable_consumer
+    original = reclamation._collect_private_coverage
+    executed = []
+    before, membership = _refusal_snapshot(source), _named_membership(source)
+
+    def collect(**kwargs):
+        value = original(**kwargs)
+        observation = value.observation
+        if mutation == "bucket_accounting":
+            buckets = tuple(replace(bucket, allocated_bytes=bucket.allocated_bytes + 512)
+                            if bucket.relative_path == ".happyranch/task-tmp/TASK-1" else bucket
+                            for bucket in observation.buckets)
+            observation = replace(observation, buckets=buckets)
+        else:
+            observation = replace(observation, dominant=("nonexistent-residual",))
+        return replace(value, observation=observation)
+
+    monkeypatch.setattr(reclamation, "_collect_private_coverage", collect)
+    monkeypatch.setattr(reclamation, "execute_ledger", lambda rows: executed.extend(rows))
+    assert source["consume"]() is None
+    assert not executed
+    assert _refusal_snapshot(source) == before
+    assert _named_membership(source) == membership
+
+
 def test_protected_named_membership_observes_add_and_remove(disposable_consumer):
     """The snapshot supplement sees immediate protected sidecar membership changes."""
     source = disposable_consumer
