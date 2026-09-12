@@ -442,19 +442,11 @@ def test_nonroot_manager_recovery_postcommit_cleanup_reenters_on_restart(tmp_pat
     reopened = Database(db_path)
     orch._db = reopened
     orch._audit = AuditLogger(reopened)
-    completed = threading.Event()
-    real_terminate = jobs_runner.terminate_jobs_for_task
-
-    async def observed_terminate(*args, **kwargs):
-        result = await real_terminate(*args, **kwargs)
-        completed.set()
-        return result
-
-    with mock.patch(
-        "runtime.daemon.jobs_runner.terminate_jobs_for_task", side_effect=observed_terminate,
-    ), mock.patch("runtime.orchestrator.authority.run_authority_hook") as authority:
+    with mock.patch("runtime.orchestrator.authority.run_authority_hook") as authority:
         _sweep_on_startup(reopened, queue, "test", orch)
-        assert completed.wait(2.0), "owned recovery cleanup runner did not finish"
+        # The recovery-owned durable backstop commits inside the startup sweep;
+        # do not mistake the asynchronous terminator return for that boundary.
+        assert reopened.get_job("JOB-OWNED").reason == "task_ended"
         assert reopened.get_job("JOB-OTHER").status.value == "running"
         # Startup cleanup precedes the lifespan orphan-job reconciliation.
         assert reopened.recover_orphaned_running_jobs(
@@ -1068,10 +1060,12 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
                 restarted_cleanup_finished.set()
         reopened.backstop_terminated_task_jobs = observe_whole_restarted_cleanup
 
-        # Bounded negative control: a shipping sweep with its cleanup seam
+        # Bounded negative control: a shipping sweep with its durable backstop
         # disabled leaves the owned job running, proving the assertion below
         # depends on the restart cleanup rather than old-process work.
-        with mock.patch(
+        with mock.patch.object(
+            reopened, "backstop_terminated_task_jobs", return_value=None,
+        ), mock.patch(
             "runtime.orchestrator.run_step._kill_jobs_for_terminating_task",
         ), mock.patch("runtime.orchestrator.run_step._enqueue_parent_if_waiting"):
             _sweep_on_startup(reopened, TaskQueue(), "test", orch)
@@ -1079,8 +1073,7 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
             assert reopened.get_job("JOB-OWNED").reason == "task_ended"
 
         _sweep_on_startup(reopened, queue, "test", orch)
-        assert restarted_cleanup_started.wait(2.0), "new-process cleanup did not start"
-        assert restarted_cleanup_finished.wait(2.0), "new-process cleanup did not finish"
+        assert restarted_cleanup_finished.wait(2.0), "new-process durable backstop did not finish"
         _sweep_on_startup(reopened, queue, "test", orch)
         # This is before the later lifespan orphan reconciliation; startup
         # touched only the recovery owner's durable row.
@@ -1594,17 +1587,15 @@ def test_completed_leaf_postcommit_restart_cleans_only_owned_job_and_wakes_once(
     path = db.path; db.close(); reopened = Database(path); orch._db = reopened
     from runtime.infrastructure.audit_logger import AuditLogger
     orch._audit = AuditLogger(reopened)
-    completed = threading.Event(); real_terminate = jobs_runner.terminate_jobs_for_task
-    async def observed_terminate(*args, **kwargs):
-        result = await real_terminate(*args, **kwargs)
-        completed.set()
-        return result
-    with mock.patch("runtime.daemon.jobs_runner.terminate_jobs_for_task", side_effect=observed_terminate):
-        _sweep_on_startup(reopened, queue, "test", orch)
-        assert completed.wait(2.0), "owned cleanup runner did not finish"
-        assert reopened.get_job("JOB-OTHER").status.value == "running"
-        # This is the shipping ordering: __main__ sweep precedes lifespan orphan scan.
-        assert reopened.recover_orphaned_running_jobs(now_iso="2026-01-01T00:02:00+00:00") == ["JOB-OTHER"]
+    _sweep_on_startup(reopened, queue, "test", orch)
+    # The startup sweep settles the exact ledger-owned job durably before it
+    # returns. The generic lifespan scan therefore sees only the unrelated
+    # row; no process wait or persisted PID signal is involved at restart.
+    assert reopened.get_job("JOB-OWNED").reason == "task_ended"
+    assert reopened.recover_orphaned_running_jobs(
+        now_iso="2026-01-01T00:02:00+00:00",
+    ) == ["JOB-OTHER"]
+    with mock.patch("runtime.daemon.jobs_runner.terminate_jobs_for_task"):
         _sweep_on_startup(reopened, queue, "test", orch)
     assert reopened.get_job("JOB-OWNED").reason == "task_ended"
     assert reopened.get_job("JOB-OTHER").reason == "daemon_crash"

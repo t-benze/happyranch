@@ -134,6 +134,20 @@ def _sweep_on_startup(
             t.status == TaskStatus.COMPLETED
             or task_id in consumed_nonroot_cleanup_ids
         ) and orchestrator is not None:
+            # The task/ledger ownership is already durable, but the ordinary
+            # cleanup helper below is deliberately asynchronous.  Record its
+            # owned-job backstop before returning to the lifespan, whose
+            # generic orphan scan otherwise can win the gap and permanently
+            # label this exact recovery-owned job ``daemon_crash``.  This
+            # transaction neither waits for nor signals a persisted PID; the
+            # later helper retains live-control termination when one exists.
+            # Restrict the eager settlement to the exact recovery-owned
+            # terminal rows selected above, so unrelated terminal/generic
+            # orphan behavior is unchanged.
+            db.backstop_terminated_task_jobs(
+                task_id,
+                finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
             from runtime.orchestrator.run_step import _kill_jobs_for_terminating_task
             _kill_jobs_for_terminating_task(orchestrator, task_id)
             if task_id in consumed_nonroot_cleanup_ids:
