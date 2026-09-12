@@ -178,6 +178,8 @@ def _install_fake_client(monkeypatch, captured):
     class FakeClient:
         def get(self, path, params=None, headers=None):
             captured["path"] = path
+            if params:
+                captured["params"] = params
             if headers:
                 captured["headers"] = headers
             return FakeResponse()
@@ -240,6 +242,25 @@ def test_memory_search_form_parses_and_dispatches(monkeypatch):
     args.func(args)
     assert captured["path"] == "/api/v1/orgs/o/agents/a/memory/entries/search"
     assert captured["json"]["query"] == "rename gotchas"
+
+
+def test_memory_get_and_search_use_runtime_session_hint_with_explicit_precedence(
+    monkeypatch,
+):
+    captured = {}
+    _install_fake_client(monkeypatch, captured)
+    monkeypatch.setenv("HAPPYRANCH_RUNTIME_SESSION_ID", "sess-runtime")
+
+    get_args = _parse(["memory", "get", "--org", "o", "--agent", "a", "MEM-001"])
+    get_args.func(get_args)
+    assert captured["params"] == {"session_id": "sess-runtime"}
+
+    search_args = _parse([
+        "memory", "search", "--org", "o", "--agent", "a", "needle",
+        "--session-id", "sess-explicit",
+    ])
+    search_args.func(search_args)
+    assert captured["params"] == {"session_id": "sess-explicit"}
 
 
 def test_learning_alias_get_form_parses_and_dispatches(monkeypatch, capsys):

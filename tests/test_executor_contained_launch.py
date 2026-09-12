@@ -195,7 +195,7 @@ def test_build_launch_spec_matches_uncontained_launch_environment(tmp_path):
 
     spec = build_command_launch_spec(
         cmd=["echo", "hello"], workspace=workspace, input_text="prompt",
-        org_slug="test",
+        org_slug="test", session_id="sess-runtime",
     )
     assert spec.argv == ("echo", "hello")
     assert spec.cwd == str(workspace)
@@ -203,6 +203,7 @@ def test_build_launch_spec_matches_uncontained_launch_environment(tmp_path):
     assert spec.stdout == subprocess.PIPE
     assert spec.text is True
     assert spec.env.get("HAPPYRANCH_ORG_SLUG") == "test"
+    assert spec.env.get("HAPPYRANCH_RUNTIME_SESSION_ID") == "sess-runtime"
 
     spec_no_stdin = build_command_launch_spec(
         cmd=["echo", "hi"], workspace=workspace, input_text=None,
@@ -350,6 +351,7 @@ def test_custom_adapter_build_launch_spec(tmp_path):
     adapter = _make_adapter_executor(tmp_path)
     spec = adapter.build_launch_spec(
         workspace=tmp_path, prompt="do it", org_slug="test",
+        session_id="sess-runtime",
         timeout_seconds=1800,
     )
     assert spec.argv == (adapter._adapter_executable,)
@@ -357,6 +359,7 @@ def test_custom_adapter_build_launch_spec(tmp_path):
     assert spec.stdin == subprocess.PIPE
     assert spec.text is True
     assert spec.env.get("HAPPYRANCH_ORG_SLUG") == "test"
+    assert spec.env.get("HAPPYRANCH_RUNTIME_SESSION_ID") == "sess-runtime"
 
 
 def test_builtin_executors_build_launch_spec(tmp_path, monkeypatch):
@@ -383,7 +386,9 @@ def test_builtin_executors_build_launch_spec(tmp_path, monkeypatch):
         assert hasattr(executor, "build_launch_spec")
         spec = executor.build_launch_spec(
             workspace=tmp_path, prompt="prompt", org_slug="test",
+            session_id="sess-runtime", resume_session_id="provider-resume",
             timeout_seconds=1800,
         )
         assert isinstance(spec.argv, tuple) and spec.argv
         assert spec.cwd == str(tmp_path)
+        assert spec.env["HAPPYRANCH_RUNTIME_SESSION_ID"] == "sess-runtime"

@@ -226,6 +226,11 @@ controlled-clock whole-report matrix are frozen acceptance obligations for the
 versioned reporting implementation; this guard does not claim either as passed.
 
 Per-agent memory lives under `<runtime>/orgs/<slug>/workspaces/<agent>/memory/`, one `MEM-NNN-<slug>.md` per entry. CLI: `happyranch memory list|get|search|add|update|promote|reindex`.
+Runtime-owned task children automatically forward their actual invocation
+session as a private CLI hint for get/search attribution. The route still
+derives org, agent, and task from `SessionTracker`; explicit CLI session ids
+win, and stale, cross-agent, cross-org, thread/dream, or manual contexts remain
+uncorrelated.
 
 Implementation: `runtime/infrastructure/learnings_store.py` and `runtime/daemon/routes/agents.py`. Spec: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`.
 
