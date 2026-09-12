@@ -5133,6 +5133,60 @@ class Database:
         return [row["task_id"] for row in rows]
 
     @_synchronized
+    def get_consumed_task_completion_recovery_owners(self) -> list[dict]:
+        """Snapshot terminal recovery owners for startup-owned effects.
+
+        IDs alone are insufficient once the selector releases its lock: a
+        newer generation can replace the task binding before startup reaches
+        cleanup.  Keep the immutable result and recovery-session fingerprint
+        so every post-selection effect can revalidate it independently.
+        """
+        rows = self._conn.execute(
+            """SELECT r.task_id, r.agent, r.recovery_session_id,
+                      r.accepted_result_id, t.status
+               FROM task_completion_recoveries AS r
+               JOIN task_results AS tr ON tr.id=r.accepted_result_id
+               JOIN tasks AS t ON t.id=r.task_id
+               WHERE r.state='callback_consumed'
+                 AND t.cancelled_at IS NULL
+                 AND ((t.status=? AND t.task_type IN ('subtask', 'task'))
+                      OR (t.status=? AND t.task_type='task'
+                          AND t.parent_task_id IS NOT NULL))
+                 AND tr.task_id=r.task_id AND tr.agent=r.agent
+                 AND tr.session_id=r.recovery_session_id
+                 AND t.assigned_agent=r.agent
+                 AND t.current_session_id=r.recovery_session_id
+               ORDER BY r.id""",
+            (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @_synchronized
+    def consumed_task_completion_recovery_owner_is_current(
+        self, *, task_id: str, agent: str, recovery_session_id: str,
+        result_row_id: int, terminal_status: str,
+    ) -> bool:
+        """Revalidate a selected owner at a startup effect boundary.
+
+        This is deliberately separate from a job UPDATE: zero running rows is
+        a valid no-op, not evidence that the selected receipt lost ownership.
+        """
+        row = self._conn.execute(
+            """SELECT 1 FROM task_completion_recoveries AS r
+               JOIN task_results AS tr ON tr.id=r.accepted_result_id
+               JOIN tasks AS t ON t.id=r.task_id
+               WHERE r.task_id=? AND r.agent=? AND r.recovery_session_id=?
+                 AND r.accepted_result_id=? AND r.state='callback_consumed'
+                 AND t.status=? AND t.cancelled_at IS NULL
+                 AND tr.task_id=r.task_id AND tr.agent=r.agent
+                 AND tr.session_id=r.recovery_session_id
+                 AND t.assigned_agent=r.agent
+                 AND t.current_session_id=r.recovery_session_id""",
+            (task_id, agent, recovery_session_id, result_row_id, terminal_status),
+        ).fetchone()
+        return row is not None
+
+    @_synchronized
     def settle_expired_task_completion_recovery(
         self, *, task_id: str, agent: str, session_id: str, settled_at: str,
     ) -> bool:

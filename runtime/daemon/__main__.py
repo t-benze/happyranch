@@ -112,12 +112,17 @@ def _sweep_on_startup(
     # may now be terminal.  Include only the ledger's exact current-owner
     # bindings: a cancelled or newer generation must remain outside this
     # reconciliation and follow its own lifecycle.
-    consumed_nonroot_cleanup_ids = set(
-        db.get_consumed_nonroot_escalation_recovery_task_ids()
-    )
+    selected_recovery_owners = {
+        owner["task_id"]: owner
+        for owner in db.get_consumed_task_completion_recovery_owners()
+    }
+    consumed_nonroot_cleanup_ids = {
+        task_id for task_id, owner in selected_recovery_owners.items()
+        if owner["status"] == TaskStatus.FAILED.value
+    }
     task_ids = dict.fromkeys([
         *db.get_accepted_task_completion_recovery_task_ids(),
-        *db.get_consumed_completed_task_completion_recovery_task_ids(),
+        *selected_recovery_owners,
         *consumed_nonroot_cleanup_ids,
         *db.get_nonterminal_task_ids(),
     ])
@@ -130,10 +135,8 @@ def _sweep_on_startup(
         # post-commit job cleanup.  Restart has no inherited live PID/control,
         # so reuse the existing ownership-aware cleanup rather than signalling
         # a persisted PID; terminal-child handling below reconstructs its wake.
-        if (
-            t.status == TaskStatus.COMPLETED
-            or task_id in consumed_nonroot_cleanup_ids
-        ) and orchestrator is not None:
+        selected_owner = selected_recovery_owners.get(task_id)
+        if selected_owner is not None and orchestrator is not None:
             # The task/ledger ownership is already durable, but the ordinary
             # cleanup helper below is deliberately asynchronous.  Record its
             # owned-job backstop before returning to the lifespan, whose
@@ -144,10 +147,25 @@ def _sweep_on_startup(
             # Restrict the eager settlement to the exact recovery-owned
             # terminal rows selected above, so unrelated terminal/generic
             # orphan behavior is unchanged.
-            db.backstop_terminated_task_jobs(
-                task_id,
+            # Revalidate the selector's full durable fingerprint at each
+            # effect boundary.  A replacement/cancellation after selection
+            # must perform no stale backstop, live cleanup, or parent wake.
+            # The guarded update itself rechecks the same fingerprint; its
+            # rowcount may be zero when no owned job remains running.
+            db.backstop_consumed_task_completion_recovery_jobs(
+                task_id=task_id,
+                agent=selected_owner["agent"],
+                result_row_id=selected_owner["accepted_result_id"],
                 finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             )
+            if not db.consumed_task_completion_recovery_owner_is_current(
+                task_id=task_id,
+                agent=selected_owner["agent"],
+                recovery_session_id=selected_owner["recovery_session_id"],
+                result_row_id=selected_owner["accepted_result_id"],
+                terminal_status=selected_owner["status"],
+            ):
+                continue
             from runtime.orchestrator.run_step import _kill_jobs_for_terminating_task
             _kill_jobs_for_terminating_task(orchestrator, task_id)
             if task_id in consumed_nonroot_cleanup_ids:

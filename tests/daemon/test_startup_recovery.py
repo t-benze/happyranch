@@ -1050,7 +1050,7 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
         orch._db = reopened
         orch._audit = AuditLogger(reopened)
         assert reopened.get_job("JOB-OWNED").status.value == "running"
-        reopened_backstop = reopened.backstop_terminated_task_jobs
+        reopened_backstop = reopened.backstop_consumed_task_completion_recovery_jobs
         def observe_whole_restarted_cleanup(*args, **kwargs):
             try:
                 return reopened_backstop(*args, **kwargs)
@@ -1058,14 +1058,12 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
                 # Runner termination is only the first phase.  Observe the
                 # real durable backstop return, including its SQLite commit.
                 restarted_cleanup_finished.set()
-        reopened.backstop_terminated_task_jobs = observe_whole_restarted_cleanup
+        reopened.backstop_consumed_task_completion_recovery_jobs = observe_whole_restarted_cleanup
 
         # Bounded negative control: a shipping sweep with its durable backstop
         # disabled leaves the owned job running, proving the assertion below
         # depends on the restart cleanup rather than old-process work.
         with mock.patch.object(
-            reopened, "backstop_terminated_task_jobs", return_value=None,
-        ), mock.patch.object(
             reopened, "backstop_consumed_task_completion_recovery_jobs", return_value=None,
         ), mock.patch(
             "runtime.orchestrator.run_step._kill_jobs_for_terminating_task",
@@ -1678,10 +1676,72 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
             assert entered.wait(2)
             assert db.get_job("JOB-OWNED").reason == "task_ended"
             assert db.recover_orphaned_running_jobs(now_iso="2026-01-01T00:03:00Z") == ["JOB-OTHER"]
-        assert not errors
     finally:
         release.set()
-        for worker in workers: worker.join(2); assert not worker.is_alive()
+        for worker in workers:
+            worker.join(2)
+            assert not worker.is_alive()
+    # Cleanup errors arise only after the held real runner is released.
+    assert not errors
+    accepted_after = db.execute(
+        "SELECT * FROM task_results WHERE id=?", (accepted["id"],),
+    ).fetchone()
+    assert accepted_after is not None and accepted_after["session_id"] == session_id
+    ledger = db.execute(
+        "SELECT state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    assert ledger["state"] == "callback_consumed"
+    assert ledger["accepted_result_id"] == accepted["id"]
+    assert db.get_task(task_id).current_session_id == session_id
+    _sweep_on_startup(db, queue, "test", orch)
+    _sweep_on_startup(db, queue, "test", orch)
+    assert db.get_job("JOB-OWNED").reason == "task_ended"
+    assert db.get_job("JOB-OTHER").reason == "daemon_crash"
+
+
+@pytest.mark.parametrize("winner", ["cancelled", "replacement"])
+def test_startup_preterminal_selection_revalidates_recovery_owner_before_effects(tmp_path, winner):
+    """A winner after owner selection receives no stale recovery effects."""
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+    from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    _claim_interrupted_recovery(db, "TASK-REC", binding="recovery")
+    db.execute("UPDATE tasks SET task_type='subtask' WHERE id='TASK-REC'"); db.commit()
+    _seed_job(db, "JOB-OWNED", "TASK-REC", "running")
+    assert db.admit_task_completion_callback(
+        task_id="TASK-REC", agent="dev_agent", session_id="recovery-TASK-REC",
+        status="completed", output_summary="done", confidence_score=100,
+    )
+    accepted = db.get_accepted_task_completion_recovery_result(
+        task_id="TASK-REC", agent="dev_agent",
+    )
+    assert accepted is not None
+    with mock.patch("runtime.orchestrator.run_step._kill_jobs_for_terminating_task"):
+        _consume_accepted_completion_recovery(
+            orch, "TASK-REC", completion_report_from_result_row(
+                "TASK-REC", accepted, fallback_agent="dev_agent",
+            ), agent="dev_agent", session_id="recovery-TASK-REC",
+            result_row_id=accepted["id"],
+        )
+    select = db.get_consumed_task_completion_recovery_owners
+    def select_then_replace():
+        selected = select()
+        assert selected and selected[0]["accepted_result_id"] == accepted["id"]
+        if winner == "cancelled":
+            db.update_task("TASK-REC", cancelled_at="2026-01-01T00:03:00Z")
+        else:
+            db.update_task("TASK-REC", current_session_id="newer-session")
+        return selected
+    with mock.patch.object(db, "get_consumed_task_completion_recovery_owners", side_effect=select_then_replace), mock.patch(
+        "runtime.orchestrator.run_step._kill_jobs_for_terminating_task",
+    ) as cleanup:
+        _sweep_on_startup(db, queue, "test", orch)
+    assert db.get_job("JOB-OWNED").status.value == "running"
+    cleanup.assert_not_called()
+    task = db.get_task("TASK-REC")
+    assert task.cancelled_at is not None if winner == "cancelled" else task.current_session_id == "newer-session"
 
 
 def _capture_worker_error(target, errors):
