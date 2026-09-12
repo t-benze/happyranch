@@ -108,6 +108,7 @@ def test_multi_job_resume_waits_for_all(
         session_id="$2"
         agent="$3"
         org_slug="$4"
+        plan_dir="${HAPPYRANCH_TEST_PLAN_DIR:?missing private plan directory}"
 
         counter="{counter_file}"
         n=$(cat "$counter" 2>/dev/null || echo 0)
@@ -118,7 +119,7 @@ def test_multi_job_resume_waits_for_all(
             # ── Stage 1: submit two review_required=true jobs + self-block ──
 
             # Submit JOB-A.
-            payload_a="/tmp/multi-job-submit-a-$$.json"
+            payload_a="$plan_dir/multi-job-submit-a-$$.json"
             printf '{{
               "task_id": "%s",
               "session_id": "%s",
@@ -130,7 +131,7 @@ def test_multi_job_resume_waits_for_all(
               "persistent": false
             }}' "$task_id" "$session_id" > "$payload_a"
 
-            submit_log_a="/tmp/multi-job-submit-log-a-$$.txt"
+            submit_log_a="$plan_dir/multi-job-submit-log-a-$$.txt"
             happyranch jobs submit --from-file "$payload_a" --org "$org_slug" \
                 > "$submit_log_a" 2>&1
             cat "$submit_log_a" >&2
@@ -145,7 +146,7 @@ def test_multi_job_resume_waits_for_all(
             echo "$job_a" > "{joba_file}"
 
             # Submit JOB-B.
-            payload_b="/tmp/multi-job-submit-b-$$.json"
+            payload_b="$plan_dir/multi-job-submit-b-$$.json"
             printf '{{
               "task_id": "%s",
               "session_id": "%s",
@@ -157,7 +158,7 @@ def test_multi_job_resume_waits_for_all(
               "persistent": false
             }}' "$task_id" "$session_id" > "$payload_b"
 
-            submit_log_b="/tmp/multi-job-submit-log-b-$$.txt"
+            submit_log_b="$plan_dir/multi-job-submit-log-b-$$.txt"
             happyranch jobs submit --from-file "$payload_b" --org "$org_slug" \
                 > "$submit_log_b" 2>&1
             cat "$submit_log_b" >&2
@@ -175,7 +176,7 @@ def test_multi_job_resume_waits_for_all(
             port=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.port")
             token=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.token")
 
-            completion_payload="/tmp/multi-job-completion-$$.json"
+            completion_payload="$plan_dir/multi-job-completion-$$.json"
             printf '{{
               "session_id": "%s",
               "agent": "%s",

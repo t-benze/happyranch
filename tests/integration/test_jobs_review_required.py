@@ -99,33 +99,44 @@ def test_review_required_job_lifecycle_submit_run_revisit(
         session_id="$2"
         agent="$3"
         org_slug="$4"
+        plan_dir="${HAPPYRANCH_TEST_PLAN_DIR:?missing private plan directory}"
+        job_sentinel="$plan_dir/happyranch-job-e2e-sentinel"
+        # The submitted job runs separately, so serialize both the JSON string
+        # and the shell argument here; it cannot rely on this plan's variables.
+        job_script_json=$(python3 - "$job_sentinel" <<'PY'
+import json
+import shlex
+import sys
+print(json.dumps(f"touch {shlex.quote(sys.argv[1])}"))
+PY
+)
 
         # Write the submit payload to a temp file.
-        payload="/tmp/job-e2e-payload-$$.json"
+        payload="$plan_dir/job-e2e-payload-$$.json"
         printf '{
           "task_id": "%s",
           "session_id": "%s",
           "title": "touch e2e sentinel",
           "rationale": "integration test needs founder approval",
-          "script": "touch /tmp/happyranch-job-e2e-sentinel",
+          "script": %s,
           "interpreter": "bash",
           "review_required": true
-        }' "$task_id" "$session_id" > "$payload"
+        }' "$task_id" "$session_id" "$job_script_json" > "$payload"
 
         # Submit the job (agent callback).
         happyranch jobs submit --from-file "$payload" --org "$org_slug" \\
-            > /tmp/job-e2e-submit-$$.log 2>&1
+            > "$plan_dir/job-e2e-submit-$$.log" 2>&1
 
         # Extract job id from submit output, e.g. "ok: submitted JOB-001 (status=pending)."
-        job_id=$(grep -oE 'JOB-[0-9]+' /tmp/job-e2e-submit-$$.log | head -1)
+        job_id=$(grep -oE 'JOB-[0-9]+' "$plan_dir/job-e2e-submit-$$.log" | head -1)
         if [[ -z "$job_id" ]]; then
             echo "ERROR: could not parse JOB id from submit output" >&2
-            cat /tmp/job-e2e-submit-$$.log >&2
+            cat "$plan_dir/job-e2e-submit-$$.log" >&2
             exit 1
         fi
 
         # Self-block: tell the orchestrator we are waiting on the founder.
-        report="/tmp/job-e2e-completion-$$.json"
+        report="$plan_dir/job-e2e-completion-$$.json"
         printf '{
           "task_id": "%s",
           "session_id": "%s",

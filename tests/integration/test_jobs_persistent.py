@@ -90,9 +90,10 @@ def test_persistent_job_full_lifecycle(
         session_id="$2"
         agent="$3"
         org_slug="$4"
+        plan_dir="${HAPPYRANCH_TEST_PLAN_DIR:?missing private plan directory}"
 
         # 1. Submit a persistent + auto-run job whose script sleeps 60s.
-        payload="/tmp/job-persistent-payload-$$.json"
+        payload="$plan_dir/job-persistent-payload-$$.json"
         printf '{{
           "task_id": "%s",
           "session_id": "%s",
@@ -105,8 +106,8 @@ def test_persistent_job_full_lifecycle(
         }}' "$task_id" "$session_id" > "$payload"
 
         happyranch jobs submit --from-file "$payload" --org "$org_slug" \\
-            > /tmp/job-persistent-submit-$$.log 2>&1
-        cat /tmp/job-persistent-submit-$$.log >&2
+            > "$plan_dir/job-persistent-submit-$$.log" 2>&1
+        cat "$plan_dir/job-persistent-submit-$$.log" >&2
         touch "{job_sentinel}"
 
         # 2. Wait until the test side has finished its assertions + stop.
@@ -118,7 +119,7 @@ def test_persistent_job_full_lifecycle(
         done
 
         # 3. Report completion so the task transitions normally.
-        report="/tmp/job-persistent-completion-$$.json"
+        report="$plan_dir/job-persistent-completion-$$.json"
         printf '{{
           "task_id": "%s",
           "session_id": "%s",

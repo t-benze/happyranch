@@ -98,6 +98,7 @@ def test_blocks_on_job_then_auto_resumes(
         session_id="$2"
         agent="$3"
         org_slug="$4"
+        plan_dir="${HAPPYRANCH_TEST_PLAN_DIR:?missing private plan directory}"
 
         counter="{counter_file}"
         n=$(cat "$counter" 2>/dev/null || echo 0)
@@ -108,7 +109,7 @@ def test_blocks_on_job_then_auto_resumes(
             # ── Stage 1: submit job + self-block with waiting_on_job_ids ──
 
             # Submit a quick auto-run job.
-            payload="/tmp/blocked-by-job-submit-$$.json"
+            payload="$plan_dir/blocked-by-job-submit-$$.json"
             printf '{{
               "task_id": "%s",
               "session_id": "%s",
@@ -120,7 +121,7 @@ def test_blocks_on_job_then_auto_resumes(
               "persistent": false
             }}' "$task_id" "$session_id" > "$payload"
 
-            submit_log="/tmp/blocked-by-job-submit-log-$$.txt"
+            submit_log="$plan_dir/blocked-by-job-submit-log-$$.txt"
             happyranch jobs submit --from-file "$payload" --org "$org_slug" > "$submit_log" 2>&1
             cat "$submit_log" >&2
 
@@ -138,7 +139,7 @@ def test_blocks_on_job_then_auto_resumes(
             port=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.port")
             token=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.token")
 
-            completion_payload="/tmp/blocked-by-job-completion-$$.json"
+            completion_payload="$plan_dir/blocked-by-job-completion-$$.json"
             printf '{{
               "session_id": "%s",
               "agent": "%s",
