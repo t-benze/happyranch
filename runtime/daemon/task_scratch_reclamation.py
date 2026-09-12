@@ -34,43 +34,52 @@ def _terminal_ns(value: object) -> int | None:
 
 def _private_evidence_ok(value: _EvidenceObservation, task_id: str,
                          agent_name: str) -> tuple[object, int] | None:
-    evidence, snapshot = value.evidence, value.snapshot
-    if not evidence.eligible or snapshot is None or evidence.boot_id is None:
+    if not isinstance(value, _EvidenceObservation):
         return None
-    tasks = {row[1]: row[3] for row in snapshot if len(row) > 3 and row[0] == "task"}
-    target = tasks.get(task_id)
-    if (target is None or getattr(target, "assigned_agent", None) != agent_name
-            or getattr(getattr(target, "status", None), "value", None)
-            not in {"completed", "failed", "cancelled"}):
-        return None
-    terminal = _terminal_ns(getattr(target, "completed_at", None))
-    if terminal is None:
-        return None
-    # Public evidence intentionally accepts a successful latest-result lookup
-    # returning None.  Private consumption is stricter: each collected
-    # component member needs its own present, matching typed result.
-    results = {row[1]: row[3] for row in snapshot if len(row) > 3 and row[0] == "result"}
-    if any(task_member not in results or results[task_member] is None
-           or results[task_member].get("status") in {"in_progress", "working"}
-           for task_member in tasks):
+    try:
+        evidence, snapshot = value.evidence, value.snapshot
+        if (not getattr(evidence, "eligible", False) or snapshot is None
+                or not getattr(evidence, "boot_id", None) or value.sessions is None
+                or value.process_identities is None):
+            return None
+        tasks = {row[1]: row[3] for row in snapshot if len(row) > 3 and row[0] == "task"}
+        target = tasks.get(task_id)
+        if (target is None or getattr(target, "assigned_agent", None) != agent_name
+                or getattr(getattr(target, "status", None), "value", None)
+                not in {"completed", "failed", "cancelled"}):
+            return None
+        terminal = _terminal_ns(getattr(target, "completed_at", None))
+        results = {row[1]: row[3] for row in snapshot if len(row) > 3 and row[0] == "result"}
+        if terminal is None or any(task_member not in results or results[task_member] is None
+                                   or results[task_member].get("status") in {"in_progress", "working"}
+                                   for task_member in tasks):
+            return None
+    except (AttributeError, TypeError):
         return None
     return target, terminal
 
 
 def _private_coverage_ok(value: _CoverageBinding, workspace: Path, task_id: str) -> bool:
-    observation, snapshot = value.observation, value.snapshot
-    if not observation.complete or not observation.coverage_ready or snapshot is None:
+    if not isinstance(value, _CoverageBinding):
         return False
     try:
+        observation, snapshot = value.observation, value.snapshot
+        if (not getattr(observation, "complete", False)
+                or not getattr(observation, "coverage_ready", False) or snapshot is None):
+            return False
         return (Path(observation.workspace).resolve(strict=True) == workspace.resolve(strict=True)
                 and any(row.relative_path == f".happyranch/task-tmp/{task_id}"
                         and row.classification == "canonical_regenerable" for row in observation.buckets))
-    except OSError:
+    except (AttributeError, OSError, TypeError):
         return False
 
 
 def _same_evidence(left: _EvidenceObservation, right: _EvidenceObservation) -> bool:
     """Compare stable authoritative values, never collection timestamps."""
+    if (not isinstance(left, _EvidenceObservation) or not isinstance(right, _EvidenceObservation)
+            or left.sessions is None or right.sessions is None
+            or left.process_identities is None or right.process_identities is None):
+        return False
     return (left.snapshot, left.sessions, left.process_identities,
             left.evidence.boot_id, left.evidence.process_roots,
             left.evidence.process_cwds, left.evidence.open_fds) == (
@@ -80,12 +89,16 @@ def _same_evidence(left: _EvidenceObservation, right: _EvidenceObservation) -> b
 
 
 def _same_coverage(left: _CoverageBinding, right: _CoverageBinding) -> bool:
-    return left.snapshot == right.snapshot
+    return (isinstance(left, _CoverageBinding) and isinstance(right, _CoverageBinding)
+            and left.snapshot is not None and right.snapshot is not None
+            and left.snapshot == right.snapshot)
 
 
 def _coverage_matches_row(value: _CoverageBinding, row: "LedgerRow", workspace: Path,
                           task_id: str, agent_name: str) -> bool:
     """Bind final C3's existing fields to the sealed canonical row."""
+    if not isinstance(value, _CoverageBinding):
+        return False
     snapshot = value.snapshot
     if not _private_coverage_ok(value, workspace, task_id) or snapshot is None:
         return False
@@ -96,7 +109,8 @@ def _coverage_matches_row(value: _CoverageBinding, row: "LedgerRow", workspace: 
         workspace_info = workspace.stat()
     except OSError:
         return False
-    if (snapshot.workspace_id != (workspace_info.st_dev, workspace_info.st_ino)
+    if (snapshot.boot != value.observation.boot_id
+            or snapshot.workspace_id != (workspace_info.st_dev, workspace_info.st_ino)
             or (row.task_id, row.agent_name, Path(row.literal_root), Path(row.manifest_path), Path(row.lock_path))
             != (task_id, agent_name, canonical_root, canonical_manifest, canonical_lock)
             or not row.protected
@@ -174,7 +188,7 @@ def collect_revalidate_seal_consume_disposable(*, db: object, sessions: object, 
     if (_private_evidence_ok(e3, task_id, agent_name) is None or _private_evidence_ok(e4, task_id, agent_name) is None
             or not _coverage_matches_row(c3, row, workspace, task_id, agent_name)
             or not _same_evidence(e2, e3) or not _same_coverage(c2, c3) or not _same_evidence(e3, e4)
-            or e4.evidence.boot_id != c3.observation.boot_id):
+            or not isinstance(c3, _CoverageBinding) or e4.evidence.boot_id != c3.observation.boot_id):
         return None
     return execute_ledger((row,))[0]
 

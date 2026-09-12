@@ -49,8 +49,10 @@ contract; no production runner authentication, transport, or execution is implie
 bounded E1/C1/E2/C2/seal/E3/C3/E4 collector admission, compares stable typed
 lifecycle/session/PID-start and coverage identity fields (not timestamps), and
 binds C3's canonical workspace/root/manifest/census projection to its
-stack-local sealed row. It returns `None` before action on any changed or
-unavailable observation, and neither activates cleanup nor excludes future
+successfully sealed stack-local row. It returns `None` before action on changed,
+malformed/private-identity/boot-mismatched, unavailable, deadline-exhausted, or
+finite-cap-exhausted observations; an executor partial failure claims zero and
+leaves the remainder for a fresh refusal. It neither activates cleanup nor excludes future
 writers or hostile same-UID swaps. Its assertion
 shapes do not establish lifecycle/liveness provenance; Git evidence and ambiguous
 identity/device evidence refuse reclamation. POSIX pathname removal does not

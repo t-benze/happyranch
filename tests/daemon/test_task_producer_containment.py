@@ -1069,11 +1069,25 @@ def test_task_producer_real_scratch_report(tmp_path, monkeypatch, mode):
                 raise RuntimeError("audit unavailable")
         return original_insert(task_id, agent, action, payload, **kwargs)
     monkeypatch.setattr(db, "insert_audit_log", audit)
-    deletions = []
-    def forbid(*args, **kwargs):
-        deletions.append(True)
-        raise AssertionError("deletion")
-    monkeypatch.setattr(task_scratch_reclamation, "execute_ledger", forbid)
+    dormant_consumer_calls = []
+    executor_calls = []
+
+    def forbid_dormant_consumer(*args, **kwargs):
+        dormant_consumer_calls.append((args, kwargs))
+        raise AssertionError("dormant synchronous consumer called")
+
+    def forbid_executor(*args, **kwargs):
+        executor_calls.append((args, kwargs))
+        raise AssertionError("ledger executor called")
+
+    # These are the dormant consumer's actual module-global lookup sites.
+    # The real producer lifecycle must keep both unreachable in every mode.
+    monkeypatch.setattr(
+        task_scratch_reclamation,
+        "collect_revalidate_seal_consume_disposable",
+        forbid_dormant_consumer,
+    )
+    monkeypatch.setattr(task_scratch_reclamation, "execute_ledger", forbid_executor)
 
     def callback():
         nonlocal snapshot
@@ -1143,7 +1157,8 @@ def test_task_producer_real_scratch_report(tmp_path, monkeypatch, mode):
         else:
             assert tracker.get_active(task_id, _AGENT) is None
         assert db.get_task(task_id).status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
-        assert not deletions
+        assert not dormant_consumer_calls
+        assert not executor_calls
         if mode == "terminal":
             # A second real invocation creates another append-only observation;
             # fixture settlement supplies terminal state, never production edits.
@@ -1157,6 +1172,7 @@ def test_task_producer_real_scratch_report(tmp_path, monkeypatch, mode):
             assert observation_checks == [(True,) * 5] * 2
             assert supervisor._admission.released_total() == 2
             assert supervisor.active_count() == 0
-            assert not deletions
+            assert not dormant_consumer_calls
+            assert not executor_calls
     finally:
         db.close()
