@@ -299,6 +299,13 @@ rather than accepting a filename whitelist. The delivery prompt contains the
 four-space-indented JOIN section alongside the unrelated parent brief and
 role-guidance text.
 
+The two callback orders exercise the same complete JOIN equality assertion for
+accepted audit/prompt bytes and appended/corrupted-remainder rejection. Result,
+task, and JOIN-audit expectations observe the original SQLite writer's bound
+SQL values and real cursor `lastrowid` before commit; final SQLite rows remain
+an independent comparison, never a generator oracle. JOB-1620 is provenance
+only for `117ac311`, not verification of later corrected bytes.
+
 ### 2026-09-12 evidence-handoff correction
 
 The earlier TASK-7823 handoff statement that JOB1591 tested its corrected
