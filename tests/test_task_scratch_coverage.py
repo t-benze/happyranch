@@ -80,6 +80,19 @@ def test_malformed_boot_and_expired_admission_fail_closed(tmp_path: Path) -> Non
     assert "observation_timeout" in expired.reasons and not expired.coverage_ready
 
 
+def test_private_binding_reuses_the_public_two_pass_admission(tmp_path: Path, monkeypatch: object) -> None:
+    """Private consumption cannot renew an exhausted deadline or scan budget."""
+    proc = tmp_path / "proc"; _boot(proc)
+    workspace = tmp_path / "workspace"; workspace.mkdir()
+    budgets: list[object] = []; original = coverage._snapshot
+    def record(*args: object) -> object:
+        budgets.append(args[2]); return original(*args)
+    monkeypatch.setattr(coverage, "_snapshot", record)
+    binding = coverage._collect_private_coverage(workspace=workspace, proc_root=proc, deadline_ns=0)
+    assert binding.snapshot is None and "observation_timeout" in binding.observation.reasons
+    assert len(budgets) == 2 and budgets[0] is budgets[1]
+
+
 def test_expired_observer_admits_no_scandir_start(tmp_path: Path) -> None:
     proc = tmp_path / "proc"; _boot(proc)
     workspace = tmp_path / "workspace"; (workspace / ".happyranch/task-tmp/TASK-1").mkdir(parents=True)

@@ -5,15 +5,208 @@ import hashlib
 import json
 import os
 import stat
+import sys
+import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Mapping
 
 from runtime.orchestrator.task_scratch import TaskScratchError, validate_task_scratch_manifest
+from runtime.daemon.task_scratch_coverage import _CoverageBinding, _collect_private_coverage, _dominant
+from runtime.daemon.task_scratch_evidence import _EvidenceObservation, _collect_private_evidence
 
 MTIME_FLOOR_NS = 60_000_000_000
 MAX_CENSUS_ENTRIES = 100_000
+
+
+def _terminal_ns(value: object) -> int | None:
+    if isinstance(value, datetime):
+        return int(value.timestamp() * 1_000_000_000)
+    if isinstance(value, str):
+        try:
+            return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1_000_000_000)
+        except ValueError:
+            return None
+    return None
+
+
+def _private_evidence_ok(value: _EvidenceObservation, task_id: str,
+                         agent_name: str) -> tuple[object, int] | None:
+    if not isinstance(value, _EvidenceObservation):
+        return None
+    try:
+        evidence, snapshot = value.evidence, value.snapshot
+        if (not getattr(evidence, "eligible", False) or snapshot is None
+                or not getattr(evidence, "boot_id", None) or value.sessions is None
+                or value.process_identities is None):
+            return None
+        tasks = {row[1]: row[3] for row in snapshot if len(row) > 3 and row[0] == "task"}
+        target = tasks.get(task_id)
+        if (target is None or getattr(target, "assigned_agent", None) != agent_name
+                or getattr(getattr(target, "status", None), "value", None)
+                not in {"completed", "failed", "cancelled"}):
+            return None
+        terminal = _terminal_ns(getattr(target, "completed_at", None))
+        results = {row[1]: row[3] for row in snapshot if len(row) > 3 and row[0] == "result"}
+        if terminal is None or any(task_member not in results or results[task_member] is None
+                                   or results[task_member].get("status") in {"in_progress", "working"}
+                                   for task_member in tasks):
+            return None
+    except (AttributeError, TypeError):
+        return None
+    return target, terminal
+
+
+def _private_coverage_ok(value: _CoverageBinding, workspace: Path, task_id: str) -> bool:
+    if not isinstance(value, _CoverageBinding):
+        return False
+    try:
+        observation, snapshot = value.observation, value.snapshot
+        if (not getattr(observation, "complete", False)
+                or not getattr(observation, "coverage_ready", False) or snapshot is None):
+            return False
+        return (observation.buckets == snapshot.buckets
+                and observation.dominant == tuple(sorted(_dominant(list(snapshot.buckets))))
+                and Path(observation.workspace).resolve(strict=True) == workspace.resolve(strict=True)
+                and any(row.relative_path == f".happyranch/task-tmp/{task_id}"
+                        and row.classification == "canonical_regenerable" for row in observation.buckets))
+    except (AttributeError, OSError, TypeError):
+        return False
+
+
+def _same_evidence(left: _EvidenceObservation, right: _EvidenceObservation) -> bool:
+    """Compare stable authoritative values, never collection timestamps."""
+    if (not isinstance(left, _EvidenceObservation) or not isinstance(right, _EvidenceObservation)
+            or left.sessions is None or right.sessions is None
+            or left.process_identities is None or right.process_identities is None):
+        return False
+    return (left.snapshot, left.sessions, left.process_identities,
+            left.evidence.boot_id, left.evidence.process_roots,
+            left.evidence.process_cwds, left.evidence.open_fds) == (
+                right.snapshot, right.sessions, right.process_identities,
+                right.evidence.boot_id, right.evidence.process_roots,
+                right.evidence.process_cwds, right.evidence.open_fds)
+
+
+def _same_coverage(left: _CoverageBinding, right: _CoverageBinding) -> bool:
+    if (not isinstance(left, _CoverageBinding) or not isinstance(right, _CoverageBinding)
+            or left.snapshot is None or right.snapshot is None):
+        return False
+    try:
+        # ``observed_at_ns`` is collection timing, not a stable binding.  Every
+        # other public projection (including bucket accounting and dominance)
+        # must agree with the private snapshot before a consumer can proceed.
+        left_observation = left.observation
+        right_observation = right.observation
+        return (left.snapshot == right.snapshot
+                and left_observation.__class__ is right_observation.__class__
+                and left_observation.__class__(
+                    **{**left_observation.__dict__, "observed_at_ns": 0})
+                == right_observation.__class__(
+                    **{**right_observation.__dict__, "observed_at_ns": 0}))
+    except (AttributeError, TypeError):
+        return False
+
+
+def _coverage_matches_row(value: _CoverageBinding, row: "LedgerRow", workspace: Path,
+                          task_id: str, agent_name: str) -> bool:
+    """Bind final C3's existing fields to the sealed canonical row."""
+    if not isinstance(value, _CoverageBinding):
+        return False
+    snapshot = value.snapshot
+    if not _private_coverage_ok(value, workspace, task_id) or snapshot is None:
+        return False
+    try:
+        canonical_root = workspace.resolve(strict=True) / ".happyranch" / "task-tmp" / task_id
+        canonical_manifest = workspace / ".happyranch" / "task-scratch-manifests" / f"{task_id}.json"
+        canonical_lock = canonical_manifest.with_suffix(".lock")
+        workspace_info = workspace.stat()
+        if (snapshot.boot != value.observation.boot_id
+                or snapshot.workspace_id != (workspace_info.st_dev, workspace_info.st_ino)
+                or (row.task_id, row.agent_name, Path(row.literal_root), Path(row.manifest_path), Path(row.lock_path))
+                != (task_id, agent_name, canonical_root, canonical_manifest, canonical_lock)
+                or not row.protected
+                or (row.protected[0].device, row.protected[0].inode) != snapshot.workspace_id):
+            return False
+        root_rel = f".happyranch/task-tmp/{task_id}"
+        manifests = {rel: (raw, classification) for rel, raw, classification in snapshot.manifests}
+        raw, classification = manifests.get(root_rel, (None, ""))
+        if classification != "canonical_regenerable" or raw is None or hashlib.sha256(raw).hexdigest() != row.manifest_digest:
+            return False
+        projected = []
+        for item in snapshot.items:
+            if item.rel == root_rel:
+                relative = ""
+            elif item.rel.startswith(root_rel + "/"):
+                relative = item.rel[len(root_rel) + 1:]
+            else:
+                continue
+            projected.append((relative, item.dev, item.ino, item.mode, item.blocks * 512, item.size))
+        expected = [(entry.relative_path, entry.device, entry.inode, entry.mode,
+                     entry.allocated_bytes, entry.apparent_bytes) for entry in row.entries]
+        return (sorted(projected) == sorted(expected)
+                and row.before == Accounting(sum(item[4] for item in projected), sum(item[5] for item in projected), len(projected))
+                and row.root_device == next((item[1] for item in projected if item[0] == ""), None)
+                and row.root_inode == next((item[2] for item in projected if item[0] == ""), None)
+                and row.coverage_digest_assertion == hashlib.sha256(repr(snapshot).encode()).hexdigest())
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+def collect_revalidate_seal_consume_disposable(*, db: object, sessions: object, workspace: Path,
+                                                task_id: str, agent_name: str, proc_root: Path = Path("/proc"),
+                                                monotonic_now: float | None = None,
+                                                daemon_started_monotonic: float | None = None,
+                                                now_ns: int | None = None) -> ReclamationResult | None:
+    """Dormant synchronous test-only consumer; no production caller imports it.
+
+    Each refusal returns ``None`` before sealing/execution.  This is a bounded
+    observer, not an atomic snapshot or writer fence.
+    """
+    kwargs = {"db": db, "sessions": sessions, "task_id": task_id,
+              "root": workspace / ".happyranch" / "task-tmp" / task_id,
+              "proc_root": proc_root, "monotonic_now": monotonic_now,
+              "daemon_started_monotonic": daemon_started_monotonic}
+    try:
+        e1 = _collect_private_evidence(**kwargs)
+        c1 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
+        e2 = _collect_private_evidence(**kwargs)
+        c2 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
+    except Exception:
+        return None
+    first = _private_evidence_ok(e1, task_id, agent_name)
+    second = _private_evidence_ok(e2, task_id, agent_name)
+    if first is None or second is None or not _private_coverage_ok(c1, workspace, task_id) or not _private_coverage_ok(c2, workspace, task_id):
+        return None
+    if not _same_evidence(e1, e2) or not _same_coverage(c1, c2) or e2.evidence.boot_id != c2.observation.boot_id:
+        return None
+    _target, terminal = second
+    boot = e2.evidence.boot_id
+    if boot is None or any(value is None for value in (e2.evidence.process_roots, e2.evidence.process_cwds, e2.evidence.open_fds)):
+        return None
+    digest = hashlib.sha256(repr(c2.snapshot).encode()).hexdigest()
+    assertions = ReclamationAssertions(agent_name,
+        LifecycleAssertions(getattr(getattr(_target, "status", None), "value", None), "private-terminal:v1", terminal, 0, ZombieRecoveryState.CLEAR, 0, 0, 0, True, False, False, False),
+        LivenessAssertions("private-evidence:v1", EvidencePlatform.LINUX if sys.platform == "linux" else EvidencePlatform.DARWIN,
+            boot, boot, True, False, False, False, False, 0, e2.evidence.process_roots, e2.evidence.process_cwds, e2.evidence.open_fds),
+        CoverageAssertions("private-coverage:v1", digest, boot, boot, True, False, False, False, 0, 0, 0))
+    try:
+        row = seal_ledger_row(workspace=workspace, task_id=task_id, assertions=assertions,
+                              now_ns=time.time_ns() if now_ns is None else now_ns)
+    except ReclamationError:
+        return None
+    try:
+        e3 = _collect_private_evidence(**kwargs)
+        c3 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
+        e4 = _collect_private_evidence(**kwargs)
+    except Exception:
+        return None
+    if (_private_evidence_ok(e3, task_id, agent_name) is None or _private_evidence_ok(e4, task_id, agent_name) is None
+            or not _coverage_matches_row(c3, row, workspace, task_id, agent_name)
+            or not _same_evidence(e2, e3) or not _same_coverage(c2, c3) or not _same_evidence(e3, e4)
+            or not isinstance(c3, _CoverageBinding) or e4.evidence.boot_id != c3.observation.boot_id):
+        return None
+    return execute_ledger((row,))[0]
 
 
 class ReclamationError(RuntimeError):
