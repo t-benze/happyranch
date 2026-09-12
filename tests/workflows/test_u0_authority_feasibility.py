@@ -46,6 +46,48 @@ def _u0_typed_json(value: object) -> _U0TypedJson:
     raise TypeError(f"unexpected JSON value: {value!r}")
 
 
+def _expected_plain_fanout_join_context(parent_id: str, children: list[str]) -> str:
+    """Independent fixture oracle for the shipping JOIN text contract.
+
+    Keep this deliberately separate from ``build_fanout_join_context``: the
+    audit/prompt observations below prove that the shipping producer emitted
+    these known fixture bytes, rather than letting that producer validate
+    itself.
+    """
+    lines = [
+        "=== FAN-OUT JOIN CONTEXT (system) ===",
+        f"All 2 fan-out children of {parent_id} are terminal.",
+        "",
+    ]
+    for index, child in enumerate(children, start=1):
+        lines.extend((
+            f"  [{index}/2] {child} (dev_agent)",
+            "       Status: completed",
+            "       Verdict: PASS",
+            "       Confidence: 100",
+            f"       Summary: report:{child}",
+            "",
+        ))
+    lines.extend((
+        "Manager's join directive: join exact reports",
+        "",
+        "Inspect any child via `happyranch details <id>` or "
+        "`happyranch audit <id>`. Decide the next step (delegate, "
+        "done, escalate, or fanout again) based on these outcomes.",
+        "",
+        "IMPORTANT: When re-delegating (retrying) any FAILED child above, "
+        "you MUST set `revisit_of_task_id` on your delegate decision to "
+        "the FAILED child's task id. Example: "
+        '{"action": "delegate", "agent": "...", "prompt": "...", '
+        '"revisit_of_task_id": "<FAILED child id>"}. '
+        "Omitting this field when re-delegating to a failed-slice agent "
+        "is a HARD REJECT — the orchestrator will deny the delegate and "
+        "ask you to retry with the field set.",
+        "=========================================",
+    ))
+    return "\n".join(lines)
+
+
 def _paths(org_state):
     from runtime.orchestrator._paths import OrgPaths
 
@@ -2480,6 +2522,8 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     # readback as its own expected-state oracle.
     transition_observations = {}
     scratch_writer_observations = {}
+    result_writer_observations, task_writer_observations = [], []
+    join_audit_writer_observations = []
     publication_reached, release_publication = threading.Event(), threading.Event()
     both_launched, permit_callbacks = threading.Event(), threading.Event()
     first_terminal, release_final, done = threading.Event(), threading.Event(), threading.Event()
@@ -2548,6 +2592,27 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         )
         observed["manifest"] = manifest
     monkeypatch.setattr(task_scratch_module, "_write_observation", observed_write_observation)
+    # Observe generated values at the original persistence writers.  In
+    # particular, ``insert_task_result`` and ``update_task`` manufacture their
+    # timestamps internally, so a later Dispatcher snapshot cannot establish
+    # which write generated a value.
+    original_insert_task_result = db.insert_task_result
+    def observed_insert_task_result(*args, **kwargs):
+        original_insert_task_result(*args, **kwargs)
+        task_id = kwargs.get("task_id", args[0] if args else None)
+        session_id = kwargs.get("session_id")
+        row = db.execute(
+            "SELECT * FROM task_results WHERE task_id = ? AND session_id = ? ORDER BY id DESC LIMIT 1",
+            (task_id, session_id),
+        ).fetchone()
+        result_writer_observations.append({"arguments": dict(kwargs), "row": dict(row)})
+    monkeypatch.setattr(db, "insert_task_result", observed_insert_task_result)
+    original_update_task = db.update_task
+    def observed_update_task(task_id, **fields):
+        original_update_task(task_id, **fields)
+        task_writer_observations.append({"task_id": task_id, "fields": dict(fields),
+                                         "row": dict(db.get_task(task_id))})
+    monkeypatch.setattr(db, "update_task", observed_update_task)
     supervisor = HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0), publisher=receipts.append)
     orch.attach_host_supervisor(supervisor)
     state = DaemonState.idle(orch._settings)
@@ -2562,6 +2627,16 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     monkeypatch.setattr(state.queue, "put_nowait", held_publication)
     dispatcher = Dispatcher(state)
     import runtime.orchestrator.run_step as run_step_module
+    original_log_fanout_join = orch._audit.log_fanout_join
+    def observed_log_fanout_join(*args, **kwargs):
+        original_log_fanout_join(*args, **kwargs)
+        task_id = kwargs.get("task_id", args[0] if args else None)
+        row = db.execute(
+            "SELECT * FROM audit_log WHERE task_id = ? AND action = 'fanout_join' ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        join_audit_writer_observations.append({"arguments": dict(kwargs), "row": dict(row)})
+    monkeypatch.setattr(orch._audit, "log_fanout_join", observed_log_fanout_join)
     original_prompt_builder = run_step_module._build_agent_prompt
     def observed_prompt_builder(prompt_orch, task, agent):
         prompt = original_prompt_builder(prompt_orch, task, agent)
@@ -2763,6 +2838,21 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     assert set(joins[0]) == {"id", "task_id", "agent", "action", "payload", "timestamp"}
     assert joins[0]["timestamp"] and joins[0]["id"] > max(row["id"] for row in initial_history["audits"])
     join_context = joins[0]["payload"]["context_markdown"]
+    expected_join_context = _expected_plain_fanout_join_context(parent_id, children)
+    assert join_context == expected_join_context
+    # A complete equality check is deliberately hostile to a plausible
+    # producer regression that appends an unowned tail or corrupts a delimiter.
+    assert join_context + "\nUNOWNED JOIN TAIL" != expected_join_context
+    assert join_context.replace("=========================================", "========================================", 1) != expected_join_context
+    assert len(join_audit_writer_observations) == 1
+    join_write = join_audit_writer_observations[0]
+    assert join_write["arguments"] == {
+        "task_id": parent_id, "width": 2, "children_ids": children,
+        "context_markdown": expected_join_context,
+    }
+    assert _u0_normalize_persisted_rows({"tasks": [], "results": [], "audits": [join_write["row"]]})["audits"] == [
+        _u0_normalize_persisted_rows({"tasks": [], "results": [], "audits": [joins[0]]})["audits"][0]
+    ]
     assert len(parent_revisit_prompts) == 1
     parent_revisit = next(entry for entry in launches if entry["task_id"] == parent_id and entry["session_id"] != launches[0]["session_id"])
     assert parent_revisit["prompt"] == parent_revisit_prompts[0]
@@ -2780,14 +2870,8 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         f"    {line}" for line in shipping_join_prompts[0].splitlines()
     )
     assert f"  role_guidance: |\n{expected_role_guidance}\n" in parent_revisit["prompt"]
-    expected_join_entries = [
-        f"[{index}/2] {child} (dev_agent)\n       Status: completed\n       Verdict: PASS\n       Confidence: 100\n       Summary: report:{child}"
-        for index, child in enumerate(children, start=1)
-    ]
-    assert all(entry in join_context for entry in expected_join_entries)
-    assert join_context.index(expected_join_entries[0]) < join_context.index(expected_join_entries[1])
     assert joins[0]["payload"] == {
-        "width": 2, "children_ids": children, "context_markdown": join_context,
+        "width": 2, "children_ids": children, "context_markdown": expected_join_context,
     }
     # The terminal drain changes only the source-owned child completion and
     # join/revisit surfaces.  Immutable non-DB bytes and attachments retain
@@ -2890,7 +2974,9 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
                 "duration_seconds", "token_count", "estimated_cost", "output_dir",
                 "waiting_on_job_ids", "verdict", "local_ci", "created_at",
             }
-            assert row["created_at"] and row["status"] == report["status"]
+            writer_row = next(item["row"] for item in result_writer_observations
+                              if item["row"]["id"] == row["id"])
+            assert row["created_at"] == writer_row["created_at"] and row["status"] == report["status"]
             assert row["agent"] == report["agent"] and row["confidence_score"] == report["confidence"]
             assert row["output_summary"] == report["summary"] and row["verdict"] == report["verdict"]
             assert row["decision_json"] == _u0_typed_json(report["decision"])
@@ -2900,6 +2986,8 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
             assert row["estimated_cost"] is None and row["waiting_on_job_ids"] is None and row["local_ci"] is None
             assert row == _u0_normalize_persisted_rows(
                 {"tasks": [], "results": [report["persisted_row"]], "audits": []}
+            )["results"][0] == _u0_normalize_persisted_rows(
+                {"tasks": [], "results": [writer_row], "audits": []}
             )["results"][0]
     # The first terminal child is immutable; the only terminal task-row
     # transitions still available to shipping completion/join/revisit are the
@@ -2928,10 +3016,20 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         assert {key: final_tasks[task_id][key] for key in unchanged} == {
             key: first_tasks[task_id][key] for key in unchanged
         }
-        observed = transition_observations[task_id]["task"]
-        assert final_tasks[task_id]["completed_at"] == observed["completed_at"].isoformat()
-        assert final_tasks[task_id]["updated_at"] == observed["updated_at"].isoformat()
-        assert final_tasks[task_id]["last_heartbeat"] == observed["last_heartbeat"].isoformat()
+        completed_index, completed_write = next(
+            (index, item) for index, item in enumerate(task_writer_observations)
+            if item["task_id"] == task_id and "completed_at" in item["fields"]
+        )
+        generated = completed_write["row"]
+        assert final_tasks[task_id]["completed_at"] == generated["completed_at"].isoformat()
+        assert final_tasks[task_id]["updated_at"] == generated["updated_at"].isoformat()
+        # ``last_heartbeat`` belongs to the original launch/heartbeat write;
+        # it is preserved by terminal completion rather than invented here.
+        heartbeat_write = next(
+            item for item in reversed(task_writer_observations[:completed_index])
+            if item["task_id"] == task_id and "last_heartbeat" in item["fields"]
+        )
+        assert final_tasks[task_id]["last_heartbeat"] == heartbeat_write["fields"]["last_heartbeat"]
     # The completed first child is immutable across the remaining callback,
     # join, and revisit; the final comparison retains whole row content.
     assert [row for row in final_history["tasks"] if row["id"] == first] == [

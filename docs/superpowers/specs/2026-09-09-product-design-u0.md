@@ -284,11 +284,15 @@ ordered cancellation-audit append before forwarding the original opaque
 control. These remain bounded test evidence, not a production behavior change.
 
 The JOIN cases retain complete preexisting result/audit rows by ID and assert
-every appended result field against its original consumed callback. For the
-held last child and parent revisit, source-derived expected terminal row values
-bind session and diagnostic PID to the recorded launch, notes to the submitted
-decision, and transition timestamps to their observed writes; every other
-persisted field remains unchanged. Workspace evidence is content-level:
+every appended result field against its original consumed callback. The audited
+JOIN text is independently derived from the known two-child fixture (including
+ordering, directive, instructions, and delimiters), with negative appended and
+corrupted-remainder controls; the shipping audit and indented prompt remain
+observations. For the held last child and parent revisit, source-derived
+expected terminal row values bind session and diagnostic PID to the recorded
+launch, notes to the submitted decision, and result/task/audit generated times
+to the original persistence writer observations; every other persisted field
+remains unchanged. Workspace evidence is content-level:
 `task_history.md` is reconstructed with the shipping serializer and each
 scratch manifest is decoded against its canonical root/producer contract,
 rather than accepting a filename whitelist. The delivery prompt contains the
