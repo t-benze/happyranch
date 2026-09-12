@@ -12,6 +12,7 @@ import yaml
 from runtime.daemon import paths as paths_mod
 from runtime.daemon import runtimes as runtimes_mod
 from runtime.runtime import RuntimeDir
+from tests.thr211_containment import plan_environment, prepare_private_test_paths
 
 
 def pytest_configure(config):
@@ -188,7 +189,10 @@ def fake_claude_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
     Setting the env var in the daemon's parent process is a no-op once the
     daemon is running, so this must happen during fixture setup.
     """
-    plan_path = tmp_path / "plan.sh"
+    paths = prepare_private_test_paths(tmp_path / "thr211-claude")
+    for name, value in plan_environment(paths).items():
+        monkeypatch.setenv(name, value)
+    plan_path = paths.plans / "plan.sh"
     monkeypatch.setenv("FAKE_CLAUDE_PLAN", str(plan_path))
     return plan_path
 

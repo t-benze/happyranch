@@ -124,3 +124,38 @@ python3 "$HOME/.local/share/happyranch-tools/jenkins_jobs.py" --controller https
 Verify the actual job script, installed helper SHA256, interpreter, exit and full output; compare the receipt's controller/job/request/queue/build/deadline/result/manifest with the saved submission. A HappyRanch job failure/rejection is a local execution fact, not Jenkins FAILURE or ABORTED. A successful waiter does not imply artifacts were collected: use the explicit bounded collection operation above, then inspect its manifest. Do not keep the model actively polling while the durable job runs.
 
 The document-only B2 skill `custom:269f9a0b-b6ab-4eb3-a19b-a3cbcbc418c8` remains separate from helper acceptance. A valid successor must match this immutable helper pin. Founder-configured eligibility is still required before materialization; this workflow does not grant eligibility or change credentials. Mac smoke TASK7679 and KB publication TASK7683 are separate evidence, not helper acceptance.
+
+## THR-211 containment Pipeline candidate
+
+`Jenkinsfile` is a manually invoked candidate for the separately authorized
+THR-211 diagnostic. Its checked-in form deliberately fails closed for
+`DIAGNOSTIC`: the manager, not a worker or this Pipeline definition, must first
+bind the immutable source/config identity, all-executor and same-UID admission
+receipt, and the single diagnostic intent. `SETUP` and `ABORT` are distinct,
+non-pytest receipt modes and keep `pytest_exit=null`.
+
+Before any installation, an authorized Jenkins owner must create an immutable
+SCM-backed Pipeline definition pinned to the reviewed source SHA and
+Jenkinsfile digest *before* evaluation. A post-checkout comparison is not an
+identity control. The owner must also provide the bounded admission window,
+node/account identity, cancellation contact, and evidence covering all three
+executors, non-Jenkins same-UID launches, and shared `/tmp` containment. An
+idle-node snapshot, account name, or `disableConcurrentBuilds` is insufficient.
+
+The only diagnostic workload, after those manager-owned gates, is exactly:
+
+~~~sh
+uv run --frozen pytest tests/integration/ -v -m integration --junitxml=artifacts/integration.xml
+~~~
+
+The candidate does not run it and no worker may POST a probe or diagnostic.
+Preparation must use private, no-follow HOME/XDG/cache/state/runtime/tmp,
+uv-cache, venv, daemon-home, plan and artifact paths before `uv`, Python,
+plugins, or checkout imports; allowlist the child environment and record
+effective Python 3.12/uv/interpreter/architecture, lock, source, Pipeline and
+module/plugin origins. Preserve the real pytest exit independently from
+cleanup/archive failures and emit bounded cleanup/observer/archive receipts.
+Use finite 15m allocation, 15m setup, 30m workload, 5m cleanup and 70m
+observation bounds. Process lifetime containment remains a separate F04
+feasibility obligation: path ownership, env cookies, timeouts, and numeric
+PID/PGID checks do not establish daemon or descendant ownership.
