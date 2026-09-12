@@ -2525,6 +2525,10 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     result_writer_observations, task_writer_observations = [], []
     join_audit_writer_observations = []
     persistence_events = []
+    writer_events: dict[str, list[dict[str, object]]] = {}
+    writer_context = threading.local()
+    writer_sequence = 0
+    interleaving_control: dict[str, object] = {}
 
     class ObservedConnection:
         """Transparent SQL-bound-value/lastrowid observer for the real writers.
@@ -2538,10 +2542,15 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
 
         def execute(self, sql, parameters=()):
             cursor = self._connection.execute(sql, parameters)
-            persistence_events.append({
+            event = {
                 "sql": sql, "parameters": tuple(parameters),
                 "lastrowid": cursor.lastrowid,
-            })
+                "thread_id": threading.get_ident(),
+                "invocation": getattr(writer_context, "invocation", None),
+            }
+            persistence_events.append(event)
+            if event["invocation"] is not None:
+                writer_events[event["invocation"]].append(event)
             return cursor
 
         def __getattr__(self, name):
@@ -2616,18 +2625,45 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         )
         observed["manifest"] = manifest
     monkeypatch.setattr(task_scratch_module, "_write_observation", observed_write_observation)
-    # Observe the original persistence SQL and cursor IDs.  No post-write row
-    # SELECT is used as a generated-value oracle.
+    # Observe the original persistence SQL and cursor IDs.  Each wrapper owns
+    # an invocation token in its calling thread, so it cannot attribute a
+    # different writer's later event merely because the original writer has
+    # returned and released its lock.  No post-write row SELECT is used as a
+    # generated-value oracle.
+    def observe_writer(kind, owner, original):
+        nonlocal writer_sequence
+        writer_sequence += 1
+        invocation = f"{kind}:{owner}:{writer_sequence}"
+        assert getattr(writer_context, "invocation", None) is None
+        writer_context.invocation = invocation
+        writer_events[invocation] = []
+        try:
+            original()
+        finally:
+            writer_context.invocation = None
+        events = writer_events[invocation]
+        assert len(events) == 1, f"{kind} invocation must own exactly one SQL write: {events!r}"
+        return invocation, events[0]
+
     original_insert_task_result = db.insert_task_result
     def observed_insert_task_result(*args, **kwargs):
-        original_insert_task_result(*args, **kwargs)
-        result_writer_observations.append({"arguments": dict(kwargs), "write": persistence_events[-1]})
+        task_id = kwargs.get("task_id", args[0] if args else None)
+        invocation, write = observe_writer(
+            "insert_task_result", task_id,
+            lambda: original_insert_task_result(*args, **kwargs),
+        )
+        result_writer_observations.append({
+            "arguments": dict(kwargs), "invocation": invocation, "write": write,
+        })
     monkeypatch.setattr(db, "insert_task_result", observed_insert_task_result)
     original_update_task = db.update_task
     def observed_update_task(task_id, **fields):
-        original_update_task(task_id, **fields)
-        task_writer_observations.append({"task_id": task_id, "fields": dict(fields),
-                                         "write": persistence_events[-1]})
+        invocation, write = observe_writer(
+            "update_task", task_id, lambda: original_update_task(task_id, **fields),
+        )
+        task_writer_observations.append({
+            "task_id": task_id, "fields": dict(fields), "invocation": invocation, "write": write,
+        })
     monkeypatch.setattr(db, "update_task", observed_update_task)
     supervisor = HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0), publisher=receipts.append)
     orch.attach_host_supervisor(supervisor)
@@ -2643,10 +2679,37 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     monkeypatch.setattr(state.queue, "put_nowait", held_publication)
     dispatcher = Dispatcher(state)
     import runtime.orchestrator.run_step as run_step_module
+    import runtime.orchestrator.capabilities as capabilities_module
+    fixture_role_guidance = "FIXTURE ROLE GUIDANCE\n- known capability input\n- retained non-JOIN instruction"
+    role_guidance_calls = []
+    def fixture_capabilities_prompt(**kwargs):
+        role_guidance_calls.append(kwargs)
+        return fixture_role_guidance
+    monkeypatch.setattr(capabilities_module, "build_capabilities_prompt", fixture_capabilities_prompt)
     original_log_fanout_join = orch._audit.log_fanout_join
     def observed_log_fanout_join(*args, **kwargs):
-        original_log_fanout_join(*args, **kwargs)
-        join_audit_writer_observations.append({"arguments": dict(kwargs), "write": persistence_events[-1]})
+        invocation, write = observe_writer(
+            "insert_audit_log", kwargs["task_id"],
+            lambda: original_log_fanout_join(*args, **kwargs),
+        )
+        # This runs after the shipping audit writer has returned.  The second
+        # writer is deliberately concurrent and becomes the global last event;
+        # the invocation-owned event above must remain the audit observation.
+        interleaving_done = threading.Event()
+        def interleave() -> None:
+            interleaving_control["thread_id"] = threading.get_ident()
+            db.update_task("TASK-U0-INTERLEAVER", note="unrelated writer")
+            interleaving_done.set()
+        interleaver = threading.Thread(target=interleave, name="u0-sql-observer-interleave", daemon=False)
+        interleaver.start()
+        assert interleaving_done.wait(3), "unrelated writer did not finish"
+        interleaver.join(3)
+        assert not interleaver.is_alive()
+        interleaving_control["audit_invocation"] = invocation
+        interleaving_control["global_last_invocation"] = persistence_events[-1]["invocation"]
+        join_audit_writer_observations.append({
+            "arguments": dict(kwargs), "invocation": invocation, "write": write,
+        })
     monkeypatch.setattr(orch._audit, "log_fanout_join", observed_log_fanout_join)
     original_prompt_builder = run_step_module._build_agent_prompt
     def observed_prompt_builder(prompt_orch, task, agent):
@@ -2690,6 +2753,7 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
             raise
     monkeypatch.setattr(dispatcher, "run_step", observed_dispatch)
     db.insert_task(TaskRecord(id=parent_id, team="engineering", brief="fanout", assigned_agent="engineering_head", task_type="task"))
+    db.insert_task(TaskRecord(id="TASK-U0-INTERLEAVER", team="engineering", brief="observer control", assigned_agent="engineering_head", task_type="task"))
     # Every boundary uses the same identity domain.  In particular, the
     # pre-spawn observation deliberately includes the future child agent so a
     # later workspace/agent-file observation is a transition, not a new key.
@@ -2869,6 +2933,10 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         parent_id, "orchestrator", "fanout_join", json.dumps(joins[0]["payload"]),
     )
     assert join_write["write"]["parameters"][4] == joins[0]["timestamp"]
+    assert join_write["write"]["sql"].startswith("INSERT INTO audit_log")
+    assert join_write["write"]["invocation"] == join_write["invocation"]
+    assert interleaving_control["audit_invocation"] == join_write["invocation"]
+    assert interleaving_control["global_last_invocation"] != join_write["invocation"]
     assert len(parent_revisit_prompts) == 1
     parent_revisit = next(entry for entry in launches if entry["task_id"] == parent_id and entry["session_id"] != launches[0]["session_id"])
     assert parent_revisit["prompt"] == parent_revisit_prompts[0]
@@ -2880,12 +2948,50 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     indented_join_context = "\n".join(f"    {line}" for line in join_context.splitlines())
     assert indented_join_context in parent_revisit["prompt"]
     assert join_context not in parent_revisit["prompt"]
-    # Check the complete source-built role guidance, not just the new JOIN
-    # substring: the parent brief and pre-existing role instructions survive.
-    expected_role_guidance = "\n".join(
-        f"    {line}" for line in shipping_join_prompts[0].splitlines()
+    # The complete role guidance expectation is fixture-owned: known capability
+    # inputs plus the independently rendered JOIN, never a prior shipping
+    # builder result.  The same full comparison rejects a non-JOIN tail.
+    expected_shipping_role_guidance = expected_join_context + fixture_role_guidance
+    assert shipping_join_prompts == [expected_shipping_role_guidance]
+    expected_delivered_role_guidance = "\n".join(
+        f"    {line}" for line in expected_shipping_role_guidance.splitlines()
     )
-    assert f"  role_guidance: |\n{expected_role_guidance}\n" in parent_revisit["prompt"]
+    expected_delivered_block = f"  role_guidance: |\n{expected_delivered_role_guidance}\n"
+    assert expected_delivered_block in parent_revisit["prompt"]
+
+    def delivered_role_guidance(prompt: str) -> str:
+        """Extract the complete literal block without treating a substring as proof."""
+        lines = prompt.splitlines()
+        header = lines.index("  role_guidance: |")
+        block: list[str] = []
+        for line in lines[header + 1:]:
+            if not line.startswith("    "):
+                break
+            block.append(line[4:])
+        return "\n".join(block)
+
+    def assert_expected_role_guidance(value: str) -> None:
+        assert value == expected_shipping_role_guidance
+
+    assert_expected_role_guidance(delivered_role_guidance(parent_revisit["prompt"]))
+    with pytest.raises(AssertionError):
+        assert_expected_role_guidance(
+            delivered_role_guidance(parent_revisit["prompt"]) + "\nUNOWNED NON-JOIN TAIL"
+        )
+    assert len(role_guidance_calls) == 2
+    assert [call["agents"] for call in role_guidance_calls] == [[
+        {"name": "dev_agent", "description": "dev_agent"},
+        {"name": "engineering_head", "description": "yourself — delegate a sub-task to yourself to decompose your own work into a fresh bounded session"},
+    ]] * 2
+    assert [call["step_number"] for call in role_guidance_calls] == [1, 2]
+    assert all(call["manager_name"] == "engineering_head" and call["self_only"] is False
+               for call in role_guidance_calls)
+    assert role_guidance_calls[0]["prior_steps"] == []
+    assert [(step.step_number, step.agent, step.action, step.result_summary, step.success)
+            for step in role_guidance_calls[1]["prior_steps"]] == [
+        (1, "dev_agent", "delegate: plain zero", "report:TASK-001", True),
+        (2, "dev_agent", "delegate: plain one", "report:TASK-002", True),
+    ]
     assert joins[0]["payload"] == {
         "width": 2, "children_ids": children, "context_markdown": expected_join_context,
     }
@@ -2990,8 +3096,9 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
                 "duration_seconds", "token_count", "estimated_cost", "output_dir",
                 "waiting_on_job_ids", "verdict", "local_ci", "created_at",
             }
-            writer = next(item["write"] for item in result_writer_observations
-                          if item["write"]["lastrowid"] == row["id"])
+            writer_observation = next(item for item in result_writer_observations
+                                      if item["write"]["lastrowid"] == row["id"])
+            writer = writer_observation["write"]
             assert row["created_at"] == writer["parameters"][-1] and row["status"] == report["status"]
             assert row["agent"] == report["agent"] and row["confidence_score"] == report["confidence"]
             assert row["output_summary"] == report["summary"] and row["verdict"] == report["verdict"]
@@ -3003,6 +3110,9 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
             assert writer["parameters"][:5] == (
                 row["task_id"], row["agent"], row["session_id"], row["status"], row["output_summary"],
             )
+            assert writer["sql"].lstrip().startswith("INSERT INTO task_results")
+            assert writer["invocation"] == writer_observation["invocation"]
+            assert writer["thread_id"] != interleaving_control["thread_id"]
             assert row == _u0_normalize_persisted_rows(
                 {"tasks": [], "results": [report["persisted_row"]], "audits": []}
             )["results"][0]
@@ -3041,6 +3151,9 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         # update_task appends its internally generated updated_at immediately
         # before the task-id SQL bind; this is the original writer value.
         assert final_tasks[task_id]["updated_at"] == completed_write["write"]["parameters"][-2]
+        assert completed_write["write"]["sql"].startswith("UPDATE tasks SET")
+        assert completed_write["write"]["parameters"][-1] == task_id
+        assert completed_write["write"]["invocation"] == completed_write["invocation"]
         # ``last_heartbeat`` belongs to the original launch/heartbeat write;
         # it is preserved by terminal completion rather than invented here.
         heartbeat_write = next(

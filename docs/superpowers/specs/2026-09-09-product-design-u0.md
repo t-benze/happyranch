@@ -300,11 +300,19 @@ four-space-indented JOIN section alongside the unrelated parent brief and
 role-guidance text.
 
 The two callback orders exercise the same complete JOIN equality assertion for
-accepted audit/prompt bytes and appended/corrupted-remainder rejection. Result,
-task, and JOIN-audit expectations observe the original SQLite writer's bound
-SQL values and real cursor `lastrowid` before commit; final SQLite rows remain
-an independent comparison, never a generator oracle. JOB-1620 is provenance
-only for `117ac311`, not verification of later corrected bytes.
+accepted audit/prompt bytes and appended/corrupted-remainder rejection. The
+role-guidance expectation is independently composed from known manager roster,
+prior-step, and fixed capability-fixture inputs plus the independently rendered
+JOIN; it is compared to the shipping role-guidance builder and to the exact
+four-space-indented delivered literal block. An appended non-JOIN tail is
+rejected through that same delivered-block comparison. Result, task, and
+JOIN-audit expectations observe the original SQLite writer's bound SQL values
+and real cursor `lastrowid` before commit, tagged to the owning writer
+invocation/thread and expected SQL operation, table, and identity binds. A
+deterministic unrelated post-return writer control makes the shared global last
+event differ from the JOIN audit's invocation-owned event; final SQLite rows
+remain an independent comparison, never a generator oracle. JOB-1620 is
+provenance only for `117ac311`, not verification of later corrected bytes.
 
 ### 2026-09-12 evidence-handoff correction
 
