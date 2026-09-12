@@ -226,9 +226,19 @@ def _finalize_owned_children(
                 process.wait(timeout=2)
             except BaseException as exc:
                 child.cleanup_errors.append(exc)
+    evidence: list[str] = []
     for child, _process in children:
-        if child is not None:
-            _note_cleanup(primary, child)
+        if child is None:
+            continue
+        evidence.extend(str(error) for error in child.cleanup_errors)
+        if child.release_error is not None:
+            evidence.append(f"release: {child.release_error}")
+    if evidence:
+        message = "escaped-child cleanup: " + "; ".join(evidence)
+        if primary is not None:
+            primary.add_note(message)
+        else:
+            raise AssertionError("escaped-child cleanup unknown: " + "; ".join(evidence))
 
 
 def _observe_terminal(child: _CooperativeEscapedChild) -> bool:
@@ -477,19 +487,126 @@ def test_finalization_attempts_every_registered_resource_after_wait_failure():
     assert events == ["close:second", "wait:second", "close:first", "wait:first"]
 
 
+def test_finalization_reports_every_resource_error_without_primary():
+    """No-primary cleanup aggregates both errors after every finalizer runs."""
+    events: list[str] = []
+
+    class _Child:
+        release_error = None
+
+        def __init__(self, name):
+            self.name = name
+            self.cleanup_errors: list[BaseException] = []
+
+        def close(self):
+            events.append(f"close:{self.name}")
+
+    class _Process:
+        def __init__(self, name):
+            self.name = name
+
+        def wait(self, **_kwargs):
+            events.append(f"wait:{self.name}")
+            raise TimeoutError(f"wait:{self.name}")
+
+    first, second = _Child("first"), _Child("second")
+    with pytest.raises(AssertionError) as raised:
+        _finalize_owned_children(None, [(first, _Process("first")), (second, _Process("second"))])
+    assert "wait:first" in str(raised.value)
+    assert "wait:second" in str(raised.value)
+    assert events == ["close:second", "wait:second", "close:first", "wait:first"]
+
+
+def test_finalization_keeps_primary_and_every_resource_error():
+    """Cleanup evidence annotates, rather than replacing, an existing primary."""
+    events: list[str] = []
+
+    class _Child:
+        release_error = None
+
+        def __init__(self, name):
+            self.name = name
+            self.cleanup_errors: list[BaseException] = []
+
+        def close(self):
+            events.append(f"close:{self.name}")
+
+    class _Process:
+        def __init__(self, name):
+            self.name = name
+
+        def wait(self, **_kwargs):
+            events.append(f"wait:{self.name}")
+            raise TimeoutError(f"wait:{self.name}")
+
+    primary = RuntimeError("shipping primary")
+    first, second = _Child("first"), _Child("second")
+    _finalize_owned_children(primary, [(first, _Process("first")), (second, _Process("second"))])
+    assert str(primary) == "shipping primary"
+    notes = getattr(primary, "__notes__", ())
+    assert any("wait:first" in note and "wait:second" in note for note in notes)
+    assert events == ["close:second", "wait:second", "close:first", "wait:first"]
+
+
 def test_cooperative_child_intrinsic_expiry_has_terminal_absence_observation():
     """An unreleased owned surrogate expires, is reaped, then becomes absent."""
-    child = _CooperativeEscapedChild(deadline_seconds=.05)
-    process = subprocess.Popen(child.argv)
+    child = None
+    process = None
     try:
+        child = _CooperativeEscapedChild(deadline_seconds=.05)
+        process = subprocess.Popen(child.argv)
         assert child.wait_for(b"R")
         assert child.wait_for(b"E")
         assert process.wait(timeout=2) == 0
         assert child.observe_terminal()
     finally:
-        child.close()
-        if process.poll() is None:
-            process.wait(timeout=2)
+        _finalize_owned_children(sys.exception(), [(child, process)])
+
+
+def test_intrinsic_expiry_popen_failure_retains_cleanup_evidence(monkeypatch):
+    """The actual expiry seam finalizes an acquired helper if Popen fails."""
+    child = SimpleNamespace(
+        argv=("owned-child",),
+        release_error=None,
+        cleanup_errors=[],
+        close_calls=0,
+    )
+
+    def close():
+        child.close_calls += 1
+        child.cleanup_errors.append(OSError("helper cleanup failed"))
+
+    child.close = close
+    monkeypatch.setattr(sys.modules[__name__], "_CooperativeEscapedChild", lambda **_kwargs: child)
+    monkeypatch.setattr(subprocess, "Popen", lambda _argv: (_ for _ in ()).throw(OSError("popen failed")))
+    with pytest.raises(OSError, match="popen failed") as raised:
+        test_cooperative_child_intrinsic_expiry_has_terminal_absence_observation()
+    assert child.close_calls == 1
+    assert any("helper cleanup failed" in note for note in getattr(raised.value, "__notes__", ()))
+
+
+def test_intrinsic_expiry_cleanup_failure_is_not_silent(monkeypatch):
+    """A successful expiry still fails when its finalizer records an error."""
+    child = SimpleNamespace(
+        argv=("owned-child",),
+        release_error=None,
+        cleanup_errors=[],
+        close_calls=0,
+        wait_for=lambda _byte: True,
+        observe_terminal=lambda: True,
+    )
+
+    def close():
+        child.close_calls += 1
+        child.cleanup_errors.append(OSError("helper cleanup failed"))
+
+    child.close = close
+    process = SimpleNamespace(wait=lambda **_kwargs: 0, poll=lambda: 0)
+    monkeypatch.setattr(sys.modules[__name__], "_CooperativeEscapedChild", lambda **_kwargs: child)
+    monkeypatch.setattr(subprocess, "Popen", lambda _argv: process)
+    with pytest.raises(AssertionError, match="helper cleanup failed"):
+        test_cooperative_child_intrinsic_expiry_has_terminal_absence_observation()
+    assert child.close_calls == 1
 
 
 @pytest.mark.parametrize("failure", ("second-helper", "first-popen", "second-popen"))
