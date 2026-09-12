@@ -112,6 +112,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from runtime.models import TaskRecord, TaskStatus, ThreadStatus
+from runtime.daemon.task_scratch_report import report_registered_agent_task_scratch
 
 if TYPE_CHECKING:
     from runtime.daemon.org_state import OrgState
@@ -1181,6 +1182,17 @@ async def trigger_cleanup(
             payload={"reason": "agent_team_unresolved", "agent": agent},
         )
         return None
+
+    try:
+        await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: report_registered_agent_task_scratch(
+                db=org.db, sessions=org.sessions, agent=agent,
+                workspace=OrgPaths(root=org.root).workspaces_dir / agent,
+            ),
+        )
+    except Exception:
+        logger.exception("task scratch weekly report failed for %s", agent)
 
     # Bounded, fail-open measurement of THE AGENT'S OWN workspace — the gate
     # for the >= 1 GiB founder threshold and the advisory snapshot packed at

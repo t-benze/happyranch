@@ -51,51 +51,54 @@ guarantee survival of hostile same-UID replacement in the final check/syscall
 window. Existing dormant-engine tests retain this boundary; this cleanup adds no
 caller, scheduler activation, legacy-backlog eligibility, or live deletion.
 
-### Dormant B2a task-scratch observation
+### Task-scratch report-only observations
 
-The THR-195 B2a task-scratch collector is not an executor permission or action
-surface: it is a dormant, production-unreferenced finite observation. It reports
-full durable lifecycle/recovery rows plus bounded Linux process references, and
-never converts missing, partial, capped, or timed-out reads into safe zeroes.
+`task_scratch_report.py` consumes the existing lifecycle/process and coverage
+collectors after `_launch_agent_with_scratch` returns and `_run_agent` resets
+scratch context. Ordinary settlement can follow this observation: a still
+nonterminal task retains its scratch. The existing due `_tick_org` reaches the
+same coordinator through `trigger_cleanup`, off the event loop and before the
+unchanged atomic cleanup-task allocation block. No new scheduler, threshold,
+cooldown, counter, history reset, receipt, API or UI is introduced.
 
-THR-195 B2a separately supplies a dormant, short-lived evidence collector from
-current durable task/revisit/job/result records, advisory session state, and
-fresh Linux boot/PID root/cwd/open-fd reads. It admits each bounded read or
-enumeration, source open, and iterator advance against one shared deadline (without pretending to preempt an
-already-started read), including aggregate linked-job reads. Ambiguous,
-missing, capped, changing, warm-up, recovery, permission, or live-reference
-evidence is ineligible. A complete fresh root/cwd/fd measurement remains
-truthful, including zero, when only an independent lifecycle, session, or durable-authority reason applies;
-partial or invalid scans remain unavailable rather than fabricated zeros. It
-has no production caller or engine/ledger import; B2b must
-recollect at action time and B3 remains coverage authority.
+The coordinator appends `task_scratch_report` to the existing audit log with the
+actual candidate task ID. Read these rows through the existing audit reader or
+`happyranch audit --org <slug> <task-id> --json`. Each append has a unique
+observation ID, caller source and producer observation ID, timestamps, boot,
+identity digest, provenance and freshness limits. `would_reclaim` means only a
+report/no-op; actual reclaimed bytes and inodes are always zero. Missing or
+partial measurements are absent/null, distinct from a complete measured zero.
+Coverage failures preserve applicable lifecycle/process retention reasons.
+Publication and observer failures cannot change the producer result.
 
-THR-195 B2a is only a dormant evidence producer: it has no orchestrator caller,
-does not seal a ledger or authorize coverage, and cannot exclude future writers.
-It makes a finite shared-deadline observation from complete durable task/job/result
-rows, advisory sessions, and Linux boot/PID/root/cwd/fd identity. It fails closed
-on changed, missing, capped, timed-out, partial, or unavailable observations; an
-unavailable measurement is not a measured zero. Each bounded source, including
-an iterator advance, is admitted
-against the collector's shared deadline (a blocking source read cannot be forcibly
-interrupted); complete fresh counts, including zero, remain measurements when an
-independent lifecycle, session, or durable-authority reason rejects eligibility. B2b recollects before any later action and B3 owns
-current-boot coverage.
+Literal no-follow workspace/parent/root/manifest observations bracket collection;
+changed identity, boot mismatch or stale/unordered observations fail closed.
+Supplied coverage is recollected because a relative path alone does not correlate
+its candidate identity. The observer has a 12-second admission deadline, a
+30-second observer-local startup warmup, at most 64 weekly candidates and 256
+inspected discovery entries (including rejected names). Unattributable discovery
+caps/unavailability produce bounded operational warnings, never fabricated task
+IDs. Candidate failures are isolated. A blocking admitted OS/DB read cannot be
+preempted; these bounds govern further work, not a hard syscall timeout.
 
-### Dormant B3a task-scratch coverage
+The evidence collector observes full durable task/revisit/job/result records,
+advisory sessions, and bounded Linux boot/PID/root/cwd/open-fd references. Terminal
+flags and cleared trackers are not process-exit evidence. Partial, missing,
+capped, warmup, changing, timed-out or unavailable evidence prevents eligibility;
+independently complete process counts remain truthful even when lifecycle or
+session state requires retention. The coverage collector compares two finite
+boot-bound snapshots of the fixed workspace partition, with allocated bytes and
+entries (hardlinks count per observed entry). Each source operation has shared
+bounds and deadline admission; missing optional parents are not invented as
+residual partitions. Repositories, special entries, malformed literal parents,
+unknown, zero, incomplete or nonready coverage cannot authorize eligibility.
 
-The B3a coverage collector is likewise dormant and production-unreferenced. It
-compares two finite boot-bound snapshots of the fixed workspace partition and
-reports allocated bytes and entries (hardlinks count per observed entry), never
-a cleanup permit or writer exclusion. Each stat, open, dependent buffered read,
-directory read, and iterator advance has its own shared-deadline admission;
-manifest bytes share their actual-byte cap while boot reads do not consume it.
-Absent optional parents create neither an invented residual partition nor an
-unavailability reason, but present malformed parents remain literal
-no-follow residuals. Candidate scan uncertainty stays `residual_unknown` and
-fail-closed; observed repositories and special entries remain disqualifying.
-Unavailable, changed, capped, zero, and partial observations are never ready;
-B2b must recollect before any later action.
+The collectors are now observed by these report-only production callers. The
+reclamation engine remains dormant and unreferenced: observations neither seal
+an executable ledger nor authorize deletion. Any future action requires fresh
+recollection, coverage, independent review and explicit activation. Legacy,
+shared `/tmp` and pre-contract roots remain ineligible. Portable observations
+cannot exclude future writers or a hostile same-UID race.
 
 ### Orchestration core
 

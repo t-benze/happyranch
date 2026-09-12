@@ -41,6 +41,7 @@ from runtime.orchestrator.task_scratch import (
     prepare_task_scratch,
     reset_task_scratch,
 )
+from runtime.daemon.task_scratch_report import report_task_scratch
 from runtime.orchestrator.org_config import (
     load_org_config,
     render_current_time_line,
@@ -1046,6 +1047,16 @@ class Orchestrator:
             )
         finally:
             reset_task_scratch(scratch_token)
+        # Observation follows scratch-context teardown and is intentionally
+        # outside completion/session/containment ownership.
+        try:
+            report_task_scratch(
+                db=self._db, sessions=self._sessions, task_id=task_id,
+                agent=agent_name, workspace=workspace, source="teardown",
+                observation_id=session_id,
+            )
+        except Exception:
+            logger.exception("task scratch teardown report failed for %s", task_id)
         self._audit.log_session_end(
             task_id=task_id,
             agent=agent_name,
