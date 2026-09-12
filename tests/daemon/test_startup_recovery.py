@@ -1134,6 +1134,14 @@ def test_accepted_manager_done_recovery_final_owner_and_receipt_fences(tmp_path,
     assert db.claim_task_completion_recovery(task_id=task_id, agent="engineering_manager", origin_session_id="origin-manager", recovery_session_id="recovery-manager", provider_session_id="provider", claimed_at="2026-01-01T00:00:00+00:00", expires_at="2999-01-01T00:02:00+00:00")
     db.update_task(task_id, current_session_id="recovery-manager")
     _seed_job(db, "JOB-OWNED", task_id, status="running")
+    # This belongs to neither the recovery task nor its parent.  Keep it
+    # observable across the completed winner's two startup entries: stale
+    # recovery must not broaden its cleanup radius.
+    db.insert_task(TaskRecord(
+        id="TASK-UNRELATED", brief="unrelated", team="engineering",
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+    ))
+    _seed_job(db, "JOB-UNRELATED", "TASK-UNRELATED", status="running")
     assert db.admit_task_completion_callback(task_id=task_id, agent="engineering_manager", session_id="recovery-manager", status="completed", output_summary="done", confidence_score=100, decision_json='{"action":"done","summary":"done"}')
     accepted = db.get_accepted_task_completion_recovery_result(task_id=task_id, agent="engineering_manager")
     assert accepted is not None
@@ -1272,6 +1280,15 @@ def test_accepted_manager_done_recovery_final_owner_and_receipt_fences(tmp_path,
                 assert dict(db.execute(
                     "SELECT * FROM task_results WHERE id=?", (accepted["id"],),
                 ).fetchone()) == accepted_result
+                ledger_after_entries = db.execute(
+                    "SELECT state, accepted_result_id FROM task_completion_recoveries "
+                    "WHERE task_id=?", (task_id,),
+                ).fetchone()
+                assert dict(ledger_after_entries) == {
+                    "state": "callback_accepted", "accepted_result_id": accepted["id"],
+                }
+                assert db.get_job("JOB-OWNED").status.value == "running"
+                assert db.get_job("JOB-UNRELATED").status.value == "running"
                 assert cleanup_calls == []
                 assert parent_calls == []
                 assert delivery_calls == []
@@ -1664,6 +1681,7 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
     _seed_job(db, "JOB-OWNED", task_id, "running"); _seed_job(db, "JOB-OTHER", "TASK-OTHER", "running")
     assert db.admit_task_completion_callback(task_id=task_id, agent=agent, session_id=session_id, status="completed", output_summary="done", confidence_score=100, decision_json=decision)
     accepted = db.get_accepted_task_completion_recovery_result(task_id=task_id, agent=agent); assert accepted is not None
+    accepted_snapshot = dict(accepted)
     entered, release, errors = threading.Event(), threading.Event(), []
     real_terminate, real_thread, workers = jobs_runner.terminate_jobs_for_task, threading.Thread, []
     async def paused(*args, **kwargs):
@@ -1686,14 +1704,15 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
     accepted_after = db.execute(
         "SELECT * FROM task_results WHERE id=?", (accepted["id"],),
     ).fetchone()
-    assert accepted_after is not None and accepted_after["session_id"] == session_id
+    assert accepted_after is not None and dict(accepted_after) == accepted_snapshot
     ledger = db.execute(
         "SELECT state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?",
         (task_id,),
     ).fetchone()
     assert ledger["state"] == "callback_consumed"
     assert ledger["accepted_result_id"] == accepted["id"]
-    assert db.get_task(task_id).current_session_id == session_id
+    task_after = db.get_task(task_id)
+    assert task_after is not None and task_after.current_session_id == session_id
     _sweep_on_startup(db, queue, "test", orch)
     _sweep_on_startup(db, queue, "test", orch)
     assert db.get_job("JOB-OWNED").reason == "task_ended"
@@ -3426,10 +3445,16 @@ def test_shipping_startup_invocation_commit_serializes_owned_job_backstop(
 
     db, orch, queue = _seed_org_with_orch(tmp_path)
     db.insert_thread(ThreadRecord(id="THR-LOCK", subject="lock"))
-    db.mint_thread_invocation(
+    governed = db.mint_thread_invocation(
         thread_id="THR-LOCK", agent_name="dev_agent", triggering_seq=1,
         purpose=ThreadInvocationPurpose.REPLY,
     )
+    db.insert_thread(ThreadRecord(id="THR-UNRELATED", subject="unrelated"))
+    unrelated = db.mint_thread_invocation(
+        thread_id="THR-UNRELATED", agent_name="other", triggering_seq=1,
+        purpose=ThreadInvocationPurpose.REPLY,
+    )
+    assert db.consume_invocation(unrelated.invocation_token)
     _seed_job(db, "JOB-OWNED", "TASK-TERMINAL", "running")
     _seed_job(db, "JOB-OTHER", "TASK-OTHER", "running")
 
@@ -3503,10 +3528,19 @@ def test_shipping_startup_invocation_commit_serializes_owned_job_backstop(
     cleanup_thread.join(2)
     assert not startup_thread.is_alive() and not cleanup_thread.is_alive()
     assert not startup_errors and not cleanup_errors
-    assert db.get_job("JOB-OWNED").reason == "task_ended"
-    assert db.get_job("JOB-OTHER").status is JobStatus.RUNNING
-    token = db.execute("SELECT invocation_token FROM thread_invocations WHERE thread_id='THR-LOCK'").fetchone()["invocation_token"]
-    invocation = db.get_invocation_any_status(token)
-    assert invocation.status.value == "failed"
+    # Prove committed state, not merely visibility on the connection whose
+    # lock was contended.  The two invocation controls distinguish the
+    # startup-governed pending receipt from an unrelated terminal receipt.
+    db_path = db.path
+    db.close()
+    reopened = Database(db_path)
+    owned = reopened.get_job("JOB-OWNED")
+    other_job = reopened.get_job("JOB-OTHER")
+    assert owned is not None and owned.reason == "task_ended"
+    assert other_job is not None and other_job.status is JobStatus.RUNNING
+    invocation = reopened.get_invocation_any_status(governed.invocation_token)
+    assert invocation is not None and invocation.status.value == "failed"
     assert invocation.decline_reason == "daemon_restart"
     assert invocation.consumed_at is not None
+    unrelated_after = reopened.get_invocation_any_status(unrelated.invocation_token)
+    assert unrelated_after is not None and unrelated_after.status.value == "consumed"
