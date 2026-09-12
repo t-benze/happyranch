@@ -20,7 +20,9 @@ touched.
 from __future__ import annotations
 
 import os
+import select
 import signal
+import shlex
 import subprocess
 import sys
 import time
@@ -64,6 +66,94 @@ def _running(pid: int, identity: str = "boot-1") -> RunningHandle:
         start_identity=identity,
         process=None,
     )
+
+
+class _CooperativeEscapedChild:
+    """Test-only finite lifetime for a child that escapes the tested group.
+
+    Closing ``_control_write`` is an explicit cooperative request to this exact
+    child, not an OS ownership claim about its PID or process group. The child
+    also expires on its own, so an exception between launch and observation
+    cannot leave it running indefinitely.
+    """
+
+    _CHILD = (
+        "import os, select, sys, time; "
+        "control, report, deadline = map(int, sys.argv[1:]); "
+        "os.setsid(); os.write(report, b'R'); "
+        "select.select([control], [], [], deadline); "
+        "os.write(report, b'E')"
+    )
+
+    def __init__(self, deadline_seconds: float = 5.0) -> None:
+        self._control_read, self._control_write = os.pipe()
+        self._report_read, self._report_write = os.pipe()
+        self._deadline_seconds = deadline_seconds
+        self._released = False
+        self.release_error: OSError | None = None
+        self._signals = b""
+
+    @property
+    def pass_fds(self) -> tuple[int, int]:
+        return (self._control_read, self._report_write)
+
+    @property
+    def argv(self) -> tuple[str, ...]:
+        return (
+            sys.executable,
+            "-c",
+            self._CHILD,
+            str(self._control_read),
+            str(self._report_write),
+            str(int(self._deadline_seconds)),
+        )
+
+    def wait_for(self, signal_byte: bytes, timeout: float = 2.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while signal_byte not in self._signals and time.monotonic() < deadline:
+            readable, _, _ = select.select([self._report_read], [], [], deadline - time.monotonic())
+            if not readable:
+                break
+            self._signals += os.read(self._report_read, 16)
+        return signal_byte in self._signals
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        try:
+            os.close(self._control_write)
+        except OSError as exc:
+            self.release_error = exc
+
+    def close(self) -> None:
+        self.release()
+        for fd in (self._control_read, self._report_read, self._report_write):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def test_cooperative_escaped_child_releases_only_its_owned_process():
+    """The test control closes one same-command child without name/PID kills."""
+    first = _CooperativeEscapedChild()
+    second = _CooperativeEscapedChild()
+    first_process = subprocess.Popen(first.argv, pass_fds=first.pass_fds)
+    second_process = subprocess.Popen(second.argv, pass_fds=second.pass_fds)
+    try:
+        assert first.wait_for(b"R")
+        assert second.wait_for(b"R")
+        first.release()
+        assert first.release_error is None
+        assert first.wait_for(b"E")
+        assert first_process.wait(timeout=2) == 0
+        assert second_process.poll() is None
+    finally:
+        second.release()
+        second_process.wait(timeout=2)
+        first.close()
+        second.close()
 
 
 # ── deterministic unit tests (fake census) ───────────────────────────
@@ -477,32 +567,42 @@ def test_escaped_descendant_is_best_effort_survivor_real(real_backend):
     Documented best-effort limitation: the census must run while the root
     still lives — a descendant that escapes AND is reparented before finish
     (root already exited) is unobservable by any process-table walk."""
-    pending = real_backend.prepare(_request(), _policy())
-    running = real_backend.launch(
-        pending, LaunchSpec(argv=("sh", "-c", "setsid sleep 60 & sleep 5"))
-    )
-    survivors = ()
+    escaped = _CooperativeEscapedChild()
+    primary_failure = False
     try:
+        pending = real_backend.prepare(_request(), _policy())
+        running = real_backend.launch(
+            pending,
+            LaunchSpec(
+                argv=("sh", "-c", f"{shlex.join(escaped.argv)} & sleep 5"),
+                pass_fds=escaped.pass_fds,
+            ),
+        )
+        assert escaped.wait_for(b"R")
         # The escaped child is spawned within the first instant; finish runs
         # while the root still lives so the fresh census can see the child.
         time.sleep(0.3)
         assert running.process.poll() is None  # root still alive
         receipt = real_backend.finish(running, "success", grace_seconds=1.0)
-        survivors = receipt.survivors
         # The escaped child survives (new session) — best-effort truth:
         # censused survivor, never a fabricated clean claim.
         assert receipt.survivors, "escaped descendant must be censused by finish's own census"
         assert receipt.quiescent is False
         assert receipt.cleanup_status is not CleanupStatus.INCOMPLETE
+    except BaseException:
+        primary_failure = True
+        raise
     finally:
-        # Tear down the escaped child by its identity-verified survivor pid
-        # (its cmdline is just ``sleep 60`` — setsid exec'd sleep).
-        for sv in survivors:
-            try:
-                os.kill(sv.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-        os.system("pkill -9 -f '^sleep 60$' 2>/dev/null || true")
+        # Run only after the shipping census/assertions. The control FD is
+        # owned by this test child; no bare PID, process-group, or name signal
+        # is attempted. On an earlier primary error the child still receives
+        # the cooperative close (and has intrinsic expiry), while its cleanup
+        # observation never replaces that primary error.
+        escaped.release()
+        if not primary_failure:
+            assert escaped.release_error is None
+            assert escaped.wait_for(b"E")
+        escaped.close()
 
 
 @real_integration
