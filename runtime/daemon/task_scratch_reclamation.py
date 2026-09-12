@@ -69,6 +69,60 @@ def _private_coverage_ok(value: _CoverageBinding, workspace: Path, task_id: str)
         return False
 
 
+def _same_evidence(left: _EvidenceObservation, right: _EvidenceObservation) -> bool:
+    """Compare stable authoritative values, never collection timestamps."""
+    return (left.snapshot, left.sessions, left.process_identities,
+            left.evidence.boot_id, left.evidence.process_roots,
+            left.evidence.process_cwds, left.evidence.open_fds) == (
+                right.snapshot, right.sessions, right.process_identities,
+                right.evidence.boot_id, right.evidence.process_roots,
+                right.evidence.process_cwds, right.evidence.open_fds)
+
+
+def _same_coverage(left: _CoverageBinding, right: _CoverageBinding) -> bool:
+    return left.snapshot == right.snapshot
+
+
+def _coverage_matches_row(value: _CoverageBinding, row: "LedgerRow", workspace: Path,
+                          task_id: str, agent_name: str) -> bool:
+    """Bind final C3's existing fields to the sealed canonical row."""
+    snapshot = value.snapshot
+    if not _private_coverage_ok(value, workspace, task_id) or snapshot is None:
+        return False
+    try:
+        canonical_root = workspace.resolve(strict=True) / ".happyranch" / "task-tmp" / task_id
+        canonical_manifest = workspace / ".happyranch" / "task-scratch-manifests" / f"{task_id}.json"
+        canonical_lock = canonical_manifest.with_suffix(".lock")
+        workspace_info = workspace.stat()
+    except OSError:
+        return False
+    if (snapshot.workspace_id != (workspace_info.st_dev, workspace_info.st_ino)
+            or (row.task_id, row.agent_name, Path(row.literal_root), Path(row.manifest_path), Path(row.lock_path))
+            != (task_id, agent_name, canonical_root, canonical_manifest, canonical_lock)
+            or not row.protected
+            or (row.protected[0].device, row.protected[0].inode) != snapshot.workspace_id):
+        return False
+    root_rel = f".happyranch/task-tmp/{task_id}"
+    manifests = {rel: (raw, classification) for rel, raw, classification in snapshot.manifests}
+    raw, classification = manifests.get(root_rel, (None, ""))
+    if classification != "canonical_regenerable" or raw is None or hashlib.sha256(raw).hexdigest() != row.manifest_digest:
+        return False
+    projected = []
+    for item in snapshot.items:
+        if item.rel == root_rel:
+            relative = ""
+        elif item.rel.startswith(root_rel + "/"):
+            relative = item.rel[len(root_rel) + 1:]
+        else:
+            continue
+        projected.append((relative, item.dev, item.ino, item.mode, item.blocks * 512, item.size))
+    expected = [(entry.relative_path, entry.device, entry.inode, entry.mode,
+                 entry.allocated_bytes, entry.apparent_bytes) for entry in row.entries]
+    return (sorted(projected) == sorted(expected)
+            and row.before == Accounting(sum(item[4] for item in projected), sum(item[5] for item in projected), len(projected))
+            and row.root_device == next((item[1] for item in projected if item[0] == ""), None)
+            and row.root_inode == next((item[2] for item in projected if item[0] == ""), None)
+            and row.coverage_digest_assertion == hashlib.sha256(repr(snapshot).encode()).hexdigest())
 def collect_revalidate_seal_consume_disposable(*, db: object, sessions: object, workspace: Path,
                                                 task_id: str, agent_name: str, proc_root: Path = Path("/proc"),
                                                 monotonic_now: float | None = None,
@@ -83,15 +137,18 @@ def collect_revalidate_seal_consume_disposable(*, db: object, sessions: object, 
               "root": workspace / ".happyranch" / "task-tmp" / task_id,
               "proc_root": proc_root, "monotonic_now": monotonic_now,
               "daemon_started_monotonic": daemon_started_monotonic}
-    e1 = _collect_private_evidence(**kwargs)
-    c1 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
-    e2 = _collect_private_evidence(**kwargs)
-    c2 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
+    try:
+        e1 = _collect_private_evidence(**kwargs)
+        c1 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
+        e2 = _collect_private_evidence(**kwargs)
+        c2 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
+    except Exception:
+        return None
     first = _private_evidence_ok(e1, task_id, agent_name)
     second = _private_evidence_ok(e2, task_id, agent_name)
     if first is None or second is None or not _private_coverage_ok(c1, workspace, task_id) or not _private_coverage_ok(c2, workspace, task_id):
         return None
-    if e1.snapshot != e2.snapshot or c1.snapshot != c2.snapshot or e2.evidence.boot_id != c2.observation.boot_id:
+    if not _same_evidence(e1, e2) or not _same_coverage(c1, c2) or e2.evidence.boot_id != c2.observation.boot_id:
         return None
     _target, terminal = second
     boot = e2.evidence.boot_id
@@ -99,7 +156,7 @@ def collect_revalidate_seal_consume_disposable(*, db: object, sessions: object, 
         return None
     digest = hashlib.sha256(repr(c2.snapshot).encode()).hexdigest()
     assertions = ReclamationAssertions(agent_name,
-        LifecycleAssertions("completed", "private-terminal:v1", terminal, 0, ZombieRecoveryState.CLEAR, 0, 0, 0, True, False, False, False),
+        LifecycleAssertions(getattr(getattr(_target, "status", None), "value", None), "private-terminal:v1", terminal, 0, ZombieRecoveryState.CLEAR, 0, 0, 0, True, False, False, False),
         LivenessAssertions("private-evidence:v1", EvidencePlatform.LINUX if sys.platform == "linux" else EvidencePlatform.DARWIN,
             boot, boot, True, False, False, False, False, 0, e2.evidence.process_roots, e2.evidence.process_cwds, e2.evidence.open_fds),
         CoverageAssertions("private-coverage:v1", digest, boot, boot, True, False, False, False, 0, 0, 0))
@@ -108,12 +165,15 @@ def collect_revalidate_seal_consume_disposable(*, db: object, sessions: object, 
                               now_ns=time.time_ns() if now_ns is None else now_ns)
     except ReclamationError:
         return None
-    e3 = _collect_private_evidence(**kwargs)
-    c3 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
-    e4 = _collect_private_evidence(**kwargs)
+    try:
+        e3 = _collect_private_evidence(**kwargs)
+        c3 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
+        e4 = _collect_private_evidence(**kwargs)
+    except Exception:
+        return None
     if (_private_evidence_ok(e3, task_id, agent_name) is None or _private_evidence_ok(e4, task_id, agent_name) is None
-            or not _private_coverage_ok(c3, workspace, task_id)
-            or e2.snapshot != e3.snapshot or c2.snapshot != c3.snapshot or e3.snapshot != e4.snapshot
+            or not _coverage_matches_row(c3, row, workspace, task_id, agent_name)
+            or not _same_evidence(e2, e3) or not _same_coverage(c2, c3) or not _same_evidence(e3, e4)
             or e4.evidence.boot_id != c3.observation.boot_id):
         return None
     return execute_ledger((row,))[0]

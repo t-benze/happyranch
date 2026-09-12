@@ -45,10 +45,13 @@ existing local-job semantics are preserved. Model/migration tests provide the
 contract; no production runner authentication, transport, or execution is implied.
 
 `task_scratch_reclamation.py` remains production-unreferenced. Its private
-`collect_revalidate_seal_consume_disposable` seam is test-only: it performs
-bounded E1/C1/E2/C2/seal/E3/C3/E4 recollection, returns `None` before action
-on any changed or unavailable observation, and neither activates cleanup nor
-excludes future writers or hostile same-UID swaps. Its assertion
+`collect_revalidate_seal_consume_disposable` seam is test-only: it retains each
+bounded E1/C1/E2/C2/seal/E3/C3/E4 collector admission, compares stable typed
+lifecycle/session/PID-start and coverage identity fields (not timestamps), and
+binds C3's canonical workspace/root/manifest/census projection to its
+stack-local sealed row. It returns `None` before action on any changed or
+unavailable observation, and neither activates cleanup nor excludes future
+writers or hostile same-UID swaps. Its assertion
 shapes do not establish lifecycle/liveness provenance; Git evidence and ambiguous
 identity/device evidence refuse reclamation. POSIX pathname removal does not
 guarantee survival of hostile same-UID replacement in the final check/syscall

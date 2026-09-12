@@ -39,6 +39,8 @@ class _EvidenceObservation:
     """
     evidence: TaskScratchEvidence
     snapshot: tuple[tuple[object, ...], ...] | None
+    sessions: tuple[object, ...] | None
+    process_identities: tuple[tuple[str, str], ...] | None
 
 
 def _under(value: str, root: Path) -> bool:
@@ -237,7 +239,7 @@ def _executor_pids(snapshot: tuple[tuple[object, ...], ...] | None) -> set[str] 
     return values
 
 
-def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, task_id: str, root: Path, proc_root: Path = Path("/proc"), monotonic_now: float | None = None, daemon_started_monotonic: float | None = None) -> TaskScratchEvidence:
+def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, task_id: str, root: Path, proc_root: Path = Path("/proc"), monotonic_now: float | None = None, daemon_started_monotonic: float | None = None, _private: bool = False) -> TaskScratchEvidence | _EvidenceObservation:
     """Finite shared-deadline observation; blocking OS/DB calls are not preemptible."""
     reasons: set[str] = set(); now = time.monotonic() if monotonic_now is None else monotonic_now
     if daemon_started_monotonic is None or now - daemon_started_monotonic < WARMUP_SECONDS: reasons.add("zombie_warmup")
@@ -306,7 +308,18 @@ def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, tas
     }
     if roots is None or cwds is None or fds is None or old_boot is None or before_scan_boot is None or final_boot is None or reasons & measurement_invalid:
         roots = cwds = fds = None
-    return TaskScratchEvidence(task_id, not reasons, tuple(sorted(reasons)), final_boot, time.time_ns(), roots, cwds, fds)
+    evidence = TaskScratchEvidence(task_id, not reasons, tuple(sorted(reasons)), final_boot, time.time_ns(), roots, cwds, fds)
+    if _private:
+        # ``after`` and the process/session values above are from this exact
+        # bounded admission.  Do not start a third snapshot just to decorate a
+        # private consumer result.
+        return _EvidenceObservation(
+            evidence,
+            after if not reasons else None,
+            tuple(sorted(sessions_before)) if not reasons else None,
+            tuple(final_identities) if not reasons and final_identities is not None else None,
+        )
+    return evidence
 
 
 def _collect_private_evidence(**kwargs: object) -> _EvidenceObservation:
@@ -315,10 +328,6 @@ def _collect_private_evidence(**kwargs: object) -> _EvidenceObservation:
     The extra snapshot is bounded by the same collector limits and is used only
     by the production-unreferenced synchronous test consumer.
     """
-    evidence = collect_task_scratch_evidence(**kwargs)  # type: ignore[arg-type]
-    reasons: set[str] = set()
-    deadline = time.monotonic_ns() + SCAN_NS
-    snapshot = _snapshot(kwargs["db"], kwargs["task_id"], reasons, deadline)  # type: ignore[arg-type]
-    if reasons:
-        snapshot = None
-    return _EvidenceObservation(evidence, snapshot)
+    value = collect_task_scratch_evidence(**kwargs, _private=True)  # type: ignore[arg-type]
+    assert isinstance(value, _EvidenceObservation)
+    return value

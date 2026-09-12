@@ -65,7 +65,7 @@ def test_removes_only_literal_root_and_preserves_sidecars(tmp_path):
     assert sibling.root.is_dir()
 
 
-def test_private_dormant_consumer_collects_real_disposable_sources_before_consuming(tmp_path):
+def test_private_dormant_consumer_collects_real_disposable_sources_before_consuming(tmp_path, expect_success=True):
     """Its only success path uses the real bounded collectors and a temp DB."""
     workspace, contract, _assertions, old = _candidate(tmp_path)
     payload = contract.root / "nested/file"
@@ -98,12 +98,42 @@ def test_private_dormant_consumer_collects_real_disposable_sources_before_consum
             db=db, sessions=SessionTracker(), workspace=workspace, task_id="TASK-1", agent_name="dev_agent",
             proc_root=proc, daemon_started_monotonic=0, monotonic_now=31,
             now_ns=old + 121_000_000_000)
-        assert result is not None and result.outcome == "completed"
-        assert (result.reclaimed_bytes, result.reclaimed_inodes) == (
-            result.before.allocated_bytes, result.before.inodes)
-        assert not contract.root.exists()
+        if expect_success:
+            assert result is not None and result.outcome == "completed"
+            assert (result.reclaimed_bytes, result.reclaimed_inodes) == (
+                result.before.allocated_bytes, result.before.inodes)
+            assert not contract.root.exists()
+        else:
+            assert result is None and contract.root.exists()
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("mutation", ["process_identity", "sealed_agent", "coverage_workspace"])
+def test_private_consumer_refuses_changed_liveness_or_canonical_binding_before_executor(tmp_path, monkeypatch, mutation):
+    """Each final binding must correspond to this operation, not merely itself."""
+    executed = []
+    original_execute = reclamation.execute_ledger
+    monkeypatch.setattr(reclamation, "execute_ledger", lambda rows: (executed.extend(rows), original_execute(rows))[1])
+    if mutation == "process_identity":
+        original_seal = reclamation.seal_ledger_row
+        def seal(**kwargs):
+            row = original_seal(**kwargs)
+            stat_path = tmp_path / "proc/42/stat"
+            fields = stat_path.read_text().split(); fields[21] = str(int(fields[21]) + 1)
+            stat_path.write_text(" ".join(fields))
+            return row
+        monkeypatch.setattr(reclamation, "seal_ledger_row", seal)
+    elif mutation == "sealed_agent":
+        original_seal = reclamation.seal_ledger_row
+        monkeypatch.setattr(reclamation, "seal_ledger_row", lambda **kwargs: original_seal(
+            **{**kwargs, "assertions": replace(kwargs["assertions"], agent_name="other_agent")}))
+    else:
+        original_collect = reclamation._collect_private_coverage
+        monkeypatch.setattr(reclamation, "_collect_private_coverage", lambda **kwargs: replace(
+            original_collect(**kwargs), snapshot=replace(original_collect(**kwargs).snapshot, workspace_id=(0, 0))))
+    test_private_dormant_consumer_collects_real_disposable_sources_before_consuming(tmp_path, expect_success=False)
+    assert not executed
 
 
 def test_private_consumer_refuses_publicly_eligible_absent_result(tmp_path):
