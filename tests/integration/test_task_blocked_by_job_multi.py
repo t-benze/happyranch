@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import json
 import time
-from textwrap import dedent
 
 import httpx
 import pytest
+
+from tests.thr211_containment import build_blocked_multi_plan
 
 from tests.integration.conftest import seed_workspace, DEFAULT_TEST_SLUG
 
@@ -90,10 +91,10 @@ def test_multi_job_resume_waits_for_all(
     seed_workspace(runtime, "engineering_head")
 
     # ── 2. State files shared between the test driver and the fake_claude plan.
-    counter_file = tmp_path / "invocation_counter"
+    counter_file = fake_claude_plan_env.parent / "invocation_counter"
     # Stage 1 writes both job IDs here so the test driver can act on them.
-    joba_file = tmp_path / "job_a.id"
-    jobb_file = tmp_path / "job_b.id"
+    joba_file = fake_claude_plan_env.parent / "job_a.id"
+    jobb_file = fake_claude_plan_env.parent / "job_b.id"
 
     # ── 3. Write the two-stage fake_claude plan.
     #
@@ -101,114 +102,7 @@ def test_multi_job_resume_waits_for_all(
     #   on both.  Writes each job ID to its own file so the test driver can
     #   issue /run calls in a controlled sequence.
     # Stage 2: task resumed after both jobs ran; complete.
-    fake_claude_plan_env.write_text(dedent(f"""\
-        #!/usr/bin/env bash
-        set -e
-        task_id="$1"
-        session_id="$2"
-        agent="$3"
-        org_slug="$4"
-        plan_dir="${HAPPYRANCH_TEST_PLAN_DIR:?missing private plan directory}"
-
-        counter="{counter_file}"
-        n=$(cat "$counter" 2>/dev/null || echo 0)
-        n=$((n + 1))
-        echo "$n" > "$counter"
-
-        if [ "$n" = "1" ]; then
-            # ── Stage 1: submit two review_required=true jobs + self-block ──
-
-            # Submit JOB-A.
-            payload_a="$plan_dir/multi-job-submit-a-$$.json"
-            printf '{{
-              "task_id": "%s",
-              "session_id": "%s",
-              "title": "multi-job e2e job A",
-              "rationale": "first of two jobs — multi-job integration test",
-              "script": "echo job-a-ran",
-              "interpreter": "bash",
-              "review_required": true,
-              "persistent": false
-            }}' "$task_id" "$session_id" > "$payload_a"
-
-            submit_log_a="$plan_dir/multi-job-submit-log-a-$$.txt"
-            happyranch jobs submit --from-file "$payload_a" --org "$org_slug" \
-                > "$submit_log_a" 2>&1
-            cat "$submit_log_a" >&2
-
-            job_a=$(grep -oE 'JOB-[0-9]+' "$submit_log_a" | head -1)
-            if [ -z "$job_a" ]; then
-                echo "ERROR: could not parse JOB-A id" >&2
-                cat "$submit_log_a" >&2
-                exit 1
-            fi
-            echo "Stage 1: submitted $job_a (JOB-A, review_required=true)" >&2
-            echo "$job_a" > "{joba_file}"
-
-            # Submit JOB-B.
-            payload_b="$plan_dir/multi-job-submit-b-$$.json"
-            printf '{{
-              "task_id": "%s",
-              "session_id": "%s",
-              "title": "multi-job e2e job B",
-              "rationale": "second of two jobs — multi-job integration test",
-              "script": "echo job-b-ran",
-              "interpreter": "bash",
-              "review_required": true,
-              "persistent": false
-            }}' "$task_id" "$session_id" > "$payload_b"
-
-            submit_log_b="$plan_dir/multi-job-submit-log-b-$$.txt"
-            happyranch jobs submit --from-file "$payload_b" --org "$org_slug" \
-                > "$submit_log_b" 2>&1
-            cat "$submit_log_b" >&2
-
-            job_b=$(grep -oE 'JOB-[0-9]+' "$submit_log_b" | head -1)
-            if [ -z "$job_b" ]; then
-                echo "ERROR: could not parse JOB-B id" >&2
-                cat "$submit_log_b" >&2
-                exit 1
-            fi
-            echo "Stage 1: submitted $job_b (JOB-B, review_required=true)" >&2
-            echo "$job_b" > "{jobb_file}"
-
-            # Self-block on BOTH jobs via direct HTTP call.
-            port=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.port")
-            token=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.token")
-
-            completion_payload="$plan_dir/multi-job-completion-$$.json"
-            printf '{{
-              "session_id": "%s",
-              "agent": "%s",
-              "status": "blocked",
-              "confidence": 0,
-              "output_summary": "Waiting for %s and %s before proceeding.",
-              "risks_flagged": [],
-              "dependencies": [],
-              "suggested_reviewer_focus": [],
-              "waiting_on_job_ids": ["%s", "%s"]
-            }}' "$session_id" "$agent" "$job_a" "$job_b" "$job_a" "$job_b" \
-                > "$completion_payload"
-
-            curl -s -X POST \\
-                "http://127.0.0.1:$port/api/v1/orgs/$org_slug/tasks/$task_id/completion" \\
-                -H "Authorization: Bearer $token" \\
-                -H "Content-Type: application/json" \\
-                -d @"$completion_payload" >&2
-            echo "" >&2
-            echo "Stage 1: blocked with waiting_on_job_ids=[$job_a, $job_b]" >&2
-
-        else
-            # ── Stage 2: both jobs completed; task resumed ──
-            echo "Stage 2: task resumed after both jobs ran, reporting completion" >&2
-
-            happyranch report-completion --org "$org_slug" \\
-                --task-id "$task_id" --session-id "$session_id" \\
-                --agent "$agent" --status completed --confidence 90 \\
-                --summary '{{"action":"done","summary":"completed after both jobs unblocked"}}'
-            echo "Stage 2: reported completed" >&2
-        fi
-    """))
+    fake_claude_plan_env.write_text(build_blocked_multi_plan(fake_claude_plan_env.parent))
     fake_claude_plan_env.chmod(0o755)
 
     # ── 4. Dispatch the task.

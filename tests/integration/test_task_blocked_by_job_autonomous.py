@@ -19,10 +19,11 @@ from __future__ import annotations
 
 import json
 import time
-from textwrap import dedent
 
 import httpx
 import pytest
+
+from tests.thr211_containment import build_blocked_autonomous_plan
 
 from tests.integration.conftest import seed_workspace, DEFAULT_TEST_SLUG
 
@@ -76,7 +77,7 @@ def test_blocks_on_job_then_auto_resumes(
 
     # ── 2. Counter file: distinguishes stage 1 (first agent invocation) from
     #        stage 2 (resumed invocation after the job completes).
-    counter_file = tmp_path / "invocation_counter"
+    counter_file = fake_claude_plan_env.parent / "invocation_counter"
 
     # ── 3. Write the two-stage fake_claude plan.
     #
@@ -87,93 +88,10 @@ def test_blocks_on_job_then_auto_resumes(
     # that passes waiting_on_job_ids (the happyranch CLI --from-file path does
     # not yet support this field).
     #
-    # Stage 2 uses happyranch report-completion inline args (not --from-file)
-    # to avoid the nested-JSON-in-single-quoted-printf escaping issue.
+    # Stage 2 serializes the completion payload to a private --from-file path.
     # The --summary value is a JSON object that _parse_next_step parses via
     # the legacy prose path: json.loads('{"action":"done",...}') -> NextStep.
-    fake_claude_plan_env.write_text(dedent(f"""\
-        #!/usr/bin/env bash
-        set -e
-        task_id="$1"
-        session_id="$2"
-        agent="$3"
-        org_slug="$4"
-        plan_dir="${HAPPYRANCH_TEST_PLAN_DIR:?missing private plan directory}"
-
-        counter="{counter_file}"
-        n=$(cat "$counter" 2>/dev/null || echo 0)
-        n=$((n + 1))
-        echo "$n" > "$counter"
-
-        if [ "$n" = "1" ]; then
-            # ── Stage 1: submit job + self-block with waiting_on_job_ids ──
-
-            # Submit a quick auto-run job.
-            payload="$plan_dir/blocked-by-job-submit-$$.json"
-            printf '{{
-              "task_id": "%s",
-              "session_id": "%s",
-              "title": "autonomous e2e job",
-              "rationale": "auto-run integration test",
-              "script": "echo autonomous-job-ran",
-              "interpreter": "bash",
-              "review_required": false,
-              "persistent": false
-            }}' "$task_id" "$session_id" > "$payload"
-
-            submit_log="$plan_dir/blocked-by-job-submit-log-$$.txt"
-            happyranch jobs submit --from-file "$payload" --org "$org_slug" > "$submit_log" 2>&1
-            cat "$submit_log" >&2
-
-            job_id=$(grep -oE 'JOB-[0-9]+' "$submit_log" | head -1)
-            if [ -z "$job_id" ]; then
-                echo "ERROR: could not parse JOB id from submit output" >&2
-                cat "$submit_log" >&2
-                exit 1
-            fi
-            echo "Stage 1: submitted $job_id" >&2
-
-            # Self-block with waiting_on_job_ids via direct HTTP call.
-            # The happyranch CLI report-completion --from-file path does not yet
-            # expose waiting_on_job_ids; we POST to the daemon directly.
-            port=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.port")
-            token=$(cat "$HAPPYRANCH_DAEMON_HOME/daemon.token")
-
-            completion_payload="$plan_dir/blocked-by-job-completion-$$.json"
-            printf '{{
-              "session_id": "%s",
-              "agent": "%s",
-              "status": "blocked",
-              "confidence": 0,
-              "output_summary": "Waiting for %s to finish before proceeding.",
-              "risks_flagged": [],
-              "dependencies": [],
-              "suggested_reviewer_focus": [],
-              "waiting_on_job_ids": ["%s"]
-            }}' "$session_id" "$agent" "$job_id" "$job_id" > "$completion_payload"
-
-            curl -s -X POST \\
-                "http://127.0.0.1:$port/api/v1/orgs/$org_slug/tasks/$task_id/completion" \\
-                -H "Authorization: Bearer $token" \\
-                -H "Content-Type: application/json" \\
-                -d @"$completion_payload" >&2
-            echo "" >&2
-            echo "Stage 1: blocked with waiting_on_job_ids=[$job_id]" >&2
-
-        else
-            # ── Stage 2: job results are available; complete the task ──
-            echo "Stage 2: task resumed, reporting completion" >&2
-
-            # Use inline args to avoid nested-JSON escaping issues with --from-file.
-            # The --summary value is a JSON decision object; _parse_next_step parses
-            # it via the legacy prose path when no decision field is provided.
-            happyranch report-completion --org "$org_slug" \\
-                --task-id "$task_id" --session-id "$session_id" \\
-                --agent "$agent" --status completed --confidence 90 \\
-                --summary '{{"action":"done","summary":"completed after job unblock"}}'
-            echo "Stage 2: reported completed" >&2
-        fi
-    """))
+    fake_claude_plan_env.write_text(build_blocked_autonomous_plan(fake_claude_plan_env.parent))
     fake_claude_plan_env.chmod(0o755)
 
     # ── 4. Dispatch the task.

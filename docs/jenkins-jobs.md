@@ -159,3 +159,40 @@ Use finite 15m allocation, 15m setup, 30m workload, 5m cleanup and 70m
 observation bounds. Process lifetime containment remains a separate F04
 feasibility obligation: path ownership, env cookies, timeouts, and numeric
 PID/PGID checks do not establish daemon or descendant ownership.
+
+The six selected test plan families call the builders in
+`tests/thr211_containment.py`. The independent thread-reply fixture has its own
+fresh plan root; it does not depend on the task-plan environment variable.
+Each emitted plan allocates a private invocation directory and registers its
+payload/log/completion files for cleanup on normal exit, callback failure, or
+HUP/INT/TERM. Cleanup attempts every registered file and the directory, emits
+each failure, and retains the primary exit status (or fails if cleanup alone
+fails). State counters, job-ID rendezvous files and readiness sentinels remain
+in the fixture-owned plan root for driver assertions; they are not transient
+callback files. Fixture directory reclamation and daemon/descendant lifetime
+containment remain separate F04 obligations. SIGKILL and hostile same-UID
+replacement are not covered by the shell traps.
+
+The review-required job serializes its absolute sentinel path into its own
+body and uses private exclusive creation, refusing existing files/symlinks.
+It does not inherit the parent plan's shell variables. The persistent plan
+rejects preexisting readiness files/symlinks before submission and fails when
+its bounded wait expires. JSON serialization preserves quoted runtime values
+and paths. Both blocked-job stages retain their original protocol fields and
+summary decisions; CLI callbacks use single-line absolute `--from-file` paths.
+
+The path helper walks literal absolute ancestry through no-follow directory
+descriptors, refuses existing roots, and compensates partial acquisition in
+reverse order. Acquisition, removal and descriptor-close errors are preserved
+together, with residue named rather than silently accepted. Callers must
+supply a trusted canonical temporary boundary: on macOS resolve the trusted
+system temporary directory first (for example `/private/var/...`), never
+resolve an untrusted candidate or accept a `/var` alias inside its ancestry.
+These checks detect preexisting unsafe paths; they are not OS isolation or a
+guarantee against hostile same-UID races after validation.
+
+Focused unit tests execute the shipping builders' returned plans and the
+actual submitted job bodies with controlled callback, HTTP, sleep and cleanup
+tools. They do not import/collect integration tests or contact a daemon or
+Jenkins. Ordinary integration remains SKIPPED under THR-243 seq42, and this
+plan evidence does not establish F04, Pipeline readiness or live admission.

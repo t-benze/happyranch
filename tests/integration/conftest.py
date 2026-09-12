@@ -224,7 +224,8 @@ def fake_claude_thread_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     Same shape as fake_claude_plan_env but routes to a separate script when
     the prompt is a thread invocation (detected by `Your invocation_token:`).
     """
-    plan_path = tmp_path / "thread_plan.sh"
+    paths = prepare_private_test_paths(tmp_path / "thr211-thread")
+    plan_path = paths.plans / "thread_plan.sh"
     monkeypatch.setenv("FAKE_CLAUDE_THREAD_PLAN", str(plan_path))
     return plan_path
 
