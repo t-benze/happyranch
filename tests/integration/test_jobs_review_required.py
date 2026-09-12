@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import json
 import time
-from textwrap import dedent
 
 import httpx
 import pytest
+
+from tests.thr211_containment import build_review_required_plan
 
 from tests.integration.conftest import seed_workspace, DEFAULT_TEST_SLUG
 
@@ -89,57 +90,9 @@ def test_review_required_job_lifecycle_submit_run_revisit(
     #
     # The plan receives: $1=task_id $2=session_id $3=agent $4=org_slug
     #
-    # We use printf + a temp file to build the JSON payload so here-docs with
-    # variable expansion stay simple, and the payload is a single happyranch
-    # invocation (required by the Claude permission model).
-    fake_claude_plan_env.write_text(dedent("""\
-        #!/usr/bin/env bash
-        set -e
-        task_id="$1"
-        session_id="$2"
-        agent="$3"
-        org_slug="$4"
-
-        # Write the submit payload to a temp file.
-        payload="/tmp/job-e2e-payload-$$.json"
-        printf '{
-          "task_id": "%s",
-          "session_id": "%s",
-          "title": "touch e2e sentinel",
-          "rationale": "integration test needs founder approval",
-          "script": "touch /tmp/happyranch-job-e2e-sentinel",
-          "interpreter": "bash",
-          "review_required": true
-        }' "$task_id" "$session_id" > "$payload"
-
-        # Submit the job (agent callback).
-        happyranch jobs submit --from-file "$payload" --org "$org_slug" \\
-            > /tmp/job-e2e-submit-$$.log 2>&1
-
-        # Extract job id from submit output, e.g. "ok: submitted JOB-001 (status=pending)."
-        job_id=$(grep -oE 'JOB-[0-9]+' /tmp/job-e2e-submit-$$.log | head -1)
-        if [[ -z "$job_id" ]]; then
-            echo "ERROR: could not parse JOB id from submit output" >&2
-            cat /tmp/job-e2e-submit-$$.log >&2
-            exit 1
-        fi
-
-        # Self-block: tell the orchestrator we are waiting on the founder.
-        report="/tmp/job-e2e-completion-$$.json"
-        printf '{
-          "task_id": "%s",
-          "session_id": "%s",
-          "agent": "%s",
-          "status": "blocked",
-          "summary": "Awaiting %s",
-          "confidence": 50,
-          "risks_flagged": [],
-          "dependencies": [],
-          "suggested_reviewer_focus": []
-        }' "$task_id" "$session_id" "$agent" "$job_id" > "$report"
-
-        happyranch report-completion --from-file "$report" --org "$org_slug"
-    """))
+    # The builder serializes JSON and the separately executed job's absolute
+    # sentinel path. Callbacks use single-line --from-file invocations.
+    fake_claude_plan_env.write_text(build_review_required_plan(fake_claude_plan_env.parent))
     fake_claude_plan_env.chmod(0o755)
 
     # ── 3. Dispatch the task.

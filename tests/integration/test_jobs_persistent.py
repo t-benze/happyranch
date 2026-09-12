@@ -17,10 +17,11 @@ Meanwhile the test:
 from __future__ import annotations
 
 import time
-from textwrap import dedent
 
 import httpx
 import pytest
+
+from tests.thr211_containment import build_persistent_plan
 
 from tests.integration.conftest import seed_workspace, DEFAULT_TEST_SLUG
 
@@ -81,58 +82,10 @@ def test_persistent_job_full_lifecycle(
     seed_workspace(runtime, "engineering_head")
 
     # Sentinel files the plan polls so the test can interleave its assertions.
-    job_sentinel = tmp_path / "job-submitted.txt"
-    stop_sentinel = tmp_path / "founder-acted.txt"
+    job_sentinel = fake_claude_plan_env.parent / "job-submitted.txt"
+    stop_sentinel = fake_claude_plan_env.parent / "founder-acted.txt"
 
-    fake_claude_plan_env.write_text(dedent(f"""\
-        #!/usr/bin/env bash
-        task_id="$1"
-        session_id="$2"
-        agent="$3"
-        org_slug="$4"
-
-        # 1. Submit a persistent + auto-run job whose script sleeps 60s.
-        payload="/tmp/job-persistent-payload-$$.json"
-        printf '{{
-          "task_id": "%s",
-          "session_id": "%s",
-          "title": "persistent dev loop",
-          "rationale": "long-running background task",
-          "script": "echo starting; sleep 60",
-          "interpreter": "bash",
-          "review_required": false,
-          "persistent": true
-        }}' "$task_id" "$session_id" > "$payload"
-
-        happyranch jobs submit --from-file "$payload" --org "$org_slug" \\
-            > /tmp/job-persistent-submit-$$.log 2>&1
-        cat /tmp/job-persistent-submit-$$.log >&2
-        touch "{job_sentinel}"
-
-        # 2. Wait until the test side has finished its assertions + stop.
-        for _ in $(seq 1 600); do
-            if [[ -f "{stop_sentinel}" ]]; then
-                break
-            fi
-            sleep 0.1
-        done
-
-        # 3. Report completion so the task transitions normally.
-        report="/tmp/job-persistent-completion-$$.json"
-        printf '{{
-          "task_id": "%s",
-          "session_id": "%s",
-          "agent": "%s",
-          "status": "completed",
-          "summary": "{{\\"action\\":\\"done\\",\\"summary\\":\\"loop launched, founder stopped\\"}}",
-          "confidence": 90,
-          "risks_flagged": [],
-          "dependencies": [],
-          "suggested_reviewer_focus": []
-        }}' "$task_id" "$session_id" "$agent" > "$report"
-
-        happyranch report-completion --from-file "$report" --org "$org_slug"
-    """))
+    fake_claude_plan_env.write_text(build_persistent_plan(fake_claude_plan_env.parent))
     fake_claude_plan_env.chmod(0o755)
 
     # ── Dispatch the task.
@@ -184,4 +137,5 @@ def test_persistent_job_full_lifecycle(
     assert final["reason"] == "founder_stop", final
 
     # ── Let the plan finish so the task transitions cleanly.
-    stop_sentinel.touch()
+    with stop_sentinel.open("x"):
+        stop_sentinel.chmod(0o600)

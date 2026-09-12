@@ -12,6 +12,8 @@ import time
 import httpx
 import pytest
 
+from tests.thr211_containment import build_content_plan
+
 from tests.integration.conftest import seed_workspace
 
 pytestmark = pytest.mark.integration
@@ -73,72 +75,13 @@ def test_content_team_pass_path_completes(
     seed_workspace(runtime, "content_writer")
     seed_workspace(runtime, "content_qa")
 
-    # State file: track how many times CM has been called so it can step through
-    # its 3 decision phases: delegate-to-writer → delegate-to-qa → done.
-    cm_state_file = fake_claude_plan_env.parent / "cm_step.txt"
-
     plan = fake_claude_plan_env
     # Write a plan script that:
     # - For content_manager: checks a counter file to decide which step to emit.
     # - For content_writer: completes with a simple summary.
     # - For content_qa: completes with a PASS verdict.
     # All agents use happyranch report-completion --from-file <json>.
-    plan.write_text(
-        '#!/usr/bin/env bash\n'
-        'set -e\n'
-        'task_id="$1"; session_id="$2"; agent="$3"; org_slug="$4"\n'
-        f'cm_state="{cm_state_file}"\n'
-        '\n'
-        'if [[ "$agent" == "content_manager" ]]; then\n'
-        '    # Read current CM step (0=delegate-writer, 1=delegate-qa, 2=done)\n'
-        '    if [[ -f "$cm_state" ]]; then\n'
-        '        step=$(cat "$cm_state")\n'
-        '    else\n'
-        '        step=0\n'
-        '    fi\n'
-        '    next=$((step+1))\n'
-        '    echo "$next" > "$cm_state"\n'
-        '\n'
-        '    tmpfile=$(mktemp /tmp/completion-XXXXXX.json)\n'
-        '    if [[ "$step" -eq 0 ]]; then\n'
-        '        # Step 1: delegate to content_writer\n'
-        '        cat > "$tmpfile" << \'__JSON__\'\n'
-        '{"task_id":"__TID__","session_id":"__SID__","agent":"content_manager","status":"completed","summary":"delegating to writer","confidence":90,"decision":{"action":"delegate","agent":"content_writer","prompt":"Write a comprehensive Macau visa guide for UK tourists"}}\n'
-        '__JSON__\n'
-        '    elif [[ "$step" -eq 1 ]]; then\n'
-        '        # Step 2: delegate to content_qa\n'
-        '        cat > "$tmpfile" << \'__JSON__\'\n'
-        '{"task_id":"__TID__","session_id":"__SID__","agent":"content_manager","status":"completed","summary":"delegating to QA","confidence":90,"decision":{"action":"delegate","agent":"content_qa","prompt":"Review the draft"}}\n'
-        '__JSON__\n'
-        '    else\n'
-        '        # Step 3: done\n'
-        '        cat > "$tmpfile" << \'__JSON__\'\n'
-        '{"task_id":"__TID__","session_id":"__SID__","agent":"content_manager","status":"completed","summary":"content approved","confidence":90,"decision":{"action":"done","summary":"content approved"}}\n'
-        '__JSON__\n'
-        '    fi\n'
-        '    # Substitute real task_id and session_id into the JSON\n'
-        '    sed -i "" "s/__TID__/$task_id/g" "$tmpfile" 2>/dev/null || sed -i "s/__TID__/$task_id/g" "$tmpfile"\n'
-        '    sed -i "" "s/__SID__/$session_id/g" "$tmpfile" 2>/dev/null || sed -i "s/__SID__/$session_id/g" "$tmpfile"\n'
-        '    happyranch report-completion --org "$org_slug" --from-file "$tmpfile"\n'
-        '    rm -f "$tmpfile"\n'
-        '\n'
-        'elif [[ "$agent" == "content_writer" ]]; then\n'
-        '    tmpfile=$(mktemp /tmp/completion-XXXXXX.json)\n'
-        '    printf \'{"task_id":"%s","session_id":"%s","agent":"content_writer","status":"completed","summary":"Draft completed","confidence":85}\' "$task_id" "$session_id" > "$tmpfile"\n'
-        '    happyranch report-completion --org "$org_slug" --from-file "$tmpfile"\n'
-        '    rm -f "$tmpfile"\n'
-        '\n'
-        'elif [[ "$agent" == "content_qa" ]]; then\n'
-        '    tmpfile=$(mktemp /tmp/completion-XXXXXX.json)\n'
-        '    printf \'{"task_id":"%s","session_id":"%s","agent":"content_qa","status":"completed","summary":"VERDICT: PASS - content is accurate","confidence":90}\' "$task_id" "$session_id" > "$tmpfile"\n'
-        '    happyranch report-completion --org "$org_slug" --from-file "$tmpfile"\n'
-        '    rm -f "$tmpfile"\n'
-        '\n'
-        'else\n'
-        '    echo "Unknown agent: $agent" >&2\n'
-        '    exit 1\n'
-        'fi\n'
-    )
+    plan.write_text(build_content_plan(plan.parent))
     plan.chmod(0o755)
 
     task_id = _submit_task(base, brief="Write Macau visa guide for UK tourists", team="content")
