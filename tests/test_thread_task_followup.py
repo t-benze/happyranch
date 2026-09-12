@@ -1036,8 +1036,8 @@ def test_escalation_thread_not_open_skips_with_audit(orch_with_db):
     assert any(r["action"] == "thread_followup_skipped" for r in audit_rows)
 
 
-def test_escalated_task_followup_prompt_matches_governing_skill_contract():
-    """The live escalation prompt and governing skill keep retirement aligned."""
+def test_escalated_task_followup_prompt_preserves_result_guidance():
+    """The live escalation prompt retains the founder-result guidance."""
     from runtime.daemon.thread_runner import _purpose_note
     from runtime.models import ThreadMessage, ThreadMessageKind
     from datetime import datetime, timezone
@@ -1057,21 +1057,24 @@ def test_escalated_task_followup_prompt_matches_governing_skill_contract():
     assert "ESCALATED" in note
     assert "TASK-893" in note
     assert "needs founder CDN authorize" in note
-    contract = (
+    runtime_contract = (
         "Reply with the precise founder decision needed",
         "Do not dispatch repair work from this turn",
         "Autonomous escalation continuation is retired",
     )
+    for instruction in runtime_contract:
+        assert instruction in note
+    assert "THR-166 policy" not in note
+
     skill = " ".join(
         (Path(__file__).resolve().parents[1] / "runtime/skills/bundled/thread/SKILL.md")
         .read_text()
         .split()
     )
-    for instruction in contract:
-        assert instruction in note
-        assert instruction in skill
-
-    assert "THR-166 policy" not in note
+    assert "Reply with the precise founder decision needed" in skill
+    assert "Optional replacement dispatch" in skill
+    assert "omitting `resolves`" in skill
+    assert "Autonomous escalation continuation is retired" not in skill
     assert "THR-166 policy" not in skill
 
 
