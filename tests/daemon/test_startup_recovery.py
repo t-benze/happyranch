@@ -1645,7 +1645,7 @@ def test_completed_leaf_postcommit_restart_cleans_only_owned_job_and_wakes_once(
 
 @pytest.mark.parametrize("kind", ["leaf", "manager_done", "nonroot_escalate"])
 @pytest.mark.parametrize("boundary_winner", ["unchanged", "terminal_cancel_route", "durable_cancelled", "same_agent_new_session", "changed_agent_same_session"])
-def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_path, kind, boundary_winner, monkeypatch):
+def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_path, kind, boundary_winner, monkeypatch, disable_termination=False):
     """A real accepted callback consumed by startup settles before its async cleanup."""
     import threading
     from runtime.daemon import jobs_runner
@@ -1674,6 +1674,29 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
     entered, release, errors = threading.Event(), threading.Event(), []
     parent_effects: list[str] = []
     real_terminate, real_thread, workers = jobs_runner.terminate_jobs_for_task, threading.Thread, []
+    prior_inflight = dict(jobs_runner._INFLIGHT)
+    prior_kill_reasons = dict(jobs_runner._KILL_REASON_OVERRIDE)
+    owned = SimpleNamespace(pid=111, returncode=None)
+    unrelated = SimpleNamespace(pid=222, returncode=None)
+    winner = SimpleNamespace(pid=333, returncode=None)
+    signals: list[tuple[int, int]] = []
+    jobs_runner._INFLIGHT["JOB-OWNED"] = owned
+    jobs_runner._INFLIGHT["JOB-OTHER"] = unrelated
+
+    def owned_killpg(pid, sig):
+        signals.append((pid, sig))
+        # Every process-control signal must name the admitted receipt-owned
+        # control.  A winner or unrelated control is never an acceptable
+        # substitute for this post-consumption settlement observation.
+        assert pid == owned.pid
+        assert sig == jobs_runner.signal.SIGTERM
+        owned.returncode = -15
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(jobs_runner.os, "killpg", owned_killpg)
+    monkeypatch.setattr(jobs_runner.asyncio, "sleep", no_wait)
     async def paused(*args, **kwargs):
         entered.set(); assert release.wait(2); return await real_terminate(*args, **kwargs)
     def tracked_thread(*, target, daemon):
@@ -1693,13 +1716,23 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
             # Defensive durable-state exclusion: this is deliberately not a
             # reachable successful cancellation of an already terminal task.
             db.update_task(task_id, cancelled_at="2026-01-01T00:02:30Z")
+            _seed_job(db, "JOB-WINNER", task_id, "running")
+            jobs_runner._INFLIGHT["JOB-WINNER"] = winner
         elif boundary_winner == "same_agent_new_session":
             db.update_task(task_id, current_session_id="newer-session")
+            _seed_job(db, "JOB-WINNER", task_id, "running")
+            jobs_runner._INFLIGHT["JOB-WINNER"] = winner
         elif boundary_winner == "changed_agent_same_session":
             db.update_task(task_id, assigned_agent="new-agent")
+            _seed_job(db, "JOB-WINNER", task_id, "running")
+            jobs_runner._INFLIGHT["JOB-WINNER"] = winner
         return original_settle(**kwargs)
     monkeypatch.setattr(db, "settle_consumed_task_completion_recovery_jobs", install_boundary_winner)
-    monkeypatch.setattr(jobs_runner, "terminate_jobs_for_task", paused)
+    async def disabled(*_args, **_kwargs):
+        entered.set()
+        assert release.wait(2)
+        return []
+    monkeypatch.setattr(jobs_runner, "terminate_jobs_for_task", disabled if disable_termination else paused)
     monkeypatch.setattr(threading, "Thread", tracked_thread)
     real_enqueue_parent = run_step._enqueue_parent_if_waiting
     def observe_parent_effect(*args, **kwargs):
@@ -1734,9 +1767,18 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
         # Failure cleanup uses the same complete release/join protocol as the
         # green path, including workers created by either reentry.
         release.set()
+        join_failures = []
         for worker in workers:
             worker.join(2)
-            assert not worker.is_alive(), "startup recovery worker leaked"
+            if worker.is_alive():
+                join_failures.append(worker)
+        jobs_runner._INFLIGHT.clear()
+        jobs_runner._INFLIGHT.update(prior_inflight)
+        jobs_runner._KILL_REASON_OVERRIDE.clear()
+        jobs_runner._KILL_REASON_OVERRIDE.update(prior_kill_reasons)
+        assert not join_failures, "startup recovery worker leaked"
+        # Every worker is joined before either liveness or worker-error
+        # failure is surfaced, including on the injected first-liveness path.
     # Worker exceptions are asserted only after every pass's worker has
     # joined; probes inject into the reentry workers specifically.
     assert not errors
@@ -1758,12 +1800,22 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
         assert task_after.current_session_id == session_id
     if boundary_winner in {"unchanged", "terminal_cancel_route"}:
         assert db.get_job("JOB-OWNED").reason == "task_ended"
+        assert (
+            owned.returncode == -15
+            and signals == [(owned.pid, jobs_runner.signal.SIGTERM)]
+        ), "owned process control was not terminated"
+        assert unrelated.returncode is None
+        assert winner.returncode is None
         # Each startup pass reconstructs the ordinary terminal parent wake;
         # queue deduplication leaves exactly one pending parent delivery.
         assert parent_effects == [task_id, task_id, task_id]
         assert list(queue._queue._queue).count(("test", "TASK-PARENT", None)) == 1
     else:
         assert db.get_job("JOB-OWNED").status.value == "running"
+        assert owned.returncode is None
+        assert winner.returncode is None
+        assert unrelated.returncode is None
+        assert signals == []
         # A winner rejects the old recovery handoff.  The one ordinary
         # startup reconstruction below is intentionally not that handoff.
         assert parent_effects == []
@@ -1774,6 +1826,54 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
         assert db.get_job("JOB-OTHER").reason == "daemon_crash"
     else:
         assert db.get_job("JOB-OTHER").status.value == "running"
+@pytest.mark.parametrize("kind", ["leaf", "manager_done", "nonroot_escalate"])
+def test_startup_consumed_recovery_disabled_termination_fails_owned_control_observation(tmp_path, kind):
+    """The maintained unchanged-owner case rejects a no-op runner terminator."""
+    with pytest.MonkeyPatch.context() as monkeypatch, pytest.raises(
+        AssertionError, match="owned process control was not terminated",
+    ):
+        test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(
+            tmp_path, kind, "unchanged", monkeypatch, disable_termination=True,
+        )
+
+
+@pytest.mark.parametrize("kind", ["leaf", "manager_done", "nonroot_escalate"])
+def test_startup_consumed_recovery_joins_every_worker_before_liveness_failure(tmp_path, kind):
+    """A first liveness failure cannot bypass bounded joins for later workers."""
+    real_thread = threading.Thread
+    workers: list[threading.Thread] = []
+    joins: list[int] = []
+
+    def instrumented_thread(*args, **kwargs):
+        worker = real_thread(*args, **kwargs)
+        index = len(workers)
+        workers.append(worker)
+        original_join = worker.join
+
+        def join(*join_args, **join_kwargs):
+            joins.append(index)
+            return original_join(*join_args, **join_kwargs)
+
+        worker.join = join
+        if index == 0:
+            # Exercise the liveness branch without leaving a real worker live;
+            # the outer finally drains every captured worker.
+            worker.is_alive = lambda: True
+        return worker
+
+    try:
+        with pytest.MonkeyPatch.context() as outer, pytest.MonkeyPatch.context() as monkeypatch:
+            outer.setattr(threading, "Thread", instrumented_thread)
+            with pytest.raises(AssertionError, match="startup recovery worker leaked"):
+                test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(
+                    tmp_path, kind, "unchanged", monkeypatch,
+                )
+        assert len(workers) == 3
+        assert joins == [0, 1, 2]
+    finally:
+        for worker in workers:
+            real_thread.join(worker, 3)
+            assert not real_thread.is_alive(worker)
 
 
 @pytest.mark.parametrize("winner", ["cancelled", "replacement"])
