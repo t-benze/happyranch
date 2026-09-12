@@ -20,12 +20,16 @@ touched.
 from __future__ import annotations
 
 import os
-import select
 import signal
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -71,31 +75,34 @@ def _running(pid: int, identity: str = "boot-1") -> RunningHandle:
 class _CooperativeEscapedChild:
     """Test-only finite lifetime for a child that escapes the tested group.
 
-    Closing ``_control_write`` is an explicit cooperative request to this exact
-    child, not an OS ownership claim about its PID or process group. The child
-    also expires on its own, so an exception between launch and observation
-    cannot leave it running indefinitely.
+    Removing the private control marker is an explicit cooperative request to
+    this exact child, passed via ordinary argv rather than an unsupported
+    LaunchSpec extension.  It is not an OS ownership claim about a PID or
+    process group.  The child also expires on its own.
     """
 
     _CHILD = (
-        "import os, select, sys, time; "
-        "control, report, deadline = map(int, sys.argv[1:]); "
-        "os.setsid(); os.write(report, b'R'); "
-        "select.select([control], [], [], deadline); "
-        "os.write(report, b'E')"
+        "import os, pathlib, sys, time; "
+        "control, report, deadline = sys.argv[1], sys.argv[2], float(sys.argv[3]); "
+        "os.setsid(); pathlib.Path(report).write_text('R'); "
+        "[(time.sleep(.02)) for _ in range(int(deadline * 50)) if pathlib.Path(control).exists()]; "
+        "pathlib.Path(report).write_text(pathlib.Path(report).read_text()+'E')"
     )
 
     def __init__(self, deadline_seconds: float = 5.0) -> None:
-        self._control_read, self._control_write = os.pipe()
-        self._report_read, self._report_write = os.pipe()
+        # Keep this tiny owned control directory under the test worktree: the
+        # shared task tmp cleaner may otherwise delete it between launch and
+        # the child's acknowledgement.
+        self._root: Path | None = Path(
+            tempfile.mkdtemp(prefix=".pytest-owned-escaped-", dir=Path.cwd())
+        )
+        self._control = self._root / "release"
+        self._report = self._root / "events"
+        self._control.touch()
         self._deadline_seconds = deadline_seconds
         self._released = False
         self.release_error: OSError | None = None
-        self._signals = b""
-
-    @property
-    def pass_fds(self) -> tuple[int, int]:
-        return (self._control_read, self._report_write)
+        self.cleanup_errors: list[BaseException] = []
 
     @property
     def argv(self) -> tuple[str, ...]:
@@ -103,57 +110,127 @@ class _CooperativeEscapedChild:
             sys.executable,
             "-c",
             self._CHILD,
-            str(self._control_read),
-            str(self._report_write),
-            str(int(self._deadline_seconds)),
+            str(self._control),
+            str(self._report),
+            str(self._deadline_seconds),
         )
 
     def wait_for(self, signal_byte: bytes, timeout: float = 2.0) -> bool:
         deadline = time.monotonic() + timeout
-        while signal_byte not in self._signals and time.monotonic() < deadline:
-            readable, _, _ = select.select([self._report_read], [], [], deadline - time.monotonic())
-            if not readable:
-                break
-            self._signals += os.read(self._report_read, 16)
-        return signal_byte in self._signals
+        while time.monotonic() < deadline:
+            try:
+                if signal_byte.decode() in self._report.read_text():
+                    return True
+            except FileNotFoundError:
+                # The child has not yet created its report, unless cleanup
+                # already removed the owned directory.
+                if self._root is None or not self._root.exists():
+                    self.cleanup_errors.append(AssertionError("report directory vanished"))
+                    return False
+            except OSError as exc:
+                self.cleanup_errors.append(exc)
+                return False
+            time.sleep(.02)
+        return False
 
     def release(self) -> None:
         if self._released:
             return
         self._released = True
         try:
-            os.close(self._control_write)
+            self._control.unlink()
         except OSError as exc:
             self.release_error = exc
 
     def close(self) -> None:
-        self.release()
-        for fd in (self._control_read, self._report_read, self._report_write):
+        try:
+            self.release()
+        except BaseException as exc:
+            self.cleanup_errors.append(exc)
+        if self._root is not None:
             try:
-                os.close(fd)
-            except OSError:
-                pass
+                shutil.rmtree(self._root)
+            except BaseException as exc:
+                self.cleanup_errors.append(exc)
+            finally:
+                self._root = None
+
+
+def _note_cleanup(primary: BaseException | None, child: _CooperativeEscapedChild) -> None:
+    """Keep the primary failure while making cleanup failure/unknown visible."""
+    evidence = [str(error) for error in child.cleanup_errors]
+    if child.release_error is not None:
+        evidence.append(f"release: {child.release_error}")
+    if evidence:
+        if primary is not None:
+            primary.add_note("escaped-child cleanup: " + "; ".join(evidence))
+        else:
+            raise AssertionError("escaped-child cleanup unknown: " + "; ".join(evidence))
 
 
 def test_cooperative_escaped_child_releases_only_its_owned_process():
     """The test control closes one same-command child without name/PID kills."""
     first = _CooperativeEscapedChild()
     second = _CooperativeEscapedChild()
-    first_process = subprocess.Popen(first.argv, pass_fds=first.pass_fds)
-    second_process = subprocess.Popen(second.argv, pass_fds=second.pass_fds)
+    first_process = subprocess.Popen(first.argv)
+    second_process = subprocess.Popen(second.argv)
     try:
         assert first.wait_for(b"R")
         assert second.wait_for(b"R")
         first.release()
         assert first.release_error is None
-        assert first.wait_for(b"E")
+        assert first.wait_for(b"E")  # acknowledgement is not terminal proof
         assert first_process.wait(timeout=2) == 0
         assert second_process.poll() is None
     finally:
-        second.release()
-        second_process.wait(timeout=2)
-        first.close()
-        second.close()
+        primary = sys.exception()
+        for child, process in ((second, second_process), (first, first_process)):
+            child.close()
+            try:
+                process.wait(timeout=2)
+            except BaseException as exc:
+                child.cleanup_errors.append(exc)
+            _note_cleanup(primary, child)
+
+
+def test_escaped_shipping_seam_uses_supported_launchspec_and_finalizes_on_finish_error(monkeypatch):
+    """Exercise the changed real test seam, not a direct-Popen-only helper."""
+    class _Child:
+        argv = ("owned-child", "control", "report", "1")
+        release_error = None
+        cleanup_errors: list[BaseException] = []
+        _root = object()
+
+        def wait_for(self, signal_byte, timeout=2.0):
+            return signal_byte == b"R"
+
+        def release(self):
+            return None
+
+        def close(self):
+            self._root = None
+
+    child = _Child()
+    launched: list[LaunchSpec] = []
+
+    class _Backend:
+        def prepare(self, *_args):
+            return object()
+
+        def launch(self, _pending, spec):
+            launched.append(spec)
+            return SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
+
+        def finish(self, *_args, **_kwargs):
+            raise RuntimeError("finish-primary")
+
+    monkeypatch.setattr(sys.modules[__name__], "_CooperativeEscapedChild", lambda: child)
+    with pytest.raises(RuntimeError, match="finish-primary"):
+        test_escaped_descendant_is_best_effort_survivor_real(_Backend())
+    assert launched and isinstance(launched[0], LaunchSpec)
+    assert "pass_fds" not in repr(launched[0])
+    assert child._root is None
+    assert child.release_error is None
 
 
 # ── deterministic unit tests (fake census) ───────────────────────────
@@ -568,14 +645,12 @@ def test_escaped_descendant_is_best_effort_survivor_real(real_backend):
     still lives — a descendant that escapes AND is reparented before finish
     (root already exited) is unobservable by any process-table walk."""
     escaped = _CooperativeEscapedChild()
-    primary_failure = False
     try:
         pending = real_backend.prepare(_request(), _policy())
         running = real_backend.launch(
             pending,
             LaunchSpec(
                 argv=("sh", "-c", f"{shlex.join(escaped.argv)} & sleep 5"),
-                pass_fds=escaped.pass_fds,
             ),
         )
         assert escaped.wait_for(b"R")
@@ -589,8 +664,7 @@ def test_escaped_descendant_is_best_effort_survivor_real(real_backend):
         assert receipt.survivors, "escaped descendant must be censused by finish's own census"
         assert receipt.quiescent is False
         assert receipt.cleanup_status is not CleanupStatus.INCOMPLETE
-    except BaseException:
-        primary_failure = True
+    except BaseException as primary:
         raise
     finally:
         # Run only after the shipping census/assertions. The control FD is
@@ -598,11 +672,16 @@ def test_escaped_descendant_is_best_effort_survivor_real(real_backend):
         # is attempted. On an earlier primary error the child still receives
         # the cooperative close (and has intrinsic expiry), while its cleanup
         # observation never replaces that primary error.
-        escaped.release()
-        if not primary_failure:
-            assert escaped.release_error is None
-            assert escaped.wait_for(b"E")
-        escaped.close()
+        primary = sys.exception()
+        try:
+            escaped.release()
+            if primary is None and not escaped.wait_for(b"E"):
+                escaped.cleanup_errors.append(AssertionError("missing release acknowledgement"))
+        except BaseException as cleanup_error:
+            escaped.cleanup_errors.append(cleanup_error)
+        finally:
+            escaped.close()
+            _note_cleanup(primary, escaped)
 
 
 @real_integration
