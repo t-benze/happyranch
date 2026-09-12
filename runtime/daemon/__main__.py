@@ -180,6 +180,18 @@ def _sweep_on_startup(
                         agent=t.assigned_agent, session_id=t.current_session_id or "",
                         result_row_id=accepted_result["id"],
                     )
+                    # The consumer's post-commit live cleanup is asynchronous.
+                    # Re-read and fence the now-consumed exact owner before the
+                    # startup sweep returns, so the generic orphan scan cannot
+                    # win this narrow gap.  The database predicate rejects a
+                    # cancellation/replacement/new accepted result and holds no
+                    # lock across termination or its grace-period wait.
+                    db.backstop_consumed_task_completion_recovery_jobs(
+                        task_id=task_id,
+                        agent=t.assigned_agent,
+                        result_row_id=accepted_result["id"],
+                        finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    )
                 continue
             recovery = db.get_claimed_task_completion_recovery(
                 task_id=task_id, agent=t.assigned_agent,

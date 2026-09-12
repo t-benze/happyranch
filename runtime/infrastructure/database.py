@@ -6359,6 +6359,40 @@ class Database:
         return cursor.rowcount
 
     @_synchronized
+    def backstop_consumed_task_completion_recovery_jobs(
+        self, *, task_id: str, agent: str, result_row_id: int, finished_at: str,
+    ) -> int:
+        """Durably settle jobs only for the exact recovery owner just consumed.
+
+        Startup calls this after the recovery consumer commits, before the
+        ordinary orphan scan can classify a still-running owned job.  The
+        guarded join deliberately rejects cancellation, replacement, or a
+        different accepted result; it never turns a historical receipt into a
+        generic terminal-job cleanup authority.
+        """
+        cursor = self._conn.execute(
+            """UPDATE jobs SET status='failed', reason='task_ended', finished_at=?,
+                              duration_ms=COALESCE(duration_ms, 0)
+               WHERE task_id=? AND status='running'
+                 AND EXISTS (
+                   SELECT 1 FROM task_completion_recoveries AS r
+                   JOIN task_results AS tr ON tr.id=r.accepted_result_id
+                   JOIN tasks AS t ON t.id=r.task_id
+                   WHERE r.task_id=? AND r.agent=? AND r.accepted_result_id=?
+                     AND r.state='callback_consumed'
+                     AND tr.task_id=r.task_id AND tr.agent=r.agent
+                     AND tr.session_id=r.recovery_session_id
+                     AND t.assigned_agent=r.agent
+                     AND t.current_session_id=r.recovery_session_id
+                     AND t.cancelled_at IS NULL
+                     AND t.status IN ('completed', 'failed')
+                 )""",
+            (finished_at, task_id, task_id, agent, result_row_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
+    @_synchronized
     def list_jobs_db(
         self,
         *,

@@ -1065,6 +1065,8 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
         # depends on the restart cleanup rather than old-process work.
         with mock.patch.object(
             reopened, "backstop_terminated_task_jobs", return_value=None,
+        ), mock.patch.object(
+            reopened, "backstop_consumed_task_completion_recovery_jobs", return_value=None,
         ), mock.patch(
             "runtime.orchestrator.run_step._kill_jobs_for_terminating_task",
         ), mock.patch("runtime.orchestrator.run_step._enqueue_parent_if_waiting"):
@@ -1263,8 +1265,11 @@ def test_accepted_manager_done_recovery_final_owner_and_receipt_fences(tmp_path,
                 assert task.assigned_agent == "engineering_manager"
                 assert task.current_session_id == "replacement-session"
                 winner_row = task.model_dump()
-                _sweep_on_startup(db, queue, "test", orch)
-                _sweep_on_startup(db, queue, "test", orch)
+                # Keep the actual observers installed across both reentries:
+                # injected stale recovery effects must not escape the test.
+                with mock.patch("runtime.daemon.jobs_runner.terminate_jobs_for_task", side_effect=observe_terminate), mock.patch("runtime.orchestrator.run_step._kill_jobs_for_terminating_task", side_effect=observe_cleanup), mock.patch("runtime.orchestrator.run_step._enqueue_parent_if_waiting", side_effect=observe_enqueue), mock.patch("runtime.orchestrator.run_step._maybe_post_thread_followup", side_effect=observe_delivery):
+                    _sweep_on_startup(db, queue, "test", orch)
+                    _sweep_on_startup(db, queue, "test", orch)
                 assert db.get_task(task_id).model_dump() == winner_row
                 assert dict(db.execute(
                     "SELECT * FROM task_results WHERE id=?", (accepted["id"],),
@@ -1634,6 +1639,56 @@ def test_completed_leaf_postcommit_restart_cleans_only_owned_job_and_wakes_once(
     # separated from recovery cleanup above.
     assert queue._queue.get_nowait() == ("test", "TASK-OTHER", None)
     assert queue._queue.empty()
+
+
+@pytest.mark.parametrize("kind", ["leaf", "manager_done", "nonroot_escalate"])
+def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_path, kind):
+    """A real accepted callback consumed by startup settles before its async cleanup."""
+    import threading
+    from runtime.daemon import jobs_runner
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+
+    if kind == "leaf":
+        db, orch, queue = _seed_org_with_orch(tmp_path)
+        task_id, agent, session_id, decision = "TASK-REC", "dev_agent", "recovery-TASK-REC", None
+        _claim_interrupted_recovery(db, task_id, binding="recovery")
+        db.execute("UPDATE tasks SET task_type='subtask' WHERE id=?", (task_id,)); db.commit()
+    else:
+        db, orch, queue, task_id, _ = _seed_manager_recovery_result(tmp_path)
+        agent, session_id = "engineering_manager", "recovery-manager"
+        db.update_task(task_id, current_session_id="origin")
+        assert db.claim_task_completion_recovery(task_id=task_id, agent=agent, origin_session_id="origin", recovery_session_id=session_id, provider_session_id="provider", claimed_at="2026-01-01T00:00:00+00:00", expires_at="2999-01-01T00:02:00+00:00")
+        db.update_task(task_id, current_session_id=session_id)
+        decision = '{"action":"done","summary":"done"}' if kind == "manager_done" else '{"action":"escalate","reason":"parent"}'
+    db.insert_task(TaskRecord(id="TASK-PARENT", brief="parent", team="engineering", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED))
+    db.execute("UPDATE tasks SET parent_task_id='TASK-PARENT' WHERE id=?", (task_id,)); db.commit()
+    db.insert_task(TaskRecord(id="TASK-OTHER", brief="other", team="engineering"))
+    _seed_job(db, "JOB-OWNED", task_id, "running"); _seed_job(db, "JOB-OTHER", "TASK-OTHER", "running")
+    assert db.admit_task_completion_callback(task_id=task_id, agent=agent, session_id=session_id, status="completed", output_summary="done", confidence_score=100, decision_json=decision)
+    accepted = db.get_accepted_task_completion_recovery_result(task_id=task_id, agent=agent); assert accepted is not None
+    entered, release, errors = threading.Event(), threading.Event(), []
+    real_terminate, real_thread, workers = jobs_runner.terminate_jobs_for_task, threading.Thread, []
+    async def paused(*args, **kwargs):
+        entered.set(); assert release.wait(2); return await real_terminate(*args, **kwargs)
+    def tracked_thread(*, target, daemon):
+        worker = real_thread(target=lambda: _capture_worker_error(target, errors), daemon=daemon); workers.append(worker); return worker
+    try:
+        with mock.patch.object(jobs_runner, "terminate_jobs_for_task", paused), mock.patch.object(threading, "Thread", tracked_thread):
+            _sweep_on_startup(db, queue, "test", orch)
+            assert entered.wait(2)
+            assert db.get_job("JOB-OWNED").reason == "task_ended"
+            assert db.recover_orphaned_running_jobs(now_iso="2026-01-01T00:03:00Z") == ["JOB-OTHER"]
+        assert not errors
+    finally:
+        release.set()
+        for worker in workers: worker.join(2); assert not worker.is_alive()
+
+
+def _capture_worker_error(target, errors):
+    try:
+        target()
+    except BaseException as exc:
+        errors.append(exc)
 
 
 @pytest.mark.asyncio
@@ -3319,6 +3374,7 @@ def test_shipping_startup_invocation_commit_serializes_owned_job_backstop(
     _seed_job(db, "JOB-OTHER", "TASK-OTHER", "running")
 
     update_reached = threading.Event()
+    cleanup_attempted_lock = threading.Event()
     release_startup = threading.Event()
     startup_errors: list[BaseException] = []
     cleanup_errors: list[BaseException] = []
@@ -3337,6 +3393,8 @@ def test_shipping_startup_invocation_commit_serializes_owned_job_backstop(
 
     class ObservableLock:
         def acquire(self, *args, **kwargs):
+            if threading.current_thread() is cleanup_thread:
+                cleanup_attempted_lock.set()
             return original_lock.acquire(*args, **kwargs)
 
         def release(self):
@@ -3378,7 +3436,7 @@ def test_shipping_startup_invocation_commit_serializes_owned_job_backstop(
     startup_thread.start()
     assert update_reached.wait(2), "shipping startup never reached UPDATE-to-commit"
     cleanup_thread.start()
-    cleanup_thread.join(0.1)
+    assert cleanup_attempted_lock.wait(2), "owned cleanup never attempted startup's DB lock"
     assert cleanup_thread.is_alive(), "owned cleanup bypassed startup's DB lock"
     release_startup.set()
     startup_thread.join(2)
@@ -3387,3 +3445,8 @@ def test_shipping_startup_invocation_commit_serializes_owned_job_backstop(
     assert not startup_errors and not cleanup_errors
     assert db.get_job("JOB-OWNED").reason == "task_ended"
     assert db.get_job("JOB-OTHER").status is JobStatus.RUNNING
+    token = db.execute("SELECT invocation_token FROM thread_invocations WHERE thread_id='THR-LOCK'").fetchone()["invocation_token"]
+    invocation = db.get_invocation_any_status(token)
+    assert invocation.status.value == "failed"
+    assert invocation.decline_reason == "daemon_restart"
+    assert invocation.consumed_at is not None
