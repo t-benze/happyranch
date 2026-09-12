@@ -469,6 +469,87 @@ def test_custom_adapter_contained_uses_backend_process(tmp_path):
     running.process.wait()
 
 
+@pytest.mark.parametrize("contained", [False, True], ids=["fallback", "contained"])
+def test_ordinary_task_producers_run_each_concrete_executor_body(tmp_path, monkeypatch, contained):
+    """The two shipping producers reach all ordinary executor bodies.
+
+    This deliberately exercises ``_launch_agent_with_scratch``, rather than
+    calling ``executor.run`` directly: both fallback and contained launch
+    forms must preserve the ordinary validator/retry contract while the real
+    Claude, OpenCode, Pi, and adapter bodies communicate with their process.
+    """
+    import json
+    from types import MethodType
+
+    from runtime.config import Settings
+    from runtime.orchestrator import executors as ex
+    from runtime.orchestrator import workspace_adapters
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    observed: list[str | None] = []
+
+    class Process:
+        pid, returncode = 70001, 0
+
+        def communicate(self, input=None, timeout=None):
+            observed.append(input)
+            if input and input.startswith('{"contract_version":'):
+                return json.dumps({
+                    "contract_version": 1, "session_id": "sess-adapter-1",
+                    "success": True, "returncode": 0, "duration_seconds": 1,
+                    "stdout_tail": "ok", "stderr_tail": "",
+                    "adapter_metadata": {"contract_version": 1, "adapter": "adapter-1", "adapter_version": "v1"},
+                    "token_usage": None,
+                }), ""
+            return "", ""
+
+    class Supervisor:
+        def run(self, request, **kwargs):
+            assert kwargs["allow_retries"] is True
+            assert kwargs["final_prelaunch_validator"] is None
+            kwargs["pre_launch_validator"]()
+            running = RunningHandle(
+                backend="fake", token="token", request_id="ordinary",
+                root_pid=70001, start_identity="fake", process=Process(),
+            )
+            result = kwargs["launch_body"](running)
+            kwargs["on_terminal"](None)
+            return SimpleNamespace(payload=result)
+
+    monkeypatch.setattr(ex, "_resolve_binary", lambda *_a, **_k: "/bin/true")
+    monkeypatch.setattr(ex, "_callee_env", lambda *_a, **_k: {})
+    monkeypatch.setattr(workspace_adapters, "allow_rules_for_agent", lambda *_a, **_k: ())
+    monkeypatch.setattr(ex.subprocess, "Popen", lambda *_a, **_k: Process())
+    monkeypatch.setattr(ex, "detect_platform_isolation", lambda: SimpleNamespace(launch_executor=lambda *_a, **_k: Process()))
+
+    executors = (
+        ex.ClaudeExecutor("claude", "default", Settings()),
+        ex.OpencodeExecutor("opencode"),
+        ex.PiExecutor("pi"),
+        _make_adapter_executor(tmp_path),
+    )
+    orch = SimpleNamespace(
+        _host_supervisor=Supervisor() if contained else None,
+        _sessions=None, _slug="test",
+    )
+    orch._run_agent_launch_contained = MethodType(
+        Orchestrator._run_agent_launch_contained, orch,
+    )
+    for executor in executors:
+        before = len(observed)
+        result = Orchestrator._launch_agent_with_scratch(
+            orch, task_id="TASK-PRODUCER", agent_name="dev_agent",
+            workspace=tmp_path, provider="ordinary", model_name=None,
+            executor=executor, session_id="sess-adapter-1",
+            full_prompt="ordinary task", timeout_seconds=10,
+            on_started=lambda _pid: None, on_throttle_event=None,
+            pre_launch_integrity_validator=lambda: None,
+            recovery_launch_validator=lambda: None,
+        )
+        assert result.success, result.error
+        assert len(observed) == before + 1
+
+
 def test_custom_adapter_contained_verifies_launch_ready(tmp_path):
     """The adapter artifact is re-verified inside the contained body too
     (defense in depth): a tampered executable fails closed."""

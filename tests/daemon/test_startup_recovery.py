@@ -1108,7 +1108,7 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
             assert queue._queue.empty()
 
 @pytest.mark.parametrize(
-    "winner", ["cancel", "new_session", "new_agent", "different_result", "not_accepted", "unchanged"],
+    "winner", ["cancel", "new_session", "new_agent", "completed", "different_result", "not_accepted", "unchanged"],
 )
 def test_accepted_manager_done_recovery_final_owner_and_receipt_fences(tmp_path, winner):
     """The real final owner CAS rejects every stale accepted-manager result."""
@@ -1159,6 +1159,16 @@ def test_accepted_manager_done_recovery_final_owner_and_receipt_fences(tmp_path,
             db.update_task(task_id, current_session_id="replacement-session")
         elif winner == "new_agent":
             db.update_task(task_id, assigned_agent="dev_agent")
+        elif winner == "completed":
+            # The final CAS is the only point at which the old recovery can
+            # publish effects.  A same-agent, newer-session terminal winner
+            # must leave the accepted old result immutable and produce no
+            # stale cleanup, parent wake, or thread follow-up on either
+            # startup re-entry.
+            db.update_task(
+                task_id, current_session_id="replacement-session",
+                status=TaskStatus.COMPLETED, note="new owner completed",
+            )
         elif winner == "different_result":
             replacement = db.insert_task_result(task_id=task_id, agent="engineering_manager", session_id="replacement-session", status="completed", confidence_score=100, output_summary="replacement")
             db.execute("UPDATE task_completion_recoveries SET accepted_result_id=? WHERE task_id=?", (replacement, task_id))
@@ -1227,7 +1237,11 @@ def test_accepted_manager_done_recovery_final_owner_and_receipt_fences(tmp_path,
         assert queue._queue.empty()
     else:
         assert ledger["state"] != "callback_consumed"
-        assert task.status is (TaskStatus.CANCELLED if winner == "cancel" else TaskStatus.IN_PROGRESS)
+        assert task.status is (
+            TaskStatus.CANCELLED if winner == "cancel"
+            else TaskStatus.COMPLETED if winner == "completed"
+            else TaskStatus.IN_PROGRESS
+        )
         # A shipping cancellation has its own observed effects.  The stale
         # recovery contributes no cleanup, parent wake, or thread delivery.
         assert winner_effect_counts is not None
@@ -1245,6 +1259,19 @@ def test_accepted_manager_done_recovery_final_owner_and_receipt_fences(tmp_path,
             if winner == "new_session":
                 assert task.assigned_agent == "engineering_manager"
                 assert task.current_session_id == "replacement-session"
+            elif winner == "completed":
+                assert task.assigned_agent == "engineering_manager"
+                assert task.current_session_id == "replacement-session"
+                winner_row = task.model_dump()
+                _sweep_on_startup(db, queue, "test", orch)
+                _sweep_on_startup(db, queue, "test", orch)
+                assert db.get_task(task_id).model_dump() == winner_row
+                assert dict(db.execute(
+                    "SELECT * FROM task_results WHERE id=?", (accepted["id"],),
+                ).fetchone()) == accepted_result
+                assert cleanup_calls == []
+                assert parent_calls == []
+                assert delivery_calls == []
             elif winner == "new_agent":
                 assert task.assigned_agent == "dev_agent"
                 assert task.current_session_id == "recovery-manager"
@@ -3268,3 +3295,95 @@ def test_terminal_job_backstop_serializes_cleanup_before_shipping_startup_update
     assert owned.reason == "task_ended"
     assert terminal is not None and terminal.status is JobStatus.COMPLETED
     assert unrelated is not None and unrelated.status is JobStatus.RUNNING
+
+
+def test_shipping_startup_invocation_commit_serializes_owned_job_backstop(
+    tmp_path, request,
+):
+    """The opposite shared-SQLite direction is finite and durable.
+
+    Pause the shipping startup ``thread_invocations`` UPDATE just before its
+    commit while it owns ``Database._lock``.  The real owned-job backstop on
+    the same connection must wait, then persist only its owned terminal row
+    after startup releases; unrelated rows retain their ordinary state.
+    """
+    from runtime.models import JobStatus
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    db.insert_thread(ThreadRecord(id="THR-LOCK", subject="lock"))
+    db.mint_thread_invocation(
+        thread_id="THR-LOCK", agent_name="dev_agent", triggering_seq=1,
+        purpose=ThreadInvocationPurpose.REPLY,
+    )
+    _seed_job(db, "JOB-OWNED", "TASK-TERMINAL", "running")
+    _seed_job(db, "JOB-OTHER", "TASK-OTHER", "running")
+
+    update_reached = threading.Event()
+    release_startup = threading.Event()
+    startup_errors: list[BaseException] = []
+    cleanup_errors: list[BaseException] = []
+    original_connection, original_lock = db._conn, db._lock
+
+    class PausingConnection:
+        def execute(self, sql, *args, **kwargs):
+            cursor = original_connection.execute(sql, *args, **kwargs)
+            if sql.startswith("UPDATE thread_invocations SET status = 'failed'"):
+                update_reached.set()
+                assert release_startup.wait(2), "test did not release startup commit"
+            return cursor
+
+        def __getattr__(self, name):
+            return getattr(original_connection, name)
+
+    class ObservableLock:
+        def acquire(self, *args, **kwargs):
+            return original_lock.acquire(*args, **kwargs)
+
+        def release(self):
+            return original_lock.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.release()
+            return False
+
+    db._conn, db._lock = PausingConnection(), ObservableLock()
+
+    def startup() -> None:
+        try:
+            _sweep_on_startup(db, queue, "test", orch)
+        except BaseException as exc:
+            startup_errors.append(exc)
+
+    def cleanup() -> None:
+        try:
+            db.backstop_terminated_task_jobs(
+                "TASK-TERMINAL", finished_at="2026-01-01T00:00:00Z",
+            )
+        except BaseException as exc:
+            cleanup_errors.append(exc)
+
+    startup_thread = threading.Thread(target=startup)
+    cleanup_thread = threading.Thread(target=cleanup)
+
+    def release_and_join() -> None:
+        release_startup.set()
+        startup_thread.join(2)
+        cleanup_thread.join(2)
+
+    request.addfinalizer(release_and_join)
+    startup_thread.start()
+    assert update_reached.wait(2), "shipping startup never reached UPDATE-to-commit"
+    cleanup_thread.start()
+    cleanup_thread.join(0.1)
+    assert cleanup_thread.is_alive(), "owned cleanup bypassed startup's DB lock"
+    release_startup.set()
+    startup_thread.join(2)
+    cleanup_thread.join(2)
+    assert not startup_thread.is_alive() and not cleanup_thread.is_alive()
+    assert not startup_errors and not cleanup_errors
+    assert db.get_job("JOB-OWNED").reason == "task_ended"
+    assert db.get_job("JOB-OTHER").status is JobStatus.RUNNING
