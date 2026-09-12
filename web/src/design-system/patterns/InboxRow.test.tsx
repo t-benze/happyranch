@@ -91,7 +91,7 @@ describe('InboxRow — semantic status pills (THREADS-05)', () => {
 });
 
 /**
- * THR-099 — the `layout="thread"` row model is id-first and single-line: a
+ * THR-099 — the `layout="thread"` row model is id-first and two-line: a
  * status-driven leading dot (open=green accent, archived=grey), the mono thread
  * id, the serif subject, the status BADGE routed through the shared semanticTone
  * vocabulary (open→"open"/blue, archived→"archived"/grey — NOT active/done), an
@@ -193,5 +193,13 @@ describe('InboxRow — thread layout (THR-099 id-first row)', () => {
     expect(screen.getByText('agent')).toHaveClass('ml-[18px]');
     rerender(<InboxRow threadId="THR-008" subject="Default row" status="open" needsYou={false} active={false} href="#" />);
     expect(screen.getByRole('link')).toHaveClass('rounded-sm', 'border', 'shadow-pasture-sm');
+  });
+
+  test('keeps semantic row colors immediate when the theme changes', () => {
+    render(
+      <InboxRow threadId="THR-009" subject="Theme switch" status="open" needsYou={false} active={false} layout="thread" href="#" />,
+    );
+    expect(screen.getByRole('link')).toHaveClass('bg-surface');
+    expect(screen.getByRole('link')).not.toHaveClass('transition-colors');
   });
 });

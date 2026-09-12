@@ -96,7 +96,7 @@ export function InboxRow({
     onSelect();
   };
 
-  const shellCls = `group relative block w-full ${layout === 'thread' ? 'px-3 py-2' : 'rounded-sm border px-3 py-2'} text-left no-underline transition-colors ${
+  const shellCls = `group relative block w-full ${layout === 'thread' ? 'px-3 py-2' : 'rounded-sm border px-3 py-2'} text-left no-underline ${
     active
       ? `bg-accent-muted ${layout === 'thread' ? '' : 'border-accent-muted shadow-pasture-sm'}`
       : `bg-surface ${layout === 'thread' ? '' : 'border-border-default shadow-pasture-sm hover:border-border-strong'}`
@@ -109,7 +109,7 @@ export function InboxRow({
   );
 
   if (layout === 'thread') {
-    // id-first single-line row (a-threads `.thread`). Status-driven leading dot
+    // id-first two-line row (a-threads `.thread`). Status-driven leading dot
     // (open=green accent, archived=grey); status badge routed through the shared
     // semanticTone vocabulary; inline `from dream` + `last <last_speaker>`.
     const dotCls = status === 'open' ? 'bg-accent' : 'bg-border-strong';
