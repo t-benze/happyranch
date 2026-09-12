@@ -1644,7 +1644,8 @@ def test_completed_leaf_postcommit_restart_cleans_only_owned_job_and_wakes_once(
 
 
 @pytest.mark.parametrize("kind", ["leaf", "manager_done", "nonroot_escalate"])
-def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_path, kind):
+@pytest.mark.parametrize("boundary_winner", ["unchanged", "terminal_cancel_route", "durable_cancelled", "same_agent_new_session", "changed_agent_same_session"])
+def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_path, kind, boundary_winner, monkeypatch):
     """A real accepted callback consumed by startup settles before its async cleanup."""
     import threading
     from runtime.daemon import jobs_runner
@@ -1675,12 +1676,38 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
         entered.set(); assert release.wait(2); return await real_terminate(*args, **kwargs)
     def tracked_thread(*, target, daemon):
         worker = real_thread(target=lambda: _capture_worker_error(target, errors), daemon=daemon); workers.append(worker); return worker
+    original_settle = db.settle_consumed_task_completion_recovery_jobs
+    def install_boundary_winner(**kwargs):
+        # This is the real post-consumption settle call made by startup, not
+        # the earlier selector or terminal CAS.
+        if boundary_winner == "terminal_cancel_route":
+            from fastapi import HTTPException
+            from runtime.daemon.routes.tasks import CancelBody, cancel_task
+            with pytest.raises(HTTPException) as exc:
+                asyncio.run(cancel_task(task_id, CancelBody(cascade=False), SimpleNamespace(db=db)))
+            assert exc.value.status_code == 409
+            assert exc.value.detail["code"] == "task_already_terminal"
+        elif boundary_winner == "durable_cancelled":
+            # Defensive durable-state exclusion: this is deliberately not a
+            # reachable successful cancellation of an already terminal task.
+            db.update_task(task_id, cancelled_at="2026-01-01T00:02:30Z")
+        elif boundary_winner == "same_agent_new_session":
+            db.update_task(task_id, current_session_id="newer-session")
+        elif boundary_winner == "changed_agent_same_session":
+            db.update_task(task_id, assigned_agent="new-agent")
+        return original_settle(**kwargs)
+    monkeypatch.setattr(db, "settle_consumed_task_completion_recovery_jobs", install_boundary_winner)
+    monkeypatch.setattr(jobs_runner, "terminate_jobs_for_task", paused)
+    monkeypatch.setattr(threading, "Thread", tracked_thread)
     try:
-        with mock.patch.object(jobs_runner, "terminate_jobs_for_task", paused), mock.patch.object(threading, "Thread", tracked_thread):
-            _sweep_on_startup(db, queue, "test", orch)
+        _sweep_on_startup(db, queue, "test", orch)
+        if boundary_winner in {"unchanged", "terminal_cancel_route"}:
             assert entered.wait(2)
             assert db.get_job("JOB-OWNED").reason == "task_ended"
             assert db.recover_orphaned_running_jobs(now_iso="2026-01-01T00:03:00Z") == ["JOB-OTHER"]
+        else:
+            assert not entered.is_set()
+            assert db.get_job("JOB-OWNED").status.value == "running"
     finally:
         release.set()
         for worker in workers:
@@ -1703,9 +1730,24 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
     assert ledger["state"] == "callback_consumed"
     assert ledger["accepted_result_id"] == accepted["id"]
     task_after = db.get_task(task_id)
-    assert task_after is not None and task_after.current_session_id == session_id
-    assert db.get_job("JOB-OWNED").reason == "task_ended"
-    assert db.get_job("JOB-OTHER").reason == "daemon_crash"
+    assert task_after is not None
+    if boundary_winner == "same_agent_new_session":
+        assert task_after.current_session_id == "newer-session"
+    elif boundary_winner == "changed_agent_same_session":
+        assert task_after.assigned_agent == "new-agent" and task_after.current_session_id == session_id
+    else:
+        assert task_after.current_session_id == session_id
+    if boundary_winner in {"unchanged", "terminal_cancel_route"}:
+        assert db.get_job("JOB-OWNED").reason == "task_ended"
+    else:
+        assert db.get_job("JOB-OWNED").status.value == "running"
+    # Ordinary orphan reconciliation is intentionally not credited to a
+    # rejected recovery settlement: only the admitted unchanged controls ran
+    # that separate sweep above.
+    if boundary_winner in {"unchanged", "terminal_cancel_route"}:
+        assert db.get_job("JOB-OTHER").reason == "daemon_crash"
+    else:
+        assert db.get_job("JOB-OTHER").status.value == "running"
 
 
 @pytest.mark.parametrize("winner", ["cancelled", "replacement"])
@@ -2316,16 +2358,27 @@ def test_consumed_recovery_parent_handoff_is_receipt_owned_through_shipping_call
     cleanup_done = threading.Event()
     parent_effects: list[str] = []
     real_thread = threading.Thread
+    prior_inflight = dict(jobs_runner._INFLIGHT)
+    prior_kill_reasons = dict(jobs_runner._KILL_REASON_OVERRIDE)
     if captured_jobs:
         _seed_job(db, "JOB-OWNED", "TASK-CHILD-HANDOFF", "running")
         owned = SimpleNamespace(pid=111, returncode=None)
         jobs_runner._INFLIGHT["JOB-OWNED"] = owned
-        monkeypatch.setattr(jobs_runner.os, "killpg", lambda pid, _sig: setattr(owned, "returncode", -15) if pid == 111 else None)
+        signals: list[tuple[int, int]] = []
+        def owned_killpg(pid, sig):
+            signals.append((pid, sig))
+            # An unexpected process-control attempt must fail this shipping
+            # proof instead of disappearing into a permissive fake.
+            assert pid == owned.pid
+            assert sig == jobs_runner.signal.SIGTERM
+            owned.returncode = -15
+        monkeypatch.setattr(jobs_runner.os, "killpg", owned_killpg)
         async def no_wait(_seconds):
             return None
         monkeypatch.setattr(jobs_runner.asyncio, "sleep", no_wait)
     else:
         owned = None
+        signals = []
     _seed_job(db, "JOB-UNRELATED", "TASK-UNRELATED", "running")
     unrelated = SimpleNamespace(pid=222, returncode=None)
     jobs_runner._INFLIGHT["JOB-UNRELATED"] = unrelated
@@ -2360,6 +2413,10 @@ def test_consumed_recovery_parent_handoff_is_receipt_owned_through_shipping_call
         assert not errors
         assert unrelated.returncode is None
         assert db.get_job("JOB-UNRELATED").status.value == "running"
+        if captured_jobs:
+            assert owned.returncode == -15
+            assert signals == [(owned.pid, jobs_runner.signal.SIGTERM)]
+            assert jobs_runner._KILL_REASON_OVERRIDE["JOB-OWNED"] == "task_ended"
         if replace_before_handoff:
             # The wrapped final caller just installed a same-agent winner;
             # the real handoff must not deliver the old receipt's parent tail.
@@ -2403,9 +2460,14 @@ def test_consumed_recovery_parent_handoff_is_receipt_owned_through_shipping_call
         assert [dict(row) for row in db.execute("SELECT * FROM task_results WHERE task_id='TASK-CHILD-HANDOFF' ORDER BY id").fetchall()] == immutable_before_reentry["results"]
         assert [dict(row) for row in db.execute("SELECT * FROM jobs WHERE task_id='TASK-CHILD-HANDOFF' ORDER BY id").fetchall()] == immutable_before_reentry["jobs"]
     finally:
-        if owned is not None:
-            jobs_runner._INFLIGHT.pop("JOB-OWNED", None)
-        jobs_runner._INFLIGHT.pop("JOB-UNRELATED", None)
+        # Release/join on every path before restoring shared runner state.
+        cleanup_done.set()
+        for worker in workers:
+            worker.join(2)
+        jobs_runner._INFLIGHT.clear()
+        jobs_runner._INFLIGHT.update(prior_inflight)
+        jobs_runner._KILL_REASON_OVERRIDE.clear()
+        jobs_runner._KILL_REASON_OVERRIDE.update(prior_kill_reasons)
 
 
 def test_consumed_recovery_parent_handoff_contender_attempts_same_rlock(tmp_path):

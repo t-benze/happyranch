@@ -122,10 +122,12 @@ completion atomically records its terminal row, delegated-verdict audit and
 exact consumed result. A manager DONE has deliberately separate boundaries:
 the final owner CAS commits only its task UPDATE. The completion-report and
 orchestration-step audits have already committed in ordinary earlier
-transactions; the consumed marker follows post-commit cleanup/delivery
-reconciliation. Startup
-therefore reconciles terminal-before-marker only for the exact owner/result and
-never selects an unrelated latest result. Manager recovery reuses the accepted result's already
+transactions. The manager-DONE completion CAS and consumed marker are distinct
+durable boundaries: the marker follows the terminal CAS but precedes the
+terminal-effects handoff, rather than cleanup or delivery. Startup before the
+marker reconciles only the exact owner/result; startup after the marker and
+before settlement re-enters exact-owner capture/settlement and never selects
+an unrelated latest result. Manager recovery reuses the accepted result's already
 durable orchestration-step audit when re-entering after a crash before its
 ordinary decision effects. Its completion-report receipt is keyed by its
 recovery session and immutable accepted result id, not an older task/agent
@@ -133,8 +135,11 @@ audit; its final done write and consumed marker compare-and-swap the assigned
 agent, runtime session, uncancelled in-progress row, and exact
 callback-accepted result, leaving a replacement, cancellation, or changed
 ledger receipt untouched. A rejected final effect performs no cleanup or
-parent/thread delivery. It retains the existing authority-hook and delivery paths, then
-spends the receipt only after those effects reconcile. This adds no
+parent/thread delivery. After the marker, synchronous settlement captures and
+settles only the exact owner's fixed running-job IDs; asynchronous cleanup may
+not reselect task-wide jobs. The bounded parent/chain effect is revalidated
+under the database RLock, while its thread-tail follow-up is deliberately
+outside that lock and can be superseded by a later replacement. This adds no
 new notification guarantee or general manager retry. Root escalation now uses
 the recovery-aware form of the existing shipping escalation CAS: task, agent,
 current recovery session, immutable accepted result, and `callback_accepted`
