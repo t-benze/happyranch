@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
 
 
 def _run(args: list[str], cwd: Path = None) -> subprocess.CompletedProcess:
@@ -438,6 +442,327 @@ def test_memory_compact_requires_one_mode(monkeypatch):
             "memory", "compact",
             "--org", "o", "--agent", "a",
         ])
+
+
+# ── Memory report ──
+
+def test_memory_report_paginates_and_prints_guarded_status(monkeypatch, capsys):
+    """The canonical report command exhausts audit pages and stays guarded."""
+    from argparse import Namespace
+    from cli.commands.learning import cmd_memory_report
+
+    class FakeResp:
+        status_code = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    calls = []
+    rows = {
+        "memory_digest_impression": [
+            {"timestamp": "2026-01-01T00:00:00+00:00", "agent": "dev_agent",
+             "task_id": "TASK-1", "payload": '{"session_id":"sess-1","digest_ids":["MEM-1"]}'},
+        ],
+        "memory_read": [
+            {"agent": "dev_agent", "task_id": "TASK-1",
+             "payload": '{"session_id":"sess-1","id":"MEM-1"}'},
+        ],
+        "memory_search": [],
+    }
+
+    class FakeClient:
+        @staticmethod
+        def from_env():
+            return FakeClient()
+
+        def get(self, path, params=None):
+            if path.endswith("/agents"):
+                return FakeResp({"agents": []})
+            assert path.endswith("/audit")
+            action = params["action"]
+            cursor = params.get("cursor")
+            calls.append((action, cursor))
+            if cursor is None:
+                return FakeResp({"entries": rows[action], "next_cursor": f"{action}-next"})
+            assert cursor == f"{action}-next"
+            return FakeResp({"entries": [], "next_cursor": None})
+
+    monkeypatch.setattr("cli.commands.learning.OpcClient", FakeClient)
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
+    cmd_memory_report(Namespace(org="o", json=False))
+
+    assert calls == [
+        ("memory_digest_impression", None), ("memory_digest_impression", "memory_digest_impression-next"),
+        ("memory_read", None), ("memory_read", "memory_read-next"),
+        ("memory_search", None), ("memory_search", "memory_search-next"),
+    ]
+    rendered = capsys.readouterr().out
+    assert "DECISION: insufficient_instrumentation" in rendered
+    assert "unversioned and invalid" in rendered
+    assert "Thresholds:    NOT MET" in rendered
+    assert "Canary-gated collection has NOT started" in rendered
+
+
+def test_memory_report_exhausts_populated_pages_and_rejects_malformed_rows(monkeypatch, capsys):
+    """Real command output stays fail-closed after later-page malformed input."""
+    from argparse import Namespace
+    from cli.commands.learning import cmd_memory_report
+
+    class FakeResp:
+        status_code = 200
+
+        def __init__(self, body): self._body = body
+        def json(self): return self._body
+
+    pages = {
+        "memory_digest_impression": [
+            [{"timestamp": "2026-01-01T00:00:00+00:00", "agent": "dev_agent", "task_id": "TASK-1", "payload": '{"session_id":"sess-1","digest_ids":["MEM-1"]}'}],
+            [{"timestamp": "2026-01-02T00:00:00+00:00", "agent": "dev_agent", "task_id": "TASK-2", "payload": '[]'}],
+        ],
+        "memory_read": [[{"agent": "dev_agent", "task_id": "TASK-1", "payload": '{"id":"MEM-1","session_id":"sess-1","task_id":"TASK-1"}'}], []],
+        "memory_search": [[{"agent": "dev_agent", "task_id": "TASK-1", "payload": '{"id":"MEM-2","session_id":"sess-1","task_id":"TASK-1","source":"search"}'}], []],
+    }
+
+    class FakeClient:
+        def get(self, path, params=None):
+            if path.endswith("/agents"):
+                return FakeResp({"agents": [{"name": "dev_agent", "role": "developer"}]})
+            action = params["action"]
+            index = 1 if params.get("cursor") else 0
+            return FakeResp({"entries": pages[action][index], "next_cursor": "next" if index == 0 else None})
+
+    monkeypatch.setattr("cli.commands.learning._learning_client", lambda: FakeClient())
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
+    cmd_memory_report(Namespace(org="o", json=False))
+    rendered = capsys.readouterr().out
+    assert "insufficient_instrumentation" in rendered
+    assert "Thresholds:    NOT MET" in rendered
+
+
+def test_memory_report_database_parity_exhausts_populated_pages(monkeypatch, capsys, tmp_path):
+    """CLI exhausts real populated audit pages and agrees with AuditLogger."""
+    from argparse import Namespace
+    from cli.commands.learning import cmd_memory_report
+
+    db = Database(tmp_path / "telemetry.db")
+    logger = AuditLogger(db)
+    for index in range(501):
+        session_id = f"sess-{index:03d}"
+        task_id = f"TASK-{index:03d}"
+        memory_id = f"MEM-{index:03d}"
+        logger.log_memory_digest_impression(
+            agent="dev_agent", task_id=task_id, session_id=session_id,
+            digest_ids=[memory_id], budget=1500,
+        )
+        logger.log_memory_read(
+            agent="dev_agent", id=memory_id, slug=memory_id,
+            session_id=session_id, task_id=task_id,
+            source="search" if index == 500 else "digest",
+        )
+        logger.log_memory_search(
+            agent="dev_agent", session_id=session_id, task_id=task_id,
+            memory_ids=[memory_id], hit_count=1, kb_hit_count=0,
+        )
+    db.execute("UPDATE audit_log SET timestamp='2026-01-01T00:00:00+00:00'")
+
+    class FakeResp:
+        status_code = 200
+
+        def __init__(self, body): self._body = body
+        def json(self): return self._body
+
+    class PaginatingDatabaseClient:
+        def get(self, path, params=None):
+            if path.endswith("/agents"):
+                return FakeResp({"agents": [{"name": "dev_agent", "role": "developer"}]})
+            rows = [dict(row) for row in db.fetch_all_readonly(
+                "SELECT timestamp, agent, task_id, payload FROM audit_log"
+                " WHERE action = ? ORDER BY id ASC", (params["action"],),
+            )]
+            start = int(params.get("cursor", "0"))
+            end = start + 250
+            return FakeResp({
+                "entries": rows[start:end],
+                "next_cursor": str(end) if end < len(rows) else None,
+            })
+
+    monkeypatch.setattr("cli.commands.learning._learning_client", PaginatingDatabaseClient)
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
+    backend = logger.compute_memory_telemetry_report(
+        agent_role_map={"dev_agent": "developer"},
+    )
+
+    cmd_memory_report(Namespace(org="o", json=True))
+    cli_json = json.loads(capsys.readouterr().out)
+    assert cli_json["decision"] == backend["decision"] == "insufficient_instrumentation"
+    assert cli_json["decision_detail"] == backend["decision_detail"]
+    assert cli_json["observation_period"] == backend["observation_period"]
+    assert cli_json["observation_period"]["thresholds_met"] is False
+    assert cli_json["aggregate"] == backend["aggregate"]
+
+    cmd_memory_report(Namespace(org="o", json=False))
+    rendered = capsys.readouterr().out
+    assert "DECISION: insufficient_instrumentation" in rendered
+    assert "Thresholds:    NOT MET" in rendered
+    assert "Thresholds:    MET" not in rendered
+    assert "Canary-gated collection has NOT started" in rendered
+    assert "Tuning advice" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("population", "malformed_action", "payload", "timestamp"),
+    [
+        (0, "memory_read", "{", None),
+        (1, "memory_search", "[]", "2026-01-01T00:00:00"),
+    ],
+)
+def test_memory_report_real_database_empty_and_short_populations_stay_guarded(
+    monkeypatch, capsys, tmp_path, population, malformed_action, payload, timestamp,
+):
+    """Empty/short real audit populations cannot lift the report guard or crash it."""
+    from argparse import Namespace
+    from cli.commands.learning import cmd_memory_report
+
+    db = Database(tmp_path / "telemetry.db")
+    logger = AuditLogger(db)
+    for index in range(population):
+        logger.log_memory_digest_impression(
+            agent="dev_agent", task_id=f"TASK-{index}", session_id=f"sess-{index}",
+            digest_ids=[f"MEM-{index}"], budget=1500,
+        )
+    logger.log_memory_read(
+        agent="dev_agent", id="MEM-0", slug="one", session_id="sess-0",
+        task_id="TASK-0", source="search",
+    )
+    logger.log_memory_search(
+        agent="dev_agent", session_id="sess-0", task_id="TASK-0",
+        memory_ids=["MEM-0"], hit_count=1, kb_hit_count=0,
+    )
+    db.execute("UPDATE audit_log SET timestamp='2026-01-01T00:00:00+00:00'")
+    db.execute("UPDATE audit_log SET payload=? WHERE action=?", (payload, malformed_action))
+    if timestamp is not None:
+        db.execute("UPDATE audit_log SET timestamp=? WHERE action=?", (timestamp, malformed_action))
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, body): self._body = body
+        def json(self): return self._body
+
+    class Client:
+        def get(self, path, params=None):
+            if path.endswith("/agents"):
+                return Response({"agents": [{"name": "dev_agent", "role": "developer"}]})
+            rows = [dict(row) for row in db.fetch_all_readonly(
+                "SELECT timestamp, agent, task_id, payload FROM audit_log WHERE action=? ORDER BY id",
+                (params["action"],),
+            )]
+            return Response({"entries": rows, "next_cursor": None})
+
+    monkeypatch.setattr("cli.commands.learning._learning_client", lambda: Client())
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
+    backend = logger.compute_memory_telemetry_report(agent_role_map={"dev_agent": "developer"})
+    cmd_memory_report(Namespace(org="o", json=True))
+    cli_json = json.loads(capsys.readouterr().out)
+    cmd_memory_report(Namespace(org="o", json=False))
+    text = capsys.readouterr().out
+
+    for report in (backend, cli_json):
+        assert report["decision"] == "insufficient_instrumentation"
+        assert report["observation_period"]["thresholds_met"] is False
+    assert "Thresholds:    NOT MET" in text
+    assert "Thresholds:    MET" not in text
+    assert "Canary-gated collection has NOT started" in text
+    assert "Tuning advice" not in text
+
+
+@pytest.mark.parametrize(
+    ("action", "payload", "timestamp"),
+    [
+        ("memory_read", '{"id":null,"source":"search","session_id":"sess-500","task_id":"TASK-500"}', None),
+        ("memory_read", '{"id":"MEM-500","source":"search","session_id":"sess-500","task_id":"TASK-500"}', "2026-01-01T00:00:00"),
+        ("memory_search", "[]", None),
+        ("memory_search", '{"session_id":"sess-500","task_id":"TASK-500","memory_ids":"MEM-500","hit_count":1,"kb_hit_count":0}', None),
+    ],
+)
+def test_memory_report_real_database_rejects_malformed_later_pages_identically(
+    monkeypatch, capsys, tmp_path, action, payload, timestamp,
+):
+    """All consumed streams are exhausted and malformed later pages get no credit."""
+    from argparse import Namespace
+    from cli.commands.learning import cmd_memory_report
+
+    db = Database(tmp_path / "telemetry.db")
+    logger = AuditLogger(db)
+    for index in range(501):
+        session_id = f"sess-{index:03d}"
+        task_id = f"TASK-{index:03d}"
+        memory_id = f"MEM-{index:03d}"
+        logger.log_memory_digest_impression(
+            agent="dev_agent", task_id=task_id, session_id=session_id,
+            digest_ids=[memory_id], budget=1500,
+        )
+        logger.log_memory_read(
+            agent="dev_agent", id=memory_id, slug=memory_id,
+            session_id=session_id, task_id=task_id, source="search",
+        )
+        logger.log_memory_search(
+            agent="dev_agent", session_id=session_id, task_id=task_id,
+            memory_ids=[memory_id], hit_count=1, kb_hit_count=0,
+        )
+    db.execute("UPDATE audit_log SET timestamp='2026-01-01T00:00:00+00:00'")
+    db.execute("UPDATE audit_log SET payload=? WHERE action=? AND payload LIKE '%sess-500%'", (payload, action))
+    if timestamp is not None:
+        db.execute("UPDATE audit_log SET timestamp=? WHERE action=? AND payload LIKE '%sess-500%'", (timestamp, action))
+
+    calls = []
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    class Client:
+        def get(self, path, params=None):
+            if path.endswith("/agents"):
+                return Response({"agents": [{"name": "dev_agent", "role": "developer"}]})
+            event = params["action"]
+            rows = [dict(row) for row in db.fetch_all_readonly(
+                "SELECT timestamp, agent, task_id, payload FROM audit_log WHERE action=? ORDER BY id",
+                (event,),
+            )]
+            start = int(params.get("cursor", "0"))
+            end = start + 250
+            calls.append((event, start))
+            return Response({"entries": rows[start:end], "next_cursor": str(end) if end < len(rows) else None})
+
+    monkeypatch.setattr("cli.commands.learning._learning_client", Client)
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
+    backend = logger.compute_memory_telemetry_report(agent_role_map={"dev_agent": "developer"})
+    cmd_memory_report(Namespace(org="o", json=True))
+    cli_json = json.loads(capsys.readouterr().out)
+    cmd_memory_report(Namespace(org="o", json=False))
+    text = capsys.readouterr().out
+
+    assert backend == cli_json
+    assert backend["decision"] == "insufficient_instrumentation"
+    assert backend["observation_period"]["thresholds_met"] is False
+    assert backend["aggregate"] == {}
+    assert "Thresholds:    NOT MET" in text
+    assert "Canary-gated collection has NOT started" in text
+    assert "Tuning advice" not in text
+    assert calls == [
+        (event, cursor)
+        for event in ("memory_digest_impression", "memory_read", "memory_search")
+        for cursor in (0, 250, 500)
+    ] * 2
 
 
 # ── Search with new flags ──

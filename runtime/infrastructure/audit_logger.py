@@ -1043,6 +1043,29 @@ class AuditLogger:
         import json
         from datetime import datetime, timedelta, timezone
 
+        def fail_closed(report: dict) -> dict:
+            """Keep current diagnostic arithmetic observation-only (TASK-7767)."""
+            reason = (
+                "Current telemetry epoch is unversioned and invalid; collection has "
+                "not started. Independent transport and deployed-canary health "
+                "evidence are required before tuning can be evaluated."
+            )
+            observation = dict(report.get("observation_period", {}))
+            observation.update({
+                "status": "insufficient_instrumentation",
+                "reason": reason,
+                "thresholds_met": False,
+                "days_met": False,
+                "sessions_met": False,
+                "diagnostics_valid_for_collection": False,
+                "diagnostic_note": "Counts and elapsed time are observation-only.",
+                "trigger": "Canary-gated collection has NOT started.",
+            })
+            report["observation_period"] = observation
+            report["decision"] = "insufficient_instrumentation"
+            report["decision_detail"] = reason
+            return report
+
         if current_time is None:
             current_time = datetime.now(timezone.utc)
 
@@ -1055,8 +1078,9 @@ class AuditLogger:
             " ORDER BY timestamp ASC",
             (),
         )
+        rows = [dict(row) for row in rows]
         if not rows:
-            return {
+            return fail_closed({
                 "observation_period": {
                     "status": "insufficient_sample",
                     "reason": "No memory_digest_impression rows found —"
@@ -1067,7 +1091,35 @@ class AuditLogger:
                 "aggregate": {},
                 "by_role": {},
                 "decision": "insufficient_sample",
-            }
+            })
+
+        def valid_impression_rows() -> bool:
+            for row in rows:
+                try:
+                    payload = json.loads(row.get("payload"))
+                except (TypeError, ValueError):
+                    return False
+                if not isinstance(payload, dict):
+                    return False
+                if not isinstance(payload.get("session_id"), str):
+                    return False
+                if not isinstance(payload.get("agent", row.get("agent", "")), str):
+                    return False
+                digest_ids = payload.get("digest_ids")
+                if not isinstance(digest_ids, list) or not all(isinstance(mid, str) for mid in digest_ids):
+                    return False
+                if not isinstance(row.get("task_id"), str) or not isinstance(row.get("timestamp"), str):
+                    return False
+                try:
+                    parsed = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
+                except ValueError:
+                    return False
+                if parsed.tzinfo is None:
+                    return False
+            return True
+
+        if not valid_impression_rows():
+            return fail_closed({"observation_period": {}, "aggregate": {}, "by_role": {}, "decision": "insufficient_sample"})
 
         # Parse impressions
         impressions: list[dict] = []
@@ -1090,7 +1142,7 @@ class AuditLogger:
                 })
 
         if not impressions:
-            return {
+            return fail_closed({
                 "observation_period": {
                     "status": "insufficient_sample",
                     "reason": "No non-empty correlated digest impressions found.",
@@ -1100,7 +1152,7 @@ class AuditLogger:
                 "aggregate": {},
                 "by_role": {},
                 "decision": "insufficient_sample",
-            }
+            })
 
         # Determine observation start (first impression timestamp)
         first_ts_str = impressions[0]["timestamp"]
@@ -1153,7 +1205,7 @@ class AuditLogger:
         }
 
         if not thresholds_met:
-            return {
+            return fail_closed({
                 "observation_period": {
                     **observation,
                     "status": "insufficient_sample",
@@ -1165,16 +1217,62 @@ class AuditLogger:
                 "aggregate": {},
                 "by_role": {},
                 "decision": "insufficient_sample",
-            }
+            })
 
-        # Collect memory_read events for pull-through.
+        # Collect all report-consumed event streams before diagnostic arithmetic.
         # Include agent and task_id columns so we can verify read rows
         # match the impression's (agent, task_id, session_id) tuple.
         read_rows = self._db.fetch_all_readonly(
-            "SELECT agent, task_id, payload FROM audit_log"
+            "SELECT timestamp, agent, task_id, payload FROM audit_log"
             " WHERE action = 'memory_read'",
             (),
         )
+        read_rows = [dict(row) for row in read_rows]
+
+        search_rows = [dict(row) for row in self._db.fetch_all_readonly(
+            "SELECT timestamp, agent, task_id, payload FROM audit_log"
+            " WHERE action = 'memory_search'", (),
+        )]
+
+        def valid_event_rows(event_rows: list[dict], *, event: str) -> bool:
+            for row in event_rows:
+                try:
+                    payload = json.loads(row.get("payload"))
+                except (TypeError, ValueError):
+                    return False
+                if not isinstance(payload, dict):
+                    return False
+                timestamp = row.get("timestamp")
+                if not isinstance(timestamp, str):
+                    return False
+                try:
+                    parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                except ValueError:
+                    return False
+                if parsed.tzinfo is None:
+                    return False
+                if not all(isinstance(row.get(key), str) for key in ("agent", "task_id")):
+                    return False
+                if event == "read":
+                    if not all(isinstance(payload.get(key), str)
+                               for key in ("id", "source", "session_id", "task_id")):
+                        return False
+                    if not isinstance(payload.get("agent", row["agent"]), str):
+                        return False
+                else:
+                    if not all(isinstance(payload.get(key), str) for key in ("session_id", "task_id")):
+                        return False
+                    memory_ids = payload.get("memory_ids")
+                    if not isinstance(memory_ids, list) or not all(isinstance(mid, str) for mid in memory_ids):
+                        return False
+                    if any(not isinstance(payload.get(key), int) or isinstance(payload.get(key), bool)
+                           for key in ("hit_count", "kb_hit_count")):
+                        return False
+            return True
+
+        if (not valid_event_rows(read_rows, event="read")
+                or not valid_event_rows(search_rows, event="search")):
+            return fail_closed({"observation_period": {}, "aggregate": {}, "by_role": {}, "decision": "insufficient_sample"})
 
         # Compute per-session pull-through.
         # Build a validated (agent, task_id, session_id) tuple map from
@@ -1461,7 +1559,7 @@ class AuditLogger:
                 f"{len(unknown_agents)} agent(s) have unknown roles"
                 f" and are excluded from role decisions: {unknown_agents}"
             )
-        return result
+        return fail_closed(result)
 
     # NOTE: audit_log.task_id doubles as a generic scope id. Thread events store
     # the thread id (THR-NNN) in that column, matching the talk_* pattern above.
