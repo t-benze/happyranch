@@ -180,30 +180,63 @@ def _u0_independent_sqlite_readback(db, task_ids: tuple[str, ...]) -> dict[str, 
 
 
 def _u0_normalize_persisted_rows(rows: dict[str, object]) -> dict[str, list[dict[str, object]]]:
-    """Normalize the source-owned JSON serialization at the SQLite boundary."""
-    def normalize(value):
+    """Normalize only columns whose outer SQLite representation is JSON.
+
+    ``output_summary``, task briefs, and nested decision/payload strings are
+    user content.  They are never recursively decoded: doing so made the
+    distinct summaries ``"true"`` and ``"1"`` compare equal because Python
+    considers ``True == 1``.  The named columns below are the only source
+    serialization boundaries used by these task/result/audit readbacks.
+    """
+    json_columns = {
+        "tasks": frozenset({"active_chain", "active_fanout", "blocked_on_job_ids"}),
+        "results": frozenset({"decision_json", "risks_flagged", "waiting_on_job_ids"}),
+        "audits": frozenset({"payload"}),
+    }
+
+    def scalar(value):
         # Pydantic's in-process snapshots retain StrEnum values whereas SQLite
-        # returns their persisted scalar.  Preserve the scalar meaning.
+        # returns their persisted scalar.  Preserve every ordinary string.
         if hasattr(value, "value"):
-            return normalize(value.value)
+            return value.value
         if isinstance(value, datetime):
             return value.isoformat()
-        if isinstance(value, str):
-            try:
-                parsed = json.loads(value)
-            except json.JSONDecodeError:
-                return value
-            return normalize(parsed)
-        if isinstance(value, list):
-            return [normalize(item) for item in value]
-        if isinstance(value, dict):
-            return {key: normalize(item) for key, item in value.items()}
         return value
+
+    def normalize_row(kind, row):
+        normalized = {key: scalar(value) for key, value in dict(row).items()}
+        for key in json_columns[kind]:
+            value = normalized.get(key)
+            if value is not None and isinstance(value, str):
+                normalized[key] = json.loads(value)
+        return normalized
     keys = {"tasks": "id", "results": "id", "audits": "id"}
     return {
-        kind: sorted((normalize(dict(row)) for row in entries), key=lambda row: row[keys[kind]])
+        kind: sorted((normalize_row(kind, row) for row in entries), key=lambda row: row[keys[kind]])
         for kind, entries in rows.items()
     }
+
+
+def test_u0_persisted_readback_normalizes_only_source_owned_outer_json() -> None:
+    """Adversarial content mutations reach the comparison used by JOIN reads."""
+    rows = {
+        "tasks": [{"id": "TASK-1", "active_fanout": '{"children_ids":["TASK-2"]}',
+                   "brief": '{"looks":"like json"}', "final_output_summary": "true"}],
+        "results": [{"id": 1, "decision_json": '{"prompt":"{\\"nested\\":\\"text\\"}"}',
+                     "output_summary": "true"}],
+        "audits": [{"id": 1, "payload": '{"note":"1"}'}],
+    }
+    normalized = _u0_normalize_persisted_rows(rows)
+    assert normalized["tasks"][0]["active_fanout"] == {"children_ids": ["TASK-2"]}
+    assert normalized["results"][0]["decision_json"] == {"prompt": '{"nested":"text"}'}
+    assert normalized["tasks"][0]["brief"] == '{"looks":"like json"}'
+    assert normalized["results"][0]["output_summary"] == "true"
+    mutated = json.loads(json.dumps(rows))
+    mutated["results"][0]["output_summary"] = "1"
+    assert _u0_normalize_persisted_rows(mutated) != normalized
+    mutated = json.loads(json.dumps(rows))
+    mutated["results"][0]["decision_json"] = '{"prompt":"{\\"nested\\":\\"changed\\"}"}'
+    assert _u0_normalize_persisted_rows(mutated) != normalized
 
 
 def _u0_snapshot_persisted_rows(snapshot: dict[str, object]) -> dict[str, list[dict[str, object]]]:
@@ -2496,6 +2529,21 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         assert all(both_launched_snapshot["tasks"][child]["status"] == TaskStatus.IN_PROGRESS.value for child in children)
         assert all(both_launched_snapshot["results"][child] == [] for child in children)
         assert held_spawn["active_fanout"] == both_launched_snapshot["active_fanout"]
+        # Launch adds only each child's source-owned scratch manifest/lock and
+        # live session/control; attachment and canonical/team/archive bytes
+        # remain in the same identity/path domain through this boundary.
+        for surface in ("attachments", "canonical_agents", "archived_agents",
+                        "archived_workspaces", "teams_bytes"):
+            assert both_launched_snapshot[surface] == held_spawn[surface]
+        assert both_launched_snapshot["controls"][parent_id] is False
+        assert all(both_launched_snapshot["controls"][child] is True for child in children)
+        assert set(both_launched_snapshot["workspaces"]["dev_agent"]) == {
+            "agent.yaml", "task_history.md",
+        } | {
+            item for child in children
+            for item in (f".happyranch/task-scratch-manifests/{child}.json",
+                         f".happyranch/task-scratch-manifests/{child}.lock")
+        }
         assert len(launches) == 3
         assert {(entry["task_id"], entry["agent"], entry["context"]["task_id"])
                 for entry in launches} == {(parent_id, "engineering_head", parent_id), *{(child, "dev_agent", child) for child in children}}
@@ -2513,6 +2561,18 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         assert held_first["tasks"][last]["status"] == TaskStatus.IN_PROGRESS.value
         assert len(held_first["results"][first]) == 1 and held_first["results"][last] == []
         assert held_first["tasks"][parent_id]["block_kind"] == "delegated" and held_first["active_fanout"][parent_id] == held_spawn["active_fanout"][parent_id] and not [row for row in held_first["audits"][parent_id] if row["action"] == "fanout_join"]
+        for surface in ("attachments", "canonical_agents", "archived_agents",
+                        "archived_workspaces", "teams_bytes"):
+            assert held_first[surface] == both_launched_snapshot[surface]
+        assert set(held_first["workspaces"]["dev_agent"]) == set(both_launched_snapshot["workspaces"]["dev_agent"])
+        changed_workspace_bytes = {
+            path for path in held_first["workspaces"]["dev_agent"]
+            if held_first["workspaces"]["dev_agent"][path] != both_launched_snapshot["workspaces"]["dev_agent"][path]
+        }
+        assert changed_workspace_bytes <= {"task_history.md", f".happyranch/task-scratch-manifests/{first}.json"}
+        assert held_first["workspaces"]["engineering_head"] == both_launched_snapshot["workspaces"]["engineering_head"]
+        assert held_first["controls"][parent_id] is False
+        assert held_first["controls"][first] is False and held_first["controls"][last] is True
         first_row = held_first["results"][first][0]
         assert next(item for item in consumed_reports if item["task_id"] == first) == {
             "task_id": first, "agent": "dev_agent", "session_id": first_row["session_id"],
@@ -2538,7 +2598,9 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     children = db.get_children(parent_id)
     final = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
     joins = [row for row in final["audits"][parent_id] if row["action"] == "fanout_join"]
-    assert len(joins) == 1 and joins[0]["payload"]["children_ids"] == children
+    assert len(joins) == 1
+    assert joins[0]["task_id"] == parent_id and joins[0]["agent"] == "orchestrator"
+    assert joins[0]["payload"]["width"] == 2 and joins[0]["payload"]["children_ids"] == children
     join_context = joins[0]["payload"]["context_markdown"]
     assert len(parent_revisit_prompts) == 1
     parent_revisit = next(entry for entry in launches if entry["task_id"] == parent_id and entry["session_id"] != launches[0]["session_id"])
@@ -2557,6 +2619,20 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     ]
     assert all(entry in join_context for entry in expected_join_entries)
     assert join_context.index(expected_join_entries[0]) < join_context.index(expected_join_entries[1])
+    # The terminal drain changes only the source-owned child completion and
+    # join/revisit surfaces.  Immutable non-DB bytes and attachments retain
+    # their complete captured content from the first-terminal boundary.
+    for surface in ("attachments", "canonical_agents", "archived_agents",
+                    "archived_workspaces", "teams_bytes"):
+        assert final[surface] == held_first[surface]
+    for agent in ("engineering_head", "dev_agent"):
+        before_workspace = held_first["workspaces"][agent]
+        after_workspace = final["workspaces"][agent]
+        assert set(after_workspace) == set(before_workspace) | ({"task_history.md"} if agent == "engineering_head" else set())
+        changed = {path for path in before_workspace
+                   if before_workspace[path] != after_workspace[path]}
+        assert changed <= {"task_history.md", f".happyranch/task-scratch-manifests/{parent_id}.json",
+                           *{f".happyranch/task-scratch-manifests/{child}.json" for child in children}}
     assert final["active_fanout"][parent_id] is None and final["active_chain"][parent_id] is None
     assert all(final["tasks"][task_id]["status"] == TaskStatus.COMPLETED.value for task_id in (parent_id, *children))
     assert final["tasks"][parent_id]["orchestration_step_count"] == 2
@@ -3073,6 +3149,7 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
         assert not [row for row in held["audits"][parent_id] if row["action"] == "fanout_join"]
         completed_row = held["results"][completed][0]
         completed_history = _u0_independent_sqlite_readback(db, (parent_id, *children))
+        pre_cancel_rows = _u0_normalize_persisted_rows(completed_history)
         completed_report = next(report for report in consumed_reports if report["task_id"] == completed)
         assert completed_report == {
             "task_id": completed, "agent": "dev_agent", "session_id": completed_row["session_id"],
@@ -3105,6 +3182,7 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
         assert after["tasks"][parent_id]["status"] == after["tasks"][live]["status"] == TaskStatus.CANCELLED.value
         assert len(control_entries) == 1 and control_entries[0][:3] == (live, "dev_agent", next(entry["session_id"] for entry in launches if entry["task_id"] == live))
         control_rows = control_entries[0][3]
+        control_history = _u0_normalize_persisted_rows(control_rows)
         # This is deliberately the original opaque-control entry, before it
         # forwards the shipping cancellation control.  The already-completed
         # sibling must retain the whole independently observed durable history
@@ -3120,6 +3198,28 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
         assert [row for row in control_rows["audits"] if row["task_id"] == completed] == [
             row for row in completed_history["audits"]
             if row["task_id"] == completed
+        ]
+        # This is the ordering-sensitive independent read taken inside the
+        # original opaque control, not the later route return.  The route owns
+        # exactly these whole-row mutations; all result content is retained.
+        pre_tasks = {row["id"]: row for row in pre_cancel_rows["tasks"]}
+        control_tasks = {row["id"]: row for row in control_history["tasks"]}
+        for task_id in (parent_id, live):
+            changed = {key for key in pre_tasks[task_id]
+                       if pre_tasks[task_id][key] != control_tasks[task_id][key]}
+            assert changed == ({"status", "block_kind", "note", "cancelled_at", "completed_at", "updated_at"}
+                               if task_id == parent_id else
+                               {"status", "note", "cancelled_at", "completed_at", "updated_at"})
+            assert control_tasks[task_id]["status"] == TaskStatus.CANCELLED.value
+            assert control_tasks[task_id]["block_kind"] is None
+            assert control_tasks[task_id]["note"] == "cancelled by founder: live sibling"
+        assert control_tasks[completed] == pre_tasks[completed]
+        assert control_history["results"] == pre_cancel_rows["results"]
+        assert control_history["audits"][:len(pre_cancel_rows["audits"])] == pre_cancel_rows["audits"]
+        assert [(row["task_id"], row["agent"], row["action"], row["payload"])
+                for row in control_history["audits"][len(pre_cancel_rows["audits"]):]] == [
+            (parent_id, "founder", "task_cancelled", {"rationale": "live sibling", "cascade": True}),
+            (live, "founder", "task_cancelled", {"rationale": "live sibling", "cascade": True}),
         ]
         assert all(row["status"] == TaskStatus.CANCELLED.value for row in control_entries[0][3]["tasks"] if row["id"] in (parent_id, live))
         assert [(audit["task_id"], audit["agent"], json.loads(audit["payload"]))

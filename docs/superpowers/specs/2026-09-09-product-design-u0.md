@@ -257,3 +257,20 @@ Current control and corrupt/partial adapter inputs fail closed before any
 proposed adapter write. R5's decision packet
 must still classify every writer/reader/compensation participant and receive
 independent review before any protected D5 choice.
+
+The JOIN SQLite comparison decodes only source-owned outer JSON columns
+(`active_chain`, `active_fanout`, `blocked_on_job_ids`, `decision_json`,
+`risks_flagged`, `waiting_on_job_ids`, and audit `payload`), plus enum/datetime model
+representations. It preserves arbitrary text and nested user strings exactly:
+the adversarial `"true"` versus `"1"` summaries, JSON-looking summaries, and
+nested prompt text are distinct. The same shipping-harness readback is used
+for those mutations and for legitimate DB/model serialization equality.
+Across both callback orders it captures the five named boundaries in one
+identity/path domain: pre-spawn, postcommit/prepublication, both-launched,
+first-terminal, and final drain. Attachments, canonical/team/archive bytes,
+controls, and source-owned workspace manifest/history changes are compared at
+each adjacent transition; the parent-owned sole `fanout_join` audit has exact
+owner, width, child order, and rendered context. The live-sibling control-entry
+readback compares full parent/live task deltas, unchanged result rows, and the
+ordered cancellation-audit append before forwarding the original opaque
+control. These remain bounded test evidence, not a production behavior change.
