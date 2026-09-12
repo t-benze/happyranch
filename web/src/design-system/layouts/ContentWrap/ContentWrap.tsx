@@ -15,7 +15,7 @@
  * out. Shared from `@/design-system` because the web eslint
  * `no-restricted-imports` rule forbids cross-feature imports (THR-099 plan §4).
  */
-import type { ReactNode, Ref } from 'react';
+import type { ReactNode, Ref, UIEventHandler } from 'react';
 import { cn } from '@/lib/utils';
 
 export interface ContentWrapProps {
@@ -24,11 +24,13 @@ export interface ContentWrapProps {
   className?: string;
   /** Optional owner ref for a route-local scroll restoration policy. */
   scrollRef?: Ref<HTMLDivElement>;
+  /** Optional observation of a route-local scroll owner's live position. */
+  onScroll?: UIEventHandler<HTMLDivElement>;
 }
 
-export function ContentWrap({ children, className, scrollRef }: ContentWrapProps): JSX.Element {
+export function ContentWrap({ children, className, scrollRef, onScroll }: ContentWrapProps): JSX.Element {
   return (
-    <div ref={scrollRef} className="h-full overflow-y-auto">
+    <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
       <div className={cn('mx-auto max-w-content px-4 py-[18px] sm:p-[26px]', className)}>
         {children}
       </div>

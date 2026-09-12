@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
@@ -204,6 +204,50 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
     expect(screen.getByRole('tab', { name: /archived/i })).toHaveAttribute('aria-selected', 'true');
   });
 
+  test('does not let detail-entry cleanup overwrite the row snapshot when a detached owner reads as clamped', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupScrollThread();
+    const user = userEvent.setup();
+    mountRouteHistory(`/orgs/${SLUG}/threads`);
+
+    await user.click(await screen.findByRole('tab', { name: /archived/i }));
+    await user.type(screen.getByRole('textbox', { name: /filter threads/i }), 'Long verification');
+    const row = await screen.findByRole('link', { name: /THR-SCROLL/i });
+    const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+    let scrollTop = 350;
+    // JSDOM simulation: real Chromium can expose a detached/changed-layout
+    // owner as zero. This makes that read boundary explicit; browser proof is
+    // retained separately.
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => (scroller.isConnected ? scrollTop : 0),
+      set: (value: number) => { scrollTop = value; },
+    });
+
+    await user.click(row);
+    expect(sessionStorage.getItem(`threads:list-scroll:${SLUG}:done:Long verification`)).toBe('350');
+  });
+
+  test('restores a returned route owner even when no animation frame is delivered', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupScrollThread();
+    const user = userEvent.setup();
+    const { router } = mountRouteHistory(`/orgs/${SLUG}/threads`);
+    const row = await screen.findByRole('link', { name: /THR-SCROLL/i });
+    const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+    scroller.scrollTop = 350;
+
+    await user.click(row);
+    const unavailableFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 0);
+    try {
+      await router.navigate(-1);
+      const returnedRow = await screen.findByRole('link', { name: /THR-SCROLL/i });
+      expect((returnedRow.closest('.overflow-y-auto') as HTMLDivElement).scrollTop).toBe(350);
+    } finally {
+      unavailableFrame.mockRestore();
+    }
+  });
+
   test('resets a newly selected bucket and filter to zero without erasing a valid saved zero', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     setupScrollThread();
@@ -214,6 +258,7 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
     scroller.scrollTop = 350;
+    fireEvent.scroll(scroller);
 
     const filter = screen.getByRole('textbox', { name: /filter threads/i });
     await user.type(filter, 'Long verification open target');
@@ -229,6 +274,29 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
     await user.click(screen.getByRole('tab', { name: /open/i }));
     await user.click(screen.getByRole('tab', { name: /archived/i }));
     await waitFor(() => expect(scroller.scrollTop).toBe(0));
+  });
+
+  test('snapshots the attached owner before bucket and filter scope actions without a scroll event', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupScrollThread();
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/threads`);
+
+    const row = await screen.findByRole('link', { name: /THR-SCROLL/i });
+    const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+    scroller.scrollTop = 350;
+
+    await user.click(screen.getByRole('tab', { name: /archived/i }));
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    await user.click(screen.getByRole('tab', { name: /open/i }));
+    await waitFor(() => expect(scroller.scrollTop).toBe(350));
+
+    scroller.scrollTop = 121;
+    const filter = screen.getByRole('textbox', { name: /filter threads/i });
+    await user.type(filter, 'Long verification open target');
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    await user.clear(filter);
+    await waitFor(() => expect(scroller.scrollTop).toBe(121));
   });
 
   test('restores a saved offset after delayed list data arrives at the real ContentWrap owner', async () => {
@@ -274,13 +342,17 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
     await waitFor(() => expect(scroller.scrollTop).toBe(121));
   });
 
-  test('keeps route-local offsets isolated across actual alpha and beta AppRoutes transitions', async () => {
+  test('preserves a ready owner through an uncached loading scope and restores it after a new owner is ready', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     sessionStorage.setItem('threads:list-scroll:alpha:open:', '350');
-    sessionStorage.setItem('threads:list-scroll:beta:open:', '121');
+    let releaseBeta!: () => void;
+    const betaPending = new Promise<void>((resolve) => { releaseBeta = resolve; });
     server.use(http.get('/api/v1/orgs/:slug/threads', ({ params, request }) => {
       const slug = String(params.slug);
       const status = new URL(request.url).searchParams.get('status');
+      if (slug === 'beta' && status === 'open') {
+        return betaPending.then(() => HttpResponse.json({ threads: [mkThread('THR-BETA', 'beta route target')] }));
+      }
       return HttpResponse.json({
         threads: status === 'open' ? [mkThread(`THR-${slug.toUpperCase()}`, `${slug} route target`)] : [],
       });
@@ -289,16 +361,104 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
     const alphaRow = await screen.findByRole('link', { name: /THR-ALPHA/i });
     const alphaScroller = alphaRow.closest('.overflow-y-auto') as HTMLDivElement;
     await waitFor(() => expect(alphaScroller.scrollTop).toBe(350));
+    // JSDOM layout emulation: the browser's reused owner can be clamped by
+    // beta's pending/shrunken content before alpha's scope cleanup reads it.
+    // A real user scroll event records the authoritative alpha geometry;
+    // assigning `scrollTop` alone intentionally does not pretend to do that.
+    let alphaTop = 350;
+    Object.defineProperty(alphaScroller, 'scrollTop', {
+      configurable: true,
+      get: () => router.state.location.pathname.includes('/beta/') ? 0 : alphaTop,
+      set: (value: number) => { alphaTop = value; },
+    });
+    fireEvent.scroll(alphaScroller);
 
+    window.dispatchEvent(new Event('threads:before-org-change'));
     await router.navigate('/orgs/beta/threads');
+    await waitFor(() => expect(document.querySelector('.animate-pulse')).not.toBeNull());
+    // The old scope was ready and saves before beta's loading content can
+    // clamp the reused owner. Beta has no saved key, so zero is intentional.
+    expect(sessionStorage.getItem('threads:list-scroll:alpha:open:')).toBe('350');
+    expect(sessionStorage.getItem('threads:list-scroll:beta:open:')).toBeNull();
+    releaseBeta();
     const betaRow = await screen.findByRole('link', { name: /THR-BETA/i });
     const betaScroller = betaRow.closest('.overflow-y-auto') as HTMLDivElement;
-    await waitFor(() => expect(betaScroller.scrollTop).toBe(121));
+    await waitFor(() => expect(betaScroller.scrollTop).toBe(0));
+    // Beta is ready now: its own user scroll is observable rather than the
+    // pending-layout clamp emulated above.
+    Object.defineProperty(betaScroller, 'scrollTop', {
+      configurable: true,
+      get: () => alphaTop,
+      set: (value: number) => { alphaTop = value; },
+    });
+    betaScroller.scrollTop = 121;
+    fireEvent.scroll(betaScroller);
 
     await router.navigate('/orgs/alpha/threads');
     const restoredAlpha = await screen.findByRole('link', { name: /THR-ALPHA/i });
     const restoredAlphaScroller = restoredAlpha.closest('.overflow-y-auto') as HTMLDivElement;
     await waitFor(() => expect(restoredAlphaScroller.scrollTop).toBe(350));
+    expect(sessionStorage.getItem('threads:list-scroll:beta:open:')).toBe('121');
+  });
+
+  test('captures the ready outgoing org owner before an uncached loading scope can clamp it without a scroll event', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let releaseBeta!: () => void;
+    const betaPending = new Promise<void>((resolve) => { releaseBeta = resolve; });
+    server.use(http.get('/api/v1/orgs/:slug/threads', ({ params, request }) => {
+      const slug = String(params.slug);
+      const status = new URL(request.url).searchParams.get('status');
+      if (slug === 'beta' && status === 'open') {
+        return betaPending.then(() => HttpResponse.json({ threads: [mkThread('THR-BETA', 'org scope target')] }));
+      }
+      return HttpResponse.json({
+        threads: status === 'open' ? [mkThread(`THR-${slug.toUpperCase()}`, 'org scope target')] : [],
+      });
+    }));
+    const { router } = mountRouteHistory('/orgs/alpha/threads');
+    const alphaRow = await screen.findByRole('link', { name: /THR-ALPHA/i });
+    const scroller = alphaRow.closest('.overflow-y-auto') as HTMLDivElement;
+    let alphaTop = 350;
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => router.state.location.pathname.includes('/beta/') ? 0 : alphaTop,
+      set: (value: number) => { alphaTop = value; },
+    });
+
+    window.dispatchEvent(new Event('threads:before-org-change'));
+    await router.navigate('/orgs/beta/threads');
+    await waitFor(() => expect(document.querySelector('.animate-pulse')).not.toBeNull());
+    expect(sessionStorage.getItem('threads:list-scroll:alpha:open:')).toBe('350');
+    releaseBeta();
+    await screen.findByRole('link', { name: /THR-BETA/i });
+    await router.navigate('/orgs/alpha/threads');
+    const returned = await screen.findByRole('link', { name: /THR-ALPHA/i });
+    await waitFor(() => expect((returned.closest('.overflow-y-auto') as HTMLDivElement).scrollTop).toBe(350));
+  });
+
+  test('does not overwrite a pending scope saved position when leaving before its response', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    sessionStorage.setItem('threads:list-scroll:beta:open:', '350');
+    let releaseBeta!: () => void;
+    const betaPending = new Promise<void>((resolve) => { releaseBeta = resolve; });
+    server.use(http.get('/api/v1/orgs/:slug/threads', ({ params, request }) => {
+      const slug = String(params.slug);
+      const status = new URL(request.url).searchParams.get('status');
+      if (slug === 'beta' && status === 'open') {
+        return betaPending.then(() => HttpResponse.json({ threads: [mkThread('THR-BETA', 'beta route target')] }));
+      }
+      return HttpResponse.json({ threads: status === 'open' ? [mkThread('THR-ALPHA', 'alpha route target')] : [] });
+    }));
+    const { router } = mountRouteHistory('/orgs/alpha/threads');
+    await screen.findByRole('link', { name: /THR-ALPHA/i });
+    await router.navigate('/orgs/beta/threads');
+    await waitFor(() => expect(document.querySelector('.animate-pulse')).not.toBeNull());
+    await router.navigate('/orgs/alpha/threads');
+    expect(sessionStorage.getItem('threads:list-scroll:beta:open:')).toBe('350');
+    await router.navigate('/orgs/beta/threads');
+    releaseBeta();
+    const returnedBeta = await screen.findByRole('link', { name: /THR-BETA/i });
+    await waitFor(() => expect((returnedBeta.closest('.overflow-y-auto') as HTMLDivElement).scrollTop).toBe(350));
   });
 });
 
