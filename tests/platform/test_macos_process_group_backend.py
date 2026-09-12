@@ -93,16 +93,22 @@ class _CooperativeEscapedChild:
         # Keep this tiny owned control directory under the test worktree: the
         # shared task tmp cleaner may otherwise delete it between launch and
         # the child's acknowledgement.
-        self._root: Path | None = Path(
-            tempfile.mkdtemp(prefix=".pytest-owned-escaped-", dir=Path.cwd())
-        )
-        self._control = self._root / "release"
-        self._report = self._root / "events"
-        self._control.touch()
+        self._root: Path | None = None
+        self._control: Path | None = None
+        self._report: Path | None = None
         self._deadline_seconds = deadline_seconds
         self._released = False
         self.release_error: OSError | None = None
         self.cleanup_errors: list[BaseException] = []
+        try:
+            self._root = Path(tempfile.mkdtemp(prefix=".pytest-owned-escaped-", dir=Path.cwd()))
+            self._control = self._root / "release"
+            self._report = self._root / "events"
+            self._control.touch()
+        except BaseException:
+            # A failed second construction step still owns the first resource.
+            self.close()
+            raise
 
     @property
     def argv(self) -> tuple[str, ...]:
@@ -119,7 +125,7 @@ class _CooperativeEscapedChild:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                if signal_byte.decode() in self._report.read_text():
+                if self._report is not None and signal_byte.decode() in self._report.read_text():
                     return True
             except FileNotFoundError:
                 # The child has not yet created its report, unless cleanup
@@ -138,7 +144,8 @@ class _CooperativeEscapedChild:
             return
         self._released = True
         try:
-            self._control.unlink()
+            if self._control is not None:
+                self._control.unlink()
         except OSError as exc:
             self.release_error = exc
 
@@ -231,6 +238,102 @@ def test_escaped_shipping_seam_uses_supported_launchspec_and_finalizes_on_finish
     assert "pass_fds" not in repr(launched[0])
     assert child._root is None
     assert child.release_error is None
+
+
+@pytest.mark.parametrize("phase", ("prepare", "launch", "finish", "assertion"))
+def test_escaped_shipping_seam_finalizes_before_identity_or_survivor_assignment(monkeypatch, phase):
+    """Every real-seam failure closes the test-owned transport and keeps its error."""
+    class _Child:
+        argv = ("owned-child",)
+        release_error = PermissionError("release failed")
+        cleanup_errors = [OSError("close failed")]
+        _root = object()
+
+        def wait_for(self, signal_byte, timeout=2.0):
+            return phase != "assertion" or signal_byte != b"R"
+
+        def release(self):
+            return None
+
+        def close(self):
+            self._root = None
+
+    child = _Child()
+
+    class _Backend:
+        def prepare(self, *_args):
+            if phase == "prepare":
+                raise RuntimeError("prepare-primary")
+            return object()
+
+        def launch(self, _pending, spec):
+            assert isinstance(spec, LaunchSpec)
+            if phase == "launch":
+                raise RuntimeError("launch-primary")
+            return SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
+
+        def finish(self, *_args, **_kwargs):
+            if phase == "finish":
+                raise RuntimeError("finish-primary")
+            return SimpleNamespace(survivors=("owned",), quiescent=False, cleanup_status=CleanupStatus.TERM)
+
+    monkeypatch.setattr(sys.modules[__name__], "_CooperativeEscapedChild", lambda: child)
+    with pytest.raises((RuntimeError, AssertionError)) as raised:
+        test_escaped_descendant_is_best_effort_survivor_real(_Backend())
+    assert child._root is None
+    notes = getattr(raised.value, "__notes__", ())
+    assert any("release failed" in note and "close failed" in note for note in notes)
+
+
+def test_escaped_shipping_seam_reports_missing_terminal_acknowledgement(monkeypatch):
+    """An E marker without reaping is insufficient; missing E is visible as unknown."""
+    class _Child:
+        argv = ("owned-child",)
+        release_error = None
+        cleanup_errors: list[BaseException] = []
+        _root = object()
+
+        def wait_for(self, signal_byte, timeout=2.0):
+            return signal_byte == b"R"
+
+        def release(self):
+            return None
+
+        def close(self):
+            self._root = None
+
+    class _Backend:
+        def prepare(self, *_args):
+            return object()
+
+        def launch(self, _pending, _spec):
+            return SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
+
+        def finish(self, *_args, **_kwargs):
+            return SimpleNamespace(survivors=("owned",), quiescent=False, cleanup_status=CleanupStatus.TERM)
+
+    child = _Child()
+    monkeypatch.setattr(sys.modules[__name__], "_CooperativeEscapedChild", lambda: child)
+    with pytest.raises(AssertionError, match="escaped-child cleanup unknown: missing release acknowledgement"):
+        test_escaped_descendant_is_best_effort_survivor_real(_Backend())
+    assert child._root is None
+
+
+def test_cooperative_child_partial_construction_closes_owned_directory(monkeypatch):
+    """A failed control-marker creation cannot leak the already-created directory."""
+    created: list[Path] = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def owned_mkdtemp(*args, **kwargs):
+        root = Path(real_mkdtemp(*args, **kwargs))
+        created.append(root)
+        return str(root)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", owned_mkdtemp)
+    monkeypatch.setattr(Path, "touch", lambda _self: (_ for _ in ()).throw(OSError("touch failed")))
+    with pytest.raises(OSError, match="touch failed"):
+        _CooperativeEscapedChild()
+    assert created and not created[0].exists()
 
 
 # ── deterministic unit tests (fake census) ───────────────────────────
