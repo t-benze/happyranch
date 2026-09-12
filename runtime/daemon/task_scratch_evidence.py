@@ -30,6 +30,17 @@ class TaskScratchEvidence:
     freshness_limited: bool = True
 
 
+@dataclass(frozen=True)
+class _EvidenceObservation:
+    """Private typed companion for the dormant consumer.
+
+    This deliberately retains the collector's existing durable snapshot rather
+    than promoting it into the report/API shape.
+    """
+    evidence: TaskScratchEvidence
+    snapshot: tuple[tuple[object, ...], ...] | None
+
+
 def _under(value: str, root: Path) -> bool:
     value = os.path.normpath(value.removesuffix(" (deleted)")); base = os.path.normpath(str(root))
     return value == base or value.startswith(base + os.sep)
@@ -154,7 +165,9 @@ def _snapshot(db: Database, task_id: str, reasons: set[str], deadline: int) -> t
         try: task = db.get_task(listed.id)
         except Exception: reasons.add("task_authority_unavailable"); return None
         if task is None or task.id != listed.id: reasons.add("task_authority_unavailable"); return None
-        out.append(("task", task.id, _shape(task)))
+        # Keep the typed record only in the private in-memory snapshot.  The
+        # public TaskScratchEvidence remains deliberately compact.
+        out.append(("task", task.id, _shape(task), task))
         if task.executor_pid is not None:
             if not isinstance(task.executor_pid, int) or isinstance(task.executor_pid, bool) or task.executor_pid <= 0:
                 reasons.add("executor_pid_unavailable")
@@ -290,3 +303,18 @@ def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, tas
     if roots is None or cwds is None or fds is None or old_boot is None or before_scan_boot is None or final_boot is None or reasons & measurement_invalid:
         roots = cwds = fds = None
     return TaskScratchEvidence(task_id, not reasons, tuple(sorted(reasons)), final_boot, time.time_ns(), roots, cwds, fds)
+
+
+def _collect_private_evidence(**kwargs: object) -> _EvidenceObservation:
+    """Return a fresh private binding without changing the public result.
+
+    The extra snapshot is bounded by the same collector limits and is used only
+    by the production-unreferenced synchronous test consumer.
+    """
+    evidence = collect_task_scratch_evidence(**kwargs)  # type: ignore[arg-type]
+    reasons: set[str] = set()
+    deadline = time.monotonic_ns() + SCAN_NS
+    snapshot = _snapshot(kwargs["db"], kwargs["task_id"], reasons, deadline)  # type: ignore[arg-type]
+    if reasons:
+        snapshot = None
+    return _EvidenceObservation(evidence, snapshot)

@@ -49,6 +49,13 @@ class TaskScratchCoverageObservation:
 
 
 @dataclass(frozen=True)
+class _CoverageBinding:
+    """Private comparison-ready snapshot; never part of report serialization."""
+    observation: TaskScratchCoverageObservation
+    snapshot: _Snapshot | None
+
+
+@dataclass(frozen=True)
 class _Item:
     rel: str
     dev: int
@@ -394,3 +401,12 @@ def collect_task_scratch_coverage(*, workspace: Path, proc_root: Path = Path("/p
     by_path = {row.relative_path: row for row in buckets}
     ready = bool(dominant) and not reasons and all(by_path[name].classification == "canonical_regenerable" for name in dominant)
     return TaskScratchCoverageObservation(str(workspace), before.boot, not reasons, ready, tuple(sorted(reasons)), tuple(buckets), tuple(sorted(dominant)), time.time_ns())
+
+
+def _collect_private_coverage(**kwargs: object) -> _CoverageBinding:
+    """Retain a bounded private binding alongside the unchanged public view."""
+    observation = collect_task_scratch_coverage(**kwargs)  # type: ignore[arg-type]
+    reasons: set[str] = set()
+    budget = _Budget(time.monotonic_ns() + SCAN_NS, reasons)
+    snapshot = _snapshot(Path(kwargs["workspace"]), Path(kwargs.get("proc_root", Path("/proc"))), budget)
+    return _CoverageBinding(observation, None if reasons else snapshot)

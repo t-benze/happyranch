@@ -5,15 +5,113 @@ import hashlib
 import json
 import os
 import stat
+import sys
+import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Mapping
 
 from runtime.orchestrator.task_scratch import TaskScratchError, validate_task_scratch_manifest
+from runtime.daemon.task_scratch_coverage import _CoverageBinding, _collect_private_coverage
+from runtime.daemon.task_scratch_evidence import _EvidenceObservation, _collect_private_evidence
 
 MTIME_FLOOR_NS = 60_000_000_000
 MAX_CENSUS_ENTRIES = 100_000
+
+
+def _terminal_ns(value: object) -> int | None:
+    if isinstance(value, datetime):
+        return int(value.timestamp() * 1_000_000_000)
+    if isinstance(value, str):
+        try:
+            return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1_000_000_000)
+        except ValueError:
+            return None
+    return None
+
+
+def _private_evidence_ok(value: _EvidenceObservation, task_id: str) -> tuple[object, int] | None:
+    evidence, snapshot = value.evidence, value.snapshot
+    if not evidence.eligible or snapshot is None or evidence.boot_id is None:
+        return None
+    tasks = [row[3] for row in snapshot if len(row) > 3 and row[0] == "task"]
+    target = next((task for task in tasks if getattr(task, "id", None) == task_id), None)
+    if target is None or getattr(getattr(target, "status", None), "value", None) not in {"completed", "failed", "cancelled"}:
+        return None
+    terminal = _terminal_ns(getattr(target, "completed_at", None))
+    if terminal is None:
+        return None
+    # The existing snapshot stores result payloads as representations for the
+    # public collector.  Re-querying is intentionally avoided here: absence is
+    # not promoted to authority; an eligible public observation alone is not a
+    # private-consumption permit.
+    if not any(row[0] == "result" and row[2] != "None" for row in snapshot):
+        return None
+    return target, terminal
+
+
+def _private_coverage_ok(value: _CoverageBinding, workspace: Path, task_id: str) -> bool:
+    observation, snapshot = value.observation, value.snapshot
+    if not observation.complete or not observation.coverage_ready or snapshot is None:
+        return False
+    try:
+        return (Path(observation.workspace).resolve(strict=True) == workspace.resolve(strict=True)
+                and any(row.relative_path == f".happyranch/task-tmp/{task_id}"
+                        and row.classification == "canonical_regenerable" for row in observation.buckets))
+    except OSError:
+        return False
+
+
+def collect_revalidate_seal_consume_disposable(*, db: object, sessions: object, workspace: Path,
+                                                task_id: str, agent_name: str, proc_root: Path = Path("/proc"),
+                                                monotonic_now: float | None = None,
+                                                daemon_started_monotonic: float | None = None,
+                                                now_ns: int | None = None) -> ReclamationResult | None:
+    """Dormant synchronous test-only consumer; no production caller imports it.
+
+    Each refusal returns ``None`` before sealing/execution.  This is a bounded
+    observer, not an atomic snapshot or writer fence.
+    """
+    kwargs = {"db": db, "sessions": sessions, "task_id": task_id,
+              "root": workspace / ".happyranch" / "task-tmp" / task_id,
+              "proc_root": proc_root, "monotonic_now": monotonic_now,
+              "daemon_started_monotonic": daemon_started_monotonic}
+    e1 = _collect_private_evidence(**kwargs)
+    c1 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
+    e2 = _collect_private_evidence(**kwargs)
+    c2 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
+    first = _private_evidence_ok(e1, task_id)
+    second = _private_evidence_ok(e2, task_id)
+    if first is None or second is None or not _private_coverage_ok(c1, workspace, task_id) or not _private_coverage_ok(c2, workspace, task_id):
+        return None
+    if e1.snapshot != e2.snapshot or c1.snapshot != c2.snapshot or e2.evidence.boot_id != c2.observation.boot_id:
+        return None
+    _target, terminal = second
+    boot = e2.evidence.boot_id
+    if boot is None or any(value is None for value in (e2.evidence.process_roots, e2.evidence.process_cwds, e2.evidence.open_fds)):
+        return None
+    digest = hashlib.sha256(repr(c2.snapshot).encode()).hexdigest()
+    assertions = ReclamationAssertions(agent_name,
+        LifecycleAssertions("completed", "private-terminal:v1", terminal, 0, ZombieRecoveryState.CLEAR, 0, 0, 0, True, False, False, False),
+        LivenessAssertions("private-evidence:v1", EvidencePlatform.LINUX if sys.platform == "linux" else EvidencePlatform.DARWIN,
+            boot, boot, True, False, False, False, False, 0, e2.evidence.process_roots, e2.evidence.process_cwds, e2.evidence.open_fds),
+        CoverageAssertions("private-coverage:v1", digest, boot, boot, True, False, False, False, 0, 0, 0))
+    try:
+        row = seal_ledger_row(workspace=workspace, task_id=task_id, assertions=assertions,
+                              now_ns=time.time_ns() if now_ns is None else now_ns)
+    except ReclamationError:
+        return None
+    e3 = _collect_private_evidence(**kwargs)
+    c3 = _collect_private_coverage(workspace=workspace, proc_root=proc_root)
+    e4 = _collect_private_evidence(**kwargs)
+    if (_private_evidence_ok(e3, task_id) is None or _private_evidence_ok(e4, task_id) is None
+            or not _private_coverage_ok(c3, workspace, task_id)
+            or e2.snapshot != e3.snapshot or c2.snapshot != c3.snapshot or e3.snapshot != e4.snapshot
+            or e4.evidence.boot_id != c3.observation.boot_id):
+        return None
+    return execute_ledger((row,))[0]
 
 
 class ReclamationError(RuntimeError):

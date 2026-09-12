@@ -5,7 +5,9 @@ import os
 import inspect
 import threading
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import runtime.daemon.task_scratch_reclamation as reclamation
@@ -59,6 +61,33 @@ def test_removes_only_literal_root_and_preserves_sidecars(tmp_path):
     assert contract.manifest_path.read_bytes() == manifest_before
     assert contract.manifest_path.with_suffix(".lock").read_bytes() == lock_before
     assert sibling.root.is_dir()
+
+
+def test_private_dormant_consumer_seals_and_consumes_only_a_stable_complete_binding(tmp_path, monkeypatch):
+    """The new seam has no caller; its only success path is synchronous here."""
+    workspace, contract, _assertions, old = _candidate(tmp_path)
+    from runtime.daemon.task_scratch_coverage import CoverageBucket, TaskScratchCoverageObservation
+    from runtime.daemon.task_scratch_evidence import TaskScratchEvidence
+    terminal = SimpleNamespace(id="TASK-1", status=SimpleNamespace(value="completed"),
+                               completed_at=datetime.fromtimestamp(
+                                   (old + 120_000_000_000) / 1_000_000_000,
+                                   tz=timezone.utc))
+    private_evidence = SimpleNamespace(
+        evidence=TaskScratchEvidence("TASK-1", True, (), "boot-1", 0, 0, 0, 0),
+        snapshot=(("task", "TASK-1", (), terminal), ("result", "TASK-1", "{'status': 'completed'}")),
+    )
+    private_coverage = SimpleNamespace(
+        observation=TaskScratchCoverageObservation(str(workspace), "boot-1", True, True, (),
+                                                    (CoverageBucket(".happyranch/task-tmp/TASK-1",
+                                                                    "canonical_regenerable", 1, 1, 1),),
+                                                    (".happyranch/task-tmp/TASK-1",), 0), snapshot=object())
+    monkeypatch.setattr(reclamation, "_collect_private_evidence", lambda **_kw: private_evidence)
+    monkeypatch.setattr(reclamation, "_collect_private_coverage", lambda **_kw: private_coverage)
+    result = reclamation.collect_revalidate_seal_consume_disposable(
+        db=object(), sessions=object(), workspace=workspace, task_id="TASK-1", agent_name="dev_agent",
+        daemon_started_monotonic=0, monotonic_now=31, now_ns=old + 121_000_000_000)
+    assert result is not None and result.outcome == "completed"
+    assert not contract.root.exists()
 
 
 @pytest.mark.parametrize("field,value", [
