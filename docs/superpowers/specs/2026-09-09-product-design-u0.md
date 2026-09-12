@@ -283,6 +283,18 @@ readback compares full parent/live task deltas, unchanged result rows, and the
 ordered cancellation-audit append before forwarding the original opaque
 control. These remain bounded test evidence, not a production behavior change.
 
+The JOIN cases retain complete preexisting result/audit rows by ID and assert
+every appended result field against its original consumed callback. For the
+held last child and parent revisit, source-derived expected terminal row values
+bind session and diagnostic PID to the recorded launch, notes to the submitted
+decision, and transition timestamps to their observed writes; every other
+persisted field remains unchanged. Workspace evidence is content-level:
+`task_history.md` is reconstructed with the shipping serializer and each
+scratch manifest is decoded against its canonical root/producer contract,
+rather than accepting a filename whitelist. The delivery prompt contains the
+four-space-indented JOIN section alongside the unrelated parent brief and
+role-guidance text.
+
 ### 2026-09-12 evidence-handoff correction
 
 The earlier TASK-7823 handoff statement that JOB1591 tested its corrected
@@ -292,3 +304,6 @@ bytes is superseded. JOB1591 is historical successful evidence for
 9846 Python passed / 1 skipped and 1557 Web passed / 1 skipped. JOB1598 is
 push-only exit 0. Neither job is evidence for later changed bytes; current
 byte verification must cite its own command, head, digest, and result.
+TASK-7825 published before its required corrected-byte `scripts/local_ci.sh
+all`; that missing local-CI verification remains historical missing evidence,
+not a pass and not a reason to reuse JOB1591.

@@ -25,6 +25,27 @@ class _U0TypedJson:
     value: object
 
 
+def _u0_typed_json(value: object) -> _U0TypedJson:
+    """Mirror the independent SQLite readback's lossless JSON projection."""
+    if value is None:
+        return _U0TypedJson("null", None)
+    if isinstance(value, bool):
+        return _U0TypedJson("bool", value)
+    if isinstance(value, int):
+        return _U0TypedJson("int", value)
+    if isinstance(value, float):
+        return _U0TypedJson("float", value)
+    if isinstance(value, str):
+        return _U0TypedJson("str", value)
+    if isinstance(value, list):
+        return _U0TypedJson("list", tuple(_u0_typed_json(item) for item in value))
+    if isinstance(value, dict):
+        return _U0TypedJson("object", tuple(sorted(
+            (key, _u0_typed_json(item)) for key, item in value.items()
+        )))
+    raise TypeError(f"unexpected JSON value: {value!r}")
+
+
 def _paths(org_state):
     from runtime.orchestrator._paths import OrgPaths
 
@@ -105,7 +126,13 @@ def _r1_snapshot(*, db, tracker, paths, queue, task_ids: tuple[str, ...],
         if not path.exists():
             return None
         raw = path.read_bytes()
-        return {"sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
+        # These fixture workspaces contain only source-owned UTF-8 control
+        # files.  Keep their bytes as well as the digest so a filename-only
+        # allowance cannot bless a wrong history or scratch-manifest rewrite.
+        return {
+            "sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw),
+            "content": raw.decode("utf-8"),
+        }
 
     canonical_paths = {name: paths.agents_dir / f"{name}.md" for name in identities}
     archived_paths = {name: paths.agents_dir / "_terminated" / f"{name}.md" for name in identities}
@@ -167,6 +194,54 @@ def _receipt_evidence(receipts) -> list[dict[str, object]]:
         }
         for receipt in receipts
     ]
+
+
+def _source_task_history(db, agent: str) -> str:
+    """Mirror the shipping history serializer for a content-level assertion."""
+    lines: list[str] = []
+    for task in db.list_agent_tasks(agent, limit=50):
+        date = task.completed_at or task.updated_at or task.created_at
+        date_str = date.date().isoformat() if hasattr(date, "date") else str(date)[:10]
+        brief = (task.brief or "").replace("\n", " ").strip()[:120]
+        outcome = (task.note or "").replace("\n", " ").strip()[:160]
+        lines.append(f"- **{task.id}** ({date_str}, {task.status.value}) — {brief}")
+        lines.append(f"  - Outcome: {outcome}" if outcome else "  - Outcome: (none)")
+        if task.final_output_dir:
+            lines.append(f"  - Output: `{task.final_output_dir}`")
+    return f"# Task History: {agent}\n\n" + "\n".join(lines) + ("\n" if lines else "")
+
+
+def _assert_source_scratch_manifest(
+    entry: dict[str, object], *, workspace, task_id: str,
+    producer_ids: list[str], writer_observation: dict[str, object],
+) -> None:
+    """Check the full writer-owned manifest against its exact launch records."""
+    manifest = json.loads(entry["content"])
+    # Keep this in lockstep with task_scratch._write_observation: accepting a
+    # few producer fields would still allow a malformed durable recovery
+    # artifact to pass merely because it has the expected filename.
+    assert set(manifest) == {
+        "version", "task_id", "required_root", "observed_root",
+        "root_classification", "manifest_classification",
+        "lock_classification", "producers",
+    }
+    expected_root = str(workspace / ".happyranch" / "task-tmp" / task_id)
+    assert manifest["version"] == 1 and manifest["task_id"] == task_id
+    assert manifest["required_root"] == manifest["observed_root"] == expected_root
+    assert manifest["root_classification"] == "regenerable_scratch"
+    assert manifest["manifest_classification"] == "durable_recovery_artifact"
+    assert manifest["lock_classification"] == "durable_recovery_artifact"
+    expected_producers = [{
+        "producer_kind": "agent", "producer_id": session_id,
+        "required": {"canonical_root": expected_root, "ownership": "runtime"},
+        "observed": {"canonical_root": expected_root, "mode": "0700"},
+        "classification": "regenerable_scratch",
+        "observed_at": writer_observation[session_id],
+    } for session_id in producer_ids]
+    assert manifest["producers"] == expected_producers
+    # This is the raw payload immediately written by task_scratch._write_observation,
+    # not a second final-state observation whose values could validate themselves.
+    assert manifest == writer_observation["manifest"]
 
 
 def _u0_independent_sqlite_readback(db, task_ids: tuple[str, ...]) -> dict[str, object]:
@@ -2399,6 +2474,12 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
     paths, receipts, launches, errors = orch._paths, [], [], []
     consumed_reports, parent_revisit_prompts, shipping_join_prompts = [], [], []
+    # These are captured at the original shipping seams, before the eventual
+    # final readback.  They bind generated timestamps and the complete
+    # append-only rows to their actual transition rather than using that final
+    # readback as its own expected-state oracle.
+    transition_observations = {}
+    scratch_writer_observations = {}
     publication_reached, release_publication = threading.Event(), threading.Event()
     both_launched, permit_callbacks = threading.Event(), threading.Event()
     first_terminal, release_final, done = threading.Event(), threading.Event(), threading.Event()
@@ -2454,6 +2535,19 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
                 kwargs["running"].process.terminate()
 
     monkeypatch.setattr(orch, "_build_executor", lambda _provider: Executor())
+    import runtime.orchestrator.task_scratch as task_scratch_module
+    original_write_observation = task_scratch_module._write_observation
+    def observed_write_observation(contract):
+        original_write_observation(contract)
+        manifest = json.loads(contract.manifest_path.read_text())
+        observed = scratch_writer_observations.setdefault(contract.task_id, {})
+        observed[contract.producer_id] = next(
+            producer["observed_at"] for producer in manifest["producers"]
+            if producer["producer_kind"] == contract.producer_kind
+            and producer["producer_id"] == contract.producer_id
+        )
+        observed["manifest"] = manifest
+    monkeypatch.setattr(task_scratch_module, "_write_observation", observed_write_observation)
     supervisor = HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0), publisher=receipts.append)
     orch.attach_host_supervisor(supervisor)
     state = DaemonState.idle(orch._settings)
@@ -2480,11 +2574,14 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         result = original_consume(consume_orch, task_id, report, result_row_id=result_row_id)
         row = db.execute("SELECT * FROM task_results WHERE id = ?", (result_row_id,)).fetchone()
         consumed_reports.append({
-            "task_id": task_id, "agent": db.get_task(task_id).assigned_agent,
+            "task_id": task_id, "agent": report.agent,
             "session_id": row["session_id"] if row else None,
             "result_row_id": result_row_id, "persisted_id": row["id"] if row else None,
             "verdict": report.verdict,
             "summary": report.output_summary,
+            "status": report.status, "confidence": report.confidence,
+            "decision": report.decision.model_dump() if report.decision else None,
+            "persisted_row": dict(row) if row else None,
         })
         return result
     monkeypatch.setattr(run_step_module, "_consume_completion_report", observed_consume)
@@ -2493,6 +2590,10 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         try:
             result = original_dispatch(*args, **kwargs)
             task_id = args[1]
+            transition_observations[task_id] = {
+                "task": dict(db.get_task(task_id)),
+                "audits": [dict(row) for row in db.get_audit_logs(task_id)],
+            }
             children = db.get_children(parent_id)
             if (task_id in children and children.index(task_id) == completion_order[0]
                     and db.get_task(task_id).status == TaskStatus.COMPLETED):
@@ -2610,16 +2711,29 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
             path for path in held_first["workspaces"]["dev_agent"]
             if held_first["workspaces"]["dev_agent"][path] != both_launched_snapshot["workspaces"]["dev_agent"][path]
         }
-        assert changed_workspace_bytes <= {"task_history.md", f".happyranch/task-scratch-manifests/{first}.json"}
+        assert changed_workspace_bytes == {"task_history.md"}
+        assert held_first["workspaces"]["dev_agent"]["task_history.md"]["content"] == _source_task_history(db, "dev_agent")
+        _assert_source_scratch_manifest(
+            held_first["workspaces"]["dev_agent"][f".happyranch/task-scratch-manifests/{first}.json"],
+            workspace=paths.workspaces_dir / "dev_agent", task_id=first,
+            producer_ids=[next(entry["session_id"] for entry in launches if entry["task_id"] == first)],
+            writer_observation=scratch_writer_observations[first],
+        )
+        assert held_first["workspaces"]["dev_agent"][f".happyranch/task-scratch-manifests/{first}.json"] == both_launched_snapshot["workspaces"]["dev_agent"][f".happyranch/task-scratch-manifests/{first}.json"]
         assert held_first["workspaces"]["engineering_head"] == both_launched_snapshot["workspaces"]["engineering_head"]
         assert held_first["controls"][parent_id] is False
         assert held_first["controls"][first] is False and held_first["controls"][last] is True
         first_row = held_first["results"][first][0]
-        assert next(item for item in consumed_reports if item["task_id"] == first) == {
+        first_report = next(item for item in consumed_reports if item["task_id"] == first)
+        assert {key: value for key, value in first_report.items() if key not in {"persisted_row", "status", "confidence", "decision"}} == {
             "task_id": first, "agent": "dev_agent", "session_id": first_row["session_id"],
             "result_row_id": first_row["id"], "persisted_id": first_row["id"],
             "verdict": "PASS", "summary": f"report:{first}",
         }
+        assert first_report["status"] == "completed" and first_report["confidence"] == 100
+        assert first_report["decision"] == NextStep(
+            action="done", summary=f"child-{children.index(first)}"
+        ).model_dump()
         independent_first = _u0_independent_sqlite_readback(db, (parent_id, *children))
         first_history = _u0_normalize_persisted_rows(independent_first)
         # Compare independent durable rows to the named first-terminal boundary;
@@ -2646,12 +2760,13 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     joins = [row for row in final["audits"][parent_id] if row["action"] == "fanout_join"]
     assert len(joins) == 1
     assert joins[0]["task_id"] == parent_id and joins[0]["agent"] == "orchestrator"
-    assert joins[0]["payload"]["width"] == 2 and joins[0]["payload"]["children_ids"] == children
+    assert set(joins[0]) == {"id", "task_id", "agent", "action", "payload", "timestamp"}
+    assert joins[0]["timestamp"] and joins[0]["id"] > max(row["id"] for row in initial_history["audits"])
     join_context = joins[0]["payload"]["context_markdown"]
     assert len(parent_revisit_prompts) == 1
     parent_revisit = next(entry for entry in launches if entry["task_id"] == parent_id and entry["session_id"] != launches[0]["session_id"])
     assert parent_revisit["prompt"] == parent_revisit_prompts[0]
-    assert "fanout" in parent_revisit_prompts[0], "unrelated parent brief remains present"
+    assert "  brief: fanout\n" in parent_revisit_prompts[0], "unrelated parent brief remains present"
     assert len(shipping_join_prompts) == 1
     # The source builder owns the four-space literal-block indentation.  The
     # raw audited context therefore is not expected as a byte substring of the
@@ -2659,12 +2774,21 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     indented_join_context = "\n".join(f"    {line}" for line in join_context.splitlines())
     assert indented_join_context in parent_revisit["prompt"]
     assert join_context not in parent_revisit["prompt"]
+    # Check the complete source-built role guidance, not just the new JOIN
+    # substring: the parent brief and pre-existing role instructions survive.
+    expected_role_guidance = "\n".join(
+        f"    {line}" for line in shipping_join_prompts[0].splitlines()
+    )
+    assert f"  role_guidance: |\n{expected_role_guidance}\n" in parent_revisit["prompt"]
     expected_join_entries = [
         f"[{index}/2] {child} (dev_agent)\n       Status: completed\n       Verdict: PASS\n       Confidence: 100\n       Summary: report:{child}"
         for index, child in enumerate(children, start=1)
     ]
     assert all(entry in join_context for entry in expected_join_entries)
     assert join_context.index(expected_join_entries[0]) < join_context.index(expected_join_entries[1])
+    assert joins[0]["payload"] == {
+        "width": 2, "children_ids": children, "context_markdown": join_context,
+    }
     # The terminal drain changes only the source-owned child completion and
     # join/revisit surfaces.  Immutable non-DB bytes and attachments retain
     # their complete captured content from the first-terminal boundary.
@@ -2677,8 +2801,24 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         assert set(after_workspace) == set(before_workspace) | ({"task_history.md"} if agent == "engineering_head" else set())
         changed = {path for path in before_workspace
                    if before_workspace[path] != after_workspace[path]}
-        assert changed <= {"task_history.md", f".happyranch/task-scratch-manifests/{parent_id}.json",
-                           *{f".happyranch/task-scratch-manifests/{child}.json" for child in children}}
+        expected_changed = (
+            {f".happyranch/task-scratch-manifests/{parent_id}.json"}
+            if agent == "engineering_head"
+            else {"task_history.md"}
+        )
+        assert changed == expected_changed
+        if agent == "dev_agent":
+            assert after_workspace["task_history.md"]["content"] == _source_task_history(db, agent)
+        else:
+            assert after_workspace["task_history.md"]["content"] == _source_task_history(db, agent)
+        for task_id in ((parent_id,) if agent == "engineering_head" else children):
+            task_launches = [entry["session_id"] for entry in launches if entry["task_id"] == task_id]
+            _assert_source_scratch_manifest(
+                after_workspace[f".happyranch/task-scratch-manifests/{task_id}.json"],
+                workspace=paths.workspaces_dir / agent, task_id=task_id,
+                producer_ids=task_launches,
+                writer_observation=scratch_writer_observations[task_id],
+            )
     assert final["active_fanout"][parent_id] is None and final["active_chain"][parent_id] is None
     assert all(final["tasks"][task_id]["status"] == TaskStatus.COMPLETED.value for task_id in (parent_id, *children))
     assert final["tasks"][parent_id]["orchestration_step_count"] == 2
@@ -2714,6 +2854,16 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     independent_final = _u0_independent_sqlite_readback(db, (parent_id, *children))
     final_history = _u0_normalize_persisted_rows(independent_final)
     assert final_history == _u0_snapshot_persisted_rows(final)
+    appended_fanout_joins = [row for row in final_history["audits"]
+                       if row["task_id"] == parent_id
+                       and row["action"] == "fanout_join"
+                       and row["id"] not in {item["id"] for item in first_history["audits"]}]
+    assert appended_fanout_joins == _u0_normalize_persisted_rows(
+        {"tasks": [], "results": [], "audits": [joins[0]]}
+    )["audits"]
+    assert transition_observations[parent_id]["audits"] == final["audits"][parent_id]
+    assert [row for row in transition_observations[parent_id]["audits"]
+            if row["action"] == "fanout_join"] == joins
     # Task rows legitimately transition; already-committed result/audit rows
     # do not.  Retain the complete initial parent history by ID across JOIN.
     for kind, key in (("results", "id"), ("audits", "id")):
@@ -2724,11 +2874,7 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     # are the same rows observed through the original consumption seam.
     first_result_ids = {row["id"] for row in first_history["results"]}
     appended_results = [row for row in final_history["results"] if row["id"] not in first_result_ids]
-    assert [(row["task_id"], row["agent"], row["verdict"], row["output_summary"])
-            for row in appended_results] == [
-        (last, "dev_agent", "PASS", f"report:{last}"),
-        (parent_id, "engineering_head", None, f"report:{parent_id}"),
-    ]
+    assert [row["task_id"] for row in appended_results] == [last, parent_id]
     appended_by_task = {row["task_id"]: row for row in appended_results}
     for report in consumed_reports:
         if report["task_id"] in (last, parent_id) and report["persisted_id"] in {row["id"] for row in appended_results}:
@@ -2736,6 +2882,25 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
             assert (row["id"], row["session_id"], row["verdict"], row["output_summary"]) == (
                 report["persisted_id"], report["session_id"], report["verdict"], report["summary"],
             )
+            # A result is append-only evidence, not a selected-column tuple:
+            # assert every shipping field against the consumed callback.
+            assert set(row) == {
+                "id", "task_id", "agent", "session_id", "status", "output_summary",
+                "decision_json", "confidence_score", "learnings", "risks_flagged",
+                "duration_seconds", "token_count", "estimated_cost", "output_dir",
+                "waiting_on_job_ids", "verdict", "local_ci", "created_at",
+            }
+            assert row["created_at"] and row["status"] == report["status"]
+            assert row["agent"] == report["agent"] and row["confidence_score"] == report["confidence"]
+            assert row["output_summary"] == report["summary"] and row["verdict"] == report["verdict"]
+            assert row["decision_json"] == _u0_typed_json(report["decision"])
+            assert row["output_dir"] is None
+            assert row["learnings"] is None and row["risks_flagged"] == _U0TypedJson("list", ())
+            assert row["duration_seconds"] is None and row["token_count"] is None
+            assert row["estimated_cost"] is None and row["waiting_on_job_ids"] is None and row["local_ci"] is None
+            assert row == _u0_normalize_persisted_rows(
+                {"tasks": [], "results": [report["persisted_row"]], "audits": []}
+            )["results"][0]
     # The first terminal child is immutable; the only terminal task-row
     # transitions still available to shipping completion/join/revisit are the
     # held last child and parent.  Timestamps/session values are deliberately
@@ -2743,9 +2908,30 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     first_tasks = {row["id"]: row for row in first_history["tasks"]}
     final_tasks = {row["id"]: row for row in final_history["tasks"]}
     assert final_tasks[first] == first_tasks[first]
-    for task_id in (last, parent_id):
-        changed = {key for key in first_tasks[task_id] if first_tasks[task_id][key] != final_tasks[task_id][key]}
-        assert changed <= {"status", "block_kind", "note", "active_fanout", "current_session_id", "executor_pid", "last_heartbeat", "completed_at", "updated_at", "orchestration_step_count", "final_output_summary"}
+    last_launch = next(entry for entry in launches if entry["task_id"] == last)
+    parent_launches = [entry for entry in launches if entry["task_id"] == parent_id]
+    expected_transitions = {
+        last: {"status": TaskStatus.COMPLETED.value, "block_kind": None,
+               "current_session_id": last_launch["session_id"], "executor_pid": last_launch["pid"],
+               "orchestration_step_count": 1, "final_output_summary": None,
+               "note": f"report:{last}"},
+        parent_id: {"status": TaskStatus.COMPLETED.value, "block_kind": None,
+                    "active_fanout": None, "current_session_id": parent_launches[1]["session_id"],
+                    "executor_pid": parent_launches[1]["pid"], "orchestration_step_count": 2,
+                    "final_output_summary": None, "note": "joined"},
+    }
+    for task_id, expected in expected_transitions.items():
+        assert {key: final_tasks[task_id][key] for key in expected} == expected
+        # Every other persisted field is immutable across the held transition;
+        # dynamic completion/update timestamps are separately bound below.
+        unchanged = set(final_tasks[task_id]) - set(expected) - {"last_heartbeat", "completed_at", "updated_at"}
+        assert {key: final_tasks[task_id][key] for key in unchanged} == {
+            key: first_tasks[task_id][key] for key in unchanged
+        }
+        observed = transition_observations[task_id]["task"]
+        assert final_tasks[task_id]["completed_at"] == observed["completed_at"].isoformat()
+        assert final_tasks[task_id]["updated_at"] == observed["updated_at"].isoformat()
+        assert final_tasks[task_id]["last_heartbeat"] == observed["last_heartbeat"].isoformat()
     # The completed first child is immutable across the remaining callback,
     # join, and revisit; the final comparison retains whole row content.
     assert [row for row in final_history["tasks"] if row["id"] == first] == [
