@@ -221,14 +221,29 @@ with F04, not fabricated from a free-port check.
 The allocation watchdog has its own15m timeout in a parallel branch and stops
 when the node is acquired; it does not wrap later work. Setup15m, held workload30m,
 cleanup/publication5m, and external observation70m remain distinct. Setup errors
-and controlled abort exits are retained. Receipt writes and both non-empty
-archives are attempted independently; all secondary errors, including a cleanup
-timeout, appear in the final console JSON without replacing the primary failure.
-The earlier archived receipt cannot include later archive errors, so the observer
-must collect **both** console and artifacts. Archives disable symlink following.
-If the console also fails, the original exception is still retained, but the
-final secondary-error receipt is unavailable; external observation must record
-that loss as UNKNOWN, never infer a clean cleanup from the earlier archive.
+and controlled abort exits are retained. The shell transport reports the actual
+setup exit separately from its transport exit. A per-invocation nonce and exact
+root/ancestor device/inode identities must return through the supervisor's
+stdout channel; numeric exits and existing marker files never prove acquisition.
+Setup output is redirected to an exclusively created log held by descriptor;
+the supervisor writes its shell receipt relative to that same open directory.
+Interrupted/no-return, missing, malformed, stale or mismatched acquisition
+results cannot release Pipeline filesystem publication, even for exit1.
+
+The Pipeline receipt writer opens every ancestor with `O_NOFOLLOW`, compares
+all saved identities, then uses descriptor-relative `O_EXCL|O_NOFOLLOW` creation.
+A replaced root/artifacts directory or pre-existing file, symlink or hardlink
+cannot redirect that write. Failure to verify or write skips both archives and
+records the reason. After successful safe writing, both non-empty archives are
+attempted independently with symlink following disabled. Archive errors and a
+cleanup timeout remain secondary to the original failure. The final console JSON
+includes every observed error; the earlier archived receipt cannot include later
+archive errors, so the observer must collect **both** console and artifacts.
+If console publication fails, secondary errors are also attached to the original
+exception. Loss of that external exception/console evidence remains UNKNOWN.
+The nonce is invocation correlation, not a secret or same-UID isolation boundary.
+These controlled shell/Groovy checks do not establish native Jenkins/CPS/plugin
+behavior or safe concurrent admission; the existing shared-venue gates still apply.
 Without a validated private root, publication uses console only. Without node
 allocation, `workspace=null`/`ALLOCATION_FAILED` is emitted and no archive is
 attempted. Missing artifacts, lost observer, or UNKNOWN never produces PASS.

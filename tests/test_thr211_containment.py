@@ -12,17 +12,27 @@ import pytest
 from tests import thr211_containment as containment
 
 
-def _pipeline_shell() -> str:
+def _pipeline_shell(name: str ="prepareShell") -> str:
     """Decode the actual Groovy single-quoted literal, including continuations."""
     import re
     text = (Path(__file__).parents[1] / "Jenkinsfile").read_text()
-    body = text.split("def prepareShell = '''", 1)[1].split("'''", 1)[0]
+    body = text.split("def " + name + " = '''", 1)[1].split("'''", 1)[0]
     escapes = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\", "'": "'", "\n": ""}
     return re.sub(r"\\([\s\S])", lambda m: escapes[m[1]], body)
 
 
+def _shell_exit(result: subprocess.CompletedProcess[bytes]) -> int:
+    lines = result.stdout.decode().splitlines()
+    assert result.returncode == 0, result.stderr
+    return int(next(line.removeprefix("THR211_EXIT=") for line in lines if line.startswith("THR211_EXIT=")))
+
+
+def _acquired(result: subprocess.CompletedProcess[bytes]) -> dict:
+    return json.loads(next(line.removeprefix("THR211_ACQUIRED=") for line in result.stdout.decode().splitlines() if line.startswith("THR211_ACQUIRED=")))
+
+
 def _pipeline_tools(tmp_path: Path, *, failure: str = "") -> tuple[dict, Path]:
-    """Controlled tools run by the actual shell. No Git/network/Python workload."""
+    """Real inline publication code; controlled Git and checkout-Python tools."""
     import getpass
     import time
     root = tmp_path / "workspace"
@@ -44,7 +54,7 @@ def _pipeline_tools(tmp_path: Path, *, failure: str = "") -> tuple[dict, Path]:
                    '  *" symbolic-ref "*) exit 1;;\n' +
                    'esac\n')
     python = tools / "python"
-    python.write_text("#!/bin/bash -p\nset -eu\n" + f"trace={shlex.quote(str(trace))}\n" +
+    python.write_text("#!/bin/bash -p\nset -eu\n" + f'if [[ "${{2:-}}" == -c ]]; then exec {shlex.quote(sys.executable)} "$@"; fi\n' + f"trace={shlex.quote(str(trace))}\n" +
                       'printf "python %s\\n" "$*" >> "$trace"\n/bin/cat >> "${trace}.python"\n' +
                       ("exit 38\n" if failure == "python" else ""))
     uv = tools / "uv"
@@ -61,7 +71,7 @@ def _pipeline_tools(tmp_path: Path, *, failure: str = "") -> tuple[dict, Path]:
                 "NODE": "controlled-node", "ACCOUNT": getpass.getuser(), "START": str(now - 1),
                 "EXPIRY": str(now + 4190), "PYTHON": str(python), "UV": str(uv), "GIT": str(git),
                 "ARCH": "controlled-arch"}
-    env = {"PATH": "/usr/bin:/bin", "WORKSPACE": str(root), "BUILD_NUMBER": "1", "NODE_NAME": "controlled-node"}
+    env = {"PATH": "/usr/bin:/bin", "WORKSPACE": str(root), "BUILD_NUMBER": "1", "NODE_NAME": "controlled-node", "PUBLICATION_NONCE": "controlled-nonce"}
     env.update({f"ADMITTED_{key}": value for key, value in admitted.items()})
     env.update({f"REQUESTED_{key}": admitted[key] for key in ("REQUEST", "MODE", "SOURCE", "PIPELINE")})
     return env, trace
@@ -75,10 +85,10 @@ def test_actual_pipeline_prepares_privately_then_holds_every_daemon_mode(tmp_pat
                SSH_AUTH_SOCK="foreign", GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.sshCommand",
                GIT_CONFIG_VALUE_0="foreign", HAPPYRANCH_TASK_TMP_ROOT="foreign", JENKINS_NODE_COOKIE="controlled-cookie")
     result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=8)
-    assert result.returncode == 78, result.stderr
+    assert _shell_exit(result) == 78, result.stderr
     root = Path(env["WORKSPACE"]) / "thr211-1"
     receipt = json.loads((root / "artifacts/shell-result.json").read_text())
-    assert receipt == {"phase": "prepared", "primary_exit": 78, "pytest_exit": None,
+    assert receipt == {"primary_exit": 78, "pytest_exit": None,
                        "cleanup": "UNKNOWN", "observer": "UNAVAILABLE", "held": "F04"}
     child_env = dict(line.split("=", 1) for line in Path(str(trace) + ".env").read_text().splitlines())
     assert "credential-canary" not in str(child_env)
@@ -110,7 +120,7 @@ def test_actual_pipeline_rejects_untrusted_admission_before_tools(tmp_path, key,
     if key in ("ADMITTED_REQUEST", "ADMITTED_SOURCE", "ADMITTED_PIPELINE"):
         env[key.replace("ADMITTED_", "REQUESTED_")] = value
     result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=5)
-    assert result.returncode == 64, result.stderr
+    assert _shell_exit(result) == 64, result.stderr
     assert not trace.exists()
     assert list(Path(env["WORKSPACE"]).iterdir()) == []
 
@@ -119,11 +129,10 @@ def test_actual_pipeline_rejects_untrusted_admission_before_tools(tmp_path, key,
 def test_actual_pipeline_failure_abort_and_publication_preserve_primary(tmp_path, failure, expected):
     env, trace = _pipeline_tools(tmp_path, failure=failure)
     result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=8)
-    assert result.returncode == expected, result.stderr
+    assert _shell_exit(result) == expected, result.stderr
     artifacts = Path(env["WORKSPACE"]) / "thr211-1/artifacts"
     if failure == "publication":
-        log = (artifacts / "setup.log").read_text()
-        assert "publication error=1 primary=37" in log
+        assert any("shell-receipt:FileExistsError" in error for error in _acquired(result)["errors"])
     else:
         receipt = json.loads((artifacts / "shell-result.json").read_text())
         assert receipt["primary_exit"] == expected and receipt["pytest_exit"] is None
@@ -173,7 +182,7 @@ def test_actual_pipeline_rejects_foreign_paths_without_touching_them(tmp_path, c
     else:
         (Path(env["WORKSPACE"]) / "thr211-1").symlink_to(foreign if case == "preexisting" else foreign / "absent")
     result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=5)
-    assert result.returncode != 0
+    assert _shell_exit(result) != 0
     assert not trace.exists()
     assert sentinel.stat().st_ino == inode and sentinel.read_text() == "untouched"
 
@@ -309,7 +318,7 @@ s.close()
     # it establishes no native-Mac daemon lifetime or independent observer proof.
 
 
-@pytest.mark.parametrize("failure", [None, "version", "arch", "env", "origin", "registry", "symlink"])
+@pytest.mark.parametrize("failure", [None, "version", "arch", "env", "origin", "registry", "symlink", "publication-symlink", "publication-file"])
 def test_actual_pipeline_environment_probe(tmp_path, monkeypatch, failure):
     import importlib
     import platform
@@ -344,6 +353,21 @@ def test_actual_pipeline_environment_probe(tmp_path, monkeypatch, failure):
     if failure == "symlink":
         (root / "home").rmdir()
         (root / "home").symlink_to(tmp_path)
+    if failure in ("publication-symlink", "publication-file"):
+        foreign = tmp_path / "foreign-publication"
+        foreign.mkdir()
+        marker = foreign / "preparation.json"
+        marker.write_text("FOREIGN")
+        inode = marker.stat().st_ino
+        if failure == "publication-symlink":
+            (root / "artifacts").rmdir()
+            (root / "artifacts").symlink_to(foreign)
+        else:
+            (root / "artifacts/preparation.json").symlink_to(marker)
+        with pytest.raises(BaseExceptionGroup):
+            containment.prepare_pipeline_environment(source, root, Path(sys.executable), platform.machine())
+        assert marker.stat().st_ino == inode and marker.read_text() == "FOREIGN"
+        return
     if failure:
         with pytest.raises(RuntimeError):
             containment.prepare_pipeline_environment(source, root, Path(sys.executable), "wrong" if failure == "arch" else platform.machine())
@@ -802,3 +826,117 @@ def test_resumed_plan_cleanup_paths(tmp_path: Path, family: str, agent: str, con
     assert result.returncode == exit_code
     assert len(plan.calls()) == prior + 1
     plan.assert_paths()
+
+
+@pytest.mark.parametrize("missing", ["NODE_NAME", "ADMITTED_ACCOUNT", "ADMITTED_START", "BUILD_NUMBER"])
+@pytest.mark.parametrize("kind", ["file", "symlink"])
+def test_pipeline_early_exit_has_no_acquisition_and_preserves_foreign(tmp_path, missing, kind):
+    env, trace = _pipeline_tools(tmp_path)
+    foreign = tmp_path / "foreign"
+    foreign.write_text("FOREIGN")
+    root = Path(env["WORKSPACE"]) / "thr211-1"
+    if kind == "file":
+        root.write_text("FOREIGN")
+    else:
+        root.symlink_to(foreign)
+    before = (foreign.stat().st_ino, foreign.read_bytes(), root.lstat().st_ino)
+    del env[missing]
+    result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=5)
+    assert _shell_exit(result) != 0
+    assert b"THR211_ACQUIRED=" not in result.stdout
+    assert not trace.exists()
+    assert before == (foreign.stat().st_ino, foreign.read_bytes(), root.lstat().st_ino)
+
+
+@pytest.mark.parametrize("change", ["none", "root", "artifacts", "ancestor", "file", "hardlink", "directory", "nonce", "stale", "root-directory"])
+def test_actual_pipeline_writer_rechecks_acquisition_and_never_follows(tmp_path, change):
+    env, trace = _pipeline_tools(tmp_path, failure="clone")
+    result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=5)
+    assert _shell_exit(result) == 37
+    acquisition = _acquired(result)
+    root = Path(acquisition["root"])
+    foreign = tmp_path / "foreign"
+    foreign.mkdir(mode=0o700)
+    (foreign / "artifacts").mkdir(mode=0o700)
+    marker = foreign / "artifacts/pipeline.json"
+    marker.write_text("FOREIGN")
+    before = (marker.stat().st_ino, marker.read_bytes())
+    if change in ("root", "artifacts", "ancestor"):
+        target = {"root": root, "artifacts": root / "artifacts", "ancestor": root.parent}[change]
+        target.rename(target.with_name(target.name + "-owned"))
+        target.symlink_to(foreign, target_is_directory=True)
+    elif change == "file":
+        (root / "artifacts/pipeline.json").symlink_to(marker)
+    elif change == "hardlink":
+        os.link(marker, root / "artifacts/pipeline.json")
+    elif change == "directory":
+        (root / "artifacts/pipeline.json").mkdir()
+    elif change == "nonce":
+        acquisition["nonce"] = "stale-nonce"
+    elif change == "stale":
+        acquisition["ancestry"][-1][1] += 1
+    elif change == "root-directory":
+        root.rename(root.with_name("owned-root"))
+        root.mkdir(mode=0o700)
+        for leaf in ("home", "xdg-config", "xdg-cache", "xdg-state", "xdg-runtime", "tmp", "uv-cache", "venv", "daemon-home", "artifacts"):
+            (root / leaf).mkdir(mode=0o700)
+    publish_env = dict(env, PUBLICATION_PYTHON=env["ADMITTED_PYTHON"], PUBLICATION_ROOT=str(root),
+                       PUBLICATION_ACQUIRED=json.dumps(acquisition), PUBLICATION_RECEIPT='{"pytest_exit":null}')
+    written = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell("publishShell")], env=publish_env, capture_output=True, timeout=5)
+    if change == "none":
+        assert written.returncode == 0, written.stderr
+        assert _acquired(written)["published"] is True
+        assert json.loads((root / "artifacts/pipeline.json").read_text()) == {"pytest_exit": None}
+    else:
+        assert written.returncode != 0 or not _acquired(written).get("published")
+    assert before == (marker.stat().st_ino, marker.read_bytes())
+
+
+@pytest.mark.parametrize("changed", ["root", "artifacts"])
+@pytest.mark.parametrize("terminal,expected", [("exit 37", 37), ('kill -TERM "$$"', 143)])
+def test_setup_replacement_cannot_redirect_supervisor_receipt(tmp_path, changed, terminal, expected):
+    import shlex
+    env, trace = _pipeline_tools(tmp_path, failure="clone")
+    root = Path(env["WORKSPACE"]) / "thr211-1"
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    marker = foreign / "shell-result.json"
+    marker.write_text("FOREIGN")
+    (foreign / "artifacts").mkdir()
+    second = foreign / "artifacts/shell-result.json"
+    second.write_text("FOREIGN")
+    before = [(p.stat().st_ino, p.read_bytes()) for p in (marker, second)]
+    target = root if changed == "root" else root / "artifacts"
+    renamed = target.with_name(target.name + "-owned")
+    git = Path(env["ADMITTED_GIT"])
+    git.write_text("#!/bin/bash -p\nset -eu\n" +
+                   f"mv {shlex.quote(str(target))} {shlex.quote(str(renamed))}\n" +
+                   f"ln -s {shlex.quote(str(foreign))} {shlex.quote(str(target))}\n" + terminal + "\n")
+    result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=5)
+    assert _shell_exit(result) == expected
+    acquired = _acquired(result)
+    assert acquired["exit"] == expected
+    assert before == [(p.stat().st_ino, p.read_bytes()) for p in (marker, second)]
+    owned_artifacts = renamed / "artifacts" if changed == "root" else renamed
+    assert json.loads((owned_artifacts / "shell-result.json").read_text())["primary_exit"] == expected
+
+
+def test_publication_retains_writer_and_every_descriptor_close_error(tmp_path):
+    import shlex
+    env, trace = _pipeline_tools(tmp_path, failure="clone")
+    setup = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=5)
+    assert _shell_exit(setup) == 37
+    acquired = _acquired(setup)
+    target = Path(acquired["root"]) / "artifacts/pipeline.json"
+    target.write_text("EXISTING")
+    words = shlex.split(_pipeline_shell("publishShell"))
+    code = words[words.index("-c") + 1]
+    injected = 'import os\nclose = os.close\ndef fail_close(fd):\n close(fd)\n raise OSError("injected close")\nos.close = fail_close\n'
+    written = subprocess.run([sys.executable, "-I", "-c", injected + code, "publish", acquired["root"],
+                              env["PUBLICATION_NONCE"], json.dumps(acquired), '{"primary_exit":37}'],
+                             env=env, capture_output=True, timeout=5)
+    assert written.returncode == 0
+    errors = _acquired(written)["errors"]
+    assert errors[0].startswith("publication:FileExistsError:")
+    assert len([error for error in errors if error.startswith("close:OSError:")]) == len(acquired["ancestry"]) + 1
+    assert target.read_text() == "EXISTING"

@@ -89,8 +89,32 @@ def prepare_pipeline_environment(source: Path, root: Path, python: Path, arch: s
         "fixture_source": str(source / "tests/integration/conftest.py"),
         "fixture_imported": False,
     }
-    with (root / "artifacts" / "preparation.json").open("x") as stream:
-        json.dump(receipt, stream, sort_keys=True)
+    # Publication opens every ancestor without following links and keeps the
+    # directory descriptor through exclusive file creation, including hardlinks.
+    publication_fds = []
+    publication_errors = []
+    try:
+        fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        publication_fds.append(fd)
+        for component in (root / "artifacts").parts[1:]:
+            if component in ("", ".", ".."):
+                raise ValueError("noncanonical preparation publication path")
+            fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            publication_fds.append(fd)
+        target = os.open("preparation.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=fd)
+        with os.fdopen(target, "w") as stream:
+            json.dump(receipt, stream, sort_keys=True)
+    except BaseException as error:
+        publication_errors.append(error)
+    finally:
+        for fd in reversed(publication_fds):
+            try:
+                os.close(fd)
+            except OSError as error:
+                publication_errors.append(error)
+    if publication_errors:
+        raise BaseExceptionGroup("preparation publication failed", publication_errors)
     return receipt
 
 

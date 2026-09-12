@@ -1,6 +1,7 @@
 // Install reviewed inline CpsFlowDefinition bytes with the manager's literal
 // THR211_INSTALL binding prepended. Never evaluate a moving SCM ref.
 def prepareShell = '''#!/bin/bash -p
+(
 set -euo pipefail
 umask 077
 export PATH=/usr/bin:/bin
@@ -44,6 +45,76 @@ for leaf in home xdg-config xdg-cache xdg-state xdg-runtime tmp uv-cache venv da
 done
 printf 'write-ready\n' > "$root/tmp/probe" || reject write-probe
 [[ "$(< "$root/tmp/probe")" == write-ready ]] || reject write-readback
+publication_code=\'import json
+import os
+import subprocess
+import sys
+
+mode, root, nonce = sys.argv[1:4]
+fds = []
+errors = []
+
+def directory(path, expected=None):
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fds.append(fd)
+    identities = []
+    for component in path.split("/")[1:]:
+        if component in ("", ".", ".."):
+            raise ValueError("noncanonical publication path")
+        fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        fds.append(fd)
+        info = os.fstat(fd)
+        identities.append([info.st_dev, info.st_ino])
+    if expected is not None and identities != expected:
+        raise ValueError("publication ancestry identity changed")
+    info = os.fstat(fd)
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError("nonprivate publication directory")
+    return fd, identities
+
+def write(fd, name, data):
+    target = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+    with os.fdopen(target, "w") as stream:
+        stream.write(data)
+
+result = None
+try:
+    if mode == "prepare":
+        fd, identities = directory(root + "/artifacts")
+        result = dict(nonce=nonce, root=root, ancestry=identities, errors=errors)
+        log = os.open("setup.log", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        with os.fdopen(log, "w") as stream:
+            child = subprocess.run(["/bin/bash", "-p", "-s", "--", *sys.argv[4:]], stdin=sys.stdin, stdout=stream, stderr=subprocess.STDOUT)
+            result["exit"] = child.returncode if child.returncode >= 0 else 128 - child.returncode
+        primary = result["exit"]
+        try:
+            write(fd, "shell-result.json", json.dumps(dict(primary_exit=primary, pytest_exit=None, cleanup="UNKNOWN", observer="UNAVAILABLE", held="F04")))
+        except Exception as error:
+            errors.append("shell-receipt:" + type(error).__name__ + ":" + str(error))
+    elif mode == "publish":
+        acquired = json.loads(sys.argv[4])
+        if acquired["nonce"] != nonce or acquired["root"] != root:
+            raise ValueError("invocation acquisition mismatch")
+        fd, identities = directory(root + "/artifacts", acquired["ancestry"])
+        write(fd, "pipeline.json", sys.argv[5])
+        result = dict(nonce=nonce, root=root, published=True, errors=errors)
+    else:
+        raise ValueError("unknown publication mode")
+except Exception as error:
+    errors.append("publication:" + type(error).__name__ + ":" + str(error))
+    if result is None:
+        result = dict(nonce=nonce, root=root, errors=errors)
+finally:
+    for fd in reversed(fds):
+        try:
+            os.close(fd)
+        except OSError as error:
+            errors.append("close:" + type(error).__name__ + ":" + str(error))
+print("THR211_ACQUIRED=" + json.dumps(result), flush=True)
+if mode == "prepare":
+    sys.exit(result.get("exit", 1))
+sys.exit(0)  # Return every publication error through stdout.
+\'
 # -p ignores BASH_ENV. Jenkins cookie is metadata, NOT process ownership.
 exec /usr/bin/env -i PATH="$root/bin:/usr/bin:/bin" HOME="$root/home" \
   XDG_CONFIG_HOME="$root/xdg-config" XDG_CACHE_HOME="$root/xdg-cache" \
@@ -55,27 +126,13 @@ exec /usr/bin/env -i PATH="$root/bin:/usr/bin:/bin" HOME="$root/home" \
   GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL=https \
   HAPPYRANCH_DAEMON_HOME="$root/daemon-home" HAPPYRANCH_DAEMON_PORT=0 \
   JENKINS_NODE_COOKIE="${JENKINS_NODE_COOKIE:-}" \
-  /bin/bash -p -s -- "$root" "$ADMITTED_SOURCE" "$ADMITTED_PIPELINE" "$ADMITTED_LOCK" \
+  "$ADMITTED_PYTHON" -I -c "$publication_code" prepare "$root" "$PUBLICATION_NONCE" "$root" "$ADMITTED_SOURCE" "$ADMITTED_PIPELINE" "$ADMITTED_LOCK" \
   "$ADMITTED_PYTHON" "$ADMITTED_UV" "$ADMITTED_GIT" "$ADMITTED_ARCH" \
   "$ADMITTED_REQUEST" "$ADMITTED_MODE" "$ADMITTED_CONFIG" <<'THR211_PRIVATE'
 set -euo pipefail
 umask 077
 root=$1; source_sha=$2; pipeline_sha=$3; lock_sha=$4
 python=$5; uv=$6; git=$7; native_arch=$8; request=$9; mode=${10}; config=${11}
-phase=setup
-finish() {
-  local primary=$? publication=0
-  trap - EXIT HUP INT TERM
-  printf '{"phase":"%s","primary_exit":%s,"pytest_exit":null,"cleanup":"UNKNOWN","observer":"UNAVAILABLE","held":"F04"}\n' "$phase" "$primary" > "$root/artifacts/shell-result.json" || publication=$?
-  if (( publication != 0 )); then printf 'publication error=%s primary=%s\n' "$publication" "$primary" >&2; fi
-  if (( primary != 0 )); then exit "$primary"; fi
-  (( publication == 0 )) || exit "$publication"
-}
-trap finish EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-exec > "$root/artifacts/setup.log" 2>&1
 printf 'request=%s mode=%s source=%s pipeline=%s config=%s\n' "$request" "$mode" "$source_sha" "$pipeline_sha" "$config"
 printf 'python=%s uv=%s git=%s native_arch=%s\n' "$python" "$uv" "$git" "$native_arch"
 "$git" clone --no-checkout -- https://github.com/t-benze/happyranch.git "$root/source"
@@ -105,11 +162,101 @@ sys.path.insert(0, str(source))  # -I omits cwd: arrange source explicitly.
 from tests.thr211_containment import prepare_pipeline_environment
 prepare_pipeline_environment(source, pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), sys.argv[4])
 THR211_ORIGINS
-phase=prepared
 # No caller receipt or boolean can release this unresolved F04 gate.
 printf 'HELD: independent daemon/descendant lifetime and observer not proved\n' >&2
 exit 78
 THR211_PRIVATE
+)
+status=$?
+printf '\nTHR211_EXIT=%s\n' "$status"
+exit 0
+'''
+
+def publishShell = '''#!/bin/bash -p
+set -eu
+root="$PUBLICATION_ROOT"
+a="$root"
+while [ "$a" != / ]; do
+  [ ! -L "$a" ] && [ -d "$a" ] || exit 64
+  a=$(/usr/bin/dirname "$a")
+done
+for leaf in home xdg-config xdg-cache xdg-state xdg-runtime tmp uv-cache venv daemon-home; do
+  [ ! -L "$root/$leaf" ] && [ -d "$root/$leaf" ] && [ -O "$root/$leaf" ] || exit 64
+done
+exec /usr/bin/env -i HOME="$root/home" XDG_CONFIG_HOME="$root/xdg-config" XDG_CACHE_HOME="$root/xdg-cache" \
+ XDG_STATE_HOME="$root/xdg-state" XDG_DATA_HOME="$root/xdg-state" XDG_RUNTIME_DIR="$root/xdg-runtime" \
+ TMPDIR="$root/tmp" TMP="$root/tmp" TEMP="$root/tmp" UV_CACHE_DIR="$root/uv-cache" \
+ UV_PROJECT_ENVIRONMENT="$root/venv/env" HAPPYRANCH_DAEMON_HOME="$root/daemon-home" \
+ PATH=/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 "$PUBLICATION_PYTHON" -I -c \'import json
+import os
+import subprocess
+import sys
+
+mode, root, nonce = sys.argv[1:4]
+fds = []
+errors = []
+
+def directory(path, expected=None):
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fds.append(fd)
+    identities = []
+    for component in path.split("/")[1:]:
+        if component in ("", ".", ".."):
+            raise ValueError("noncanonical publication path")
+        fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        fds.append(fd)
+        info = os.fstat(fd)
+        identities.append([info.st_dev, info.st_ino])
+    if expected is not None and identities != expected:
+        raise ValueError("publication ancestry identity changed")
+    info = os.fstat(fd)
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError("nonprivate publication directory")
+    return fd, identities
+
+def write(fd, name, data):
+    target = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+    with os.fdopen(target, "w") as stream:
+        stream.write(data)
+
+result = None
+try:
+    if mode == "prepare":
+        fd, identities = directory(root + "/artifacts")
+        result = dict(nonce=nonce, root=root, ancestry=identities, errors=errors)
+        log = os.open("setup.log", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        with os.fdopen(log, "w") as stream:
+            child = subprocess.run(["/bin/bash", "-p", "-s", "--", *sys.argv[4:]], stdin=sys.stdin, stdout=stream, stderr=subprocess.STDOUT)
+            result["exit"] = child.returncode if child.returncode >= 0 else 128 - child.returncode
+        primary = result["exit"]
+        try:
+            write(fd, "shell-result.json", json.dumps(dict(primary_exit=primary, pytest_exit=None, cleanup="UNKNOWN", observer="UNAVAILABLE", held="F04")))
+        except Exception as error:
+            errors.append("shell-receipt:" + type(error).__name__ + ":" + str(error))
+    elif mode == "publish":
+        acquired = json.loads(sys.argv[4])
+        if acquired["nonce"] != nonce or acquired["root"] != root:
+            raise ValueError("invocation acquisition mismatch")
+        fd, identities = directory(root + "/artifacts", acquired["ancestry"])
+        write(fd, "pipeline.json", sys.argv[5])
+        result = dict(nonce=nonce, root=root, published=True, errors=errors)
+    else:
+        raise ValueError("unknown publication mode")
+except Exception as error:
+    errors.append("publication:" + type(error).__name__ + ":" + str(error))
+    if result is None:
+        result = dict(nonce=nonce, root=root, errors=errors)
+finally:
+    for fd in reversed(fds):
+        try:
+            os.close(fd)
+        except OSError as error:
+            errors.append("close:" + type(error).__name__ + ":" + str(error))
+print("THR211_ACQUIRED=" + json.dumps(result), flush=True)
+if mode == "prepare":
+    sys.exit(result.get("exit", 1))
+sys.exit(0)  # Return every publication error through stdout.
+\' publish "$PUBLICATION_ROOT" "$PUBLICATION_NONCE" "$PUBLICATION_ACQUIRED" "$PUBLICATION_RECEIPT"
 '''
 
 if (!binding.hasVariable('THR211_INSTALL')) error('HELD: manager-installed configuration absent')
@@ -144,14 +291,30 @@ try {
         receipt.source = params.SOURCE_SHA
         receipt.pipeline = params.PIPELINE_SHA
         def primaryFailure = null
+        def acquisition = null
+        def nonce = java.util.UUID.randomUUID().toString()
         try {
           stage('Private frozen preparation') {
             timeout(time: 15, unit: 'MINUTES') {
               withEnv(keys.collect { "ADMITTED_${it}=${installed[it]}" } + [
-                "REQUESTED_REQUEST=${params.REQUEST_ID}", "REQUESTED_MODE=${params.MODE}",
+                "PUBLICATION_NONCE=${nonce}", "REQUESTED_REQUEST=${params.REQUEST_ID}", "REQUESTED_MODE=${params.MODE}",
                 "REQUESTED_SOURCE=${params.SOURCE_SHA}", "REQUESTED_PIPELINE=${params.PIPELINE_SHA}"
               ]) {
-                receipt.setup_exit = sh(script: prepareShell, returnStatus: true)
+                def output = sh(script: prepareShell, returnStdout: true)
+                def exits = output.readLines().findAll { it.startsWith('THR211_EXIT=') }
+                if (exits.size() == 1 && exits[0].substring(12) ==~ /[0-9]{1,3}/) {
+                  receipt.setup_exit = exits[0].substring(12).toInteger()
+                }
+                def records = output.readLines().findAll { it.startsWith('THR211_ACQUIRED=') }
+                try {
+                 if (records.size() == 1) {
+                  def candidate = new groovy.json.JsonSlurperClassic().parseText(records[0].substring(16))
+                  receipt.errors.addAll(candidate.errors ?: [])
+                  if (candidate.nonce == nonce && candidate.root == "${receipt.workspace}/thr211-${env.BUILD_NUMBER}" &&
+                      candidate.ancestry instanceof List && candidate.ancestry &&
+                      candidate.exit == receipt.setup_exit && receipt.setup_exit != null) acquisition = candidate
+                 }
+                } catch (Throwable e) { receipt.errors.add('acquisition:' + e.getClass().getSimpleName()) }
               }
               if (receipt.setup_exit != 0) error("preparation exit ${receipt.setup_exit}; F04 held")
             }
@@ -170,21 +333,33 @@ try {
         } finally {
           try {
             timeout(time: 5, unit: 'MINUTES') {
-              // Still inside the acquired node/workspace lease, including abort.
-              // If validation failed or an interrupted shell never returned, no
-              // filesystem ownership is established. Only publish to console.
-              if (receipt.setup_exit == null || receipt.setup_exit == 64) {
+              // A shell status or on-disk marker never establishes acquisition.
+              if (acquisition == null) {
                 receipt.errors.add('publication:workspace-root-unverified')
               } else {
+                def published = false
                 try {
-                  writeFile(file: "thr211-${env.BUILD_NUMBER}/artifacts/pipeline.json", text: groovy.json.JsonOutput.toJson(receipt))
+                  withEnv(["PUBLICATION_PYTHON=${installed.PYTHON}", "PUBLICATION_ROOT=${acquisition.root}",
+                           "PUBLICATION_NONCE=${nonce}", "PUBLICATION_ACQUIRED=${groovy.json.JsonOutput.toJson(acquisition)}",
+                           "PUBLICATION_RECEIPT=${groovy.json.JsonOutput.toJson(receipt)}"]) {
+                    // Actual writer traverses with O_NOFOLLOW, checks every saved
+                    // inode and creates exclusively relative to its open directory.
+                    def output = sh(script: publishShell, returnStdout: true)
+                    def record = new groovy.json.JsonSlurperClassic().parseText(output.trim().substring(16))
+                    receipt.errors.addAll(record.errors ?: [])
+                    published = record.published == true && record.nonce == nonce && record.root == acquisition.root
+                  }
                 } catch (Throwable e) { receipt.errors.add('receipt:' + e.getClass().getSimpleName()) }
-                try {
-                  archiveArtifacts(artifacts: "thr211-${env.BUILD_NUMBER}/artifacts/pipeline.json", allowEmptyArchive: false, followSymlinks: false)
-                } catch (Throwable e) { receipt.errors.add('receipt-archive:' + e.getClass().getSimpleName()) }
-                try {
-                  archiveArtifacts(artifacts: "thr211-${env.BUILD_NUMBER}/artifacts/**", allowEmptyArchive: false, followSymlinks: false)
-                } catch (Throwable e) { receipt.errors.add('artifacts:' + e.getClass().getSimpleName()) }
+                if (published) {
+                  try {
+                    archiveArtifacts(artifacts: "thr211-${env.BUILD_NUMBER}/artifacts/pipeline.json", allowEmptyArchive: false, followSymlinks: false)
+                  } catch (Throwable e) { receipt.errors.add('receipt-archive:' + e.getClass().getSimpleName()) }
+                  try {
+                    archiveArtifacts(artifacts: "thr211-${env.BUILD_NUMBER}/artifacts/**", allowEmptyArchive: false, followSymlinks: false)
+                  } catch (Throwable e) { receipt.errors.add('artifacts:' + e.getClass().getSimpleName()) }
+                } else {
+                  receipt.errors.add('publication:writer-unverified;archives-skipped')
+                }
               }
             }
           } catch (Throwable e) { receipt.errors.add('cleanup-publication:' + e.getClass().getSimpleName()) }
@@ -195,7 +370,10 @@ try {
           } catch (Throwable e) { receipt.errors.add('console:' + e.getClass().getSimpleName()) }
           if (receipt.errors) currentBuild.result = 'FAILURE'
         }
-        if (primaryFailure != null) throw primaryFailure
+        if (primaryFailure != null) {
+          receipt.errors.each { primaryFailure.addSuppressed(new RuntimeException(it.toString())) }
+          throw primaryFailure
+        }
         if (receipt.errors) error('cleanup/publication failed; see every secondary error')
       }
     } finally { executionEnded = true }
