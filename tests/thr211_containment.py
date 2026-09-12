@@ -15,6 +15,85 @@ from pathlib import Path
 from textwrap import dedent
 
 
+def prepare_pipeline_environment(source: Path, root: Path, python: Path, arch: str) -> dict:
+    """Non-pytest private setup probe. Never launches a daemon or imports fixtures.
+
+    Called by the actual Jenkins shell only after detached/hash/frozen setup.
+    This is preparation evidence, not F04 ownership or live admission evidence.
+    """
+    import hashlib
+    import importlib
+    import platform
+    import sys
+
+    if sys.version_info[:2] != (3, 12) or platform.machine() != arch:
+        raise RuntimeError("effective Python3.12/native architecture mismatch")
+    if Path(sys.prefix) != root / "venv" / "env":
+        raise RuntimeError("effective interpreter outside private venv")
+    if not python.is_absolute() or not python.is_file():
+        raise RuntimeError("native interpreter unavailable")
+    if Path(sys._base_executable).resolve() != python.resolve():
+        raise RuntimeError("venv/native interpreter mismatch")
+    expected = {
+        "HOME": "home", "XDG_CONFIG_HOME": "xdg-config", "XDG_CACHE_HOME": "xdg-cache",
+        "XDG_STATE_HOME": "xdg-state", "XDG_DATA_HOME": "xdg-state", "XDG_RUNTIME_DIR": "xdg-runtime",
+        "TMPDIR": "tmp", "TMP": "tmp", "TEMP": "tmp", "UV_CACHE_DIR": "uv-cache",
+        "UV_PROJECT_ENVIRONMENT": "venv/env", "HAPPYRANCH_DAEMON_HOME": "daemon-home",
+    }
+    paths = {}
+    for name, leaf in expected.items():
+        path = root / leaf
+        if os.environ.get(name) != str(path):
+            raise RuntimeError(f"private environment mismatch: {name}")
+        # Validate every existing component; root's trusted canonical boundary
+        # was checked by the shell before creation. No candidate resolve().
+        for ancestor in (path, *path.parents):
+            info = ancestor.lstat()
+            if not stat.S_ISDIR(info.st_mode):
+                raise RuntimeError(f"non-directory ancestry: {name}")
+        info = path.stat()
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise RuntimeError(f"non-private directory: {name}")
+        paths[name] = str(path)
+
+    origins = {}
+    # Import the selected runtime package, configuration, CLI and explicit test
+    # plugins only. Integration conftest is parsed in focused tests, never imported.
+    for name in ("runtime", "runtime.config", "runtime.orchestrator.executor_binary_registry",
+                 "cli", "tests.thr211_containment", "pytest", "pytest_asyncio.plugin", "xdist.plugin"):
+        module = importlib.import_module(name)
+        origin = Path(module.__file__).resolve()
+        if not (origin.is_relative_to(source) or origin.is_relative_to(root / "venv" / "env")):
+            raise RuntimeError(f"foreign import origin: {name}")
+        origins[name] = str(origin)
+    fakes = {}
+    for name in ("claude", "codex", "opencode"):
+        original = source / "tests" / "integration" / f"fake_{name}.sh"
+        target = root / "bin" / f"fake_{name}.sh"
+        with target.open("xb") as stream:
+            stream.write(original.read_bytes())
+        target.chmod(0o700)
+        fakes[name] = str(target)
+    # Real registry serializer, private daemon-home only; no daemon/auth startup.
+    from runtime.orchestrator.executor_binary_registry import load_registry, save_registry
+    save_registry(fakes)
+    if load_registry() != fakes:
+        raise RuntimeError("fake registry readback mismatch")
+    receipt = {
+        "phase": "prepared", "result": "HELD", "pytest_exit": None,
+        "cleanup": "UNKNOWN", "observer": "UNAVAILABLE", "port": None,
+        "f04": "daemon/descendant lifetime not proved", "paths": paths,
+        "python": sys.executable, "version": platform.python_version(), "arch": platform.machine(),
+        "native_python": str(python), "source": str(source), "origins": origins, "fakes": fakes,
+        "lock_sha256": hashlib.sha256((source / "uv.lock").read_bytes()).hexdigest(),
+        "fixture_source": str(source / "tests/integration/conftest.py"),
+        "fixture_imported": False,
+    }
+    with (root / "artifacts" / "preparation.json").open("x") as stream:
+        json.dump(receipt, stream, sort_keys=True)
+    return receipt
+
+
 @dataclass(frozen=True)
 class PrivateTestPaths:
     """Fresh, private locations passed to fake plans as data."""

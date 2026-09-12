@@ -127,20 +127,71 @@ The document-only B2 skill `custom:269f9a0b-b6ab-4eb3-a19b-a3cbcbc418c8` remains
 
 ## THR-211 containment Pipeline candidate
 
-`Jenkinsfile` is a manually invoked candidate for the separately authorized
-THR-211 diagnostic. Its checked-in form deliberately fails closed for
-`DIAGNOSTIC`: the manager, not a worker or this Pipeline definition, must first
-bind the immutable source/config identity, all-executor and same-UID admission
-receipt, and the single diagnostic intent. `SETUP` and `ABORT` are distinct,
-non-pytest receipt modes and keep `pytest_exit=null`.
+`Jenkinsfile` now contains executable private, detached, frozen preparation and
+failure publication. It is a **held candidate**, not an installed job or a
+successful setup/abort proof. The shipping `live_daemon` and `live_daemon_idle`
+fixtures still start/stop through `daemon.sh` without a lifecycle `finally` or
+bounded subprocess calls. Foreground `runtime.daemon.__main__.main` owns its
+socket, but does not supply a test-owned independent lifetime mechanism for
+escaped executors/jobs through parent loss. The controlled fixture tests expose
+that gap without importing integration tests or launching a daemon. No fixture
+repair, native-Mac containment, or acceptance is claimed.
 
-Before any installation, an authorized Jenkins owner must create an immutable
-SCM-backed Pipeline definition pinned to the reviewed source SHA and
-Jenkinsfile digest *before* evaluation. A post-checkout comparison is not an
-identity control. The owner must also provide the bounded admission window,
-node/account identity, cancellation contact, and evidence covering all three
-executors, non-Jenkins same-UID launches, and shared `/tmp` containment. An
-idle-node snapshot, account name, or `disableConcurrentBuilds` is insufficient.
+Every mode (`SETUP`, `ABORT`, `DIAGNOSTIC`) runs the same independent preparation
+if admitted, then exits78/HELD before any daemon/pytest. SETUP and ABORT remain
+separate requests for future non-pytest lifecycle probes; they currently cannot
+complete those probes. There is no parameter that releases F04. A later reviewed
+implementation must establish the lifetime/observer mechanism before changing
+this gate. A preparation result, synthetic self-expiring child, or green CI is
+not that proof. ONE diagnostic remains UNUSED and parent-held.
+
+### Installed definition and admission readback (manager-owned, not performed)
+
+Use an ordinary **inline Pipeline script**, `CpsFlowDefinition`, not “Pipeline
+script from SCM”. This Scripted Pipeline has no implicit checkout or `agent`
+directive. Its first repository operation is the explicit detached fetch/checkout
+inside private setup. Do not add `checkout scm`, a mutable branch loader,
+`load`/`evaluate` of a fetched script, or automatic triggers. No Jenkins helper,
+new plugin, credential, account or controller configuration is a dependency.
+
+Before evaluation, the authorized manager/owner must:
+
+1. Retrieve `Jenkinsfile` from the reviewed immutable commit, verify its SHA256
+   against the accepted handoff, and construct the full inline script from those
+   exact bytes plus a **literal** `binding.setVariable('THR211_INSTALL', map)`
+   prefix. The map is installed configuration, never derived from parameters,
+   build environment, caller receipt strings, workspace files or fetched SCM.
+2. Supply exactly these string keys: `REQUEST`, `MODE`, `SOURCE` (40 hex),
+   `PIPELINE` and `LOCK` (SHA256 of Jenkinsfile/uv.lock), `CONFIG` (SHA256 of the
+   canonical admission record excluding its own digest), `NODE`, `ACCOUNT`,
+   `START`, `EXPIRY` (UTC epoch seconds), `PYTHON`, `UV`, `GIT` (absolute effective
+   tool paths), and `ARCH` (native architecture). The owner retains the record
+   and digest independently. These are required real values, not supplied example
+   admission or a ready request. The shell matches request/mode/source/Pipeline,
+   actual node and effective account, validates all shapes, and checks the window
+   before checkout. It requires at least50m remaining after allocation and a
+   window no longer than70m. Missing bindings fail even before node allocation.
+3. Tie that installation to the actual human administrator, all-three-executor
+   and non-Jenkins same-UID scheduled/manual inventory, enforceable participant
+   admission, contact/cancellation owner, and one request/window. A signature,
+   job-level concurrency exclusion, or idle snapshot does not enforce admission.
+   A same-UID process can still race files/processes; this Pipeline is not OS
+   isolation. No readiness record exists while these owner prerequisites are absent.
+4. Serialize the literal prefix and reviewed script as XML text in the existing
+   authorized job's `<definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition">`
+   `<script>` element, using an XML serializer, preserving its approved sandbox
+   setting and other configuration. After the separately authorized installation,
+   GET that exact job's `config.xml`, parse it, compare **the complete script and
+   map bytes** with the locally prepared XML, and retain the full config SHA256
+   separately from the map's admission digest. Recheck immediately before the
+   one authorized submission; a post-checkout digest cannot replace this check.
+
+Use only the established fixed API origin `http://127.0.0.1:8081` and protected
+netrc **reference**, never token contents or parameter credentials. Use bounded
+ordinary GET/POST calls per KB `jenkins-job-setup-and-durable-observation`; no
+`scripts/jenkins_jobs.py` dependency applies to this THR-211 path. Installation,
+readback against a controller, probe submission and diagnostic submission remain
+parent-owned and have not been performed by this implementation.
 
 The only diagnostic workload, after those manager-owned gates, is exactly:
 
@@ -149,16 +200,50 @@ uv run --frozen pytest tests/integration/ -v -m integration --junitxml=artifacts
 ~~~
 
 The candidate does not run it and no worker may POST a probe or diagnostic.
-Preparation must use private, no-follow HOME/XDG/cache/state/runtime/tmp,
-uv-cache, venv, daemon-home, plan and artifact paths before `uv`, Python,
-plugins, or checkout imports; allowlist the child environment and record
-effective Python 3.12/uv/interpreter/architecture, lock, source, Pipeline and
-module/plugin origins. Preserve the real pytest exit independently from
-cleanup/archive failures and emit bounded cleanup/observer/archive receipts.
-Use finite 15m allocation, 15m setup, 30m workload, 5m cleanup and 70m
-observation bounds. Process lifetime containment remains a separate F04
-feasibility obligation: path ownership, env cookies, timeouts, and numeric
-PID/PGID checks do not establish daemon or descendant ownership.
+The shell checks literal directory ancestry, creates a fresh private workspace
+child with HOME/XDG/config/cache/state/runtime/tmp/uv-cache/venv/daemon-home/plans/
+artifacts, and verifies a bounded write/read before Git/Python/uv. A clean
+`env -i` child excludes credential/proxy/Git/Python/startup/outer fake injection;
+only explicit settings and the Jenkins cookie are retained. The cookie is not
+ownership authority. Tool parent ancestry must be canonical too. On macOS the
+owner establishes the trusted `/private/var/...` temporary boundary before use;
+an untrusted `/var` symlink ancestor is refused rather than resolved away.
+
+Detached source SHA/clean state, Jenkinsfile/lock digests, native Python3.12/arch,
+frozen sync, effective venv/native interpreter, absolute uv version and relevant
+module/plugin origins are checked. `-I` explicitly inserts the selected source;
+it does not presume cwd imports. Copied fakes are registered/read back only in
+the private daemon-home. The probe never imports integration conftest or starts
+the daemon; its `port=null`, `pytest_exit=null`, `observer=UNAVAILABLE`, and
+`cleanup=UNKNOWN` remain explicit. Real ephemeral daemon-port readback is held
+with F04, not fabricated from a free-port check.
+
+The allocation watchdog has its own15m timeout in a parallel branch and stops
+when the node is acquired; it does not wrap later work. Setup15m, held workload30m,
+cleanup/publication5m, and external observation70m remain distinct. Setup errors
+and controlled abort exits are retained. Receipt writes and both non-empty
+archives are attempted independently; all secondary errors, including a cleanup
+timeout, appear in the final console JSON without replacing the primary failure.
+The earlier archived receipt cannot include later archive errors, so the observer
+must collect **both** console and artifacts. Archives disable symlink following.
+If the console also fails, the original exception is still retained, but the
+final secondary-error receipt is unavailable; external observation must record
+that loss as UNKNOWN, never infer a clean cleanup from the earlier archive.
+Without a validated private root, publication uses console only. Without node
+allocation, `workspace=null`/`ALLOCATION_FAILED` is emitted and no archive is
+attempted. Missing artifacts, lost observer, or UNKNOWN never produces PASS.
+Private roots/residue are retained for review; no unproved recursive cleanup or
+PID-based teardown is attempted.
+
+For any later authorized live request, persist request→queue→exact build identity
+once; never retry an uncertain POST or select `lastBuild`. Submit the bounded
+70m observer as a finite persistent HappyRanch job using the KB's supported job
+payload and immediately park with `waiting_on_job_ids`. On the supported job
+result continuation, inspect `jobs show` and `jobs output`, then exact remote
+terminal result, console, setup/pytest exits, all errors, cleanup evidence and
+artifact manifest. Observer job exit0 alone is not Jenkins/workload PASS. This
+document provides no ready owner/window or authorization to install, probe,
+cancel unrelated work, or consume the diagnostic.
 
 The six selected test plan families call the builders in
 `tests/thr211_containment.py`. The independent thread-reply fixture has its own

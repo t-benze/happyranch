@@ -11,6 +11,351 @@ import pytest
 
 from tests import thr211_containment as containment
 
+
+def _pipeline_shell() -> str:
+    """Decode the actual Groovy single-quoted literal, including continuations."""
+    import re
+    text = (Path(__file__).parents[1] / "Jenkinsfile").read_text()
+    body = text.split("def prepareShell = '''", 1)[1].split("'''", 1)[0]
+    escapes = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\", "'": "'", "\n": ""}
+    return re.sub(r"\\([\s\S])", lambda m: escapes[m[1]], body)
+
+
+def _pipeline_tools(tmp_path: Path, *, failure: str = "") -> tuple[dict, Path]:
+    """Controlled tools run by the actual shell. No Git/network/Python workload."""
+    import getpass
+    import time
+    root = tmp_path / "workspace"
+    root.mkdir()
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    trace = tmp_path / "trace"
+    import shlex
+    git = tools / "git"
+    git.write_text("#!/bin/bash -p\nset -eu\n" + f"trace={shlex.quote(str(trace))}\n" +
+                   'printf "git %s\\n" "$*" >> "$trace"\n' +
+                   '/usr/bin/env > "${trace}.env"\n' +
+                   ("exit 37\n" if failure == "clone" else "") +
+                   ("kill -TERM \"$$\"\n" if failure == "abort" else "") +
+                   ("mkdir \"${TMPDIR%/tmp}/artifacts/shell-result.json\"; exit 37\n" if failure == "publication" else "") +
+                   'case " $* " in\n' +
+                   '  *" clone "*) mkdir "${@: -1}";;\n' +
+                   '  *" rev-parse "*) printf "%s\\n" ' + ("b" * 40 if failure == "head" else "a" * 40) + ';;\n' +
+                   '  *" symbolic-ref "*) exit 1;;\n' +
+                   'esac\n')
+    python = tools / "python"
+    python.write_text("#!/bin/bash -p\nset -eu\n" + f"trace={shlex.quote(str(trace))}\n" +
+                      'printf "python %s\\n" "$*" >> "$trace"\n/bin/cat >> "${trace}.python"\n' +
+                      ("exit 38\n" if failure == "python" else ""))
+    uv = tools / "uv"
+    uv.write_text("#!/bin/bash -p\nset -eu\n" + f"trace={shlex.quote(str(trace))}\n" +
+                  'printf "uv %s\\n" "$*" >> "$trace"\n' +
+                  ("exit 39\n" if failure == "uv" else "") +
+                  'if [[ "$1" == sync ]]; then\n mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"\n' +
+                  f' cp {shlex.quote(str(python))} "$UV_PROJECT_ENVIRONMENT/bin/python"\nfi\n')
+    for tool in (git, python, uv):
+        tool.chmod(0o700)
+    now = int(time.time())
+    admitted = {"REQUEST": "controlled-1", "MODE": "SETUP", "SOURCE": "a" * 40,
+                "PIPELINE": "b" * 64, "LOCK": "c" * 64, "CONFIG": "d" * 64,
+                "NODE": "controlled-node", "ACCOUNT": getpass.getuser(), "START": str(now - 1),
+                "EXPIRY": str(now + 4190), "PYTHON": str(python), "UV": str(uv), "GIT": str(git),
+                "ARCH": "controlled-arch"}
+    env = {"PATH": "/usr/bin:/bin", "WORKSPACE": str(root), "BUILD_NUMBER": "1", "NODE_NAME": "controlled-node"}
+    env.update({f"ADMITTED_{key}": value for key, value in admitted.items()})
+    env.update({f"REQUESTED_{key}": admitted[key] for key in ("REQUEST", "MODE", "SOURCE", "PIPELINE")})
+    return env, trace
+
+
+@pytest.mark.parametrize("mode", ["SETUP", "ABORT", "DIAGNOSTIC"])
+def test_actual_pipeline_prepares_privately_then_holds_every_daemon_mode(tmp_path, mode):
+    env, trace = _pipeline_tools(tmp_path)
+    env.update(ADMITTED_MODE=mode, REQUESTED_MODE=mode, HTTPS_PROXY="credential-canary",
+               BASH_ENV="/no-such-startup", PYTHONPATH="credential-canary", FAKE_CLAUDE_PLAN="foreign",
+               SSH_AUTH_SOCK="foreign", GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.sshCommand",
+               GIT_CONFIG_VALUE_0="foreign", HAPPYRANCH_TASK_TMP_ROOT="foreign", JENKINS_NODE_COOKIE="controlled-cookie")
+    result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=8)
+    assert result.returncode == 78, result.stderr
+    root = Path(env["WORKSPACE"]) / "thr211-1"
+    receipt = json.loads((root / "artifacts/shell-result.json").read_text())
+    assert receipt == {"phase": "prepared", "primary_exit": 78, "pytest_exit": None,
+                       "cleanup": "UNKNOWN", "observer": "UNAVAILABLE", "held": "F04"}
+    child_env = dict(line.split("=", 1) for line in Path(str(trace) + ".env").read_text().splitlines())
+    assert "credential-canary" not in str(child_env)
+    assert all(name not in child_env for name in ("BASH_ENV", "PYTHONPATH", "SSH_AUTH_SOCK", "GIT_CONFIG_COUNT", "FAKE_CLAUDE_PLAN", "HAPPYRANCH_TASK_TMP_ROOT"))
+    assert child_env["JENKINS_NODE_COOKIE"] == "controlled-cookie"
+    for leaf in ("home", "xdg-config", "xdg-cache", "xdg-state", "xdg-runtime", "tmp", "uv-cache", "venv", "daemon-home", "plans", "artifacts"):
+        assert (root / leaf).is_dir()
+        assert (root / leaf).stat().st_mode & 0o077 == 0
+    calls = trace.read_text()
+    assert "--no-checkout" in calls and "checkout --detach " + "a" * 40 in calls
+    assert "uv sync --frozen --python " + env["ADMITTED_PYTHON"] in calls
+    assert "pytest " not in calls
+    emitted_python = Path(str(trace) + ".python").read_text()
+    assert "sys.path.insert(0, str(source))" in emitted_python
+    assert "prepare_pipeline_environment" in emitted_python
+
+
+@pytest.mark.parametrize("key,value", [
+    ("REQUESTED_REQUEST", "x"), ("REQUESTED_SOURCE", "e" * 40), ("REQUESTED_PIPELINE", "f" * 64),
+    ("REQUESTED_MODE", "ABORT"), ("ADMITTED_REQUEST", "bad request"), ("ADMITTED_SOURCE", "bad"),
+    ("ADMITTED_PIPELINE", "x"), ("ADMITTED_CONFIG", "x"), ("ADMITTED_LOCK", "x"),
+    ("NODE_NAME", "foreign"), ("ADMITTED_ACCOUNT", "foreign"), ("ADMITTED_START", "bad"),
+    ("ADMITTED_EXPIRY", "1000000000"), ("ADMITTED_START", "9999999999"),
+    ("ADMITTED_PYTHON", "python3"), ("BUILD_NUMBER", "../escape"),
+])
+def test_actual_pipeline_rejects_untrusted_admission_before_tools(tmp_path, key, value):
+    env, trace = _pipeline_tools(tmp_path)
+    env[key] = value
+    if key in ("ADMITTED_REQUEST", "ADMITTED_SOURCE", "ADMITTED_PIPELINE"):
+        env[key.replace("ADMITTED_", "REQUESTED_")] = value
+    result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=5)
+    assert result.returncode == 64, result.stderr
+    assert not trace.exists()
+    assert list(Path(env["WORKSPACE"]).iterdir()) == []
+
+
+@pytest.mark.parametrize("failure,expected", [("clone", 37), ("head", 1), ("python", 38), ("uv", 39), ("abort", 143), ("publication", 37)])
+def test_actual_pipeline_failure_abort_and_publication_preserve_primary(tmp_path, failure, expected):
+    env, trace = _pipeline_tools(tmp_path, failure=failure)
+    result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=8)
+    assert result.returncode == expected, result.stderr
+    artifacts = Path(env["WORKSPACE"]) / "thr211-1/artifacts"
+    if failure == "publication":
+        log = (artifacts / "setup.log").read_text()
+        assert "publication error=1 primary=37" in log
+    else:
+        receipt = json.loads((artifacts / "shell-result.json").read_text())
+        assert receipt["primary_exit"] == expected and receipt["pytest_exit"] is None
+        assert receipt["cleanup"] == "UNKNOWN"
+    assert "pytest " not in trace.read_text()
+
+
+@pytest.mark.parametrize("failure", [None, "pipeline", "lock", "arch", "version"])
+def test_actual_emitted_pipeline_identity_python(tmp_path, failure):
+    import hashlib
+    import platform
+    shell = _pipeline_shell()
+    code = shell.split("<<'THR211_IDENTITY'\n", 1)[1].split("\nTHR211_IDENTITY", 1)[0]
+    (tmp_path / "Jenkinsfile").write_text("controlled-pipeline")
+    (tmp_path / "uv.lock").write_text("controlled-lock")
+    digests = [hashlib.sha256((tmp_path / file).read_bytes()).hexdigest() for file in ("Jenkinsfile", "uv.lock")]
+    if failure in ("pipeline", "lock"):
+        digests[0 if failure == "pipeline" else 1] = "0" * 64
+    args = ["probe", *digests, "wrong" if failure == "arch" else platform.machine()]
+    # Controlled version inputs let the same shipping gate be exercised by
+    # required CI3.14 as well as maker3.12, without copying the gate logic.
+    setup = f"import sys; sys.version_info = {(3, 11) if failure == 'version' else (3, 12)!r}; sys.argv = {args!r}\n"
+    result = subprocess.run([sys.executable, "-I", "-c", setup + code], cwd=tmp_path, capture_output=True, timeout=5)
+    assert (result.returncode == 0) is (failure is None)
+    if failure:
+        assert b"AssertionError" in result.stderr
+    else:
+        assert b"native" in result.stdout
+
+
+@pytest.mark.parametrize("case", ["alias", "ancestor", "preexisting", "dangling"])
+def test_actual_pipeline_rejects_foreign_paths_without_touching_them(tmp_path, case):
+    env, trace = _pipeline_tools(tmp_path)
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    sentinel = foreign / "sentinel"
+    sentinel.write_text("untouched")
+    inode = sentinel.stat().st_ino
+    if case in ("alias", "ancestor"):
+        alias = tmp_path / "alias"
+        alias.symlink_to(foreign, target_is_directory=True)
+        if case == "ancestor":
+            (foreign / "nested").mkdir()
+            env["WORKSPACE"] = str(alias / "nested")
+        else:
+            env["WORKSPACE"] = str(alias)
+    else:
+        (Path(env["WORKSPACE"]) / "thr211-1").symlink_to(foreign if case == "preexisting" else foreign / "absent")
+    result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=5)
+    assert result.returncode != 0
+    assert not trace.exists()
+    assert sentinel.stat().st_ino == inode and sentinel.read_text() == "untouched"
+
+
+def _extracted_fixture(name, monkeypatch, tmp_path, scenario, *, spawn=None):
+    """Only compile the named shipping fixture, never import its directory.
+
+    These characterization cases expose WHY F04 remains held. Their passing
+    status must never be reported as F04 cleanup acceptance.
+    """
+    import ast
+    import builtins
+    import types
+    source = Path(__file__).parent / "integration/conftest.py"
+    tree = ast.parse(source.read_text())
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    node.decorator_list = []
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command[-1], kwargs))
+        if command[-1] == "start":
+            if spawn:
+                spawn()
+            if scenario in ("start", "post_spawn"):
+                raise RuntimeError(scenario)
+        if command[-1] == "stop":
+            if scenario == "stop_timeout":
+                raise subprocess.TimeoutExpired(command, 1)
+            return types.SimpleNamespace(returncode=37 if scenario == "stop_nonzero" else 0)
+    ticks = iter(range(0, 100, 2))
+    port_file = tmp_path / "port"
+    port_file.write_text("49123")
+    registry = types.SimpleNamespace(save_registry=lambda _: None)
+    runtimes = types.SimpleNamespace(register=lambda _: None)
+    def importer(module, globals=None, locals=None, fromlist=(), level=0):
+        if module == "runtime.orchestrator.executor_binary_registry":
+            return registry
+        if module == "runtime.daemon":
+            return types.SimpleNamespace(runtimes=runtimes)
+        raise AssertionError(f"unexpected fixture import: {module}")
+    ns = {"__file__": str(source), "__builtins__": dict(vars(builtins), __import__=importer),
+          "Path": Path, "subprocess": types.SimpleNamespace(run=run), "_nested_daemon_env": lambda: {},
+          "time": types.SimpleNamespace(time=lambda: next(ticks), sleep=lambda _: None),
+          "paths_mod": types.SimpleNamespace(port_file=lambda: port_file),
+          "httpx": types.SimpleNamespace(get=lambda *a, **k: types.SimpleNamespace(status_code=503 if scenario == "health" else 200), HTTPError=OSError)}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), ns)
+    arguments = {arg.arg: monkeypatch if arg.arg == "monkeypatch" else tmp_path for arg in node.args.args}
+    return ns[name](**arguments), calls
+
+
+@pytest.mark.parametrize("fixture", ["live_daemon", "live_daemon_idle"])
+@pytest.mark.parametrize("scenario", ["normal", "start", "health", "assertion", "post_spawn", "stop_nonzero", "stop_timeout", "simultaneous", "parent_abort", "observer_loss"])
+def test_shipping_fixture_characterizes_unresolved_f04(tmp_path, monkeypatch, fixture, scenario):
+    generator, calls = _extracted_fixture(fixture, monkeypatch, tmp_path, scenario)
+    if scenario in ("start", "post_spawn", "health"):
+        with pytest.raises(RuntimeError):
+            next(generator)
+        assert [call[0] for call in calls] == ["start"]  # Missing cleanup, NOT repaired.
+    else:
+        assert next(generator) == "49123"
+        if scenario in ("assertion", "simultaneous"):
+            with pytest.raises(AssertionError, match="original"):
+                generator.throw(AssertionError("original"))
+            assert len(calls) == 1  # Both cleanup errors would be unobserved.
+        elif scenario in ("parent_abort", "observer_loss"):
+            generator.close()
+            assert len(calls) == 1
+        elif scenario == "stop_timeout":
+            with pytest.raises(subprocess.TimeoutExpired):
+                next(generator)
+        else:
+            with pytest.raises(StopIteration):
+                next(generator)
+            assert calls[-1][0] == "stop"
+            assert calls[-1][1]["check"] is False  # nonzero currently discarded.
+    assert all("timeout" not in kwargs for _, kwargs in calls)  # Hold evidence.
+
+
+@pytest.mark.parametrize("fixture", ["live_daemon", "live_daemon_idle"])
+def test_shipping_start_gap_leaves_controlled_escaped_listener_until_own_expiry(tmp_path, monkeypatch, fixture):
+    import socket
+    import select
+    # Sole synthetic child. It sets its own alarm before acquiring its listener,
+    # has no children and expires independently; no parent PID/PGID is signalled.
+    child = None
+    port = None
+    code = """import signal, socket, time
+signal.alarm(2)
+s = socket.socket()
+s.bind(('127.0.0.1', 0))
+s.listen()
+print(s.getsockname()[1], flush=True)
+time.sleep(1)
+s.close()
+"""
+    def spawn():
+        nonlocal child, port
+        child = subprocess.Popen([sys.executable, "-I", "-c", code], stdout=subprocess.PIPE, text=True,
+                                 start_new_session=True, env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
+        # select bounds even a failure before the first line/registration.
+        assert select.select([child.stdout], [], [], 2)[0]
+        port = int(child.stdout.readline())
+    sentinel = tmp_path / "unrelated"
+    sentinel.write_text("untouched")
+    inode = sentinel.stat().st_ino
+    unrelated = subprocess.Popen([sys.executable, "-I", "-c",
+                                  "import signal,time; signal.alarm(3); print('ready',flush=True); time.sleep(2)"],
+                                 stdout=subprocess.PIPE, text=True,
+                                 env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
+    generator, calls = _extracted_fixture(fixture, monkeypatch, tmp_path, "post_spawn", spawn=spawn)
+    try:
+        assert select.select([unrelated.stdout], [], [], 2)[0]
+        assert unrelated.stdout.readline().strip() == "ready"
+        with pytest.raises(RuntimeError, match="post_spawn"):
+            next(generator)
+        assert child.poll() is None
+        with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+            pass  # Actual escaped listener survives the SHIPPING failure path.
+        assert [c[0] for c in calls] == ["start"]
+        assert unrelated.poll() is None
+    finally:
+        if child is not None:
+            child.wait(timeout=3)  # Cooperative self-expiry, not fixture cleanup.
+            child.stdout.close()
+        unrelated.wait(timeout=4)
+        unrelated.stdout.close()
+    assert unrelated.returncode == 0
+    assert sentinel.stat().st_ino == inode and sentinel.read_text() == "untouched"
+    with socket.socket() as observer:
+        observer.settimeout(0.2)
+        assert observer.connect_ex(("127.0.0.1", port)) != 0
+    # This Linux/Mac-compatible synthetic counterexample proves insufficiency;
+    # it establishes no native-Mac daemon lifetime or independent observer proof.
+
+
+@pytest.mark.parametrize("failure", [None, "version", "arch", "env", "origin", "registry", "symlink"])
+def test_actual_pipeline_environment_probe(tmp_path, monkeypatch, failure):
+    import importlib
+    import platform
+    from types import SimpleNamespace
+    from runtime.orchestrator import executor_binary_registry as registry
+    root = tmp_path / "private"
+    root.mkdir(mode=0o700)
+    leaves = {"HOME": "home", "XDG_CONFIG_HOME": "xdg-config", "XDG_CACHE_HOME": "xdg-cache",
+              "XDG_STATE_HOME": "xdg-state", "XDG_DATA_HOME": "xdg-state", "XDG_RUNTIME_DIR": "xdg-runtime",
+              "TMPDIR": "tmp", "TMP": "tmp", "TEMP": "tmp", "UV_CACHE_DIR": "uv-cache",
+              "UV_PROJECT_ENVIRONMENT": "venv/env", "HAPPYRANCH_DAEMON_HOME": "daemon-home"}
+    for leaf in (*set(leaves.values()), "bin", "plans", "artifacts"):
+        (root / leaf).mkdir(mode=0o700, parents=True, exist_ok=True)
+    for key, leaf in leaves.items():
+        monkeypatch.setenv(key, str(root / leaf))
+    monkeypatch.setattr(sys, "prefix", str(root / "venv/env"))
+    monkeypatch.setattr(sys, "_base_executable", sys.executable)
+    monkeypatch.setattr(sys, "version_info", (3, 13) if failure == "version" else (3, 12))
+    source = root / "source"
+    source.mkdir()
+    (source / "tests/integration").mkdir(parents=True)
+    (source / "uv.lock").write_text("controlled-lock")
+    for name in ("claude", "codex", "opencode"):
+        (source / f"tests/integration/fake_{name}.sh").write_text("#!/bin/sh\nexit 0\n")
+    monkeypatch.setattr(importlib, "import_module", lambda name: SimpleNamespace(__file__=str(
+        tmp_path / "foreign.py" if failure == "origin" else source / "module.py")))
+    saved = {}
+    monkeypatch.setattr(registry, "save_registry", lambda data: saved.update(data))
+    monkeypatch.setattr(registry, "load_registry", lambda: {} if failure == "registry" else saved)
+    if failure == "env":
+        monkeypatch.setenv("HOME", str(tmp_path))
+    if failure == "symlink":
+        (root / "home").rmdir()
+        (root / "home").symlink_to(tmp_path)
+    if failure:
+        with pytest.raises(RuntimeError):
+            containment.prepare_pipeline_environment(source, root, Path(sys.executable), "wrong" if failure == "arch" else platform.machine())
+        assert not (root / "artifacts/preparation.json").exists()
+    else:
+        receipt = containment.prepare_pipeline_environment(source, root, Path(sys.executable), platform.machine())
+        assert receipt["result"] == "HELD" and receipt["pytest_exit"] is None and receipt["port"] is None
+        assert json.loads((root / "artifacts/preparation.json").read_text()) == receipt
+        assert saved == {name: str(root / f"bin/fake_{name}.sh") for name in ("claude", "codex", "opencode")}
+        for path in saved.values():
+            assert Path(path).stat().st_mode & 0o777 == 0o700
+
 from tests.thr211_containment import (
     build_review_required_job_script,
     plan_environment,
