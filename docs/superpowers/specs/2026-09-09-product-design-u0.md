@@ -265,6 +265,14 @@ representations. It preserves arbitrary text and nested user strings exactly:
 the adversarial `"true"` versus `"1"` summaries, JSON-looking summaries, and
 nested prompt text are distinct. The same shipping-harness readback is used
 for those mutations and for legitimate DB/model serialization equality.
+Its private comparison representation also retains decoded JSON scalar kinds:
+boolean, integer, float, null, string, list, and object remain distinct at
+every nesting level. Thus payload `{"x":true}` cannot compare equal to
+`{"x":1}`, and `1` cannot compare equal to `1.0`; this applies to the same
+independent-readback comparator used by both JOIN orders, not to a separate
+lookalike probe. It still converts only source-owned enum/datetime model
+representations and never decodes arbitrary summaries, briefs, or nested
+strings.
 Across both callback orders it captures the five named boundaries in one
 identity/path domain: pre-spawn, postcommit/prepublication, both-launched,
 first-terminal, and final drain. Attachments, canonical/team/archive bytes,
@@ -274,3 +282,13 @@ owner, width, child order, and rendered context. The live-sibling control-entry
 readback compares full parent/live task deltas, unchanged result rows, and the
 ordered cancellation-audit append before forwarding the original opaque
 control. These remain bounded test evidence, not a production behavior change.
+
+### 2026-09-12 evidence-handoff correction
+
+The earlier TASK-7823 handoff statement that JOB1591 tested its corrected
+bytes is superseded. JOB1591 is historical successful evidence for
+`584c443b..a4906416` only (diff digest
+`f7193920f4f0f85dd73cea6cceb9f598a9b551d896f2c90b3ca516fbae51c263`):
+9846 Python passed / 1 skipped and 1557 Web passed / 1 skipped. JOB1598 is
+push-only exit 0. Neither job is evidence for later changed bytes; current
+byte verification must cite its own command, head, digest, and result.

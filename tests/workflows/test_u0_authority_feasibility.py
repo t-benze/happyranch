@@ -17,6 +17,14 @@ from runtime.orchestrator import prompt_loader
 from runtime.orchestrator.chain import build_prior_leg_context
 
 
+@dataclasses.dataclass(frozen=True)
+class _U0TypedJson:
+    """Private comparison form that preserves JSON scalar type fidelity."""
+
+    kind: str
+    value: object
+
+
 def _paths(org_state):
     from runtime.orchestrator._paths import OrgPaths
 
@@ -203,12 +211,33 @@ def _u0_normalize_persisted_rows(rows: dict[str, object]) -> dict[str, list[dict
             return value.isoformat()
         return value
 
+    def typed_json(value):
+        # JSON has distinct boolean, integer, and number values; Python's
+        # ordinary container equality erases that distinction (True == 1 and
+        # 1 == 1.0).  This is used only after decoding a named SQLite JSON
+        # column, never for user-authored prose or nested JSON-looking text.
+        if value is None:
+            return _U0TypedJson("null", None)
+        if isinstance(value, bool):
+            return _U0TypedJson("bool", value)
+        if isinstance(value, int):
+            return _U0TypedJson("int", value)
+        if isinstance(value, float):
+            return _U0TypedJson("float", value)
+        if isinstance(value, str):
+            return _U0TypedJson("str", value)
+        if isinstance(value, list):
+            return _U0TypedJson("list", tuple(typed_json(item) for item in value))
+        if isinstance(value, dict):
+            return _U0TypedJson("object", tuple(sorted((key, typed_json(item)) for key, item in value.items())))
+        raise TypeError(f"unexpected decoded JSON value: {type(value).__name__}")
+
     def normalize_row(kind, row):
         normalized = {key: scalar(value) for key, value in dict(row).items()}
         for key in json_columns[kind]:
             value = normalized.get(key)
-            if value is not None and isinstance(value, str):
-                normalized[key] = json.loads(value)
+            if value is not None:
+                normalized[key] = typed_json(json.loads(value) if isinstance(value, str) else value)
         return normalized
     keys = {"tasks": "id", "results": "id", "audits": "id"}
     return {
@@ -227,8 +256,8 @@ def test_u0_persisted_readback_normalizes_only_source_owned_outer_json() -> None
         "audits": [{"id": 1, "payload": '{"note":"1"}'}],
     }
     normalized = _u0_normalize_persisted_rows(rows)
-    assert normalized["tasks"][0]["active_fanout"] == {"children_ids": ["TASK-2"]}
-    assert normalized["results"][0]["decision_json"] == {"prompt": '{"nested":"text"}'}
+    assert normalized["tasks"][0]["active_fanout"].kind == "object"
+    assert normalized["results"][0]["decision_json"].kind == "object"
     assert normalized["tasks"][0]["brief"] == '{"looks":"like json"}'
     assert normalized["results"][0]["output_summary"] == "true"
     mutated = json.loads(json.dumps(rows))
@@ -237,6 +266,18 @@ def test_u0_persisted_readback_normalizes_only_source_owned_outer_json() -> None
     mutated = json.loads(json.dumps(rows))
     mutated["results"][0]["decision_json"] = '{"prompt":"{\\"nested\\":\\"changed\\"}"}'
     assert _u0_normalize_persisted_rows(mutated) != normalized
+    # These all pass through the same normalizer used by the independent
+    # SQLite comparisons in the JOIN schedules, including nested lists.
+    for column, before, after in (
+        ("decision_json", '{"x":true}', '{"x":1}'),
+        ("decision_json", '{"x":1}', '{"x":1.0}'),
+        ("decision_json", '{"x":[true,{"n":1.0}]}', '{"x":[1,{"n":1}]}'),
+    ):
+        mutated = json.loads(json.dumps(rows))
+        mutated["results"][0][column] = before
+        comparison_before = _u0_normalize_persisted_rows(mutated)
+        mutated["results"][0][column] = after
+        assert _u0_normalize_persisted_rows(mutated) != comparison_before
 
 
 def _u0_snapshot_persisted_rows(snapshot: dict[str, object]) -> dict[str, list[dict[str, object]]]:
@@ -3216,10 +3257,14 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
         assert control_tasks[completed] == pre_tasks[completed]
         assert control_history["results"] == pre_cancel_rows["results"]
         assert control_history["audits"][:len(pre_cancel_rows["audits"])] == pre_cancel_rows["audits"]
+        expected_cancel_payload = _u0_normalize_persisted_rows({
+            "tasks": [], "results": [],
+            "audits": [{"id": 0, "payload": '{"rationale":"live sibling","cascade":true}'}],
+        })["audits"][0]["payload"]
         assert [(row["task_id"], row["agent"], row["action"], row["payload"])
                 for row in control_history["audits"][len(pre_cancel_rows["audits"]):]] == [
-            (parent_id, "founder", "task_cancelled", {"rationale": "live sibling", "cascade": True}),
-            (live, "founder", "task_cancelled", {"rationale": "live sibling", "cascade": True}),
+            (parent_id, "founder", "task_cancelled", expected_cancel_payload),
+            (live, "founder", "task_cancelled", expected_cancel_payload),
         ]
         assert all(row["status"] == TaskStatus.CANCELLED.value for row in control_entries[0][3]["tasks"] if row["id"] in (parent_id, live))
         assert [(audit["task_id"], audit["agent"], json.loads(audit["payload"]))
