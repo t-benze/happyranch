@@ -116,14 +116,14 @@ def _sweep_on_startup(
         owner["task_id"]: owner
         for owner in db.get_consumed_task_completion_recovery_owners()
     }
-    consumed_nonroot_cleanup_ids = {
+    consumed_parent_cleanup_ids = {
         task_id for task_id, owner in selected_recovery_owners.items()
-        if owner["status"] == TaskStatus.FAILED.value
+        if owner["parent_task_id"] is not None
     }
     task_ids = dict.fromkeys([
         *db.get_accepted_task_completion_recovery_task_ids(),
         *selected_recovery_owners,
-        *consumed_nonroot_cleanup_ids,
+        *consumed_parent_cleanup_ids,
         *db.get_nonterminal_task_ids(),
     ])
     for task_id in task_ids:
@@ -152,26 +152,28 @@ def _sweep_on_startup(
             # must perform no stale backstop, live cleanup, or parent wake.
             # The guarded update itself rechecks the same fingerprint; its
             # rowcount may be zero when no owned job remains running.
-            db.backstop_consumed_task_completion_recovery_jobs(
-                task_id=task_id,
-                agent=selected_owner["agent"],
-                result_row_id=selected_owner["accepted_result_id"],
+            recovery_owner = (
+                selected_owner["agent"], selected_owner["recovery_session_id"],
+                selected_owner["accepted_result_id"], selected_owner["status"],
+            )
+            recovery_job_ids = db.settle_consumed_task_completion_recovery_jobs(
+                task_id=task_id, agent=recovery_owner[0],
+                recovery_session_id=recovery_owner[1], result_row_id=recovery_owner[2],
+                terminal_status=recovery_owner[3],
                 finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             )
-            if not db.consumed_task_completion_recovery_owner_is_current(
-                task_id=task_id,
-                agent=selected_owner["agent"],
-                recovery_session_id=selected_owner["recovery_session_id"],
-                result_row_id=selected_owner["accepted_result_id"],
-                terminal_status=selected_owner["status"],
-            ):
+            if recovery_job_ids is None:
                 continue
             from runtime.orchestrator.run_step import _kill_jobs_for_terminating_task
-            _kill_jobs_for_terminating_task(orchestrator, task_id)
-            if task_id in consumed_nonroot_cleanup_ids:
-                _enqueue_parent_if_waiting(
-                    orchestrator, task_id, root_auto_revisit_spawned=False,
-                )
+            _kill_jobs_for_terminating_task(
+                orchestrator, task_id, recovery_owner=recovery_owner,
+                recovery_job_ids=recovery_job_ids,
+                after_recovery_cleanup=(
+                    lambda task_id=task_id: _enqueue_parent_if_waiting(
+                        orchestrator, task_id, root_auto_revisit_spawned=False,
+                    ) if task_id in consumed_parent_cleanup_ids else None
+                ),
+            )
 
         # THR-247 recovery is not an ordinary THR-079 subprocess.  Its claim
         # is durably spent before launch/PID publication, so a restart must
@@ -197,18 +199,6 @@ def _sweep_on_startup(
                         orchestrator, task_id, accepted_report,
                         agent=t.assigned_agent, session_id=t.current_session_id or "",
                         result_row_id=accepted_result["id"],
-                    )
-                    # The consumer's post-commit live cleanup is asynchronous.
-                    # Re-read and fence the now-consumed exact owner before the
-                    # startup sweep returns, so the generic orphan scan cannot
-                    # win this narrow gap.  The database predicate rejects a
-                    # cancellation/replacement/new accepted result and holds no
-                    # lock across termination or its grace-period wait.
-                    db.backstop_consumed_task_completion_recovery_jobs(
-                        task_id=task_id,
-                        agent=t.assigned_agent,
-                        result_row_id=accepted_result["id"],
-                        finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     )
                 continue
             recovery = db.get_claimed_task_completion_recovery(

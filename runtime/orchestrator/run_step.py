@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator.org_config import load_org_config
@@ -492,8 +492,11 @@ def _consume_accepted_completion_recovery(
         )
         if transitioned:
             orch._update_task_history(task_id)
-            _kill_jobs_for_terminating_task(orch, task_id)
-            _enqueue_parent_if_waiting(orch, task_id)
+            _handoff_consumed_recovery_terminal_effects(
+                orch, task_id, agent, session_id, result_row_id,
+                TaskStatus.COMPLETED.value,
+                after_recovery_cleanup=lambda: _enqueue_parent_if_waiting(orch, task_id),
+            )
         return
     _recovery_decision = getattr(report, "decision", None)
     _recovery_action = (
@@ -535,8 +538,11 @@ def _consume_accepted_completion_recovery(
         )
         if transitioned:
             orch._update_task_history(task_id)
-            _kill_jobs_for_terminating_task(orch, task_id)
-            _enqueue_parent_if_waiting(orch, task_id)
+            _handoff_consumed_recovery_terminal_effects(
+                orch, task_id, agent, session_id, result_row_id,
+                TaskStatus.FAILED.value,
+                after_recovery_cleanup=lambda: _enqueue_parent_if_waiting(orch, task_id),
+            )
         return
     if not effects_applied:
         # An interrupted ordinary terminal transition may have committed its
@@ -602,8 +608,16 @@ def _consume_accepted_completion_recovery(
             and settled.current_session_id == session_id
             and accepted is not None and accepted["id"] == result_row_id
         ):
-            _kill_jobs_for_terminating_task(orch, task_id)
-            _enqueue_parent_if_waiting(orch, task_id)
+            if db.mark_task_completion_recovery_callback_consumed(
+                task_id=task_id, agent=agent, session_id=session_id,
+                result_row_id=result_row_id,
+                settled_at=datetime.now(timezone.utc).isoformat(),
+            ):
+                _handoff_consumed_recovery_terminal_effects(
+                    orch, task_id, agent, session_id, result_row_id,
+                    TaskStatus.COMPLETED.value,
+                    after_recovery_cleanup=lambda: _enqueue_parent_if_waiting(orch, task_id),
+                )
     settled = db.get_task(task_id)
     if (settled is not None and settled.status is TaskStatus.COMPLETED
             and settled.assigned_agent == agent and settled.current_session_id == session_id):
@@ -886,14 +900,22 @@ def _consume_completion_report(
         else:
             completed = _complete(orch, task_id, note=decision.summary or report.output_summary,
                                   output_dir=report.output_dir,
-                                  recovery_owner=(*recovery_owner, recovery_result_id))
+                                  recovery_owner=(*recovery_owner, recovery_result_id),
+                                  after_recovery_cleanup=lambda: _enqueue_parent_if_waiting(
+                                      orch, task_id),
+                                  after_recovery_parent_effect=lambda: _maybe_post_thread_followup(
+                                      orch, task_id,
+                                      status=TaskStatus.COMPLETED,
+                                      auto_revisit_spawned=False,
+                                  ))
         if not completed:
             return
-        _enqueue_parent_if_waiting(orch, task_id)
-        _maybe_post_thread_followup(
-            orch, task_id,
-            status=TaskStatus.COMPLETED, auto_revisit_spawned=False,
-        )
+        if recovery_owner is None:
+            _enqueue_parent_if_waiting(orch, task_id)
+            _maybe_post_thread_followup(
+                orch, task_id,
+                status=TaskStatus.COMPLETED, auto_revisit_spawned=False,
+            )
         return
 
     if decision.action == "escalate":
@@ -2256,7 +2278,9 @@ def _is_already_terminal(orch: "Orchestrator", task_id: str) -> bool:
 
 
 def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str | None = None,
-              recovery_owner: tuple[str, str, int] | None = None) -> bool:
+              recovery_owner: tuple[str, str, int] | None = None,
+              after_recovery_cleanup: Callable[[], None] | None = None,
+              after_recovery_parent_effect: Callable[[], None] | None = None) -> bool:
     from datetime import datetime, timezone
     # Idempotence guard: /cancel may have already taken this task to FAILED
     # between Popen return and here. Don't resurrect a cancelled task back to
@@ -2277,7 +2301,17 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str 
                              completed_at=datetime.now(timezone.utc).isoformat())
     _log_verdict_if_delegated(orch, task_id, success=True)
     orch._update_task_history(task_id)
-    _kill_jobs_for_terminating_task(orch, task_id)
+    if recovery_owner is None:
+        _kill_jobs_for_terminating_task(orch, task_id)
+    elif orch._db.mark_task_completion_recovery_callback_consumed(
+        task_id=task_id, agent=recovery_owner[0], session_id=recovery_owner[1],
+        result_row_id=recovery_owner[2], settled_at=datetime.now(timezone.utc).isoformat(),
+    ):
+        _handoff_consumed_recovery_terminal_effects(
+            orch, task_id, recovery_owner[0], recovery_owner[1], recovery_owner[2],
+            TaskStatus.COMPLETED.value, after_recovery_cleanup=after_recovery_cleanup,
+            after_recovery_parent_effect=after_recovery_parent_effect,
+        )
     return True
 
 
@@ -2322,7 +2356,56 @@ def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
     _kill_jobs_for_terminating_task(orch, task_id)
 
 
-def _kill_jobs_for_terminating_task(orch: "Orchestrator", task_id: str) -> None:
+def _handoff_consumed_recovery_terminal_effects(
+    orch: "Orchestrator", task_id: str, agent: str, session_id: str,
+    result_row_id: int, terminal_status: str, *,
+    after_recovery_cleanup: Callable[[], None] | None = None,
+    after_recovery_parent_effect: Callable[[], None] | None = None,
+) -> None:
+    """Capture a consumed recovery's exact jobs before asynchronous effects.
+
+    The settlement transaction owns the current-receipt recheck and durable
+    ``task_ended`` write.  It releases SQLite before the runner's process wait;
+    the async cleanup receives only the captured IDs and fences parent delivery
+    with the same consumed owner predicate.
+    """
+    recovery_job_ids = orch._db.settle_consumed_task_completion_recovery_jobs(
+        task_id=task_id, agent=agent, recovery_session_id=session_id,
+        result_row_id=result_row_id, terminal_status=terminal_status,
+        finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    )
+    if recovery_job_ids is None:
+        return
+    # A valid zero-job receipt has no asynchronous termination boundary.  Its
+    # parent handoff must not be lost merely because there is nothing for the
+    # runner to drain.
+    if not recovery_job_ids:
+        handed_off = False
+        if after_recovery_cleanup is not None:
+            handed_off = orch._db.handoff_consumed_task_completion_recovery_parent_effect(
+                task_id=task_id, agent=agent, recovery_session_id=session_id,
+                result_row_id=result_row_id, terminal_status=terminal_status,
+                effect=after_recovery_cleanup,
+            )
+        if handed_off and after_recovery_parent_effect is not None:
+            after_recovery_parent_effect()
+        return
+    _kill_jobs_for_terminating_task(
+        orch, task_id,
+        recovery_owner=(agent, session_id, result_row_id, terminal_status),
+        recovery_job_ids=recovery_job_ids,
+        after_recovery_cleanup=after_recovery_cleanup,
+        after_recovery_parent_effect=after_recovery_parent_effect,
+    )
+
+
+def _kill_jobs_for_terminating_task(
+    orch: "Orchestrator", task_id: str, *,
+    recovery_owner: tuple[str, str, int, str] | None = None,
+    recovery_job_ids: tuple[str, ...] | None = None,
+    after_recovery_cleanup: Callable[[], None] | None = None,
+    after_recovery_parent_effect: Callable[[], None] | None = None,
+) -> None:
     """Fire-and-forget: kill all in-flight persistent jobs owned by ``task_id``.
 
     Called from ``_complete`` and ``_fail`` whenever a task transitions to a
@@ -2339,8 +2422,11 @@ def _kill_jobs_for_terminating_task(orch: "Orchestrator", task_id: str) -> None:
     worker with no event loop of its own.
     """
     db = orch._db
-    inflight_map = db.get_running_job_task_ids()
-    if not any(v == task_id for v in inflight_map.values()):
+    inflight_map = (
+        {job_id: task_id for job_id in recovery_job_ids}
+        if recovery_job_ids is not None else db.get_running_job_task_ids()
+    )
+    if recovery_job_ids is None and not any(v == task_id for v in inflight_map.values()):
         return
 
     from datetime import datetime, timezone
@@ -2357,7 +2443,20 @@ def _kill_jobs_for_terminating_task(orch: "Orchestrator", task_id: str) -> None:
         # helper owns only this short transaction; never hold its lock across
         # termination, signals, or the runner's grace-period wait above.
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        db.backstop_terminated_task_jobs(task_id, finished_at=now)
+        if recovery_owner is None:
+            db.backstop_terminated_task_jobs(task_id, finished_at=now)
+        else:
+            agent, session_id, result_row_id, terminal_status = recovery_owner
+            handed_off = False
+            if after_recovery_cleanup is not None:
+                handed_off = db.handoff_consumed_task_completion_recovery_parent_effect(
+                    task_id=task_id, agent=agent,
+                    recovery_session_id=session_id, result_row_id=result_row_id,
+                    terminal_status=terminal_status,
+                    effect=after_recovery_cleanup,
+                )
+            if handed_off and after_recovery_parent_effect is not None:
+                after_recovery_parent_effect()
 
     try:
         loop = asyncio.get_running_loop()
@@ -2370,6 +2469,8 @@ def _kill_jobs_for_terminating_task(orch: "Orchestrator", task_id: str) -> None:
         ).start()
     else:
         loop.create_task(_kill_and_backstop())
+
+
 
 
 def _log_verdict_if_delegated(

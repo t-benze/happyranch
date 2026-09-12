@@ -422,11 +422,14 @@ def test_nonroot_manager_recovery_postcommit_cleanup_reenters_on_restart(tmp_pat
     report = completion_report_from_result_row(
         task_id, accepted, fallback_agent="engineering_manager",
     )
-    with mock.patch(
-        "runtime.orchestrator.run_step._kill_jobs_for_terminating_task",
-        side_effect=RuntimeError("after commit"),
+    # The consumed marker is durable before terminal effects.  Interrupt at
+    # the actual capture-and-settle boundary, rather than at the async
+    # dispatcher which is necessarily after the owned row was settled.
+    with mock.patch.object(
+        db, "settle_consumed_task_completion_recovery_jobs",
+        side_effect=RuntimeError("before capture-and-settle"),
     ):
-        with pytest.raises(RuntimeError, match="after commit"):
+        with pytest.raises(RuntimeError, match="before capture-and-settle"):
             _consume_accepted_completion_recovery(
                 orch, task_id, report, agent="engineering_manager",
                 session_id="recovery-manager", result_row_id=accepted["id"],
@@ -618,6 +621,9 @@ def test_nonroot_manager_recovery_stale_winner_rejects_at_final_transaction(tmp_
 @pytest.mark.parametrize("winner", ["cancelled", "new_session", "new_agent"])
 def test_consumed_nonroot_receipt_selector_excludes_changed_winner(tmp_path, winner):
     """A real consumed receipt selects once, then rejects exactly one changed owner predicate."""
+    import threading
+
+    from runtime.daemon import jobs_runner
     from runtime.orchestrator.orchestrator import completion_report_from_result_row
     from runtime.orchestrator import run_step
 
@@ -635,16 +641,43 @@ def test_consumed_nonroot_receipt_selector_excludes_changed_winner(tmp_path, win
         status="completed", output_summary="escalate", confidence_score=100, decision_json='{"action":"escalate","reason":"parent"}')
     accepted = db.get_accepted_task_completion_recovery_result(task_id=task_id, agent="engineering_manager")
     assert accepted is not None
-    with mock.patch("runtime.orchestrator.run_step._kill_jobs_for_terminating_task"):
+    cleanup_done = threading.Event()
+    worker_errors: list[BaseException] = []
+    workers = []
+    real_terminate = jobs_runner.terminate_jobs_for_task
+    real_thread = threading.Thread
+
+    async def observed_terminate(*args, **kwargs):
+        try:
+            return await real_terminate(*args, **kwargs)
+        finally:
+            cleanup_done.set()
+
+    def tracked_thread(*, target, daemon):
+        worker = real_thread(
+            target=lambda: _capture_worker_error(target, worker_errors), daemon=daemon,
+        )
+        workers.append(worker)
+        return worker
+
+    with mock.patch.object(jobs_runner, "terminate_jobs_for_task", observed_terminate), mock.patch.object(
+        threading, "Thread", tracked_thread,
+    ):
         run_step._consume_accepted_completion_recovery(orch, task_id,
             completion_report_from_result_row(task_id, accepted, fallback_agent="engineering_manager"),
             agent="engineering_manager", session_id="recovery-manager", result_row_id=accepted["id"])
+        assert cleanup_done.wait(2), "positive consumed-receipt cleanup did not finish"
+    for worker in workers:
+        worker.join(2)
+        assert not worker.is_alive()
+    assert not worker_errors
     assert db.get_consumed_nonroot_escalation_recovery_task_ids() == [task_id]
     accepted_before = dict(accepted)
     # The positive consume legitimately wakes the waiting parent.  Empty it
     # before changing one selector predicate so later delivery is attributable.
     assert queue._queue.get_nowait() == ("test", "TASK-PARENT", None)
     assert queue._queue.empty()
+    assert db.get_job("JOB-OWNED").reason == "task_ended"
     cleanup_calls: list[str] = []
     if winner == "cancelled":
         # It is already terminal: change only the cancellation metadata while
@@ -654,6 +687,7 @@ def test_consumed_nonroot_receipt_selector_excludes_changed_winner(tmp_path, win
         db.update_task(task_id, current_session_id="new-session")
     else:
         db.update_task(task_id, assigned_agent="new-agent")
+    _seed_job(db, "JOB-WINNER", task_id, status="running")
     assert db.get_consumed_nonroot_escalation_recovery_task_ids() == []
     real_enqueue = run_step._enqueue_parent_if_waiting
     parent_calls: list[str] = []
@@ -664,7 +698,8 @@ def test_consumed_nonroot_receipt_selector_excludes_changed_winner(tmp_path, win
         _sweep_on_startup(db, queue, "test", orch); _sweep_on_startup(db, queue, "test", orch)
     assert cleanup_calls == []
     assert task_id not in parent_calls
-    assert db.get_job("JOB-OWNED").status.value == "running"
+    assert db.get_job("JOB-OWNED").reason == "task_ended"
+    assert db.get_job("JOB-WINNER").status.value == "running"
     assert dict(db.execute("SELECT * FROM task_results WHERE id=?", (accepted["id"],)).fetchone()) == accepted_before
 @pytest.mark.parametrize("failure_point", ["before_effect", "after_effect_before_ledger"])
 def test_root_recovery_escalation_transaction_rolls_back_then_restart_settles_once(
@@ -870,19 +905,13 @@ def test_accepted_manager_done_recovery_preserves_replaced_owner_at_complete(tmp
 def test_manager_done_postcommit_cleanup_pending_restarts_once(
     tmp_path, parent_linked, interrupt_before_marker,
 ):
-    """A marker-committed manager DONE survives cleanup still being in flight.
+    """Marker-edge manager-DONE crashes replay one owned settlement once.
 
-    The first cleanup coroutine is deliberately held at its real runner
-    boundary.  This models a daemon death after the terminal CAS and consumed
-    marker commit, rather than pretending that a synchronous cleanup mock is
-    pending.  A fresh startup owns the durable cleanup backstop; it does not
-    inherit or signal the old process control.
+    Both boundaries precede the receipt-bound handoff, so the owned durable
+    job is still running when the old SQLite connection closes. Two shipping
+    startup sweeps then consume and settle only that row; no old-process live
+    cleanup, provider, or authority work is inherited.
     """
-    import asyncio
-    import threading
-    from contextlib import ExitStack
-
-    from runtime.daemon import jobs_runner
     from runtime.infrastructure.audit_logger import AuditLogger
     from runtime.orchestrator import run_step
     from runtime.orchestrator.orchestrator import completion_report_from_result_row
@@ -927,84 +956,19 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
     )
     db.commit()
 
-    cleanup_pending = threading.Event()
-    restarted_cleanup_started = threading.Event()
     restarted_cleanup_finished = threading.Event()
-    terminate_calls = 0
-    old_process = True
-    old_operations: dict[int, tuple[threading.Event, threading.Event, threading.Thread]] = {}
-    real_thread = threading.Thread
-    real_terminate = jobs_runner.terminate_jobs_for_task
     real_mark = db.mark_task_completion_recovery_callback_consumed
 
-    class OldProcessAbandoned(Exception):
-        """The old daemon died after its terminal receipt, before cleanup."""
-
-    async def controlled_terminate(*args, **kwargs):
-        nonlocal terminate_calls
-        terminate_calls += 1
-        operation = terminate_calls
-        if old_process:
-            # Each old-process operation owns its own control and thread.  On
-            # release it exits before the real runner or the DB backstop, just
-            # as process death would; it must not finish the pending cleanup.
-            release, acknowledged = threading.Event(), threading.Event()
-            old_operations[operation] = (
-                release, acknowledged, threading.current_thread(),
-            )
-            cleanup_pending.set()
-            try:
-                assert release.wait(2.0), "test did not abandon old cleanup"
-                raise OldProcessAbandoned()
-            finally:
-                acknowledged.set()
-        restarted_cleanup_started.set()
-        return await real_terminate(*args, **kwargs)
-
     def mark_then_interrupt(**kwargs):
-        # _complete has already scheduled real async cleanup before this
-        # marker.  Require its coroutine to be pending at the exact boundary.
-        assert cleanup_pending.wait(2.0), "cleanup was not pending before consumed marker"
+        # The handoff begins only after this marker returns. Interrupting at
+        # either edge is a finite pre-settlement crash seam: no old-process
+        # cleanup worker can have written the owned job.
         if interrupt_before_marker:
             raise RuntimeError("interrupt immediately before callback_consumed commit")
         assert real_mark(**kwargs)
         raise RuntimeError("interrupt immediately after callback_consumed commit")
 
-    def abandon_old_process_cleanup() -> None:
-        for release, acknowledged, cleanup_thread in tuple(old_operations.values()):
-            release.set()
-            assert acknowledged.wait(2.0), "old cleanup did not acknowledge abandonment"
-            cleanup_thread.join(timeout=2.0)
-            assert not cleanup_thread.is_alive(), "old cleanup thread did not join"
-
-    def track_cleanup_thread(*args, **kwargs):
-        target = kwargs.get("target")
-        target_index = 1
-        positional = list(args)
-        if target is None and len(positional) > target_index:
-            target = positional[target_index]
-        if target is None:
-            return real_thread(*args, **kwargs)
-
-        def exit_old_process(*target_args, **target_kwargs):
-            try:
-                target(*target_args, **target_kwargs)
-            except OldProcessAbandoned:
-                # The test runner owns the old-process boundary and joins this
-                # thread; swallowing only this sentinel avoids detached-thread
-                # warnings while preserving every other failure.
-                return
-
-        if "target" in kwargs:
-            kwargs["target"] = exit_old_process
-        else:
-            positional[target_index] = exit_old_process
-        return real_thread(*positional, **kwargs)
-
-    with ExitStack() as cleanup_guard, mock.patch(
-        "runtime.daemon.jobs_runner.terminate_jobs_for_task",
-        side_effect=controlled_terminate,
-    ), mock.patch("threading.Thread", side_effect=track_cleanup_thread), mock.patch.object(
+    with mock.patch.object(
         db, "mark_task_completion_recovery_callback_consumed",
         side_effect=mark_then_interrupt,
     ), mock.patch("runtime.orchestrator.authority.run_authority_hook") as authority, mock.patch.object(
@@ -1013,7 +977,6 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
         "runtime.orchestrator.run_step._maybe_post_thread_followup",
         wraps=run_step._maybe_post_thread_followup,
     ) as followup:
-        cleanup_guard.callback(abandon_old_process_cleanup)
         expected_boundary = (
             "immediately before callback_consumed"
             if interrupt_before_marker else "immediately after callback_consumed"
@@ -1038,10 +1001,6 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
         assert ledger["accepted_result_id"] == accepted["id"]
         assert db.get_job("JOB-OWNED").status.value == "running"
 
-        # Model old-process death: all owned coroutines acknowledge and join
-        # without calling the real runner or writing the owned job.
-        abandon_old_process_cleanup()
-        old_process = False
         accepted_row_before = dict(accepted)
         db_path = db.path
         assert db.get_job("JOB-OWNED").status.value == "running"
@@ -1050,7 +1009,7 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
         orch._db = reopened
         orch._audit = AuditLogger(reopened)
         assert reopened.get_job("JOB-OWNED").status.value == "running"
-        reopened_backstop = reopened.backstop_consumed_task_completion_recovery_jobs
+        reopened_backstop = reopened.settle_consumed_task_completion_recovery_jobs
         def observe_whole_restarted_cleanup(*args, **kwargs):
             try:
                 return reopened_backstop(*args, **kwargs)
@@ -1058,13 +1017,13 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
                 # Runner termination is only the first phase.  Observe the
                 # real durable backstop return, including its SQLite commit.
                 restarted_cleanup_finished.set()
-        reopened.backstop_consumed_task_completion_recovery_jobs = observe_whole_restarted_cleanup
+        reopened.settle_consumed_task_completion_recovery_jobs = observe_whole_restarted_cleanup
 
         # Bounded negative control: a shipping sweep with its durable backstop
         # disabled leaves the owned job running, proving the assertion below
         # depends on the restart cleanup rather than old-process work.
         with mock.patch.object(
-            reopened, "backstop_consumed_task_completion_recovery_jobs", return_value=None,
+            reopened, "settle_consumed_task_completion_recovery_jobs", return_value=None,
         ), mock.patch(
             "runtime.orchestrator.run_step._kill_jobs_for_terminating_task",
         ), mock.patch("runtime.orchestrator.run_step._enqueue_parent_if_waiting"):
@@ -1084,7 +1043,7 @@ def test_manager_done_postcommit_cleanup_pending_restarts_once(
         ) == ["JOB-UNRELATED"]
         assert authority.call_count == 0
         provider_launch.assert_not_called()
-        assert followup.call_count == 1
+        assert followup.call_count == 0
         assert [row["action"] for row in reopened.get_audit_logs(task_id)].count(
             "completion_report",
         ) == 1
@@ -1199,6 +1158,9 @@ def test_accepted_manager_done_recovery_final_owner_and_receipt_fences(tmp_path,
         return real_delivery(*args, **kwargs)
 
     cleanup_finished = threading.Event()
+    worker_threads: list[threading.Thread] = []
+    worker_errors: list[BaseException] = []
+    real_thread = threading.Thread
     real_terminate = jobs_runner.terminate_jobs_for_task
 
     async def observe_terminate(*args, **kwargs):
@@ -1212,12 +1174,37 @@ def test_accepted_manager_done_recovery_final_owner_and_receipt_fences(tmp_path,
         cleanup_calls.append(args[1])
         return real_kill(*args, **kwargs)
 
-    with mock.patch.object(db, "complete_task_if_current_recovery_owner", side_effect=install_winner_at_final_cas), mock.patch("runtime.daemon.jobs_runner.terminate_jobs_for_task", side_effect=observe_terminate), mock.patch("runtime.orchestrator.run_step._kill_jobs_for_terminating_task", side_effect=observe_cleanup), mock.patch("runtime.orchestrator.run_step._enqueue_parent_if_waiting", side_effect=observe_enqueue), mock.patch("runtime.orchestrator.run_step._maybe_post_thread_followup", side_effect=observe_delivery):
+    def tracked_thread(*args, **kwargs):
+        target = kwargs.get("target")
+        target_args = kwargs.get("args", ())
+        target_kwargs = kwargs.get("kwargs", {})
+        if target is None:
+            return real_thread(*args, **kwargs)
+
+        def capture_worker_error():
+            try:
+                target(*target_args, **target_kwargs)
+            except BaseException as exc:
+                worker_errors.append(exc)
+
+        thread_kwargs = dict(kwargs)
+        thread_kwargs["target"] = capture_worker_error
+        thread_kwargs.pop("args", None)
+        thread_kwargs.pop("kwargs", None)
+        worker = real_thread(*args, **thread_kwargs)
+        worker_threads.append(worker)
+        return worker
+
+    with mock.patch.object(db, "complete_task_if_current_recovery_owner", side_effect=install_winner_at_final_cas), mock.patch("runtime.daemon.jobs_runner.terminate_jobs_for_task", side_effect=observe_terminate), mock.patch("runtime.orchestrator.run_step._kill_jobs_for_terminating_task", side_effect=observe_cleanup), mock.patch("runtime.orchestrator.run_step._enqueue_parent_if_waiting", side_effect=observe_enqueue), mock.patch("runtime.orchestrator.run_step._maybe_post_thread_followup", side_effect=observe_delivery), mock.patch("threading.Thread", side_effect=tracked_thread):
         run_step._consume_accepted_completion_recovery(
             orch, task_id,
             completion_report_from_result_row(task_id, accepted, fallback_agent="engineering_manager"),
             agent="engineering_manager", session_id="recovery-manager", result_row_id=accepted["id"],
         )
+        for worker in worker_threads:
+            worker.join(2.0)
+            assert not worker.is_alive(), "recovery handoff thread did not join"
+    assert not worker_errors
     task = db.get_task(task_id)
     assert task is not None
     assert boundary_calls == 1
@@ -1234,12 +1221,12 @@ def test_accepted_manager_done_recovery_final_owner_and_receipt_fences(tmp_path,
         assert task.status is TaskStatus.COMPLETED
         assert ledger["state"] == "callback_consumed"
         assert ledger["accepted_result_id"] == accepted["id"]
-        # _complete owns immediate cleanup; the recovery reconciler repeats
-        # its established post-terminal cleanup/backstop exactly once.
-        assert cleanup_calls == [task_id, task_id]
+        # Settlement captures the owned job once and the asynchronous handoff
+        # performs the one fixed-identity runner cleanup before parent wake.
+        assert cleanup_calls == [task_id]
         assert cleanup_finished.wait(2.0), "owned done cleanup did not finish"
         assert db.get_job("JOB-OWNED").reason == "task_ended"
-        assert parent_calls == [task_id, task_id]
+        assert parent_calls == [task_id]
         assert delivery_calls == [task_id]
         assert queue._queue.get_nowait() == ("test", "TASK-PARENT", None)
         assert queue._queue.empty()
@@ -1701,6 +1688,10 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
             assert not worker.is_alive()
     # Cleanup errors arise only after the held real runner is released.
     assert not errors
+    _sweep_on_startup(db, queue, "test", orch)
+    _sweep_on_startup(db, queue, "test", orch)
+    # These immutable receipt and owner assertions are deliberately after
+    # both reentries: a later startup must not corrupt already-consumed state.
     accepted_after = db.execute(
         "SELECT * FROM task_results WHERE id=?", (accepted["id"],),
     ).fetchone()
@@ -1713,8 +1704,6 @@ def test_startup_consumed_recovery_backstops_owned_job_before_orphan_sweep(tmp_p
     assert ledger["accepted_result_id"] == accepted["id"]
     task_after = db.get_task(task_id)
     assert task_after is not None and task_after.current_session_id == session_id
-    _sweep_on_startup(db, queue, "test", orch)
-    _sweep_on_startup(db, queue, "test", orch)
     assert db.get_job("JOB-OWNED").reason == "task_ended"
     assert db.get_job("JOB-OTHER").reason == "daemon_crash"
 
@@ -1737,16 +1726,42 @@ def test_startup_preterminal_selection_revalidates_recovery_owner_before_effects
         task_id="TASK-REC", agent="dev_agent",
     )
     assert accepted is not None
-    with mock.patch("runtime.orchestrator.run_step._kill_jobs_for_terminating_task"):
+    accepted_snapshot = dict(accepted)
+
+    def interrupt_before_settlement(**kwargs):
+        raise RuntimeError("finite post-consumption/pre-settlement interruption")
+
+    with mock.patch.object(
+        db, "settle_consumed_task_completion_recovery_jobs",
+        side_effect=interrupt_before_settlement,
+    ), pytest.raises(RuntimeError, match="post-consumption/pre-settlement"):
         _consume_accepted_completion_recovery(
             orch, "TASK-REC", completion_report_from_result_row(
                 "TASK-REC", accepted, fallback_agent="dev_agent",
             ), agent="dev_agent", session_id="recovery-TASK-REC",
             result_row_id=accepted["id"],
         )
+    receipt_before_restart = db.execute(
+        "SELECT state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?",
+        ("TASK-REC",),
+    ).fetchone()
+    assert receipt_before_restart["state"] == "callback_consumed"
+    assert receipt_before_restart["accepted_result_id"] == accepted["id"]
+    assert db.get_task("TASK-REC").status is TaskStatus.COMPLETED
+    assert db.get_job("JOB-OWNED").status.value == "running"
+    assert dict(db.execute(
+        "SELECT * FROM task_results WHERE id=?", (accepted["id"],),
+    ).fetchone()) == accepted_snapshot
+
     select = db.get_consumed_task_completion_recovery_owners
+    selection_calls = 0
+
     def select_then_replace():
+        nonlocal selection_calls
+        selection_calls += 1
         selected = select()
+        if selection_calls > 1:
+            return selected
         assert selected and selected[0]["accepted_result_id"] == accepted["id"]
         if winner == "cancelled":
             db.update_task("TASK-REC", cancelled_at="2026-01-01T00:03:00Z")
@@ -1757,10 +1772,21 @@ def test_startup_preterminal_selection_revalidates_recovery_owner_before_effects
         "runtime.orchestrator.run_step._kill_jobs_for_terminating_task",
     ) as cleanup:
         _sweep_on_startup(db, queue, "test", orch)
+        _sweep_on_startup(db, queue, "test", orch)
     assert db.get_job("JOB-OWNED").status.value == "running"
     cleanup.assert_not_called()
     task = db.get_task("TASK-REC")
     assert task.cancelled_at is not None if winner == "cancelled" else task.current_session_id == "newer-session"
+    assert dict(db.execute(
+        "SELECT * FROM task_results WHERE id=?", (accepted["id"],),
+    ).fetchone()) == accepted_snapshot
+    receipt_after_reentries = db.execute(
+        "SELECT state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?",
+        ("TASK-REC",),
+    ).fetchone()
+    assert dict(receipt_after_reentries) == dict(receipt_before_restart)
+    assert selection_calls == 2
+    assert queue._queue.empty()
 
 
 def _capture_worker_error(target, errors):
@@ -2253,6 +2279,192 @@ def _seed_job(db: Database, job_id: str, task_id: str, status: str) -> None:
     ))
     db._conn.execute("UPDATE jobs SET status=? WHERE id=?", (status, job_id))
     db._conn.commit()
+
+
+def _seed_consumed_parent_handoff(db: Database) -> tuple[dict, dict]:
+    db.insert_task(TaskRecord(
+        id="TASK-PARENT-HANDOFF", brief="parent", team="engineering",
+        status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
+        task_type="task",
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-CHILD-HANDOFF", brief="child", team="engineering",
+        assigned_agent="dev_agent", parent_task_id="TASK-PARENT-HANDOFF",
+        status=TaskStatus.IN_PROGRESS, current_session_id="origin", task_type="subtask",
+    ))
+    assert db.claim_task_completion_recovery(task_id="TASK-CHILD-HANDOFF", agent="dev_agent", origin_session_id="origin", recovery_session_id="recovery", provider_session_id="provider", claimed_at="2026-01-01T00:00:00Z", expires_at="2999-01-01T00:02:00Z")
+    db.update_task("TASK-CHILD-HANDOFF", current_session_id="recovery")
+    assert db.admit_task_completion_callback(task_id="TASK-CHILD-HANDOFF", agent="dev_agent", session_id="recovery", status="completed", output_summary="done", confidence_score=100, decision_json='{"action":"done","summary":"done"}')
+    accepted = db.get_accepted_task_completion_recovery_result(task_id="TASK-CHILD-HANDOFF", agent="dev_agent")
+    assert accepted is not None
+    db.update_task("TASK-CHILD-HANDOFF", status=TaskStatus.COMPLETED)
+    assert db.mark_task_completion_recovery_callback_consumed(task_id="TASK-CHILD-HANDOFF", agent="dev_agent", session_id="recovery", result_row_id=accepted["id"], settled_at="2026-01-01T00:01:00Z")
+    return accepted, dict(accepted)
+
+
+@pytest.mark.parametrize("captured_jobs,replace_before_handoff", [(0, False), (1, False), (0, True), (1, True)], ids=["zero-job", "one-job", "zero-job-winner", "one-job-winner"])
+def test_consumed_recovery_parent_handoff_is_receipt_owned_through_shipping_caller(tmp_path, monkeypatch, captured_jobs, replace_before_handoff):
+    """The actual shipping handoff owns only its captured receipt and parent wake."""
+    from types import SimpleNamespace
+    from runtime.daemon import jobs_runner
+    from runtime.orchestrator import run_step
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    accepted, accepted_snapshot = _seed_consumed_parent_handoff(db)
+    workers: list[threading.Thread] = []
+    errors: list[BaseException] = []
+    cleanup_done = threading.Event()
+    parent_effects: list[str] = []
+    real_thread = threading.Thread
+    if captured_jobs:
+        _seed_job(db, "JOB-OWNED", "TASK-CHILD-HANDOFF", "running")
+        owned = SimpleNamespace(pid=111, returncode=None)
+        jobs_runner._INFLIGHT["JOB-OWNED"] = owned
+        monkeypatch.setattr(jobs_runner.os, "killpg", lambda pid, _sig: setattr(owned, "returncode", -15) if pid == 111 else None)
+        async def no_wait(_seconds):
+            return None
+        monkeypatch.setattr(jobs_runner.asyncio, "sleep", no_wait)
+    else:
+        owned = None
+    _seed_job(db, "JOB-UNRELATED", "TASK-UNRELATED", "running")
+    unrelated = SimpleNamespace(pid=222, returncode=None)
+    jobs_runner._INFLIGHT["JOB-UNRELATED"] = unrelated
+
+    def tracked_thread(*, target, daemon):
+        worker = real_thread(target=lambda: _capture_worker_error(target, errors), daemon=daemon)
+        workers.append(worker)
+        return worker
+    monkeypatch.setattr(threading, "Thread", tracked_thread)
+
+    if replace_before_handoff:
+        original_handoff = db.handoff_consumed_task_completion_recovery_parent_effect
+        def winner_then_original(**kwargs):
+            db.update_task("TASK-CHILD-HANDOFF", current_session_id="winner")
+            db.insert_task_result(task_id="TASK-CHILD-HANDOFF", agent="dev_agent", session_id="winner", status="completed", confidence_score=99, output_summary="winner")
+            _seed_job(db, "JOB-WINNER", "TASK-CHILD-HANDOFF", "running")
+            return original_handoff(**kwargs)
+        monkeypatch.setattr(db, "handoff_consumed_task_completion_recovery_parent_effect", winner_then_original)
+
+    try:
+        run_step._handoff_consumed_recovery_terminal_effects(
+            orch, "TASK-CHILD-HANDOFF", "dev_agent", "recovery", accepted["id"],
+            TaskStatus.COMPLETED.value,
+            after_recovery_cleanup=lambda: run_step._enqueue_parent_if_waiting(orch, "TASK-CHILD-HANDOFF"),
+            after_recovery_parent_effect=lambda: parent_effects.append("receipt-owned"),
+        )
+        if workers:
+            cleanup_done.set()
+        for worker in workers:
+            worker.join(2)
+            assert not worker.is_alive(), "owned async cleanup thread leaked"
+        assert not errors
+        assert unrelated.returncode is None
+        assert db.get_job("JOB-UNRELATED").status.value == "running"
+        if replace_before_handoff:
+            # The wrapped final caller just installed a same-agent winner;
+            # the real handoff must not deliver the old receipt's parent tail.
+            assert queue._queue.empty()
+            assert parent_effects == []
+        else:
+            assert parent_effects == ["receipt-owned"]
+        immutable_before_reentry = {
+            "accepted": dict(db.execute("SELECT * FROM task_results WHERE id=?", (accepted["id"],)).fetchone()),
+            "ledger": dict(db.execute("SELECT * FROM task_completion_recoveries WHERE task_id='TASK-CHILD-HANDOFF'").fetchone()),
+            "binding": dict(db.execute("SELECT id, current_session_id, status, assigned_agent FROM tasks WHERE id='TASK-CHILD-HANDOFF'").fetchone()),
+            "results": [dict(row) for row in db.execute("SELECT * FROM task_results WHERE task_id='TASK-CHILD-HANDOFF' ORDER BY id").fetchall()],
+            "jobs": [dict(row) for row in db.execute("SELECT * FROM jobs WHERE task_id='TASK-CHILD-HANDOFF' ORDER BY id").fetchall()],
+        }
+        # Keep the real queue observer intact through both startup reentries;
+        # deduplication, not queue draining, establishes at-most-once delivery.
+        _sweep_on_startup(db, queue, "test", orch)
+        _sweep_on_startup(db, queue, "test", orch)
+        for worker in workers:
+            worker.join(2)
+            assert not worker.is_alive(), "startup reentry worker leaked"
+        assert not errors
+        if replace_before_handoff:
+            # A later generic startup scan may legitimately reconstruct the
+            # terminal child's ordinary parent wake. It is distinct from the
+            # rejected recovery handoff and remains deduplicated across both
+            # reentries without draining the queue between them.
+            assert queue._queue.get_nowait() == ("test", "TASK-PARENT-HANDOFF", None)
+            assert queue._queue.empty()
+            assert db.get_task("TASK-CHILD-HANDOFF").current_session_id == "winner"
+            assert db.get_job("JOB-WINNER").status.value == "running"
+        else:
+            assert queue._queue.get_nowait() == ("test", "TASK-PARENT-HANDOFF", None)
+            assert queue._queue.empty()
+            if captured_jobs:
+                assert db.get_job("JOB-OWNED").reason == "task_ended"
+        assert immutable_before_reentry["accepted"] == accepted_snapshot
+        assert dict(db.execute("SELECT * FROM task_results WHERE id=?", (accepted["id"],)).fetchone()) == immutable_before_reentry["accepted"]
+        assert dict(db.execute("SELECT * FROM task_completion_recoveries WHERE task_id='TASK-CHILD-HANDOFF'").fetchone()) == immutable_before_reentry["ledger"]
+        assert dict(db.execute("SELECT id, current_session_id, status, assigned_agent FROM tasks WHERE id='TASK-CHILD-HANDOFF'").fetchone()) == immutable_before_reentry["binding"]
+        assert [dict(row) for row in db.execute("SELECT * FROM task_results WHERE task_id='TASK-CHILD-HANDOFF' ORDER BY id").fetchall()] == immutable_before_reentry["results"]
+        assert [dict(row) for row in db.execute("SELECT * FROM jobs WHERE task_id='TASK-CHILD-HANDOFF' ORDER BY id").fetchall()] == immutable_before_reentry["jobs"]
+    finally:
+        if owned is not None:
+            jobs_runner._INFLIGHT.pop("JOB-OWNED", None)
+        jobs_runner._INFLIGHT.pop("JOB-UNRELATED", None)
+
+
+def test_consumed_recovery_parent_handoff_contender_attempts_same_rlock(tmp_path):
+    """A real parent effect excludes a writer at the same database RLock acquisition."""
+    from runtime.orchestrator import run_step
+
+    db, orch, queue = _seed_org_with_orch(tmp_path)
+    accepted, _ = _seed_consumed_parent_handoff(db)
+    release, contender_attempt = threading.Event(), threading.Event()
+    errors: list[BaseException] = []
+    original_lock = db._lock
+
+    class ObservedLock:
+        def acquire(self, *args, **kwargs):
+            if threading.current_thread().name == "owner-contender":
+                contender_attempt.set()
+            return original_lock.acquire(*args, **kwargs)
+        def release(self):
+            return original_lock.release()
+        def __enter__(self):
+            self.acquire()
+            return self
+        def __exit__(self, *exc):
+            self.release()
+
+    db._lock = ObservedLock()
+    def contender_work() -> None:
+        try:
+            db.update_task("TASK-CHILD-HANDOFF", current_session_id="winner")
+        except BaseException as exc:
+            errors.append(exc)
+    contender = threading.Thread(target=contender_work, name="owner-contender")
+    def actual_parent_effect() -> None:
+        run_step._enqueue_parent_if_waiting(orch, "TASK-CHILD-HANDOFF")
+        contender.start()
+        assert contender_attempt.wait(2), "contender never attempted the database RLock"
+        assert contender.is_alive(), "contender acquired the lock during parent effect"
+        assert release.wait(2), "test did not release parent effect"
+    def handoff_work() -> None:
+        try:
+            run_step._handoff_consumed_recovery_terminal_effects(orch, "TASK-CHILD-HANDOFF", "dev_agent", "recovery", accepted["id"], TaskStatus.COMPLETED.value, after_recovery_cleanup=actual_parent_effect)
+        except BaseException as exc:
+            errors.append(exc)
+    handoff = threading.Thread(target=handoff_work, name="handoff")
+    try:
+        handoff.start()
+        assert contender_attempt.wait(2)
+        release.set()
+        handoff.join(2); contender.join(2)
+        assert not handoff.is_alive() and not contender.is_alive(), "worker thread leaked"
+    finally:
+        release.set()
+        handoff.join(2)
+        if contender.ident is not None:
+            contender.join(2)
+        db._lock = original_lock
+    assert not errors
+    assert db.get_task("TASK-CHILD-HANDOFF").current_session_id == "winner"
+    assert queue._queue.get_nowait() == ("test", "TASK-PARENT-HANDOFF", None)
 
 
 def test_sweep_blocked_on_job_with_live_job_survives_restart(tmp_path):

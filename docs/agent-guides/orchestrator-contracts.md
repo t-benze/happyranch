@@ -359,7 +359,10 @@ settled fail-closed in its dedicated ledger transaction when its durable
 origin or recovery binding is still current. This spends the episode,
 terminalizes the task, and invokes ordinary owned-job `task_ended` cleanup;
 it never launches a second recovery or uses a persisted PID as containment.
-An accepted callback, cancellation, or newer binding wins unchanged. A manager
+An accepted callback, cancellation, or newer binding wins unchanged. Accepted consumed
+receipts settle only their captured running jobs. The bounded parent/chain effect is
+rechecked under that same owner predicate; any thread followup is deliberately after
+the guarded handoff and can be superseded by a later replacement. A manager
 DONE whose terminal owner CAS committed before its recovery marker is
 reconciled only for the exact task/agent/runtime-session/result receipt; its
 post-commit cleanup and delivery are not part of that terminal transaction, so

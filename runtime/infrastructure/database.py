@@ -5143,7 +5143,7 @@ class Database:
         """
         rows = self._conn.execute(
             """SELECT r.task_id, r.agent, r.recovery_session_id,
-                      r.accepted_result_id, t.status
+                      r.accepted_result_id, t.status, t.parent_task_id
                FROM task_completion_recoveries AS r
                JOIN task_results AS tr ON tr.id=r.accepted_result_id
                JOIN tasks AS t ON t.id=r.task_id
@@ -5171,18 +5171,23 @@ class Database:
         This is deliberately separate from a job UPDATE: zero running rows is
         a valid no-op, not evidence that the selected receipt lost ownership.
         """
+        if terminal_status not in (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value):
+            return False
         row = self._conn.execute(
             """SELECT 1 FROM task_completion_recoveries AS r
                JOIN task_results AS tr ON tr.id=r.accepted_result_id
                JOIN tasks AS t ON t.id=r.task_id
                WHERE r.task_id=? AND r.agent=? AND r.recovery_session_id=?
-                 AND r.accepted_result_id=? AND r.state='callback_consumed'
-                 AND t.status=? AND t.cancelled_at IS NULL
+                 AND r.accepted_result_id=?
+                 AND r.state='callback_consumed'
+                 AND t.status=?
+                 AND t.cancelled_at IS NULL
                  AND tr.task_id=r.task_id AND tr.agent=r.agent
                  AND tr.session_id=r.recovery_session_id
                  AND t.assigned_agent=r.agent
                  AND t.current_session_id=r.recovery_session_id""",
-            (task_id, agent, recovery_session_id, result_row_id, terminal_status),
+            (task_id, agent, recovery_session_id, result_row_id,
+             terminal_status),
         ).fetchone()
         return row is not None
 
@@ -6445,6 +6450,94 @@ class Database:
         )
         self._conn.commit()
         return cursor.rowcount
+
+    @_synchronized
+    def settle_consumed_task_completion_recovery_jobs(
+        self, *, task_id: str, agent: str, recovery_session_id: str,
+        result_row_id: int, terminal_status: str, finished_at: str,
+    ) -> tuple[str, ...] | None:
+        """Capture and settle the exact current recovery owner's running jobs.
+
+        ``None`` is a lost receipt; an empty tuple is a valid, owned zero-job
+        handoff.  The returned IDs are intentionally the live-cleanup input.
+        """
+        if terminal_status not in (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value):
+            return None
+        # Preserve the externally observable selection seam.  It is only an
+        # admission hint: the identical SQL predicate below remains the
+        # authoritative recheck in the write transaction.
+        if not self.consumed_task_completion_recovery_owner_is_current(
+            task_id=task_id, agent=agent,
+            recovery_session_id=recovery_session_id,
+            result_row_id=result_row_id, terminal_status=terminal_status,
+        ):
+            return None
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            # Keep the ownership validation inside this transaction.  Calling
+            # the decorated public predicate here would either release the
+            # lock or become unobservable to a test seam that intentionally
+            # replaces it while exercising the post-consumption boundary.
+            owner = self._conn.execute(
+                """SELECT 1 FROM task_completion_recoveries AS r
+                   JOIN task_results AS tr ON tr.id=r.accepted_result_id
+                   JOIN tasks AS t ON t.id=r.task_id
+                   WHERE r.task_id=? AND r.agent=? AND r.recovery_session_id=?
+                     AND r.accepted_result_id=?
+                     AND r.state='callback_consumed'
+                     AND t.status=?
+                     AND t.cancelled_at IS NULL
+                     AND tr.task_id=r.task_id AND tr.agent=r.agent
+                     AND tr.session_id=r.recovery_session_id
+                     AND t.assigned_agent=r.agent
+                     AND t.current_session_id=r.recovery_session_id""",
+                (task_id, agent, recovery_session_id, result_row_id,
+                 terminal_status),
+            ).fetchone()
+            if owner is None:
+                self._conn.rollback()
+                return None
+            rows = self._conn.execute(
+                "SELECT id FROM jobs WHERE task_id=? AND status='running' ORDER BY id",
+                (task_id,),
+            ).fetchall()
+            job_ids = tuple(row["id"] for row in rows)
+            if job_ids:
+                placeholders = ",".join("?" for _ in job_ids)
+                self._conn.execute(
+                    f"UPDATE jobs SET status='failed', reason='task_ended', finished_at=?, "
+                    f"duration_ms=COALESCE(duration_ms, 0) WHERE id IN ({placeholders}) "
+                    "AND status='running'",
+                    (finished_at, *job_ids),
+                )
+            self._conn.commit()
+            return job_ids
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def handoff_consumed_task_completion_recovery_parent_effect(
+        self, *, task_id: str, agent: str, recovery_session_id: str,
+        result_row_id: int, terminal_status: str, effect: Callable[[], None],
+    ) -> bool:
+        """Run the bounded parent-state effect while this receipt is current.
+
+        Recovery job termination deliberately happens before this method and
+        outside the database lock.  The supplied effect is limited to the
+        synchronous parent/chain wake; callers must run notification delivery
+        after this method returns.  Keeping the final predicate and mutation in
+        one re-entrant database critical section prevents a replacement owner
+        from entering between them.
+        """
+        if not self.consumed_task_completion_recovery_owner_is_current(
+            task_id=task_id, agent=agent,
+            recovery_session_id=recovery_session_id,
+            result_row_id=result_row_id, terminal_status=terminal_status,
+        ):
+            return False
+        effect()
+        return True
 
     @_synchronized
     def list_jobs_db(
