@@ -1551,8 +1551,8 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
         const variant = messageVariant(m);
         return (
           <div key={`${m.seq}-${m.speaker}-${m.kind}`}>
-            {/* System rows — centered "· system event · broadcast to all"
-                divider (THR-061 a-thread-detail .sys), not a chat bubble.
+            {/* System rows — full-width separator above an inline, wrapping
+                event description and trailing metadata, not a chat bubble.
                 Terminal responder history (incl. a system-row-anchored REPLY
                 range that settled) renders as the same light strip below the
                 divider (TASK-5553): ResponderStatusStrip filters to terminal
@@ -1648,7 +1648,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
 }
 
 /* ------------------------------------------------------------------ */
-/*  System divider — centered "· system event · broadcast to all"      */
+/*  System divider — full-width rule above wrapping event text      */
 /* ------------------------------------------------------------------ */
 
 interface SystemDividerProps {
@@ -1660,18 +1660,17 @@ interface SystemDividerProps {
 function SystemDivider({ timestamp, systemPayload, slug }: SystemDividerProps): JSX.Element {
   const description = describeSystem(systemPayload, slug);
   return (
-    <div className="my-1 flex items-center gap-3" title={new Date(timestamp).toLocaleString()}>
-      <span aria-hidden="true" className="bg-border-subtle h-px flex-1" />
-      <span className="text-text-muted text-mono-sm flex min-w-0 items-center gap-1.5 font-mono">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0" aria-hidden="true">
+    <div className="my-1 w-full min-w-0" title={new Date(timestamp).toLocaleString()}>
+      <div aria-hidden="true" className="bg-border-subtle mb-2 h-px w-full" />
+      <div className="text-text-muted text-mono-sm break-words font-mono">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mr-1.5 inline-block align-text-bottom" aria-hidden="true">
           <path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2" />
           <circle cx="9" cy="7" r="3" />
           <path d="M22 21v-2a4 4 0 00-3-3.9" />
         </svg>
-        <span className="text-text-secondary">{description}</span>
-        <span className="text-text-disabled shrink-0 whitespace-nowrap">· {S.systemEventLabel} event · broadcast to all</span>
-      </span>
-      <span aria-hidden="true" className="bg-border-subtle h-px flex-1" />
+        <span className="text-text-secondary">{description}</span>{' '}
+        <span className="text-text-disabled">· {S.systemEventLabel} event · broadcast to all</span>
+      </div>
     </div>
   );
 }

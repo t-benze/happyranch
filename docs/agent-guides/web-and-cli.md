@@ -27,6 +27,17 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 - Python: `tests/contract/test_openapi_snapshot.py` pins OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
 - TypeScript: `web/src/test/openapi-coverage.test.ts` asserts every documented path is either included with a TS mirror or excluded with justification.
 
+### Thread-detail system rows
+
+The live `ThreadDetailTranscript` renders system events through its local
+`SystemDivider`: one separator above a monospaced description, inline icon
+and task links, then trailing system-event metadata. Short and long rows use
+the transcript content width inside the existing padding. Text and unbroken
+identifiers wrap; the timestamp remains available in the row tooltip.
+`describeSystem` retains its existing content contract, including the
+240-character summary/reason slicing. Ordinary message bubbles and terminal
+responder strips retain their separate rendering paths.
+
 ### Sidebar height and scrolling
 
 The AppShell keeps the sidebar within the window height. Its organization
