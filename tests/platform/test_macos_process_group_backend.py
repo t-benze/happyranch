@@ -84,7 +84,7 @@ class _CooperativeEscapedChild:
     _CHILD = (
         "import os, pathlib, sys, time; "
         "control, report, deadline = sys.argv[1], sys.argv[2], float(sys.argv[3]); "
-        "os.setsid(); pathlib.Path(report).write_text('R'); "
+        "os.setsid(); pathlib.Path(report).write_text('R:'+str(os.getpid())); "
         "[(time.sleep(.02)) for _ in range(int(deadline * 50)) if pathlib.Path(control).exists()]; "
         "pathlib.Path(report).write_text(pathlib.Path(report).read_text()+'E')"
     )
@@ -105,9 +105,13 @@ class _CooperativeEscapedChild:
             self._control = self._root / "release"
             self._report = self._root / "events"
             self._control.touch()
-        except BaseException:
+        except BaseException as primary:
             # A failed second construction step still owns the first resource.
             self.close()
+            for error in self.cleanup_errors:
+                primary.add_note(f"escaped-child construction cleanup: {error}")
+            if self.release_error is not None:
+                primary.add_note(f"escaped-child construction release: {self.release_error}")
             raise
 
     @property
@@ -137,6 +141,36 @@ class _CooperativeEscapedChild:
                 self.cleanup_errors.append(exc)
                 return False
             time.sleep(.02)
+        return False
+
+    def observe_terminal(self, timeout: float = 2.0) -> bool:
+        """Read-only bounded absence observation for this test-owned child.
+
+        The E marker is written before interpreter exit, so it is only an
+        acknowledgement.  This method never signals a numeric PID: inability
+        to obtain the child identity or establish its absence remains visible
+        cleanup uncertainty.
+        """
+        try:
+            report = self._report.read_text() if self._report is not None else ""
+            ready, pid_text = report.split(":", 1)
+            if ready != "R":
+                raise ValueError("missing child identity")
+            pid = int(pid_text.split("E", 1)[0])
+        except (OSError, ValueError) as exc:
+            self.cleanup_errors.append(AssertionError(f"terminal identity unavailable: {exc}"))
+            return False
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)  # read-only presence observation, never cleanup signalling
+            except ProcessLookupError:
+                return True
+            except OSError as exc:
+                self.cleanup_errors.append(AssertionError(f"terminal observation unavailable: {exc}"))
+                return False
+            time.sleep(.02)
+        self.cleanup_errors.append(AssertionError("terminal absence not observed"))
         return False
 
     def release(self) -> None:
@@ -175,13 +209,45 @@ def _note_cleanup(primary: BaseException | None, child: _CooperativeEscapedChild
             raise AssertionError("escaped-child cleanup unknown: " + "; ".join(evidence))
 
 
+def _finalize_owned_children(
+    primary: BaseException | None,
+    children: list[tuple[_CooperativeEscapedChild | None, object | None]],
+) -> None:
+    """Attempt every acquired test-owned finalizer before reporting evidence."""
+    for child, process in reversed(children):
+        if child is None:
+            continue
+        try:
+            child.close()
+        except BaseException as exc:
+            child.cleanup_errors.append(exc)
+        if process is not None:
+            try:
+                process.wait(timeout=2)
+            except BaseException as exc:
+                child.cleanup_errors.append(exc)
+    for child, _process in children:
+        if child is not None:
+            _note_cleanup(primary, child)
+
+
+def _observe_terminal(child: _CooperativeEscapedChild) -> bool:
+    observer = getattr(child, "observe_terminal", None)
+    if observer is None:
+        child.cleanup_errors.append(AssertionError("terminal identity unavailable"))
+        return False
+    return observer()
+
+
 def test_cooperative_escaped_child_releases_only_its_owned_process():
     """The test control closes one same-command child without name/PID kills."""
-    first = _CooperativeEscapedChild()
-    second = _CooperativeEscapedChild()
-    first_process = subprocess.Popen(first.argv)
-    second_process = subprocess.Popen(second.argv)
+    first = second = None
+    first_process = second_process = None
     try:
+        first = _CooperativeEscapedChild()
+        first_process = subprocess.Popen(first.argv)
+        second = _CooperativeEscapedChild()
+        second_process = subprocess.Popen(second.argv)
         assert first.wait_for(b"R")
         assert second.wait_for(b"R")
         first.release()
@@ -191,13 +257,7 @@ def test_cooperative_escaped_child_releases_only_its_owned_process():
         assert second_process.poll() is None
     finally:
         primary = sys.exception()
-        for child, process in ((second, second_process), (first, first_process)):
-            child.close()
-            try:
-                process.wait(timeout=2)
-            except BaseException as exc:
-                child.cleanup_errors.append(exc)
-            _note_cleanup(primary, child)
+        _finalize_owned_children(primary, [(first, first_process), (second, second_process)])
 
 
 def test_escaped_shipping_seam_uses_supported_launchspec_and_finalizes_on_finish_error(monkeypatch):
@@ -334,6 +394,143 @@ def test_cooperative_child_partial_construction_closes_owned_directory(monkeypat
     with pytest.raises(OSError, match="touch failed"):
         _CooperativeEscapedChild()
     assert created and not created[0].exists()
+
+
+def test_cooperative_child_partial_construction_keeps_all_cleanup_errors(monkeypatch):
+    """A constructor primary retains both concrete release/removal failures."""
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda **_kwargs: "/tmp/not-created-owned-child")
+    monkeypatch.setattr(Path, "touch", lambda _self: (_ for _ in ()).throw(OSError("primary touch")))
+    monkeypatch.setattr(Path, "unlink", lambda _self: (_ for _ in ()).throw(PermissionError("release failed")))
+    monkeypatch.setattr(shutil, "rmtree", lambda _path: (_ for _ in ()).throw(PermissionError("remove failed")))
+    with pytest.raises(OSError, match="primary touch") as raised:
+        _CooperativeEscapedChild()
+    notes = getattr(raised.value, "__notes__", ())
+    assert any("release failed" in note for note in notes)
+    assert any("remove failed" in note for note in notes)
+
+
+def test_escaped_shipping_seam_rejects_preexit_acknowledgement_without_terminal_absence(monkeypatch):
+    """The actual LaunchSpec seam cannot turn E plus a live child into clean-up."""
+    class _Child:
+        argv = ("owned-child",)
+        release_error = None
+        cleanup_errors: list[BaseException] = []
+        _root = object()
+
+        def wait_for(self, signal_byte, timeout=2.0):
+            return signal_byte in (b"R", b"E")
+
+        def observe_terminal(self):
+            return False
+
+        def release(self):
+            return None
+
+        def close(self):
+            self._root = None
+
+    class _Backend:
+        def prepare(self, *_args):
+            return object()
+
+        def launch(self, _pending, spec):
+            assert isinstance(spec, LaunchSpec)
+            return SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
+
+        def finish(self, *_args, **_kwargs):
+            return SimpleNamespace(survivors=("owned",), quiescent=False, cleanup_status=CleanupStatus.TERM)
+
+    child = _Child()
+    monkeypatch.setattr(sys.modules[__name__], "_CooperativeEscapedChild", lambda: child)
+    with pytest.raises(AssertionError, match="terminal observation unknown"):
+        test_escaped_descendant_is_best_effort_survivor_real(_Backend())
+    assert child._root is None
+
+
+def test_finalization_attempts_every_registered_resource_after_wait_failure():
+    """Later wait failure records evidence without bypassing earlier closes."""
+    events: list[str] = []
+
+    class _Child:
+        release_error = None
+        cleanup_errors: list[BaseException]
+
+        def __init__(self, name):
+            self.name = name
+            self.cleanup_errors = []
+
+        def close(self):
+            events.append(f"close:{self.name}")
+
+    class _Process:
+        def __init__(self, name, fail=False):
+            self.name, self.fail = name, fail
+
+        def wait(self, **_kwargs):
+            events.append(f"wait:{self.name}")
+            if self.fail:
+                raise TimeoutError(f"wait:{self.name}")
+
+    first, second = _Child("first"), _Child("second")
+    with pytest.raises(AssertionError, match="wait:second"):
+        _finalize_owned_children(None, [(first, _Process("first")), (second, _Process("second", fail=True))])
+    assert events == ["close:second", "wait:second", "close:first", "wait:first"]
+
+
+def test_cooperative_child_intrinsic_expiry_has_terminal_absence_observation():
+    """An unreleased owned surrogate expires, is reaped, then becomes absent."""
+    child = _CooperativeEscapedChild(deadline_seconds=.05)
+    process = subprocess.Popen(child.argv)
+    try:
+        assert child.wait_for(b"R")
+        assert child.wait_for(b"E")
+        assert process.wait(timeout=2) == 0
+        assert child.observe_terminal()
+    finally:
+        child.close()
+        if process.poll() is None:
+            process.wait(timeout=2)
+
+
+@pytest.mark.parametrize("failure", ("second-helper", "first-popen", "second-popen"))
+def test_cooperative_child_acquisition_failure_finalizes_registered_resources(monkeypatch, failure):
+    """Each construction/launch gap closes every resource acquired so far."""
+    children = []
+
+    class _Child:
+        argv = ("owned-child",)
+        release_error = None
+
+        def __init__(self):
+            self.closed = False
+            self.cleanup_errors: list[BaseException] = []
+            children.append(self)
+            if failure == "second-helper" and len(children) == 2:
+                raise OSError("second helper")
+
+        def wait_for(self, _byte, timeout=2.0):
+            return True
+
+        def release(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    launches = 0
+
+    def popen(_argv):
+        nonlocal launches
+        launches += 1
+        if failure == "first-popen" or failure == "second-popen" and launches == 2:
+            raise OSError(failure)
+        return SimpleNamespace(wait=lambda **_kwargs: 0, poll=lambda: None)
+
+    monkeypatch.setattr(sys.modules[__name__], "_CooperativeEscapedChild", _Child)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    with pytest.raises(OSError, match="helper|popen"):
+        test_cooperative_escaped_child_releases_only_its_owned_process()
+    assert children and all(child.closed for child in children if child is not children[-1] or failure != "second-helper")
 
 
 # ── deterministic unit tests (fake census) ───────────────────────────
@@ -770,16 +967,16 @@ def test_escaped_descendant_is_best_effort_survivor_real(real_backend):
     except BaseException as primary:
         raise
     finally:
-        # Run only after the shipping census/assertions. The control FD is
-        # owned by this test child; no bare PID, process-group, or name signal
-        # is attempted. On an earlier primary error the child still receives
-        # the cooperative close (and has intrinsic expiry), while its cleanup
-        # observation never replaces that primary error.
+        # Run only after the shipping census/assertions. The control marker is
+        # owned by this test child; no process-group or name signal is
+        # attempted.  E is pre-exit acknowledgement, never terminal proof.
         primary = sys.exception()
         try:
             escaped.release()
-            if primary is None and not escaped.wait_for(b"E"):
+            if not escaped.wait_for(b"E"):
                 escaped.cleanup_errors.append(AssertionError("missing release acknowledgement"))
+            if not _observe_terminal(escaped):
+                escaped.cleanup_errors.append(AssertionError("terminal observation unknown"))
         except BaseException as cleanup_error:
             escaped.cleanup_errors.append(cleanup_error)
         finally:
