@@ -613,6 +613,73 @@ def test_memory_report_database_parity_exhausts_populated_pages(monkeypatch, cap
 
 
 @pytest.mark.parametrize(
+    ("population", "malformed_action", "payload", "timestamp"),
+    [
+        (0, "memory_read", "{", None),
+        (1, "memory_search", "[]", "2026-01-01T00:00:00"),
+    ],
+)
+def test_memory_report_real_database_empty_and_short_populations_stay_guarded(
+    monkeypatch, capsys, tmp_path, population, malformed_action, payload, timestamp,
+):
+    """Empty/short real audit populations cannot lift the report guard or crash it."""
+    from argparse import Namespace
+    from cli.commands.learning import cmd_memory_report
+
+    db = Database(tmp_path / "telemetry.db")
+    logger = AuditLogger(db)
+    for index in range(population):
+        logger.log_memory_digest_impression(
+            agent="dev_agent", task_id=f"TASK-{index}", session_id=f"sess-{index}",
+            digest_ids=[f"MEM-{index}"], budget=1500,
+        )
+    logger.log_memory_read(
+        agent="dev_agent", id="MEM-0", slug="one", session_id="sess-0",
+        task_id="TASK-0", source="search",
+    )
+    logger.log_memory_search(
+        agent="dev_agent", session_id="sess-0", task_id="TASK-0",
+        memory_ids=["MEM-0"], hit_count=1, kb_hit_count=0,
+    )
+    db.execute("UPDATE audit_log SET timestamp='2026-01-01T00:00:00+00:00'")
+    db.execute("UPDATE audit_log SET payload=? WHERE action=?", (payload, malformed_action))
+    if timestamp is not None:
+        db.execute("UPDATE audit_log SET timestamp=? WHERE action=?", (timestamp, malformed_action))
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, body): self._body = body
+        def json(self): return self._body
+
+    class Client:
+        def get(self, path, params=None):
+            if path.endswith("/agents"):
+                return Response({"agents": [{"name": "dev_agent", "role": "developer"}]})
+            rows = [dict(row) for row in db.fetch_all_readonly(
+                "SELECT timestamp, agent, task_id, payload FROM audit_log WHERE action=? ORDER BY id",
+                (params["action"],),
+            )]
+            return Response({"entries": rows, "next_cursor": None})
+
+    monkeypatch.setattr("cli.commands.learning._learning_client", lambda: Client())
+    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
+    backend = logger.compute_memory_telemetry_report(agent_role_map={"dev_agent": "developer"})
+    cmd_memory_report(Namespace(org="o", json=True))
+    cli_json = json.loads(capsys.readouterr().out)
+    cmd_memory_report(Namespace(org="o", json=False))
+    text = capsys.readouterr().out
+
+    for report in (backend, cli_json):
+        assert report["decision"] == "insufficient_instrumentation"
+        assert report["observation_period"]["thresholds_met"] is False
+    assert "Thresholds:    NOT MET" in text
+    assert "Thresholds:    MET" not in text
+    assert "Canary-gated collection has NOT started" in text
+    assert "Tuning advice" not in text
+
+
+@pytest.mark.parametrize(
     ("action", "payload", "timestamp"),
     [
         ("memory_read", '{"id":null,"source":"search","session_id":"sess-500","task_id":"TASK-500"}', None),
