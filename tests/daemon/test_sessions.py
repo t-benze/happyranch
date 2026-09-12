@@ -7,6 +7,67 @@ import pytest
 from runtime.daemon.sessions import SessionTracker
 
 
+def test_recovery_purpose_is_exact_generation_and_replacement_safe() -> None:
+    tracker = SessionTracker()
+    tracker.set_active("TASK-001", "dev_agent", "sess-old", org_slug="alpha")
+    assert tracker.mark_recovery_session("TASK-001", "dev_agent", "sess-old")
+    assert tracker.is_recovery_session("TASK-001", "dev_agent", "sess-old")
+    tracker.set_active("TASK-001", "dev_agent", "sess-new", org_slug="alpha")
+    assert not tracker.is_recovery_session("TASK-001", "dev_agent", "sess-old")
+    assert not tracker.is_recovery_session("TASK-001", "dev_agent", "sess-new")
+
+
+def test_recovery_registration_is_atomic_and_stale_clear_cannot_taint_ordinary_replacement() -> None:
+    tracker = SessionTracker()
+    tracker.register_recovery_session(
+        "TASK-001", "dev_agent", "recovery", org_slug="alpha",
+        recovery_deadline_monotonic=123.0,
+    )
+    assert tracker.get_active("TASK-001", "dev_agent") == "recovery"
+    assert tracker.is_recovery_session("TASK-001", "dev_agent", "recovery")
+    assert tracker.recovery_deadline_monotonic("TASK-001", "dev_agent", "recovery") == 123.0
+    tracker.set_active("TASK-001", "dev_agent", "ordinary", org_slug="alpha")
+    assert not tracker.clear_if_active_session("TASK-001", "dev_agent", "recovery")
+    assert tracker.get_active("TASK-001", "dev_agent") == "ordinary"
+    assert not tracker.is_recovery_session("TASK-001", "dev_agent", "ordinary")
+    assert tracker.recovery_deadline_monotonic("TASK-001", "dev_agent", "recovery") is None
+    assert not tracker.mark_recovery_session("TASK-001", "dev_agent", "sess-old")
+    assert tracker.clear_if_active_session("TASK-001", "dev_agent", "ordinary")
+    assert tracker.get_active("TASK-001", "dev_agent") is None
+
+
+def test_stale_recovery_clear_retains_newer_recovery_deadline_and_control() -> None:
+    """A stale recovery terminal hook cannot erase a newer recovery generation."""
+    tracker = SessionTracker()
+    calls: list[str] = []
+    tracker.register_recovery_session("TASK-001", "dev_agent", "recovery-old", recovery_deadline_monotonic=10.0)
+    tracker.register_recovery_session("TASK-001", "dev_agent", "recovery-new", recovery_deadline_monotonic=20.0)
+    tracker.set_cancel_control("TASK-001", "dev_agent", "recovery-new", lambda: calls.append("new"))
+    tracker.set_pid("TASK-001", "dev_agent", "recovery-new", 4321)
+    assert not tracker.clear_if_active_session("TASK-001", "dev_agent", "recovery-old")
+    assert tracker.get_active("TASK-001", "dev_agent") == "recovery-new"
+    assert tracker.is_recovery_session("TASK-001", "dev_agent", "recovery-new")
+    assert tracker.recovery_deadline_monotonic("TASK-001", "dev_agent", "recovery-new") == 20.0
+    assert tracker.get_pid("TASK-001", "dev_agent") == 4321
+    assert tracker.clear_if_active_session("TASK-001", "dev_agent", "recovery-new")
+    assert tracker.recovery_deadline_monotonic("TASK-001", "dev_agent", "recovery-new") is None
+
+
+def test_ordinary_replacement_revokes_only_the_displaced_recovery_control() -> None:
+    tracker = SessionTracker()
+    calls: list[str] = []
+    tracker.register_recovery_session("TASK-001", "dev_agent", "recovery", org_slug="alpha")
+    tracker.set_cancel_control("TASK-001", "dev_agent", "recovery", lambda: calls.append("recovery"))
+
+    tracker.set_active("TASK-001", "dev_agent", "ordinary", org_slug="alpha")
+
+    assert calls == ["recovery"]
+    ordinary_control = lambda: calls.append("ordinary")
+    tracker.set_cancel_control("TASK-001", "dev_agent", "ordinary", ordinary_control)
+    tracker.set_active("TASK-001", "dev_agent", "ordinary-next", org_slug="alpha")
+    assert calls == ["recovery"]
+
+
 def test_register_and_lookup() -> None:
     t = SessionTracker()
     t.set_active("TASK-001", "dev_agent", "sess-1")

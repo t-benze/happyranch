@@ -207,6 +207,21 @@ def test_skills_agent_returns_only_b2_custom_skill_mapping(client_with_runtime):
     }
 
 
+@pytest.mark.parametrize("path", [f"{BASE}/agent-create", "/api/v1/orgs/alpha/skills/agent"])
+def test_recovery_session_cannot_create_custom_skill_on_either_mount(client_with_runtime, path):
+    """Both agent creation mounts delegate to the same recovery-purpose gate."""
+    client, org = client_with_runtime
+    task_id, session_id = "TASK-RECOVERY-SKILL", "sess-recovery-skill"
+    org.db.insert_task(TaskRecord(id=task_id, brief="recover", assigned_agent="dev_agent"))
+    org.sessions.register_recovery_session(task_id, "dev_agent", session_id, org_slug="alpha")
+    before = _custom_counts(org)
+    client.headers.pop("Authorization", None)
+    response = client.post(path, params={"session_id": session_id}, json=_body("recovery-skill"))
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "recovery_purpose_forbidden"
+    assert _custom_counts(org) == before
+
+
 @pytest.mark.parametrize("method,path,payload", [
     ("post", "", _body()),
     ("patch", "/{skill_id}", {"name": "Renamed"}),

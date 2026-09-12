@@ -52,6 +52,20 @@
 
 ## Decision in one page
 
+### THR-247 recovery addendum
+
+The ordinary 429 policy remains the supervisor's configured retry/release/
+sleep/re-admission sequence.  The THR-247 one-shot Codex completion-recovery
+caller alone may pass the default-preserving per-invocation
+`allow_retries=False` control.  That makes a recovery `RATE_LIMITED` outcome
+final after the normal finish, receipt, caller terminal hook, and lease
+release; it does not alter the global retry count, backoff schedule, admission
+policy, cancellation reason, or result diagnostics.  Ordinary task, thread,
+schedule, wake, and dream callers do not pass the control and retain the
+configured retry behavior.  Honest-passthrough recovery execution retains the
+existing empty executor-throttle backoff so one recovery invocation makes only
+one provider execution.
+
 One daemon-wide `HostSessionSupervisor` owns admission and containment for
 every top-level agent invocation. The backend contract is **capability-based**
 (never an OS-name branch): each backend declares three-state capability

@@ -91,6 +91,14 @@ Keyed by provider string (`claude | codex | opencode | pi | ...`), so saturating
 
 Rate-limit detection is normalized: `_run_command` sets `ExecutorResult.rate_limited` from `is_rate_limit_signature(...)` and the classifier prefers that field over its legacy string heuristic. Two additive audit actions surface the activity through the existing `insert_audit_log` (no schema change): `executor_slot_wait` (`{provider, wait_seconds, ceiling}`) when a launch waited for a slot, and `executor_rate_limit_backoff` (`{provider, attempt, backoff_seconds}`) per 429 retry.
 
+The configured schedule remains the default for ordinary invocations. The
+bounded THR-247 Codex completion-recovery path alone opts out per invocation
+at the host-supervisor seam: its first rate-limited provider result is
+finalized and receipted honestly without backoff or re-admission. This does
+not alter global throttle settings, ordinary invocation retries, admission, or
+rate-limit diagnostics; the honest-passthrough fallback likewise uses its
+existing empty executor-throttle backoff for that one provider execution.
+
 The list/dict-shaped keys (`executor_ceiling_overrides`, `executor_rate_limit_backoff_seconds`) are set via `config.yaml`; the scalar keys also accept `HAPPYRANCH_`-prefixed env vars.
 
 ## Metrics Persistence (THR-066)

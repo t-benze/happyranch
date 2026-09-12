@@ -366,6 +366,23 @@ def test_learnings_appends_to_file(
     assert "use uv not pip" in (workspace / "learnings.md").read_text()
 
 
+def test_recovery_session_cannot_append_learning_before_file_mutation(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    workspace = org_state.root / "workspaces" / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    learnings = workspace / "learnings.md"
+    learnings.write_text("# Learnings: dev_agent\n\n")
+    org_state.sessions.register_recovery_session("TASK-RECOVERY-LEARNING", "dev_agent", "sess-recovery-learning")
+    response = TestClient(app).post(
+        "/api/v1/orgs/alpha/agents/dev_agent/learnings", headers=auth_headers,
+        json={"session_id": "sess-recovery-learning", "task_id": "TASK-RECOVERY-LEARNING", "text": "blocked"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "recovery_purpose_forbidden"
+    assert learnings.read_text() == "# Learnings: dev_agent\n\n"
+
+
 def test_learnings_session_mismatch_409(
     tmp_home, app, org_state, auth_headers,
 ) -> None:
@@ -915,6 +932,36 @@ def test_manage_agent_enroll_creates_pending(
     agent = prompt_loader.load_pending_agent(_paths(org_state), "content_writer")
     assert agent is not None
     assert agent.executor == "codex"
+
+
+def test_recovery_manage_agent_is_denied_before_config_or_audit_mutation(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """A valid manager request reaches the purpose gate before any enrollment."""
+    _seed_active_agent(org_state, "engineering_head", role="manager")
+    before_audit = len(org_state.db.get_audit_logs("TASK-RECOVERY-MANAGE"))
+    org_state.sessions.register_recovery_session(
+        "TASK-RECOVERY-MANAGE", "engineering_head", "recovery-manage",
+    )
+    body = {
+        "action": "enroll", "name": "recovery_writer", "team": "engineering",
+        "description": "writes", "system_prompt": "write safely", "executor": "codex",
+        "task_id": "TASK-RECOVERY-MANAGE", "session_id": "recovery-manage",
+    }
+    client = TestClient(app)
+    denied = client.post("/api/v1/orgs/alpha/agents/manage", json=body, headers=auth_headers)
+    assert denied.status_code == 403
+    assert denied.json()["detail"]["code"] == "recovery_purpose_forbidden"
+    assert prompt_loader.load_pending_agent(_paths(org_state), "recovery_writer") is None
+    assert len(org_state.db.get_audit_logs("TASK-RECOVERY-MANAGE")) == before_audit
+
+    _activate_eh_session(org_state)
+    body["name"] = "ordinary_writer"
+    body["task_id"] = _EH_TASK
+    body["session_id"] = _EH_SESSION
+    ordinary = client.post("/api/v1/orgs/alpha/agents/manage", json=body, headers=auth_headers)
+    assert ordinary.status_code == 200, ordinary.text
+    assert prompt_loader.load_pending_agent(_paths(org_state), "ordinary_writer") is not None
 
 
 def test_manage_agent_enroll_persists_description(

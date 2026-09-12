@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -307,7 +309,6 @@ def test_completion_requires_session_id(tmp_home, app, auth_headers) -> None:
         headers=auth_headers,
     )
     task_id = sub.json()["task_id"]
-
     r = TestClient(app).post(
         f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
         json={"agent": "dev_agent", "status": "completed", "confidence": 90,
@@ -379,6 +380,631 @@ def test_completion_persists_when_session_matches(tmp_home, app, daemon_state, o
     assert r.status_code == 200
     rows = org_state.db.get_task_results(task_id)
     assert any(r["session_id"] == "sess-1" for r in rows)
+
+
+def test_completion_preserves_ordinary_assigned_task_before_session_publication(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Task routing alone is not durable invocation publication.
+
+    Submission assigns a worker before the runner has published a concrete
+    session.  The established tracker-backed callback contract remains valid
+    in that window; only ``current_session_id`` activates the stricter durable
+    binding fence.
+    """
+    task_id = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
+    ).json()["task_id"]
+    task = org_state.db.get_task(task_id)
+    assert task is not None and task.assigned_agent is not None
+    assert task.current_session_id is None
+    org_state.sessions.set_active(task_id, "dev_agent", "ordinary-session")
+
+    response = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={"session_id": "ordinary-session", "agent": "dev_agent",
+              "status": "completed", "confidence": 90, "output_summary": "ok"},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    assert org_state.db.get_latest_task_result(task_id, "dev_agent", "ordinary-session") is not None
+
+
+def test_completion_recovery_claim_rejects_late_origin_callback(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """A spent recovery claim fences the missing-callback generation."""
+    from runtime.models import TaskStatus
+    sub = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
+    )
+    task_id = sub.json()["task_id"]
+    org_state.db.update_task(
+        task_id, status=TaskStatus.IN_PROGRESS, assigned_agent="dev_agent", current_session_id="sess-origin",
+    )
+    assert org_state.db.claim_task_completion_recovery(
+        task_id=task_id, agent="dev_agent", origin_session_id="sess-origin",
+        recovery_session_id="sess-recovery", provider_session_id="codex-conversation",
+        claimed_at="2026-01-01T00:00:00+00:00",
+        expires_at="2999-01-01T00:02:00+00:00",
+    )
+    org_state.sessions.set_active(task_id, "dev_agent", "sess-origin")
+    response = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={"session_id": "sess-origin", "agent": "dev_agent",
+              "status": "completed", "confidence": 90, "output_summary": "late"},
+        headers=auth_headers,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "recovery_callback_not_admissible"
+
+
+@pytest.mark.parametrize("first", ["callback", "claim"])
+def test_completion_callback_and_recovery_claim_arbitrate_at_real_sqlite_boundary(
+    tmp_home, app, org_state, auth_headers, monkeypatch, first,
+) -> None:
+    """The real route callback and claim overlap at the synchronized transaction.
+
+    The connection observer pauses *after* the selected operation has acquired
+    SQLite's ``BEGIN IMMEDIATE`` boundary.  The opposing operation must then
+    be observed attempting the same shipping Database lock before release.
+    This is deliberately stronger than merely releasing two worker threads at
+    once: both route admission and durable claiming are in flight at the real
+    serialization point, while their normal admission/claim decisions remain
+    unmodified.
+    """
+    from runtime.models import TaskStatus
+
+    client = TestClient(app)
+    task_id = client.post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "arbitrate"}, headers=auth_headers,
+    ).json()["task_id"]
+    origin = "origin-runtime-binding"
+    recovery = "recovery-runtime-binding"
+    provider_conversation = "provider-conversation-id"
+    org_state.db.update_task(
+        task_id, status=TaskStatus.IN_PROGRESS, assigned_agent="dev_agent",
+        current_session_id=origin,
+    )
+    org_state.sessions.set_active(task_id, "dev_agent", origin)
+
+    entered_transaction = threading.Event()
+    contender_waiting = threading.Event()
+    release_transaction = threading.Event()
+    errors: list[BaseException] = []
+    callback_response: list[object] = []
+    claim_outcome: list[bool] = []
+    original_connection = org_state.db._conn
+    original_lock = org_state.db._lock
+
+    class ObservedConnection:
+        def execute(self, sql, *args, **kwargs):
+            result = original_connection.execute(sql, *args, **kwargs)
+            if sql == "BEGIN IMMEDIATE" and not entered_transaction.is_set():
+                entered_transaction.set()
+                assert release_transaction.wait(timeout=2), "transaction gate was not released"
+            return result
+
+        def __getattr__(self, name):
+            return getattr(original_connection, name)
+
+    class ObservedRLock:
+        def acquire(self, *args, **kwargs):
+            if entered_transaction.is_set():
+                contender_waiting.set()
+            return original_lock.acquire(*args, **kwargs)
+
+        def release(self):
+            return original_lock.release()
+
+        def __getattr__(self, name):
+            return getattr(original_lock, name)
+
+    monkeypatch.setattr(org_state.db, "_conn", ObservedConnection())
+    monkeypatch.setattr(org_state.db, "_lock", ObservedRLock())
+
+    def callback() -> None:
+        try:
+            response = TestClient(app).post(
+                f"/api/v1/orgs/alpha/tasks/{task_id}/completion", headers=auth_headers,
+                json={"session_id": origin, "agent": "dev_agent", "status": "completed",
+                      "confidence": 90, "output_summary": "origin exact callback"},
+            )
+            callback_response.append(response)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def claim() -> None:
+        try:
+            claim_outcome.append(org_state.db.claim_task_completion_recovery(
+                task_id=task_id, agent="dev_agent", origin_session_id=origin,
+                recovery_session_id=recovery, provider_session_id=provider_conversation,
+                claimed_at="2026-01-01T00:00:00+00:00",
+                expires_at="2999-01-01T00:02:00+00:00",
+            ))
+        except BaseException as exc:
+            errors.append(exc)
+
+    owner = callback if first == "callback" else claim
+    contender = claim if first == "callback" else callback
+    owner_worker = threading.Thread(target=owner, name=f"f4-{first}-owner")
+    contender_worker = threading.Thread(target=contender, name=f"f4-{first}-contender")
+    contender_started = False
+    try:
+        owner_worker.start()
+        assert entered_transaction.wait(timeout=2), "owner never reached BEGIN IMMEDIATE"
+        contender_worker.start()
+        contender_started = True
+        assert contender_waiting.wait(timeout=2), "contender never waited on the real Database lock"
+        release_transaction.set()
+        owner_worker.join(timeout=2)
+        if contender_started:
+            contender_worker.join(timeout=2)
+        assert not owner_worker.is_alive()
+        assert not contender_worker.is_alive()
+    finally:
+        release_transaction.set()
+        owner_worker.join(timeout=2)
+        contender_worker.join(timeout=2)
+    assert errors == []
+    assert len(callback_response) == 1 and len(claim_outcome) == 1
+
+    if first == "callback":
+        assert callback_response[0].status_code == 200
+        assert claim_outcome == [False]
+        results = org_state.db.get_task_results(task_id)
+        assert len(results) == 1 and results[0]["session_id"] == origin
+        assert org_state.db.execute(
+            "SELECT COUNT(*) FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+        ).fetchone()[0] == 0
+        assert org_state.sessions.get_active(task_id, "dev_agent") is None
+        # The connected origin-winner launch assertion remains
+        # test_run_step_codex_origin_callback_winning_claim_is_consumed.
+        return
+
+    assert claim_outcome == [True]
+    assert callback_response[0].status_code == 409
+    assert callback_response[0].json()["detail"]["code"] == "recovery_callback_not_admissible"
+    assert org_state.db.get_task_results(task_id) == []
+    # A rejected origin callback must not clear either the original owner or
+    # the newly published recovery owner.
+    assert org_state.sessions.get_active(task_id, "dev_agent") == origin
+    assert org_state.sessions.publish_recovery_session(
+        task_id, "dev_agent", recovery, org_slug="alpha",
+        publish=lambda: org_state.db.publish_task_completion_recovery_binding(
+            task_id=task_id, agent="dev_agent", origin_session_id=origin,
+            recovery_session_id=recovery,
+        ),
+    )
+    assert org_state.sessions.get_active(task_id, "dev_agent") == recovery
+    accepted = client.post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion", headers=auth_headers,
+        json={"session_id": recovery, "agent": "dev_agent", "status": "completed",
+              "confidence": 90, "output_summary": "fresh recovery callback"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    accepted_result = org_state.db.get_latest_task_result(task_id, "dev_agent", recovery)
+    assert accepted_result is not None
+    ledger = org_state.db.execute(
+        "SELECT accepted_result_id, accepted_result_session_id FROM task_completion_recoveries WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    assert (ledger["accepted_result_id"], ledger["accepted_result_session_id"]) == (
+        accepted_result["id"], recovery,
+    )
+    assert not org_state.db.claim_task_completion_recovery(
+        task_id=task_id, agent="dev_agent", origin_session_id=origin,
+        recovery_session_id="second-recovery", provider_session_id="second-provider-conversation",
+        claimed_at="2026-01-01T00:00:00+00:00", expires_at="2999-01-01T00:02:00+00:00",
+    )
+    assert len(org_state.db.get_task_results(task_id)) == 1
+
+
+@pytest.mark.parametrize("decision", [
+    {"action": "delegate", "agent": "dev_agent", "prompt": "valid delegated work"},
+    {"action": "fanout", "children": [{"agent": "dev_agent", "prompt": "one"}, {"agent": "qa_engineer", "prompt": "two"}], "width_cap_ack": 2},
+    {"action": "parallel", "children": [{"agent": "dev_agent", "prompt": "one"}, {"agent": "qa_engineer", "prompt": "two"}], "width_cap_ack": 2},
+    {"action": "supersede", "successor_brief": "valid successor", "rationale": "valid rationale", "attestation": {"recovery_reason": "bounded repair", "policy_product_intent_unchanged": True, "no_budget_or_external_commitment": True, "no_permission_or_cross_team_change": True, "no_schema_auth_security_privacy_or_data_access_change": True, "no_unresolved_founder_gate": True}},
+])
+def test_recovery_manager_valid_decision_is_denied_before_result_insertion(
+    tmp_home, app, org_state, auth_headers, decision,
+) -> None:
+    """Recovery completion may report; it cannot dispatch fresh work."""
+    from runtime.models import TaskStatus
+    task_id = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
+    ).json()["task_id"]
+    org_state.db.update_task(task_id, status=TaskStatus.IN_PROGRESS, assigned_agent="engineering_manager")
+    org_state.sessions.register_recovery_session(task_id, "engineering_manager", "sess-recovery-manager")
+    response = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion", headers=auth_headers,
+        json={"session_id": "sess-recovery-manager", "agent": "engineering_manager",
+              "status": "completed", "confidence": 90, "output_summary": "blocked",
+              "decision": decision},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "recovery_purpose_forbidden"
+    assert org_state.db.get_task_results(task_id) == []
+
+
+def test_claimed_registered_recovery_accepts_owned_blocked_callback(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Positive admission requires both durable claim and recovery registration."""
+    from runtime.models import JobInterpreter, JobRecord, JobStatus, TaskStatus
+
+    client = TestClient(app)
+    task_id = client.post("/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers).json()["task_id"]
+    org_state.db.update_task(
+        task_id, status=TaskStatus.IN_PROGRESS, assigned_agent="dev_agent", current_session_id="origin",
+    )
+    job_id = org_state.db.next_job_id()
+    org_state.db.insert_job(JobRecord(
+        id=job_id, task_id=task_id, agent_name="dev_agent", title="owned", rationale="test",
+        script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING,
+        created_at="2026-09-11T00:00:00Z",
+    ))
+    assert org_state.db.claim_task_completion_recovery(
+        task_id=task_id, agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="conversation",
+        claimed_at="2026-09-11T00:00:00Z", expires_at="2999-01-01T00:02:00Z",
+    )
+    org_state.db.update_task(task_id, current_session_id="recovery")
+    org_state.sessions.register_recovery_session(task_id, "dev_agent", "recovery")
+    response = client.post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion", headers=auth_headers,
+        json={"session_id": "recovery", "agent": "dev_agent", "status": "blocked",
+              "confidence": 90, "output_summary": "waiting", "waiting_on_job_ids": [job_id]},
+    )
+    assert response.status_code == 200, response.text
+    result = org_state.db.get_latest_task_result(task_id, "dev_agent", "recovery")
+    assert result is not None and result["status"] == "blocked"
+    ledger = org_state.db.execute(
+        "SELECT accepted_result_id, accepted_result_session_id FROM task_completion_recoveries WHERE task_id = ?",
+        (task_id,),
+    ).fetchone()
+    assert (ledger["accepted_result_id"], ledger["accepted_result_session_id"]) == (result["id"], "recovery")
+
+
+def test_recovery_callback_live_deadline_is_checked_at_final_admission(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """A rollback-safe wall expiry cannot extend the server live budget."""
+    from runtime.models import TaskStatus
+    import runtime.infrastructure.database as database_module
+
+    client = TestClient(app)
+    task_id = client.post("/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers).json()["task_id"]
+    org_state.db.update_task(task_id, status=TaskStatus.IN_PROGRESS, assigned_agent="dev_agent", current_session_id="origin")
+    assert org_state.db.claim_task_completion_recovery(
+        task_id=task_id, agent="dev_agent", origin_session_id="origin", recovery_session_id="recovery",
+        provider_session_id="conversation", claimed_at="2026-01-01T00:00:00+00:00", expires_at="2999-01-01T00:02:00+00:00",
+    )
+    org_state.db.update_task(task_id, current_session_id="recovery")
+    # The server-owned registration carries the live budget while durable wall
+    # expiry remains deliberately far away.
+    org_state.sessions.register_recovery_session(
+        task_id, "dev_agent", "recovery", recovery_deadline_monotonic=10.0,
+    )
+    monkeypatch.setattr(database_module._time, "monotonic", lambda: 10.0)
+    response = client.post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion", headers=auth_headers,
+        json={"session_id": "recovery", "agent": "dev_agent", "status": "completed", "confidence": 90, "output_summary": "late"},
+    )
+    assert response.status_code == 409
+    assert org_state.db.get_task_results(task_id) == []
+    row = org_state.db.execute("SELECT accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,)).fetchone()
+    assert row["accepted_result_id"] is None
+
+
+def test_recovery_callback_final_db_admission_cannot_cross_live_deadline(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """The final transactional admission, rather than a pre-route check, fences expiry."""
+    from runtime.models import TaskStatus
+    import runtime.infrastructure.database as database_module
+
+    client = TestClient(app)
+    task_id = client.post("/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers).json()["task_id"]
+    org_state.db.update_task(task_id, status=TaskStatus.IN_PROGRESS, assigned_agent="dev_agent", current_session_id="origin")
+    assert org_state.db.claim_task_completion_recovery(
+        task_id=task_id, agent="dev_agent", origin_session_id="origin", recovery_session_id="recovery",
+        provider_session_id="conversation", claimed_at="2026-01-01T00:00:00+00:00", expires_at="2999-01-01T00:02:00+00:00",
+    )
+    org_state.db.update_task(task_id, current_session_id="recovery")
+    now = [0.0]
+    org_state.sessions.register_recovery_session(
+        task_id, "dev_agent", "recovery", recovery_deadline_monotonic=10.0,
+    )
+    monkeypatch.setattr(database_module._time, "monotonic", lambda: now[0])
+    original_admit = org_state.db.admit_task_completion_callback
+
+    def admit_after_route_validation(**kwargs):
+        now[0] = 10.0
+        return original_admit(**kwargs)
+
+    monkeypatch.setattr(org_state.db, "admit_task_completion_callback", admit_after_route_validation)
+    response = client.post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion", headers=auth_headers,
+        json={"session_id": "recovery", "agent": "dev_agent", "status": "completed", "confidence": 90, "output_summary": "late"},
+    )
+    assert response.status_code == 409
+    assert org_state.db.get_task_results(task_id) == []
+    row = org_state.db.execute("SELECT accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,)).fetchone()
+    assert row["accepted_result_id"] is None
+
+
+def test_recovery_callback_held_async_db_lock_crossing_live_deadline_is_rejected(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """A real ASGI callback waits on the shipping async lock, then expires.
+
+    The observed wrapper retains the actual ``org.db_lock``; it only provides
+    finite proof that the request reached its acquisition wait.  The binding
+    lease is never held across that await.
+    """
+    import asyncio
+    from types import SimpleNamespace
+    import httpx
+    import runtime.infrastructure.database as database_module
+    from runtime.models import TaskStatus
+
+    client = TestClient(app)
+    task_id = client.post("/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers).json()["task_id"]
+    org_state.db.update_task(task_id, status=TaskStatus.IN_PROGRESS, assigned_agent="dev_agent", current_session_id="origin")
+    assert org_state.db.claim_task_completion_recovery(
+        task_id=task_id, agent="dev_agent", origin_session_id="origin", recovery_session_id="recovery",
+        provider_session_id="conversation", claimed_at="2026-01-01T00:00:00+00:00", expires_at="2999-01-01T00:02:00+00:00",
+    )
+    org_state.db.update_task(task_id, current_session_id="recovery")
+    org_state.sessions.register_recovery_session(task_id, "dev_agent", "recovery", recovery_deadline_monotonic=10.0)
+    now = [0.0]
+    # Do not mutate the process-global time module used by asyncio/TestClient.
+    monkeypatch.setattr(database_module, "_time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    class ObservedLock:
+        def __init__(self):
+            self.lock = asyncio.Lock()
+            self.waiting = asyncio.Event()
+        async def __aenter__(self):
+            self.waiting.set()
+            await self.lock.acquire()
+            return self
+        async def __aexit__(self, *_args):
+            self.lock.release()
+
+    observed = ObservedLock()
+    org_state.db_lock = observed
+
+    async def drive():
+        await observed.lock.acquire()  # the real route lock is held
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as async_client:
+            callback = asyncio.create_task(async_client.post(
+                f"/api/v1/orgs/alpha/tasks/{task_id}/completion", headers=auth_headers,
+                json={"session_id": "recovery", "agent": "dev_agent", "status": "completed", "confidence": 90, "output_summary": "late"},
+            ))
+            await observed.waiting.wait()
+            now[0] = 10.0
+            observed.lock.release()
+            return await callback
+
+    response = asyncio.run(drive())
+    assert response.status_code == 409
+    assert org_state.db.get_task_results(task_id) == []
+    ledger = org_state.db.execute("SELECT accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,)).fetchone()
+    assert ledger["accepted_result_id"] is None
+
+
+def test_recovery_callback_just_before_live_deadline_is_exactly_once_after_lost_response(
+    tmp_home, app, org_state, auth_headers, monkeypatch,
+) -> None:
+    """A valid final-moment callback wins once; its late duplicate cannot alter it."""
+    from types import SimpleNamespace
+    import runtime.infrastructure.database as database_module
+    from runtime.models import TaskStatus
+
+    client = TestClient(app)
+    task_id = client.post("/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers).json()["task_id"]
+    org_state.db.update_task(task_id, status=TaskStatus.IN_PROGRESS, assigned_agent="dev_agent", current_session_id="origin")
+    assert org_state.db.claim_task_completion_recovery(task_id=task_id, agent="dev_agent", origin_session_id="origin", recovery_session_id="recovery", provider_session_id="conversation", claimed_at="2026-01-01T00:00:00+00:00", expires_at="2999-01-01T00:02:00+00:00")
+    org_state.db.update_task(task_id, current_session_id="recovery")
+    org_state.sessions.register_recovery_session(task_id, "dev_agent", "recovery", recovery_deadline_monotonic=10.0)
+    now = [9.999]
+    monkeypatch.setattr(database_module, "_time", SimpleNamespace(monotonic=lambda: now[0]))
+    payload = {"session_id": "recovery", "agent": "dev_agent", "status": "completed", "confidence": 90, "output_summary": "accepted"}
+    assert client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers).status_code == 200
+    result = org_state.db.get_latest_task_result(task_id, "dev_agent", "recovery")
+    ledger = org_state.db.execute("SELECT accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,)).fetchone()
+    assert ledger["accepted_result_id"] == result["id"]
+    now[0] = 10.0
+    duplicate = client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers)
+    assert duplicate.status_code == 200  # tracker-cleared exact replay is idempotent
+    assert org_state.db.get_task_results(task_id) == [result]
+    assert org_state.db.execute("SELECT accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,)).fetchone()["accepted_result_id"] == result["id"]
+
+
+@pytest.mark.parametrize(
+    ("agent", "status", "decision"),
+    [
+        ("dev_agent", "completed", None),
+        ("engineering_manager", "completed", {"action": "done"}),
+        ("engineering_manager", "blocked", {"action": "done"}),
+    ],
+)
+def test_claimed_registered_recovery_completed_callback_records_exact_ledger_identity(
+    tmp_home, app, org_state, auth_headers, agent, status, decision,
+) -> None:
+    from runtime.models import JobInterpreter, JobRecord, JobStatus, TaskStatus
+
+    client = TestClient(app)
+    task_id = client.post("/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers).json()["task_id"]
+    org_state.db.update_task(task_id, status=TaskStatus.IN_PROGRESS, assigned_agent=agent, current_session_id="origin")
+    assert org_state.db.claim_task_completion_recovery(
+        task_id=task_id, agent=agent, origin_session_id="origin", recovery_session_id="recovery",
+        provider_session_id="conversation", claimed_at="2026-09-11T00:00:00Z", expires_at="2999-01-01T00:02:00Z",
+    )
+    org_state.db.update_task(task_id, current_session_id="recovery")
+    org_state.sessions.register_recovery_session(task_id, agent, "recovery")
+    payload = {"session_id": "recovery", "agent": agent, "status": status,
+               "confidence": 90, "output_summary": "exact recovery"}
+    if status == "blocked":
+        job_id = org_state.db.next_job_id()
+        org_state.db.insert_job(JobRecord(
+            id=job_id, task_id=task_id, agent_name=agent, title="owned", rationale="test",
+            script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING,
+            created_at="2026-09-11T00:00:00Z",
+        ))
+        payload["waiting_on_job_ids"] = [job_id]
+    if decision is not None:
+        payload["decision"] = decision
+    response = client.post(f"/api/v1/orgs/alpha/tasks/{task_id}/completion", json=payload, headers=auth_headers)
+    assert response.status_code == 200, response.text
+    result = org_state.db.get_latest_task_result(task_id, agent, "recovery")
+    ledger = org_state.db.execute(
+        "SELECT accepted_result_id, accepted_result_session_id FROM task_completion_recoveries WHERE task_id = ?", (task_id,),
+    ).fetchone()
+    assert result is not None
+    assert (ledger["accepted_result_id"], ledger["accepted_result_session_id"]) == (result["id"], "recovery")
+
+
+@pytest.mark.parametrize("kind", ["empty", "foreign", "missing"])
+def test_claimed_registered_recovery_rejects_invalid_waiting_jobs_without_result(
+    tmp_home, app, org_state, auth_headers, kind,
+) -> None:
+    from runtime.models import JobInterpreter, JobRecord, JobStatus, TaskStatus
+
+    client = TestClient(app)
+    task_id = client.post("/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers).json()["task_id"]
+    org_state.db.update_task(task_id, status=TaskStatus.IN_PROGRESS, assigned_agent="engineering_manager", current_session_id="origin")
+    assert org_state.db.claim_task_completion_recovery(
+        task_id=task_id, agent="engineering_manager", origin_session_id="origin", recovery_session_id="recovery",
+        provider_session_id="conversation", claimed_at="2026-09-11T00:00:00Z", expires_at="2999-01-01T00:02:00Z",
+    )
+    org_state.db.update_task(task_id, current_session_id="recovery")
+    org_state.sessions.register_recovery_session(task_id, "engineering_manager", "recovery")
+    waiting: list[str] = []
+    if kind == "foreign":
+        foreign_task = client.post("/api/v1/orgs/alpha/tasks", json={"brief": "foreign"}, headers=auth_headers).json()["task_id"]
+        foreign_id = org_state.db.next_job_id()
+        org_state.db.insert_job(JobRecord(
+            id=foreign_id, task_id=foreign_task, agent_name="engineering_manager", title="foreign", rationale="test",
+            script_text="true", interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING,
+            created_at="2026-09-11T00:00:00Z",
+        ))
+        waiting = [foreign_id]
+    elif kind == "missing":
+        waiting = ["JOB-NOT-THERE"]
+    response = client.post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion", headers=auth_headers,
+        json={"session_id": "recovery", "agent": "engineering_manager", "status": "blocked",
+              "confidence": 90, "output_summary": "waiting", "waiting_on_job_ids": waiting},
+    )
+    assert response.status_code == ({"empty": 400, "foreign": 400, "missing": 404}[kind]), response.text
+    assert org_state.db.get_task_results(task_id) == []
+    ledger = org_state.db.execute(
+        "SELECT accepted_result_id, accepted_result_session_id FROM task_completion_recoveries WHERE task_id = ?", (task_id,),
+    ).fetchone()
+    assert (ledger["accepted_result_id"], ledger["accepted_result_session_id"]) == (None, None)
+
+
+def test_completion_after_settled_recovery_allows_new_normal_generation(
+    tmp_home, app, daemon_state, org_state, auth_headers,
+) -> None:
+    """A spent recovery episode cannot permanently block job-resume callbacks."""
+    from runtime.models import TaskStatus
+    task_id = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
+    ).json()["task_id"]
+    org_state.db.update_task(
+        task_id, status=TaskStatus.IN_PROGRESS, assigned_agent="dev_agent", current_session_id="origin",
+    )
+    assert org_state.db.claim_task_completion_recovery(
+        task_id=task_id, agent="dev_agent", origin_session_id="origin",
+        recovery_session_id="recovery", provider_session_id="conversation",
+        claimed_at="2026-01-01T00:00:00+00:00", expires_at="2999-01-01T00:02:00+00:00",
+    )
+    # The accepted recovery callback, not a test-only consumed-state edit,
+    # durably records the exact result identity before later settlement.
+    org_state.db.update_task(task_id, current_session_id="recovery")
+    org_state.sessions.set_active(task_id, "dev_agent", "recovery")
+    accepted = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={"session_id": "recovery", "agent": "dev_agent",
+              "status": "completed", "confidence": 90, "output_summary": "recovered"},
+        headers=auth_headers,
+    )
+    assert accepted.status_code == 200
+    accepted_row = org_state.db.execute(
+        "SELECT accepted_result_id, accepted_result_session_id "
+        "FROM task_completion_recoveries WHERE task_id = ?", (task_id,),
+    ).fetchone()
+    result = org_state.db.get_latest_task_result(task_id, "dev_agent", "recovery")
+    assert accepted_row["accepted_result_id"] == result["id"]
+    assert accepted_row["accepted_result_session_id"] == "recovery"
+    # A real later normal invocation updates durable publication before it
+    # becomes tracker-visible; tracker-only replacement would conceal a
+    # durable/tracker disagreement at callback admission.
+    org_state.db.update_task(task_id, current_session_id="ordinary-resume")
+    org_state.sessions.set_active(task_id, "dev_agent", "ordinary-resume")
+    response = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={"session_id": "ordinary-resume", "agent": "dev_agent",
+              "status": "completed", "confidence": 90, "output_summary": "normal"},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    assert org_state.db.get_latest_task_result(task_id, "dev_agent", "ordinary-resume")
+
+
+def test_completion_old_origin_stays_fenced_after_later_recovery_episode(
+    tmp_home, app, org_state, auth_headers,
+) -> None:
+    """Historical origins remain fenced; latest-ledger lookup cannot reopen one."""
+    from runtime.models import TaskStatus
+    task_id = TestClient(app).post(
+        "/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers,
+    ).json()["task_id"]
+    org_state.db.update_task(
+        task_id, status=TaskStatus.IN_PROGRESS, assigned_agent="dev_agent", current_session_id="origin-old",
+    )
+    assert org_state.db.claim_task_completion_recovery(
+        task_id=task_id, agent="dev_agent", origin_session_id="origin-old",
+        recovery_session_id="recovery-old", provider_session_id="conversation",
+        claimed_at="2026-01-01T00:00:00+00:00", expires_at="2999-01-01T00:02:00+00:00",
+    )
+    org_state.db.update_task(task_id, current_session_id="recovery-old")
+    org_state.sessions.set_active(task_id, "dev_agent", "recovery-old")
+    accepted = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={"session_id": "recovery-old", "agent": "dev_agent", "status": "completed",
+              "confidence": 90, "output_summary": "recovered"}, headers=auth_headers,
+    )
+    assert accepted.status_code == 200
+    recovery_result = org_state.db.get_latest_task_result(
+        task_id, "dev_agent", "recovery-old",
+    )
+    assert recovery_result is not None
+    org_state.db.mark_task_completion_recovery_callback_consumed(
+        task_id=task_id, agent="dev_agent", session_id="recovery-old",
+        result_row_id=recovery_result["id"],
+        settled_at="2026-01-01T00:01:00+00:00",
+    )
+    org_state.db.update_task(task_id, current_session_id="origin-new")
+    assert org_state.db.claim_task_completion_recovery(
+        task_id=task_id, agent="dev_agent", origin_session_id="origin-new",
+        recovery_session_id="recovery-new", provider_session_id="conversation",
+        claimed_at="2026-01-01T00:02:00+00:00", expires_at="2999-01-01T00:04:00+00:00",
+    )
+    org_state.sessions.set_active(task_id, "dev_agent", "origin-old")
+    response = TestClient(app).post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/completion",
+        json={"session_id": "origin-old", "agent": "dev_agent", "status": "completed",
+              "confidence": 90, "output_summary": "late"}, headers=auth_headers,
+    )
+    assert response.status_code == 409
+    rows = org_state.db.get_task_results(task_id)
+    assert [row["session_id"] for row in rows] == ["recovery-old"]
 
 
 def test_completion_callback_plus_audit_logger_does_not_duplicate_row(
@@ -2203,6 +2829,23 @@ def test_progress_persists_audit_entry(tmp_home, app, org_state, auth_headers) -
     assert len(progress_logs) == 1
     assert progress_logs[0]["agent"] == "dev_agent"
     assert progress_logs[0]["payload"]["message"] == "Phase 3 of 6: tests passing"
+
+
+def test_recovery_progress_is_denied_before_audit_write(tmp_home, app, org_state, auth_headers) -> None:
+    from runtime.models import TaskStatus
+
+    client = TestClient(app)
+    task_id = client.post("/api/v1/orgs/alpha/tasks", json={"brief": "x"}, headers=auth_headers).json()["task_id"]
+    org_state.db.update_task(task_id, status=TaskStatus.IN_PROGRESS, assigned_agent="dev_agent")
+    org_state.sessions.register_recovery_session(task_id, "dev_agent", "recovery-progress")
+    before = len(org_state.db.get_audit_logs(task_id))
+    response = client.post(
+        f"/api/v1/orgs/alpha/tasks/{task_id}/progress", headers=auth_headers,
+        json={"session_id": "recovery-progress", "agent": "dev_agent", "message": "blocked"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "recovery_purpose_forbidden"
+    assert len(org_state.db.get_audit_logs(task_id)) == before
 
 
 def test_progress_does_not_clear_session(tmp_home, app, org_state, auth_headers) -> None:

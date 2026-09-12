@@ -1,7 +1,9 @@
+import asyncio
 import hashlib
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,6 +13,7 @@ from runtime.infrastructure.database import Database
 from runtime.models import (
     TaskRecord,
     TaskStatus,
+    TokenUsage,
     ThreadRecord,
 )
 from runtime.orchestrator.executors import ExecutorResult
@@ -526,6 +529,9 @@ def test_run_agent_registers_active_session_when_tracker_attached(
     `happyranch report-completion` callback hits 409 unknown_session and the task
     silently fails with note='agent session failed'."""
     from runtime.daemon.sessions import SessionTracker
+    from runtime.models import JobInterpreter, JobRecord, JobStatus
+    import runtime.daemon.jobs_runner as jobs_runner
+    import threading
 
     _setup_workspaces(test_runtime)
     tracker = SessionTracker()
@@ -542,6 +548,1297 @@ def test_run_agent_registers_active_session_when_tracker_attached(
         orchestrator._run_agent(task_id, "engineering_head", "any prompt")
 
     assert tracker.get_active(task_id, "engineering_head") == "sess-eh"
+
+
+def test_run_step_codex_clean_omission_recovers_through_real_callback_admission(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """THR-247 group A: a clean omission gets one bound, agent-authored recovery.
+
+    The provider continuation id is intentionally distinct from both daemon
+    invocation identities.  This exercises real ``run_step`` and ``_run_agent``;
+    only the external Codex executor is fake.
+    """
+    from runtime.daemon.sessions import SessionTracker
+
+    agent = "engineering_head"
+    origin_runtime_id = "sess-runtime-origin"
+    provider_origin_id = "provider-origin"
+    recovery_runtime_id = "sess-runtime-recovery"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("recover clean Codex callback omission")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    session_ids = iter((origin_runtime_id, recovery_runtime_id))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            invocation = len(self.calls)
+            if invocation == 1:
+                assert kwargs["session_id"] == origin_runtime_id
+                assert kwargs["resume_session_id"] is None
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=origin_runtime_id,
+                    agent_session_id=provider_origin_id,
+                    token_usage=TokenUsage(input_tokens=11, output_tokens=7),
+                )
+
+            assert invocation == 2
+            assert kwargs["session_id"] == recovery_runtime_id
+            assert kwargs["resume_session_id"] == provider_origin_id
+            task = orchestrator._db.get_task(task_id)
+            assert task.current_session_id == recovery_runtime_id
+            assert tracker.is_recovery_session(task_id, agent, recovery_runtime_id)
+            claim = orchestrator._db.execute(
+                "SELECT origin_session_id, provider_session_id, recovery_session_id, state "
+                "FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+            ).fetchone()
+            assert dict(claim) == {
+                "origin_session_id": origin_runtime_id,
+                "provider_session_id": provider_origin_id,
+                "recovery_session_id": recovery_runtime_id,
+                "state": "claimed",
+            }
+            # This is the same transactional admission helper used by the route;
+            # its current durable binding is the recovery generation above.
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=recovery_runtime_id,
+                status="completed", output_summary="agent-authored completion",
+                decision_json=json.dumps({"action": "done", "summary": "finished"}),
+                confidence_score=100,
+            )
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id=recovery_runtime_id,
+                agent_session_id=provider_origin_id,
+                token_usage=TokenUsage(input_tokens=3, output_tokens=2),
+            )
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert len(fake.calls) == 2
+    recovery = orchestrator._db.execute(
+        "SELECT origin_session_id, provider_session_id, recovery_session_id, "
+        "state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?",
+        (task_id,),
+    ).fetchall()
+    assert len(recovery) == 1
+    result = orchestrator._db.get_latest_task_result(task_id, agent, recovery_runtime_id)
+    assert result is not None
+    assert recovery[0]["accepted_result_id"] == result["id"]
+    assert orchestrator._db.get_task(task_id).status == TaskStatus.COMPLETED
+    usage = orchestrator._db.execute(
+        "SELECT session_id FROM session_token_usage WHERE task_id=? ORDER BY session_id",
+        (task_id,),
+    ).fetchall()
+    assert [row["session_id"] for row in usage] == sorted(
+        (origin_runtime_id, recovery_runtime_id)
+    )
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "completion_timing"),
+    [(0, "before_callback"), (0, "after_callback"),
+     (7, "before_callback"), (7, "after_callback")],
+)
+@pytest.mark.parametrize("ordinary_outcome", ["completed", "timeout"])
+def test_run_step_recovered_blocked_callback_resumes_one_ordinary_owned_job_session(
+    orchestrator, test_runtime, monkeypatch, exit_code, completion_timing, ordinary_outcome,
+):
+    """D3a: a recovered blocked callback resumes exactly one ordinary session.
+
+    The fake is restricted to the external Codex process.  The shipping
+    recovery admission, blocked transaction, job-finished predicate, CAS
+    claim, ordinary launch, and session-purpose gate all run against SQLite.
+    """
+    from datetime import datetime, timezone
+
+    from fastapi import HTTPException
+    from runtime.daemon.event_bus import EventBus
+    from runtime.daemon.jobs_runner import fire_resume_check_for_job
+    from runtime.daemon.routes.tasks import ProgressBody, submit_progress
+    from runtime.daemon.sessions import SessionTracker
+    from runtime.models import JobInterpreter, JobRecord, JobStatus
+
+    agent = "engineering_head"
+    origin_id = "runtime-origin"
+    recovery_id = "runtime-recovery"
+    ordinary_id = "runtime-ordinary"
+    provider_id = "provider-origin"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("recover then resume owned job")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    job_id = orchestrator._db.next_job_id()
+    orchestrator._db.insert_job(JobRecord(
+        id=job_id, task_id=task_id, agent_name=agent, title="owned",
+        rationale="test recovery block", script_text="true",
+        interpreter=JobInterpreter.BASH, status=JobStatus.RUNNING,
+        started_at="2026-09-12T00:00:00+00:00",
+        created_at="2026-09-12T00:00:00+00:00",
+    ))
+    queued: list[tuple[str, str, dict | None]] = []
+
+    class Queue:
+        def enqueue(self, slug, queued_task_id, *, metadata=None):
+            queued.append((slug, queued_task_id, metadata))
+
+    orchestrator._queue = Queue()
+    org = SimpleNamespace(
+        db=orchestrator._db, db_lock=asyncio.Lock(), sessions=tracker,
+        orchestrator=orchestrator, event_bus=EventBus(lambda _task_id: []),
+    )
+    session_ids = iter((origin_id, recovery_id, ordinary_id))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+    ordinary_timeout = orchestrator._resolve_session_timeout(agent, task_id=task_id)
+    assert orchestrator._settings.executor_rate_limit_backoff_seconds
+
+    def finish_job() -> None:
+        status = JobStatus.COMPLETED if exit_code == 0 else JobStatus.FAILED
+        orchestrator._db.transition_job_to_terminal(
+            job_id, status=status, exit_code=exit_code,
+            finished_at=datetime.now(timezone.utc).isoformat(), duration_ms=1,
+            stdout_head="", stderr_head="" if exit_code == 0 else "failed",
+            reason=None if exit_code == 0 else "nonzero_exit",
+        )
+        fire_resume_check_for_job(org, job_id)
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls: list[dict] = []
+            self.recovery_row: dict | None = None
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                assert kwargs["session_id"] == origin_id
+                assert kwargs["resume_session_id"] is None
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=origin_id,
+                    agent_session_id=provider_id,
+                )
+            if len(self.calls) == 2:
+                assert kwargs["session_id"] == recovery_id
+                assert kwargs["resume_session_id"] == provider_id
+                assert tracker.is_recovery_session(task_id, agent, recovery_id)
+                with pytest.raises(HTTPException, match="recovery_purpose_forbidden"):
+                    asyncio.run(submit_progress(
+                        task_id, ProgressBody(session_id=recovery_id, agent=agent, message="no"), org,
+                    ))
+                if completion_timing == "before_callback":
+                    finish_job()
+                assert orchestrator._db.admit_task_completion_callback(
+                    task_id=task_id, agent=agent, session_id=recovery_id,
+                    status="blocked", output_summary="waiting on owned job",
+                    waiting_on_job_ids=[job_id], confidence_score=100,
+                )
+                self.recovery_row = dict(orchestrator._db.get_latest_task_result(
+                    task_id, agent, recovery_id,
+                ))
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=recovery_id,
+                    agent_session_id=provider_id,
+                )
+
+            assert len(self.calls) == 3
+            assert kwargs["session_id"] == ordinary_id
+            # Ordinary blocked-job resume preserves established launch
+            # semantics: no provider-continuity id is supplied.
+            assert kwargs["resume_session_id"] is None
+            assert kwargs["timeout_seconds"] == ordinary_timeout
+            assert kwargs["throttle_backoff_seconds"] is None
+            assert not tracker.is_recovery_session(task_id, agent, ordinary_id)
+            assert tracker.recovery_deadline_monotonic(task_id, agent, ordinary_id) is None
+            assert "=== BLOCKED-JOBS-RESULTS (system) ===" in kwargs["prompt"]
+            assert f"{job_id}  {'completed' if exit_code == 0 else 'failed'}" in kwargs["prompt"]
+            assert asyncio.run(submit_progress(
+                task_id, ProgressBody(session_id=ordinary_id, agent=agent, message="ordinary admitted"), org,
+            )) == {"ok": True}
+            if ordinary_outcome == "timeout":
+                return ExecutorResult(
+                    success=False, duration_seconds=1, session_id=ordinary_id,
+                    error="ordinary provider timed out", failure_category="provider_timeout",
+                    provider_launched=True,
+                )
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=ordinary_id,
+                status="completed", output_summary="ordinary completion",
+                decision_json=json.dumps({"action": "done", "summary": "done"}),
+                confidence_score=100,
+            )
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id=ordinary_id,
+                agent_session_id="provider-ordinary",
+            )
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+        if completion_timing == "after_callback":
+            finish_job()
+        # Replay delivery before draining: duplicate enqueues are allowed, but
+        # run_step's persisted claim admits only one ordinary provider call.
+        fire_resume_check_for_job(org, job_id)
+        while queued:
+            _slug, queued_task_id, metadata = queued.pop(0)
+            orchestrator.run_step(queued_task_id, metadata=metadata)
+
+    assert len(fake.calls) == 3
+    task = orchestrator._db.get_task(task_id)
+    assert task.status == (TaskStatus.COMPLETED if ordinary_outcome == "completed" else TaskStatus.FAILED)
+    job = orchestrator._db.get_job(job_id)
+    assert job is not None and job.exit_code == exit_code
+    assert job.status == (JobStatus.COMPLETED if exit_code == 0 else JobStatus.FAILED)
+    assert job.reason != "task_ended"
+    recovery = orchestrator._db.execute(
+        "SELECT state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchall()
+    assert len(recovery) == 1 and recovery[0]["state"] == "callback_consumed"
+    results = orchestrator._db.get_task_results(task_id)
+    assert len(results) == (2 if ordinary_outcome == "completed" else 1)
+    assert results[0]["session_id"] == recovery_id and results[0]["status"] == "blocked"
+    if ordinary_outcome == "completed":
+        assert results[1]["session_id"] == ordinary_id and results[1]["status"] == "completed"
+    assert recovery[0]["accepted_result_id"] == results[0]["id"]
+    assert dict(orchestrator._db.get_latest_task_result(task_id, agent, recovery_id)) == fake.recovery_row
+    resumed = [log for log in orchestrator._db.get_audit_logs(task_id)
+               if log["action"] == "task_resumed_from_jobs"]
+    assert len(resumed) == 1
+    assert resumed[0]["payload"]["job_outcomes"] == {
+        job_id: "completed" if exit_code == 0 else "failed",
+    }
+    assert len([log for log in orchestrator._db.get_audit_logs(task_id)
+                if log["action"] == "progress"]) == 1
+
+
+@pytest.mark.parametrize(("claim_delay", "expect_recovery"), [(40.0, True), (120.0, False)])
+def test_run_step_codex_recovery_claim_delay_consumes_the_single_live_budget(
+    orchestrator, test_runtime, monkeypatch, claim_delay, expect_recovery,
+):
+    """Claim contention consumes recovery time and never restarts its 120-second budget."""
+    import runtime.orchestrator.run_step as run_step_module
+
+    agent = "engineering_head"
+    _setup_codex_workspace(test_runtime, agent)
+    task_id = orchestrator.create_task("recovery claim timing")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    ids = iter(("origin", "recovery"))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(ids))
+    now = [0.0]
+    monkeypatch.setattr(run_step_module.time, "monotonic", lambda: now[0])
+    original_claim = orchestrator._db.claim_task_completion_recovery
+
+    def delayed_claim(**kwargs):
+        claimed = original_claim(**kwargs)
+        now[0] += claim_delay
+        return claimed
+
+    monkeypatch.setattr(orchestrator._db, "claim_task_completion_recovery", delayed_claim)
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id="origin",
+                    agent_session_id="provider-origin",
+                )
+            assert kwargs["timeout_seconds"] <= 80
+            return ExecutorResult(
+                success=False, duration_seconds=1, session_id="recovery",
+                agent_session_id="provider-origin", error="recovery omitted callback",
+            )
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert len(fake.calls) == (2 if expect_recovery else 1)
+    row = orchestrator._db.execute(
+        "SELECT count(*) AS n, accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchone()
+    assert row["n"] == 1
+    assert row["accepted_result_id"] is None
+    assert orchestrator._db.get_task(task_id).status == TaskStatus.FAILED
+
+
+def test_run_step_codex_origin_callback_winning_claim_is_consumed(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """An origin callback admitted immediately before the real claim wins.
+
+    The recovery id is intentionally allocated before ``claim``.  It is only
+    a candidate, so a failed claim must not treat the still-current origin
+    session as a displaced newer owner.
+    """
+    agent = "engineering_head"
+    origin_runtime_id = "sess-runtime-origin"
+    _setup_codex_workspace(test_runtime, agent)
+    task_id = orchestrator.create_task("origin callback races recovery claim")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: origin_runtime_id)
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, **kwargs):
+            self.calls += 1
+            assert self.calls == 1
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id=origin_runtime_id,
+                agent_session_id="provider-origin",
+            )
+
+    original_claim = orchestrator._db.claim_task_completion_recovery
+
+    def _origin_wins_claim(**kwargs):
+        assert orchestrator._db.admit_task_completion_callback(
+            task_id=task_id, agent=agent, session_id=origin_runtime_id,
+            status="completed", output_summary="origin callback won",
+            decision_json=json.dumps({"action": "done", "summary": "done"}),
+            confidence_score=100,
+        )
+        return original_claim(**kwargs)
+
+    fake = FakeCodexExecutor()
+    monkeypatch.setattr(orchestrator._db, "claim_task_completion_recovery", _origin_wins_claim)
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert fake.calls == 1
+    assert orchestrator._db.execute(
+        "SELECT count(*) FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchone()[0] == 0
+    assert orchestrator._db.get_task(task_id).status == TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize(
+    ("failure_category", "error"),
+    [
+        ("provider_nonzero", "provider failed after callback"),
+        ("provider_timeout", "provider timed out after callback"),
+    ],
+)
+def test_run_step_codex_recovery_accepted_callback_wins_provider_failure(
+    orchestrator, test_runtime, monkeypatch, failure_category, error,
+):
+    """THR-247 C1b: a landed recovery callback, not provider prose, is terminal.
+
+    This retains the provider's unsuccessful result for diagnostics and usage;
+    it merely proves that it cannot erase the exact accepted callback.
+    """
+    from runtime.daemon.sessions import SessionTracker
+    from types import SimpleNamespace
+    import runtime.orchestrator.run_step as run_step_module
+
+    agent = "engineering_head"
+    origin_runtime_id = "sess-runtime-origin"
+    provider_origin_id = "provider-origin"
+    recovery_runtime_id = "sess-runtime-recovery"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("recover callback despite provider failure")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    session_ids = iter((origin_runtime_id, recovery_runtime_id))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+    # Keep the full recovery path on an injected live clock.  The callback
+    # lands just before the budget ends; the provider then times out after it.
+    now = [0.0]
+    monkeypatch.setattr(run_step_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = []
+            self.recovery_result = None
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=origin_runtime_id,
+                    agent_session_id=provider_origin_id,
+                    token_usage=TokenUsage(input_tokens=11, output_tokens=7),
+                )
+            assert len(self.calls) == 2
+            assert kwargs["session_id"] == recovery_runtime_id
+            assert kwargs["resume_session_id"] == provider_origin_id
+            assert tracker.is_recovery_session(task_id, agent, recovery_runtime_id)
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=recovery_runtime_id,
+                status="completed", output_summary="accepted before provider failure",
+                decision_json=json.dumps({"action": "done", "summary": "finished"}),
+                confidence_score=100,
+            )
+            now[0] = 120.0
+            self.recovery_result = ExecutorResult(
+                success=False, duration_seconds=1, session_id=recovery_runtime_id,
+                agent_session_id=provider_origin_id, error=error,
+                failure_category=failure_category, provider_launched=True,
+                token_usage=TokenUsage(input_tokens=3, output_tokens=2),
+            )
+            return self.recovery_result
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert len(fake.calls) == 2
+    assert fake.recovery_result is not None
+    assert fake.recovery_result.success is False
+    assert fake.recovery_result.failure_category == failure_category
+    assert fake.recovery_result.error == error
+    recoveries = orchestrator._db.execute(
+        "SELECT state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?",
+        (task_id,),
+    ).fetchall()
+    assert len(recoveries) == 1
+    recovery = recoveries[0]
+    accepted = orchestrator._db.get_latest_task_result(task_id, agent, recovery_runtime_id)
+    assert recovery["state"] == "callback_consumed"
+    assert recovery["accepted_result_id"] == accepted["id"]
+    assert orchestrator._db.get_task(task_id).status == TaskStatus.COMPLETED
+    usage = orchestrator._db.execute(
+        "SELECT session_id, input_tokens, output_tokens FROM session_token_usage "
+        "WHERE task_id=? ORDER BY session_id", (task_id,),
+    ).fetchall()
+    assert [tuple(row) for row in usage] == [
+        (origin_runtime_id, 11, 7), (recovery_runtime_id, 3, 2),
+    ]
+
+
+def test_run_step_codex_recovery_timeout_without_callback_fails_closed(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """The timeout control spends one recovery and never recursively launches."""
+    agent = "engineering_head"
+    _setup_codex_workspace(test_runtime, agent)
+    task_id = orchestrator.create_task("recovery timeout without callback")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    session_ids = iter(("sess-origin", "sess-recovery"))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id="sess-origin",
+                    agent_session_id="provider-origin",
+                )
+            assert len(self.calls) == 2
+            # Recovery is server-marked; an ordinary provider resume alone
+            # would not justify suppressing configured executor retries.
+            assert kwargs["throttle_backoff_seconds"] == ()
+            return ExecutorResult(
+                success=False, duration_seconds=1, session_id="sess-recovery",
+                agent_session_id="provider-origin", error="provider timed out",
+                failure_category="provider_timeout", provider_launched=True,
+            )
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert len(fake.calls) == 2
+    assert orchestrator._db.get_task(task_id).status == TaskStatus.FAILED
+    recovery = orchestrator._db.execute(
+        "SELECT accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchone()
+    assert recovery["accepted_result_id"] is None
+
+
+@pytest.mark.parametrize(
+    "recovery_outcome",
+    ["timeout", "provider_error", "launch_exception", "second_clean_omission"],
+)
+def test_run_step_codex_second_omission_failure_spends_once_and_cleans_owned_jobs(
+    orchestrator, test_runtime, monkeypatch, recovery_outcome,
+):
+    """D3b: every eligible recovery failure closes one spent episode.
+
+    The rows and jobs are real SQLite state. Only the Codex provider boundary
+    is fake; a distinct older callback row proves that failure does not select
+    a task/agent-wide "latest" result.
+    """
+    from runtime.daemon.sessions import SessionTracker
+    import runtime.daemon.jobs_runner as jobs_runner
+    from runtime.models import JobInterpreter, JobRecord, JobStatus
+    import threading
+
+    agent = "engineering_head"
+    origin_id, recovery_id, old_id = "origin", "recovery", "older-session"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("recovery failure must fail closed")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    # This is a valid historical result for the same task/agent, but never an
+    # exact origin/recovery callback and therefore never an eligible fallback.
+    assert orchestrator._db.admit_task_completion_callback(
+        task_id=task_id, agent=agent, session_id=old_id, status="completed",
+        output_summary="older result must remain untouched",
+        decision_json=json.dumps({"action": "done", "summary": "old"}),
+        confidence_score=100,
+    )
+    older_before = dict(orchestrator._db.get_latest_task_result(task_id, agent, old_id))
+    owned_id = orchestrator._db.next_job_id()
+    unrelated_id = "JOB-UNRELATED"
+    for job_id, owner in ((owned_id, task_id), (unrelated_id, "unrelated-task")):
+        orchestrator._db.insert_job(JobRecord(
+            id=job_id, task_id=owner, agent_name=agent, title="running",
+            rationale="D3b", script_text="true", interpreter=JobInterpreter.BASH,
+            status=JobStatus.RUNNING, started_at="2026-09-12T00:00:00+00:00",
+            created_at="2026-09-12T00:00:00+00:00",
+        ))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(iter_ids))
+    iter_ids = iter((origin_id, recovery_id))
+
+    class ObservableProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid, self.returncode = pid, None
+
+    # Exercise the shipping terminator with live controls, rather than merely
+    # proving its durable backstop can update rows.  Preserve both process
+    # registries even if the parameterized provider assertion fails.
+    prior_inflight = dict(jobs_runner._INFLIGHT)
+    prior_overrides = dict(jobs_runner._KILL_REASON_OVERRIDE)
+    owned, unrelated = ObservableProcess(101), ObservableProcess(202)
+    jobs_runner._INFLIGHT.clear()
+    jobs_runner._INFLIGHT.update({owned_id: owned, unrelated_id: unrelated})
+
+    def killpg(pid: int, _sig: int) -> None:
+        if pid == owned.pid:
+            owned.returncode = -15
+
+    async def no_wait(_seconds: float) -> None:
+        return None
+
+    class JoinedCleanupThread:
+        """Keep the real cleanup coroutine finite and observable in this test."""
+        def __init__(self, *, target, daemon):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(threading, "Thread", JoinedCleanupThread)
+    monkeypatch.setattr(jobs_runner.os, "killpg", killpg)
+    monkeypatch.setattr(jobs_runner.asyncio, "sleep", no_wait)
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=origin_id,
+                    agent_session_id="provider-origin",
+                )
+            assert len(self.calls) == 2, "no third provider launch/restart retry"
+            assert kwargs["session_id"] == recovery_id
+            if recovery_outcome == "launch_exception":
+                raise RuntimeError("fake recovery launch failed")
+            if recovery_outcome == "second_clean_omission":
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=recovery_id,
+                    agent_session_id="provider-origin", provider_launched=True,
+                )
+            return ExecutorResult(
+                success=False, duration_seconds=1, session_id=recovery_id,
+                agent_session_id="provider-origin", provider_launched=True,
+                error=("provider timed out" if recovery_outcome == "timeout" else "provider error"),
+                failure_category=("provider_timeout" if recovery_outcome == "timeout" else "provider_nonzero"),
+            )
+
+    fake = FakeCodexExecutor()
+    try:
+        with patch.object(orchestrator, "_build_executor", return_value=fake):
+            orchestrator.run_step(task_id)
+            # A terminal/restarted task cannot recursively launch a recovery.
+            orchestrator.run_step(task_id)
+
+        assert len(fake.calls) == 2
+        task = orchestrator._db.get_task(task_id)
+        assert task.status == TaskStatus.FAILED
+        recovery = orchestrator._db.execute(
+            "SELECT state, accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+        ).fetchall()
+        assert len(recovery) == 1
+        assert recovery[0]["accepted_result_id"] is None
+        assert orchestrator._db.get_job(owned_id).reason == "task_ended"
+        assert orchestrator._db.get_job(unrelated_id).status == JobStatus.RUNNING
+        assert dict(orchestrator._db.get_latest_task_result(task_id, agent, old_id)) == older_before
+        # Both origin and recovery callbacks arrive too late and cannot mint rows.
+        for session_id in (origin_id, recovery_id):
+            assert not orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=session_id, status="completed",
+                output_summary="late", decision_json=json.dumps({"action": "done"}),
+                confidence_score=100,
+            )
+        assert len(orchestrator._db.get_task_results(task_id)) == 1
+        assert owned.returncode == -15
+        assert unrelated.returncode is None
+    finally:
+        jobs_runner._INFLIGHT.clear()
+        jobs_runner._INFLIGHT.update(prior_inflight)
+        jobs_runner._KILL_REASON_OVERRIDE.clear()
+        jobs_runner._KILL_REASON_OVERRIDE.update(prior_overrides)
+
+
+@pytest.mark.parametrize(
+    "origin_outcome", ["timeout", "provider_error", "missing_provider_resume", "cancelled"],
+)
+def test_run_step_codex_ineligible_origin_never_claims_or_launches_recovery(
+    orchestrator, test_runtime, monkeypatch, origin_outcome,
+):
+    """D3b: only a clean Codex omission with a provider id can claim recovery."""
+    from runtime.daemon.event_bus import EventBus
+    from runtime.daemon.routes.tasks import CancelBody, cancel_task
+    from runtime.daemon.sessions import SessionTracker
+    from runtime.models import JobInterpreter, JobRecord, JobStatus
+    import runtime.daemon.jobs_runner as jobs_runner
+    import threading
+
+    agent = "engineering_head"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("ineligible Codex origin")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    assert orchestrator._db.admit_task_completion_callback(
+        task_id=task_id, agent=agent, session_id="older-session", status="completed",
+        output_summary="older result", decision_json=json.dumps({"action": "done"}),
+        confidence_score=100,
+    )
+    older_before = dict(orchestrator._db.get_latest_task_result(task_id, agent, "older-session"))
+    owned_id, unrelated_id = orchestrator._db.next_job_id(), "JOB-UNRELATED"
+    for job_id, owner in ((owned_id, task_id), (unrelated_id, "unrelated-task")):
+        orchestrator._db.insert_job(JobRecord(
+            id=job_id, task_id=owner, agent_name=agent, title="running",
+            rationale="ineligible recovery", script_text="true", interpreter=JobInterpreter.BASH,
+            status=JobStatus.RUNNING, started_at="2026-09-12T00:00:00+00:00",
+            created_at="2026-09-12T00:00:00+00:00",
+        ))
+    cleanup_calls: list[tuple[str, tuple[str, ...]]] = []
+    signals: list[tuple[int, int]] = []
+
+    class ObservableProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid, self.returncode = pid, None
+
+    real_terminate = jobs_runner.terminate_jobs_for_task
+    prior_inflight = dict(jobs_runner._INFLIGHT)
+    prior_overrides = dict(jobs_runner._KILL_REASON_OVERRIDE)
+    jobs_runner._INFLIGHT.clear()
+    jobs_runner._INFLIGHT[owned_id] = ObservableProcess(101)
+    jobs_runner._INFLIGHT[unrelated_id] = ObservableProcess(202)
+
+    async def observe_real_terminate(task_id, *, inflight_to_task=None, grace_seconds=5.0):
+        result = await real_terminate(
+            task_id, inflight_to_task=inflight_to_task, grace_seconds=grace_seconds,
+        )
+        cleanup_calls.append((task_id, tuple(result)))
+        return result
+
+    async def no_wait(_seconds: float) -> None:
+        return None
+
+    class JoinedCleanupThread:
+        def __init__(self, *, target, daemon):
+            self.target, self.daemon = target, daemon
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(jobs_runner, "terminate_jobs_for_task", observe_real_terminate)
+    def killpg(pid, sig):
+        signals.append((pid, sig))
+        if pid == 101:
+            jobs_runner._INFLIGHT[owned_id].returncode = -15
+    monkeypatch.setattr(jobs_runner.os, "killpg", killpg)
+    monkeypatch.setattr(jobs_runner.asyncio, "sleep", no_wait)
+    monkeypatch.setattr(threading, "Thread", JoinedCleanupThread)
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "origin")
+    org = SimpleNamespace(
+        db=orchestrator._db, db_lock=asyncio.Lock(), sessions=tracker,
+        orchestrator=orchestrator, event_bus=EventBus(lambda _task_id: []),
+    )
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, **kwargs):
+            self.calls += 1
+            assert self.calls == 1
+            if origin_outcome == "cancelled":
+                asyncio.run(cancel_task(task_id, CancelBody(rationale="founder stop"), org))
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id="origin",
+                    agent_session_id="provider-origin",
+                )
+            if origin_outcome == "missing_provider_resume":
+                return ExecutorResult(success=True, duration_seconds=1, session_id="origin")
+            return ExecutorResult(
+                success=False, duration_seconds=1, session_id="origin",
+                agent_session_id="provider-origin",
+                error=("provider timed out" if origin_outcome == "timeout" else "provider error"),
+                failure_category=("provider_timeout" if origin_outcome == "timeout" else "provider_nonzero"),
+            )
+
+    fake = FakeCodexExecutor()
+    try:
+        with patch.object(orchestrator, "_build_executor", return_value=fake):
+            orchestrator.run_step(task_id)
+
+        assert fake.calls == 1
+        assert orchestrator._db.execute(
+            "SELECT count(*) FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+        ).fetchone()[0] == 0
+        task = orchestrator._db.get_task(task_id)
+        assert task.status == (TaskStatus.CANCELLED if origin_outcome == "cancelled" else TaskStatus.FAILED)
+        assert cleanup_calls == [(task_id, (owned_id,))]
+        # Exercise the shipping termination helper: it signalled only the owned
+        # observable process, never the unrelated live control.
+        assert signals and {pid for pid, _sig in signals} == {101}
+        assert orchestrator._db.get_job(owned_id).reason == "task_ended"
+        assert orchestrator._db.get_job(unrelated_id).status == JobStatus.RUNNING
+        assert dict(orchestrator._db.get_latest_task_result(task_id, agent, "older-session")) == older_before
+        assert not orchestrator._db.admit_task_completion_callback(
+            task_id=task_id, agent=agent, session_id="origin", status="completed",
+            output_summary="late", decision_json=json.dumps({"action": "done"}), confidence_score=100,
+        )
+        assert jobs_runner._INFLIGHT[owned_id].returncode == -15
+        assert jobs_runner._INFLIGHT[unrelated_id].returncode is None
+    finally:
+        jobs_runner._INFLIGHT.clear()
+        jobs_runner._INFLIGHT.update(prior_inflight)
+        jobs_runner._KILL_REASON_OVERRIDE.clear()
+        jobs_runner._KILL_REASON_OVERRIDE.update(prior_overrides)
+
+
+def test_run_step_codex_recovery_cancellation_after_callback_wins(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Use the real cancellation route after admission, before executor return."""
+    from runtime.daemon.event_bus import EventBus
+    from runtime.daemon.routes.tasks import CancelBody, cancel_task
+    from runtime.daemon.sessions import SessionTracker
+
+    agent = "engineering_head"
+    origin_runtime_id = "sess-runtime-origin"
+    recovery_runtime_id = "sess-runtime-recovery"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("cancel accepted recovery callback")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    session_ids = iter((origin_runtime_id, recovery_runtime_id))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+    org = SimpleNamespace(
+        db=orchestrator._db, db_lock=asyncio.Lock(), sessions=tracker,
+        orchestrator=orchestrator, event_bus=EventBus(lambda _task_id: []),
+    )
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=origin_runtime_id,
+                    agent_session_id="provider-origin",
+                )
+            assert len(self.calls) == 2
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=recovery_runtime_id,
+                status="completed", output_summary="accepted then cancelled",
+                decision_json=json.dumps({"action": "done", "summary": "must not run"}),
+                confidence_score=100,
+            )
+            asyncio.run(cancel_task(task_id, CancelBody(rationale="founder stop"), org))
+            return ExecutorResult(
+                success=False, duration_seconds=1, session_id=recovery_runtime_id,
+                agent_session_id="provider-origin", error="provider cancelled",
+                failure_category="provider_nonzero", provider_launched=True,
+            )
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert len(fake.calls) == 2
+    task = orchestrator._db.get_task(task_id)
+    assert task.status == TaskStatus.CANCELLED
+    assert task.cancelled_at is not None
+    recovery = orchestrator._db.execute(
+        "SELECT accepted_result_id FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchone()
+    accepted = orchestrator._db.get_latest_task_result(task_id, agent, recovery_runtime_id)
+    assert recovery["accepted_result_id"] == accepted["id"]
+    assert accepted["decision_json"] == json.dumps({"action": "done", "summary": "must not run"})
+
+
+@pytest.mark.parametrize(
+    "event", ["unchanged", "cancelled", "replaced"],
+)
+def test_run_step_codex_recovery_observes_ownership_at_fallback_launch(
+    orchestrator, test_runtime, monkeypatch, event,
+):
+    """C1: only an unchanged recovery owner reaches the fallback boundary.
+
+    This exercises real ``run_step``/``_run_agent`` callback and claim
+    plumbing.  The fake is only the provider/process boundary: its launch
+    counter increments *after* the production per-attempt validator, which is
+    the same pre-Popen seam used by the actual Codex executor.
+    """
+    from runtime.daemon.event_bus import EventBus
+    from runtime.daemon.routes.tasks import CancelBody, cancel_task
+    from runtime.daemon.sessions import SessionTracker
+
+    agent = "engineering_head"
+    origin_id = "sess-origin"
+    recovery_id = "sess-recovery"
+    newer_id = "sess-newer"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("recovery prelaunch ownership")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    session_ids = iter((origin_id, recovery_id))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+    org = SimpleNamespace(
+        db=orchestrator._db, db_lock=asyncio.Lock(), sessions=tracker,
+        orchestrator=orchestrator, event_bus=EventBus(lambda _task_id: []),
+    )
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = []
+            self.recovery_provider_launches = 0
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=origin_id,
+                    agent_session_id="provider-origin",
+                )
+            assert len(self.calls) == 2, "recovery cannot recursively launch"
+            if event == "cancelled":
+                # Exercise the shipping cancellation route, rather than
+                # mutating the task row or tracker in the test.
+                asyncio.run(cancel_task(task_id, CancelBody(rationale="founder stop"), org))
+            elif event == "replaced":
+                # Model ordinary newer-generation publication with both real
+                # ownership authorities, including its generation-owned PID,
+                # cancellation control, and accepted exact callback.
+                orchestrator._db.update_task(
+                    task_id, assigned_agent=agent, current_session_id=newer_id,
+                )
+                tracker.set_active(task_id, agent, newer_id, org_slug="test")
+                tracker.set_pid(task_id, agent, newer_id, 4242)
+                newer_cancel = MagicMock()
+                tracker.set_cancel_control(task_id, agent, newer_id, newer_cancel)
+                assert orchestrator._db.admit_task_completion_callback(
+                    task_id=task_id, agent=agent, session_id=newer_id,
+                    status="completed", output_summary="newer owner",
+                    decision_json=json.dumps({"action": "done", "summary": "newer"}),
+                    confidence_score=100,
+                )
+            if event != "unchanged":
+                with pytest.raises(RuntimeError, match="ownership lost"):
+                    kwargs["pre_launch_validator"]()
+                return ExecutorResult(
+                    success=False, duration_seconds=0, session_id=recovery_id,
+                    error="launch ownership lost", failure_category="prelaunch",
+                )
+
+            kwargs["pre_launch_validator"]()
+            self.recovery_provider_launches += 1
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=recovery_id,
+                status="completed", output_summary="recovery owner",
+                decision_json=json.dumps({"action": "done", "summary": "recovered"}),
+                confidence_score=100,
+            )
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id=recovery_id,
+                agent_session_id="provider-origin", provider_launched=True,
+            )
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert len(fake.calls) == 2
+    assert fake.recovery_provider_launches == (1 if event == "unchanged" else 0)
+    recovery = orchestrator._db.execute(
+        "SELECT count(*) AS n, max(state) AS state FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchone()
+    assert recovery["n"] == 1
+    task = orchestrator._db.get_task(task_id)
+    assert len(fake.calls) == 2, "one origin plus at most one recovery; no third call"
+    if event == "replaced":
+        assert task.current_session_id == newer_id
+        assert tracker.get_active(task_id, agent) == newer_id
+        assert tracker.get_pid(task_id, agent) == 4242
+        assert tracker.get_cancel_control(task_id, agent) is not None
+        newer = orchestrator._db.get_latest_task_result(task_id, agent, newer_id)
+        assert newer is not None
+        assert newer["output_summary"] == "newer owner"
+        assert recovery["state"] == "superseded"
+        assert task.status == TaskStatus.IN_PROGRESS
+    elif event == "cancelled":
+        assert task.cancelled_at is not None
+        assert task.status == TaskStatus.CANCELLED
+    else:
+        accepted = orchestrator._db.get_latest_task_result(task_id, agent, recovery_id)
+        assert accepted is not None
+        assert accepted["output_summary"] == "recovery owner"
+        assert task.status == TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize("event", ["unchanged", "cancelled", "replaced"])
+def test_run_step_codex_recovery_observes_ownership_during_contained_prepare(
+    orchestrator, test_runtime, monkeypatch, event,
+):
+    """C1 contained path: preparation cannot launch a displaced recovery.
+
+    The real ``run_step -> _run_agent -> _run_agent_launch_contained`` chain
+    uses the lifecycle suite's fake containment backend.  Its recovery
+    ``prepare`` hook is the deliberate post-validator/pre-launch window: the
+    shipping cancellation route or ordinary newer-generation publication runs
+    there, after the recovery validator has accepted ownership.
+    """
+    from runtime.daemon.event_bus import EventBus
+    from runtime.daemon.routes.tasks import CancelBody, cancel_task
+    from runtime.daemon.sessions import SessionTracker
+    from runtime.platform.session_backend import LaunchSpec
+    from tests.test_host_supervisor_lifecycle import FakeBackend, make_supervisor
+
+    agent = "engineering_head"
+    origin_id, recovery_id, newer_id = "sess-origin", "sess-recovery", "sess-newer"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("contained recovery prelaunch ownership")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+    session_ids = iter((origin_id, recovery_id))
+    org = SimpleNamespace(
+        db=orchestrator._db, db_lock=asyncio.Lock(), sessions=tracker,
+        orchestrator=orchestrator, event_bus=EventBus(lambda _task_id: []),
+    )
+
+    class PrepareWindowBackend(FakeBackend):
+        def prepare(self, request, policy):
+            pending = super().prepare(request, policy)
+            if self.calls["prepare"] != 2:
+                return pending
+            if event == "cancelled":
+                asyncio.run(cancel_task(task_id, CancelBody(rationale="founder stop"), org))
+            elif event == "replaced":
+                orchestrator._db.update_task(
+                    task_id, assigned_agent=agent, current_session_id=newer_id,
+                )
+                tracker.set_active(task_id, agent, newer_id, org_slug="test")
+                tracker.set_pid(task_id, agent, newer_id, 4242)
+                newer_cancel = MagicMock()
+                tracker.set_cancel_control(task_id, agent, newer_id, newer_cancel)
+                assert orchestrator._db.admit_task_completion_callback(
+                    task_id=task_id, agent=agent, session_id=newer_id,
+                    status="completed", output_summary="newer owner",
+                    decision_json=json.dumps({"action": "done", "summary": "newer"}),
+                    confidence_score=100,
+                )
+            return pending
+
+    backend = PrepareWindowBackend()
+    supervisor, _publisher = make_supervisor(backend=backend)
+    orchestrator.attach_host_supervisor(supervisor)
+
+    class FakeCodexExecutor:
+        def __init__(self):
+            self.calls = []
+
+        def build_launch_spec(self, **_kwargs):
+            return LaunchSpec(argv=("fake-codex",))
+
+        def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return ExecutorResult(
+                    success=True, duration_seconds=1, session_id=origin_id,
+                    agent_session_id="provider-origin",
+                )
+            assert len(self.calls) == 2, "recovery cannot recursively launch"
+            assert event == "unchanged"
+            assert orchestrator._db.admit_task_completion_callback(
+                task_id=task_id, agent=agent, session_id=recovery_id,
+                status="completed", output_summary="recovery owner",
+                decision_json=json.dumps({"action": "done", "summary": "recovered"}),
+                confidence_score=100,
+            )
+            return ExecutorResult(
+                success=True, duration_seconds=1, session_id=recovery_id,
+                agent_session_id="provider-origin", provider_launched=True,
+            )
+
+    fake = FakeCodexExecutor()
+    with patch.object(orchestrator, "_build_executor", return_value=fake):
+        orchestrator.run_step(task_id)
+
+    assert backend.calls["launch"] == (2 if event == "unchanged" else 1)
+    assert backend.calls["prepare"] == 2
+    assert backend.calls["abandon"] == (0 if event == "unchanged" else 1)
+    assert len(fake.calls) == (2 if event == "unchanged" else 1)
+    assert supervisor.active_count() == 0
+    assert supervisor._admission.admitted_total() == 2
+    assert supervisor._admission.released_total() == 2
+    recovery = orchestrator._db.execute(
+        "SELECT count(*) AS n, max(state) AS state FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchone()
+    assert recovery["n"] == 1
+    task = orchestrator._db.get_task(task_id)
+    if event == "unchanged":
+        assert task.status == TaskStatus.COMPLETED
+        assert recovery["state"] == "callback_consumed"
+    elif event == "cancelled":
+        assert task.status == TaskStatus.CANCELLED
+    else:
+        assert task.status == TaskStatus.IN_PROGRESS
+        assert task.current_session_id == newer_id
+        assert tracker.get_active(task_id, agent) == newer_id
+        assert tracker.get_pid(task_id, agent) == 4242
+        assert tracker.get_cancel_control(task_id, agent) is not None
+        newer = orchestrator._db.get_latest_task_result(task_id, agent, newer_id)
+        assert newer is not None
+        assert newer["output_summary"] == "newer owner"
+        assert recovery["state"] == "superseded"
+
+
+@pytest.mark.parametrize("launch_mode", ["contained", "passthrough", "fallback"])
+@pytest.mark.parametrize(
+    ("deadline_case", "advance"),
+    [
+        ("429", None),
+        ("setup_expired", 120.0),
+        ("setup_remainder", 0.25),
+        ("launch_expired", 120.0),
+        ("launch_remainder", 0.25),
+    ],
+)
+def test_run_step_codex_clean_omission_recovery_429_has_one_real_provider_launch(
+    orchestrator, test_runtime, monkeypatch, launch_mode, deadline_case, advance,
+):
+    """C2h: deadline behavior reaches each real recovery provider boundary.
+
+    This deliberately keeps the orchestration and Codex executor real.  Only
+    the OS process boundary is fake: a clean origin emits Codex's real JSONL
+    conversation identity, then its resumed recovery returns a 429 with no
+    callback.  The three forms observe their actual launch boundaries rather
+    than accepting a fake executor's recorded keyword arguments.
+    """
+    from runtime.daemon.sessions import SessionTracker
+    from runtime.orchestrator import executors as executors_mod
+    from runtime.orchestrator import orchestrator as orchestrator_mod
+    from runtime.orchestrator import run_step as run_step_mod
+    from runtime.orchestrator.executors import CodexExecutor
+    from runtime.orchestrator.throttle import ProviderThrottle, get_throttle, set_throttle
+    from runtime.platform.session_backend import RunningHandle
+    from tests.test_host_supervisor_lifecycle import FakeBackend, make_supervisor
+
+    agent = "engineering_head"
+    origin_id, recovery_id, provider_id = "sess-origin", "sess-recovery", "provider-origin"
+    _setup_codex_workspace(test_runtime, agent)
+    tracker = SessionTracker()
+    orchestrator.attach_sessions(tracker)
+    task_id = orchestrator.create_task("one recovery 429 across shipping launch forms")
+    orchestrator._db.update_task(task_id, assigned_agent=agent)
+    # The test runner itself may be nested in a task scratch environment; a
+    # daemon-launched agent correctly rejects inheriting those parent controls.
+    monkeypatch.delenv("HAPPYRANCH_TASK_TMP_ROOT", raising=False)
+    monkeypatch.delenv("HAPPYRANCH_TASK_SCRATCH_MANIFEST", raising=False)
+    session_ids = iter((origin_id, recovery_id))
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: next(session_ids))
+    monkeypatch.setattr(executors_mod, "_resolve_binary", lambda _profile: "fake-codex")
+
+    class DeadlineClock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+    # These are module-local replacements.  Patching ``time.monotonic`` would
+    # mutate the shared stdlib module and incorrectly freeze the real-time host
+    # supervisor's event/admission machinery.
+    clock = DeadlineClock()
+    monkeypatch.setattr(run_step_mod, "time", clock)
+    monkeypatch.setattr(orchestrator_mod, "time", clock)
+    monkeypatch.setattr(executors_mod, "time", clock)
+    launches: list[tuple[str, tuple[str, ...]]] = []
+    sleeps: list[float] = []
+    cleanup: list[str] = []
+
+    class Process:
+        def __init__(self, ordinal: int):
+            self.pid = 7000 + ordinal
+            self.returncode = 0 if ordinal == 1 else 1
+
+        def communicate(self, **_kwargs):
+            if self.returncode == 0:
+                return json.dumps({"type": "thread.started", "thread_id": provider_id}) + "\n", ""
+            if deadline_case.endswith("remainder"):
+                assert _kwargs["timeout"] == pytest.approx(120.0 - advance)
+                assert orchestrator._db.admit_task_completion_callback(
+                    task_id=task_id, agent=agent, session_id=recovery_id,
+                    status="completed", output_summary="recovery deadline callback",
+                    decision_json=json.dumps({"action": "done", "summary": "recovered"}),
+                    confidence_score=100,
+                )
+                return "", ""
+            return "", "HTTP 429 rate limit"
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            cleanup.append(f"kill-{self.pid}")
+            return None
+
+    class ContainedBackend(FakeBackend):
+        def prepare(self, request, policy):
+            pending = super().prepare(request, policy)
+            if self.calls["prepare"] == 2 and deadline_case.startswith("setup_"):
+                # The recovery's ordinary validator has already run; the
+                # supervisor final hook must fence the prepared handle before
+                # its launch commitment.
+                clock.now = advance
+            return pending
+
+        def launch(self, pending, spec):
+            ordinal = len(launches) + 1
+            launches.append(("backend.launch", tuple(spec.argv)))
+            with self.lock:
+                self.calls["launch"] += 1
+            running = RunningHandle(
+                backend=self.name, token=pending.token, request_id=pending.request_id,
+                root_pid=7000 + ordinal, start_identity="fake-start",
+                process=Process(ordinal),
+            )
+            if ordinal == 2 and deadline_case.startswith("launch_"):
+                # The backend has launched/owned the process before budget loss.
+                clock.now = advance
+            return running
+
+    def isolation_launch(cmd, **_kwargs):
+        ordinal = len(launches) + 1
+        launches.append(("isolation.launch_executor", tuple(cmd)))
+        proc = Process(ordinal)
+        if ordinal == 2 and deadline_case.startswith("launch_"):
+            clock.now = advance
+        return proc
+
+    original_callee_env = executors_mod._callee_env
+
+    def recovery_callee_env(**kwargs):
+        env = original_callee_env(**kwargs)
+        if (
+            launch_mode != "contained"
+            and len(launches) == 1
+            and deadline_case.startswith("setup_")
+        ):
+            # This runs after the old validator but before the actual
+            # uncontained provider Popen in both fallback paths.
+            clock.now = advance
+        return env
+
+    monkeypatch.setattr(executors_mod, "_callee_env", recovery_callee_env)
+
+    backend = None
+    supervisor = None
+    if launch_mode == "contained":
+        backend = ContainedBackend()
+        supervisor, _ = make_supervisor(backend=backend)
+        orchestrator.attach_host_supervisor(supervisor)
+    elif launch_mode == "passthrough":
+        from runtime.platform.passthrough_backend import PassthroughBackend
+        # The honest backend produces process=None, so Codex reaches its real
+        # uncontained isolation boundary inside the supervisor launch body.
+        supervisor, _ = make_supervisor(backend=PassthroughBackend())
+        orchestrator.attach_host_supervisor(supervisor)
+
+    monkeypatch.setattr(
+        executors_mod, "detect_platform_isolation",
+        lambda: SimpleNamespace(launch_executor=isolation_launch),
+    )
+    throttle = ProviderThrottle(
+        ceiling_default=1, spacing_seconds=0.0, backoff_seconds=(9.0,), sleep=sleeps.append,
+    )
+    old_throttle = get_throttle()
+    set_throttle(throttle)
+    try:
+        executor = CodexExecutor(codex_cli_path="fake-codex", sandbox_mode="workspace-write")
+        with patch.object(orchestrator, "_build_executor", return_value=executor):
+            orchestrator.run_step(task_id)
+    finally:
+        set_throttle(old_throttle)
+
+    expected_launches = 1 if deadline_case == "setup_expired" else 2
+    assert len(launches) == expected_launches, orchestrator._db.get_task(task_id).note
+    assert launches[0][1][:2] == ("fake-codex", "exec")
+    if expected_launches == 2:
+        assert provider_id in launches[1][1]
+    assert sleeps == [], "recovery never gets a second provider opportunity"
+    recovery = orchestrator._db.execute(
+        "SELECT origin_session_id, recovery_session_id, provider_session_id, state "
+        "FROM task_completion_recoveries WHERE task_id=?", (task_id,),
+    ).fetchall()
+    assert [dict(row) for row in recovery] == [{
+        "origin_session_id": origin_id,
+        "recovery_session_id": recovery_id,
+        "provider_session_id": provider_id,
+        "state": "callback_consumed" if deadline_case.endswith("remainder") else "claimed",
+    }]
+    task = orchestrator._db.get_task(task_id)
+    if deadline_case.endswith("remainder"):
+        assert task.status == TaskStatus.COMPLETED
+    else:
+        assert task.status == TaskStatus.FAILED
+    if deadline_case == "launch_expired":
+        assert cleanup == ["kill-7002"], "the launched recovery is drained by its owner"
+    assert tracker.get_active(task_id, agent) is None
+    assert tracker.get_cancel_control(task_id, agent) is None
+    if supervisor is not None:
+        assert supervisor._admission.admitted_total() == 2
+        assert supervisor._admission.released_total() == 2
+        assert supervisor.active_count() == 0
+    if backend is not None:
+        assert backend.calls["prepare"] == 2
+        assert backend.calls["finish"] == (1 if deadline_case == "setup_expired" else 2)
+        assert backend.calls["abandon"] == (1 if deadline_case == "setup_expired" else 0)
 
 
 def test_run_agent_skips_session_registration_when_tracker_not_attached(
