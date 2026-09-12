@@ -17,14 +17,12 @@ corrects, or refines each cell. Validation covered `runtime/` (Python daemon +
 orchestrator + infrastructure store) and `web/src/` (React surfaces). Citations
 are `path:line` against `77150e0`.
 
-**GitNexus status (per brief step 3):** GitNexus MCP is **up but its happyranch
-index is STALE** — the freshest index is commit `c13c23d` (2026-06-13), which
-predates `77150e0`. Blast-radius numbers below are therefore *approximate*
-(indexed against a slightly older tree); the symbols queried all still exist on
-`77150e0`. Where I rely on GitNexus I say so; the per-symbol structural tracing
-itself was re-confirmed manually against `77150e0`. **GitNexus indexes Python
-only** (LRN-053) — it is **N/A for the frontend/TSX work**, which is the bulk of
-this overhaul, so most rows below are "GitNexus: N/A (frontend)".
+**Historical analysis limits:** The impact estimates below came from a Python-only
+index at `c13c23d` (2026-06-13), which predates `77150e0`, and are therefore
+*approximate*. Per-symbol structural tracing was re-confirmed manually against
+`77150e0`. The index did not cover frontend/TSX work, which is the bulk of this
+overhaul; "N/A (frontend)" means no indexed estimate, not no impact. These are
+historical findings, not current verification.
 
 ### Classification legend (the load-bearing lens — brief step 4)
 
@@ -125,7 +123,7 @@ in its own columns). For dollars it can only honestly show `$0.00` / "not metere
 (2) cost computed at token-capture time, (3) a **persisted `cost_usd`** field (new
 column on `session_token_usage`, or finally populating `task_results.estimated_cost`).
 That is a **new persisted field / SQLite migration** → I will not author it; the
-founder must rule. GitNexus: the read side is low-blast (`compute_spend_today`
+founder must rule. Historical impact estimate: the read side is low-blast (`compute_spend_today`
 upstream = LOW, only feeds `get_dashboard_summary`), so the risk is the new store,
 not edit fan-out.
 
@@ -148,7 +146,7 @@ Both placements are served by the **same stored data**: tasks with
 
 Both ultimately read the **same `tasks` escalation state + `audit_log` escalation
 events**. **Placing the queue on Home or Audit (or both) is purely a UX/routing
-decision — there is no data constraint either way.** GitNexus:
+decision — there is no data constraint either way.** Historical impact estimate:
 `compute_escalations_open` upstream = **LOW** blast. This is a **product ruling**,
 not an engineering blocker — both are RENDER-ONLY.
 
@@ -160,7 +158,7 @@ Effort: S/M/L/XL (engineering re-size of product's guess). "Class" per §0 legen
 
 ### IA / navigation
 
-| # | Direction A | Corrected Current (`77150e0`) | Class | Effort | GitNexus | Notes |
+| # | Direction A | Corrected Current (`77150e0`) | Class | Effort | Historical impact estimate | Notes |
 |---|---|---|---|---|---|---|
 | IA-1 | Left sidebar (primary + Operate) + window chrome | 9 flat top tabs (`web/src/routes.tsx`, TopBar) | RENDER-ONLY | L | N/A (frontend) | Shell rebuild; touches every page layout. No backend. |
 | IA-2 | Default landing = Home | Default landing = Threads | RENDER-ONLY | S | N/A | One-line route change. |
