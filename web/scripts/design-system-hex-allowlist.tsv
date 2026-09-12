@@ -4,7 +4,7 @@ design-system/primitives/Dialog.tsx	38	27	bg-black/60	Existing modal scrim palet
 features/settings/SettingsDialog.tsx	474	59	bg-white	Existing checked-control foreground utility frozen pending a separately reviewed semantic-token migration
 features/settings/sections/DaemonCapacitySection.tsx	126	126	text-white	Existing meter-label foreground utility frozen pending a separately reviewed semantic-token migration
 features/settings/sections/OrganizationSection.tsx	586	59	bg-white	Existing checked-control foreground utility frozen pending a separately reviewed semantic-token migration
-features/threads/ThreadsPage.tsx	233	106	text-white	Existing progress-label foreground utility frozen pending a separately reviewed semantic-token migration
+features/threads/ThreadsPage.tsx	234	106	text-white	Existing progress-label foreground utility frozen pending a separately reviewed semantic-token migration
 features/work-hours-config/OverviewPage.tsx	123	65	bg-white	Existing progress-label foreground utility frozen pending a separately reviewed semantic-token migration
 features/work-hours-config/TierEditorDialog.tsx	400	69	bg-white	Existing slider-label foreground utility frozen pending a separately reviewed semantic-token migration
 design-system/patterns/CommandPalette.tsx	172	66	bg-transparent	legacy default Tailwind special colour utility
@@ -43,7 +43,7 @@ features/skills/SkillsPage.tsx	96	56	border-transparent	legacy default Tailwind 
 features/system-assistant/ConversationSwitcher.tsx	161	57	bg-transparent	legacy default Tailwind special colour utility
 features/tasks/TaskListRow.tsx	112	62	bg-current	legacy default Tailwind special colour utility
 features/tasks/TasksPage.tsx	105	64	bg-current	legacy default Tailwind special colour utility
-features/threads/ThreadsPage.tsx	1260	91	bg-current	legacy default Tailwind special colour utility
+features/threads/ThreadsPage.tsx	1371	91	bg-current	legacy default Tailwind special colour utility
 features/todos/components/StatusPill.tsx	27	60	bg-current	legacy default Tailwind special colour utility
 features/usage/UsagePage.tsx	735	57	border-transparent	legacy default Tailwind special colour utility
 features/usage/UsagePage.tsx	736	65	border-transparent	legacy default Tailwind special colour utility
