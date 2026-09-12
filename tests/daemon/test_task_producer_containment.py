@@ -299,6 +299,10 @@ def _seed_org(paths: OrgPaths, tmp_path: Path, test_settings: Settings) -> None:
 
 def _make_orch(tmp_path: Path, backend: _FakeBackend, executor: _RecordingExecutor,
                monkeypatch, *, max_retry_attempts: int = 0, backoff_seconds=()):
+    from runtime.daemon import task_scratch_report as reports
+    from tests.test_task_scratch_report import _proc
+    monkeypatch.setattr(reports, "_PROC_ROOT", _proc(tmp_path))
+    monkeypatch.setattr(reports, "_STARTED_MONOTONIC", 0)
     test_settings = Settings(project_root=tmp_path / "proj")
     rt = tmp_path / "runtime"
     paths = OrgPaths(root=rt / "orgs" / "test")
@@ -1022,3 +1026,137 @@ def test_supervisor_on_terminal_fires_on_cancelled_while_queued():
     assert outcome.cancelled_while_queued is True
     assert len(hook_calls) == 1
     assert hook_calls[0] is outcome
+
+
+@pytest.mark.parametrize("mode", ["terminal", "nonterminal", "newer", "observer_error", "publisher_error",
+                                  "recovery", "revisit", "linked", "pid", "root", "cwd", "fd"])
+def test_task_producer_real_scratch_report(tmp_path, monkeypatch, mode):
+    from runtime.daemon import task_scratch_report as reports, task_scratch_reclamation
+    from runtime.orchestrator import task_scratch
+    from tests.test_task_scratch_report import _snapshot
+
+    backend = _FakeBackend()
+    orch, supervisor, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
+    task_id = _seed_task(db)
+    workspace = orch._paths.workspaces_dir / _AGENT
+    events = []
+    snapshot = None
+    observation_checks = []
+    original_insert = db.insert_audit_log
+    supervisor._publisher = lambda receipt: events.append("receipt")
+    clear = tracker.clear_if_active_session
+
+    def record_clear(*args, **kwargs):
+        events.append("clear")
+        count = events.count("clear")
+        assert backend.calls["finish"] == count
+        assert supervisor._admission.released_total() == count - 1
+        return clear(*args, **kwargs)
+    monkeypatch.setattr(tracker, "clear_if_active_session", record_clear)
+
+    def audit(task_id, agent, action, payload=None, **kwargs):
+        if action == reports.AUDIT_ACTION:
+            events.append("report")
+            count = events.count("report")
+            observation_checks.append((
+                task_scratch._ACTIVE.get() is None,
+                backend.calls["finish"] == count,
+                supervisor._admission.released_total() == count,
+                supervisor.active_count() == 0,
+                snapshot == _snapshot(workspace),
+            ))
+            if mode == "publisher_error":
+                raise RuntimeError("audit unavailable")
+        return original_insert(task_id, agent, action, payload, **kwargs)
+    monkeypatch.setattr(db, "insert_audit_log", audit)
+    deletions = []
+    def forbid(*args, **kwargs):
+        deletions.append(True)
+        raise AssertionError("deletion")
+    monkeypatch.setattr(task_scratch_reclamation, "execute_ledger", forbid)
+
+    def callback():
+        nonlocal snapshot
+        scratch = task_scratch._ACTIVE.get()
+        assert scratch is not None
+        for index in range(256):
+            (scratch.root / str(index)).write_bytes(b"x" * 8192)
+        (workspace / "repos").mkdir(exist_ok=True)
+        (workspace / "repos/keep").write_bytes(b"repository")
+        (scratch.root.parent / "sibling").mkdir(exist_ok=True)
+        (scratch.root.parent / "sibling/keep").write_bytes(b"sibling")
+        if mode != "nonterminal":
+            db.update_task(task_id, status=TaskStatus.COMPLETED)
+        if mode == "newer":
+            tracker.set_active(task_id, _AGENT, "new-session")
+            tracker.set_pid(task_id, _AGENT, "new-session", 8888)
+        if mode == "recovery":
+            db.update_task_active_chain(task_id, '{"state":"pending"}')
+        elif mode == "revisit":
+            db.insert_task(TaskRecord(id="TASK-RETRY", brief="retry", assigned_agent=_AGENT,
+                current_session_id="retry", status=TaskStatus.IN_PROGRESS, revisit_of_task_id=task_id))
+        elif mode == "linked":
+            db.update_task(task_id, blocked_on_job_ids='["JOB-MISSING"]')
+        elif mode == "pid":
+            db.update_task(task_id, executor_pid=42)
+        elif mode in {"root", "cwd", "fd"}:
+            path = reports._PROC_ROOT / "42" / ("fd/3" if mode == "fd" else mode)
+            if path.is_symlink():
+                path.unlink()
+            path.symlink_to(scratch.root)
+        snapshot = _snapshot(workspace)
+        return {}
+
+    executor = _RecordingExecutor(observer=callback)
+    monkeypatch.setattr(orch, "_build_executor", lambda _: executor)
+    if mode == "observer_error":
+        monkeypatch.setattr(reports, "_identity", lambda *a: (_ for _ in ()).throw(OSError("observation failed")))
+    try:
+        orch.run_step(task_id)
+        assert backend.calls["finish"] == 1
+        assert supervisor._admission.admitted_total() == supervisor._admission.released_total() == 1
+        assert supervisor.active_count() == 0
+        assert events == ["receipt", "clear", "report"]
+        assert observation_checks == [(True,) * 5]
+        rows = [row for row in db.get_audit_logs(task_id) if row["action"] == reports.AUDIT_ACTION]
+        if mode == "publisher_error":
+            assert rows == []
+        else:
+            assert len(rows) == 1
+            payload = rows[0]["payload"]
+            expected = {"terminal": "would_reclaim", "nonterminal": "retain",
+                        "newer": "retain", "observer_error": "unavailable"}.get(mode, "retain")
+            assert payload["decision"] == expected, payload["reasons"]
+            assert payload["actual_reclaimed_bytes"] == payload["actual_reclaimed_inodes"] == 0
+            assert payload["source"] == "teardown" and payload["report_only"]
+            if mode == "nonterminal":
+                assert "nonterminal_or_unresolved_lineage" in payload["reasons"]
+            retention = {"newer": "active_session", "recovery": "nonterminal_or_unresolved_lineage",
+                         "revisit": "nonterminal_or_unresolved_lineage", "linked": "linked_job_authority_unavailable",
+                         "pid": "executor_pid_live_or_ambiguous", "root": "process_root_reference",
+                         "cwd": "process_cwd_reference", "fd": "open_fd_reference"}
+            if mode in retention:
+                assert retention[mode] in payload["reasons"]
+        if mode == "newer":
+            assert tracker.get_active(task_id, _AGENT) == "new-session"
+            assert tracker.get_pid(task_id, _AGENT) == 8888
+        else:
+            assert tracker.get_active(task_id, _AGENT) is None
+        assert db.get_task(task_id).status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
+        assert not deletions
+        if mode == "terminal":
+            # A second real invocation creates another append-only observation;
+            # fixture settlement supplies terminal state, never production edits.
+            db.update_task(task_id, status=TaskStatus.PENDING)
+            orch.run_step(task_id)
+            repeated = [row for row in db.get_audit_logs(task_id) if row["action"] == reports.AUDIT_ACTION]
+            assert len(repeated) == 2
+            assert repeated[0]["payload"]["observation_id"] != repeated[1]["payload"]["observation_id"]
+            assert all(row["payload"]["decision"] == "would_reclaim" for row in repeated)
+            assert events == ["receipt", "clear", "report"] * 2
+            assert observation_checks == [(True,) * 5] * 2
+            assert supervisor._admission.released_total() == 2
+            assert supervisor.active_count() == 0
+            assert not deletions
+    finally:
+        db.close()

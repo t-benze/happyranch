@@ -1,4 +1,4 @@
-"""Dormant, finite task-scratch coverage observation; never a cleanup permit.
+"""Finite task-scratch coverage consumed by report-only coordination; never a cleanup permit.
 
 Every source operation is admitted through one bounded observer. A complete
 observation compares two snapshots; it cannot preempt an already-admitted

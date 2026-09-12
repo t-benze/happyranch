@@ -1,4 +1,4 @@
-"""Dormant bounded observations for later scratch reconciliation, never a permit."""
+"""Bounded observations consumed by report-only scratch coordination, never a permit."""
 from __future__ import annotations
 
 import os
