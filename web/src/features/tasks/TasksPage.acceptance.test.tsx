@@ -89,25 +89,63 @@ describe('C13 actual Tasks route auth recovery', () => {
         return HttpResponse.json({ tasks: [task('B-1'), task('B-2')], next_cursor: null });
       }),
     );
-    mount(qc, 'org-b');
-    if (variant === 'b') {
-      await screen.findByText('Brief B-2');
-      expect(roots.map((r) => r.bearer)).toEqual(['Bearer synthetic-stale', 'Bearer synthetic-fresh']);
-      expect(roots[0].params).toBe(roots[1].params);
-    } else {
-      await screen.findByText('Could not load tasks'); noFalseSuccess(); expect(ids()).toEqual([]);
-      expect(roots).toHaveLength(variant === 'd' ? 0 : variant === 'c' ? 2 : 1);
-      expect(bootstraps).toBe(variant === 'a' ? 0 : 1);
-      recovered = true; await keyboardRetry(); await screen.findByText('Brief B-2');
+    // Observe requests independently of MSW's successful shell handlers: a handled
+    // org/dashboard request is still an isolation failure in these four cases.
+    const shellRequests: string[] = [];
+    const observeRequest = ({ request }: { request: Request }) => {
+      const path = new URL(request.url).pathname;
+      if (path !== '/api/v1/auth/bootstrap' && !/^\/api\/v1\/orgs\/[^/]+\/tasks\/roots$/.test(path)) {
+        shellRequests.push(`${request.method} ${request.url}`);
+      }
+    };
+    function healthyShell() {
+      expect(shellRequests, 'no shell or unrelated HTTP, even when MSW handles it').toEqual([]);
+      for (const [key, data] of [
+        [['orgs'], orgs],
+        [['dashboard-summary', 'org-a'], summary],
+        [['dashboard-summary', 'org-b'], summary],
+      ] as const) {
+        // Bootstrap can fail before HTTP reaches MSW; the ledger alone cannot
+        // prove that a shell query remained healthy in that case.
+        expect(qc.getQueryState(key), `healthy shell query ${key.join('/')}`).toMatchObject({
+          status: 'success', fetchStatus: 'idle', error: null, errorUpdateCount: 0,
+          fetchFailureCount: 0, fetchFailureReason: null, data,
+        });
+      }
     }
-    expect(ids()).toEqual(['B-1', 'B-2']);
-    expect(screen.getByLabelText('Current URL')).toHaveTextContent('/orgs/org-b/tasks');
-    expect(roots.every((r) => r.slug === 'org-b' && r.params === '?limit=50')).toBe(true);
-    expect(roots).toHaveLength(variant === 'c' ? 3 : variant === 'd' ? 1 : 2);
-    expect(bootstraps).toBe(variant === 'a' ? 0 : variant === 'd' ? 2 : 1);
-    if (variant !== 'a') expect(roots.at(-1)?.bearer).toBe('Bearer synthetic-fresh');
-    expect(screen.queryByText('Could not load tasks')).not.toBeInTheDocument();
-    expect(screen.queryByText('Brief ALIEN')).not.toBeInTheDocument();
+    const taskHrefs = () => Array.from(document.querySelectorAll('a[href*="/tasks/"]'))
+      .map((anchor) => anchor.getAttribute('href')).sort();
+    server.events.on('request:start', observeRequest);
+    try {
+      mount(qc, 'org-b');
+      if (variant === 'b') {
+        await screen.findByText('Brief B-2');
+        expect(roots.map((r) => r.bearer)).toEqual(['Bearer synthetic-stale', 'Bearer synthetic-fresh']);
+        expect(roots[0].params).toBe(roots[1].params);
+      } else {
+        await screen.findByText('Could not load tasks'); noFalseSuccess(); expect(ids()).toEqual([]);
+        expect(roots).toHaveLength(variant === 'd' ? 0 : variant === 'c' ? 2 : 1);
+        expect(bootstraps).toBe(variant === 'a' ? 0 : 1);
+        healthyShell();
+        expect(taskHrefs()).toEqual([]);
+        expect(screen.queryByText('Brief ALIEN')).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Current URL').textContent).toBe('/orgs/org-b/tasks');
+        recovered = true; await keyboardRetry(); await screen.findByText('Brief B-2');
+      }
+      healthyShell();
+      expect(taskHrefs()).toEqual(['/orgs/org-b/tasks/B-1', '/orgs/org-b/tasks/B-2']);
+      expect(screen.getByText('Brief B-1')).toBeInTheDocument();
+      expect(screen.getByText('Brief B-2')).toBeInTheDocument();
+      expect(screen.getByLabelText('Current URL').textContent).toBe('/orgs/org-b/tasks');
+      expect(roots.every((r) => r.slug === 'org-b' && r.params === '?limit=50')).toBe(true);
+      expect(roots).toHaveLength(variant === 'c' ? 3 : variant === 'd' ? 1 : 2);
+      expect(bootstraps).toBe(variant === 'a' ? 0 : variant === 'd' ? 2 : 1);
+      if (variant !== 'a') expect(roots.at(-1)?.bearer).toBe('Bearer synthetic-fresh');
+      expect(screen.queryByText('Could not load tasks')).not.toBeInTheDocument();
+      expect(screen.queryByText('Brief ALIEN')).not.toBeInTheDocument();
+    } finally {
+      server.events.removeListener('request:start', observeRequest);
+    }
   });
 });
 
