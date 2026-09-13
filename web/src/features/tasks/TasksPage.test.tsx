@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { Link, MemoryRouter } from 'react-router-dom';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
@@ -10,6 +10,13 @@ import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvi
 import * as api from '@/lib/api';
 import type { SSEOptions } from '@/lib/api';
 import type { ActiveChainResponse, JobRecord, TaskEvent, TaskRecord } from '@/lib/api/types';
+
+beforeEach(() => {
+  server.use(
+    http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] })),
+    http.get('/api/v1/orgs/:slug/dashboard/summary', () => HttpResponse.json({ org_age_days: 1 })),
+  );
+});
 
 const SLUG = 'hk-macau-tourism';
 
@@ -287,7 +294,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     await waitFor(() => {
-      expect(screen.getByText(/Active/)).toBeInTheDocument();
+      expect(screen.getByText(/In progress/)).toBeInTheDocument();
     });
   });
 
@@ -302,7 +309,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     mountAt(`/orgs/${SLUG}/tasks`);
     const tablist = await screen.findByRole('tablist', { name: 'Group by' });
     // Segmented = a grouped, bordered, rounded container — not plain text tabs.
-    expect(tablist).toHaveClass('rounded-lg');
+    expect(tablist).toHaveClass('rounded-full');
     expect(tablist).toHaveClass('border');
     // The active segment ('Status', the default) carries the accent fill.
     expect(screen.getByRole('tab', { name: 'Status' })).toHaveClass(
@@ -339,14 +346,14 @@ describe('TasksPage — read path (roots endpoint)', () => {
     );
     mountAt(`/orgs/${SLUG}/tasks`);
     const inProgress = await screen.findByRole('heading', {
-      name: /Active/,
+      name: /In progress/,
     });
     // Count badge reflects the client-side group size (2 in_progress roots).
     expect(within(inProgress).getByText('2')).toBeInTheDocument();
     // Colored status dot uses the green 'open' token for in_progress.
     const dot = inProgress.querySelector('span[aria-hidden="true"]');
     expect(dot).not.toBeNull();
-    expect(dot).toHaveClass('text-status-open');
+    expect(dot).toHaveClass('text-info');
     // The pending group shows a count of 1.
     const pending = screen.getByRole('heading', { name: /Pending/ });
     expect(within(pending).getByText('1')).toBeInTheDocument();
@@ -410,7 +417,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     // The worse-child root names the worst descendant status inline, colored
     // with the escalated token.
     const rollup = await screen.findByText('subtask escalated');
-    expect(rollup).toHaveClass('text-status-escalated');
+    expect(rollup).toHaveClass('text-attention-text');
     // The healthy root surfaces no inline rollup (no fabricated subtask state).
     expect(screen.queryByText('subtask in progress')).not.toBeInTheDocument();
     // STATUS column for the worse-child root shows compact primary 'in_progress'
@@ -447,7 +454,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
 
     expect(titleColumn).toBe(title.parentElement);
     expect(titleColumn).toHaveClass('min-w-0');
-    expect(titleColumn).toHaveClass('flex-1');
+    expect(titleColumn?.parentElement).toHaveClass('tasks-grid');
     expect(titleColumn).toHaveClass('flex-col');
     expect(titleColumn).toHaveClass('items-start');
     expect(title).toHaveClass('w-full');
@@ -539,7 +546,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
 
 // THR-037 Change B Phase 2: the status-GROUP header maps must speak the Path-B
 // vocabulary. `escalated` is a first-class attention group (red dot, surfaced
-// early); `cancelled` is a calm terminal group (muted dot, dimmed/terminal set);
+// early); `cancelled` is a calm terminal group (muted dot, full opacity);
 // `blocked` is fully retired from this presentation surface.
 describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2)', () => {
   function mountStatuses(tasks: TaskRecord[]) {
@@ -552,7 +559,7 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
     return mountAt(`/orgs/${SLUG}/tasks`);
   }
 
-  test('escalated group renders the red attention dot + a proper label and sorts early', async () => {
+  test('escalated group renders the amber attention dot + a proper label and sorts early', async () => {
     const running = rootTask({
       task_id: 'TASK-0600',
       status: 'in_progress',
@@ -572,14 +579,14 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
     const escalatedHeading = await screen.findByRole('heading', {
       name: /Waiting on you/,
     });
-    // Red attention dot — the SAME token StatusBadge uses for escalated.
+    // Amber attention dot — the SAME token StatusBadge uses for escalated.
     const dot = escalatedHeading.querySelector('span[aria-hidden="true"]');
     expect(dot).not.toBeNull();
-    expect(dot).toHaveClass('text-status-escalated');
+    expect(dot).toHaveClass('text-attention-text');
 
     // Sorts EARLY: the escalated attention group precedes the in_progress group
     // in document order (first-class attention, surfaced near the top).
-    const activeHeading = screen.getByRole('heading', { name: /Active/ });
+    const activeHeading = screen.getByRole('heading', { name: /In progress/ });
     expect(
       escalatedHeading.compareDocumentPosition(activeHeading) &
         Node.DOCUMENT_POSITION_FOLLOWING,
@@ -591,7 +598,7 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
     expect(escalatedHeading.parentElement).not.toHaveClass('opacity-60');
   });
 
-  test('cancelled group renders the muted/terminal treatment and is in the dimmed set', async () => {
+  test('cancelled group renders the muted/terminal treatment without dimming', async () => {
     const cancelled = rootTask({
       task_id: 'TASK-0602',
       status: 'cancelled',
@@ -609,9 +616,8 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
     expect(dot).not.toBeNull();
     expect(dot).toHaveClass('text-status-archived');
 
-    // Cancelled sits in the terminal/dimmed set (calmer than completed).
-    // Dimming is on the heading's wrapper (a-tasks: label above rows-card).
-    expect(cancelledHeading.parentElement).toHaveClass('opacity-60');
+    // Cancelled retains full opacity; only superseded rows are dimmed.
+    expect(cancelledHeading.parentElement).not.toHaveClass('opacity-60');
   });
 
   test('no `blocked` group label or dot path remains on this surface', async () => {
@@ -625,7 +631,7 @@ describe('TasksPage — Path-B status group vocabulary (THR-037 Change B Phase 2
     ];
     mountStatuses(tasks);
 
-    await screen.findByRole('heading', { name: /Active/ });
+    await screen.findByRole('heading', { name: /In progress/ });
     // No retired `blocked` group heading.
     expect(screen.queryByRole('heading', { name: /Blocked/ })).toBeNull();
     // No retired blocked dot token anywhere in the rendered surface.
@@ -672,7 +678,7 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
     // (escalated) · 1 failed (rollup). Wait for the roots query to populate
     // (the static header renders before the fetch resolves).
     await waitFor(() =>
-      expect(screen.getByText(/ROOT TASKS/)).toHaveTextContent('3 ROOT TASKS'),
+      expect(screen.getByText(/ROOT TASKS/)).toHaveTextContent('3 LOADED MATCHING ROOT TASKS'),
     );
     const eyebrow = screen.getByText(/ROOT TASKS/);
     expect(eyebrow).toHaveTextContent('SUBTASKS ROLL UP');
@@ -796,7 +802,7 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
     expect(statusText).not.toContain('escalated');
     // TITLE column: 'subtask escalated' appears as second-line context.
     const rollup = within(row).getByText('subtask escalated');
-    expect(rollup).toHaveClass('text-status-escalated');
+    expect(rollup).toHaveClass('text-attention-text');
   });
 
   test('STATUS compact when delegated + worse rollup — both waiting and rollup in TITLE', async () => {
@@ -934,7 +940,7 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
 
 // THR-046 msg-11: wider layout, cream canvas, rounded column header,
 // rounded bordered group-section cards, right-aligned group-by control,
-// "Waiting on you" escalation label, "Active" in_progress label.
+// "Waiting on you" escalation label, "In progress" label.
 describe('TasksPage — THR-046 msg-11 layout reshape', () => {
   function mountTasks(tasks: TaskRecord[]) {
     sessionStorage.setItem('happyranch.token', 'tok');
@@ -988,13 +994,13 @@ describe('TasksPage — THR-046 msg-11 layout reshape', () => {
     });
     // The header contains a flex row with justify-between — the title (left)
     // and the group-by tabs (right) are siblings.
-    const headerFlex = document.querySelector('header .flex.items-start.justify-between');
+    const headerFlex = screen.getByTestId('tasks-page-header');
     expect(headerFlex).not.toBeNull();
     const tablist = headerFlex!.querySelector('[role="tablist"]');
     expect(tablist).not.toBeNull();
   });
 
-  test('escalated group renders as "Waiting on you" with red attention dot', async () => {
+  test('escalated group renders as "Waiting on you" with amber attention dot', async () => {
     mountTasks([
       rootTask({
         task_id: 'TASK-0730',
@@ -1006,16 +1012,16 @@ describe('TasksPage — THR-046 msg-11 layout reshape', () => {
     const heading = await screen.findByRole('heading', {
       name: /Waiting on you/,
     });
-    // Red attention dot.
+    // Amber attention dot.
     const dot = heading.querySelector('span[aria-hidden="true"]');
     expect(dot).not.toBeNull();
-    expect(dot).toHaveClass('text-status-escalated');
+    expect(dot).toHaveClass('text-attention-text');
     // Not dimmed (dimming lives on the heading's wrapper — a-tasks label
     // above rows-card).
     expect(heading.parentElement).not.toHaveClass('opacity-60');
   });
 
-  test('in_progress group renders as "Active" with green status dot', async () => {
+  test('in_progress group renders as "In progress" with blue status dot', async () => {
     mountTasks([
       rootTask({
         task_id: 'TASK-0740',
@@ -1025,11 +1031,11 @@ describe('TasksPage — THR-046 msg-11 layout reshape', () => {
       }),
     ]);
     const heading = await screen.findByRole('heading', {
-      name: /Active/,
+      name: /In progress/,
     });
     const dot = heading.querySelector('span[aria-hidden="true"]');
     expect(dot).not.toBeNull();
-    expect(dot).toHaveClass('text-status-open');
+    expect(dot).toHaveClass('text-info');
     // Count badge present.
     expect(within(heading).getByText('1')).toBeInTheDocument();
   });
