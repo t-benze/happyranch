@@ -239,8 +239,10 @@ attempted independently with symlink following disabled. Archive errors and a
 cleanup timeout remain secondary to the original failure. The final console JSON
 includes every observed error; the earlier archived receipt cannot include later
 archive errors, so the observer must collect **both** console and artifacts.
-If console publication fails, secondary errors are also attached to the original
-exception. Loss of that external exception/console evidence remains UNKNOWN.
+If console publication fails, its classified `console:<ExceptionClass>` error,
+with the observed console exception as cause, is attached to the original
+exception even before allocation; no filesystem fallback is attempted. Loss of
+that external exception/console evidence remains UNKNOWN.
 The nonce is invocation correlation, not a secret or same-UID isolation boundary.
 These controlled shell/Groovy checks do not establish native Jenkins/CPS/plugin
 behavior or safe concurrent admission; the existing shared-venue gates still apply.

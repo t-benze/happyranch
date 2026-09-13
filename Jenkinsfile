@@ -384,7 +384,13 @@ try {
     try {
       echo groovy.json.JsonOutput.toJson([result: 'ALLOCATION_FAILED', workspace: null,
           pytest_exit: null, errors: [primary.getClass().getSimpleName()]])
-    } catch (Throwable e) { currentBuild.result = 'FAILURE' }
+    } catch (Throwable e) {
+      // There is no verified workspace before allocation, so console is the
+      // only publication channel. Preserve its failure on the original
+      // allocation exception; do not attempt shell, file, or archive fallback.
+      primary.addSuppressed(new RuntimeException('console:' + e.getClass().getSimpleName(), e))
+      currentBuild.result = 'FAILURE'
+    }
   }
   throw primary
 }

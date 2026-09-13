@@ -318,6 +318,18 @@ s.close()
     # it establishes no native-Mac daemon lifetime or independent observer proof.
 
 
+def test_allocation_console_failure_retains_classified_secondary_without_workspace_fallback() -> None:
+    """The unallocated Pipeline path has console only, never filesystem publication."""
+    text = (Path(__file__).parents[1] / "Jenkinsfile").read_text()
+    outer = text.split("} catch (Throwable primary) {", 1)[1]
+    assert "primary.addSuppressed(new RuntimeException('console:' + e.getClass().getSimpleName(), e))" in outer
+    assert "currentBuild.result = 'FAILURE'" in outer
+    allocation_only = outer.split("if (!allocated) {", 1)[1].split("\n  }\n  throw primary", 1)[0]
+    assert "sh(" not in allocation_only
+    assert "writeFile(" not in allocation_only
+    assert "archiveArtifacts(" not in allocation_only
+
+
 @pytest.mark.parametrize("failure", [None, "version", "arch", "env", "origin", "registry", "symlink", "publication-symlink", "publication-file"])
 def test_actual_pipeline_environment_probe(tmp_path, monkeypatch, failure):
     import importlib
