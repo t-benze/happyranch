@@ -386,6 +386,101 @@ println(JsonOutput.toJson([passed:true, primary:thrown.message,
 '''
 
 
+def test_allocated_console_failure_retains_exact_causal_objects(tmp_path) -> None:
+    """Evaluate the shipping allocated body with retained Pipeline doubles."""
+    jar = os.environ.get("THR211_GROOVY_JAR")
+    if not jar:
+        pytest.skip("evaluated Pipeline requires the task-provisioned Groovy jar")
+    probe = tmp_path / "allocated-console.groovy"
+    probe.write_text(ALLOCATED_CONSOLE_PROBE_GROOVY)
+    env, _ = _pipeline_tools(tmp_path)
+    inputs = tmp_path / "input.json"
+    inputs.write_text(json.dumps({"allocation": {"env": env}}))
+    result = subprocess.run([
+        "/usr/bin/java", f"-Djava.io.tmpdir={tmp_path}", "-cp", jar,
+        "groovy.ui.GroovyMain", str(probe),
+        str(Path(__file__).parents[1] / "Jenkinsfile"), str(inputs),
+    ], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["passed"] == ["primary", "abort", "console-only", "multiple"]
+
+
+ALLOCATED_CONSOLE_PROBE_GROOVY = r'''
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurperClassic
+def input = new JsonSlurperClassic().parseText(new File(args[1]).text).allocation
+def installed = input.env.findAll { k,v -> k.startsWith('ADMITTED_') }.collectEntries { k,v -> [(k.substring(9)):v] }
+def passed = []
+['primary', 'abort', 'console-only', 'multiple'].each { scenario ->
+  def b = new Binding()
+  b.setVariable('THR211_INSTALL', installed)
+  b.setVariable('params', [REQUEST_ID:installed.REQUEST, MODE:installed.MODE, SOURCE_SHA:installed.SOURCE, PIPELINE_SHA:installed.PIPELINE])
+  b.setVariable('env', [BUILD_NUMBER:'1'])
+  b.setVariable('currentBuild', [result:null])
+  b.setVariable('properties', { List x -> })
+  b.setVariable('disableConcurrentBuilds', { -> [:] })
+  b.setVariable('parameters', { List x -> x })
+  b.setVariable('choice', { Map x -> x })
+  b.setVariable('string', { Map x -> x })
+  b.setVariable('parallel', { Map x -> x.execution(); x.allocation() })
+  def primary = scenario == 'abort' ? new InterruptedException('aborted') : new IllegalArgumentException('workload primary')
+  def console = new IOException('exact console object')
+  def calls = []
+  def childEnv = [:]
+  b.setVariable('node', { String x, Closure body -> calls.add('node'); body() })
+  b.setVariable('pwd', { -> input.env.WORKSPACE })
+  b.setVariable('stage', { String x, Closure body ->
+    // This controlled branch covers aggregation with no earlier primary. It
+    // does not claim the currently held live Workload can finish successfully.
+    if (x == 'Workload' && scenario == 'console-only') return
+    body()
+  })
+  b.setVariable('timeout', { Map x, Closure body -> body() })
+  b.setVariable('withEnv', { List x, Closure body ->
+    def old = [:] + childEnv
+    x.each { def parts = it.toString().split('=', 2); childEnv[parts[0]] = parts[1] }
+    try { body() } finally { childEnv = old }
+  })
+  b.setVariable('sh', { Map x ->
+    assert x.returnStdout
+    if (childEnv.containsKey('PUBLICATION_ROOT')) {
+      calls.add('writer')
+      return 'THR211_ACQUIRED=' + JsonOutput.toJson([published:true, nonce:childEnv.PUBLICATION_NONCE, root:childEnv.PUBLICATION_ROOT, errors:[]])
+    }
+    calls.add('prepare')
+    return 'THR211_ACQUIRED=' + JsonOutput.toJson([nonce:childEnv.PUBLICATION_NONCE, root:input.env.WORKSPACE+'/thr211-1', ancestry:[[device:1,inode:2]], exit:0, errors:[]]) + '\nTHR211_EXIT=0\n'
+  })
+  b.setVariable('archiveArtifacts', { Map x ->
+    calls.add('archive')
+    assert x.allowEmptyArchive == false && x.followSymlinks == false
+    if (scenario == 'multiple') throw new IOException('archive unavailable')
+  })
+  b.setVariable('writeFile', { Map x -> throw new AssertionError('unsafe writeFile') })
+  b.setVariable('error', { String x -> throw primary })
+  b.setVariable('echo', { String x -> calls.add('console'); throw console })
+  Throwable thrown
+  try { new GroovyShell(b).evaluate(new File(args[0])) } catch (Throwable e) { thrown = e }
+  assert calls == ['node', 'prepare', 'writer', 'archive', 'archive', 'console']
+  assert b.getVariable('currentBuild').result == 'FAILURE'
+  if (scenario == 'console-only') {
+    assert thrown.is(console)
+    assert thrown.suppressed.length == 0
+    assert thrown.cause == null
+  } else {
+    assert thrown.is(primary)
+    assert thrown.cause == null
+    def classified = thrown.suppressed.findAll { it.message == 'console:IOException' }
+    assert classified.size() == 1
+    assert classified[0].cause.is(console)
+    assert thrown.suppressed.length == (scenario == 'multiple' ? 3 : 1)
+    if (scenario == 'multiple') assert thrown.suppressed*.message == ['receipt-archive:IOException', 'artifacts:IOException', 'console:IOException']
+  }
+  passed.add(scenario)
+}
+println(JsonOutput.toJson([passed:passed]))
+'''
+
+
 def _await_file(path: Path, timeout: float = 2) -> str:
     import time
     deadline = time.monotonic() + timeout

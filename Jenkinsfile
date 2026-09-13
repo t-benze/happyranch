@@ -291,6 +291,8 @@ try {
         receipt.source = params.SOURCE_SHA
         receipt.pipeline = params.PIPELINE_SHA
         def primaryFailure = null
+        def consoleFailure = null
+        def consoleClassification = null
         def acquisition = null
         def nonce = java.util.UUID.randomUUID().toString()
         try {
@@ -369,11 +371,24 @@ try {
           // archived initial receipt cannot contain errors occurring after it.
           try {
             echo groovy.json.JsonOutput.toJson(receipt)
-          } catch (Throwable e) { receipt.errors.add('console:' + e.getClass().getSimpleName()) }
+          } catch (Throwable e) {
+            consoleFailure = e
+            consoleClassification = 'console:' + e.getClass().getSimpleName()
+            receipt.errors.add(consoleClassification)
+          }
           if (receipt.errors) currentBuild.result = 'FAILURE'
         }
+        // Keep the observed console object even when there was no earlier
+        // primary. A classification string is only the serializable receipt.
+        if (primaryFailure == null && consoleFailure != null) primaryFailure = consoleFailure
         if (primaryFailure != null) {
-          receipt.errors.each { primaryFailure.addSuppressed(new RuntimeException(it.toString())) }
+          receipt.errors.each {
+            if (it != consoleClassification) {
+              primaryFailure.addSuppressed(new RuntimeException(it.toString()))
+            } else if (!primaryFailure.is(consoleFailure)) {
+              primaryFailure.addSuppressed(new RuntimeException(it.toString(), consoleFailure))
+            }
+          }
           throw primaryFailure
         }
         if (receipt.errors) error('cleanup/publication failed; see every secondary error')
