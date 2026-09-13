@@ -73,3 +73,14 @@ describe('StatusBadge — Path B task vocabulary', () => {
     expect(screen.getByText('archived')).toHaveClass('text-status-archived');
   });
 });
+
+describe('Tasks opt-in presentation', () => {
+  test.each(['in_progress', 'escalated'] as const)('%s changes only when opted in', (status) => {
+    const { container } = render(<><StatusBadge status={status} /><StatusBadge status={status} presentation="tasks" /></>);
+    const [normal, tasks] = Array.from(container.children);
+    expect(normal).not.toHaveClass('tasks-status');
+    expect(tasks).toHaveClass('tasks-status', status === 'in_progress' ? 'text-info' : 'text-attention-text');
+    expect(normal).toHaveClass(status === 'in_progress' ? 'text-status-open' : 'text-status-escalated');
+    expect(normal.textContent).toBe(tasks.textContent);
+  });
+});

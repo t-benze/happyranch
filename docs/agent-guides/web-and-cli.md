@@ -27,6 +27,29 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 - Python: `tests/contract/test_openapi_snapshot.py` pins OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
 - TypeScript: `web/src/test/openapi-coverage.test.ts` asserts every documented path is either included with a TS mirror or excluded with justification.
 
+### Tasks list
+
+The Tasks heading, grouping controls, inline filters and root rows share one
+scroll owner. Status, Agent and Thread grouping use loaded matching roots;
+counts do not claim a server total or count subtasks. Status grouping preserves
+all seven lifecycle groups: Completed excludes superseded, which appears in
+Resolved. Only superseded rows are dimmed in every grouping. Tasks opts into
+blue in-progress and amber escalated badges and its own AppBar metrics; other
+surfaces retain their defaults.
+
+Filter supports status and exact assigned-agent name. Apply submits both drafts;
+closing the panel leaves applied values unchanged. Clear omits both parameters.
+An empty agent means no agent filter, not an unassigned-only request. Applied
+values remain visible, including for successful empty results. A new org/filter
+request starts without another context's cursor; returning to a cached context
+retains its own pages. Local recovery ownership resets on context changes.
+Initial failures show an
+explicit Retry; failed refreshes retain cached rows and a stale warning;
+failed pagination retains loaded rows and requires its separate page Retry.
+Manual refresh retries the active context's loaded pages. Subtask severity
+rollups are count-free; task detail owns subtask browsing. No New task flow is
+exposed by this list.
+
 ### Thread-detail system rows
 
 The live `ThreadDetailTranscript` renders system events through its local
