@@ -30,9 +30,11 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 	}
 	visible := false
 	for _, peer := range status.Peer {
-		if peer.HostName == c.ExpectedPeer || strings.TrimSuffix(peer.DNSName, ".") == c.ExpectedPeer {
-			visible = true
-			break
+		for _, expected := range c.ExpectedPeers {
+			if peer.HostName == expected || strings.TrimSuffix(peer.DNSName, ".") == expected {
+				visible = true
+				break
+			}
 		}
 	}
 	return RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: visible}, nil
