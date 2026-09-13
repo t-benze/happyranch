@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import json
 import sqlite3
 import threading
 import traceback
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +17,47 @@ from fastapi import HTTPException
 from runtime.models import CompletionReport
 from runtime.orchestrator import prompt_loader
 from runtime.orchestrator.chain import build_prior_leg_context
+
+
+@dataclasses.dataclass(frozen=True)
+class _U0HostedSourceContract:
+    """Pinned source contracts for PR845 and its recorded hosted merge.
+
+    These are intentionally a closed set.  The evidence scenarios must not
+    silently accept a source whose prompt or teardown behavior is unknown.
+    """
+
+    expanded_prior_steps: bool
+    teardown_scratch_report: bool
+
+
+def _u0_hosted_source_contract() -> _U0HostedSourceContract:
+    """Select the exact, independently recorded PR or hosted-merge contract."""
+    import runtime.orchestrator.orchestrator as orchestrator_module
+    import runtime.orchestrator.run_step as run_step_module
+
+    source_pair = (
+        hashlib.sha256(Path(run_step_module.__file__).read_bytes()).hexdigest(),
+        hashlib.sha256(Path(orchestrator_module.__file__).read_bytes()).hexdigest(),
+    )
+    contracts = {
+        # PR845 e1e2c676: compact prior-step records; no teardown reporter.
+        ("3f201e4763f1f48b81f1656078b07332e656857e1b4629e4507e1f50189e3566",
+         "0c84c2d8af5de8fada6b64771c5a94f65f3e6cb28be1a9176d238b26b6ce0369"):
+            _U0HostedSourceContract(False, False),
+        # Recorded synthetic merge f08d99b tree 536d81be: both behaviors land
+        # from its main parent.  These are source bytes, not test observations.
+        ("e6b5b869b3ec3f1a6e597594b9e27f5e48dad4ff9f361646d19c924d771ea86e",
+         "65606c50ee41224fdb8fe48193adffd045a0d6977fd7eed7e4342c0ec876e73d"):
+            _U0HostedSourceContract(True, True),
+    }
+    try:
+        return contracts[source_pair]
+    except KeyError as error:
+        raise AssertionError(
+            "unverified U0 source contract: run_step/orchestrator sha256="
+            f"{source_pair!r}"
+        ) from error
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2060,10 +2103,29 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
         key: value for key, value in after_cancel.items() if key != "audits"
     }
     assert final["audits"][parent_id] == after_cancel["audits"][parent_id]
-    assert final["audits"][first][:-1] == after_cancel["audits"][first]
-    assert final["audits"][first][-1]["action"] == "session_end"
-    assert final["audits"][first][-1]["task_id"] == first
-    assert final["audits"][first][-1]["agent"] == "dev_agent"
+    contract = _u0_hosted_source_contract()
+    expected_tail = 2 if contract.teardown_scratch_report else 1
+    assert final["audits"][first][:-expected_tail] == after_cancel["audits"][first]
+    terminal_tail = final["audits"][first][-expected_tail:]
+    if contract.teardown_scratch_report:
+        scratch_audit, session_end = terminal_tail
+        # Teardown reports its bounded scratch observation before the session
+        # terminal audit. Keep the complete new row in-order, never filtered.
+        assert set(scratch_audit) == {"id", "task_id", "agent", "action", "payload", "timestamp"}
+        assert scratch_audit["task_id"] == first
+        assert scratch_audit["agent"] == "dev_agent"
+        assert scratch_audit["action"] == "task_scratch_report"
+        assert scratch_audit["payload"]["report_only"] is True
+        assert scratch_audit["payload"]["source"] == "teardown"
+        assert scratch_audit["payload"]["decision"] == "unavailable"
+        assert scratch_audit["payload"]["reasons"] == [
+            "coverage_not_ready", "nonterminal_or_unresolved_lineage", "observer_unavailable",
+        ]
+    else:
+        (session_end,) = terminal_tail
+    assert session_end["action"] == "session_end"
+    assert session_end["task_id"] == first
+    assert session_end["agent"] == "dev_agent"
     assert late_statuses == [(409, {"code": "task_not_active", "task_id": first,
                                    "status": TaskStatus.CANCELLED.value, "cancelled": True})]
     assert [task_id for task_id, *_rest in launches] == [parent_id, first]
@@ -2496,6 +2558,7 @@ def test_r1_plain_fanout_joins_only_after_both_original_children_complete(
 def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     tmp_path, monkeypatch, completion_order: tuple[int, int],
     boundary_failure: BaseException | None = None,
+    interleaver_failure: BaseException | None = None,
 ) -> None:
     """Two real queue workers consume both plain children before either callback.
 
@@ -2696,15 +2759,33 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         # writer is deliberately concurrent and becomes the global last event;
         # the invocation-owned event above must remain the audit observation.
         interleaving_done = threading.Event()
+        interleaver_errors: list[BaseException] = []
         def interleave() -> None:
-            interleaving_control["thread_id"] = threading.get_ident()
-            db.update_task("TASK-U0-INTERLEAVER", note="unrelated writer")
-            interleaving_done.set()
+            try:
+                if interleaver_failure is not None:
+                    raise interleaver_failure
+                db.update_task("TASK-U0-INTERLEAVER", note="unrelated writer")
+                interleaving_control["invocation"] = task_writer_observations[-1]["invocation"]
+            except BaseException as error:
+                interleaver_errors.append(error)
+            finally:
+                interleaving_done.set()
         interleaver = threading.Thread(target=interleave, name="u0-sql-observer-interleave", daemon=False)
         interleaver.start()
-        assert interleaving_done.wait(3), "unrelated writer did not finish"
-        interleaver.join(3)
-        assert not interleaver.is_alive()
+        interleaver_assertion = None
+        try:
+            assert interleaving_done.wait(3), "unrelated writer did not finish"
+        except BaseException as error:
+            interleaver_assertion = error
+        finally:
+            interleaver.join(3)
+        if interleaver.is_alive():
+            interleaver_errors.append(RuntimeError("owned SQL observer interleaver did not join"))
+        if interleaver_errors or interleaver_assertion is not None:
+            failures = [*interleaver_errors]
+            if interleaver_assertion is not None:
+                failures.append(interleaver_assertion)
+            raise BaseExceptionGroup("SQL observer interleaver failures", failures)
         interleaving_control["audit_invocation"] = invocation
         interleaving_control["global_last_invocation"] = persistence_events[-1]["invocation"]
         join_audit_writer_observations.append({
@@ -2987,11 +3068,22 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
     assert all(call["manager_name"] == "engineering_head" and call["self_only"] is False
                for call in role_guidance_calls)
     assert role_guidance_calls[0]["prior_steps"] == []
+    if _u0_hosted_source_contract().expanded_prior_steps:
+        expected_prior_steps = [
+            (1, "dev_agent", "delegate [TASK-001]: plain zero",
+             "task_id=TASK-001; status=completed; verdict=PASS; "
+             "revisit_of_task_id=(none); reason=report:TASK-001", True),
+            (2, "dev_agent", "delegate [TASK-002]: plain one",
+             "task_id=TASK-002; status=completed; verdict=PASS; "
+             "revisit_of_task_id=(none); reason=report:TASK-002", True),
+        ]
+    else:
+        expected_prior_steps = [
+            (1, "dev_agent", "delegate: plain zero", "report:TASK-001", True),
+            (2, "dev_agent", "delegate: plain one", "report:TASK-002", True),
+        ]
     assert [(step.step_number, step.agent, step.action, step.result_summary, step.success)
-            for step in role_guidance_calls[1]["prior_steps"]] == [
-        (1, "dev_agent", "delegate: plain zero", "report:TASK-001", True),
-        (2, "dev_agent", "delegate: plain one", "report:TASK-002", True),
-    ]
+            for step in role_guidance_calls[1]["prior_steps"]] == expected_prior_steps
     assert joins[0]["payload"] == {
         "width": 2, "children_ids": children, "context_markdown": expected_join_context,
     }
@@ -3112,7 +3204,7 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
             )
             assert writer["sql"].lstrip().startswith("INSERT INTO task_results")
             assert writer["invocation"] == writer_observation["invocation"]
-            assert writer["thread_id"] != interleaving_control["thread_id"]
+            assert writer["invocation"] != interleaving_control["invocation"]
             assert row == _u0_normalize_persisted_rows(
                 {"tasks": [], "results": [report["persisted_row"]], "audits": []}
             )["results"][0]
@@ -3204,6 +3296,22 @@ def test_r1_plain_fanout_real_workers_retain_dispatcher_and_boundary_errors(tmp_
         )
     assert any("U0_PLAIN_FANOUT_DISPATCH_ERROR" in str(error) for error in raised.value.exceptions)
     assert any("U0_PLAIN_FANOUT_BOUNDARY_ERROR" in str(error) for error in raised.value.exceptions)
+
+
+def test_r1_plain_fanout_sql_observer_interleaver_retains_original_error(tmp_path, monkeypatch) -> None:
+    """The owned unrelated-writer failure survives release and worker cleanup."""
+    with pytest.raises(BaseExceptionGroup, match="cancellation harness failures") as raised:
+        test_r1_plain_fanout_real_workers_join_in_each_callback_order(
+            tmp_path, monkeypatch, (0, 1),
+            interleaver_failure=RuntimeError("U0_SQL_OBSERVER_INTERLEAVER_ERROR"),
+        )
+
+    def contains(error: BaseException) -> bool:
+        if "U0_SQL_OBSERVER_INTERLEAVER_ERROR" in str(error):
+            return True
+        return isinstance(error, BaseExceptionGroup) and any(contains(item) for item in error.exceptions)
+
+    assert any(contains(error) for error in raised.value.exceptions)
 
 
 def test_r1_plain_fanout_cancel_after_commit_before_original_child_publication(
@@ -3752,9 +3860,28 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
         assert changed <= {"updated_at", "last_heartbeat"}
         appended_audits = final["audits"][task_id][len(after["audits"][task_id]):]
         assert final["audits"][task_id][:len(after["audits"][task_id])] == after["audits"][task_id]
-        assert appended_audits == ([] if task_id != live else [
-            audit for audit in appended_audits if audit["action"] == "session_end"
-        ])
+        if task_id != live:
+            assert appended_audits == []
+        else:
+            contract = _u0_hosted_source_contract()
+            assert [audit["action"] for audit in appended_audits] == (
+                ["task_scratch_report", "session_end"]
+                if contract.teardown_scratch_report else ["session_end"]
+            )
+            if contract.teardown_scratch_report:
+                scratch_audit, session_end = appended_audits
+                assert set(scratch_audit) == {"id", "task_id", "agent", "action", "payload", "timestamp"}
+                assert scratch_audit["task_id"] == live
+                assert scratch_audit["agent"] == "dev_agent"
+                assert scratch_audit["payload"]["report_only"] is True
+                assert scratch_audit["payload"]["source"] == "teardown"
+                assert scratch_audit["payload"]["decision"] == "unavailable"
+                assert scratch_audit["payload"]["reasons"] == [
+                    "coverage_not_ready", "nonterminal_or_unresolved_lineage", "observer_unavailable",
+                ]
+            else:
+                (session_end,) = appended_audits
+            assert session_end["task_id"] == live and session_end["agent"] == "dev_agent"
     for surface in ("attachments", "results", "sessions", "pids", "controls", "queue", "canonical_agents", "archived_agents", "workspaces", "archived_workspaces", "teams_bytes", "active_fanout", "active_chain"):
         assert final[surface] == after[surface]
     assert not [row for row in final["audits"][parent_id] if row["action"] == "fanout_join"]

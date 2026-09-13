@@ -326,3 +326,30 @@ byte verification must cite its own command, head, digest, and result.
 TASK-7825 published before its required corrected-byte `scripts/local_ci.sh
 all`; that missing local-CI verification remains historical missing evidence,
 not a pass and not a reason to reuse JOB1591.
+
+### 2026-09-12 R1 observer-harness correction (TASK-7916)
+
+The real-worker plain-fanout SQLite observer now treats its unrelated writer as
+an invocation-owned worker: it records the original error, signals its done
+event in `finally`, joins after both successful and failed waits, and returns
+the original error through the existing dispatcher/worker cleanup aggregation.
+Attribution compares writer invocation identity, not a cross-lifetime Python
+thread ID that may be reused. The focused injected control preserves
+`U0_SQL_OBSERVER_INTERLEAVER_ERROR` after all cleanup; normal real-worker JOIN
+orders remain green. This is test-harness evidence only. Populated
+pipeline-carrier PASS/None/REVISE shipping schedules, cancellation/remaining
+serialization, and R2--R5 remain uncompleted R1/package cells.
+
+### 2026-09-13 hosted-merge correction and D5 packet (TASK-8215)
+
+Hosted Python 3.14 exercised synthetic merge `f08d99b` (reconstructed tree
+`536d81be`) rather than PR-only source. The five failures were assertion drift:
+both JOIN orders retain the source-owned `delegate [TASK-ID]` label and
+task/status/verdict/revisit summary, while cancellation teardown appends a
+complete `task_scratch_report` audit before `session_end`. The tests assert the
+ordered rows and source-defined teardown fields without filtering audit residue
+or weakening prompt equality. The companion D5 packet remains proposal/evidence
+only: it recommends a distinct workflow-owned persistence/dispatch adapter,
+keeps legacy chain/fanout owners, and names Founder decisions before any
+protected implementation. U1--U6, cutover proof, and the NOT RUN study remain
+explicitly pending.
