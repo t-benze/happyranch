@@ -39,7 +39,7 @@ def test_list_agents_returns_names(tmp_home, app, org_state, auth_headers) -> No
 
 
 def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
-    app, org_state, auth_headers,
+    app, daemon_state, org_state, auth_headers,
 ) -> None:
     """The activity read uses trigger audits, before its five-row limit."""
     _seed_active_agent(org_state, "dev_agent")
@@ -79,12 +79,24 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
         ("TASK-wrong-trigger", "dev_agent", "completed", "cleanup", "2026-04-02T00:00:00+00:00", "2026-04-02T00:00:00+00:00"),
     )
     db.insert_audit_log("TASK-wrong-trigger", "qa_engineer", "workspace_cleanup_triggered", None)
+    # A second eligible agent contributes its own activity in alpha.  Its
+    # separate HTTP read below prevents this from being merely a foreign-row
+    # negative fixture.
+    db._conn.execute(
+        "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-ALPHA-QA", "qa_engineer", "completed", "cleanup", "2026-04-03T00:00:00+00:00", "2026-04-03T00:00:00+00:00"),
+    )
+    db.insert_audit_log("TASK-ALPHA-QA", "qa_engineer", "workspace_cleanup_triggered", None)
     # Result selection is scoped to the task and requested agent.  The later
     # foreign result must not replace the matching result, while null and blank
     # summaries remain distinct wire values for the presentation layer.
     db._conn.execute(
         "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        ("TASK-6", "dev_agent", "sess-6", "blocked", "latest matching summary", "2026-01-06T00:00:00+00:00"),
+        ("TASK-6", "dev_agent", "sess-6-old", "completed", "older matching summary", "2026-01-06T00:00:00+00:00"),
+    )
+    db._conn.execute(
+        "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-6", "dev_agent", "sess-6-new", "blocked", "latest matching summary", "2026-01-07T00:00:00+00:00"),
     )
     db._conn.execute(
         "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -118,6 +130,57 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     assert response.json()["activities"][4]["result_status"] == "failed"
     assert response.json()["activities"][4]["output_summary"] == ""
     assert db._conn.total_changes == before
+    alpha_qa_response = TestClient(app).get(
+        "/api/v1/orgs/alpha/agents/qa_engineer/cleanup-activity", headers=auth_headers,
+    )
+    assert alpha_qa_response.status_code == 200
+    assert alpha_qa_response.json()["activities"] == [{
+        "task_id": "TASK-ALPHA-QA", "status": "completed",
+        "created_at": "2026-04-03T00:00:00+00:00",
+        "result_status": None, "output_summary": None,
+    }]
+    assert db._conn.total_changes == before
+
+    # A second loaded org proves the HTTP dependency resolves each org's
+    # database, rather than merely filtering foreign rows in alpha.
+    beta_root = daemon_state.runtime.orgs_dir / "beta"
+    (beta_root / "org" / "agents").mkdir(parents=True)
+    (beta_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    beta = asyncio.run(daemon_state.add_org("beta"))
+    _seed_active_agent(beta, "dev_agent")
+    _seed_active_agent(beta, "qa_engineer")
+    beta.db._conn.execute(
+        "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-BETA", "qa_engineer", "completed", "cleanup", "2026-05-01T00:00:00+00:00", "2026-05-01T00:00:00+00:00"),
+    )
+    beta.db.insert_audit_log("TASK-BETA", "qa_engineer", "workspace_cleanup_triggered", None)
+    beta.db._conn.execute(
+        "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-BETA-DEV", "dev_agent", "failed", "cleanup", "2026-05-02T00:00:00+00:00", "2026-05-02T00:00:00+00:00"),
+    )
+    beta.db.insert_audit_log("TASK-BETA-DEV", "dev_agent", "workspace_cleanup_triggered", None)
+    beta.db._conn.commit()
+    beta_before = beta.db._conn.total_changes
+    beta_response = TestClient(app).get(
+        "/api/v1/orgs/beta/agents/qa_engineer/cleanup-activity", headers=auth_headers,
+    )
+    assert beta_response.status_code == 200
+    assert beta_response.json()["activities"] == [{
+        "task_id": "TASK-BETA", "status": "completed",
+        "created_at": "2026-05-01T00:00:00+00:00",
+        "result_status": None, "output_summary": None,
+    }]
+    assert beta.db._conn.total_changes == beta_before
+    beta_dev_response = TestClient(app).get(
+        "/api/v1/orgs/beta/agents/dev_agent/cleanup-activity", headers=auth_headers,
+    )
+    assert beta_dev_response.status_code == 200
+    assert beta_dev_response.json()["activities"] == [{
+        "task_id": "TASK-BETA-DEV", "status": "failed",
+        "created_at": "2026-05-02T00:00:00+00:00",
+        "result_status": None, "output_summary": None,
+    }]
+    assert beta.db._conn.total_changes == beta_before
 
 
 def test_cleanup_activity_returns_404_for_unknown_agent(app, auth_headers) -> None:

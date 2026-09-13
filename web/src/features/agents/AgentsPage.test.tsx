@@ -1879,9 +1879,12 @@ describe('AgentDetailPane — cleanup activity', () => {
     stubBaseHandlers();
     stubDetailHandlers();
     let resolvePrevious!: () => void;
+    let observePreviousRequest!: () => void;
     const previous = new Promise<void>((resolve) => { resolvePrevious = resolve; });
+    const previousRequest = new Promise<void>((resolve) => { observePreviousRequest = resolve; });
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, async () => {
+        observePreviousRequest();
         await previous;
         return HttpResponse.json({ activities: [{ task_id: 'TASK-OLD', status: 'failed', result_status: null, created_at: '2026-05-20T08:00:00Z', output_summary: 'old owner' }] });
       }),
@@ -1890,12 +1893,19 @@ describe('AgentDetailPane — cleanup activity', () => {
       ),
     );
     const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+    const { client } = mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_head`]);
     await screen.findByText(/Loading cleanup activity/i);
+    await previousRequest;
     await user.click(await screen.findByRole('button', { name: /support_agent/i }));
     const task = await screen.findByRole('link', { name: 'TASK-CURRENT' });
     resolvePrevious();
     await act(async () => { await previous; });
+    await waitFor(() => {
+      const oldQuery = client.getQueryCache().find({ queryKey: ['cleanup-activity', SLUG, 'engineering_head'] });
+      expect(oldQuery?.state.fetchStatus).toBe('idle');
+      expect(oldQuery?.state.status).toBe('success');
+      expect(oldQuery?.state.data).toEqual(expect.objectContaining({ activities: [expect.objectContaining({ task_id: 'TASK-OLD' })] }));
+    });
     expect(screen.queryByText('old owner')).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'TASK-CURRENT' })).toBeInTheDocument();
     task.focus();
@@ -1908,7 +1918,9 @@ describe('AgentDetailPane — cleanup activity', () => {
     stubBaseHandlers();
     stubDetailHandlers();
     let resolveOld!: () => void;
+    let observeOldRequest!: () => void;
     const old = new Promise<void>((resolve) => { resolveOld = resolve; });
+    const oldRequest = new Promise<void>((resolve) => { observeOldRequest = resolve; });
     const otherAgents = { agents: [AGENTS_PAYLOAD.agents[0]] };
     server.use(
       http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }, { slug: OTHER, root: '/y' }] })),
@@ -1919,6 +1931,7 @@ describe('AgentDetailPane — cleanup activity', () => {
       http.get(`/api/v1/orgs/${OTHER}/jobs/`, () => HttpResponse.json({ jobs: [] })),
       http.get(`/api/v1/orgs/${OTHER}/agents/engineering_head/memory/entries/`, () => HttpResponse.json({ entries: [] })),
       http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, async () => {
+        observeOldRequest();
         await old;
         return HttpResponse.json({ activities: [{ task_id: 'TASK-OLD-ORG', status: 'failed', result_status: null, created_at: '2026-05-20T08:00:00Z', output_summary: 'old org' }] });
       }),
@@ -1927,8 +1940,9 @@ describe('AgentDetailPane — cleanup activity', () => {
       ),
     );
     const user = userEvent.setup();
-    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+    const { client } = mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_head`]);
     await screen.findByText(/Loading cleanup activity/i);
+    await oldRequest;
     // Radix Select consults this browser API during its real pointer path;
     // JSDOM omits it, so provide the harmless false response on this trigger.
     const orgSwitcher = screen.getByLabelText('Active org');
@@ -1936,11 +1950,21 @@ describe('AgentDetailPane — cleanup activity', () => {
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
     await user.click(orgSwitcher);
     await user.click(await screen.findByRole('option', { name: OTHER }));
-    expect(await screen.findByRole('link', { name: 'TASK-NEW-ORG' })).toHaveAttribute('href', `/orgs/${OTHER}/tasks/TASK-NEW-ORG`);
+    const task = await screen.findByRole('link', { name: 'TASK-NEW-ORG' });
+    expect(task).toHaveAttribute('href', `/orgs/${OTHER}/tasks/TASK-NEW-ORG`);
     resolveOld();
     await act(async () => { await old; });
+    await waitFor(() => {
+      const oldQuery = client.getQueryCache().find({ queryKey: ['cleanup-activity', SLUG, 'engineering_head'] });
+      expect(oldQuery?.state.fetchStatus).toBe('idle');
+      expect(oldQuery?.state.status).toBe('success');
+      expect(oldQuery?.state.data).toEqual(expect.objectContaining({ activities: [expect.objectContaining({ task_id: 'TASK-OLD-ORG' })] }));
+    });
     expect(screen.queryByText('old org')).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'TASK-NEW-ORG' })).toBeInTheDocument();
+    task.focus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('heading', { name: 'TASK-NEW-ORG' })).toBeInTheDocument();
   });
 });
 
