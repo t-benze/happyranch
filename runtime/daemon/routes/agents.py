@@ -472,6 +472,15 @@ def list_agents(slug: str, org: OrgDep) -> dict:
     return {"agents": rows}
 
 
+@router.get("/agents/{agent_name}/cleanup-activity")
+def get_cleanup_activity(slug: str, agent_name: str, org: OrgDep) -> dict:
+    """Read the five newest scheduler-triggered workspace cleanup tasks."""
+    paths = OrgPaths(root=org.root)
+    if prompt_loader.load_agent(paths, agent_name) is None:
+        raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+    return {"activities": org.db.list_workspace_cleanup_activity(agent_name)}
+
+
 @router.post("/agents/init")
 async def init_agents(slug: str, body: InitBody, org: OrgDep):
     """Initialize agent workspaces.
