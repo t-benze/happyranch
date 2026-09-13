@@ -12,6 +12,7 @@
  * assertions.
  */
 import { act, screen, waitFor } from '@testing-library/react';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterEach, describe, expect, test, vi } from 'vitest';
@@ -20,6 +21,13 @@ import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 
 const SLUG = 'alpha';
+
+let mountedQueryClient: QueryClient | null = null;
+
+function QueryClientProbe(): null {
+  mountedQueryClient = useQueryClient();
+  return null;
+}
 
 function mountAt(route: string) {
   server.use(
@@ -30,7 +38,19 @@ function mountAt(route: string) {
       HttpResponse.json({ agents: [] }),
     ),
   );
-  return renderWithProviders(<AppRoutes />, { route });
+  return renderWithProviders(<><AppRoutes /><QueryClientProbe /></>, { route });
+}
+
+/** The active list query is intentionally discovered, not reconstructed: the
+ * page owns its query parameters and row navigation unmounts that page. */
+function openListCache() {
+  const query = mountedQueryClient?.getQueryCache().findAll({
+    queryKey: ['threads', SLUG],
+  }).find(({ queryKey }) => (queryKey[2] as { status?: string } | undefined)?.status === 'open');
+  expect(query).toBeDefined();
+  return mountedQueryClient!.getQueryData<{ threads: ReturnType<typeof mkThread>[] }>(
+    query!.queryKey,
+  );
 }
 
 function mkThread(
@@ -174,6 +194,7 @@ beforeEach(() => {
 
 afterEach(() => {
   sessionStorage.removeItem('happyranch.token');
+  mountedQueryClient = null;
   vi.restoreAllMocks();
 });
 
@@ -405,28 +426,30 @@ describe('THR-209 — Pinned section', () => {
     );
   });
 
-  test('pinned section headings and controls are keyboard-accessible with clear labels', async () => {
-    stubList([
+  test('pinned section rows are navigation-only and retain native links', async () => {
+    const state = [
       mkThread('THR-1', 'Pinned accessible', { pinned: true, pinned_at: '2026-05-20T00:00:00Z' }),
       mkThread('THR-2', 'Ordinary accessible'),
-    ]);
+    ];
+    stubList(state);
+    stubDetail(state[0]);
     mountAt(`/orgs/${SLUG}/threads`);
     await waitFor(() => expect(screen.getByText(/Pinned accessible/i)).toBeInTheDocument());
 
     // Section headings are real h2 elements in document order.
     const headings = screen.getAllByRole('heading', { level: 2 });
     expect(headings.map((h) => h.textContent)).toEqual(['Pinned', 'Threads']);
-    // Every row exposes a keyboard-reachable pin toggle with a labelled name.
-    expect(
-      screen.getByRole('button', { name: /Unpin thread THR-1/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: /Pin thread THR-2/i }),
-    ).toBeInTheDocument();
-    // The per-row pin buttons are focusable controls (tabbable).
-    for (const b of screen.getAllByRole('button', { name: /Pin thread|Unpin thread/i })) {
-      expect(b).toHaveAttribute('type', 'button');
-    }
+    expect(screen.queryByRole('button', { name: /Pin thread|Unpin thread/i })).not.toBeInTheDocument();
+    const row = screen.getByRole('link', { name: /Pinned accessible/i });
+    expect(row).toHaveAttribute(
+      'href', `/orgs/${SLUG}/threads/THR-1`,
+    );
+    // Assert focus while the list is still mounted; Enter follows the native
+    // anchor and swaps to the surviving detail-only control.
+    row.focus();
+    expect(row).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument());
   });
 
   test('Pinned section renders identically when the open list is the sole qualifying view', async () => {
@@ -450,33 +473,32 @@ describe('THR-209 — Pinned section', () => {
     );
   });
 
-  test('row pin toggle updates list optimistically and calls POST /pin', async () => {
+  test('row navigation reaches the detail Pin control and preserves the mutation', async () => {
     // Stateful stub: the POST flips the durable pin state the GET returns.
     const state = [mkThread('THR-A', 'Alpha subject')];
     stubList(state);
+    stubDetail(state[0]);
     server.use(
       http.post(`/api/v1/orgs/${SLUG}/threads/THR-A/pin`, () => {
-        state[0] = { ...state[0], pinned: true, pinned_at: '2026-05-20T00:00:00Z' };
+        state[0].pinned = true;
+        state[0].pinned_at = '2026-05-20T00:00:00Z';
         return HttpResponse.json({ thread_id: 'THR-A', pinned: true });
       }),
     );
     mountAt(`/orgs/${SLUG}/threads`);
     await waitFor(() => expect(screen.getByText('Alpha subject')).toBeInTheDocument());
 
-    await userEvent.click(screen.getByRole('button', { name: /Pin thread THR-A/i }));
-    // Optimistic: the Pinned section appears without waiting for a refetch.
-    await waitFor(() =>
-      expect(screen.getByRole('heading', { name: /Pinned/i })).toBeInTheDocument(),
-    );
-    // Control now reads as unpin (persists through the refetch).
-    expect(
-      await screen.findByRole('button', { name: /Unpin thread THR-A/i }),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Pin thread|Unpin thread/i })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('link', { name: /Alpha subject/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
+    expect(await screen.findByRole('button', { name: 'Unpin' })).toBeInTheDocument();
   });
 
-  test('row pin failure rolls back and shows a visible error', async () => {
+  test('row navigation reaches detail rollback on a pin failure', async () => {
     const state = [mkThread('THR-A', 'Alpha subject', { pinned: true })];
     stubList(state);
+    stubDetail(state[0]);
     server.use(
       http.post(`/api/v1/orgs/${SLUG}/threads/THR-A/pin`, () =>
         HttpResponse.json({ error: 'boom' }, { status: 500 }),
@@ -484,18 +506,14 @@ describe('THR-209 — Pinned section', () => {
     );
     mountAt(`/orgs/${SLUG}/threads`);
     await waitFor(() => expect(screen.getByText('Alpha subject')).toBeInTheDocument());
-    expect(screen.getByRole('heading', { name: /Pinned/i })).toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole('button', { name: /Unpin thread THR-A/i }));
+    await userEvent.click(screen.getByRole('link', { name: /Alpha subject/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Unpin' }));
     // Error banner appears (aria-live alert).
     await waitFor(() =>
       expect(screen.getByRole('alert')).toHaveTextContent(/Pin change failed/i),
     );
-    // Rollback: the thread stays pinned (Pinned section still present).
-    expect(screen.getByRole('heading', { name: /Pinned/i })).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: /Unpin thread THR-A/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument();
   });
 });
 
@@ -517,6 +535,7 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
       mkThread('THR-1', 'One ordinary', { started_at: '2026-05-13T00:00:00Z' }),
     ];
     stubServerOrderedList(state);
+    stubDetail(state[1]);
     // Gated POST: the mutation stays pending until the test releases it, so the
     // optimistic render is observable before the response and the refetch.
     let releasePost!: () => void;
@@ -526,11 +545,8 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
     server.use(
       http.post(`/api/v1/orgs/${SLUG}/threads/THR-10/pin`, async () => {
         await gate;
-        state[1] = {
-          ...state[1],
-          pinned: true,
-          pinned_at: '2026-05-21T00:00:00Z',
-        };
+        state[1].pinned = true;
+        state[1].pinned_at = '2026-05-21T00:00:00Z';
         return HttpResponse.json({ thread_id: 'THR-10', pinned: true });
       }),
     );
@@ -539,25 +555,27 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
     // Initial server order: Pinned [THR-2], Threads [THR-10, THR-1].
     expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Two', 'Ten', 'One']);
 
-    await userEvent.click(screen.getByRole('button', { name: /Pin thread THR-10/i }));
+    await userEvent.click(screen.getByRole('link', { name: /Ten unpinned/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
 
-    // BEFORE the POST resolves: optimistic reorder → Pinned [THR-10, THR-2]
-    // (numeric 10 > 2 — lexicographic would keep THR-2 first).
+    // The list unmounts on detail navigation. Its real cache still exposes
+    // the optimistic numeric ordering before the gated response settles.
     await waitFor(() => {
-      expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Ten', 'Two', 'One']);
+      const data = openListCache();
+      expect(data?.threads.map((thread) => thread.thread_id)).toEqual(['THR-10', 'THR-2', 'THR-1']);
+      expect(data?.threads[0].pinned).toBe(true);
     });
-    // THR-10 renders inside the Pinned section (heading precedes its row).
-    const pinnedHeading = screen.getByRole('heading', { name: /Pinned/i });
-    const tenRow = screen.getByText(/Ten unpinned/i);
-    expect(pinnedHeading.compareDocumentPosition(tenRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     // Release the response — success + refetch reconcile to the same order.
     await act(async () => {
       releasePost();
     });
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /Unpin thread THR-10/i })).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('link', { name: /All threads/i }));
+    await waitFor(() => expect(rowSubjects()).toEqual(expect.arrayContaining([
+      expect.stringContaining('Ten unpinned'),
+    ])));
     expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Ten', 'Two', 'One']);
   });
 
@@ -577,6 +595,7 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
       mkThread('THR-1', 'One ordinary', { started_at: '2026-05-13T00:00:00Z' }),
     ];
     stubServerOrderedList(state);
+    stubDetail(state[1]);
     let releasePost!: () => void;
     const gate = new Promise<void>((res) => {
       releasePost = res;
@@ -584,35 +603,31 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
     server.use(
       http.post(`/api/v1/orgs/${SLUG}/threads/THR-2/pin`, async () => {
         await gate;
-        state[1] = { ...state[1], pinned: false, pinned_at: null };
+        state[1].pinned = false;
+        state[1].pinned_at = null;
         return HttpResponse.json({ thread_id: 'THR-2', pinned: false });
       }),
     );
     mountAt(`/orgs/${SLUG}/threads`);
     await waitFor(() => expect(screen.getByText(/Ten pinned/i)).toBeInTheDocument());
 
-    await userEvent.click(screen.getByRole('button', { name: /Unpin thread THR-2/i }));
+    await userEvent.click(screen.getByRole('link', { name: /Two pinned/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Unpin' }));
 
-    // BEFORE the POST resolves: THR-2 drops into ordinary started_at-desc
-    // position (THR-10 05-14, THR-1 05-13, THR-2 05-12).
+    // The list is unmounted; assert the live open-list cache before POST resolution.
     await waitFor(() => {
-      expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Ten', 'One', 'Two']);
+      const data = openListCache();
+      expect(data?.threads.map((thread) => thread.thread_id)).toEqual(['THR-10', 'THR-1', 'THR-2']);
+      expect(data?.threads[2].pinned).toBe(false);
     });
-    // THR-2 is no longer inside the Pinned section (its row follows the
-    // Pinned heading, i.e. it lives in the ordinary section).
-    const pinnedHeading = screen.getByRole('heading', { name: /Pinned/i });
-    const twoRow = screen.getByText(/Two pinned/i);
-    expect(
-      pinnedHeading.compareDocumentPosition(twoRow) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
 
     await act(async () => {
       releasePost();
     });
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /Pin thread THR-2/i })).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('link', { name: /All threads/i }));
+    await waitFor(() => expect(rowSubjects()).toHaveLength(3));
     expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Ten', 'One', 'Two']);
   });
 
@@ -627,6 +642,7 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
       mkThread('THR-1', 'One ordinary', { started_at: '2026-05-13T00:00:00Z' }),
     ];
     stubServerOrderedList(state);
+    stubDetail(state[1]);
     server.use(
       http.post(`/api/v1/orgs/${SLUG}/threads/THR-10/pin`, () =>
         HttpResponse.json({ error: 'boom' }, { status: 500 }),
@@ -635,17 +651,20 @@ describe('THR-209 — optimistic pin reorders the open list under the server rul
     mountAt(`/orgs/${SLUG}/threads`);
     await waitFor(() => expect(screen.getByText(/Ten unpinned/i)).toBeInTheDocument());
 
-    await userEvent.click(screen.getByRole('button', { name: /Pin thread THR-10/i }));
+    await userEvent.click(screen.getByRole('link', { name: /Ten unpinned/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: 'Pin' }));
     await waitFor(() =>
       expect(screen.getByRole('alert')).toHaveTextContent(/Pin change failed/i),
     );
-    // Rollback: exact prior order restored (Pinned [THR-2], Threads [THR-10, THR-1]).
+    // Rollback restores the exact prior open-list cache and header state.
+    const data = openListCache();
+    expect(data?.threads.map((thread) => thread.thread_id)).toEqual(['THR-2', 'THR-10', 'THR-1']);
+    expect(data?.threads.find((thread) => thread.thread_id === 'THR-10')?.pinned).toBe(false);
+    expect(screen.getByRole('button', { name: 'Pin' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('link', { name: /All threads/i }));
+    await waitFor(() => expect(rowSubjects()).toHaveLength(3));
     expect(rowSubjects().map((s) => s.includes('Two pinned') ? 'Two' : s.includes('Ten') ? 'Ten' : s.includes('One') ? 'One' : '?')).toEqual(['Two', 'Ten', 'One']);
-    expect(screen.getByRole('button', { name: /Pin thread THR-10/i })).toBeInTheDocument();
-    // No optimistic Pinned-section reorder leaked.
-    const pinnedHeading = screen.getByRole('heading', { name: /Pinned/i });
-    const tenRow = screen.getByText(/Ten unpinned/i);
-    expect(pinnedHeading.compareDocumentPosition(tenRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
 
