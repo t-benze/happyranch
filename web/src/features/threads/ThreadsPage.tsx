@@ -1668,7 +1668,7 @@ function SystemDivider({ timestamp, systemPayload, slug }: SystemDividerProps): 
           <circle cx="9" cy="7" r="3" />
           <path d="M22 21v-2a4 4 0 00-3-3.9" />
         </svg>
-        <span className="text-text-secondary">{description}</span>{' '}
+        <span className="text-text-secondary whitespace-pre-wrap">{description}</span>{' '}
         <span className="text-text-disabled">· {S.systemEventLabel} event · broadcast to all</span>
       </div>
     </div>
@@ -1721,7 +1721,7 @@ function describeSystem(payload: Record<string, unknown> | null, slug?: string):
         ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
         : taskId;
       const summary = payload.final_output_summary
-        ? String(payload.final_output_summary).slice(0, 240)
+        ? String(payload.final_output_summary)
         : null;
       return (
         <>
@@ -1757,7 +1757,7 @@ function describeSystem(payload: Record<string, unknown> | null, slug?: string):
       const taskLink = slug && taskId
         ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
         : taskId;
-      const reason = payload.reason ? String(payload.reason).slice(0, 240) : null;
+      const reason = payload.reason ? String(payload.reason) : null;
       return (
         <>
           task {taskLink} escalated{reason ? ` · ${reason}` : ''}

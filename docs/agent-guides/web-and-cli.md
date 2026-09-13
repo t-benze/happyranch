@@ -34,9 +34,11 @@ The live `ThreadDetailTranscript` renders system events through its local
 and task links, then trailing system-event metadata. Short and long rows use
 the transcript content width inside the existing padding. Text and unbroken
 identifiers wrap; the timestamp remains available in the row tooltip.
-`describeSystem` retains its existing content contract, including the
-240-character summary/reason slicing. Ordinary message bubbles and terminal
-responder strips retain their separate rendering paths.
+`describeSystem` displays the complete supplied task-completion summary and
+escalation reason without a character limit, preserving line breaks and safely
+rendering HTML-like content as literal text. It does not expose additional
+payload fields. Ordinary message bubbles and terminal responder strips retain
+their separate rendering paths. CLI transcript formatting is unchanged.
 
 ### Sidebar height and scrolling
 
