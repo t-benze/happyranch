@@ -1848,7 +1848,7 @@ describe('AgentDetailPane — cleanup activity', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     expect(await screen.findByText(/Loading cleanup activity/i)).toBeInTheDocument();
-    expect(await screen.findByText(summary)).toBeInTheDocument();
+    expect(await screen.findByText(summary.trim())).toBeInTheDocument();
     expect(screen.queryByText('cleanup', { selector: 'cleanup' })).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'TASK-CLEANUP-LONG' }))
       .toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-CLEANUP-LONG`);
@@ -1875,7 +1875,7 @@ describe('AgentDetailPane — cleanup activity', () => {
     expect(attempts).toBe(2);
   });
 
-  test('retained pane ignores a late previous-agent response and Enter activates the current task', async () => {
+  test('retained pane ignores a late previous-agent response before Enter activates the current task', async () => {
     stubBaseHandlers();
     stubDetailHandlers();
     let resolvePrevious!: () => void;
@@ -1894,12 +1894,53 @@ describe('AgentDetailPane — cleanup activity', () => {
     await screen.findByText(/Loading cleanup activity/i);
     await user.click(await screen.findByRole('button', { name: /support_agent/i }));
     const task = await screen.findByRole('link', { name: 'TASK-CURRENT' });
-    task.focus();
-    await user.keyboard('{Enter}');
-    expect(await screen.findByRole('heading', { name: 'TASK-CURRENT' })).toBeInTheDocument();
     resolvePrevious();
     await act(async () => { await previous; });
     expect(screen.queryByText('old owner')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'TASK-CURRENT' })).toBeInTheDocument();
+    task.focus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('heading', { name: 'TASK-CURRENT' })).toBeInTheDocument();
+  });
+
+  test('retained pane ignores a late same-agent response after an org switch', async () => {
+    const OTHER = 'other-org';
+    stubBaseHandlers();
+    stubDetailHandlers();
+    let resolveOld!: () => void;
+    const old = new Promise<void>((resolve) => { resolveOld = resolve; });
+    const otherAgents = { agents: [AGENTS_PAYLOAD.agents[0]] };
+    server.use(
+      http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }, { slug: OTHER, root: '/y' }] })),
+      http.get(`/api/v1/orgs/${OTHER}/agents`, () => HttpResponse.json(otherAgents)),
+      http.get(`/api/v1/orgs/${OTHER}/settings`, () => HttpResponse.json({})),
+      http.get(`/api/v1/orgs/${OTHER}/teams`, () => HttpResponse.json({ teams: [] })),
+      http.get(`/api/v1/orgs/${OTHER}/tasks`, () => HttpResponse.json({ tasks: [] })),
+      http.get(`/api/v1/orgs/${OTHER}/jobs/`, () => HttpResponse.json({ jobs: [] })),
+      http.get(`/api/v1/orgs/${OTHER}/agents/engineering_head/memory/entries/`, () => HttpResponse.json({ entries: [] })),
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, async () => {
+        await old;
+        return HttpResponse.json({ activities: [{ task_id: 'TASK-OLD-ORG', status: 'failed', result_status: null, created_at: '2026-05-20T08:00:00Z', output_summary: 'old org' }] });
+      }),
+      http.get(`/api/v1/orgs/${OTHER}/agents/engineering_head/cleanup-activity`, () =>
+        HttpResponse.json({ activities: [{ task_id: 'TASK-NEW-ORG', status: 'completed', result_status: 'completed', created_at: '2026-05-21T08:00:00Z', output_summary: 'new org' }] }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+    await screen.findByText(/Loading cleanup activity/i);
+    // Radix Select consults this browser API during its real pointer path;
+    // JSDOM omits it, so provide the harmless false response on this trigger.
+    const orgSwitcher = screen.getByLabelText('Active org');
+    Object.defineProperty(orgSwitcher, 'hasPointerCapture', { value: () => false });
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: () => {} });
+    await user.click(orgSwitcher);
+    await user.click(await screen.findByRole('option', { name: OTHER }));
+    expect(await screen.findByRole('link', { name: 'TASK-NEW-ORG' })).toHaveAttribute('href', `/orgs/${OTHER}/tasks/TASK-NEW-ORG`);
+    resolveOld();
+    await act(async () => { await old; });
+    expect(screen.queryByText('old org')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'TASK-NEW-ORG' })).toBeInTheDocument();
   });
 });
 
