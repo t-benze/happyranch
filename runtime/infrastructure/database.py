@@ -5543,6 +5543,33 @@ class Database:
         return result
 
     @_synchronized
+    def list_workspace_cleanup_activity(self, agent: str, limit: int = 5) -> list[dict]:
+        """Return the newest distinct scheduler-triggered cleanup tasks for an agent.
+
+        The audit action is the sole eligibility marker.  Joining it before the
+        limit avoids a bounded audit-page scan and duplicate trigger rows cannot
+        displace another task.  A correlated result lookup keeps the task's
+        current lifecycle status separate from its latest agent result.
+        """
+        rows = self._conn.execute(
+            """SELECT t.id AS task_id, t.status, t.created_at,
+                      (SELECT r.status FROM task_results r
+                       WHERE r.task_id=t.id AND r.agent=?
+                       ORDER BY r.id DESC LIMIT 1) AS result_status,
+                      (SELECT r.output_summary FROM task_results r
+                       WHERE r.task_id=t.id AND r.agent=?
+                       ORDER BY r.id DESC LIMIT 1) AS output_summary
+               FROM tasks t
+               JOIN (SELECT DISTINCT task_id FROM audit_log
+                     WHERE action='workspace_cleanup_triggered' AND agent=?) a
+                 ON a.task_id=t.id
+               WHERE t.assigned_agent=?
+               ORDER BY t.created_at DESC, t.id DESC LIMIT ?""",
+            (agent, agent, agent, agent, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @_synchronized
     def get_latest_task_result(
         self, task_id: str, agent: str, session_id: str,
     ) -> dict | None:
