@@ -1832,6 +1832,28 @@ describe('AgentDetailPane — cleanup activity', () => {
     expect(screen.getByText('Summary unavailable')).toBeInTheDocument();
   });
 
+  test('renders a populated hostile, long summary literally after loading', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    const summary = '<cleanup> ' + 'bounded evidence '.repeat(40);
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return HttpResponse.json({ activities: [{
+          task_id: 'TASK-CLEANUP-LONG', status: 'failed', result_status: 'blocked',
+          created_at: '2026-05-20T08:00:00Z', output_summary: summary,
+        }] });
+      }),
+    );
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    expect(await screen.findByText(/Loading cleanup activity/i)).toBeInTheDocument();
+    expect(await screen.findByText(summary)).toBeInTheDocument();
+    expect(screen.queryByText('cleanup', { selector: 'cleanup' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'TASK-CLEANUP-LONG' }))
+      .toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-CLEANUP-LONG`);
+  });
+
   test('shows an error and retries the cleanup activity request', async () => {
     stubBaseHandlers();
     stubDetailHandlers();
@@ -1851,6 +1873,33 @@ describe('AgentDetailPane — cleanup activity', () => {
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     await screen.findByText('No cleanup activity for this agent.');
     expect(attempts).toBe(2);
+  });
+
+  test('retained pane ignores a late previous-agent response and Enter activates the current task', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    let resolvePrevious!: () => void;
+    const previous = new Promise<void>((resolve) => { resolvePrevious = resolve; });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, async () => {
+        await previous;
+        return HttpResponse.json({ activities: [{ task_id: 'TASK-OLD', status: 'failed', result_status: null, created_at: '2026-05-20T08:00:00Z', output_summary: 'old owner' }] });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/agents/support_agent/cleanup-activity`, () =>
+        HttpResponse.json({ activities: [{ task_id: 'TASK-CURRENT', status: 'completed', result_status: 'completed', created_at: '2026-05-21T08:00:00Z', output_summary: 'current owner' }] }),
+      ),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+    await screen.findByText(/Loading cleanup activity/i);
+    await user.click(await screen.findByRole('button', { name: /support_agent/i }));
+    const task = await screen.findByRole('link', { name: 'TASK-CURRENT' });
+    task.focus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('heading', { name: 'TASK-CURRENT' })).toBeInTheDocument();
+    resolvePrevious();
+    await act(async () => { await previous; });
+    expect(screen.queryByText('old owner')).not.toBeInTheDocument();
   });
 });
 

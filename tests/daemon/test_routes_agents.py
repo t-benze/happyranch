@@ -55,14 +55,48 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
         )
         db.insert_audit_log(task_id, "dev_agent", "workspace_cleanup_triggered", None)
     db.insert_audit_log("TASK-6", "dev_agent", "workspace_cleanup_triggered", None)
+    # Equal run dates use immutable task ID as the stable descending tie-breaker.
+    for task_id in ("TASK-TIE-A", "TASK-TIE-B"):
+        db._conn.execute(
+            "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (task_id, "dev_agent", "completed", "cleanup", "2026-03-01T00:00:00+00:00", "2026-03-01T00:00:00+00:00"),
+        )
+        db.insert_audit_log(task_id, "dev_agent", "workspace_cleanup_triggered", None)
     db._conn.execute(
         "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
         ("TASK-wrong", "qa_engineer", "completed", "cleanup", "2026-02-01T00:00:00+00:00", "2026-02-01T00:00:00+00:00"),
     )
     db.insert_audit_log("TASK-wrong", "dev_agent", "workspace_cleanup_triggered", None)
+    # These newest-looking rows must not qualify: no task, no authoritative
+    # trigger, or a trigger recorded for another agent.
+    db.insert_audit_log("TASK-orphan", "dev_agent", "workspace_cleanup_triggered", None)
+    db._conn.execute(
+        "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-brief-only", "dev_agent", "completed", "workspace cleanup", "2026-04-01T00:00:00+00:00", "2026-04-01T00:00:00+00:00"),
+    )
+    db._conn.execute(
+        "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-wrong-trigger", "dev_agent", "completed", "cleanup", "2026-04-02T00:00:00+00:00", "2026-04-02T00:00:00+00:00"),
+    )
+    db.insert_audit_log("TASK-wrong-trigger", "qa_engineer", "workspace_cleanup_triggered", None)
+    # Result selection is scoped to the task and requested agent.  The later
+    # foreign result must not replace the matching result, while null and blank
+    # summaries remain distinct wire values for the presentation layer.
     db._conn.execute(
         "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         ("TASK-6", "dev_agent", "sess-6", "blocked", "latest matching summary", "2026-01-06T00:00:00+00:00"),
+    )
+    db._conn.execute(
+        "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-6", "qa_engineer", "sess-foreign", "completed", "foreign later result", "2026-04-03T00:00:00+00:00"),
+    )
+    db._conn.execute(
+        "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-5", "dev_agent", "sess-5", "completed", None, "2026-01-05T00:00:00+00:00"),
+    )
+    db._conn.execute(
+        "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-4", "dev_agent", "sess-4", "failed", "", "2026-01-04T00:00:00+00:00"),
     )
     db._conn.commit()
     before = db._conn.total_changes
@@ -71,12 +105,18 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     )
     assert response.status_code == 200
     assert [row["task_id"] for row in response.json()["activities"]] == [
-        "TASK-6", "TASK-5", "TASK-4", "TASK-3", "TASK-2",
+        "TASK-TIE-B", "TASK-TIE-A", "TASK-6", "TASK-5", "TASK-4",
     ]
-    first = response.json()["activities"][0]
+    first = response.json()["activities"][2]
     assert first["status"] == "failed"
     assert first["result_status"] == "blocked"
     assert first["output_summary"] == "latest matching summary"
+    assert response.json()["activities"][3] == {
+        "task_id": "TASK-5", "status": "failed", "created_at": "2026-01-05T00:00:00+00:00",
+        "result_status": "completed", "output_summary": None,
+    }
+    assert response.json()["activities"][4]["result_status"] == "failed"
+    assert response.json()["activities"][4]["output_summary"] == ""
     assert db._conn.total_changes == before
 
 
