@@ -190,8 +190,8 @@ def test_actual_pipeline_rejects_foreign_paths_without_touching_them(tmp_path, c
 def _extracted_fixture(name, monkeypatch, tmp_path, scenario, *, spawn=None):
     """Only compile the named shipping fixture, never import its directory.
 
-    These characterization cases expose WHY F04 remains held. Their passing
-    status must never be reported as F04 cleanup acceptance.
+    The real foreground context handles acquisition and cleanup; only Popen,
+    health and runtime registration are controlled. No daemon is imported.
     """
     import ast
     import builtins
@@ -201,17 +201,21 @@ def _extracted_fixture(name, monkeypatch, tmp_path, scenario, *, spawn=None):
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
     node.decorator_list = []
     calls = []
-    def run(command, **kwargs):
-        calls.append((command[-1], kwargs))
-        if command[-1] == "start":
-            if spawn:
-                spawn()
-            if scenario in ("start", "post_spawn"):
-                raise RuntimeError(scenario)
-        if command[-1] == "stop":
-            if scenario == "stop_timeout":
-                raise subprocess.TimeoutExpired(command, 1)
-            return types.SimpleNamespace(returncode=37 if scenario == "stop_nonzero" else 0)
+    def launch(command, **kwargs):
+        calls.append(("start", kwargs))
+        if spawn:
+            spawn()
+        if scenario in ("start", "post_spawn"):
+            raise RuntimeError(scenario)
+        def wait(**options):
+            calls.append(("stop", options))
+            if scenario in ("stop_timeout", "simultaneous"):
+                raise subprocess.TimeoutExpired(command, options["timeout"])
+            return 37 if scenario == "stop_nonzero" else 0
+        return types.SimpleNamespace(args=command, wait=wait, poll=lambda: None)
+    # Replace the helper's module binding, not the shared subprocess module.
+    monkeypatch.setattr(containment, "subprocess", types.SimpleNamespace(
+        Popen=launch, CalledProcessError=subprocess.CalledProcessError))
     ticks = iter(range(0, 100, 2))
     port_file = tmp_path / "port"
     port_file.write_text("49123")
@@ -224,8 +228,8 @@ def _extracted_fixture(name, monkeypatch, tmp_path, scenario, *, spawn=None):
             return types.SimpleNamespace(runtimes=runtimes)
         raise AssertionError(f"unexpected fixture import: {module}")
     ns = {"__file__": str(source), "__builtins__": dict(vars(builtins), __import__=importer),
-          "Path": Path, "subprocess": types.SimpleNamespace(run=run), "_nested_daemon_env": lambda: {},
-          "time": types.SimpleNamespace(time=lambda: next(ticks), sleep=lambda _: None),
+          "Path": Path, "foreground_daemon": containment.foreground_daemon, "_nested_daemon_env": lambda: {},
+          "time": types.SimpleNamespace(monotonic=lambda: next(ticks), sleep=lambda _: None),
           "paths_mod": types.SimpleNamespace(port_file=lambda: port_file),
           "httpx": types.SimpleNamespace(get=lambda *a, **k: types.SimpleNamespace(status_code=503 if scenario == "health" else 200), HTTPError=OSError)}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), ns)
@@ -235,30 +239,37 @@ def _extracted_fixture(name, monkeypatch, tmp_path, scenario, *, spawn=None):
 
 @pytest.mark.parametrize("fixture", ["live_daemon", "live_daemon_idle"])
 @pytest.mark.parametrize("scenario", ["normal", "start", "health", "assertion", "post_spawn", "stop_nonzero", "stop_timeout", "simultaneous", "parent_abort", "observer_loss"])
-def test_shipping_fixture_characterizes_unresolved_f04(tmp_path, monkeypatch, fixture, scenario):
+def test_shipping_fixture_foreground_cleanup(tmp_path, monkeypatch, fixture, scenario):
     generator, calls = _extracted_fixture(fixture, monkeypatch, tmp_path, scenario)
     if scenario in ("start", "post_spawn", "health"):
         with pytest.raises(RuntimeError):
             next(generator)
-        assert [call[0] for call in calls] == ["start"]  # Missing cleanup, NOT repaired.
+        assert [call[0] for call in calls] == (["start", "stop"] if scenario == "health" else ["start"])
+        # The lease descriptors are gone even when Popen raises after spawn.
+        with pytest.raises(OSError):
+            os.fstat(calls[0][1]["stdin"])
     else:
         assert next(generator) == "49123"
         if scenario in ("assertion", "simultaneous"):
-            with pytest.raises(AssertionError, match="original"):
-                generator.throw(AssertionError("original"))
-            assert len(calls) == 1  # Both cleanup errors would be unobserved.
+            primary = AssertionError("original")
+            with pytest.raises(AssertionError) as caught:
+                generator.throw(primary)
+            assert caught.value is primary
+            assert len(calls) == 2
+            assert len(primary.thr211_cleanup_errors) == (1 if scenario == "simultaneous" else 0)
         elif scenario in ("parent_abort", "observer_loss"):
             generator.close()
-            assert len(calls) == 1
-        elif scenario == "stop_timeout":
-            with pytest.raises(subprocess.TimeoutExpired):
+            assert len(calls) == 2  # Generator exit is not native parent-loss proof.
+        elif scenario in ("stop_timeout", "stop_nonzero"):
+            with pytest.raises(BaseExceptionGroup) as caught:
                 next(generator)
+            expected = subprocess.TimeoutExpired if scenario == "stop_timeout" else subprocess.CalledProcessError
+            assert isinstance(caught.value.exceptions[0], expected)
         else:
             with pytest.raises(StopIteration):
                 next(generator)
             assert calls[-1][0] == "stop"
-            assert calls[-1][1]["check"] is False  # nonzero currently discarded.
-    assert all("timeout" not in kwargs for _, kwargs in calls)  # Hold evidence.
+    assert all(kwargs["timeout"] == 4 for name, kwargs in calls if name == "stop")
 
 
 @pytest.mark.parametrize("fixture", ["live_daemon", "live_daemon_idle"])
@@ -318,16 +329,241 @@ s.close()
     # it establishes no native-Mac daemon lifetime or independent observer proof.
 
 
-def test_allocation_console_failure_retains_classified_secondary_without_workspace_fallback() -> None:
-    """The unallocated Pipeline path has console only, never filesystem publication."""
-    text = (Path(__file__).parents[1] / "Jenkinsfile").read_text()
-    outer = text.split("} catch (Throwable primary) {", 1)[1]
-    assert "primary.addSuppressed(new RuntimeException('console:' + e.getClass().getSimpleName(), e))" in outer
-    assert "currentBuild.result = 'FAILURE'" in outer
-    allocation_only = outer.split("if (!allocated) {", 1)[1].split("\n  }\n  throw primary", 1)[0]
-    assert "sh(" not in allocation_only
-    assert "writeFile(" not in allocation_only
-    assert "archiveArtifacts(" not in allocation_only
+def test_allocation_console_failure_retains_classified_secondary_without_workspace_fallback(tmp_path) -> None:
+    """Evaluate shipping Pipeline using the retained TASK8153 reproducer."""
+    jar = os.environ.get("THR211_GROOVY_JAR")
+    if not jar:
+        pytest.skip("evaluated Pipeline requires the task-provisioned Groovy jar")
+    probe = tmp_path / "allocation.groovy"
+    probe.write_text(ALLOCATION_PROBE_GROOVY)
+    env, _ = _pipeline_tools(tmp_path)
+    inputs = tmp_path / "input.json"
+    inputs.write_text(json.dumps({"allocation": {"env": env}}))
+    result = subprocess.run([
+        "/usr/bin/java", f"-Djava.io.tmpdir={tmp_path}", "-cp", jar,
+        "groovy.ui.GroovyMain", str(probe),
+        str(Path(__file__).parents[1] / "Jenkinsfile"), str(inputs),
+    ], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["passed"] is True
+
+
+ALLOCATION_PROBE_GROOVY = r'''
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurperClassic
+def input = new JsonSlurperClassic().parseText(new File(args[1]).text).allocation
+def installed = input.env.findAll { k,v -> k.startsWith('ADMITTED_') }.collectEntries { k,v -> [(k.substring(9)):v] }
+def b = new Binding()
+b.setVariable('THR211_INSTALL', installed)
+b.setVariable('params', [:])
+b.setVariable('env', [BUILD_NUMBER:'1'])
+b.setVariable('currentBuild', [result:null])
+b.setVariable('properties', { List x -> })
+b.setVariable('disableConcurrentBuilds', { -> [:] })
+b.setVariable('parameters', { List x -> x })
+b.setVariable('choice', { Map x -> x })
+b.setVariable('string', { Map x -> x })
+b.setVariable('parallel', { Map x -> x.execution(); x.allocation() })
+def primary = new IllegalArgumentException('allocation unavailable')
+def secondary = new IOException('console unavailable')
+def calls = []
+b.setVariable('node', { String x, Closure body -> calls.add('node'); throw primary })
+b.setVariable('echo', { String x -> calls.add('console attempted'); throw secondary })
+['sh','writeFile','archiveArtifacts'].each { name ->
+  b.setVariable(name, { Map x -> calls.add(name); throw new AssertionError('forbidden filesystem operation: '+name) })
+}
+Throwable thrown
+try { new GroovyShell(b).evaluate(new File(args[0])) } catch(Throwable e) { thrown=e }
+assert thrown.is(primary)
+assert calls == ['node', 'console attempted']
+assert thrown.suppressed.length == 1
+assert thrown.suppressed[0].message == 'console:IOException'
+assert thrown.suppressed[0].cause.is(secondary)
+assert thrown.cause == null
+assert b.getVariable('currentBuild').result == 'FAILURE'
+println(JsonOutput.toJson([passed:true, primary:thrown.message,
+    returned_suppressed:thrown.suppressed*.message, calls:calls]))
+'''
+
+
+def _await_file(path: Path, timeout: float = 2) -> str:
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists() and path.read_text():
+            return path.read_text()
+        time.sleep(.01)
+    raise AssertionError(f"synthetic readiness deadline: {path}")
+
+
+@pytest.mark.parametrize("failure", ["normal", "assertion", "deadline", "observer_loss"])
+def test_native_foreground_interpreter_lifetime(tmp_path, failure):
+    import socket
+    ready = tmp_path / "ready"
+    (tmp_path / "synthetic.py").write_text(
+        "import os, signal, socket, time\n"
+        "signal.alarm(3)\ns = socket.socket()\ns.bind(('127.0.0.1',0))\ns.listen()\n"
+        f"with open({str(ready)!r}, 'x') as f: f.write(str(s.getsockname()[1]))\n"
+        + ("time.sleep(.1)\nsignal.raise_signal(signal.SIGKILL)\n" if failure == "observer_loss" else "time.sleep(2)\n"))
+    primary = AssertionError("body failed")
+    process = None
+    try:
+        with containment.foreground_daemon(tmp_path, dict(os.environ), module="synthetic", lifetime=.5, grace=.1) as process:
+            port = int(_await_file(ready))
+            with socket.create_connection(("127.0.0.1", port), timeout=.2):
+                pass
+            if failure == "assertion":
+                raise primary
+            if failure in ("deadline", "observer_loss"):
+                process.wait(timeout=2)
+    except AssertionError as error:
+        assert failure == "assertion" and error is primary
+        assert error.thr211_cleanup_errors == ()
+    except BaseExceptionGroup as error:
+        assert failure in ("deadline", "observer_loss")
+        assert error.exceptions[0].returncode == (124 if failure == "deadline" else -9)
+    assert process is not None and process.returncode is not None
+    with socket.socket() as observer:
+        observer.settimeout(.2)
+        assert observer.connect_ex(("127.0.0.1", port)) != 0
+
+
+def test_native_parent_loss_closes_foreground_listener(tmp_path):
+    import socket
+    import time
+    ready = tmp_path / "ready"
+    (tmp_path / "synthetic.py").write_text(
+        "import signal,socket,time\nsignal.alarm(3)\n"
+        "s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen()\n"
+        f"with open({str(ready)!r},'x') as f: f.write(str(s.getsockname()[1]))\n"
+        "time.sleep(2)\n")
+    source = str(Path(__file__).parents[1])
+    parent_code = (
+        f"import sys; sys.path.insert(0,{source!r})\n"
+        "import os,time\nfrom pathlib import Path\nfrom tests.thr211_containment import foreground_daemon\n"
+        f"with foreground_daemon(Path({str(tmp_path)!r}),dict(os.environ),module='synthetic',lifetime=2,grace=.1):\n"
+        f" while not Path({str(ready)!r}).exists(): time.sleep(.01)\n"
+        " os._exit(23)\n")
+    result = subprocess.run([sys.executable, "-I", "-c", parent_code], timeout=4)
+    assert result.returncode == 23
+    port = int(_await_file(ready))
+    deadline = time.monotonic() + 1
+    while True:
+        with socket.socket() as observer:
+            observer.settimeout(.1)
+            if observer.connect_ex(("127.0.0.1", port)) != 0:
+                break
+        assert time.monotonic() < deadline
+        time.sleep(.01)
+    # Port closure proves only this listener; no grandchild-reaping claim.
+
+
+@pytest.mark.parametrize("loss", ["lease_close", "observer_loss"])
+def test_native_foreground_escape_remains_unknown(tmp_path, loss):
+    """Specific F04 counterexample even with foreground launch and EOF cleanup."""
+    import socket
+    import time
+    port_file = tmp_path / "escaped-port"
+    finished = tmp_path / "escaped-finished"
+    sentinel = tmp_path / "unrelated"
+    sentinel.write_text("untouched")
+    inode = sentinel.stat().st_ino
+    child_code = (
+        "import signal,socket,time\nsignal.alarm(3)\n"
+        "s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen()\n"
+        f"with open({str(port_file)!r},'x') as f: f.write(str(s.getsockname()[1]))\n"
+        "time.sleep(1)\ns.close()\n"
+        f"with open({str(finished)!r},'x') as f: f.write('self-expired')\n")
+    (tmp_path / "synthetic.py").write_text(
+        "import subprocess,sys,time,signal\n"
+        f"subprocess.Popen([sys.executable,'-I','-c',{child_code!r}], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        + ("time.sleep(.2)\nsignal.raise_signal(signal.SIGKILL)\n" if loss == "observer_loss" else "time.sleep(2)\n"))
+    unrelated = subprocess.Popen([sys.executable, "-I", "-c", "import signal,time; signal.alarm(4); time.sleep(2)"], env=dict(os.environ))
+    try:
+        try:
+            with containment.foreground_daemon(tmp_path, dict(os.environ), module="synthetic", lifetime=2, grace=.1) as process:
+                port = int(_await_file(port_file))
+                if loss == "observer_loss":
+                    process.wait(timeout=1)
+        except BaseExceptionGroup as error:
+            assert loss == "observer_loss" and error.exceptions[0].returncode == -9
+        assert process.returncode is not None
+        with socket.create_connection(("127.0.0.1", port), timeout=.2):
+            pass  # Escaped child/listener survives the shipping helper's cleanup.
+        assert unrelated.poll() is None
+        assert _await_file(finished) == "self-expired"
+    finally:
+        unrelated.wait(timeout=4)
+    assert unrelated.returncode == 0
+    assert sentinel.stat().st_ino == inode and sentinel.read_text() == "untouched"
+    with socket.socket() as observer:
+        observer.settimeout(.2)
+        assert observer.connect_ex(("127.0.0.1", port)) != 0
+
+
+def test_foreground_preserves_primary_and_all_cleanup_error_objects(monkeypatch, tmp_path):
+    import types
+    primary = KeyboardInterrupt("abort")
+    close_errors = [OSError("writer close"), OSError("reader close")]
+    wait_error = subprocess.TimeoutExpired("synthetic", 4)
+    calls = []
+    def close(fd):
+        calls.append(fd)
+        raise close_errors[len(calls) - 1]
+    def wait(**kwargs):
+        assert kwargs == {"timeout": 4}
+        raise wait_error
+    monkeypatch.setattr(containment, "os", types.SimpleNamespace(pipe=lambda: (10, 11), close=close))
+    monkeypatch.setattr(containment, "subprocess", types.SimpleNamespace(Popen=lambda *a, **k: types.SimpleNamespace(wait=wait)))
+    with pytest.raises(KeyboardInterrupt) as caught:
+        with containment.foreground_daemon(tmp_path, {}):
+            raise primary
+    assert caught.value is primary
+    assert calls == [11, 10]
+    assert primary.thr211_cleanup_errors == (*close_errors, wait_error)
+
+
+def test_foreground_acquisition_failure_keeps_exact_primary(monkeypatch, tmp_path):
+    import types
+    primary = OSError("pipe acquisition")
+    def acquire():
+        raise primary
+    monkeypatch.setattr(containment, "os", types.SimpleNamespace(pipe=acquire))
+    with pytest.raises(OSError) as caught:
+        with containment.foreground_daemon(tmp_path, {}):
+            pytest.fail("must not launch")
+    assert caught.value is primary and primary.thr211_cleanup_errors == ()
+
+
+def test_native_post_spawn_pre_registration_failure_releases_lease(monkeypatch, tmp_path):
+    import types
+    original = RuntimeError("post-spawn/pre-registration")
+    children = []
+    readers = []
+    def launch(*args, **kwargs):
+        child = subprocess.Popen(*args, **kwargs)
+        children.append(child)
+        readers.append(kwargs["stdin"])
+        raise original
+    (tmp_path / "synthetic.py").write_text("import time; time.sleep(2)\n")
+    monkeypatch.setattr(containment, "subprocess", types.SimpleNamespace(Popen=launch))
+    with pytest.raises(RuntimeError) as caught:
+        with containment.foreground_daemon(tmp_path, dict(os.environ), module="synthetic", lifetime=1, grace=.1):
+            pytest.fail("must not yield")
+    assert caught.value is original
+    assert len(children) == 1
+    assert children[0].wait(timeout=2) == -15
+    with pytest.raises(OSError):
+        os.fstat(readers[0])
+
+
+@pytest.mark.parametrize("lifetime,grace", [(0, 1), (1801, 1), (1, 0), (1, 6), (float('nan'), 1)])
+def test_foreground_invalid_bounds_fail_before_acquisition(monkeypatch, tmp_path, lifetime, grace):
+    import types
+    monkeypatch.setattr(containment, "os", types.SimpleNamespace())
+    with pytest.raises(ValueError):
+        with containment.foreground_daemon(tmp_path, {}, lifetime=lifetime, grace=grace):
+            pytest.fail("must not launch")
 
 
 @pytest.mark.parametrize("failure", [None, "version", "arch", "env", "origin", "registry", "symlink", "publication-symlink", "publication-file"])

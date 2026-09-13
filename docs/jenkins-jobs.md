@@ -130,12 +130,30 @@ The document-only B2 skill `custom:269f9a0b-b6ab-4eb3-a19b-a3cbcbc418c8` remains
 `Jenkinsfile` now contains executable private, detached, frozen preparation and
 failure publication. It is a **held candidate**, not an installed job or a
 successful setup/abort proof. The shipping `live_daemon` and `live_daemon_idle`
-fixtures still start/stop through `daemon.sh` without a lifecycle `finally` or
-bounded subprocess calls. Foreground `runtime.daemon.__main__.main` owns its
-socket, but does not supply a test-owned independent lifetime mechanism for
-escaped executors/jobs through parent loss. The controlled fixture tests expose
-that gap without importing integration tests or launching a daemon. No fixture
-repair, native-Mac containment, or acceptance is claimed.
+fixtures now execute `runtime.daemon` in a test-owned foreground interpreter,
+using the selected Python executable and source root. Both health/yield seams
+are inside unconditional context cleanup, with a monotonic five-second health
+deadline. The interpreter observes a pipe whose writer stays with the fixture:
+EOF requests SIGTERM **on itself**, followed by a three-second hard-exit grace;
+the observer also enforces a thirty-minute interpreter lifetime. Cleanup closes
+both acquired descriptors and waits at most four seconds. It never signals a
+saved PID/PGID. Startup, body and abort exceptions retain their exact identity,
+with every observed cleanup exception on `thr211_cleanup_errors`; cleanup-only
+failures raise an exception group. A nonzero stop or wait timeout is not success.
+
+This is a bounded foreground repair, **not complete F04 containment**. The
+watcher starts inside the child interpreter, so unbounded OS launch/interpreter
+bootstrap is not proven bounded. The thread shares the daemon's lifetime;
+SIGKILL loses both. A child that starts a new session keeps its listener after
+the foreground interpreter exits, on ordinary lease closure as well as watcher
+loss. Focused tests execute this counterexample with self-expiring synthetic
+children and an unchanged unrelated sentinel. Parent-loss tests establish the
+synthetic foreground listener's closure, not all descendants' disappearance.
+No pipe, directory, environment cookie or timeout supplies an independent
+descendant ownership facility. Such a facility still needs a concrete admitted
+venue/mechanism and native proof; editing production `daemon.sh` is not shown
+necessary by these results. No integration module is imported or real daemon
+launched in these repair checks. Native-Mac guarantees remain UNPROVED.
 
 Every mode (`SETUP`, `ABORT`, `DIAGNOSTIC`) runs the same independent preparation
 if admitted, then exits78/HELD before any daemon/pytest. SETUP and ABORT remain

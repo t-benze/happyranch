@@ -321,6 +321,8 @@ try {
           }
           stage('Workload') {
             timeout(time: 30, unit: 'MINUTES') {
+              // Foreground EOF cleanup controls one interpreter only. Synthetic
+              // setsid children survive it (including observer loss); UNKNOWN.
               // A future reviewed F04 release must wire the owned observer first:
               // uv run --frozen pytest tests/integration/ -v -m integration --junitxml=artifacts/integration.xml
               error('HELD: fixture lifetime proof absent; pytest unrun')

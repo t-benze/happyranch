@@ -1,8 +1,7 @@
 """Test-only filesystem preparation for the THR-211 Jenkins candidate.
 
-This module deliberately creates no process ownership abstraction.  A private
-directory can contain a test plan; it cannot identify, reap, or contain a
-daemon or an escaped descendant.
+The foreground lifetime below controls only the launched interpreter. Neither
+its EOF lease nor a private directory owns escaped descendants. F04 stays held.
 """
 from __future__ import annotations
 
@@ -10,9 +9,89 @@ import os
 import json
 import shlex
 import stat
+import subprocess
+import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from textwrap import dedent
+
+
+# Run the daemon IN the leased interpreter, not beneath another Popen/nohup.
+# The writer is never passed to the child. Parent loss closes it even when
+# launch raises after creating the interpreter but before returning its handle.
+# No saved PID/PGID is signalled: raise_signal targets this interpreter itself.
+FOREGROUND_BOOTSTRAP = r'''
+import os, runpy, select, signal, sys, threading, time
+source, module, lifetime, grace = sys.argv[1:]
+lifetime, grace = float(lifetime), float(grace)
+def observe():
+    try:
+        ready, _, _ = select.select([0], [], [], lifetime)
+        if not ready:
+            os._exit(124)
+        # The lease transports no data; either EOF or unexpected data stops us.
+        os.read(0, 1)
+        signal.raise_signal(signal.SIGTERM)
+        time.sleep(grace)
+    finally:
+        os._exit(124)
+threading.Thread(target=observe, daemon=True).start()
+sys.path.insert(0, source)
+sys.argv = [module]
+runpy.run_module(module, run_name='__main__', alter_sys=True)
+'''
+
+
+@contextmanager
+def foreground_daemon(source: Path, env: dict[str, str], *, lifetime: float = 1800,
+                      grace: float = 3, module: str = "runtime.daemon"):
+    """Bound the foreground interpreter; descendant cleanup remains UNKNOWN.
+
+    Cleanup never signals a numeric process identity. Every acquired descriptor
+    is closed, even on launch failure. A bounded wait observes interpreter exit;
+    it does not assert listener/descendant absence. Secondary exception objects
+    are retained on the exact primary under ``thr211_cleanup_errors``.
+    """
+    if not (0 < lifetime <= 1800 and 0 < grace <= 5):
+        raise ValueError("foreground lifetime/grace outside finite bounds")
+    descriptors = []
+    process = None
+    primary = None
+    errors = []
+    try:
+        reader, writer = os.pipe()
+        descriptors.extend((reader, writer))
+        process = subprocess.Popen(
+            [sys.executable, "-I", "-c", FOREGROUND_BOOTSTRAP,
+             str(source), module, str(lifetime), str(grace)],
+            stdin=reader, env=env, close_fds=True,
+        )
+        yield process
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        # Writer first: release the child even if closing the reader fails.
+        for fd in reversed(descriptors):
+            try:
+                os.close(fd)
+            except BaseException as error:
+                errors.append(error)
+        if process is not None:
+            try:
+                code = process.wait(timeout=grace + 1)
+                if code not in (0, -15):
+                    errors.append(subprocess.CalledProcessError(code, process.args))
+            except BaseException as error:
+                errors.append(error)
+        if primary is not None:
+            primary.add_note("F04 descendant cleanup UNKNOWN; foreground lease only")
+            primary.thr211_cleanup_errors = (*getattr(primary, "thr211_cleanup_errors", ()), *errors)
+            for error in errors:
+                primary.add_note(f"foreground cleanup: {type(error).__name__}: {error}")
+        elif errors:
+            raise BaseExceptionGroup("foreground cleanup failed; descendants UNKNOWN", errors)
 
 
 def prepare_pipeline_environment(source: Path, root: Path, python: Path, arch: str) -> dict:
