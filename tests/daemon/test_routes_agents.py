@@ -38,6 +38,55 @@ def test_list_agents_returns_names(tmp_home, app, org_state, auth_headers) -> No
     assert "engineering_head" in names
 
 
+def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
+    app, org_state, auth_headers,
+) -> None:
+    """The activity read uses trigger audits, before its five-row limit."""
+    _seed_active_agent(org_state, "dev_agent")
+    _seed_active_agent(org_state, "qa_engineer")
+    db = org_state.db
+    # Seed directly so this test exercises the projection without invoking a
+    # lifecycle writer.  The same trigger twice must not displace TASK-4.
+    for index in range(1, 7):
+        task_id = f"TASK-{index}"
+        db._conn.execute(
+            "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (task_id, "dev_agent", "failed", "cleanup", f"2026-01-0{index}T00:00:00+00:00", f"2026-01-0{index}T00:00:00+00:00"),
+        )
+        db.insert_audit_log(task_id, "dev_agent", "workspace_cleanup_triggered", None)
+    db.insert_audit_log("TASK-6", "dev_agent", "workspace_cleanup_triggered", None)
+    db._conn.execute(
+        "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-wrong", "qa_engineer", "completed", "cleanup", "2026-02-01T00:00:00+00:00", "2026-02-01T00:00:00+00:00"),
+    )
+    db.insert_audit_log("TASK-wrong", "dev_agent", "workspace_cleanup_triggered", None)
+    db._conn.execute(
+        "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ("TASK-6", "dev_agent", "sess-6", "blocked", "latest matching summary", "2026-01-06T00:00:00+00:00"),
+    )
+    db._conn.commit()
+    before = db._conn.total_changes
+    response = TestClient(app).get(
+        "/api/v1/orgs/alpha/agents/dev_agent/cleanup-activity", headers=auth_headers,
+    )
+    assert response.status_code == 200
+    assert [row["task_id"] for row in response.json()["activities"]] == [
+        "TASK-6", "TASK-5", "TASK-4", "TASK-3", "TASK-2",
+    ]
+    first = response.json()["activities"][0]
+    assert first["status"] == "failed"
+    assert first["result_status"] == "blocked"
+    assert first["output_summary"] == "latest matching summary"
+    assert db._conn.total_changes == before
+
+
+def test_cleanup_activity_returns_404_for_unknown_agent(app, auth_headers) -> None:
+    response = TestClient(app).get(
+        "/api/v1/orgs/alpha/agents/missing/cleanup-activity", headers=auth_headers,
+    )
+    assert response.status_code == 404
+
+
 @pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
 def test_list_agents_accepts_snapshot_universal_newlines(
     tmp_home, app, org_state, auth_headers, newline,

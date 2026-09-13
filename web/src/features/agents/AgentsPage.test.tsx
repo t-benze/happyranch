@@ -1811,6 +1811,49 @@ describe('AgentDetailPane — recent jobs cross-link', () => {
   });
 });
 
+describe('AgentDetailPane — cleanup activity', () => {
+  test('renders an agent-scoped task link, distinct statuses, and an unavailable summary', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, () =>
+        HttpResponse.json({ activities: [{
+          task_id: 'TASK-CLEANUP-6', status: 'failed', result_status: 'blocked',
+          created_at: '2026-05-20T08:00:00Z', output_summary: '   ',
+        }] }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    await waitFor(() => expect(screen.getByText(/Cleanup activity/i)).toBeInTheDocument());
+    const link = await screen.findByRole('link', { name: 'TASK-CLEANUP-6' });
+    expect(link).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-CLEANUP-6`);
+    expect(screen.getByText(/Task: failed.*Result: blocked/)).toBeInTheDocument();
+    expect(screen.getByText('Summary unavailable')).toBeInTheDocument();
+  });
+
+  test('shows an error and retries the cleanup activity request', async () => {
+    stubBaseHandlers();
+    stubDetailHandlers();
+    let attempts = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents/engineering_head/cleanup-activity`, () => {
+        attempts += 1;
+        return attempts === 1
+          ? HttpResponse.json({ detail: 'unavailable' }, { status: 500 })
+          : HttpResponse.json({ activities: [] });
+      }),
+    );
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/agents/engineering_head`);
+
+    await screen.findByText('Failed to load cleanup activity.');
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await screen.findByText('No cleanup activity for this agent.');
+    expect(attempts).toBe(2);
+  });
+});
+
 describe('AgentDetailPane — Start Thread Reflection affordance (THR-106)', () => {
   test('Reflection button appears in Start Thread dialog for a single-agent start', async () => {
     stubBaseHandlers();

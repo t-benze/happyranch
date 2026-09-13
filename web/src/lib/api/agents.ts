@@ -15,6 +15,7 @@ import { request } from './client';
 import type {
   AgentEnrollment,
   AgentSummary,
+  CleanupActivity,
   MemoryEntry,
   MemoryEntrySummary,
 } from './types';
@@ -32,6 +33,9 @@ export const listAgents = (
   slug: string,
 ): Promise<{ agents: AgentSummary[] }> =>
   request(`/orgs/${slug}/agents`);
+
+export const getCleanupActivity = (slug: string, agentName: string): Promise<{ activities: CleanupActivity[] }> =>
+  request(`/orgs/${slug}/agents/${agentName}/cleanup-activity`);
 
 export interface CreateAgentBody {
   name: string;

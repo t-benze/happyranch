@@ -362,6 +362,9 @@ export interface AgentsApi {
   useAgentTasks: (
     agentName: string | undefined,
   ) => QueryLike<{ tasks: TaskRecord[] }>;
+  useCleanupActivity: (agentName: string | undefined) => QueryLike<{ activities: import('@/lib/api/types').CleanupActivity[] }> & {
+    refetch: () => Promise<unknown>;
+  };
 
   useCreateAgent: () => MutationLike<CreateAgentArgs, CreateAgentResult>;
   useApproveAgent: () => MutationLike<ApproveAgentArgs, ApproveAgentResult>;
