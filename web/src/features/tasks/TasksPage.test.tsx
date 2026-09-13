@@ -1,13 +1,14 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { Link, MemoryRouter } from 'react-router-dom';
+import { Link, MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import * as api from '@/lib/api';
+import { __resetTokenCacheForTests } from '@/lib/auth';
 import type { SSEOptions } from '@/lib/api';
 import type { ActiveChainResponse, JobRecord, TaskEvent, TaskRecord } from '@/lib/api/types';
 
@@ -140,51 +141,117 @@ describe('TasksPage — read path (roots endpoint)', () => {
     expect(screen.queryByText('Could not load tasks')).not.toBeInTheDocument();
   });
 
-  test('retains populated cached rows when a stale refetch fails and retries all loaded pages', async () => {
-    sessionStorage.setItem('happyranch.token', 'tok');
-    const queryClient = makeQueryClient();
-    queryClient.setQueryData(['tasks-roots-infinite', SLUG, undefined], {
-      pages: [
-        { tasks: [TASK], next_cursor: 'page-2' },
-        { tasks: [rootTask({ task_id: 'TASK-0092', brief: 'Cached second page' })], next_cursor: null },
-      ],
-      pageParams: [undefined, 'page-2'],
-    });
-    let shouldFail = true;
-    const requestedBefore: string[] = [];
-    server.use(
-      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
-        const before = new URL(request.url).searchParams.get('before') ?? 'first';
-        requestedBefore.push(before);
+  test.each(['unfiltered', 'filtered'] as const)(
+    'C09 %s retains two cached pages through invalidation500, keyboard Retry500, then Retry200',
+    async (context) => {
+      __resetTokenCacheForTests();
+      sessionStorage.clear();
+      sessionStorage.setItem('happyranch.token', 'synthetic-c09');
+      const queryClient = makeQueryClient();
+      const params = context === 'filtered'
+        ? { status: 'in_progress', assigned_agent: 'agent-c09' } : undefined;
+      const key = ['tasks-roots-infinite', SLUG, params];
+      const first = rootTask({ ...TASK, assigned_agent: 'agent-c09' });
+      const second = rootTask({ ...first, task_id: 'TASK-0092', brief: 'Cached second page' });
+      const cached = {
+        pages: [
+          { tasks: [first], next_cursor: 'page-2' },
+          { tasks: [second], next_cursor: null },
+        ],
+        pageParams: [undefined, 'page-2'],
+      };
+      // Seed both keys so selecting the filtered context causes no setup HTTP.
+      queryClient.setQueryData(['tasks-roots-infinite', SLUG, undefined], cached);
+      queryClient.setQueryData(key, cached);
+      let shouldFail = true;
+      const ledger: { pathname: string; params: Record<string, string>; bearer: string | null }[] = [];
+      server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+        const url = new URL(request.url);
+        ledger.push({ pathname: url.pathname, params: Object.fromEntries(url.searchParams),
+          bearer: request.headers.get('authorization') });
         if (shouldFail) return new HttpResponse(null, { status: 500 });
-        return HttpResponse.json(
-          before === 'first'
-            ? { tasks: [TASK], next_cursor: 'page-2' }
-            : { tasks: [rootTask({ task_id: 'TASK-0092', brief: 'Recovered second page' })], next_cursor: null },
-        );
-      }),
-    );
-    render(
-      <MemoryRouter initialEntries={[`/orgs/${SLUG}/tasks`]}>
-        <AppProvider client={queryClient}><AppRoutes /></AppProvider>
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByText(/Draft Hong Kong visa guide/)).toBeInTheDocument();
-    await act(() => queryClient.invalidateQueries({
-      queryKey: ['tasks-roots-infinite', SLUG, undefined],
-      exact: true,
-    }));
-    expect(await screen.findByText('Tasks may be out of date')).toBeInTheDocument();
-    expect(screen.getByText('Cached second page')).toBeInTheDocument();
-    expect(screen.queryByText('End of list')).not.toBeInTheDocument();
-
-    shouldFail = false;
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByText('Recovered second page')).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByText('Tasks may be out of date')).not.toBeInTheDocument());
-    expect(requestedBefore).toEqual(['first', 'first', 'page-2']);
-  });
+        return HttpResponse.json(url.searchParams.has('before')
+          ? { tasks: [{ ...second, brief: 'Recovered second page' }], next_cursor: null }
+          : { tasks: [first], next_cursor: 'page-2' });
+      }));
+      function Location() {
+        const location = useLocation();
+        return <output aria-label="C09 current URL">{location.pathname}</output>;
+      }
+      const mounted = render(
+        <MemoryRouter initialEntries={[`/orgs/${SLUG}/tasks`]}>
+          <AppProvider client={queryClient}><Location /><AppRoutes /></AppProvider>
+        </MemoryRouter>,
+      );
+      const user = userEvent.setup();
+      const requestAt = (before?: string) => ({ pathname: `/api/v1/orgs/${SLUG}/tasks/roots`,
+        params: { ...params, limit: '50', ...(before ? { before } : {}) },
+        bearer: 'Bearer synthetic-c09' });
+      function inventory(secondBrief: string) {
+        const rows = within(screen.getByTestId('tasks-responsive-list')).getAllByRole('listitem');
+        expect(rows.map((row) => within(row).getByRole('link').getAttribute('href')).sort())
+          .toEqual([`/orgs/${SLUG}/tasks/TASK-0091`, `/orgs/${SLUG}/tasks/TASK-0092`]);
+        expect(screen.getByText(first.brief)).toBeInTheDocument();
+        expect(screen.getByText(secondBrief)).toBeInTheDocument();
+        expect(screen.getByLabelText('C09 current URL').textContent).toBe(`/orgs/${SLUG}/tasks`);
+        if (params) {
+          expect(screen.getByText(/Applied filters:/).textContent)
+            .toBe('Applied filters: status = in_progress assigned agent = agent-c09');
+        } else expect(screen.queryByText(/Applied filters:/)).not.toBeInTheDocument();
+      }
+      async function failed(attempts: number) {
+        await waitFor(() => {
+          expect(queryClient.getQueryState(key)).toMatchObject({ status: 'error', fetchStatus: 'idle' });
+          expect(within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' })).toBeEnabled();
+        });
+        expect(screen.getByRole('alert')).toHaveTextContent('Tasks may be out of date');
+        inventory('Cached second page');
+        expect(queryClient.getQueryData(key)).toEqual(cached);
+        for (const text of ['No tasks', 'End of list', 'Could not load tasks', 'Recovered second page']) {
+          expect(screen.queryByText(text)).not.toBeInTheDocument();
+        }
+        expect(ledger).toEqual(Array.from({ length: attempts }, () => requestAt()));
+      }
+      async function keyboardRetry() {
+        const retry = within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' });
+        expect(retry).toBeEnabled(); retry.focus(); expect(retry).toHaveFocus();
+        await user.keyboard('{Enter}');
+      }
+      try {
+        await screen.findByText('Cached second page');
+        if (params) {
+          await user.click(screen.getByRole('button', { name: 'Filter' }));
+          await user.selectOptions(screen.getByLabelText('Task status'), params.status);
+          await user.type(screen.getByLabelText('Assigned agent (exact name)'), params.assigned_agent);
+          await user.click(screen.getByRole('button', { name: 'Apply' }));
+        }
+        inventory('Cached second page');
+        expect(ledger).toEqual([]);
+        await act(() => queryClient.invalidateQueries({ queryKey: key, exact: true }));
+        await failed(1);
+        await keyboardRetry();
+        await failed(2);
+        shouldFail = false;
+        await keyboardRetry();
+        await screen.findByText('Recovered second page');
+        await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+        inventory('Recovered second page');
+        expect(screen.queryByText('Cached second page')).not.toBeInTheDocument();
+        expect(screen.queryByText('Tasks may be out of date')).not.toBeInTheDocument();
+        expect(screen.queryByText('No tasks')).not.toBeInTheDocument();
+        expect(screen.getByText('End of list')).toBeInTheDocument();
+        expect(queryClient.getQueryState(key)).toMatchObject({ status: 'success', fetchStatus: 'idle' });
+        expect(queryClient.getQueryData(key)).toEqual({ ...cached, pages: [cached.pages[0],
+          { tasks: [{ ...second, brief: 'Recovered second page' }], next_cursor: null }] });
+        expect(ledger).toEqual([requestAt(), requestAt(), requestAt(), requestAt('page-2')]);
+        if (params) expect(queryClient.getQueryData(['tasks-roots-infinite', SLUG, undefined])).toEqual(cached);
+      } finally {
+        mounted.unmount();
+        await queryClient.cancelQueries(); queryClient.clear();
+        __resetTokenCacheForTests(); sessionStorage.clear();
+      }
+    },
+  );
 
   test('retains the first page when fetching the next page fails and retries that page only', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
