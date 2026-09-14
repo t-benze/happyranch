@@ -77,9 +77,20 @@ def _is_aware_datetime(value: object) -> bool:
 
     This deliberately shares the helper's existing parser rather than treating
     SQLite's permissive date functions as the timestamp authority.  It is used
-    after the one bounded SQL observation; it never creates a second lookup.
+    both inside the bounded newer-owner query and after bounded reads; it never
+    creates a second lookup.
     """
     if not isinstance(value, str):
+        return False
+    # CPython 3.14 normalizes ISO hour 24 to the next day's midnight.  The
+    # finite selector instead has an explicit persisted-ordering contract: an
+    # hour-24 value is malformed.  Keep this a narrow exception around the
+    # standard parser rather than a format whitelist, so all other parser-valid
+    # ISO forms retain their existing behavior.
+    if (
+        (len(value) >= 13 and value[4] == "-" and value[7] == "-" and value[11:13] == "24")
+        or (len(value) >= 11 and value[:8].isdigit() and value[9:11] == "24")
+    ):
         return False
     try:
         return _parse_dt(value).tzinfo is not None
