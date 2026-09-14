@@ -271,17 +271,17 @@ def _release_publication_lease(conn: sqlite3.Connection, namespace: str, owner: 
         raise
 
 
-def _pointer(conn: sqlite3.Connection, namespace: str) -> tuple[int, str | None, str | None, str]:
+def _pointer(conn: sqlite3.Connection, namespace: str) -> tuple[int, str | None, str | None, str, int]:
     row = conn.execute(
-        "SELECT current_generation, journal_id, snapshot_digest, state FROM workflow_authority_pointers WHERE namespace=?",
+        "SELECT current_generation, journal_id, snapshot_digest, state, profile_fence FROM workflow_authority_pointers WHERE namespace=?",
         (namespace,),
     ).fetchone()
-    return (0, None, None, "ready") if row is None else tuple(row)  # type: ignore[return-value]
+    return (0, None, None, "ready", 0) if row is None else tuple(row)  # type: ignore[return-value]
 
 
 def _active_journal(conn: sqlite3.Connection, namespace: str) -> tuple[object, ...] | None:
     return conn.execute(
-        """SELECT id, generation, expected_generation, snapshot_bytes, snapshot_digest, state, recovery_owner
+        """SELECT id, generation, expected_generation, snapshot_bytes, snapshot_digest, state, recovery_owner, profile_fence
            FROM workflow_publication_journals
            WHERE namespace=? AND state NOT IN ('cache_installed','aborted')
            ORDER BY rowid DESC LIMIT 1""",
@@ -313,7 +313,7 @@ def _verified_ready_pointer(
     active = _active_journal(conn, namespace)
     if active is not None:
         raise ValueError(f"publication_fenced:{active[5]}")
-    generation, journal_id, digest, state = _pointer(conn, namespace)
+    generation, journal_id, digest, state, _profile_fence = _pointer(conn, namespace)
     if generation == 0:
         raise ValueError("authority_uninitialized")
     if state != "ready" or journal_id is None or digest is None:
@@ -325,6 +325,52 @@ def _verified_ready_pointer(
     if not path.is_file() or path.read_bytes() != journal[4]:
         raise ValueError("canonical_snapshot_mismatch")
     return generation, digest, journal[4]
+
+
+def _verify_predecessor(
+    conn: sqlite3.Connection, root: Path, namespace: str, expected_generation: int,
+    *, require_canonical: bool,
+) -> tuple[int, str | None, str | None, str, int]:
+    """Refuse an incomplete old lineage before recovery or compensation mutates it."""
+    pointer = _pointer(conn, namespace)
+    generation, journal_id, digest, state, _profile_fence = pointer
+    path = _publication_file(root, namespace)
+    if expected_generation == 0:
+        if pointer != (0, None, None, "ready", 0) or path.exists():
+            raise ValueError("initial_predecessor_incoherent")
+        return pointer
+    if generation != expected_generation or state != "ready" or journal_id is None or digest is None:
+        raise ValueError("predecessor_pointer_incoherent")
+    journal = _journal_by_id(conn, namespace, journal_id)
+    if journal[2] != generation or journal[5] != digest or journal[6] != "cache_installed":
+        raise ValueError("predecessor_journal_incoherent")
+    if require_canonical and (not path.is_file() or path.read_bytes() != journal[4]):
+        raise ValueError("predecessor_canonical_incoherent")
+    return pointer
+
+
+def _verify_active_transition(
+    conn: sqlite3.Connection, root: Path, namespace: str,
+    active: tuple[object, ...],
+) -> tuple[int, str | None, str | None, str, int]:
+    """Validate every durable participant before an active recovery writes anything."""
+    journal_id, generation, expected, snapshot, digest, state, _owner, profile_fence = active
+    if sha256_bytes(snapshot) != digest or generation != expected + 1:
+        raise ValueError("active_journal_invalid")
+    if state == "pointer_committed":
+        pointer = _pointer(conn, namespace)
+        if pointer != (generation, journal_id, digest, "ready", profile_fence):
+            raise ValueError("active_pointer_incoherent")
+        path = _publication_file(root, namespace)
+        if not path.is_file() or path.read_bytes() != snapshot:
+                raise ValueError("committed_snapshot_mismatch")
+        return pointer
+    path = _publication_file(root, namespace)
+    active_has_replaced_canonical = path.is_file() and path.read_bytes() == snapshot
+    return _verify_predecessor(
+        conn, root, namespace, expected,
+        require_canonical=state == "prepared" and not active_has_replaced_canonical,
+    )
 
 
 def _assert_ready_snapshot(conn: sqlite3.Connection, root: Path, cache: dict[str, tuple[int, str]], namespace: str) -> tuple[int, str]:
@@ -350,6 +396,7 @@ def publish_authority_generation(
     conn: sqlite3.Connection, *, root: Path, cache: dict[str, tuple[int, str]], namespace: str,
     expected_generation: int, snapshot: bytes, publisher: str, journal_id: str,
     interrupt_at: str | None = None, stage_hook: Callable[[str], None] | None = None,
+    profile_fence: int | None = None,
 ) -> int:
     """Publish one proposed generation in crash-visible, forward-only stages.
 
@@ -371,13 +418,19 @@ def publish_authority_generation(
         digest = sha256_bytes(snapshot)
         conn.execute("BEGIN IMMEDIATE")
         try:
-            current, _old_id, _old_digest, _state = _pointer(conn, namespace)
-            if current != expected_generation or _active_journal(conn, namespace) is not None:
+            current, _old_id, _old_digest, pointer_state, current_profile_fence = _pointer(conn, namespace)
+            selected_profile_fence = current_profile_fence if profile_fence is None else profile_fence
+            if (
+                current != expected_generation or _active_journal(conn, namespace) is not None
+                or selected_profile_fence != current_profile_fence
+                or (pointer_state == "fenced" and profile_fence is None)
+                or pointer_state not in {"ready", "fenced"}
+            ):
                 raise ValueError("expected_generation_cas_failed")
             conn.execute(
-                "INSERT INTO workflow_publication_journals VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO workflow_publication_journals VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (journal_id, namespace, expected_generation + 1, expected_generation, snapshot, digest,
-                 publisher, owner, "prepared", "workflow_recovery"),
+                 publisher, owner, selected_profile_fence, "prepared", "workflow_recovery"),
             )
             conn.commit()
         except Exception:
@@ -385,6 +438,19 @@ def publish_authority_generation(
             raise
         if stage_hook is not None:
             stage_hook("journal_prepared")
+        # The prepared journal is not permission to cross the first file write:
+        # a profile coordinator may have durably fenced this exact publisher.
+        current, _id, _old_digest, pointer_state, current_profile_fence = _pointer(conn, namespace)
+        journal_state = conn.execute(
+            "SELECT state, profile_fence FROM workflow_publication_journals WHERE id=?", (journal_id,),
+        ).fetchone()
+        if (
+            current != expected_generation
+            or (pointer_state != "ready" and not (pointer_state == "fenced" and profile_fence is not None))
+            or current_profile_fence != selected_profile_fence
+            or journal_state != ("prepared", selected_profile_fence)
+        ):
+            raise ValueError("profile_fence_stale_publisher")
         if interrupt_at == "process_exit_prepared":
             os._exit(73)
         if interrupt_at == "prepared":
@@ -413,19 +479,19 @@ def publish_authority_generation(
             raise PublicationInterrupted("publication_interrupted:canonical")
         conn.execute("BEGIN IMMEDIATE")
         try:
-            current, _old_id, _old_digest, _state = _pointer(conn, namespace)
+            current, _old_id, _old_digest, _state, current_profile_fence = _pointer(conn, namespace)
             changed = conn.execute(
                 "UPDATE workflow_publication_journals SET state='pointer_committed' WHERE id=? AND state='canonical_published'",
                 (journal_id,),
             ).rowcount
-            if current != expected_generation or changed != 1:
+            if current != expected_generation or current_profile_fence != selected_profile_fence or changed != 1:
                 raise ValueError("pointer_cas_failed")
             conn.execute(
-                """INSERT INTO workflow_authority_pointers(namespace,current_generation,journal_id,snapshot_digest,state)
-                   VALUES (?,?,?,?, 'ready')
+                """INSERT INTO workflow_authority_pointers(namespace,current_generation,journal_id,snapshot_digest,state,profile_fence)
+                   VALUES (?,?,?,?, 'ready',?)
                    ON CONFLICT(namespace) DO UPDATE SET current_generation=excluded.current_generation,
-                     journal_id=excluded.journal_id,snapshot_digest=excluded.snapshot_digest,state='ready'""",
-                (namespace, expected_generation + 1, journal_id, digest),
+                     journal_id=excluded.journal_id,snapshot_digest=excluded.snapshot_digest,state='ready',profile_fence=excluded.profile_fence""",
+                (namespace, expected_generation + 1, journal_id, digest, selected_profile_fence),
             )
             conn.commit()
         except Exception:
@@ -503,10 +569,15 @@ def compensate_authority_publication(
                 "SELECT expected_generation, snapshot_bytes, snapshot_digest, state, publisher FROM workflow_publication_journals WHERE id=? AND namespace=?",
                 (journal_id, namespace),
             ).fetchone()
-            current, pointer_id, pointer_digest, pointer_state = _pointer(conn, namespace)
+            current, pointer_id, pointer_digest, pointer_state, _profile_fence = _pointer(conn, namespace)
             if row is None or row[4] != publisher or row[3] not in {"prepared", "canonical_published"} or current != row[0] or sha256_bytes(row[1]) != row[2]:
                 raise ValueError("stale_compensation_fenced")
             path = _publication_file(root, namespace)
+            active_has_replaced_canonical = path.is_file() and path.read_bytes() == row[1]
+            _verify_predecessor(
+                conn, root, namespace, row[0],
+                require_canonical=row[3] == "prepared" and not active_has_replaced_canonical,
+            )
             if row[3] == "prepared":
                 if path.is_file() and path.read_bytes() == row[1]:
                     conn.execute("UPDATE workflow_publication_journals SET state='forward_recovery_required' WHERE id=?", (journal_id,))
@@ -553,11 +624,10 @@ def recover_authority_publication(
                 return "uninitialized_no_authority"
             _rehydrate_verified_cache(conn, root, cache, namespace)
             return "rehydrated_coherent"
-        journal_id, generation, expected, snapshot, digest, state, _owner = active
-        if sha256_bytes(snapshot) != digest or generation != expected + 1:
-            raise ValueError("active_journal_invalid")
+        journal_id, generation, expected, snapshot, digest, state, _owner, profile_fence = active
+        _verify_active_transition(conn, root, namespace, active)
         path = _publication_file(root, namespace)
-        current, _pointer_id, _pointer_digest, _pointer_state = _pointer(conn, namespace)
+        current, _pointer_id, _pointer_digest, _pointer_state, _pointer_profile_fence = _pointer(conn, namespace)
         if state == "prepared":
             if path.is_file() and sha256_bytes(path.read_bytes()) == digest:
                 conn.execute("UPDATE workflow_publication_journals SET state='forward_recovery_required' WHERE id=?", (journal_id,))
@@ -586,15 +656,15 @@ def recover_authority_publication(
                 raise PublicationInterrupted("recovery_interrupted:before_pointer")
             conn.execute("BEGIN IMMEDIATE")
             try:
-                current, _pointer_id, _pointer_digest, _pointer_state = _pointer(conn, namespace)
-                if current != expected:
+                current, _pointer_id, _pointer_digest, _pointer_state, current_profile_fence = _pointer(conn, namespace)
+                if current != expected or current_profile_fence != profile_fence:
                     raise ValueError("pointer_cas_failed")
                 conn.execute("UPDATE workflow_publication_journals SET state='pointer_committed' WHERE id=?", (journal_id,))
                 conn.execute(
-                    """INSERT INTO workflow_authority_pointers VALUES (?,?,?,?, 'ready')
+                    """INSERT INTO workflow_authority_pointers VALUES (?,?,?,?, 'ready',?)
                        ON CONFLICT(namespace) DO UPDATE SET current_generation=excluded.current_generation,
-                       journal_id=excluded.journal_id,snapshot_digest=excluded.snapshot_digest,state='ready'""",
-                    (namespace, generation, journal_id, digest),
+                       journal_id=excluded.journal_id,snapshot_digest=excluded.snapshot_digest,state='ready',profile_fence=excluded.profile_fence""",
+                    (namespace, generation, journal_id, digest, profile_fence),
                 )
                 conn.commit()
             except Exception:
@@ -627,8 +697,16 @@ def fence_authority_namespace(
     _require_idle(conn)
     conn.execute("BEGIN IMMEDIATE")
     try:
+        active = _active_journal(conn, namespace)
+        if active is not None:
+            if active[5] != "prepared":
+                raise ValueError("profile_fence_active_publication")
+            conn.execute(
+                "UPDATE workflow_publication_journals SET state='aborted' WHERE id=? AND state='prepared'",
+                (active[0],),
+            )
         changed = conn.execute(
-            "UPDATE workflow_authority_pointers SET state='fenced' WHERE namespace=? AND state='ready'",
+            "UPDATE workflow_authority_pointers SET state='fenced', profile_fence=profile_fence+1 WHERE namespace=? AND state='ready'",
             (namespace,),
         ).rowcount
         if changed != 1:

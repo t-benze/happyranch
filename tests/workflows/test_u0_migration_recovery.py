@@ -681,7 +681,48 @@ def test_proposed_recovery_interruptions_and_profile_pre_fence_deny_admission(tm
     with pytest.raises(ValueError, match="authority_pointer_not_ready"):
         admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id="profile-gap", request_bytes=b"x", admitted_by="reader", expected_generation=2)
     assert _publication_rows(path) == before
-    assert publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=2, snapshot=b"three", publisher="profile-republish", journal_id="profile-next") == 3
+    assert publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=2, snapshot=b"three", publisher="profile-republish", journal_id="profile-next", profile_fence=1) == 3
+
+
+def test_proposed_profile_fence_rejects_a_prepared_old_profile_publisher_before_file_mutation(tmp_path: Path) -> None:
+    path, files, cache = tmp_path / "profile-race.db", tmp_path / "canonical", {}
+    seed = _adapter(path)
+    assert publish_authority_generation(seed, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"stable", publisher="bootstrap", journal_id="base") == 1
+    arrived, release = threading.Event(), threading.Event()
+    outcomes: list[object] = []
+
+    def old_profile_publisher() -> None:
+        conn = sqlite3.connect(path)
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            outcomes.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"stale", publisher="old-profile", journal_id="stale-journal", stage_hook=lambda stage: (arrived.set(), (_ for _ in ()).throw(AssertionError("profile_release_timeout")) if not release.wait(5) else None) if stage == "journal_prepared" else None))
+        except BaseException as exc:
+            outcomes.append(exc)
+        finally:
+            conn.close()
+
+    worker = threading.Thread(target=old_profile_publisher)
+    worker.start()
+    assert arrived.wait(5)
+    fence = sqlite3.connect(path)
+    fence.execute("PRAGMA foreign_keys=ON")
+    try:
+        fence_authority_namespace(fence, cache={}, namespace="engineering", reason="profile-change")
+    finally:
+        release.set()
+        worker.join(5)
+        fence.close()
+    assert not worker.is_alive() and len(outcomes) == 1
+    assert isinstance(outcomes[0], ValueError) and str(outcomes[0]) == "profile_fence_stale_publisher"
+    residue = _publication_rows(path)
+    assert residue["pointers"] == [("engineering", 1, "base", sha256_bytes(b"stable"), "fenced")]
+    assert seed.execute("SELECT profile_fence FROM workflow_authority_pointers WHERE namespace='engineering'").fetchone() == (1,)
+    assert residue["journals"][-1][0] == "stale-journal" and residue["journals"][-1][7] == "aborted"
+    assert residue["admissions"] == [] and residue["leases"] == []
+    assert (files / "engineering.authority.json").read_bytes() == b"stable"
+    with pytest.raises(ValueError, match="authority_pointer_not_ready"):
+        admit_authority_request(seed, root=files, cache=cache, namespace="engineering", request_id="stale-request", request_bytes=b"x", admitted_by="reader", expected_generation=1)
+    assert publish_authority_generation(seed, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"profile-current", publisher="profile-republish", journal_id="current-journal", profile_fence=1) == 2
 
 
 def test_proposed_concurrent_same_label_publishers_and_admission_are_fenced_at_real_barriers(tmp_path: Path) -> None:

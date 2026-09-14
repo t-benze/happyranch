@@ -387,7 +387,7 @@ keeps legacy chain/fanout owners, and names Founder decisions before any
 protected implementation. U1--U6, cutover proof, and the NOT RUN study remain
 explicitly pending.
 
-### 2026-09-15 F4/F5 publication-protocol evidence (TASK-8368 correction)
+### 2026-09-15 F4/F5 publication-protocol evidence (TASK-8375 correction)
 
 This is a concrete proposed protocol plus executable isolated evidence, not a
 production approval, migration, runtime import, or a claim that same-UID
@@ -431,7 +431,13 @@ valid initial publication remains possible. A prepared record is never blindly
 discarded: compensation reads the canonical file and only aborts a verified
 pre-file attempt; replacement-before-journal-stamp becomes
 `forward_recovery_required` and is completed forward. It never restores a
-stale file/cache/pointer.
+stale file/cache/pointer. Active recovery and compensation first verify the
+entire selected transition: active journal bytes/digest/generation/profile-fence,
+the pointer identity/generation/digest/state, the previous ready journal and,
+where applicable, its canonical bytes. A malformed active pointer or previous
+lineage therefore refuses before journal state, staging file, canonical file, or
+cache mutation. Recovery before cache stamping is repeatable; it does not turn
+a cold cache into evidence of coherence.
 
 There is no false universal lock order. Publication uses a cooperative lease
 and short SQLite stage transactions; no lock spans launch/network/clone.
@@ -446,7 +452,15 @@ model proves the material edge: a concurrent admission after the pre-fence and
 before republish is rejected. It does not claim a distributed atomic commit,
 global lock nesting, or that the existing production routes already implement
 this protocol. Existing `teams_lock`, org DB RLock, and callback order remain
-separate; no coordinator spans clone/network/launch/callback.
+separate; no coordinator spans clone/network/launch/callback. The proposed
+pointer carries a monotonic `profile_fence`; each prepared journal records the
+identity it observed. The profile coordinator aborts only a still-pre-file
+prepared old-profile journal before incrementing/fencing the pointer. A
+publisher rechecks that durable identity before its first staging-file write and
+again at pointer CAS. An old prepared publisher consequently cannot clear a
+newer fence; only an explicitly profile-validated republisher with the current
+fence identity may return the pointer to ready. This is isolated-model proof,
+not a claim that current route locks already enforce it.
 
 The isolated schema/helper implement journal, pointer, invocation/PID lease,
 admission, publisher, recovery, forward-only compensation, and later
@@ -462,7 +476,11 @@ revalidates, same-label accidental reentrancy is refused, dead-owner recovery
 and cold-cache rehydration work, an aborted preparation can be retried with a
 new attempt ID, staged/replacement/pointer/cache windows fence and recover
 twice, canonical compensation is forward-only, missing pointer journals refuse,
-and corrupt committed snapshots refuse without destructive rollback. This is
+and corrupt committed snapshots refuse without destructive rollback. The new
+independent-connection profile schedule holds an old publisher at
+`journal_prepared`, commits the fence independently, releases/joins in `finally`,
+and observes the original publisher fail before files/cache/admission change;
+only a current-fence republisher is admitted. This is
 the Phase-1 minimum publication proof, not a general legacy or Phase-2
 serialization claim. Atomic request/outbox and uncertain-launch remain the next
 unit, not complete here.
