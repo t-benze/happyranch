@@ -107,10 +107,17 @@ def test_workspace_cleanup_selection_is_bounded_and_exposes_each_real_read(db, t
 def test_workspace_cleanup_selection_refuses_before_later_reads_on_bad_owner_or_marker(db, tmp_path) -> None:
     _selection_fixture(db)
     admitted: list[str] = []
-    assert _select(
+    statements: list[str] = []
+    db._conn.set_trace_callback(statements.append)
+    selection = _select(
         db, tmp_path, lambda name: admitted.append(name) is None or True, stale_count=1,
-    ) is None
-    assert admitted == ["owner"]
+    )
+    db._conn.set_trace_callback(None)
+    # Supplied claim counts are local invocation preconditions: malformed
+    # inputs refuse before either the durable owner read or its admission.
+    assert selection is None
+    assert admitted == []
+    assert not [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
 
     db.update_task("TASK-OWNER", orchestration_step_count=2)
     admitted.clear()
