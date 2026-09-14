@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { Link, MemoryRouter, useLocation } from 'react-router-dom';
+import { Link, MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
@@ -9,6 +9,7 @@ import { server } from '@/test/server';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import * as api from '@/lib/api';
 import { __resetTokenCacheForTests } from '@/lib/auth';
+import { useResolveEscalation } from '@/hooks/tasks';
 import type { SSEOptions } from '@/lib/api';
 import type { ActiveChainResponse, JobRecord, TaskEvent, TaskRecord } from '@/lib/api/types';
 
@@ -167,6 +168,52 @@ describe('TasksPage — read path (roots endpoint)', () => {
     expect(attentionAttempts).toBe(2);
   });
 
+  test('C08 resolves through the mounted provider then refetches both streams into the final waiting rows', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let resolved = false;
+    const oldEscalation = rootTask({
+      task_id: 'TASK-RESOLVED-ESC', brief: 'Escalation now resolved', status: 'escalated', severity_rollup: 'escalated',
+    });
+    const promotedRoot = rootTask({
+      task_id: 'TASK-PROMOTED-ESC', brief: 'New escalation after refetch', status: 'pending', severity_rollup: 'pending',
+    });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+        const attention = new URL(request.url).searchParams.get('status') === 'escalated';
+        if (!resolved) return HttpResponse.json({ tasks: attention ? [oldEscalation] : [oldEscalation, promotedRoot], next_cursor: null });
+        return HttpResponse.json({
+          tasks: attention
+            ? [{ ...promotedRoot, status: 'escalated', severity_rollup: 'escalated' }]
+            : [{ ...oldEscalation, status: 'resolved', severity_rollup: 'resolved' }, { ...promotedRoot, status: 'escalated', severity_rollup: 'escalated' }],
+          next_cursor: null,
+        });
+      }),
+      http.post(`/api/v1/orgs/${SLUG}/tasks/TASK-RESOLVED-ESC/resolve-escalation`, () => {
+        resolved = true;
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    function ResolveButton() {
+      const resolve = useResolveEscalation('TASK-RESOLVED-ESC');
+      return <button onClick={() => void resolve.mutateAsync({ decision: 'continue', rationale: 'Founder resolution' })}>Resolve waiting task</button>;
+    }
+    const queryClient = makeQueryClient();
+    render(<MemoryRouter initialEntries={[`/orgs/${SLUG}/tasks`]}><AppProvider client={queryClient}>
+      <Routes><Route path="/orgs/:slug/tasks" element={<ResolveButton />} /></Routes><AppRoutes />
+    </AppProvider></MemoryRouter>);
+    await screen.findByText('Escalation now resolved');
+    expect(screen.getAllByText('Escalation now resolved')).toHaveLength(1);
+    await userEvent.click(screen.getByRole('button', { name: 'Resolve waiting task' }));
+    await screen.findByText('New escalation after refetch');
+    const waiting = screen.getByRole('heading', { name: 'Waiting on you' }).closest('section')!;
+    expect(within(waiting).queryByText('Escalation now resolved')).not.toBeInTheDocument();
+    expect(within(waiting).getByText('New escalation after refetch')).toBeInTheDocument();
+    expect(screen.getAllByText('New escalation after refetch')).toHaveLength(1);
+    expect(screen.getByText('1 waiting on you')).toBeInTheDocument();
+    await queryClient.cancelQueries();
+    queryClient.clear();
+  });
+
   test('does not render a late attention response from a prior org', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     let releaseOld!: () => void;
@@ -202,6 +249,103 @@ describe('TasksPage — read path (roots endpoint)', () => {
     expect(screen.getByText('Current org escalation')).toBeInTheDocument();
     await queryClient.cancelQueries();
     queryClient.clear();
+  });
+
+  test('settles both old-org streams before keeping only the filtered current-org rows', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let releaseOldOrdinary!: () => void;
+    let releaseOldAttention!: () => void;
+    const oldOrdinary = new Promise<void>((resolve) => { releaseOldOrdinary = resolve; });
+    const oldAttention = new Promise<void>((resolve) => { releaseOldAttention = resolve; });
+    const requests: { slug: string; params: Record<string, string>; settled: boolean }[] = [];
+    const oldRoot = rootTask({ task_id: 'TASK-ORG-A', brief: 'Old org ordinary root' });
+    const oldEscalation = rootTask({ task_id: 'TASK-ORG-A-ESC', brief: 'Old org escalation', status: 'escalated', severity_rollup: 'escalated' });
+    const currentRoot = rootTask({ task_id: 'TASK-ORG-B', brief: 'Current org ordinary root' });
+    const currentFiltered = rootTask({ task_id: 'TASK-ORG-B-COMPLETE', brief: 'Current org filtered root', status: 'completed', severity_rollup: 'completed' });
+    const currentEscalation = rootTask({ task_id: 'TASK-ORG-B-ESC', brief: 'Current org escalation', status: 'escalated', severity_rollup: 'escalated' });
+    server.use(http.get('/api/v1/orgs/:slug/tasks/roots', async ({ request, params }) => {
+      const url = new URL(request.url);
+      const status = url.searchParams.get('status');
+      const receipt = { slug: String(params.slug), params: Object.fromEntries(url.searchParams), settled: false };
+      requests.push(receipt);
+      if (params.slug === 'org-a') await (status === 'escalated' ? oldAttention : oldOrdinary);
+      receipt.settled = true;
+      if (params.slug === 'org-a') return HttpResponse.json({ tasks: status === 'escalated' ? [oldEscalation] : [oldRoot], next_cursor: null });
+      if (status === 'escalated') return HttpResponse.json({ tasks: [currentEscalation], next_cursor: null });
+      return HttpResponse.json({ tasks: status === 'completed' ? [currentFiltered] : [currentRoot], next_cursor: null });
+    }));
+    const queryClient = makeQueryClient();
+    render(<MemoryRouter initialEntries={['/orgs/org-a/tasks']}><AppProvider client={queryClient}>
+      <Link to="/orgs/org-b/tasks">Go org b</Link><AppRoutes />
+    </AppProvider></MemoryRouter>);
+
+    await waitFor(() => expect(requests.filter((request) => request.slug === 'org-a')).toHaveLength(2));
+    expect(requests.filter((request) => request.slug === 'org-a').map((request) => request.params))
+      .toEqual(expect.arrayContaining([{ limit: '50' }, { status: 'escalated', limit: '50' }]));
+    await userEvent.click(screen.getByRole('link', { name: 'Go org b' }));
+    expect(await screen.findByText('Current org ordinary root')).toBeInTheDocument();
+    expect(await screen.findByText('Current org escalation')).toBeInTheDocument();
+    await waitFor(() => expect(requests.filter((request) => request.slug === 'org-b')).toHaveLength(2));
+    expect(requests.filter((request) => request.slug === 'org-b').map((request) => request.params))
+      .toEqual(expect.arrayContaining([{ limit: '50' }, { status: 'escalated', limit: '50' }]));
+
+    releaseOldOrdinary();
+    releaseOldAttention();
+    await waitFor(() => expect(requests.filter((request) => request.slug === 'org-a').every((request) => request.settled)).toBe(true));
+    expect(screen.queryByText('Old org ordinary root')).not.toBeInTheDocument();
+    expect(screen.queryByText('Old org escalation')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Filter' }));
+    await userEvent.selectOptions(screen.getByLabelText('Task status'), 'completed');
+    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    expect(await screen.findByText('Current org filtered root')).toBeInTheDocument();
+    expect(screen.getByText('Current org escalation')).toBeInTheDocument();
+    expect(screen.queryByText('Current org ordinary root')).not.toBeInTheDocument();
+    expect(requests.filter((request) => request.slug === 'org-b').map((request) => request.params))
+      .toContainEqual({ status: 'completed', limit: '50' });
+    await queryClient.cancelQueries();
+    queryClient.clear();
+  });
+
+  test('keeps an older attention row through ordinary page two and deduplicates later-page overlap', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let intersect: IntersectionObserverCallback | undefined;
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: IntersectionObserverCallback) { intersect = callback; }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+      takeRecords() { return []; }
+      root = null;
+      rootMargin = '';
+      thresholds = [];
+    });
+    const oldEscalation = rootTask({ task_id: 'TASK-OLD-ESC', brief: 'Older escalation', status: 'escalated', severity_rollup: 'escalated' });
+    const laterEscalation = rootTask({ task_id: 'TASK-LATER-ESC', brief: 'Later escalation', status: 'escalated', severity_rollup: 'escalated' });
+    const firstOrdinary = rootTask({ task_id: 'TASK-ORD-ONE', brief: 'First ordinary root' });
+    const laterOrdinary = rootTask({ task_id: 'TASK-ORD-TWO', brief: 'Second ordinary root' });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      if (params.get('status') === 'escalated') {
+        return HttpResponse.json(params.has('before')
+          ? { tasks: [oldEscalation, laterEscalation], next_cursor: null }
+          : { tasks: [oldEscalation], next_cursor: 'attention-2' });
+      }
+      return HttpResponse.json(params.has('before')
+        ? { tasks: [oldEscalation, laterOrdinary], next_cursor: null }
+        : { tasks: [firstOrdinary], next_cursor: 'ordinary-2' });
+    }));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+    expect(await screen.findByText('Older escalation')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Load more waiting-on-you tasks' }));
+    expect(await screen.findByText('Later escalation')).toBeInTheDocument();
+    await act(async () => intersect?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+    expect(await screen.findByText('Second ordinary root')).toBeInTheDocument();
+    expect(screen.getAllByText('Older escalation')).toHaveLength(1);
+    expect(screen.getAllByText('Later escalation')).toHaveLength(1);
+    expect(screen.getAllByText('First ordinary root')).toHaveLength(1);
+    expect(screen.getAllByText('Second ordinary root')).toHaveLength(1);
   });
 
   test('shows an older escalated root from its independent status query without claiming a partial exact count', async () => {

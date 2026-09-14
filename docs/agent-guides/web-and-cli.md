@@ -49,9 +49,17 @@ severity rollup. Its rows are root-only and own the presentation when an
 ordinary page contains the same task id. While its cursor remains, wording is
 non-exact (`50+ waiting on you`); only an exhausted traversal may show an
 exact count. The ordinary cursor order is unchanged.
-Initial failures show an
-explicit Retry; failed refreshes retain cached rows and a stale warning;
-failed pagination retains loaded rows and requires its separate page Retry.
+Ordinary status/agent filters remain their established independent traversal;
+they do not alter the separate attention query. Initial attention failures make
+no count claim and show Retry. A failed attention refresh or continuation keeps
+the deduplicated loaded rows and their honest current count visible with a
+stale/error warning; continuation Retry resumes the failed attention cursor,
+while ordinary pagination retains its own separate page Retry. Waiting rows
+share the ordinary responsive row treatment without depending on ordinary rows
+being rendered.
+Initial ordinary failures show an
+explicit Retry; failed ordinary refreshes retain cached rows and a stale warning;
+failed ordinary pagination retains loaded rows and requires its separate page Retry.
 Manual refresh retries the active context's loaded pages. Subtask severity
 rollups are count-free; task detail owns subtask browsing. No New task flow is
 exposed by this list.

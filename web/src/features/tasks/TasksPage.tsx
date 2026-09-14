@@ -177,8 +177,10 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
   const [draftAgent, setDraftAgent] = useState(filters?.assigned_agent ?? '');
   const [isRetrying, setIsRetrying] = useState(false);
   const [nextPageError, setNextPageError] = useState(false);
+  const [attentionNextPageError, setAttentionNextPageError] = useState(false);
   const retryOwner = useRef(false);
   const pageOwner = useRef(false);
+  const attentionPageOwner = useRef(false);
   const routes = useTasksRoutes();
   const orgSlug = useOrgSlugOptional();
   const queryClient = useQueryClient();
@@ -194,10 +196,17 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
     [tasksQuery.data],
   );
   const attentionTasks = useMemo(
-    () => (attentionQuery.data?.pages.flatMap((p) => p.tasks) ?? [])
-      // Keep the presentation rooted in the exact status contract even when
-      // a test/double or stale intermediary returns an over-broad payload.
-      .filter((task) => task.status === 'escalated'),
+    () => {
+      const seen = new Set<string>();
+      return (attentionQuery.data?.pages.flatMap((p) => p.tasks) ?? [])
+        // Keep the presentation rooted in the exact status contract even when
+        // a test/double or stale intermediary returns an over-broad payload.
+        .filter((task) => {
+          if (task.status !== 'escalated' || seen.has(task.task_id)) return false;
+          seen.add(task.task_id);
+          return true;
+        });
+    },
     [attentionQuery.data],
   );
   const attentionTaskIds = useMemo(
@@ -310,10 +319,29 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
     }
   };
   const retryAttention = async () => {
+    setAttentionNextPageError(false);
     await queryClient.refetchQueries({
       queryKey: ['tasks-roots-infinite', orgSlug, attentionParams],
       exact: true,
     });
+  };
+  const loadNextAttentionPage = async () => {
+    if (attentionPageOwner.current) return;
+    attentionPageOwner.current = true;
+    setAttentionNextPageError(false);
+    try {
+      const result = await attentionQuery.fetchNextPage();
+      const failed =
+        typeof result === 'object' &&
+        result !== null &&
+        'isFetchNextPageError' in result &&
+        result.isFetchNextPageError === true;
+      setAttentionNextPageError(failed);
+    } catch {
+      setAttentionNextPageError(true);
+    } finally {
+      attentionPageOwner.current = false;
+    }
   };
   const attentionCount = attentionQuery.hasNextPage
     ? '50+ waiting on you'
@@ -381,7 +409,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
         {filters && <p className="text-text-secondary mb-4 text-sm">Applied filters: {filters.status && `status = ${filters.status}`} {filters.assigned_agent && `assigned agent = ${filters.assigned_agent}`}</p>}
         {attentionQuery.isLoading ? (
           <p className="text-text-muted px-6 text-sm">Loading waiting-on-you tasks…</p>
-        ) : attentionQuery.isError ? (
+        ) : attentionQuery.isError && attentionTasks.length === 0 ? (
           <div role="alert" className="border-feedback-danger bg-danger-soft mx-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
             <p className="text-text-primary text-sm font-medium">Could not load waiting-on-you tasks</p>
             <Button size="sm" variant="outline" onClick={() => void retryAttention()}>
@@ -389,7 +417,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
             </Button>
           </div>
         ) : attentionTasks.length > 0 ? (
-          <section aria-labelledby="waiting-on-you-heading" className="border-border-default mx-6 mb-6 space-y-2 rounded-xl border p-3">
+          <section aria-labelledby="waiting-on-you-heading" data-waiting-on-you-responsive-list className="border-border-default mx-6 mb-6 space-y-2 rounded-xl border p-3">
             <div className="flex items-center justify-between gap-3">
               <h2 id="waiting-on-you-heading" className="flex items-center gap-2 text-task-group text-text-primary font-semibold tracking-tight">
                 <span aria-hidden className="inline-block h-2 w-2 rounded-full text-attention-text" />
@@ -406,8 +434,16 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                 ))}
               </ul>
             </div>
-            {attentionQuery.hasNextPage && (
-              <Button size="sm" variant="outline" onClick={() => void attentionQuery.fetchNextPage()} loading={attentionQuery.isFetchingNextPage}>
+            {attentionQuery.isError && (
+              <div role="alert" className="border-feedback-danger bg-danger-soft flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
+                <p className="text-text-primary text-sm font-medium">Could not load waiting-on-you tasks; previously loaded rows are still shown.</p>
+                <Button size="sm" variant="outline" onClick={() => void (attentionNextPageError ? loadNextAttentionPage() : retryAttention())}>
+                  <RefreshCw size={14} aria-hidden /> {attentionNextPageError ? 'Retry loading more waiting-on-you tasks' : 'Retry'}
+                </Button>
+              </div>
+            )}
+            {attentionQuery.hasNextPage && !attentionNextPageError && (
+              <Button size="sm" variant="outline" onClick={() => void loadNextAttentionPage()} loading={attentionQuery.isFetchingNextPage}>
                 Load more waiting-on-you tasks
               </Button>
             )}
@@ -446,17 +482,17 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
             )}
             <style>{`@media (max-width: 767px) {
               [data-tasks-responsive-list] > div:first-child { display: none; }
-              [data-tasks-responsive-list] section li > div > a {
+              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a {
                 display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem .75rem; align-items: center;
               }
-              [data-tasks-responsive-list] section li > div > a > div { width: auto; min-width: 0; }
-              [data-tasks-responsive-list] section li > div > a > div:nth-child(1) { grid-column: 1; grid-row: 1; }
-              [data-tasks-responsive-list] section li > div > a > div:nth-child(2) { grid-column: 2; grid-row: 1; }
-              [data-tasks-responsive-list] section li > div > a > div:nth-child(3) { grid-column: 1 / -1; grid-row: 2; overflow: visible; }
-              [data-tasks-responsive-list] section li > div > a > div:nth-child(3) > span { white-space: normal; overflow: visible; text-overflow: clip; }
-              [data-tasks-responsive-list] section li > div > a > div:nth-child(4) { grid-column: 1; grid-row: 3; }
-              [data-tasks-responsive-list] section li > div > a > div:nth-child(5) { grid-column: 2; grid-row: 3; }
-              [data-tasks-responsive-list] section li > div > a > div:nth-child(6) { grid-column: 2; grid-row: 4; justify-self: end; }
+              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div { width: auto; min-width: 0; }
+              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(1) { grid-column: 1; grid-row: 1; }
+              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(2) { grid-column: 2; grid-row: 1; }
+              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(3) { grid-column: 1 / -1; grid-row: 2; overflow: visible; }
+              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(3) > span { white-space: normal; overflow: visible; text-overflow: clip; }
+              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(4) { grid-column: 1; grid-row: 3; }
+              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(5) { grid-column: 2; grid-row: 3; }
+              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(6) { grid-column: 2; grid-row: 4; justify-self: end; }
             }`}</style>
             <div data-testid="tasks-responsive-list" data-tasks-responsive-list>
               <TaskListColumnHeader />
