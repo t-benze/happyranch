@@ -399,6 +399,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     expect(screen.getByText('Founder decision without ordinary roots')).toBeInTheDocument();
     expect(screen.getByText('1 waiting on you')).toBeInTheDocument();
     expect(screen.getByText('No tasks')).toBeInTheDocument();
+    expect(screen.getByTestId('tasks-responsive-styles')).toHaveTextContent('data-waiting-on-you-responsive-list');
   });
 
   test('keeps initial loading distinct from empty', async () => {

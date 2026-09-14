@@ -449,6 +449,20 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
             )}
           </section>
         ) : null}
+        <style data-testid="tasks-responsive-styles">{`@media (max-width: 767px) {
+          [data-tasks-responsive-list] > div:first-child { display: none; }
+          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a {
+            display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .5rem .75rem; align-items: center;
+          }
+          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div { width: auto; min-width: 0; }
+          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(1) { grid-column: 1; grid-row: 1; }
+          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(2) { grid-column: 2; grid-row: 1; }
+          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(3) { grid-column: 1 / -1; grid-row: 2; overflow: visible; }
+          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(3) > span { white-space: normal; overflow: visible; text-overflow: clip; }
+          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(4) { grid-column: 1; grid-row: 3; }
+          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(5) { grid-column: 2; grid-row: 3; }
+          :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(6) { grid-column: 2; grid-row: 4; justify-self: end; }
+        }`}</style>
         {isLoading && !isRetrying ? (
           <p className="text-text-muted py-6 text-center text-sm">Loading…</p>
         ) : (tasksQuery.isError || isRetrying) && !hasUsableTasks ? (
@@ -480,20 +494,6 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                 </Button>
               </div>
             )}
-            <style>{`@media (max-width: 767px) {
-              [data-tasks-responsive-list] > div:first-child { display: none; }
-              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a {
-                display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem .75rem; align-items: center;
-              }
-              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div { width: auto; min-width: 0; }
-              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(1) { grid-column: 1; grid-row: 1; }
-              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(2) { grid-column: 2; grid-row: 1; }
-              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(3) { grid-column: 1 / -1; grid-row: 2; overflow: visible; }
-              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(3) > span { white-space: normal; overflow: visible; text-overflow: clip; }
-              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(4) { grid-column: 1; grid-row: 3; }
-              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(5) { grid-column: 2; grid-row: 3; }
-              :is([data-tasks-responsive-list] section, [data-waiting-on-you-responsive-list]) li > div > a > div:nth-child(6) { grid-column: 2; grid-row: 4; justify-self: end; }
-            }`}</style>
             <div data-testid="tasks-responsive-list" data-tasks-responsive-list>
               <TaskListColumnHeader />
             {groups.map(([key, tasks]) => {
