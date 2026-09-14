@@ -243,6 +243,149 @@ def test_real_systemd_denial_matrix_executes_every_bounded_probe() -> None:
         assert sandbox_property in harness
 
 
+def _run_real_systemd_failure_snapshot(tmp_path: Path, *, malformed: bool = False) -> subprocess.CompletedProcess[str]:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    snapshot_helpers = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; mkdir -p "$diagnostics"
+sudo() {{ "$@"; }}
+timeout() {{ while [[ $1 == --* || $1 =~ ^[0-9]+$ ]]; do shift; done; "$@"; }}
+systemctl() {{
+  if [[ $1 == show ]]; then
+    case $4 in
+      ActiveState) printf '%s\n' "${{MALFORMED:+SECRET_CANARY}}${{MALFORMED:-failed}}" ;;
+      SubState) printf '%s\n' failed ;;
+      Result) printf '%s\n' exit-code ;;
+      ExecMainStatus) printf '%s\n' 37 ;;
+      ExecStartPre) printf '%s\n' 'path=/secret status=19 command=SECRET_CANARY' ;;
+    esac
+  elif [[ $1 == list-jobs ]]; then
+    printf '%s\n' '42 happyranch-connector.service start running' '99 unrelated.service start waiting'
+  fi
+}}
+{snapshot_helpers}
+capture_failure_snapshot first-positive-start-failure
+cat "$diagnostics/first-positive-start-failure.json"
+'''
+    return subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True,
+        env=os.environ | ({"MALFORMED": "1"} if malformed else {}), check=False,
+    )
+
+
+def test_real_systemd_failure_snapshot_executes_shipping_source_and_is_secret_free(tmp_path: Path) -> None:
+    result = _run_real_systemd_failure_snapshot(tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "SECRET_CANARY" not in result.stdout + result.stderr
+    snapshot = json.loads(result.stdout)
+    assert snapshot["id"] == "first-positive-start-failure"
+    assert snapshot["units"]["happyranch-connector.service"] == {
+        "active": "failed", "sub": "failed", "result": "exit-code",
+        "exec_main_status": "37", "exec_start_pre_status": "unknown",
+    }
+    assert snapshot["jobs"] == [{"id": 42, "unit": "happyranch-connector.service", "state": "running"}]
+    assert snapshot["credential_presence"] == {
+        "source": False, "held_source": False, "consumed_marker": False,
+        "transient_dropin": False, "staged_directory": False,
+    }
+
+
+def test_real_systemd_failure_snapshot_bounds_malformed_observations(tmp_path: Path) -> None:
+    result = _run_real_systemd_failure_snapshot(tmp_path, malformed=True)
+    assert result.returncode == 0, result.stderr
+    assert "SECRET_CANARY" not in result.stdout + result.stderr
+    assert {unit["active"] for unit in json.loads(result.stdout)["units"].values()} == {"unknown"}
+
+
+def test_real_systemd_failure_capture_precedes_teardown_and_preserves_exit_37() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    cleanup_capture = harness.index("(( original_status == 0 )) || capture_failure_snapshot failure-before-teardown || true")
+    teardown = harness.index("sudo systemctl stop happyranch-managed.target", cleanup_capture)
+    guarded_start = harness.index("start_managed_target() {")
+    capture = harness.index("capture_failure_snapshot first-positive-start-failure || true", guarded_start)
+    preserved_status = harness.index('start_managed_target || exit "$?"', capture)
+    assert cleanup_capture < teardown
+    assert guarded_start < capture < preserved_status
+    assert "trap cleanup EXIT\ntrap 'cleanup 130' INT\ntrap 'cleanup 143' TERM" in harness
+
+
+def test_real_systemd_positive_start_exit_trap_preserves_exit_37_despite_capture_and_cleanup_failures(tmp_path: Path) -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    snapshot = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    unit_helpers = "systemctl_absent_value() {" + harness.split("systemctl_absent_value() {", 1)[1].split("\ndiagnostics=", 1)[0]
+    cleanup = harness.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup EXIT", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    (fake_bin / "systemctl").write_text("""#!/bin/bash
+if [[ $1 == start ]]; then exit 37; fi
+if [[ $1 == show ]]; then case $4 in ActiveState) echo failed;; SubState) echo failed;; Result) echo exit-code;; ExecMainStatus) echo 37;; *) echo unknown;; esac; fi
+exit 0
+""")
+    (fake_bin / "sudo").write_text("#!/bin/bash\nif [[ $1 == systemctl ]]; then shift; exec systemctl \"$@\"; fi\nexit 0\n")
+    (fake_bin / "pgrep").write_text("#!/bin/bash\nexit 1\n")
+    for executable in fake_bin.iterdir(): executable.chmod(0o700)
+    work = tmp_path / "work"; (work / "hs").mkdir(parents=True)
+    (work / "headscale").write_text("#!/bin/bash\necho '[]'\n"); (work / "headscale").chmod(0o700)
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; work={work!s}; evidence_driver=/missing; evidence_artifact=/missing
+peer_pid=""; daemon_pid=""; headscale_pid=""; sidecar_ip=""; run_id=test
+port_open() {{ return 1; }}
+tsnet_open() {{ return 1; }}
+evidence() {{ return 0; }}
+{snapshot}
+{unit_helpers}
+cleanup() {{
+{cleanup}
+}}
+trap cleanup EXIT
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
+start_managed_target || exit "$?"
+'''
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True,
+        env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "N3_RESIDUE_ROOT": str(tmp_path), "N3_UNIT_ROOT": str(tmp_path)}, check=False,
+    )
+    assert result.returncode == 37, result.stderr
+    assert (tmp_path / "first-positive-start-failure.json").exists()
+
+
+@pytest.mark.parametrize(("signal", "expected"), [("INT", 130), ("TERM", 143)])
+def test_real_systemd_signal_traps_cleanup_once_and_preserve_non_success(tmp_path: Path, signal: str, expected: int) -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    snapshot = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    unit_helpers = "systemctl_absent_value() {" + harness.split("systemctl_absent_value() {", 1)[1].split("\ndiagnostics=", 1)[0]
+    cleanup = harness.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup EXIT", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    (fake_bin / "systemctl").write_text("#!/bin/bash\nif [[ $1 == show ]]; then echo 0; fi\nexit 0\n")
+    (fake_bin / "sudo").write_text("#!/bin/bash\nif [[ $1 == systemctl ]]; then shift; exec systemctl \"$@\"; fi\nexit 0\n")
+    (fake_bin / "pgrep").write_text("#!/bin/bash\nexit 1\n")
+    for executable in fake_bin.iterdir(): executable.chmod(0o700)
+    work = tmp_path / "work"; (work / "hs").mkdir(parents=True)
+    (work / "headscale").write_text("#!/bin/bash\necho '[]'\n"); (work / "headscale").chmod(0o700)
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; work={work!s}; evidence_driver=/missing; evidence_artifact=/missing
+peer_pid=""; daemon_pid=""; headscale_pid=""; sidecar_ip=""; run_id=test
+port_open() {{ return 1; }}
+tsnet_open() {{ return 1; }}
+evidence() {{ return 0; }}
+{snapshot}
+{unit_helpers}
+cleanup() {{
+{cleanup}
+}}
+trap cleanup EXIT
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
+kill -{signal} $$
+'''
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True,
+        env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "N3_RESIDUE_ROOT": str(tmp_path), "N3_UNIT_ROOT": str(tmp_path)}, check=False,
+    )
+    assert result.returncode == expected, result.stderr
+    assert (tmp_path / "cleanup-status.txt").read_text() == "fixtures_reaped=1\n"
+
+
 def _run_real_systemd_shipping_cleanup(tmp_path: Path, **env: str) -> subprocess.CompletedProcess[str]:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
     unit_helpers = "systemctl_absent_value() {" + harness.split("systemctl_absent_value() {", 1)[1].split("\ndiagnostics=", 1)[0]

@@ -77,9 +77,74 @@ run_id="$(cat /proc/sys/kernel/random/uuid)"
 package_sha="$(sha256sum "$PACKAGE_TAR" | cut -d' ' -f1)"
 python "$evidence_driver" init "$evidence_artifact" --git-head "$PROOF_SUBJECT_SHA" --package-sha256 "$package_sha" --run-id "$run_id"
 headscale_pid=""; peer_pid=""; daemon_pid=""
-cleanup() {
-  local original_status=$? cleanup_failed=0
+safe_systemctl_value() {
+  # Each observer has a one-second deadline, one-second kill grace and a
+  # 512-byte input cap; unavailable data is explicit and never blocks teardown.
+  local unit="$1" property="$2" value file status
+  (( SECONDS < observe_deadline )) || { printf unknown; return; }
+  file="$(mktemp "$diagnostics/.n3-observe.XXXXXX")" || { printf unknown; return; }
   set +e
+  timeout --kill-after=1 1 systemctl show "$unit" -p "$property" --value 2>/dev/null | head -c 512 >"$file"
+  status=${PIPESTATUS[0]}
+  set -e
+  value="$(<"$file")"; rm -f "$file"
+  (( status == 0 )) || { printf unknown; return; }
+  case "$property:$value" in
+    ActiveState:active|ActiveState:inactive|ActiveState:failed|ActiveState:activating|ActiveState:deactivating|ActiveState:unknown|SubState:running|SubState:dead|SubState:failed|SubState:exited|SubState:waiting|Result:success|Result:exit-code|Result:signal|Result:timeout|Result:resources|Result:unknown) printf '%s' "$value" ;;
+    ExecMainStatus:*) [[ "$value" =~ ^[0-9]{1,6}$ ]] && printf '%s' "$value" || printf unknown ;;
+    # ExecStartPre contains argv/path text and must never become evidence prose.
+    ExecStartPre:*) printf unknown ;;
+    *) printf unknown ;;
+  esac
+}
+capture_failure_snapshot() {
+  # Snapshot work has an eight-second aggregate budget. No observation changes
+  # the exit status that entered cleanup; all retained values are closed terms.
+  local name="${1:-failure-snapshot}" snapshot unit first=1 active sub result main pre source held marker dropin staging
+  snapshot="$diagnostics/$name.json"
+  observe_deadline=$((SECONDS + 8))
+  source=false; held=false; marker=false; dropin=false; staging=false
+  if (( SECONDS < observe_deadline )); then timeout --kill-after=1 1 sudo test -e /etc/happyranch/enrollment.key && source=true; fi
+  if (( SECONDS < observe_deadline )); then timeout --kill-after=1 1 sudo test -e /etc/happyranch/enrollment.key.held && held=true; fi
+  if (( SECONDS < observe_deadline )); then timeout --kill-after=1 1 sudo test -e /var/lib/happyranch-tsnet-sidecar/credential.consumed && marker=true; fi
+  if (( SECONDS < observe_deadline )); then timeout --kill-after=1 1 sudo test -e /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf && dropin=true; fi
+  if (( SECONDS < observe_deadline )); then timeout --kill-after=1 1 sudo test -d /run/credentials/happyranch-tsnet-sidecar.service && staging=true; fi
+  {
+    printf '{"schema":"happyranch.n3.failure-snapshot","version":1,"id":"%s","units":{' "$name"
+    for unit in happyranch-managed.target happyranch-connector.service happyranch-tsnet-sidecar.service; do
+      active="$(safe_systemctl_value "$unit" ActiveState)"; sub="$(safe_systemctl_value "$unit" SubState)"
+      result="$(safe_systemctl_value "$unit" Result)"; main="$(safe_systemctl_value "$unit" ExecMainStatus)"
+      pre="$(safe_systemctl_value "$unit" ExecStartPre)"
+      (( first )) || printf ','; first=0
+      printf '"%s":{"active":"%s","sub":"%s","result":"%s","exec_main_status":"%s","exec_start_pre_status":"%s"}' "$unit" "$active" "$sub" "$result" "$main" "$pre"
+    done
+    printf '},"jobs":['
+    first=1
+    while read -r job unit kind state extra; do
+      [[ "$job" =~ ^[0-9]{1,9}$ && -z "$extra" && "$kind" == start ]] || continue
+      case "$job:$unit:$state" in
+        [0-9]*:happyranch-managed.target:waiting|[0-9]*:happyranch-managed.target:running|[0-9]*:happyranch-connector.service:waiting|[0-9]*:happyranch-connector.service:running|[0-9]*:happyranch-tsnet-sidecar.service:waiting|[0-9]*:happyranch-tsnet-sidecar.service:running)
+          (( first )) || printf ','; first=0; printf '{"id":%s,"unit":"%s","state":"%s"}' "$job" "$unit" "$state" ;;
+      esac
+    done < <(if (( SECONDS < observe_deadline )); then timeout --kill-after=1 1 systemctl list-jobs --no-legend --plain 2>/dev/null | head -c 1024; fi)
+    printf '],"credential_presence":{"source":%s,"held_source":%s,"consumed_marker":%s,"transient_dropin":%s,"staged_directory":%s}}\n' "$source" "$held" "$marker" "$dropin" "$staging"
+  } >"$snapshot" || true
+}
+start_managed_target() {
+  # Keep the initiating positive-start status authoritative even when bounded
+  # capture cannot run; EXIT cleanup preserves this same status in turn.
+  if sudo systemctl start happyranch-managed.target; then
+    return 0
+  else
+    local start_status=$?
+  fi
+  capture_failure_snapshot first-positive-start-failure || true
+  return "$start_status"
+}
+cleanup() {
+  local original_status="${1:-$?}" cleanup_failed=0
+  set +e
+  (( original_status == 0 )) || capture_failure_snapshot failure-before-teardown || true
   sudo systemctl stop happyranch-managed.target
   if [[ -n "${sidecar_ip:-}" ]] && [[ -n "$peer_pid" ]] && sudo kill -0 "$peer_pid" 2>/dev/null; then
     ! tsnet_open || cleanup_failed=1
@@ -128,7 +193,9 @@ cleanup() {
   (( original_status != 0 )) && exit "$original_status"
   exit "$cleanup_failed"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
 
 hs_url="https://github.com/juanfont/headscale/releases/download/v${HEADSCALE_VERSION}/headscale_${HEADSCALE_VERSION}_linux_amd64"
 ts_url="https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_amd64.tgz"
@@ -354,15 +421,18 @@ diagnostic credential_input input_acquisition systemd happyranch-tsnet-sidecar.s
 # queued restart can race the first real enrollment and consume its staging.
 sudo systemctl reset-failed happyranch-tsnet-sidecar.service happyranch-connector.service
 wait_for "failed credential staging cleanup" sudo test ! -e /run/credentials/happyranch-tsnet-sidecar.service
+capture_failure_snapshot completed-stop-reset || true
 sudo mv /etc/happyranch/enrollment.key.held /etc/happyranch/enrollment.key
+capture_failure_snapshot restored-source-pre-probe || true
 
 # The failed shipping-service start above causes systemd to create the unit's
 # StateDirectory. The denial probe can now retain the shipping unit's exact
 # ReadWritePaths and explicit AF_NETLINK allowance while measuring every other
 # sandbox dimension fail closed, without a harness-created drop-in.
 capture_denial_matrix shipping-unit
+capture_failure_snapshot post-probe-pre-positive-start || true
 
-sudo systemctl start happyranch-managed.target
+start_managed_target || exit "$?"
 wait_for "connector READY" active happyranch-connector.service
 wait_for "sidecar READY and ExpectedPeers" active happyranch-tsnet-sidecar.service
 connector_ready="$(systemctl show happyranch-connector.service -p ActiveEnterTimestampMonotonic --value)"
