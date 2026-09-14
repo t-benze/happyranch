@@ -739,6 +739,7 @@ systemctl list-jobs --no-legend | grep -q 'happyranch-managed.target' || fail "s
 evidence "concurrency_reentry" "stop_then_start_barrier"
 : | sudo tee "$barrier_dir/stop-release" >/dev/null; wait "$stop_job"; wait "$start_job"
 sudo rm -f /etc/systemd/system/happyranch-tsnet-sidecar.service.d/90-ci-barrier.conf
+sudo rm -f "$barrier_dir/start-entered" "$barrier_dir/start-release" "$barrier_dir/stop-entered" "$barrier_dir/stop-release"
 sudo rmdir "$barrier_dir" || fail "barrier residue"
 sudo systemctl daemon-reload
 

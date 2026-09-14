@@ -5,10 +5,13 @@ import io
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
+import runpy
 import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import zipfile
 
 import pytest
@@ -360,6 +363,7 @@ def test_real_systemd_barriers_use_restrictive_service_state_directory_and_contr
     assert 'sudo test -e "$barrier_dir/stop-entered"' in harness
     assert 'sudo tee "$barrier_dir/start-release"' in harness
     assert 'sudo tee "$barrier_dir/stop-release"' in harness
+    assert 'sudo rm -f "$barrier_dir/start-entered" "$barrier_dir/start-release" "$barrier_dir/stop-entered" "$barrier_dir/stop-release"' in harness
     assert 'sudo rmdir "$barrier_dir" || fail "barrier residue"' in harness
 
 
@@ -404,6 +408,167 @@ cleanup 0
     stop_release = next(index for index, event in enumerate(events) if event.endswith(":/visible/service-owned/barrier/stop-release"))
     teardown = events.index("systemctl:stop")
     assert start_release < teardown and stop_release < teardown
+
+
+def test_real_systemd_barrier_bodies_remove_only_owned_markers_before_rmdir(tmp_path: Path) -> None:
+    """Execute the source-defined barrier bodies and its controller cleanup."""
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    start_body = re.search(r"ExecStartPre=/bin/sh -c '([^']+)'", harness)
+    stop_body = re.search(r"ExecStopPost=/bin/sh -c '([^']+)'", harness)
+    cleanup_body = re.search(
+        r'(sudo rm -f "\$barrier_dir/start-entered"[^\n]+\n'
+        r'\s*sudo rmdir "\$barrier_dir" \|\| fail "barrier residue")', harness,
+    )
+    assert start_body and stop_body and cleanup_body
+    barrier_dir = tmp_path / "state" / ".n3-barrier-test"
+    barrier_dir.parent.mkdir(mode=0o700)
+    durable = barrier_dir.parent / "credential.consumed"; durable.write_text("durable")
+    barrier_dir.mkdir(mode=0o700)
+    assert barrier_dir.stat().st_mode & 0o777 == 0o700
+    for body, entered, release in (
+        (start_body.group(1), "start-entered", "start-release"),
+        (stop_body.group(1), "stop-entered", "stop-release"),
+    ):
+        process = subprocess.Popen(["bash", "-c", f'barrier_dir="{barrier_dir}"; {body}'])
+        for _ in range(40):
+            if (barrier_dir / entered).exists():
+                break
+            process.poll()
+            if process.returncode is not None:
+                pytest.fail(f"source barrier exited early: {body}")
+            time.sleep(0.01)
+        else:
+            pytest.fail(f"source barrier never created {entered}")
+        (barrier_dir / release).touch()
+        assert process.wait(timeout=1) == 0
+
+    result = subprocess.run(
+        ["bash", "-c", f'''set -euo pipefail
+sudo() {{ "$@"; }}
+fail() {{ return 1; }}
+barrier_dir="{barrier_dir}"
+{cleanup_body.group(1)}
+'''], capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not barrier_dir.exists()
+    assert durable.read_text() == "durable"
+
+
+def test_real_systemd_barrier_cleanup_refuses_unknown_child_residue(tmp_path: Path) -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    cleanup_body = re.search(
+        r'(sudo rm -f "\$barrier_dir/start-entered"[^\n]+\n'
+        r'\s*sudo rmdir "\$barrier_dir" \|\| fail "barrier residue")', harness,
+    )
+    assert cleanup_body
+    barrier_dir = tmp_path / ".n3-barrier-test"; barrier_dir.mkdir(mode=0o700)
+    for marker in ("start-entered", "start-release", "stop-entered", "stop-release"):
+        (barrier_dir / marker).touch()
+    (barrier_dir / "unexpected").write_text("must-refuse")
+    result = subprocess.run(
+        ["bash", "-c", f'''set -euo pipefail
+sudo() {{ "$@"; }}
+fail() {{ return 1; }}
+barrier_dir="{barrier_dir}"
+{cleanup_body.group(1)}
+'''], capture_output=True, text=True, check=False,
+    )
+    assert result.returncode != 0
+    assert (barrier_dir / "unexpected").read_text() == "must-refuse"
+
+
+def _seed_n3_evidence(artifact: Path, *, run_id: str, include_cleanup: bool) -> Path:
+    """Use the real shipping evidence driver to make a valid isolated ledger."""
+    driver = Path("app/linux/package/n3_evidence.py").resolve()
+    phases = runpy.run_path(str(driver))["PHASES"]
+    subject = "a" * 40
+    subprocess.run([sys.executable, str(driver), "init", str(artifact), "--git-head", subject,
+                    "--package-sha256", "b" * 64, "--run-id", run_id], check=True)
+    for phase, observations in phases.items():
+        for observation in observations:
+            if phase == "cleanup" and observation in {"all_residue_absent", "task_work_removed"}:
+                continue
+            if phase == "cleanup" and not include_cleanup:
+                continue
+            subprocess.run([sys.executable, str(driver), "observe", str(artifact), "--phase", phase,
+                            "--observation", observation, "--assertion-id", f"seed:{phase}:{observation}"], check=True)
+    subprocess.run([sys.executable, str(driver), "diagnose", str(artifact), "--id", "seed-diagnostic",
+                    "--category", "network_join", "--phase", "peer_establishment", "--actor", "tsnet-sidecar",
+                    "--unit", "happyranch-tsnet-sidecar.service"], check=True)
+    return driver
+
+
+def _run_source_cleanup_acceptance(
+    tmp_path: Path, *, artifact_run: str, cleanup_run: str, include_cleanup: bool,
+    listener_residue: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """Run source cleanup against isolated strict dependencies and real evidence code."""
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    evidence = harness.split("evidence() {", 1)[1].split("\n}\ndiagnostic()", 1)[0]
+    cleanup = harness.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup EXIT", 1)[0]
+    artifact = tmp_path / "execution-evidence.json"
+    driver = _seed_n3_evidence(artifact, run_id=artifact_run, include_cleanup=include_cleanup)
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    events = tmp_path / "events.log"
+    (fake_bin / "python").write_text("#!/bin/bash\nprintf 'evidence:%s\\n' \"$2\" >>\"$EVENT_LOG\"\nexec \"$REAL_PYTHON\" \"$@\"\n")
+    (fake_bin / "systemctl").write_text("#!/bin/bash\ncase \"$1\" in show) echo 0;; list-unit-files|stop|disable|reset-failed|daemon-reload) ;; *) exit 91;; esac\n")
+    (fake_bin / "sudo").write_text("#!/bin/bash\ncase \"$1\" in systemctl) shift; exec systemctl \"$@\";; test|rm|kill|find|update-ca-certificates) exit 0;; *) exit 92;; esac\n")
+    (fake_bin / "pgrep").write_text("#!/bin/bash\nexit 1\n")
+    for executable in fake_bin.iterdir():
+        executable.chmod(0o700)
+    work = tmp_path / "work"; (work / "hs").mkdir(parents=True)
+    (work / "headscale").write_text("#!/bin/bash\nprintf '[]'\n"); (work / "headscale").chmod(0o700)
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; work={work!s}; evidence_driver={driver!s}; evidence_artifact={artifact!s}
+PROOF_SUBJECT_SHA={'a' * 40}
+peer_pid={"123" if listener_residue else '""'}; daemon_pid=""; headscale_pid=""; sidecar_ip={"visible" if listener_residue else '""'}; run_id={cleanup_run}
+port_open() {{ return 1; }}
+tsnet_open() {{ return {0 if listener_residue else 1}; }}
+evidence() {{
+{evidence}
+}}
+cleanup() {{
+{cleanup}
+}}
+cleanup 0
+'''
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False,
+                            env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "EVENT_LOG": str(events),
+                                              "REAL_PYTHON": sys.executable, "N3_RESIDUE_ROOT": str(tmp_path),
+                                              "N3_UNIT_ROOT": str(tmp_path)})
+    return result, events.read_text().splitlines() if events.exists() else []
+
+
+def test_real_systemd_cleanup_finalizes_and_validates_actual_evidence_once(tmp_path: Path) -> None:
+    result, events = _run_source_cleanup_acceptance(
+        tmp_path, artifact_run="run", cleanup_run="run", include_cleanup=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert events.count("evidence:finalize") == 1
+    assert events.count("evidence:validate") == 1
+
+
+def test_real_systemd_cleanup_residue_never_finalizes_actual_evidence(tmp_path: Path) -> None:
+    result, events = _run_source_cleanup_acceptance(
+        tmp_path, artifact_run="run", cleanup_run="run", include_cleanup=True, listener_residue=True,
+    )
+    assert result.returncode != 0
+    assert "evidence:finalize" not in events and "evidence:validate" not in events
+
+
+@pytest.mark.parametrize(("artifact_run", "expected_final", "expected_validate"), [
+    ("run", 1, 1), ("different", 1, 1),
+])
+def test_real_systemd_cleanup_finalizer_or_validator_failure_is_nonzero(
+    tmp_path: Path, artifact_run: str, expected_final: int, expected_validate: int,
+) -> None:
+    result, events = _run_source_cleanup_acceptance(
+        tmp_path, artifact_run=artifact_run, cleanup_run="run", include_cleanup=artifact_run == "different",
+    )
+    assert result.returncode != 0
+    assert events.count("evidence:finalize") == expected_final
+    assert events.count("evidence:validate") == expected_validate
 
 
 def test_real_systemd_failure_capture_precedes_teardown_and_preserves_exit_37() -> None:
