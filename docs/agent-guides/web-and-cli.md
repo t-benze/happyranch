@@ -56,7 +56,8 @@ the deduplicated loaded rows and their honest current count visible with a
 stale/error warning; continuation Retry resumes the failed attention cursor,
 while ordinary pagination retains its own separate page Retry. Waiting rows
 share the ordinary responsive row treatment without depending on ordinary rows
-being rendered.
+being rendered. Its page-local load-more and Retry controls wrap within the
+attention card at narrow widths; shared button behavior is unchanged.
 Initial ordinary failures show an
 explicit Retry; failed ordinary refreshes retain cached rows and a stale warning;
 failed ordinary pagination retains loaded rows and requires its separate page Retry.

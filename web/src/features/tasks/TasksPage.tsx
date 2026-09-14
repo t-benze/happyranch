@@ -412,7 +412,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
         ) : attentionQuery.isError && attentionTasks.length === 0 ? (
           <div role="alert" className="border-feedback-danger bg-danger-soft mx-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
             <p className="text-text-primary text-sm font-medium">Could not load waiting-on-you tasks</p>
-            <Button size="sm" variant="outline" onClick={() => void retryAttention()}>
+            <Button size="sm" variant="outline" className="h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void retryAttention()}>
               <RefreshCw size={14} aria-hidden /> Retry
             </Button>
           </div>
@@ -437,13 +437,13 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
             {attentionQuery.isError && (
               <div role="alert" className="border-feedback-danger bg-danger-soft flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
                 <p className="text-text-primary text-sm font-medium">Could not load waiting-on-you tasks; previously loaded rows are still shown.</p>
-                <Button size="sm" variant="outline" onClick={() => void (attentionNextPageError ? loadNextAttentionPage() : retryAttention())}>
+                <Button size="sm" variant="outline" className="h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void (attentionNextPageError ? loadNextAttentionPage() : retryAttention())}>
                   <RefreshCw size={14} aria-hidden /> {attentionNextPageError ? 'Retry loading more waiting-on-you tasks' : 'Retry'}
                 </Button>
               </div>
             )}
             {attentionQuery.hasNextPage && !attentionNextPageError && (
-              <Button size="sm" variant="outline" onClick={() => void loadNextAttentionPage()} loading={attentionQuery.isFetchingNextPage}>
+              <Button size="sm" variant="outline" className="h-auto w-full max-w-full whitespace-normal break-words sm:w-auto" onClick={() => void loadNextAttentionPage()} loading={attentionQuery.isFetchingNextPage}>
                 Load more waiting-on-you tasks
               </Button>
             )}

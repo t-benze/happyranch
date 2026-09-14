@@ -274,6 +274,17 @@ describe('TasksPage — read path (roots endpoint)', () => {
       if (status === 'escalated') return HttpResponse.json({ tasks: [currentEscalation], next_cursor: null });
       return HttpResponse.json({ tasks: status === 'completed' ? [currentFiltered] : [currentRoot], next_cursor: null });
     }));
+    const interceptedFetch = globalThis.fetch;
+    let releaseBodies!: () => void;
+    const bodyGate = new Promise<void>((resolve) => { releaseBodies = resolve; });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (...args) => {
+      const response = await interceptedFetch(...args);
+      if (String(args[0]).includes('/orgs/org-a/tasks/roots')) {
+        const originalText = response.text.bind(response);
+        response.text = async () => { await bodyGate; return originalText(); };
+      }
+      return response;
+    });
     const queryClient = makeQueryClient();
     render(<MemoryRouter initialEntries={['/orgs/org-a/tasks']}><AppProvider client={queryClient}>
       <Link to="/orgs/org-b/tasks">Go org b</Link><AppRoutes />
@@ -292,6 +303,20 @@ describe('TasksPage — read path (roots endpoint)', () => {
     releaseOldOrdinary();
     releaseOldAttention();
     await waitFor(() => expect(requests.filter((request) => request.slug === 'org-a').every((request) => request.settled)).toBe(true));
+    releaseBodies();
+    const oldOrdinaryKey = ['tasks-roots-infinite', 'org-a', undefined] as const;
+    const oldAttentionKey = ['tasks-roots-infinite', 'org-a', { status: 'escalated' }] as const;
+    const currentOrdinaryKey = ['tasks-roots-infinite', 'org-b', undefined] as const;
+    const currentAttentionKey = ['tasks-roots-infinite', 'org-b', { status: 'escalated' }] as const;
+    await waitFor(() => {
+      for (const key of [oldOrdinaryKey, oldAttentionKey, currentOrdinaryKey, currentAttentionKey]) {
+        expect(queryClient.getQueryState(key)).toMatchObject({ status: 'success', fetchStatus: 'idle' });
+      }
+    });
+    expect(queryClient.getQueryData(oldOrdinaryKey)).toEqual({ pages: [{ tasks: [oldRoot], next_cursor: null }], pageParams: [undefined] });
+    expect(queryClient.getQueryData(oldAttentionKey)).toEqual({ pages: [{ tasks: [oldEscalation], next_cursor: null }], pageParams: [undefined] });
+    expect(queryClient.getQueryData(currentOrdinaryKey)).toEqual({ pages: [{ tasks: [currentRoot], next_cursor: null }], pageParams: [undefined] });
+    expect(queryClient.getQueryData(currentAttentionKey)).toEqual({ pages: [{ tasks: [currentEscalation], next_cursor: null }], pageParams: [undefined] });
     expect(screen.queryByText('Old org ordinary root')).not.toBeInTheDocument();
     expect(screen.queryByText('Old org escalation')).not.toBeInTheDocument();
 
@@ -303,6 +328,13 @@ describe('TasksPage — read path (roots endpoint)', () => {
     expect(screen.queryByText('Current org ordinary root')).not.toBeInTheDocument();
     expect(requests.filter((request) => request.slug === 'org-b').map((request) => request.params))
       .toContainEqual({ status: 'completed', limit: '50' });
+    const currentFilteredKey = ['tasks-roots-infinite', 'org-b', { status: 'completed' }] as const;
+    await waitFor(() => expect(queryClient.getQueryState(currentFilteredKey)).toMatchObject({ status: 'success', fetchStatus: 'idle' }));
+    expect(queryClient.getQueryData(currentFilteredKey)).toEqual({ pages: [{ tasks: [currentFiltered], next_cursor: null }], pageParams: [undefined] });
+    expect(screen.queryByText('Old org ordinary root')).not.toBeInTheDocument();
+    expect(screen.queryByText('Old org escalation')).not.toBeInTheDocument();
+    expect(screen.getByText('Current org filtered root')).toBeInTheDocument();
+    expect(screen.getByText('Current org escalation')).toBeInTheDocument();
     await queryClient.cancelQueries();
     queryClient.clear();
   });
