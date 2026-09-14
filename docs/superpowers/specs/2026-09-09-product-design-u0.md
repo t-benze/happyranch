@@ -370,9 +370,18 @@ Hosted Python 3.14 exercised synthetic merge `f08d99b` (reconstructed tree
 `536d81be`) rather than PR-only source. The five failures were assertion drift:
 both JOIN orders retain the source-owned `delegate [TASK-ID]` label and
 task/status/verdict/revisit summary, while cancellation teardown appends a
-complete `task_scratch_report` audit before `session_end`. The tests assert the
-ordered rows and source-defined teardown fields without filtering audit residue
-or weakening prompt equality. The companion D5 packet remains proposal/evidence
+complete `task_scratch_report` audit before `session_end`. On the current
+source, each of the chain and both completed-child orders now asserts the full
+source-owned unavailable-report shape at the real writer: report-only/source,
+freshness/budget/provenance/coverage and generated observation fields, zero
+actual reclamation, canonical launched-agent task root, and the actual launched
+session producer observation. The twelve pytest-native controls independently
+corrupt one of bytes, inodes, root, or producer session at that writer while
+retaining its original publication; every schedule rejects its matching field.
+These are current test-harness observations, not a reclamation action or a
+production protocol claim. Ordered audit residue, prompt equality, completed
+sibling preservation, late 409, original error propagation, and owned-worker
+release/join remain asserted. The companion D5 packet remains proposal/evidence
 only: it recommends a distinct workflow-owned persistence/dispatch adapter,
 keeps legacy chain/fanout owners, and names Founder decisions before any
 protected implementation. U1--U6, cutover proof, and the NOT RUN study remain

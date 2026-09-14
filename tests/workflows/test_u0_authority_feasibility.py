@@ -151,6 +151,106 @@ class _U0CurrentLaunchSpecAdapter:
         )
 
 
+_U0_SCRATCH_AUDIT_FIELDS = (
+    "actual_reclaimed_bytes", "actual_reclaimed_inodes", "root",
+    "producer_observation_id",
+)
+
+
+def _observe_selected_scratch_audit(monkeypatch, target, *, mutate_field=None):
+    """Observe the real audit writer, optionally corrupting one input field.
+
+    The wrapper deliberately leaves collection, decision, commit, and cleanup
+    to the shipping reporter.  It records the source payload before the test's
+    downstream corruption so mutation controls cannot use their persisted row
+    as an oracle.
+    """
+    from runtime.infrastructure.database import Database
+
+    assert mutate_field in (None, *_U0_SCRATCH_AUDIT_FIELDS)
+    original = Database.insert_audit_log
+    observations = []
+    corruptions = {
+        "actual_reclaimed_bytes": 1,
+        "actual_reclaimed_inodes": 1,
+        "root": "/u0-corrupt-scratch-root",
+        "producer_observation_id": "u0-corrupt-session",
+    }
+
+    def observed(self, task_id, agent, action, payload=None):
+        if action == "task_scratch_report" and task_id == target["task_id"]:
+            original_payload = dict(payload or {})
+            observations.append({
+                "task_id": task_id, "agent": agent,
+                "original_payload": original_payload,
+                "mutate_field": mutate_field,
+            })
+            if mutate_field is not None:
+                payload = {**original_payload, mutate_field: corruptions[mutate_field]}
+        return original(self, task_id, agent, action, payload)
+
+    monkeypatch.setattr(Database, "insert_audit_log", observed)
+    return observations
+
+
+def _assert_source_owned_scratch_audit(*, audit, observations, task_id, agent,
+                                       session_id, workspace):
+    """Check every source-owned unavailable-report field against launch inputs."""
+    assert len(observations) == 1, "selected scratch-audit writer was not hit exactly once"
+    observation = observations[0]
+    assert (observation["task_id"], observation["agent"]) == (task_id, agent)
+    source_payload = observation["original_payload"]
+    payload = audit["payload"]
+    expected_keys = {
+        "report_only", "source", "observation_id", "producer_observation_id",
+        "started_at_ns", "freshness_limited", "observation_budget_ns",
+        "provenance", "coverage_recollected", "actual_reclaimed_bytes",
+        "actual_reclaimed_inodes", "root", "decision", "reasons", "observed_at_ns",
+        "manifest_status", "candidate_identity", "boot_id", "evidence_observed_at_ns",
+        "evidence_freshness_limited", "process_roots", "process_cwds", "open_fds",
+        "coverage_boot_id", "coverage_observed_at_ns", "coverage_complete",
+        "coverage_ready", "coverage_freshness_limited", "allocated_bytes", "entries",
+    }
+    assert set(payload) == expected_keys
+    assert set(source_payload) == expected_keys
+    assert payload["report_only"] is True
+    assert payload["source"] == "teardown"
+    assert payload["freshness_limited"] is True
+    assert payload["observation_budget_ns"] == 12_000_000_000
+    assert payload["provenance"] == "literal_identity_bracketed_collectors"
+    assert payload["coverage_recollected"] is False
+    assert payload["actual_reclaimed_bytes"] == 0, "scratch audit actual_reclaimed_bytes fidelity"
+    assert payload["actual_reclaimed_inodes"] == 0, "scratch audit actual_reclaimed_inodes fidelity"
+    assert payload["root"] == str(workspace / ".happyranch/task-tmp" / task_id), "scratch audit root fidelity"
+    assert payload["producer_observation_id"] == session_id, "scratch audit producer_observation_id fidelity"
+    assert isinstance(payload["observation_id"], str) and len(payload["observation_id"]) == 32
+    assert payload["observation_id"] != session_id
+    assert isinstance(payload["started_at_ns"], int) and isinstance(payload["observed_at_ns"], int)
+    assert payload["started_at_ns"] <= payload["observed_at_ns"]
+    assert payload["manifest_status"] == "ok"
+    assert isinstance(payload["candidate_identity"], str) and len(payload["candidate_identity"]) == 64
+    assert isinstance(payload["boot_id"], str) and payload["boot_id"]
+    assert payload["coverage_boot_id"] == payload["boot_id"]
+    assert all(isinstance(payload[key], int) for key in (
+        "evidence_observed_at_ns", "coverage_observed_at_ns", "allocated_bytes", "entries",
+    ))
+    assert all(isinstance(payload[key], bool) for key in (
+        "evidence_freshness_limited", "coverage_complete", "coverage_ready",
+        "coverage_freshness_limited",
+    ))
+    assert all(isinstance(payload[key], int) and payload[key] >= 0 for key in (
+        "process_roots", "process_cwds", "open_fds",
+    ))
+    assert payload["decision"] == "unavailable"
+    assert payload["reasons"] == [
+        "coverage_not_ready", "nonterminal_or_unresolved_lineage", "observer_unavailable",
+    ]
+    # The input capture is only a writer-hit/provenance witness.  Expected
+    # values above come from source constants and the actual launch inputs.
+    assert source_payload["producer_observation_id"] == session_id
+    assert source_payload["root"] == str(workspace / ".happyranch/task-tmp" / task_id)
+
+
 def _paths(org_state):
     from runtime.orchestrator._paths import OrgPaths
 
@@ -1957,7 +2057,9 @@ def test_r1_chain_harness_propagates_dispatcher_error(tmp_path, monkeypatch) -> 
     assert any("U0_DISPATCH_ERROR_CONTROL" in str(error) for error in raised.value.exceptions)
 
 
-def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, monkeypatch) -> None:
+def test_r1_chain_cancel_before_first_callback_rejects_late_result(
+    tmp_path, monkeypatch, _scratch_audit_mutation: str | None = None,
+) -> None:
     """A real parent cascade wins before the first chain callback is submitted.
 
     The executor is the only fake boundary.  In particular, cancellation uses
@@ -1975,6 +2077,10 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
     backend = _FakeBackend(auto_exit_after=0)
     orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
     paths, receipts, launches, errors, late_statuses, control_entries = orch._paths, [], [], [], [], []
+    scratch_target = {"task_id": None}
+    scratch_audit_observations = _observe_selected_scratch_audit(
+        monkeypatch, scratch_target, mutate_field=_scratch_audit_mutation,
+    )
     child_held, release_child, done = threading.Event(), threading.Event(), threading.Event()
 
     class EventSink:
@@ -2067,6 +2173,7 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
     try:
         assert child_held.wait(3), "first contained child was not admitted/launched"
         first = db.get_children(parent_id)[0]
+        scratch_target["task_id"] = first
         before = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent_id, first), agent_names=("engineering_head", "dev_agent"))
         assert [(task_id, agent, request_id) for task_id, agent, _session, request_id, _pid in launches] == [
             (parent_id, "engineering_head", parent_id), (first, "dev_agent", first)]
@@ -2139,12 +2246,13 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
         assert scratch_audit["task_id"] == first
         assert scratch_audit["agent"] == "dev_agent"
         assert scratch_audit["action"] == "task_scratch_report"
-        assert scratch_audit["payload"]["report_only"] is True
-        assert scratch_audit["payload"]["source"] == "teardown"
-        assert scratch_audit["payload"]["decision"] == "unavailable"
-        assert scratch_audit["payload"]["reasons"] == [
-            "coverage_not_ready", "nonterminal_or_unresolved_lineage", "observer_unavailable",
-        ]
+        _assert_source_owned_scratch_audit(
+            audit=scratch_audit, observations=scratch_audit_observations,
+            task_id=first, agent="dev_agent",
+            session_id=next(session_id for task_id, _agent, session_id, *_rest in launches
+                            if task_id == first),
+            workspace=paths.workspaces_dir / "dev_agent",
+        )
     else:
         (session_end,) = terminal_tail
     assert session_end["action"] == "session_end"
@@ -3614,6 +3722,7 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
     tmp_path, monkeypatch, completed_index: int,
     dispatcher_failure: BaseException | None = None,
     boundary_failure: BaseException | None = None,
+    _scratch_audit_mutation: str | None = None,
 ) -> None:
     """Cancel only the live fanout sibling after the other real callback commits.
 
@@ -3633,6 +3742,10 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
     backend = _FakeBackend(auto_exit_after=0)
     orch, _, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)
     paths, receipts, launches, errors, late = orch._paths, [], [], [], []
+    scratch_target = {"task_id": None}
+    scratch_audit_observations = _observe_selected_scratch_audit(
+        monkeypatch, scratch_target, mutate_field=_scratch_audit_mutation,
+    )
     consumed_reports, accepted_callbacks = [], []
     first_done, first_terminal, live_held, release_live, done = (threading.Event() for _ in range(5))
 
@@ -3758,6 +3871,7 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
         assert live_held.wait(5), "live sibling never reached its original callback"
         children = db.get_children(parent_id)
         completed, live = children[completed_index], children[1 - completed_index]
+        scratch_target["task_id"] = live
         held = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue,
                             task_ids=(parent_id, *children), agent_names=("engineering_head", "dev_agent"))
         assert held["tasks"][completed]["status"] == TaskStatus.COMPLETED.value
@@ -3900,12 +4014,13 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
                 assert set(scratch_audit) == {"id", "task_id", "agent", "action", "payload", "timestamp"}
                 assert scratch_audit["task_id"] == live
                 assert scratch_audit["agent"] == "dev_agent"
-                assert scratch_audit["payload"]["report_only"] is True
-                assert scratch_audit["payload"]["source"] == "teardown"
-                assert scratch_audit["payload"]["decision"] == "unavailable"
-                assert scratch_audit["payload"]["reasons"] == [
-                    "coverage_not_ready", "nonterminal_or_unresolved_lineage", "observer_unavailable",
-                ]
+                _assert_source_owned_scratch_audit(
+                    audit=scratch_audit, observations=scratch_audit_observations,
+                    task_id=live, agent="dev_agent",
+                    session_id=next(entry["session_id"] for entry in launches
+                                    if entry["task_id"] == live),
+                    workspace=paths.workspaces_dir / "dev_agent",
+                )
             else:
                 (session_end,) = appended_audits
             assert session_end["task_id"] == live and session_end["agent"] == "dev_agent"
@@ -3947,3 +4062,29 @@ def test_r1_plain_fanout_live_cancel_harness_retains_dispatcher_and_boundary_err
         )
     assert any("U0_PLAIN_LIVE_CANCEL_DISPATCH_ERROR" in str(error) for error in raised.value.exceptions)
     assert any("U0_PLAIN_LIVE_CANCEL_BOUNDARY_ERROR" in str(error) for error in raised.value.exceptions)
+
+
+@pytest.mark.parametrize(
+    ("schedule", "field"),
+    [
+        *[("chain", field) for field in _U0_SCRATCH_AUDIT_FIELDS],
+        *[("fanout-first", field) for field in _U0_SCRATCH_AUDIT_FIELDS],
+        *[("fanout-second", field) for field in _U0_SCRATCH_AUDIT_FIELDS],
+    ],
+)
+def test_r1_cancellation_scratch_audit_writer_mutation_controls(
+    tmp_path, monkeypatch, schedule: str, field: str,
+) -> None:
+    """Each real cancellation schedule rejects exactly one writer corruption."""
+    with monkeypatch.context() as control:
+        with pytest.raises(AssertionError, match=rf"scratch audit {field} fidelity") as raised:
+            if schedule == "chain":
+                test_r1_chain_cancel_before_first_callback_rejects_late_result(
+                    tmp_path, control, _scratch_audit_mutation=field,
+                )
+            else:
+                test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
+                    tmp_path, control, 0 if schedule == "fanout-first" else 1,
+                    _scratch_audit_mutation=field,
+                )
+    assert f"scratch audit {field} fidelity" in str(raised.value)
