@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from enum import StrEnum
 
-from typing import Literal
+from typing import Literal, Mapping
 
 from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
 
@@ -366,6 +367,166 @@ class ManagerSelfEvaluation(BaseModel):
     @classmethod
     def _self_evaluation_digests(cls, value: str, info):
         return validate_authority_digest(value, f"self_evaluation.{info.field_name}")
+
+
+# THR-229 v2 values are deliberately separate from ``ManagerSelfEvaluation``.
+# The latter is the persisted v1 wire contract and must remain byte-for-byte
+# compatible until a later staged consumer selects v2.
+AUTHORITY_POLICY_V2_CONTRACT_ID = "authority_policy_v2"
+AUTHORITY_POLICY_V2_CONTRACT_VERSION = "v2"
+AUTHORITY_POLICY_V2_WIRE_REVISION = 1
+AUTHORITY_POLICY_V2_CONTRACT_PREIMAGE = {
+    "algorithm": "sha256",
+    "contract_id": AUTHORITY_POLICY_V2_CONTRACT_ID,
+    "contract_version": AUTHORITY_POLICY_V2_CONTRACT_VERSION,
+    "kind": "manager_self_evaluation",
+    "wire_revision": AUTHORITY_POLICY_V2_WIRE_REVISION,
+}
+_AUTHORITY_POLICY_V2_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def authority_policy_v2_canonical_json_bytes(value: object) -> bytes:
+    """Return the frozen v2 canonical JSON bytes without text normalization."""
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")
+
+
+def authority_policy_v2_sha256(value: object) -> str:
+    return hashlib.sha256(authority_policy_v2_canonical_json_bytes(value)).hexdigest()
+
+
+def authority_policy_v2_contract_digest() -> str:
+    return authority_policy_v2_sha256(AUTHORITY_POLICY_V2_CONTRACT_PREIMAGE)
+
+
+def decode_authority_policy_v2_json(raw: str | bytes) -> dict[str, object]:
+    """Decode a v2 wire object and reject duplicate members before validation."""
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        decoded: dict[str, object] = {}
+        for key, value in pairs:
+            if key in decoded:
+                raise ValueError(f"duplicate JSON member {key!r}")
+            decoded[key] = value
+        return decoded
+
+    decoded = json.loads(raw, object_pairs_hook=reject_duplicates)
+    if not isinstance(decoded, dict):
+        raise ValueError("v2 wire payload must be a JSON object")
+    return decoded
+
+
+def _validate_authority_policy_v2_text(value: str, field_name: str, maximum: int) -> str:
+    if not value or value.isspace() or len(value) > maximum:
+        raise ValueError(f"{field_name} must be a nonblank string of at most {maximum} scalars")
+    if "\x00" in value or any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+        raise ValueError(f"{field_name} must not contain NUL or surrogate code points")
+    return value
+
+
+def _validate_authority_policy_v2_digest(value: str, field_name: str) -> str:
+    if not _AUTHORITY_POLICY_V2_DIGEST_RE.fullmatch(value):
+        raise ValueError(f"{field_name} must be 64 lowercase hexadecimal characters")
+    return value
+
+
+class AuthorityPolicyV2Assessment(BaseModel):
+    """One clause-free applicability assessment for a v2 editable text."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    applicability: Literal["applies", "does_not_apply", "uncertain"]
+    confidence: StrictInt = Field(ge=0, le=100)
+    uncertainty_codes: list[Literal[
+        "ambiguous_scope", "missing_context", "conflicting_evidence",
+        "unknown_authorization", "insufficient_confidence", "unsupported_version",
+    ]] = Field(strict=True)
+
+    @field_validator("uncertainty_codes")
+    @classmethod
+    def _codes_are_unique(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("uncertainty_codes must not contain duplicates")
+        return values
+
+
+class AuthorityPolicyV2ManagerSelfEvaluation(BaseModel):
+    """Strict, advisory v2 evaluation envelope; it grants no runtime authority."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    activation_epoch: StrictInt = Field(ge=1, le=2147483647)
+    activation_id: StrictStr
+    contract_digest: StrictStr
+    contract_id: Literal[AUTHORITY_POLICY_V2_CONTRACT_ID]
+    contract_version: Literal[AUTHORITY_POLICY_V2_CONTRACT_VERSION]
+    executor_kind: StrictStr
+    manager_session_id: StrictStr
+    model_id: StrictStr
+    policy_digest: StrictStr
+    policy_version: StrictInt = Field(ge=1, le=2147483647)
+    provider_id: StrictStr
+    release_id: StrictStr
+    root_task_id: StrictStr
+    what_not_to_escalate: AuthorityPolicyV2Assessment
+    what_to_escalate: AuthorityPolicyV2Assessment
+
+    @field_validator("contract_digest", "policy_digest")
+    @classmethod
+    def _v2_digests_are_lower_hex(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_digest(value, info.field_name)
+
+    @field_validator("activation_id", "release_id")
+    @classmethod
+    def _v2_prefixed_ids_are_well_formed(cls, value: str, info) -> str:
+        prefix = "APV2A-" if info.field_name == "activation_id" else "APV2-"
+        if not value.startswith(prefix):
+            raise ValueError(f"{info.field_name} must start with {prefix}")
+        _validate_authority_policy_v2_digest(value[len(prefix):], info.field_name)
+        return value
+
+    @field_validator("executor_kind", "manager_session_id", "model_id", "provider_id", "root_task_id")
+    @classmethod
+    def _v2_identity_scalars_are_strict(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, 128)
+
+    @model_validator(mode="after")
+    def _release_id_matches_policy_digest(self) -> AuthorityPolicyV2ManagerSelfEvaluation:
+        if self.release_id != f"APV2-{self.policy_digest}":
+            raise ValueError("release_id must contain policy_digest")
+        if self.contract_digest != authority_policy_v2_contract_digest():
+            raise ValueError("contract_digest does not match the v2 contract")
+        return self
+
+
+def authority_policy_v2_release_preimage(
+    *, contract_digest: str, policy_id: str, team: str, title: str, version: int,
+    what_to_escalate: str, what_not_to_escalate: str,
+) -> dict[str, object]:
+    return {
+        "contract_digest": contract_digest, "policy_id": policy_id, "team": team,
+        "title": title, "version": version,
+        "what_not_to_escalate": what_not_to_escalate,
+        "what_to_escalate": what_to_escalate,
+    }
+
+
+def authority_policy_v2_release_digest(**values: object) -> str:
+    return authority_policy_v2_sha256(authority_policy_v2_release_preimage(**values))
+
+
+def authority_policy_v2_activation_digest(
+    *, action: str, previous_selector_id: str, release_digest: str, release_id: str,
+    selector_epoch: int, team: str,
+) -> str:
+    return authority_policy_v2_sha256({
+        "action": action, "previous_selector_id": previous_selector_id,
+        "release_digest": release_digest, "release_id": release_id,
+        "selector_epoch": selector_epoch, "team": team,
+    })
+
+
+def authority_policy_v2_candidate_claim_digest(values: Mapping[str, object]) -> str:
+    """Digest the exact frozen claim-key preimage; callers own binding authentication."""
+    return authority_policy_v2_sha256(dict(values))
 
 
 class TaskStep(BaseModel):

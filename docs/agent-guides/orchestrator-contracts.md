@@ -263,6 +263,17 @@ activate a production policy. Authority hook/store/route/envelope tests cover th
 negative cases. There is no universal post-session detector for arbitrary
 external side effects or role-based pathname enforcement.
 
+The staged THR-229 v2 value contract is separate from that live v1 path until
+its later persisted selector and authenticated consumer land. It has two
+editable release texts, `What to escalate` and `What not to escalate`; a pure
+assessment helper treats an escalate match as dominant, permits continuation
+only for clear non-escalate plus continue applicability, and otherwise fails
+closed. These value-layer results are advisory data, not launch authentication
+or continuation authority. The file-backed completion CLI preserves a supplied
+`manager_self_evaluation` member verbatim (including invalid/null values) so
+the daemon, rather than the client, validates it; an omitted member remains
+omitted.
+
 ## Inline Delegation Chains
 
 A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg when a child terminates completed with a matching verdict. Since THR-211, auto-advance may also fire from a child whose completion report has durably landed while its task row still reads `in_progress` (the completion-status-lag window) — the recognition is session-safe and at-most-once, and the chain gate consumes the exact authenticated `(task_id, assigned_agent, current_session_id)` report so a newer unrelated row can never advance or clear the chain; see `tests/test_thr211_completion_status_lag.py` for the session-bound regression cases.

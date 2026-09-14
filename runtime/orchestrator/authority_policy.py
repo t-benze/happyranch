@@ -43,6 +43,59 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
+from enum import StrEnum
+
+from runtime.models import AuthorityPolicyV2Assessment
+
+
+# These v2 values are deliberately advisory until a later, persisted v2
+# consumer authenticates its launch binding.  They do not alter the legacy
+# policy, phrase contract, evaluator, or continuation hook in this module.
+AUTHORITY_POLICY_V2_CONTRACT_ID = "authority_policy_v2"
+AUTHORITY_POLICY_V2_CONTRACT_VERSION = "v2"
+
+
+class AuthorityPolicyV2AssessmentOutcome(StrEnum):
+    """Clause-free deterministic result of the two v2 applicability fields."""
+
+    ESCALATE_APPLIES = "escalate_applies"
+    CONTINUE_APPLIES = "continue_applies"
+    NEITHER_APPLY = "neither_apply"
+    UNCERTAIN = "uncertain"
+    INVALID = "invalid"
+
+
+def derive_authority_policy_v2_assessment_outcome(
+    what_to_escalate: AuthorityPolicyV2Assessment | dict[str, object] | object,
+    what_not_to_escalate: AuthorityPolicyV2Assessment | dict[str, object] | object,
+) -> AuthorityPolicyV2AssessmentOutcome:
+    """Apply the frozen v2 precedence without consulting prose or legacy clauses.
+
+    This helper is intentionally only value-layer logic.  A later consumer
+    must authenticate the persisted session/release/result identity before it
+    can use the derived outcome for any lifecycle operation.
+    """
+    try:
+        escalate = AuthorityPolicyV2Assessment.model_validate(what_to_escalate)
+        continue_assessment = AuthorityPolicyV2Assessment.model_validate(what_not_to_escalate)
+    except Exception:
+        return AuthorityPolicyV2AssessmentOutcome.INVALID
+    assessments = (escalate, continue_assessment)
+    if any(
+        item.applicability == "uncertain"
+        or item.confidence < 80
+        or item.uncertainty_codes
+        for item in assessments
+    ):
+        return AuthorityPolicyV2AssessmentOutcome.UNCERTAIN
+    if escalate.applicability == "applies":
+        return AuthorityPolicyV2AssessmentOutcome.ESCALATE_APPLIES
+    if (
+        escalate.applicability == "does_not_apply"
+        and continue_assessment.applicability == "applies"
+    ):
+        return AuthorityPolicyV2AssessmentOutcome.CONTINUE_APPLIES
+    return AuthorityPolicyV2AssessmentOutcome.NEITHER_APPLY
 
 
 # Closed vocabulary of policy clause actions. The hook executes EXACTLY the

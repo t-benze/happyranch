@@ -658,6 +658,10 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     # the orchestrator parses it via the NextStep pydantic model.
     if data.get("decision") is not None:
         body["decision"] = data["decision"]
+    # Preserve the caller's exact supplied evaluation value for daemon-side
+    # validation. Explicit null/false/empty/invalid values are not omission.
+    if "manager_self_evaluation" in data:
+        body["manager_self_evaluation"] = data["manager_self_evaluation"]
     # Agents self-blocking on jobs pass `waiting_on_job_ids` so the daemon's
     # block-on-jobs branch (run_step's self-blocked handler) transitions the
     # task to BLOCKED+BLOCKED_ON_JOB instead of the legacy self-escalate path.
