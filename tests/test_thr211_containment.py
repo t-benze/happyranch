@@ -1049,7 +1049,8 @@ def test_plan_preserves_primary_and_every_cleanup_error(tmp_path: Path, control:
 
 
 @pytest.mark.parametrize('kind', ['file', 'symlink', 'old'])
-def test_submitted_review_job_rejects_foreign_or_old_sentinel(tmp_path: Path, kind: str) -> None:
+@pytest.mark.parametrize('stale_atime', [False, True])
+def test_submitted_review_job_rejects_foreign_or_old_sentinel(tmp_path: Path, kind: str, stale_atime: bool, monkeypatch) -> None:
     plan = PlanRun(tmp_path / 'run', 'review_required')
     assert plan.run().returncode == 0
     script = plan.calls()[0]['payload']['script']
@@ -1062,10 +1063,33 @@ def test_submitted_review_job_rejects_foreign_or_old_sentinel(tmp_path: Path, ki
         sentinel.write_text('foreign file')
     else:
         assert subprocess.run(['bash', '-c', script], env=plan.env).returncode == 0
-    before = (sentinel.lstat(), sentinel.read_bytes(), foreign.stat(), foreign.read_bytes())
+    if stale_atime:
+        for path in (sentinel, foreign):
+            os.utime(path, ns=(1, path.stat().st_mtime_ns))
+        # Deterministically model read-induced atime changes, including the
+        # symlink target, even on noatime mounts. Do not depend on relatime.
+        read_bytes = Path.read_bytes
+        reads = []
+        def advancing_read(path):
+            data = read_bytes(path)
+            if path in (sentinel, foreign):
+                reads.append(path)
+                os.utime(path, ns=(1_000_000_000 + len(reads), path.stat().st_mtime_ns))
+            return data
+        monkeypatch.setattr(Path, 'read_bytes', advancing_read)
+    contents = sentinel.read_bytes(), foreign.read_bytes()
+    if stale_atime:
+        assert reads == [sentinel, foreign]
+        assert sentinel.stat().st_atime_ns > 1 and foreign.stat().st_atime_ns > 1
+    before = sentinel.lstat(), foreign.stat()
     result = subprocess.run(['bash', '-c', script], env=plan.env, capture_output=True)
+    after = sentinel.lstat(), foreign.stat()
     assert result.returncode != 0
-    assert before == (sentinel.lstat(), sentinel.read_bytes(), foreign.stat(), foreign.read_bytes())
+    assert before == after  # Full metadata, including atime and inode.
+    assert contents == (sentinel.read_bytes(), foreign.read_bytes())
+    if stale_atime:
+        assert reads == [sentinel, foreign, sentinel, foreign]
+        assert foreign.stat().st_atime_ns > after[1].st_atime_ns
 
 
 @pytest.mark.parametrize('name', ['job-submitted.txt', 'founder-acted.txt'])

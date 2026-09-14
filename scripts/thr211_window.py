@@ -44,9 +44,10 @@ class Window:
         self.cleanup_deadline = float('inf')
         self.receipt = dict(cleanup='NOT_STARTED', restoration='NOT_STARTED', export='UNKNOWN')
 
-    def command(self, name: str, remaining: float = 3) -> str:
+    def command_plan(self) -> dict[str, list[str]]:
+        """Validate every required vector without executing any native command."""
         uid = str(self.facts['uid'])
-        if not re.fullmatch(r'[1-9][0-9]*', uid):
+        if type(self.facts['uid']) is not int or not re.fullmatch(r'[1-9][0-9]*', uid):
             raise Refused('nonzero numeric UID required')
         allowed = {
             'id': ['/usr/bin/id', '-u', 'jenkins'],
@@ -55,11 +56,17 @@ class Window:
             'term': ['/usr/bin/pkill', '-TERM', '-U', uid, '-u', uid],
             'kill': ['/usr/bin/pkill', '-KILL', '-U', uid, '-u', uid],
         }
-        argv = self.facts['commands'][name]
-        if argv != allowed[name]:
-            raise Refused('native command outside reviewed UID scope')
-        if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv) or not Path(argv[0]).is_absolute():
-            raise Refused('unbound native command: ' + name)
+        commands = self.facts.get('commands')
+        if not isinstance(commands, dict):
+            raise Refused('unbound native command plan')
+        for name, expected in allowed.items():
+            argv = commands.get(name)
+            if not isinstance(argv, list) or argv != expected:
+                raise Refused('native command outside reviewed UID scope: ' + name)
+        return allowed
+
+    def command(self, name: str, remaining: float = 3) -> str:
+        argv = self.command_plan()[name]
         timeout = min(3, remaining, self.deadline - self.clock(), self.cleanup_deadline - self.clock())
         if timeout <= 0:
             raise Refused('deadline expired')
@@ -94,26 +101,47 @@ class Window:
     def operator_receipt(self, key: str) -> dict:
         path = Path(self.facts[key])
         private_control(path)
-        data = json.loads(path.read_text())
+        text = path.read_text()
+        if not text:
+            raise Refused('missing operator evidence: ' + key)
+        data = json.loads(text)
         expected = dict(request=self.facts['binding'][0], source=self.facts['binding'][1],
                         uid=self.facts['uid'], host=self.facts['host'])
         if any(data.get(name) != value for name, value in expected.items()):
             raise Refused('operator receipt run binding: ' + key)
         return data
 
-    def ready(self) -> None:
+    def control(self) -> None:
+        """Recheck the independent operating terminal and required evidence access."""
         if platform.system() != 'Darwin' or platform.node() != self.facts['host'] or os.geteuid() != 0:
             raise Refused('native outside-UID root terminal required')
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             raise Refused('independent terminal unavailable')
         private_control(self.evidence)
-        private_control(Path(self.facts['ready']).parent, readable=True)
-        self.identity()
+        ready_parent = Path(self.facts['ready']).parent
+        private_control(ready_parent, readable=True)
+        for path in (self.evidence, ready_parent):
+            if not path.is_dir() or not os.access(path, os.R_OK | os.W_OK | os.X_OK):
+                raise Refused('independent control/evidence inaccessible')
         for key in ('native_semantics_review', 'source_inhibition_receipt', 'drain_receipt', 'original_state_receipt'):
             path = Path(self.facts[key])
             private_control(path)
             if not path.is_file() or not path.read_bytes():
                 raise Refused('missing operator evidence: ' + key)
+
+    def stopped_hold(self) -> None:
+        self.control()
+        hold = Path(self.facts['stopped_sources_receipt'])
+        if self.operator_receipt('stopped_sources_receipt').get('state') != 'STOPPED_NO_PENDING_LAUNCH':
+            raise Refused('source hold changed')
+        if not 0 <= self.wall() - hold.stat().st_mtime <= 30:
+            raise Refused('source hold confirmation stale')
+        self.operator_receipt('export_receipt')
+
+    def ready(self) -> None:
+        self.command_plan()
+        self.control()
+        self.identity()
         for key in ('native_semantics_review', 'source_inhibition_receipt', 'drain_receipt'):
             self.operator_receipt(key)
         if self.operator_receipt('source_inhibition_receipt').get('state') != 'HELD' or self.operator_receipt('drain_receipt').get('state') != 'DRAINED':
@@ -135,6 +163,7 @@ class Window:
 
     def lease(self) -> None:
         # root-controlled readable directory is outside target-writable ancestry.
+        self.control()
         self.identity()
         if self.clock() >= self.deadline:
             raise Refused('observation deadline expired')
@@ -211,25 +240,17 @@ class Window:
         self.receipt['cleanup'] = 'INCOMPLETE'
         end = min(self.deadline, self.clock() + 30)
         self.cleanup_deadline = end
-        for key in ('export_receipt', 'stopped_sources_receipt'):
-            private_control(Path(self.facts[key]))
-            if not Path(self.facts[key]).read_bytes():
-                raise Refused('missing finalization evidence')
-        self.operator_receipt('export_receipt')
-        if self.operator_receipt('stopped_sources_receipt').get('state') != 'STOPPED_NO_PENDING_LAUNCH':
-            raise Refused('source shutdown not confirmed')
+        self.command_plan()
+        self.stopped_hold()
         if self.receipt['export'] == 'UNKNOWN':
             self.receipt['export'] = 'OPERATOR_RECEIPTED'
         for phase in ('term', 'kill'):
-            hold = Path(self.facts['stopped_sources_receipt'])
-            if self.operator_receipt('stopped_sources_receipt').get('state') != 'STOPPED_NO_PENDING_LAUNCH':
-                raise Refused('source hold changed')
-            if not 0 <= self.wall() - hold.stat().st_mtime <= 30:
-                raise Refused('source hold confirmation stale')
+            self.stopped_hold()
             self.identity(end - self.clock())
             if self.census(end - self.clock()):
                 # Exact native UID-intersection command vectors come from the
                 # reviewed native receipt; never construct PID/name/PGID targets.
+                self.stopped_hold()
                 self.command(phase, end - self.clock())
             if phase == 'term':
                 self.sleep(min(3, max(0, end - self.clock())))
@@ -237,9 +258,11 @@ class Window:
         while True:
             if self.clock() >= end:
                 raise Refused('cleanup deadline expired')
+            self.stopped_hold()
             self.identity(end - self.clock())
             if self.census(end - self.clock()):
                 raise Refused('survivor or rearrival')
+            self.stopped_hold()
             observed = self.clock()
             if observed >= end:
                 raise Refused('cleanup deadline expired')
@@ -248,11 +271,15 @@ class Window:
             elif observed - quiet >= 5:
                 break
             self.sleep(min(.5, max(0, end - self.clock())))
+        self.stopped_hold()
+        if self.clock() >= end:
+            raise Refused('cleanup deadline expired')
         self.receipt['cleanup'] = 'OBSERVED_EMPTY_5S'
 
     def restored(self) -> None:
         if self.receipt['cleanup'] != 'OBSERVED_EMPTY_5S':
             raise Refused('keep admission held: cleanup incomplete')
+        self.control()
         import hashlib
         original_bytes = Path(self.facts['original_state_receipt']).read_bytes()
         if hashlib.sha256(original_bytes).hexdigest() != self.facts['binding'][5]:
@@ -262,6 +289,9 @@ class Window:
         private_control(restored_path)
         if original != json.loads(restored_path.read_text()):
             raise Refused('restoration differs from exact original state')
+        self.control()
+        if self.clock() >= self.deadline:
+            raise Refused('observation deadline expired')
         self.receipt['restoration'] = 'READBACK_MATCH'
 
 

@@ -374,6 +374,9 @@ The root-owned JSON FACTS object contains:
   -U UID -u UID`). Every UID argument must equal the literal verified nonzero UID.
   No process-name, PID-list, process-group or broader command is accepted. Native
   review must specifically establish real/effective UID intersection semantics.
+  The entire plan is validated without execution before readiness and again at
+  cleanup admission; an absent or invalid TERM or KILL vector refuses before
+  either signal, even when that vector would not be needed.
 
 Original/restored state receipts are JSON mappings of each exact node/job config
 hash and offline/disabled state, and each observed native domain/label/definition
@@ -411,10 +414,15 @@ outside-UID evidence directory, without following source links,
 with a 64MiB per-file bound; absent files remain UNAVAILABLE. Thus partial retrieval
 survives agent loss. It copies no environment, credential or entire HOME tree.
 
-Cleanup rechecks native identity and census before each signal phase, refuses
-mixed real/effective UID rows, and requires the source-hold confirmation to remain
-fresh within30 seconds. TERM,3-second grace, conditional KILL and repeated
-five-second empty observations share one30-second deadline. Every native command
+Cleanup rechecks native identity and census before each signal phase and refuses
+mixed real/effective UID rows. The independent terminal and control/evidence
+access are revalidated immediately before TERM and KILL, throughout quiet
+observations, and before restoration acceptance. The run-bound stopped-source
+hold must remain available, STOPPED_NO_PENDING_LAUNCH and fresh within30 seconds
+throughout quiet observations and immediately before OBSERVED_EMPTY_5S. Loss
+refuses further signals and leaves cleanup INCOMPLETE; terminal/control loss
+after closure prevents restoration acceptance without erasing observed closure.
+TERM,3-second grace, conditional KILL and repeated five-second empty observations share one30-second deadline. Every native command
 uses the remaining deadline and at most3 seconds. Nonzero native read/signal,
 survivor, rearrival, UID change or expiry means INCOMPLETE. Other UID rows are
 excluded from signals. The operator keeps sources held throughout the interval.

@@ -165,3 +165,129 @@ def test_slow_native_calls_share_one_cleanup_deadline(native):
         instance.cleanup()
     assert clock[0] <= 30
     assert instance.receipt['cleanup'] == 'INCOMPLETE'
+
+
+@pytest.mark.parametrize('phase', ['ready', 'cleanup'])
+@pytest.mark.parametrize('vector', ['term', 'kill'])
+@pytest.mark.parametrize('defect', ['missing', 'null', 'string', 'empty', 'broadened', 'other_uid'])
+def test_entire_command_plan_refuses_before_any_signal(native, phase, vector, defect):
+    instance, commands, census, _ = native
+    if phase == 'cleanup':
+        instance.ready()
+    # No target remains for KILL: even its unused fallback must be valid.
+    census[:] = ['21 999 999'] + [''] * 20
+    plan = instance.facts['commands']
+    if defect == 'missing':
+        del plan[vector]
+    else:
+        plan[vector] = {
+            'null': None, 'string': ' '.join(plan[vector]), 'empty': [],
+            'broadened': plan[vector][:4],
+            'other_uid': plan[vector][:-1] + ['1000'],
+        }[defect]
+    with pytest.raises(window.Refused):
+        getattr(instance, phase)()
+    assert not any(argv[0].endswith('pkill') for argv in commands)
+    if phase == 'cleanup':
+        assert instance.receipt['cleanup'] == 'INCOMPLETE'
+
+
+@pytest.mark.parametrize('loss', ['finalize', 'grace', 'quiet', 'acceptance'])
+@pytest.mark.parametrize('surface', ['stdin', 'stdout', 'evidence', 'control'])
+def test_main_revalidates_independent_control(native, monkeypatch, tmp_path, loss, surface):
+    instance, commands, census, _ = native
+    facts_path = tmp_path / 'facts.json'
+    facts_path.write_text(json.dumps(instance.facts))
+    monkeypatch.setattr(window.argparse.ArgumentParser, 'parse_args',
+                        lambda _: SimpleNamespace(facts=facts_path, evidence=tmp_path))
+    monkeypatch.setattr(window, 'Window', lambda *args: instance)
+    monkeypatch.setattr(window.select, 'select', lambda *args: ([window.sys.stdin], [], []))
+    lost = [False]
+    answers = iter(['finalize', 'restored'])
+    def read():
+        answer = next(answers)
+        if (answer == 'finalize' and loss == 'finalize') or (answer == 'restored' and loss == 'acceptance'):
+            lost[0] = True
+        return answer + '\n'
+    monkeypatch.setattr(window.sys.stdin, 'readline', read, raising=False)
+    if surface in ('stdin', 'stdout'):
+        monkeypatch.setattr(getattr(window.sys, surface), 'isatty', lambda: not lost[0])
+    else:
+        inaccessible = tmp_path if surface == 'evidence' else Path(instance.facts['native_semantics_review'])
+        def control(path, **kwargs):
+            if lost[0] and path == inaccessible:
+                raise window.Refused('independent control inaccessible')
+        monkeypatch.setattr(window, 'private_control', control)
+    def capture():
+        instance.receipt['export'] = 'PARTIAL_OR_COMPLETE_FILES_COPIED'
+        census[:] = ['21 999 999', '21 999 999'] + [''] * 20
+    monkeypatch.setattr(instance, 'capture', capture)
+    sleep = instance.sleep
+    def pause(amount):
+        sleep(amount)
+        if (loss == 'grace' and amount == 3) or (loss == 'quiet' and amount == .5):
+            lost[0] = True
+    instance.sleep = pause
+    with pytest.raises(window.Refused):
+        window.main()
+    signals = [argv[1] for argv in commands if argv[0].endswith('pkill')]
+    assert signals == {'finalize': [], 'grace': ['-TERM'], 'quiet': ['-TERM', '-KILL'],
+                       'acceptance': ['-TERM', '-KILL']}[loss]
+    receipt = json.loads((tmp_path / 'window-result.json').read_text())
+    assert receipt['cleanup'] == ('OBSERVED_EMPTY_5S' if loss == 'acceptance' else 'INCOMPLETE')
+    assert receipt['restoration'] != 'READBACK_MATCH'
+    assert not Path(instance.facts['ready']).exists()
+
+
+@pytest.mark.parametrize('when', ['after_kill', 'last_census', 'last_hold_read'])
+@pytest.mark.parametrize('change', ['missing', 'stale', 'withdrawn', 'binding', 'inaccessible'])
+def test_quiet_interval_rechecks_bound_stopped_source_hold(native, monkeypatch, when, change):
+    instance, commands, census, clock = native
+    instance.ready()
+    census[:] = ['21 999 999', '21 999 999'] + [''] * 20
+    path = Path(instance.facts['stopped_sources_receipt'])
+    changed = [False]
+    def mutate():
+        if changed[0]:
+            return
+        changed[0] = True
+        if change == 'missing':
+            path.unlink()
+        elif change == 'stale':
+            window.os.utime(path, (-31, -31))
+        elif change in ('withdrawn', 'binding'):
+            data = json.loads(path.read_text())
+            data['state' if change == 'withdrawn' else 'request'] = 'LOST'
+            path.write_text(json.dumps(data))
+            window.os.utime(path, (clock[0], clock[0]))
+        else:
+            def inaccessible(value, **kwargs):
+                if value == path:
+                    raise window.Refused('hold control inaccessible')
+            monkeypatch.setattr(window, 'private_control', inaccessible)
+    run = instance.run
+    def execute(argv, **kwargs):
+        result = run(argv, **kwargs)
+        if ((when == 'after_kill' and argv[1] == '-KILL')
+                or (when == 'last_census' and argv[0] == '/bin/ps' and clock[0] >= 8)):
+            mutate()
+        return result
+    instance.run = execute
+    read_text = Path.read_text
+    # The change latch prevents recursive mutation during the receipt read.
+    if when == 'last_hold_read':
+        def checked_read(path_self, *args, **kwargs):
+            if path_self == path and clock[0] >= 8 and not changed[0]:
+                mutate()
+            return read_text(path_self, *args, **kwargs)
+        monkeypatch.setattr(Path, 'read_text', checked_read)
+    with pytest.raises((window.Refused, OSError)):
+        instance.cleanup()
+    assert changed[0]
+    assert instance.receipt['cleanup'] == 'INCOMPLETE'
+    with pytest.raises(window.Refused):
+        instance.restored()
+    assert instance.receipt['restoration'] != 'READBACK_MATCH'
+    assert clock[0] <= 30
+    assert instance.cleanup_deadline == 30
+    assert [argv[1] for argv in commands if argv[0].endswith('pkill')] == ['-TERM', '-KILL']
