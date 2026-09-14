@@ -22,9 +22,11 @@ defaults to `false`, and is inert/reserved for a later hook. No action consumer
 exists, so `true` currently triggers no reclamation.
 
 The database-only reclamation selection helper has no `run_step` or scheduler
-caller. Its named per-read admission callback is reserved for the later hook's
-deadline/read accounting; it does not load this config, create a claim, or call
-the consumer itself. Every helper SQL/decode observation fails closed as `None`;
+caller. Supplied claim counts other than initial `0 -> 1` refuse before its
+per-read admission callback or SQL; a valid supplied pair still needs a fresh
+durable-owner read. Its named per-read admission callback is reserved for the
+later hook's deadline/read accounting; it does not load this config, create a
+claim, or call the consumer itself. Every helper SQL/decode observation fails closed as `None`;
 this preserves the bounded later-hook admission accounting without implying SQL
 preemption.
 

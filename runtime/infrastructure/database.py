@@ -72,6 +72,32 @@ def _parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _has_raw_iso_hour_24(value: str) -> bool:
+    """Identify hour 24 without narrowing ``datetime.fromisoformat`` inputs.
+
+    The parser accepts calendar and ISO-week dates in extended/basic forms,
+    with or without a week weekday.  They place the one-character datetime
+    separator after a 10-, 8-, or 7-character date portion respectively.  A
+    raw check at those possible time offsets catches parser normalization of
+    24:00 while leaving all other parsing and timezone validation to the
+    standard parser.
+    """
+    date_lengths: list[int] = []
+    if len(value) >= 13 and value[:4].isdigit():
+        if value[4] == "-" and value[7] == "-" and value[5:7].isdigit() and value[8:10].isdigit():
+            date_lengths.append(10)  # YYYY-MM-DD
+        if value[4:6] == "-W" and value[6:8].isdigit() and value[8] == "-" and value[9].isdigit():
+            date_lengths.append(10)  # YYYY-Www-D
+    if len(value) >= 11 and value[:4].isdigit():
+        if value[:8].isdigit() or (value[4:6] == "-W" and value[6:8].isdigit()):
+            date_lengths.append(8)  # YYYYMMDD or YYYY-Www
+        if value[4] == "W" and value[5:8].isdigit():
+            date_lengths.append(8)  # YYYYWwwD
+    if len(value) >= 10 and value[:4].isdigit() and value[4] == "W" and value[5:7].isdigit():
+        date_lengths.append(7)  # YYYYWww
+    return any(value[length + 1:length + 3] == "24" for length in date_lengths)
+
+
 def _is_aware_datetime(value: object) -> bool:
     """Return whether one persisted ordering value is a usable aware ISO time.
 
@@ -87,10 +113,7 @@ def _is_aware_datetime(value: object) -> bool:
     # hour-24 value is malformed.  Keep this a narrow exception around the
     # standard parser rather than a format whitelist, so all other parser-valid
     # ISO forms retain their existing behavior.
-    if (
-        (len(value) >= 13 and value[4] == "-" and value[7] == "-" and value[11:13] == "24")
-        or (len(value) >= 11 and value[:8].isdigit() and value[9:11] == "24")
-    ):
+    if _has_raw_iso_hour_24(value):
         return False
     try:
         return _parse_dt(value).tzinfo is not None
@@ -5684,6 +5707,12 @@ class Database:
             observations.append(name)
             return True
 
+        # These are invocation-local CAS inputs, not durable-owner facts.
+        # Refuse malformed supplied claim context before even admitting the
+        # owner read; a valid supplied pair still requires that fresh read.
+        if stale_orchestration_step_count != 0 or claimed_next_step_count != 1:
+            return None
+
         # 1. Current durable owner.  The registered identity and canonical
         # workspace are supplied by the authoritative caller; no roster read
         # is invented here.  The stale count and CAS-written next count bind
@@ -5702,8 +5731,6 @@ class Database:
             or owner.status is not TaskStatus.IN_PROGRESS
             or owner.block_kind is not None
             or owner.cancelled_at is not None
-            or stale_orchestration_step_count != 0
-            or claimed_next_step_count != 1
             or owner.orchestration_step_count != 1
             or canonical_workspace != authoritative_workspace
             or not owner.brief.startswith(_WORKSPACE_CLEANUP_BRIEF_MARKER)

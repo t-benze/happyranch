@@ -527,8 +527,14 @@ def cleanup_selection_matrix(tmp_path):
 
 @pytest.mark.parametrize("value", [
     "2025-02-29T00:00:00+00:00", "2025-02-30T00:00:00+00:00",
-    "2025-04-31T00:00:00+00:00", "2025-01-01T24:00:00+00:00",
-    "20250101T240000+0000",
+    "2025-04-31T00:00:00+00:00",
+    *[
+        f"{date}{separator}{time}"
+        for date in ("2025-01-01", "20250101", "2025-W01-1", "2025W011", "2025-W01", "2025W01")
+        for separator in ("T", " ")
+        for time in ("24:00:00+00:00", "240000+0000")
+    ],
+    "2025-01-01🕛24:00:00+00:00",
 ])
 def test_workspace_cleanup_selection_newer_marker_uses_parser_for_invalid_calendar(
     cleanup_selection_matrix, value,
@@ -540,6 +546,27 @@ def test_workspace_cleanup_selection_newer_marker_uses_parser_for_invalid_calend
         action="workspace_cleanup_triggered", payload={"run_number": 4, "brief_kind": "cleanup"})
     assert select() is None
     assert len(queries) == 4
+
+
+@pytest.mark.parametrize("value", [
+    *[
+        f"{date}{separator}{time}"
+        for date in ("2025-01-01", "20250101", "2025-W01-1", "2025W011", "2025-W01", "2025W01")
+        for separator in ("T", " ")
+        for time in ("00:00:00+00:00", "000000+0000", "23:24:00+00:00", "232400+0000")
+    ],
+    "2025-01-01🕛00:00:00+00:00",
+])
+def test_workspace_cleanup_selection_preserves_valid_raw_hour_formats(
+    cleanup_selection_matrix, value,
+) -> None:
+    database, _, select, queries, _ = cleanup_selection_matrix
+    database.execute("UPDATE tasks SET created_at=? WHERE id='TASK-1'", (value,))
+    database.insert_audit_log(task_id="TASK-1", agent="dev_agent",
+        action="workspace_cleanup_triggered", payload={"run_number": 1, "brief_kind": "report_only"})
+    selection = select()
+    assert selection is not None and len(selection.candidates) == 3
+    assert len(queries) == 10
 
 
 @pytest.mark.parametrize("value", [
@@ -585,6 +612,7 @@ def test_workspace_cleanup_selection_all_newer_statuses_refuse(cleanup_selection
 def test_workspace_cleanup_selection_owner_and_claim_mismatches_stop_at_owner(cleanup_selection_matrix, change) -> None:
     database, _, select, queries, now = cleanup_selection_matrix
     kwargs = {}
+    admissions: list[str] = []
     if change == "missing":
         database.execute("DELETE FROM tasks WHERE id='TASK-100'")
     elif change == "cancelled":
@@ -607,8 +635,12 @@ def test_workspace_cleanup_selection_owner_and_claim_mismatches_stop_at_owner(cl
         database.execute("UPDATE tasks SET status='not-a-status' WHERE id='TASK-100'")
     else:
         kwargs["authoritative_workspace"] = Path("/other")
+    expected_queries = 0 if change in {"stale", "claimed", "claimed_zero"} else 1
+    if expected_queries == 0:
+        kwargs["admit_observation"] = lambda name: admissions.append(name) is None or True
     assert select(**kwargs) is None
-    assert len(queries) == 1
+    assert len(queries) == expected_queries
+    assert admissions == []
 
 
 @pytest.mark.parametrize("kind", ["zero", "two", "mixed", "wrong", "list", "bad_json", "bool", "kind", "first", "second"])
