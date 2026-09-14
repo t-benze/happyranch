@@ -28,7 +28,14 @@ type tsnetServer interface {
 	Close() error
 }
 
-type productionTSNetServer struct{ server *tsnet.Server }
+type tsnetLocalClient interface {
+	Status(context.Context) (*ipnstate.Status, error)
+}
+
+type productionTSNetServer struct {
+	server      *tsnet.Server
+	localClient func() (tsnetLocalClient, error)
+}
 
 func (s productionTSNetServer) Start() error  { return s.server.Start() }
 func (s productionTSNetServer) ClearAuthKey() { s.server.AuthKey = "" }
@@ -36,7 +43,11 @@ func (s productionTSNetServer) Up(ctx context.Context) (*ipnstate.Status, error)
 	return s.server.Up(ctx)
 }
 func (s productionTSNetServer) Status(ctx context.Context) (*ipnstate.Status, error) {
-	client, err := s.server.LocalClient()
+	localClient := s.localClient
+	if localClient == nil {
+		localClient = func() (tsnetLocalClient, error) { return s.server.LocalClient() }
+	}
+	client, err := localClient()
 	if err != nil {
 		return nil, err
 	}
