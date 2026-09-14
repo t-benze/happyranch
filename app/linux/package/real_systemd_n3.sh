@@ -72,6 +72,7 @@ sudo systemd-run --quiet --wait --collect --unit=happyranch-n3-qualification /bi
 
 work="$(mktemp -d)"
 evidence_driver="$PWD/app/linux/package/n3_evidence.py"
+failure_capture_driver="$PWD/app/linux/package/n3_failure_capture.py"
 evidence_artifact="$diagnostics/execution-evidence.json"
 run_id="$(cat /proc/sys/kernel/random/uuid)"
 barrier_dir="/var/lib/happyranch-tsnet-sidecar/.n3-barrier-$run_id"
@@ -103,17 +104,20 @@ observe_systemctl_value() {
   # 512-byte cap.  `observation_loss` is a closed term: it distinguishes a
   # successful empty response, failed query, real timeout, truncation, parse
   # loss and work which was not attempted. Raw command output is never kept.
-  local unit="$1" property="$2" value file status bytes
+  local unit="$1" property="$2" value file status bytes cap=128
   observation_value=unknown; observation_loss=unattempted
   (( SECONDS < observe_deadline )) || return
+  (( observe_bytes_left > 0 )) || return
+  (( observe_bytes_left < cap )) && cap="$observe_bytes_left"
   file="$(mktemp "$diagnostics/.n3-observe.XXXXXX")" || { observation_loss=launch_failure; return; }
   set +e
-  timeout --kill-after=1 1 systemctl show "$unit" -p "$property" --value 2>/dev/null | head -c 512 >"$file"
+  timeout --kill-after=1 1 systemctl show "$unit" -p "$property" --value 2>/dev/null | head -c "$((cap + 1))" >"$file"
   status=${PIPESTATUS[0]}
   set -e
   value="$(<"$file")"; bytes="$(wc -c <"$file")"; rm -f "$file"
+  (( bytes > cap )) && { observe_bytes_left=0; observation_loss=truncated; return; }
+  observe_bytes_left=$((observe_bytes_left - bytes))
   if (( status == 124 )); then observation_loss=timeout; return; fi
-  if (( bytes >= 512 )) && (( status != 0 )); then observation_loss=truncated; return; fi
   if (( status != 0 )); then observation_loss=query_error; return; fi
   if [[ -z "$value" ]]; then observation_loss=empty; return; fi
   case "$property:$value" in
@@ -125,13 +129,59 @@ observe_systemctl_value() {
     *) observation_loss=parse_loss ;;
   esac
 }
+capture_diagnostic_receipts() {
+  # The sidecar is the sole diagnostic receipt producer. Journal records are
+  # accepted only when their unit, invocation, boot, and collection window all
+  # match this failing run; the Python helper emits no journal prose.
+  local invocation_file journal_file helper_file invocation status bytes now_us
+  diagnostic_receipts='[]'; diagnostic_receipt_loss='["unattempted"]'
+  (( SECONDS < observe_deadline && observe_bytes_left > 0 )) || return
+  invocation_file="$(mktemp "$diagnostics/.n3-invocation.XXXXXX")" || { diagnostic_receipt_loss='["launch_failure"]'; return; }
+  set +e
+  timeout --kill-after=1 1 systemctl show happyranch-tsnet-sidecar.service -p InvocationID --value 2>/dev/null | head -c 65 >"$invocation_file"
+  status=${PIPESTATUS[0]}
+  set -e
+  invocation="$(<"$invocation_file")"; rm -f "$invocation_file"
+  if (( status == 124 )); then diagnostic_receipt_loss='["timeout"]'; return; fi
+  [[ "$invocation" =~ ^[0-9a-fA-F-]{32,64}$ ]] || { diagnostic_receipt_loss='["query_error"]'; return; }
+  journal_file="$(mktemp "$diagnostics/.n3-receipts.XXXXXX")" || { diagnostic_receipt_loss='["launch_failure"]'; return; }
+  set +e
+  timeout --kill-after=1 1 journalctl -u happyranch-tsnet-sidecar.service -b "$snapshot_boot_id" --since "@$snapshot_since_us" --output=json --no-pager 2>/dev/null | head -c "$((observe_bytes_left + 1))" >"$journal_file"
+  status=${PIPESTATUS[0]}
+  set -e
+  bytes="$(wc -c <"$journal_file")"
+  if (( bytes > observe_bytes_left )); then
+    observe_bytes_left=0
+    diagnostic_receipt_loss='["truncated"]'
+    rm -f "$journal_file"
+    return
+  fi
+  observe_bytes_left=$((observe_bytes_left - bytes))
+  if (( status != 0 )); then
+    rm -f "$journal_file"
+    (( status == 124 )) && diagnostic_receipt_loss='["timeout"]' || diagnostic_receipt_loss='["query_error"]'
+    return
+  fi
+  now_us="$(date +%s%N 2>/dev/null | cut -c1-16 || printf 0)"
+  helper_file="$(mktemp "$diagnostics/.n3-receipt-result.XXXXXX")" || { rm -f "$journal_file"; diagnostic_receipt_loss='["launch_failure"]'; return; }
+  if python "$failure_capture_driver" --input "$journal_file" --invocation-id "$invocation" --boot-id "$snapshot_boot_id" --since-us "$snapshot_since_us" --until-us "$now_us" >"$helper_file" 2>/dev/null; then
+    diagnostic_receipts="$(python -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["receipts"],separators=(",",":")))' "$helper_file" 2>/dev/null || printf '[]')"
+    diagnostic_receipt_loss="$(python -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["losses"],separators=(",",":")))' "$helper_file" 2>/dev/null || printf '["parse_loss"]')"
+  else
+    diagnostic_receipt_loss='["parse_loss"]'
+  fi
+  rm -f "$journal_file" "$helper_file"
+}
 capture_failure_snapshot() {
   # Snapshot work has an eight-second aggregate budget. No observation changes
   # the exit status that entered cleanup; all retained values are closed terms.
-  local name="${1:-failure-snapshot}" snapshot unit first=1 active sub result main pre source held marker dropin staging source_loss held_loss marker_loss dropin_loss staging_loss loss_first=1 losses_file
+  local name="${1:-failure-snapshot}" snapshot unit first=1 active sub result main pre source held marker dropin staging source_loss held_loss marker_loss dropin_loss staging_loss loss_first=1 losses_file jobs_file job_status job_bytes jobs_loss jobs_first
   snapshot="$diagnostics/$name.json"
   losses_file="$(mktemp "$diagnostics/.n3-losses.XXXXXX")" || return 1
   observe_deadline=$((SECONDS + 8))
+  observe_bytes_left=8192
+  snapshot_since_us="$(date +%s%N 2>/dev/null | cut -c1-16 || printf 0)"
+  snapshot_boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf unavailable)"
   observe_presence /etc/happyranch/enrollment.key -e; source="$presence_value"; source_loss="$presence_loss"
   observe_presence /etc/happyranch/enrollment.key.held -e; held="$presence_value"; held_loss="$presence_loss"
   observe_presence /var/lib/happyranch-tsnet-sidecar/credential.consumed -e; marker="$presence_value"; marker_loss="$presence_loss"
@@ -153,23 +203,43 @@ capture_failure_snapshot() {
         printf '"%s.%s":"%s"' "$unit" "${property_loss%%:*}" "${property_loss#*:}" >>"$losses_file"
       done
     done
+    jobs_file="$(mktemp "$diagnostics/.n3-jobs.XXXXXX")" || { jobs_loss=launch_failure; : >"$losses_file"; }
+    jobs_loss=unattempted; jobs_first=1
+    if [[ -n "${jobs_file:-}" ]] && (( SECONDS < observe_deadline && observe_bytes_left > 0 )); then
+      set +e
+      timeout --kill-after=1 1 systemctl list-jobs --no-legend --plain 2>/dev/null | head -c "$((observe_bytes_left + 1))" >"$jobs_file"
+      job_status=${PIPESTATUS[0]}
+      set -e
+      job_bytes="$(wc -c <"$jobs_file")"
+      if (( job_bytes > observe_bytes_left )); then jobs_loss=truncated; observe_bytes_left=0
+      elif (( job_status == 124 )); then jobs_loss=timeout; observe_bytes_left=$((observe_bytes_left - job_bytes))
+      elif (( job_status != 0 )); then jobs_loss=query_error; observe_bytes_left=$((observe_bytes_left - job_bytes))
+      else
+        jobs_loss=observed; observe_bytes_left=$((observe_bytes_left - job_bytes))
+      fi
+    fi
     printf '},"jobs":['
-    first=1
-    while read -r job unit kind state extra; do
-      [[ "$job" =~ ^[0-9]{1,9}$ && -z "$extra" && "$kind" == start ]] || continue
-      case "$job:$unit:$state" in
-        [0-9]*:happyranch-managed.target:waiting|[0-9]*:happyranch-managed.target:running|[0-9]*:happyranch-connector.service:waiting|[0-9]*:happyranch-connector.service:running|[0-9]*:happyranch-tsnet-sidecar.service:waiting|[0-9]*:happyranch-tsnet-sidecar.service:running)
-          (( first )) || printf ','; first=0; printf '{"id":%s,"unit":"%s","state":"%s"}' "$job" "$unit" "$state" ;;
-      esac
-    done < <(if (( SECONDS < observe_deadline )); then timeout --kill-after=1 1 systemctl list-jobs --no-legend --plain 2>/dev/null | head -c 1024; fi)
-    printf '],"credential_presence":{"source":%s,"held_source":%s,"consumed_marker":%s,"transient_dropin":%s,"staged_directory":%s},"collection":{"run_id":"%s","boot_id":"%s","window_seconds":8,"source":"systemctl-closed-values"},"observation_loss":{' "$source" "$held" "$marker" "$dropin" "$staging" "${run_id:-unknown}" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf unavailable)"
+    if [[ -n "${jobs_file:-}" && -f "$jobs_file" ]]; then
+      while read -r job unit kind state extra; do
+        if [[ ! "$job" =~ ^[0-9]{1,9}$ || -n "$extra" || "$kind" != start ]]; then [[ "$jobs_loss" == observed ]] && jobs_loss=parse_loss; continue; fi
+        case "$job:$unit:$state" in
+          [0-9]*:happyranch-managed.target:waiting|[0-9]*:happyranch-managed.target:running|[0-9]*:happyranch-connector.service:waiting|[0-9]*:happyranch-connector.service:running|[0-9]*:happyranch-tsnet-sidecar.service:waiting|[0-9]*:happyranch-tsnet-sidecar.service:running)
+            (( jobs_first )) || printf ','; jobs_first=0; printf '{"id":%s,"unit":"%s","state":"%s"}' "$job" "$unit" "$state" ;;
+        esac
+      done <"$jobs_file"
+      rm -f "$jobs_file"
+    fi
+    capture_diagnostic_receipts
+    printf '],"diagnostic_receipts":%s,"credential_presence":{"source":%s,"held_source":%s,"consumed_marker":%s,"transient_dropin":%s,"staged_directory":%s},"collection":{"run_id":"%s","boot_id":"%s","window_seconds":8,"output_cap_bytes":8192,"source":"systemctl-and-attributed-sidecar-journal"},"observation_loss":{' "$diagnostic_receipts" "$source" "$held" "$marker" "$dropin" "$staging" "${run_id:-unknown}" "$snapshot_boot_id"
     for property_loss in "credential.source:$source_loss" "credential.held_source:$held_loss" "credential.consumed_marker:$marker_loss" "credential.transient_dropin:$dropin_loss" "credential.staged_directory:$staging_loss"; do
       [[ "$property_loss" == *:observed_present || "$property_loss" == *:observed_absent ]] && continue
       (( loss_first )) || printf ',' >>"$losses_file"; loss_first=0
       printf '"%s":"%s"' "${property_loss%%:*}" "${property_loss#*:}" >>"$losses_file"
     done
     cat "$losses_file"
-    printf '}}\n'
+    [[ "$jobs_loss" == observed ]] || { (( loss_first )) || printf ','; loss_first=0; printf '"jobs":"%s"' "$jobs_loss"; }
+    (( loss_first )) || printf ','
+    printf '"diagnostic_receipts":%s}}\n' "$diagnostic_receipt_loss"
   } >"$snapshot" || true
   rm -f "$losses_file"
 }

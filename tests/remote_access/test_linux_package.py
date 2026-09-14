@@ -259,6 +259,13 @@ def test_real_systemd_denial_matrix_executes_every_bounded_probe() -> None:
 def _run_real_systemd_failure_snapshot(tmp_path: Path, *, malformed: bool = False) -> subprocess.CompletedProcess[str]:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
     snapshot_helpers = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    (fake_bin / "journalctl").write_text("""#!/usr/bin/env python3
+import json, time
+print(json.dumps({"MESSAGE": "diagnostic_receipt=" + json.dumps({"category": "network_join", "phase": "peer_establishment", "actor": "tsnet-sidecar", "unit": "happyranch-tsnet-sidecar.service", "outcome": "failed", "terminal": True, "assertion": {"status": "completed"}}), "_SYSTEMD_UNIT": "happyranch-tsnet-sidecar.service", "_SYSTEMD_INVOCATION_ID": "12345678-1234-1234-1234-123456789abc", "_BOOT_ID": open("/proc/sys/kernel/random/boot_id").read().strip(), "__REALTIME_TIMESTAMP": str(int(time.time() * 1_000_000))}, separators=(",", ":")))
+print("not-json SECRET_CANARY")
+""")
+    (fake_bin / "journalctl").chmod(0o700)
     script = f'''set -euo pipefail
 diagnostics={tmp_path!s}; mkdir -p "$diagnostics"
 sudo() {{ "$@"; }}
@@ -266,6 +273,7 @@ timeout() {{ while [[ $1 == --* || $1 =~ ^[0-9]+$ ]]; do shift; done; "$@"; }}
 systemctl() {{
   if [[ $1 == show ]]; then
     case $4 in
+      InvocationID) printf '%s\n' 12345678-1234-1234-1234-123456789abc ;;
       ActiveState) printf '%s\n' "${{MALFORMED:+SECRET_CANARY}}${{MALFORMED:-failed}}" ;;
       SubState) printf '%s\n' failed ;;
       Result) printf '%s\n' exit-code ;;
@@ -277,12 +285,13 @@ systemctl() {{
   fi
 }}
 {snapshot_helpers}
+failure_capture_driver={Path("app/linux/package/n3_failure_capture.py").resolve()!s}
 capture_failure_snapshot first-positive-start-failure
 cat "$diagnostics/first-positive-start-failure.json"
 '''
     return subprocess.run(
         ["bash", "-c", script], capture_output=True, text=True,
-        env=os.environ | ({"MALFORMED": "1"} if malformed else {}), check=False,
+        env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"} | ({"MALFORMED": "1"} if malformed else {}), check=False,
     )
 
 
@@ -301,11 +310,37 @@ def test_real_systemd_failure_snapshot_executes_shipping_source_and_is_secret_fr
         "source": False, "held_source": False, "consumed_marker": False,
         "transient_dropin": False, "staged_directory": False,
     }
-    assert snapshot["collection"]["source"] == "systemctl-closed-values"
+    assert snapshot["collection"]["source"] == "systemctl-and-attributed-sidecar-journal"
     assert snapshot["collection"]["window_seconds"] == 8
+    assert snapshot["collection"]["output_cap_bytes"] == 8192
+    assert snapshot["diagnostic_receipts"] == [{"category": "network_join", "phase": "peer_establishment"}]
+    assert snapshot["observation_loss"]["diagnostic_receipts"] == ["parse_loss"]
     # The raw ExecStartPre command is deliberately rejected as parse loss;
     # absence of a retained value is never represented as a clean observation.
-    assert set(snapshot["observation_loss"].values()) == {"parse_loss"}
+    assert {value for key, value in snapshot["observation_loss"].items() if key != "diagnostic_receipts"} == {"parse_loss"}
+
+
+def test_real_systemd_failure_snapshot_uses_real_timeout_and_never_claims_unattempted_as_absent(tmp_path: Path) -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    snapshot_helpers = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    (fake_bin / "systemctl").write_text("#!/bin/bash\nsleep 2\nprintf '%s\\n' failed\n")
+    (fake_bin / "journalctl").write_text("#!/bin/bash\nsleep 2\n")
+    for executable in fake_bin.iterdir():
+        executable.chmod(0o700)
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; mkdir -p "$diagnostics"
+sudo() {{ "$@"; }}
+failure_capture_driver={Path("app/linux/package/n3_failure_capture.py").resolve()!s}
+{snapshot_helpers}
+capture_failure_snapshot real-timeout
+cat "$diagnostics/real-timeout.json"
+'''
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"})
+    assert result.returncode == 0, result.stderr
+    snapshot = json.loads(result.stdout)
+    assert "timeout" in snapshot["observation_loss"].values()
+    assert snapshot["credential_presence"]["source"] is False
 
 
 def test_real_systemd_failure_snapshot_bounds_malformed_observations(tmp_path: Path) -> None:
@@ -314,7 +349,7 @@ def test_real_systemd_failure_snapshot_bounds_malformed_observations(tmp_path: P
     assert "SECRET_CANARY" not in result.stdout + result.stderr
     snapshot = json.loads(result.stdout)
     assert {unit["active"] for unit in snapshot["units"].values()} == {"unknown"}
-    assert set(snapshot["observation_loss"].values()) == {"parse_loss"}
+    assert {value for key, value in snapshot["observation_loss"].items() if key != "diagnostic_receipts"} == {"parse_loss"}
 
 
 def test_real_systemd_barriers_use_restrictive_service_state_directory_and_controller_sudo() -> None:
@@ -326,6 +361,49 @@ def test_real_systemd_barriers_use_restrictive_service_state_directory_and_contr
     assert 'sudo tee "$barrier_dir/start-release"' in harness
     assert 'sudo tee "$barrier_dir/stop-release"' in harness
     assert 'sudo rmdir "$barrier_dir" || fail "barrier residue"' in harness
+
+
+def test_real_systemd_cleanup_releases_both_held_barriers_before_teardown(tmp_path: Path) -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    unit_helpers = "systemctl_absent_value() {" + harness.split("systemctl_absent_value() {", 1)[1].split("\ndiagnostics=", 1)[0]
+    cleanup = harness.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup EXIT", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    (fake_bin / "systemctl").write_text("""#!/bin/bash
+printf 'systemctl:%s\n' "$1" >>"$EVENT_LOG"
+case "$1" in show) echo 0;; list-unit-files) exit 0;; stop|disable|reset-failed|daemon-reload) exit 0;; *) exit 96;; esac
+""")
+    (fake_bin / "sudo").write_text("""#!/bin/bash
+printf 'sudo:%s:%s\n' "$1" "${2:-}" >>"$EVENT_LOG"
+case "$1" in systemctl) shift; exec systemctl "$@";; test|rm|kill|find|update-ca-certificates|tee) exit 0;; *) exit 95;; esac
+""")
+    (fake_bin / "pgrep").write_text("#!/bin/bash\nexit 1\n")
+    for executable in fake_bin.iterdir():
+        executable.chmod(0o700)
+    work = tmp_path / "work"; (work / "hs").mkdir(parents=True)
+    (work / "headscale").write_text("#!/bin/bash\nprintf '[]'\n"); (work / "headscale").chmod(0o700)
+    evidence = tmp_path / "evidence.py"; evidence.write_text("raise SystemExit(0)\n")
+    event_log = tmp_path / "events.log"
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; work={work!s}; evidence_driver={evidence!s}; evidence_artifact={tmp_path / "artifact"!s}
+PROOF_SUBJECT_SHA={'a' * 40}
+peer_pid=""; daemon_pid=""; headscale_pid=""; sidecar_ip=""; run_id=test
+barrier_dir=/visible/service-owned/barrier
+port_open() {{ return 1; }}
+tsnet_open() {{ return 1; }}
+evidence() {{ return 0; }}
+{unit_helpers}
+cleanup() {{
+{cleanup}
+}}
+cleanup 0
+'''
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "EVENT_LOG": str(event_log), "N3_UNIT_ROOT": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    events = event_log.read_text().splitlines()
+    start_release = next(index for index, event in enumerate(events) if event.endswith(":/visible/service-owned/barrier/start-release"))
+    stop_release = next(index for index, event in enumerate(events) if event.endswith(":/visible/service-owned/barrier/stop-release"))
+    teardown = events.index("systemctl:stop")
+    assert start_release < teardown and stop_release < teardown
 
 
 def test_real_systemd_failure_capture_precedes_teardown_and_preserves_exit_37() -> None:
@@ -380,6 +458,90 @@ start_managed_target || exit "$?"
     assert (tmp_path / "first-positive-start-failure.json").exists()
 
 
+@pytest.mark.parametrize(("capture_mode", "expected_loss"), [
+    ("query", "query_error"), ("parse", "parse_loss"),
+    ("timeout", "timeout"), ("launch", "launch_failure"),
+])
+def test_real_systemd_shipping_exit_path_is_strict_ordered_and_preserves_37(
+    tmp_path: Path, capture_mode: str, expected_loss: str,
+) -> None:
+    """Exercise the extracted positive-start EXIT/trap path, never host systemd."""
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    snapshot = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    unit_helpers = "systemctl_absent_value() {" + harness.split("systemctl_absent_value() {", 1)[1].split("\ndiagnostics=", 1)[0]
+    cleanup = harness.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup EXIT", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    (fake_bin / "systemctl").write_text("""#!/bin/bash
+set -eu
+printf 'systemctl:%s\n' "$1" >>"$EVENT_LOG"
+case "$1" in
+  start) exit 37 ;;
+  show) case "$4" in InvocationID) echo 12345678-1234-1234-1234-123456789abc;; ActiveState) echo failed;; SubState) echo failed;; Result) echo exit-code;; ExecMainStatus) echo 37;; MainPID) echo 0;; *) echo unknown;; esac ;;
+  stop|disable|reset-failed|daemon-reload|list-unit-files|list-jobs) exit 0 ;;
+  *) printf 'unknown-systemctl:%s\n' "$1" >>"$EVENT_LOG"; exit 97 ;;
+esac
+""")
+    (fake_bin / "sudo").write_text("""#!/bin/bash
+set -eu
+printf 'sudo:%s\n' "$1" >>"$EVENT_LOG"
+case "$1" in
+  systemctl) shift; exec systemctl "$@" ;;
+  test|rm|kill|find|update-ca-certificates) exit 0 ;;
+  *) printf 'unknown-sudo:%s\n' "$1" >>"$EVENT_LOG"; exit 98 ;;
+esac
+""")
+    (fake_bin / "pgrep").write_text("#!/bin/bash\nprintf 'pgrep\n' >>\"$EVENT_LOG\"\nexit 0\n")
+    (fake_bin / "journalctl").write_text("""#!/bin/bash
+printf 'capture\n' >>"$EVENT_LOG"
+case "${CAPTURE_MODE:?}" in
+  query) exit 5 ;;
+  parse) printf '%s\n' 'diagnostic_receipt={TOKEN_CANARY=never-retain}' ;;
+  timeout) sleep 2 ;;
+  *) exit 99 ;;
+esac
+""")
+    (fake_bin / "mktemp").write_text("""#!/bin/bash
+if [[ ${CAPTURE_MODE:-} == launch && $* == *n3-receipts* ]]; then printf 'capture-launch\n' >>"$EVENT_LOG"; exit 1; fi
+exec /usr/bin/mktemp "$@"
+""")
+    (fake_bin / "evidence").write_text("#!/bin/bash\nprintf 'evidence:%s\n' \"$1\" >>\"$EVENT_LOG\"\nexit 0\n")
+    for executable in fake_bin.iterdir():
+        executable.chmod(0o700)
+    work = tmp_path / "work"; (work / "hs").mkdir(parents=True)
+    (work / "headscale").write_text("#!/bin/bash\nprintf '[]'\n")
+    (work / "headscale").chmod(0o700)
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; work={work!s}; evidence_driver={fake_bin / "evidence"!s}; evidence_artifact=/missing
+failure_capture_driver={Path("app/linux/package/n3_failure_capture.py").resolve()!s}
+peer_pid=""; daemon_pid=""; headscale_pid=""; sidecar_ip=""; run_id=test
+port_open() {{ return 1; }}
+tsnet_open() {{ return 1; }}
+evidence() {{ return 0; }}
+{snapshot}
+{unit_helpers}
+cleanup() {{
+{cleanup}
+}}
+trap cleanup EXIT
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
+start_managed_target || exit "$?"
+'''
+    event_log = tmp_path / "events.log"
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, check=False,
+        env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "EVENT_LOG": str(event_log), "CAPTURE_MODE": capture_mode, "N3_RESIDUE_ROOT": str(tmp_path), "N3_UNIT_ROOT": str(tmp_path)},
+    )
+    assert result.returncode == 37, result.stderr
+    snapshot_doc = json.loads((tmp_path / "first-positive-start-failure.json").read_text())
+    assert expected_loss in snapshot_doc["observation_loss"]["diagnostic_receipts"]
+    events = event_log.read_text().splitlines()
+    first_capture = "capture-launch" if capture_mode == "launch" else "capture"
+    assert events.index(first_capture) < events.index("systemctl:stop")
+    assert (tmp_path / "cleanup-events.log").read_text().splitlines() == ["cleanup"]
+    assert not any(event.startswith(("evidence:finalize", "evidence:validate", "unknown-")) for event in events)
+
+
 @pytest.mark.parametrize(("signal", "expected"), [("INT", 130), ("TERM", 143)])
 def test_real_systemd_signal_traps_cleanup_once_and_preserve_non_success(tmp_path: Path, signal: str, expected: int) -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
@@ -415,6 +577,7 @@ kill -{signal} $$
     )
     assert result.returncode == expected, result.stderr
     assert (tmp_path / "cleanup-status.txt").read_text() == "fixtures_reaped=1\n"
+    assert (tmp_path / "cleanup-events.log").read_text().splitlines() == ["cleanup"]
 
 
 def _run_real_systemd_shipping_cleanup(tmp_path: Path, **env: str) -> subprocess.CompletedProcess[str]:
