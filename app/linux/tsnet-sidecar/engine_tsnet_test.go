@@ -30,6 +30,7 @@ type fakeTSNetServer struct {
 	statusCalls, closeCalls, listenCalls int
 	clearAuthKeyCalls                    int
 	upDeadline, statusDeadline           time.Time
+	listener                             net.Listener
 }
 
 func (f *fakeTSNetServer) Start() error {
@@ -51,6 +52,7 @@ func (f *fakeTSNetServer) Up(ctx context.Context) (*ipnstate.Status, error) {
 	f.upCalls++
 	f.upDeadline, _ = ctx.Deadline()
 	entered, release, status, err, ignoreContext := f.upEntered, f.upRelease, f.upStatus, f.upErr, f.ignoreContext
+	f.upEntered = nil
 	f.mu.Unlock()
 	if entered != nil {
 		close(entered)
@@ -73,6 +75,7 @@ func (f *fakeTSNetServer) Status(ctx context.Context) (*ipnstate.Status, error) 
 	f.statusCalls++
 	f.statusDeadline, _ = ctx.Deadline()
 	entered, release, err, ignoreContext := f.statusEntered, f.statusRelease, f.statusErr, f.ignoreContext
+	f.statusEntered = nil
 	f.mu.Unlock()
 	if entered != nil {
 		close(entered)
@@ -106,6 +109,9 @@ func (f *fakeTSNetServer) Listen(string) (net.Listener, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listenCalls++
+	if f.listener != nil {
+		return f.listener, nil
+	}
 	return nil, errors.New("not expected")
 }
 func (f *fakeTSNetServer) Close() error { f.mu.Lock(); defer f.mu.Unlock(); f.closeCalls++; return nil }
@@ -263,7 +269,7 @@ func TestProductionAdapterViaSidecarDoesNotAdmitAfterCancelledPeerPoll(t *testin
 		upStatus:      runningWithPeer("other", ""),
 		statusEntered: make(chan struct{}),
 		statusRelease: release,
-		statuses:      []*ipnstate.Status{runningWithPeer("expected", "")},
+		statuses:      []*ipnstate.Status{runningWithPeer("mac-client-123", "")},
 		ignoreContext: true,
 	}
 	cfg := validConfig(t)
@@ -284,6 +290,56 @@ func TestProductionAdapterViaSidecarDoesNotAdmitAfterCancelledPeerPoll(t *testin
 	}
 	if _, err := os.Stat(cfg.CredentialFile); err != nil {
 		t.Fatalf("credential was consumed before receipt: %v", err)
+	}
+}
+
+func TestProductionAdapterViaSidecarWaitsForRunningAndPeerBeforeAdmission(t *testing.T) {
+	upRelease := make(chan struct{})
+	statusRelease := make(chan struct{})
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &fakeTSNetServer{
+		upEntered:     make(chan struct{}),
+		upRelease:     upRelease,
+		upStatus:      runningWithPeer("other", ""),
+		statusEntered: make(chan struct{}),
+		statusRelease: statusRelease,
+		statuses:      []*ipnstate.Status{runningWithPeer("mac-client-123", "")},
+		listener:      listener,
+	}
+	cfg := validConfig(t)
+	probes := 0
+	result := make(chan error, 1)
+	sidecar := New(cfg, testTSNetEngine(server), dialFunc(func(context.Context, string, string) (net.Conn, error) {
+		probes++
+		client, peer := net.Pipe()
+		_ = peer.Close()
+		return client, nil
+	}))
+	go func() { result <- sidecar.Start(context.Background()) }()
+	<-server.upEntered
+	if _, err := os.Stat(cfg.CredentialFile); err != nil || probes != 0 || server.listenCalls != 0 {
+		t.Fatalf("admitted while Up blocked: credential=%v probes=%d listens=%d", err, probes, server.listenCalls)
+	}
+	close(upRelease)
+	<-server.statusEntered
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, consumedMarker)); !os.IsNotExist(err) || probes != 0 || server.listenCalls != 0 {
+		t.Fatalf("admitted while peer blocked: marker=%v probes=%d listens=%d", err, probes, server.listenCalls)
+	}
+	close(statusRelease)
+	if err := <-result; err != nil {
+		t.Fatalf("Start error=%v", err)
+	}
+	if probes != 1 || server.upCalls != 1 || server.statusCalls != 1 || server.listenCalls != 1 {
+		t.Fatalf("calls up=%d status=%d probe=%d listen=%d", server.upCalls, server.statusCalls, probes, server.listenCalls)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, consumedMarker)); err != nil {
+		t.Fatalf("marker missing after receipt: %v", err)
+	}
+	if err := sidecar.Stop(); err != nil {
+		t.Fatal(err)
 	}
 }
 
