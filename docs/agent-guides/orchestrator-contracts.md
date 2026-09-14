@@ -21,6 +21,11 @@ it is boolean and defaults to `true`. Its separate
 defaults to `false`, and is inert/reserved for a later hook. No action consumer
 exists, so `true` currently triggers no reclamation.
 
+The database-only reclamation selection helper has no `run_step` or scheduler
+caller. Its named per-read admission callback is reserved for the later hook's
+deadline/read accounting; it does not load this config, create a claim, or call
+the consumer itself.
+
 ## Org Content APIs
 
 `AgentDef` in `runtime/orchestrator/agent_def.py` represents an agent file: markdown with YAML frontmatter parsed/rendered by `parse_agent_text` and `render_agent_text`.

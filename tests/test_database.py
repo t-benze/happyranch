@@ -1,10 +1,187 @@
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from runtime.infrastructure.database import Database, LineageTooDeep
+from runtime.infrastructure.database import (
+    Database,
+    LineageTooDeep,
+    WorkspaceCleanupReclamationSelection,
+)
 from runtime.models import BlockKind, TaskRecord, TaskStatus
+
+
+_CLEANUP_MARKER = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)"
+
+
+def _cleanup_task(
+    db: Database,
+    task_id: str,
+    *,
+    created_at: datetime,
+    status: TaskStatus,
+    count: int = 0,
+    completed_at: datetime | None = None,
+    parent_task_id: str | None = None,
+    revisit_of_task_id: str | None = None,
+) -> None:
+    db.insert_task(TaskRecord(
+        id=task_id,
+        brief=f"{_CLEANUP_MARKER}\nfixture",
+        assigned_agent="dev_agent",
+        status=status,
+        orchestration_step_count=count,
+        created_at=created_at,
+        updated_at=created_at,
+        completed_at=completed_at,
+        current_session_id=f"session-{task_id}",
+        parent_task_id=parent_task_id,
+        revisit_of_task_id=revisit_of_task_id,
+    ))
+
+
+def _selection_fixture(db: Database, *, targets: int = 1) -> tuple[datetime, list[TaskRecord | None]]:
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    for ordinal in (1, 2):
+        _cleanup_task(
+            db, f"TASK-OLDER-{ordinal}", created_at=now - timedelta(days=ordinal),
+            completed_at=now - timedelta(days=ordinal), status=TaskStatus.COMPLETED,
+        )
+    _cleanup_task(
+        db, "TASK-OWNER", created_at=now, status=TaskStatus.IN_PROGRESS, count=1,
+    )
+    db.insert_audit_log(
+        task_id="TASK-OWNER", agent="dev_agent", action="workspace_cleanup_triggered",
+        payload={"run_number": 3, "brief_kind": "cleanup"},
+    )
+    target_rows = []
+    for ordinal in range(targets):
+        target_id = f"TASK-TARGET-{ordinal}"
+        completed_at = now - timedelta(days=10 + ordinal)
+        db.insert_task(TaskRecord(
+            id=target_id, brief="ordinary completed task", assigned_agent="dev_agent",
+            status=TaskStatus.COMPLETED, created_at=completed_at - timedelta(hours=1),
+            updated_at=completed_at - timedelta(hours=1), completed_at=completed_at,
+            current_session_id=f"session-{target_id}",
+        ))
+        db.insert_task_result(
+            task_id=target_id, agent="dev_agent", session_id=f"session-{target_id}",
+            output_summary="done", confidence_score=90, status="completed",
+        )
+        target_rows.append(db.get_task(target_id))
+    return now, target_rows
+
+
+def _select(db: Database, tmp_path, admissions=None, *, stale_count: int = 0, claimed_count: int = 1):
+    workspace = tmp_path / "runtime" / "workspaces" / "dev_agent"
+    return db.select_workspace_cleanup_reclamation_candidates(
+        owner_task_id="TASK-OWNER", agent="dev_agent",
+        stale_orchestration_step_count=stale_count, claimed_next_step_count=claimed_count,
+        canonical_workspace=workspace, authoritative_workspace=workspace,
+        admit_observation=admissions,
+    )
+
+
+def test_workspace_cleanup_selection_is_bounded_and_exposes_each_real_read(db, tmp_path) -> None:
+    _selection_fixture(db)
+    statements: list[str] = []
+    db._conn.set_trace_callback(statements.append)
+    selection = _select(db, tmp_path)
+    db._conn.set_trace_callback(None)
+
+    assert isinstance(selection, WorkspaceCleanupReclamationSelection)
+    assert [candidate.task_id for candidate in selection.candidates] == ["TASK-TARGET-0"]
+    assert selection.candidates[0].scratch_path == (
+        tmp_path / "runtime" / "workspaces" / "dev_agent" / ".happyranch" / "task-tmp" / "TASK-TARGET-0"
+    )
+    assert selection.read_observations == (
+        "owner", "marker", "history", "newer_owner", "candidates", "graph_tasks", "graph_edges", "result:TASK-TARGET-0",
+    )
+    assert len([sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]) == 8
+
+
+def test_workspace_cleanup_selection_refuses_before_later_reads_on_bad_owner_or_marker(db, tmp_path) -> None:
+    _selection_fixture(db)
+    admitted: list[str] = []
+    assert _select(
+        db, tmp_path, lambda name: admitted.append(name) is None or True, stale_count=1,
+    ) is None
+    assert admitted == ["owner"]
+
+    db.update_task("TASK-OWNER", orchestration_step_count=2)
+    admitted.clear()
+    assert _select(db, tmp_path, lambda name: admitted.append(name) is None or True) is None
+    assert admitted == ["owner"]
+
+    db.update_task("TASK-OWNER", orchestration_step_count=1)
+    db.insert_audit_log(
+        task_id="TASK-OWNER", agent="foreign", action="workspace_cleanup_triggered",
+        payload={"run_number": 3, "brief_kind": "cleanup"},
+    )
+    admitted.clear()
+    assert _select(db, tmp_path, lambda name: admitted.append(name) is None or True) is None
+    assert admitted == ["owner", "marker"]
+
+
+def test_workspace_cleanup_selection_refuses_sixth_raw_before_age_filter_without_refill(db, tmp_path) -> None:
+    now, _targets = _selection_fixture(db, targets=5)
+    db.insert_task(TaskRecord(
+        id="TASK-NEWER", brief="ordinary completed task", assigned_agent="dev_agent",
+        status=TaskStatus.COMPLETED, created_at=now + timedelta(minutes=1),
+        updated_at=now + timedelta(minutes=1), completed_at=now + timedelta(minutes=1),
+        current_session_id="session-TASK-NEWER",
+    ))
+    # The newer row is raw candidate number six.  It cannot be filtered away
+    # to make the five older roots actionable.
+    assert _select(db, tmp_path) is None
+
+
+def test_workspace_cleanup_selection_refuses_newer_marker_and_relevant_foreign_live_graph(db, tmp_path) -> None:
+    now, targets = _selection_fixture(db)
+    _cleanup_task(
+        db, "TASK-LATER", created_at=now + timedelta(minutes=1),
+        status=TaskStatus.IN_PROGRESS, count=1,
+    )
+    db.insert_audit_log(
+        task_id="TASK-LATER", agent="dev_agent", action="workspace_cleanup_triggered",
+        payload={"run_number": 4, "brief_kind": "cleanup"},
+    )
+    assert _select(db, tmp_path) is None
+
+    db.execute("DELETE FROM audit_log WHERE task_id='TASK-LATER'")
+    db.execute("DELETE FROM tasks WHERE id='TASK-LATER'")
+    target = targets[0]
+    assert target is not None
+    db.insert_task(TaskRecord(
+        id="TASK-FOREIGN-LIVE", brief="ordinary", assigned_agent="foreign",
+        status=TaskStatus.PENDING, created_at=now - timedelta(days=11),
+        updated_at=now - timedelta(days=11),
+    ))
+    db.execute(
+        "UPDATE tasks SET parent_task_id='TASK-FOREIGN-LIVE' WHERE id=?",
+        (target.id,),
+    )
+    assert _select(db, tmp_path) is None
+
+
+def test_workspace_cleanup_selection_admission_and_missing_result_stop_later_reads(db, tmp_path) -> None:
+    _selection_fixture(db, targets=2)
+    # Candidate order is oldest completed first, so target 1 is checked first.
+    db.execute("DELETE FROM task_results WHERE task_id='TASK-TARGET-1'")
+    admitted: list[str] = []
+    assert _select(db, tmp_path, lambda name: admitted.append(name) is None or True) is None
+    assert admitted[-1] == "result:TASK-TARGET-1"
+    assert "result:TASK-TARGET-0" not in admitted
+
+    admitted.clear()
+    def stop_at_candidates(name: str) -> bool:
+        admitted.append(name)
+        return name != "candidates"
+
+    assert _select(db, tmp_path, stop_at_candidates) is None
+    # The denied observation is not performed and no later admission is made.
+    assert admitted == ["owner", "marker", "history", "newer_owner", "candidates"]
 
 
 def test_init_creates_tables(db):
