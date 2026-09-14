@@ -20,6 +20,16 @@ SIDECAR_UNIT = "happyranch-tsnet-sidecar.service"
 SIDECAR_ACTOR = "tsnet-sidecar"
 
 
+def _compact_hex(value: object, *, size: int) -> str | None:
+    """Normalize systemd's hyphenated and journal's compact ID spellings."""
+    if not isinstance(value, str):
+        return None
+    compact = value.replace("-", "").lower()
+    if len(compact) != size or any(character not in "0123456789abcdef" for character in compact):
+        return None
+    return compact
+
+
 def _receipt(message: str) -> dict[str, str] | None:
     if not message.startswith(RECEIPT_PREFIX):
         return None
@@ -51,6 +61,10 @@ def collect(*, lines: list[str], invocation_id: str, boot_id: str, since_us: int
     receipts: list[dict[str, str]] = []
     losses: set[str] = set()
     saw_record = False
+    expected_invocation = _compact_hex(invocation_id, size=32)
+    expected_boot = _compact_hex(boot_id, size=32)
+    if expected_invocation is None or expected_boot is None or since_us > until_us:
+        return {"receipts": [], "losses": ["parse_loss"]}
     for line in lines:
         try:
             event = json.loads(line)
@@ -70,8 +84,8 @@ def collect(*, lines: list[str], invocation_id: str, boot_id: str, since_us: int
             continue
         if (
             event.get("_SYSTEMD_UNIT") != SIDECAR_UNIT
-            or event.get("_BOOT_ID") != boot_id
-            or event.get("_SYSTEMD_INVOCATION_ID") != invocation_id
+            or _compact_hex(event.get("_BOOT_ID"), size=32) != expected_boot
+            or _compact_hex(event.get("_SYSTEMD_INVOCATION_ID"), size=32) != expected_invocation
             or not since_us <= int(timestamp) <= until_us
         ):
             losses.add("attribution_loss")

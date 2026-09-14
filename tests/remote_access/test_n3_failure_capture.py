@@ -50,6 +50,18 @@ def test_collect_rejects_wrong_invocation_boot_and_window_without_dropping_match
     assert result["losses"] == ["attribution_loss"]
 
 
+def test_collect_normalizes_proc_and_journal_boot_id_spellings() -> None:
+    hyphenated_boot = "abcdef01-2345-6789-abcd-ef0123456789"
+    result = collect(
+        lines=[_record(boot=hyphenated_boot, invocation=INVOCATION.upper())],
+        invocation_id=INVOCATION,
+        boot_id=hyphenated_boot,
+        since_us=100,
+        until_us=200,
+    )
+    assert result == {"receipts": [{"category": "network_join", "phase": "peer_establishment"}], "losses": ["observed"]}
+
+
 def test_collect_distinguishes_observed_empty_from_invalid_grammar() -> None:
     assert collect(lines=[], invocation_id=INVOCATION, boot_id=BOOT, since_us=100, until_us=200) == {"receipts": [], "losses": ["empty"]}
     invalid = collect(lines=[_record(category="unknown", phase="unknown")], invocation_id=INVOCATION, boot_id=BOOT, since_us=100, until_us=200)

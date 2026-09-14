@@ -458,6 +458,143 @@ start_managed_target || exit "$?"
     assert (tmp_path / "first-positive-start-failure.json").exists()
 
 
+def test_real_systemd_shipping_capture_retains_pre_start_receipt_with_compact_boot_context(tmp_path: Path) -> None:
+    """Run the shipping start/trap path against strict time- and context-aware doubles."""
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    snapshot = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    unit_helpers = "systemctl_absent_value() {" + harness.split("systemctl_absent_value() {", 1)[1].split("\ndiagnostics=", 1)[0]
+    cleanup = harness.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup EXIT", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    invocation = "12345678123412341234123456789abc"
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip().replace("-", "")
+    receipt = json.dumps({
+        "MESSAGE": "diagnostic_receipt=" + json.dumps({
+            "category": "network_join", "phase": "peer_establishment", "actor": "tsnet-sidecar",
+            "unit": "happyranch-tsnet-sidecar.service", "outcome": "failed", "terminal": True,
+            "assertion": {"status": "completed"},
+        }),
+        "_SYSTEMD_UNIT": "happyranch-tsnet-sidecar.service", "_SYSTEMD_INVOCATION_ID": invocation,
+        "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": "1700000000000000",
+    })
+    stale = json.dumps({"MESSAGE": "diagnostic_receipt={TOKEN_CANARY=never-retain}", "_SYSTEMD_UNIT": "happyranch-tsnet-sidecar.service", "_SYSTEMD_INVOCATION_ID": "stale", "_BOOT_ID": boot, "__REALTIME_TIMESTAMP": "1700000000000001"})
+    old = json.dumps({"MESSAGE": "diagnostic_receipt={TOKEN_CANARY=never-retain}", "_SYSTEMD_UNIT": "happyranch-tsnet-sidecar.service", "_SYSTEMD_INVOCATION_ID": invocation, "_BOOT_ID": "f" * 32, "__REALTIME_TIMESTAMP": "1699999999999999"})
+    (fake_bin / "date").write_text("#!/bin/bash\nprintf '1700000000000000000\\n'\n")
+    (fake_bin / "systemctl").write_text(f'''#!/bin/bash
+printf 'systemctl:%s\\n' "$1" >>"$EVENT_LOG"
+case "$1" in
+  start) exit 37 ;;
+  show) case "$4" in InvocationID) printf '%s\\n' "$INVOCATION";; ActiveState) echo failed;; SubState) echo failed;; Result) echo exit-code;; ExecMainStatus) echo 37;; *) echo unknown;; esac ;;
+  list-jobs|stop|disable|reset-failed|daemon-reload|list-unit-files) exit 0 ;;
+  *) exit 98 ;;
+esac
+''')
+    (fake_bin / "sudo").write_text("#!/bin/bash\nif [[ $1 == systemctl ]]; then shift; exec systemctl \"$@\"; fi\nif [[ $1 == test ]]; then exit 1; fi\nexit 0\n")
+    (fake_bin / "journalctl").write_text('''#!/bin/bash
+printf 'journal:%s\\n' "$*" >>"$EVENT_LOG"
+[[ "$*" == *"-b $BOOT"* && "$*" == *"--since @1700000000"* ]] || exit 91
+printf '%s\\n%s\\n%s\\n' "$RECEIPT" "$STALE" "$OLD"
+''')
+    (fake_bin / "pgrep").write_text("#!/bin/bash\nexit 1\n")
+    work = tmp_path / "work"; (work / "hs").mkdir(parents=True)
+    (work / "headscale").write_text("#!/bin/bash\nprintf '[]'\n"); (work / "headscale").chmod(0o700)
+    for executable in fake_bin.iterdir(): executable.chmod(0o700)
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; work={work!s}; evidence_driver=/missing; evidence_artifact=/missing
+failure_capture_driver={Path("app/linux/package/n3_failure_capture.py").resolve()!s}
+peer_pid=""; daemon_pid=""; headscale_pid=""; sidecar_ip=""; run_id=test
+port_open() {{ return 1; }}
+tsnet_open() {{ return 1; }}
+evidence() {{ return 0; }}
+{snapshot}
+{unit_helpers}
+cleanup() {{
+{cleanup}
+}}
+trap cleanup EXIT
+start_managed_target || exit "$?"
+'''
+    event_log = tmp_path / "events.log"
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, env=os.environ | {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}", "EVENT_LOG": str(event_log), "INVOCATION": invocation,
+        "BOOT": boot, "RECEIPT": receipt, "STALE": stale, "OLD": old, "N3_RESIDUE_ROOT": str(tmp_path), "N3_UNIT_ROOT": str(tmp_path),
+    })
+    assert result.returncode == 37, result.stderr
+    snapshot_doc = json.loads((tmp_path / "first-positive-start-failure.json").read_text())
+    assert snapshot_doc["diagnostic_receipts"] == [{"category": "network_join", "phase": "peer_establishment"}]
+    assert snapshot_doc["collection"]["boot_id"] == boot
+    assert snapshot_doc["collection"]["window_start_us"] == 1700000000000000
+    assert snapshot_doc["collection"]["journal_since_epoch_seconds"] == 1700000000
+    assert "TOKEN_CANARY" not in (tmp_path / "first-positive-start-failure.json").read_text() + result.stdout + result.stderr
+    events = event_log.read_text().splitlines()
+    assert next(index for index, event in enumerate(events) if event.startswith("journal:")) < events.index("systemctl:stop")
+
+
+def test_real_systemd_failure_snapshot_keeps_valid_loss_json_when_jobs_temp_launch_fails(tmp_path: Path) -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    snapshot = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    (fake_bin / "mktemp").write_text("#!/bin/bash\n[[ $* == *n3-jobs* ]] && exit 1\nexec /usr/bin/mktemp \"$@\"\n")
+    (fake_bin / "systemctl").write_text("#!/bin/bash\n[[ $1 == show ]] && { [[ $4 == InvocationID ]] && printf '%s\\n' 12345678123412341234123456789abc || echo untrusted; exit 0; }\nexit 1\n")
+    (fake_bin / "sudo").write_text("#!/bin/bash\n[[ $1 == test ]] && exit 1\nexec \"$@\"\n")
+    (fake_bin / "journalctl").write_text("#!/bin/bash\nexit 1\n")
+    for executable in fake_bin.iterdir(): executable.chmod(0o700)
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; failure_capture_driver=/missing; run_id=test
+{snapshot}
+capture_failure_snapshot jobs-temp-failure
+cat "$diagnostics/jobs-temp-failure.json"
+'''
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, env=os.environ | {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}", "N3_UNIT_ROOT": str(tmp_path),
+    })
+    assert result.returncode == 0, result.stderr
+    document = json.loads(result.stdout)
+    assert document["observation_loss"]["jobs"] == "launch_failure"
+    assert document["observation_loss"]["happyranch-managed.target.active"] == "parse_loss"
+
+
+def test_real_systemd_capture_reserves_termination_grace_from_shared_deadline(tmp_path: Path) -> None:
+    """The extracted shipping helper refuses a new command without its kill grace."""
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    helper = "observe_remaining() {" + harness.split("observe_remaining() {", 1)[1].split("\ncapture_now_us() {", 1)[0]
+    result = subprocess.run(
+        ["bash", "-c", f"set -euo pipefail\n{helper}\nSECONDS=10\nobserve_deadline=12\nobserve_bytes_left=1\nobserve_remaining"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+
+
+def test_real_systemd_failure_snapshot_refuses_valid_looking_nonzero_invocation_query(tmp_path: Path) -> None:
+    """A nonzero InvocationID lookup cannot authorize journal attribution."""
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    snapshot = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    (fake_bin / "systemctl").write_text("""#!/bin/bash
+if [[ $1 == show && $4 == InvocationID ]]; then printf '%s\\n' 12345678123412341234123456789abc; exit 7; fi
+if [[ $1 == show ]]; then echo failed; exit 0; fi
+exit 0
+""")
+    (fake_bin / "sudo").write_text("#!/bin/bash\n[[ $1 == test ]] && exit 1\nexec \"$@\"\n")
+    (fake_bin / "journalctl").write_text("#!/bin/bash\nprintf 'journal-called\\n' >>\"$EVENT_LOG\"\nexit 0\n")
+    for executable in fake_bin.iterdir(): executable.chmod(0o700)
+    event_log = tmp_path / "events.log"
+    script = f'''set -euo pipefail
+diagnostics={tmp_path!s}; failure_capture_driver=/missing; run_id=test
+{snapshot}
+capture_failure_snapshot nonzero-invocation
+cat "$diagnostics/nonzero-invocation.json"
+'''
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, env=os.environ | {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}", "EVENT_LOG": str(event_log), "N3_UNIT_ROOT": str(tmp_path),
+    })
+    assert result.returncode == 0, result.stderr
+    document = json.loads(result.stdout)
+    assert document["observation_loss"]["diagnostic_receipts"] == ["query_error"]
+    assert not event_log.exists()
+
+
 @pytest.mark.parametrize(("capture_mode", "expected_loss"), [
     ("query", "query_error"), ("parse", "parse_loss"),
     ("timeout", "timeout"), ("launch", "launch_failure"),

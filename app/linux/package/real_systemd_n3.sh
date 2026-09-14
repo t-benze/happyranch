@@ -76,6 +76,7 @@ failure_capture_driver="$PWD/app/linux/package/n3_failure_capture.py"
 evidence_artifact="$diagnostics/execution-evidence.json"
 run_id="$(cat /proc/sys/kernel/random/uuid)"
 barrier_dir="/var/lib/happyranch-tsnet-sidecar/.n3-barrier-$run_id"
+capture_window_since_us="$(date +%s%N 2>/dev/null | cut -c1-16 || printf 0)"
 package_sha="$(sha256sum "$PACKAGE_TAR" | cut -d' ' -f1)"
 python "$evidence_driver" init "$evidence_artifact" --git-head "$PROOF_SUBJECT_SHA" --package-sha256 "$package_sha" --run-id "$run_id"
 headscale_pid=""; peer_pid=""; daemon_pid=""
@@ -83,13 +84,35 @@ safe_systemctl_value() {
   observe_systemctl_value "$1" "$2"
   printf '%s' "$observation_value"
 }
+observe_remaining() {
+  # A one-second termination grace is part of the same aggregate deadline.
+  # Do not start an observation that cannot consume both its command slot and
+  # that grace before the deadline.
+  local remaining
+  (( SECONDS < observe_deadline && observe_bytes_left > 0 )) || return 1
+  remaining=$((observe_deadline - SECONDS))
+  (( remaining > 2 )) || return 1
+  observe_timeout_seconds=1
+}
+capture_now_us() {
+  local value
+  value="$(date +%s%N 2>/dev/null | cut -c1-16 || printf 0)"
+  [[ "$value" =~ ^[0-9]{16}$ ]] || value=0
+  printf '%s' "$value"
+}
+compact_boot_id() {
+  local value
+  value="$(tr -d '-' </proc/sys/kernel/random/boot_id 2>/dev/null | tr '[:upper:]' '[:lower:]' || printf unavailable)"
+  [[ "$value" =~ ^[0-9a-f]{32}$ ]] || value=unavailable
+  printf '%s' "$value"
+}
 observe_presence() {
   # A failed/late existence probe is unknown, never a false claim of absence.
   local path="$1" kind="$2" status
   presence_value=false; presence_loss=observed_absent
-  (( SECONDS < observe_deadline )) || { presence_value='"unknown"'; presence_loss=unattempted; return; }
+  observe_remaining || { presence_value='"unknown"'; presence_loss=unattempted; return; }
   set +e
-  timeout --kill-after=1 1 sudo test "$kind" "$path"
+  timeout --kill-after=1 "$observe_timeout_seconds" sudo test "$kind" "$path"
   status=$?
   set -e
   case "$status" in
@@ -106,12 +129,11 @@ observe_systemctl_value() {
   # loss and work which was not attempted. Raw command output is never kept.
   local unit="$1" property="$2" value file status bytes cap=128
   observation_value=unknown; observation_loss=unattempted
-  (( SECONDS < observe_deadline )) || return
-  (( observe_bytes_left > 0 )) || return
+  observe_remaining || return
   (( observe_bytes_left < cap )) && cap="$observe_bytes_left"
   file="$(mktemp "$diagnostics/.n3-observe.XXXXXX")" || { observation_loss=launch_failure; return; }
   set +e
-  timeout --kill-after=1 1 systemctl show "$unit" -p "$property" --value 2>/dev/null | head -c "$((cap + 1))" >"$file"
+  timeout --kill-after=1 "$observe_timeout_seconds" systemctl show "$unit" -p "$property" --value 2>/dev/null | head -c "$((cap + 1))" >"$file"
   status=${PIPESTATUS[0]}
   set -e
   value="$(<"$file")"; bytes="$(wc -c <"$file")"; rm -f "$file"
@@ -133,20 +155,26 @@ capture_diagnostic_receipts() {
   # The sidecar is the sole diagnostic receipt producer. Journal records are
   # accepted only when their unit, invocation, boot, and collection window all
   # match this failing run; the Python helper emits no journal prose.
-  local invocation_file journal_file helper_file invocation status bytes now_us
+  local invocation_file journal_file helper_file field_file="" invocation status bytes now_us field_status field_bytes field
   diagnostic_receipts='[]'; diagnostic_receipt_loss='["unattempted"]'
-  (( SECONDS < observe_deadline && observe_bytes_left > 0 )) || return
+  observe_remaining || return
   invocation_file="$(mktemp "$diagnostics/.n3-invocation.XXXXXX")" || { diagnostic_receipt_loss='["launch_failure"]'; return; }
   set +e
-  timeout --kill-after=1 1 systemctl show happyranch-tsnet-sidecar.service -p InvocationID --value 2>/dev/null | head -c 65 >"$invocation_file"
+  timeout --kill-after=1 "$observe_timeout_seconds" systemctl show happyranch-tsnet-sidecar.service -p InvocationID --value 2>/dev/null | head -c 65 >"$invocation_file"
   status=${PIPESTATUS[0]}
   set -e
-  invocation="$(<"$invocation_file")"; rm -f "$invocation_file"
+  invocation="$(<"$invocation_file")"; bytes="$(wc -c <"$invocation_file")"; rm -f "$invocation_file"
+  if (( bytes > 64 )); then observe_bytes_left=0; diagnostic_receipt_loss='["truncated"]'; return; fi
+  observe_bytes_left=$((observe_bytes_left - bytes))
   if (( status == 124 )); then diagnostic_receipt_loss='["timeout"]'; return; fi
-  [[ "$invocation" =~ ^[0-9a-fA-F-]{32,64}$ ]] || { diagnostic_receipt_loss='["query_error"]'; return; }
+  if (( status != 0 )); then diagnostic_receipt_loss='["query_error"]'; return; fi
+  if [[ -z "$invocation" ]]; then diagnostic_receipt_loss='["empty"]'; return; fi
+  invocation="${invocation//-/}"
+  [[ "$invocation" =~ ^[0-9a-fA-F]{32}$ ]] || { diagnostic_receipt_loss='["parse_loss"]'; return; }
+  observe_remaining || { diagnostic_receipt_loss='["unattempted"]'; return; }
   journal_file="$(mktemp "$diagnostics/.n3-receipts.XXXXXX")" || { diagnostic_receipt_loss='["launch_failure"]'; return; }
   set +e
-  timeout --kill-after=1 1 journalctl -u happyranch-tsnet-sidecar.service -b "$snapshot_boot_id" --since "@$snapshot_since_us" --output=json --no-pager 2>/dev/null | head -c "$((observe_bytes_left + 1))" >"$journal_file"
+  timeout --kill-after=1 "$observe_timeout_seconds" journalctl -u happyranch-tsnet-sidecar.service -b "$snapshot_boot_id" --since "@$snapshot_since_seconds" --output=json --no-pager 2>/dev/null | head -c "$((observe_bytes_left + 1))" >"$journal_file"
   status=${PIPESTATUS[0]}
   set -e
   bytes="$(wc -c <"$journal_file")"
@@ -162,26 +190,48 @@ capture_diagnostic_receipts() {
     (( status == 124 )) && diagnostic_receipt_loss='["timeout"]' || diagnostic_receipt_loss='["query_error"]'
     return
   fi
-  now_us="$(date +%s%N 2>/dev/null | cut -c1-16 || printf 0)"
+  now_us="$(capture_now_us)"
+  (( now_us >= snapshot_since_us )) || { rm -f "$journal_file"; diagnostic_receipt_loss='["parse_loss"]'; return; }
+  observe_remaining || { rm -f "$journal_file"; diagnostic_receipt_loss='["unattempted"]'; return; }
   helper_file="$(mktemp "$diagnostics/.n3-receipt-result.XXXXXX")" || { rm -f "$journal_file"; diagnostic_receipt_loss='["launch_failure"]'; return; }
-  if python "$failure_capture_driver" --input "$journal_file" --invocation-id "$invocation" --boot-id "$snapshot_boot_id" --since-us "$snapshot_since_us" --until-us "$now_us" >"$helper_file" 2>/dev/null; then
-    diagnostic_receipts="$(python -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["receipts"],separators=(",",":")))' "$helper_file" 2>/dev/null || printf '[]')"
-    diagnostic_receipt_loss="$(python -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["losses"],separators=(",",":")))' "$helper_file" 2>/dev/null || printf '["parse_loss"]')"
-  else
-    diagnostic_receipt_loss='["parse_loss"]'
-  fi
+  set +e
+  timeout --kill-after=1 "$observe_timeout_seconds" python "$failure_capture_driver" --input "$journal_file" --invocation-id "$invocation" --boot-id "$snapshot_boot_id" --since-us "$snapshot_since_us" --until-us "$now_us" >"$helper_file" 2>/dev/null
+  status=$?
+  set -e
+  bytes="$(wc -c <"$helper_file")"
+  if (( bytes > observe_bytes_left )); then observe_bytes_left=0; rm -f "$journal_file" "$helper_file"; diagnostic_receipt_loss='["truncated"]'; return; fi
+  observe_bytes_left=$((observe_bytes_left - bytes))
+  if (( status == 124 )); then rm -f "$journal_file" "$helper_file"; diagnostic_receipt_loss='["timeout"]'; return; fi
+  if (( status != 0 )); then rm -f "$journal_file" "$helper_file"; diagnostic_receipt_loss='["parse_loss"]'; return; fi
+  for field in receipts losses; do
+    observe_remaining || { rm -f "$journal_file" "$helper_file" "$field_file"; diagnostic_receipt_loss='["unattempted"]'; return; }
+    field_file="$(mktemp "$diagnostics/.n3-receipt-$field.XXXXXX")" || { rm -f "$journal_file" "$helper_file"; diagnostic_receipt_loss='["launch_failure"]'; return; }
+    set +e
+    timeout --kill-after=1 "$observe_timeout_seconds" python -c 'import json,sys; value=json.load(open(sys.argv[1]))[sys.argv[2]]; assert isinstance(value,list); print(json.dumps(value,separators=(",",":")))' "$helper_file" "$field" >"$field_file" 2>/dev/null
+    field_status=$?
+    set -e
+    field_bytes="$(wc -c <"$field_file")"
+    if (( field_bytes > observe_bytes_left )); then observe_bytes_left=0; rm -f "$journal_file" "$helper_file" "$field_file"; diagnostic_receipt_loss='["truncated"]'; return; fi
+    observe_bytes_left=$((observe_bytes_left - field_bytes))
+    if (( field_status == 124 )); then rm -f "$journal_file" "$helper_file" "$field_file"; diagnostic_receipt_loss='["timeout"]'; return; fi
+    if (( field_status != 0 )); then rm -f "$journal_file" "$helper_file" "$field_file"; diagnostic_receipt_loss='["parse_loss"]'; return; fi
+    if [[ "$field" == receipts ]]; then diagnostic_receipts="$(<"$field_file")"; else diagnostic_receipt_loss="$(<"$field_file")"; fi
+    rm -f "$field_file"
+  done
   rm -f "$journal_file" "$helper_file"
 }
 capture_failure_snapshot() {
   # Snapshot work has an eight-second aggregate budget. No observation changes
   # the exit status that entered cleanup; all retained values are closed terms.
-  local name="${1:-failure-snapshot}" snapshot unit first=1 active sub result main pre source held marker dropin staging source_loss held_loss marker_loss dropin_loss staging_loss loss_first=1 losses_file jobs_file job_status job_bytes jobs_loss jobs_first
+  local name="${1:-failure-snapshot}" snapshot unit first=1 active sub result main pre source held marker dropin staging source_loss held_loss marker_loss dropin_loss staging_loss loss_first=1 losses_file jobs_file="" job_status job_bytes jobs_loss jobs_first snapshot_until_us
   snapshot="$diagnostics/$name.json"
   losses_file="$(mktemp "$diagnostics/.n3-losses.XXXXXX")" || return 1
   observe_deadline=$((SECONDS + 8))
   observe_bytes_left=8192
-  snapshot_since_us="$(date +%s%N 2>/dev/null | cut -c1-16 || printf 0)"
-  snapshot_boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf unavailable)"
+  snapshot_since_us="${capture_window_since_us:-$(capture_now_us)}"
+  [[ "$snapshot_since_us" =~ ^[0-9]{16}$ ]] || snapshot_since_us="$(capture_now_us)"
+  snapshot_since_seconds=$((snapshot_since_us / 1000000))
+  snapshot_boot_id="$(compact_boot_id)"
   observe_presence /etc/happyranch/enrollment.key -e; source="$presence_value"; source_loss="$presence_loss"
   observe_presence /etc/happyranch/enrollment.key.held -e; held="$presence_value"; held_loss="$presence_loss"
   observe_presence /var/lib/happyranch-tsnet-sidecar/credential.consumed -e; marker="$presence_value"; marker_loss="$presence_loss"
@@ -203,17 +253,20 @@ capture_failure_snapshot() {
         printf '"%s.%s":"%s"' "$unit" "${property_loss%%:*}" "${property_loss#*:}" >>"$losses_file"
       done
     done
-    jobs_file="$(mktemp "$diagnostics/.n3-jobs.XXXXXX")" || { jobs_loss=launch_failure; : >"$losses_file"; }
     jobs_loss=unattempted; jobs_first=1
-    if [[ -n "${jobs_file:-}" ]] && (( SECONDS < observe_deadline && observe_bytes_left > 0 )); then
+    if ! jobs_file="$(mktemp "$diagnostics/.n3-jobs.XXXXXX")"; then
+      jobs_loss=launch_failure
+    elif observe_remaining; then
       set +e
-      timeout --kill-after=1 1 systemctl list-jobs --no-legend --plain 2>/dev/null | head -c "$((observe_bytes_left + 1))" >"$jobs_file"
+      timeout --kill-after=1 "$observe_timeout_seconds" systemctl list-jobs --no-legend --plain 2>/dev/null | head -c "$((observe_bytes_left + 1))" >"$jobs_file"
       job_status=${PIPESTATUS[0]}
       set -e
       job_bytes="$(wc -c <"$jobs_file")"
       if (( job_bytes > observe_bytes_left )); then jobs_loss=truncated; observe_bytes_left=0
       elif (( job_status == 124 )); then jobs_loss=timeout; observe_bytes_left=$((observe_bytes_left - job_bytes))
       elif (( job_status != 0 )); then jobs_loss=query_error; observe_bytes_left=$((observe_bytes_left - job_bytes))
+      elif (( job_bytes == 0 )); then
+        jobs_loss=empty; observe_bytes_left=$((observe_bytes_left - job_bytes))
       else
         jobs_loss=observed; observe_bytes_left=$((observe_bytes_left - job_bytes))
       fi
@@ -230,7 +283,9 @@ capture_failure_snapshot() {
       rm -f "$jobs_file"
     fi
     capture_diagnostic_receipts
-    printf '],"diagnostic_receipts":%s,"credential_presence":{"source":%s,"held_source":%s,"consumed_marker":%s,"transient_dropin":%s,"staged_directory":%s},"collection":{"run_id":"%s","boot_id":"%s","window_seconds":8,"output_cap_bytes":8192,"source":"systemctl-and-attributed-sidecar-journal"},"observation_loss":{' "$diagnostic_receipts" "$source" "$held" "$marker" "$dropin" "$staging" "${run_id:-unknown}" "$snapshot_boot_id"
+    snapshot_until_us="$(capture_now_us)"
+    (( snapshot_until_us >= snapshot_since_us )) || snapshot_until_us="$snapshot_since_us"
+    printf '],"diagnostic_receipts":%s,"credential_presence":{"source":%s,"held_source":%s,"consumed_marker":%s,"transient_dropin":%s,"staged_directory":%s},"collection":{"run_id":"%s","boot_id":"%s","window_start_us":%s,"window_end_us":%s,"journal_since_epoch_seconds":%s,"window_seconds":8,"output_cap_bytes":8192,"source":"systemctl-and-attributed-sidecar-journal"},"observation_loss":{' "$diagnostic_receipts" "$source" "$held" "$marker" "$dropin" "$staging" "${run_id:-unknown}" "$snapshot_boot_id" "$snapshot_since_us" "$snapshot_until_us" "$snapshot_since_seconds"
     for property_loss in "credential.source:$source_loss" "credential.held_source:$held_loss" "credential.consumed_marker:$marker_loss" "credential.transient_dropin:$dropin_loss" "credential.staged_directory:$staging_loss"; do
       [[ "$property_loss" == *:observed_present || "$property_loss" == *:observed_absent ]] && continue
       (( loss_first )) || printf ',' >>"$losses_file"; loss_first=0
@@ -246,6 +301,9 @@ capture_failure_snapshot() {
 start_managed_target() {
   # Keep the initiating positive-start status authoritative even when bounded
   # capture cannot run; EXIT cleanup preserves this same status in turn.
+  # This is intentionally before the start invocation: a sidecar receipt can
+  # be emitted before systemctl returns the failing positive-start status.
+  capture_window_since_us="$(capture_now_us)"
   if sudo systemctl start happyranch-managed.target; then
     return 0
   else
