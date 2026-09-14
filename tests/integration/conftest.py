@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import time
 from pathlib import Path
 
@@ -12,6 +11,7 @@ import yaml
 from runtime.daemon import paths as paths_mod
 from runtime.daemon import runtimes as runtimes_mod
 from runtime.runtime import RuntimeDir
+from tests.thr211_containment import foreground_daemon, plan_environment, prepare_private_test_paths
 
 
 def pytest_configure(config):
@@ -188,7 +188,10 @@ def fake_claude_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
     Setting the env var in the daemon's parent process is a no-op once the
     daemon is running, so this must happen during fixture setup.
     """
-    plan_path = tmp_path / "plan.sh"
+    paths = prepare_private_test_paths(tmp_path / "thr211-claude")
+    for name, value in plan_environment(paths).items():
+        monkeypatch.setenv(name, value)
+    plan_path = paths.plans / "plan.sh"
     monkeypatch.setenv("FAKE_CLAUDE_PLAN", str(plan_path))
     return plan_path
 
@@ -220,7 +223,8 @@ def fake_claude_thread_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     Same shape as fake_claude_plan_env but routes to a separate script when
     the prompt is a thread invocation (detected by `Your invocation_token:`).
     """
-    plan_path = tmp_path / "thread_plan.sh"
+    paths = prepare_private_test_paths(tmp_path / "thr211-thread")
+    plan_path = paths.plans / "thread_plan.sh"
     monkeypatch.setenv("FAKE_CLAUDE_THREAD_PLAN", str(plan_path))
     return plan_path
 
@@ -253,7 +257,7 @@ def live_daemon(
     fake_opencode_thread_plan_env,
     monkeypatch,
 ):
-    """Start the daemon via scripts/daemon.sh and stop it after the test."""
+    """Lease a foreground daemon interpreter; descendant cleanup is unproved."""
     monkeypatch.setenv("HAPPYRANCH_CLAUDE_CLI_PATH", str(fake_claude))
     monkeypatch.setenv("HAPPYRANCH_CODEX_CLI_PATH", str(fake_codex))
     monkeypatch.setenv("HAPPYRANCH_OPENCODE_CLI_PATH", str(fake_opencode))
@@ -275,24 +279,24 @@ def live_daemon(
     from runtime.daemon import runtimes as runtimes_mod
 
     runtimes_mod.register(runtime_container)
-    script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
-    subprocess.run([str(script), "start"], check=True, env=_nested_daemon_env())
-    # Wait for /health to respond
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        if paths_mod.port_file().exists():
-            port = paths_mod.port_file().read_text().strip()
-            try:
-                r = httpx.get(f"http://127.0.0.1:{port}/api/v1/health", timeout=1.0)
-                if r.status_code == 200:
-                    yield port
-                    break
-            except httpx.HTTPError:
-                pass
-        time.sleep(0.2)
-    else:
-        raise RuntimeError("daemon failed to start")
-    subprocess.run([str(script), "stop"], check=False, env=_nested_daemon_env())
+    source = Path(__file__).resolve().parent.parent.parent
+    with foreground_daemon(source, _nested_daemon_env()) as process:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise RuntimeError(f"foreground daemon exited: {process.returncode}")
+            if paths_mod.port_file().exists():
+                port = paths_mod.port_file().read_text().strip()
+                try:
+                    r = httpx.get(f"http://127.0.0.1:{port}/api/v1/health", timeout=1.0)
+                    if r.status_code == 200:
+                        yield port
+                        break
+                except httpx.HTTPError:
+                    pass
+            time.sleep(0.2)
+        else:
+            raise RuntimeError("daemon failed to start")
 
 
 @pytest.fixture
@@ -322,20 +326,21 @@ def live_daemon_idle(
         "codex": str(fake_codex),
         "opencode": str(fake_opencode),
     })
-    script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
-    subprocess.run([str(script), "start"], check=True, env=_nested_daemon_env())
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        if paths_mod.port_file().exists():
-            port = paths_mod.port_file().read_text().strip()
-            try:
-                r = httpx.get(f"http://127.0.0.1:{port}/api/v1/health", timeout=1.0)
-                if r.status_code == 200:
-                    yield port
-                    break
-            except httpx.HTTPError:
-                pass
-        time.sleep(0.2)
-    else:
-        raise RuntimeError("daemon failed to start")
-    subprocess.run([str(script), "stop"], check=False, env=_nested_daemon_env())
+    source = Path(__file__).resolve().parent.parent.parent
+    with foreground_daemon(source, _nested_daemon_env()) as process:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise RuntimeError(f"foreground daemon exited: {process.returncode}")
+            if paths_mod.port_file().exists():
+                port = paths_mod.port_file().read_text().strip()
+                try:
+                    r = httpx.get(f"http://127.0.0.1:{port}/api/v1/health", timeout=1.0)
+                    if r.status_code == 200:
+                        yield port
+                        break
+                except httpx.HTTPError:
+                    pass
+            time.sleep(0.2)
+        else:
+            raise RuntimeError("daemon failed to start")
