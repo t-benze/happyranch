@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
+from pydantic import ValidationError
+
 from runtime.models import (
     AuthorityAuditEvent,
     AuthorityAuditEventType,
@@ -5663,7 +5665,10 @@ class Database:
         # initial (0 -> 1) claim; cleanup ordinal is not a claim count.
         if not admit("owner"):
             return None
-        owner = self.get_task(owner_task_id)
+        try:
+            owner = self.get_task(owner_task_id)
+        except (sqlite3.Error, ValidationError, TypeError, ValueError):
+            return None
         if (
             owner is None
             or owner.id != owner_task_id
@@ -5732,14 +5737,19 @@ class Database:
         # owner (including an unreadable/orphaned one) exists.
         if not admit("newer_owner"):
             return None
-        newer = self._conn.execute(
+        try:
+            newer = self._conn.execute(
             """SELECT a.task_id, a.agent, a.payload, t.created_at, t.status
                FROM audit_log a LEFT JOIN tasks t ON t.id=a.task_id
                WHERE a.action='workspace_cleanup_triggered' AND a.task_id<>?
-                 AND (t.id IS NULL OR t.created_at>? OR (t.created_at=? AND t.id>?))
-               ORDER BY t.created_at DESC, a.task_id DESC LIMIT 2""",
-            (owner_task_id, owner_tuple[0], owner_tuple[0], owner_task_id),
-        ).fetchall()
+                 AND (t.id IS NULL OR t.created_at NOT GLOB '????-??-??T??:??:??*'
+                      OR t.created_at>? OR (t.created_at=? AND t.id>?))
+               ORDER BY CASE WHEN t.id IS NULL OR t.created_at NOT GLOB '????-??-??T??:??:??*' THEN 0 ELSE 1 END,
+                        t.created_at DESC, a.task_id DESC LIMIT 2""",
+                (owner_task_id, owner_tuple[0], owner_tuple[0], owner_task_id),
+            ).fetchall()
+        except sqlite3.Error:
+            return None
         if newer:
             return None
 
@@ -5750,18 +5760,24 @@ class Database:
             """SELECT id, status, assigned_agent, created_at, completed_at,
                       current_session_id
                FROM tasks
-               WHERE assigned_agent=? AND brief NOT LIKE ? ESCAPE '\\'
+               WHERE assigned_agent=?
                  AND status IN ('completed','failed','cancelled','superseded')
                ORDER BY completed_at ASC, id ASC LIMIT 6""",
-            (agent, escaped_marker + "%"),
+            (agent,),
         ).fetchall()
         if len(raw_candidates) == 6:
             return None
         candidate_rows: list[sqlite3.Row] = []
         try:
             for row in raw_candidates:
+                created_at = row["created_at"]
                 completed_at = row["completed_at"]
-                if not isinstance(completed_at, str) or _parse_dt(completed_at).tzinfo is None:
+                if (
+                    not isinstance(created_at, str)
+                    or not isinstance(completed_at, str)
+                    or _parse_dt(created_at).tzinfo is None
+                    or _parse_dt(completed_at).tzinfo is None
+                ):
                     return None
                 if row["status"] not in _WORKSPACE_CLEANUP_TERMINAL_STATUSES:
                     return None
@@ -5795,10 +5811,12 @@ class Database:
             return None
         nodes = {str(row["id"]): row for row in graph_tasks}
         adjacency: dict[str, set[str]] = {node_id: set() for node_id in nodes}
+        directed: dict[str, set[str]] = {node_id: set() for node_id in nodes}
         for edge in graph_edges:
             child_id, relative_id = str(edge["child_id"]), str(edge["relative_id"])
             if child_id in adjacency:
                 adjacency[child_id].add(relative_id)
+                directed[child_id].add(relative_id)
             if relative_id in adjacency:
                 adjacency[relative_id].add(child_id)
 
@@ -5830,6 +5848,24 @@ class Database:
                     stack.append((neighbour, node_id))
             if root != owner_task_id and owner_task_id in visited:
                 return None
+            visiting: set[str] = set()
+            visited_directed: set[str] = set()
+
+            def has_directed_cycle(node_id: str) -> bool:
+                if node_id in visiting:
+                    return True
+                if node_id in visited_directed:
+                    return False
+                visiting.add(node_id)
+                for relative_id in directed.get(node_id, ()):
+                    if relative_id in visited and has_directed_cycle(relative_id):
+                        return True
+                visiting.remove(node_id)
+                visited_directed.add(node_id)
+                return False
+
+            if any(has_directed_cycle(node_id) for node_id in visited):
+                return None
 
         # One and only one exact persisted-result read follows for each
         # selected target.  A refusal starts no later result read.
@@ -5841,7 +5877,12 @@ class Database:
                 return None
             if not admit(f"result:{task_id}"):
                 return None
-            result = self.get_latest_task_result(task_id, agent, session_id)
+            if not task_id.startswith("TASK-") or not task_id[5:].isdigit():
+                return None
+            try:
+                result = self.get_latest_task_result(task_id, agent, session_id)
+            except (sqlite3.Error, json.JSONDecodeError, ValidationError, TypeError, ValueError):
+                return None
             if result is None or result.get("status") != row["status"]:
                 return None
             candidates.append(WorkspaceCleanupReclamationCandidate(

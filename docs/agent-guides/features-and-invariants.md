@@ -68,7 +68,12 @@ newer-owner, six-raw-candidate, graph, and exact-result reads. It exposes each
 read admission to the future hook and returns `None` on every malformed,
 oversized, related-live, or inconsistent observation. It neither reads config
 nor imports or invokes the reclamation consumer, writes an audit, or grants an
-action permit.
+action permit. The helper performs seven base SQL observations plus at most
+five exact result reads; the future hook's initial config read and five fresh
+config/owner pairs make the complete admission model 23 reads. A fifth consumer
+admission at read 23 is allowed; prospective read 24 refuses before another
+load. These admissions bound later work rather than preempting an in-flight SQL
+or OS operation, and the six raw rows are never refilled after age filtering.
 
 ### Task-scratch report-only observations
 

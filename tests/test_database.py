@@ -46,7 +46,7 @@ def _selection_fixture(db: Database, *, targets: int = 1) -> tuple[datetime, lis
     for ordinal in (1, 2):
         _cleanup_task(
             db, f"TASK-OLDER-{ordinal}", created_at=now - timedelta(days=ordinal),
-            completed_at=now - timedelta(days=ordinal), status=TaskStatus.COMPLETED,
+            status=TaskStatus.PENDING,
         )
     _cleanup_task(
         db, "TASK-OWNER", created_at=now, status=TaskStatus.IN_PROGRESS, count=1,
@@ -57,7 +57,7 @@ def _selection_fixture(db: Database, *, targets: int = 1) -> tuple[datetime, lis
     )
     target_rows = []
     for ordinal in range(targets):
-        target_id = f"TASK-TARGET-{ordinal}"
+        target_id = f"TASK-{1000 + ordinal}"
         completed_at = now - timedelta(days=10 + ordinal)
         db.insert_task(TaskRecord(
             id=target_id, brief="ordinary completed task", assigned_agent="dev_agent",
@@ -86,17 +86,18 @@ def _select(db: Database, tmp_path, admissions=None, *, stale_count: int = 0, cl
 def test_workspace_cleanup_selection_is_bounded_and_exposes_each_real_read(db, tmp_path) -> None:
     _selection_fixture(db)
     statements: list[str] = []
+    admissions: list[str] = []
     db._conn.set_trace_callback(statements.append)
-    selection = _select(db, tmp_path)
+    selection = _select(db, tmp_path, lambda name: admissions.append(name) is None or True)
     db._conn.set_trace_callback(None)
 
-    assert isinstance(selection, WorkspaceCleanupReclamationSelection)
-    assert [candidate.task_id for candidate in selection.candidates] == ["TASK-TARGET-0"]
+    assert isinstance(selection, WorkspaceCleanupReclamationSelection), admissions
+    assert [candidate.task_id for candidate in selection.candidates] == ["TASK-1000"]
     assert selection.candidates[0].scratch_path == (
-        tmp_path / "runtime" / "workspaces" / "dev_agent" / ".happyranch" / "task-tmp" / "TASK-TARGET-0"
+        tmp_path / "runtime" / "workspaces" / "dev_agent" / ".happyranch" / "task-tmp" / "TASK-1000"
     )
     assert selection.read_observations == (
-        "owner", "marker", "history", "newer_owner", "candidates", "graph_tasks", "graph_edges", "result:TASK-TARGET-0",
+        "owner", "marker", "history", "newer_owner", "candidates", "graph_tasks", "graph_edges", "result:TASK-1000",
     )
     assert len([sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]) == 8
 
@@ -168,11 +169,11 @@ def test_workspace_cleanup_selection_refuses_newer_marker_and_relevant_foreign_l
 def test_workspace_cleanup_selection_admission_and_missing_result_stop_later_reads(db, tmp_path) -> None:
     _selection_fixture(db, targets=2)
     # Candidate order is oldest completed first, so target 1 is checked first.
-    db.execute("DELETE FROM task_results WHERE task_id='TASK-TARGET-1'")
+    db.execute("DELETE FROM task_results WHERE task_id='TASK-1001'")
     admitted: list[str] = []
     assert _select(db, tmp_path, lambda name: admitted.append(name) is None or True) is None
-    assert admitted[-1] == "result:TASK-TARGET-1"
-    assert "result:TASK-TARGET-0" not in admitted
+    assert admitted[-1] == "result:TASK-1001"
+    assert "result:TASK-1000" not in admitted
 
     admitted.clear()
     def stop_at_candidates(name: str) -> bool:
@@ -182,6 +183,28 @@ def test_workspace_cleanup_selection_admission_and_missing_result_stop_later_rea
     assert _select(db, tmp_path, stop_at_candidates) is None
     # The denied observation is not performed and no later admission is made.
     assert admitted == ["owner", "marker", "history", "newer_owner", "candidates"]
+
+
+def test_workspace_cleanup_selection_refuses_malformed_and_noncanonical_observations(db, tmp_path) -> None:
+    now, _ = _selection_fixture(db)
+    db.execute("UPDATE tasks SET created_at='!invalid' WHERE id='TASK-OWNER'")
+    assert _select(db, tmp_path) is None
+
+    db.close()
+    db = Database(tmp_path / "selection.sqlite")
+    now, _ = _selection_fixture(db)
+    db.execute("UPDATE tasks SET id='/tmp/escape' WHERE id='TASK-1000'")
+    assert _select(db, tmp_path) is None
+
+
+def test_workspace_cleanup_selection_includes_terminal_cleanup_rows_in_raw_six(db, tmp_path) -> None:
+    now, _ = _selection_fixture(db, targets=4)
+    for task_id in ("TASK-3000", "TASK-3001"):
+        _cleanup_task(db, task_id, created_at=now - timedelta(days=20),
+                      completed_at=now - timedelta(days=20), status=TaskStatus.COMPLETED)
+        db.insert_task_result(task_id=task_id, agent="dev_agent", session_id=f"session-{task_id}",
+                              output_summary="done", confidence_score=90, status="completed")
+    assert _select(db, tmp_path) is None
 
 
 def test_init_creates_tables(db):
