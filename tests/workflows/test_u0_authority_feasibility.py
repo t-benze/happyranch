@@ -155,6 +155,9 @@ _U0_SCRATCH_AUDIT_FIELDS = (
     "actual_reclaimed_bytes", "actual_reclaimed_inodes", "root",
     "producer_observation_id",
 )
+_U0_GENERATED_SCRATCH_AUDIT_FIELDS = (
+    "observation_id", "candidate_identity", "started_at_ns", "observed_at_ns",
+)
 
 
 def _observe_selected_scratch_audit(monkeypatch, target, *, mutate_field=None):
@@ -167,7 +170,7 @@ def _observe_selected_scratch_audit(monkeypatch, target, *, mutate_field=None):
     """
     from runtime.infrastructure.database import Database
 
-    assert mutate_field in (None, *_U0_SCRATCH_AUDIT_FIELDS)
+    assert mutate_field in (None, *_U0_SCRATCH_AUDIT_FIELDS, *_U0_GENERATED_SCRATCH_AUDIT_FIELDS)
     original = Database.insert_audit_log
     observations = []
     corruptions = {
@@ -175,6 +178,10 @@ def _observe_selected_scratch_audit(monkeypatch, target, *, mutate_field=None):
         "actual_reclaimed_inodes": 1,
         "root": "/u0-corrupt-scratch-root",
         "producer_observation_id": "u0-corrupt-session",
+        "observation_id": "f" * 32,
+        "candidate_identity": "e" * 64,
+        "started_at_ns": 1,
+        "observed_at_ns": 2,
     }
 
     def observed(self, task_id, agent, action, payload=None):
@@ -186,7 +193,15 @@ def _observe_selected_scratch_audit(monkeypatch, target, *, mutate_field=None):
                 "mutate_field": mutate_field,
             })
             if mutate_field is not None:
-                payload = {**original_payload, mutate_field: corruptions[mutate_field]}
+                corrupted = corruptions[mutate_field]
+                # Keep the existing source-required ordering/type checks true
+                # for generated-time controls: the regression must reach the
+                # new pre-corruption provenance comparison, not fail earlier.
+                if mutate_field == "started_at_ns":
+                    corrupted = original_payload[mutate_field] - 1
+                elif mutate_field == "observed_at_ns":
+                    corrupted = original_payload[mutate_field] + 1
+                payload = {**original_payload, mutate_field: corrupted}
         return original(self, task_id, agent, action, payload)
 
     monkeypatch.setattr(Database, "insert_audit_log", observed)
@@ -227,6 +242,10 @@ def _assert_source_owned_scratch_audit(*, audit, observations, task_id, agent,
     assert payload["observation_id"] != session_id
     assert isinstance(payload["started_at_ns"], int) and isinstance(payload["observed_at_ns"], int)
     assert payload["started_at_ns"] <= payload["observed_at_ns"]
+    assert isinstance(source_payload["observation_id"], str) and len(source_payload["observation_id"]) == 32
+    assert isinstance(source_payload["candidate_identity"], str) and len(source_payload["candidate_identity"]) == 64
+    assert isinstance(source_payload["started_at_ns"], int) and isinstance(source_payload["observed_at_ns"], int)
+    assert source_payload["started_at_ns"] <= source_payload["observed_at_ns"]
     assert payload["manifest_status"] == "ok"
     assert isinstance(payload["candidate_identity"], str) and len(payload["candidate_identity"]) == 64
     assert isinstance(payload["boot_id"], str) and payload["boot_id"]
@@ -249,6 +268,14 @@ def _assert_source_owned_scratch_audit(*, audit, observations, task_id, agent,
     # values above come from source constants and the actual launch inputs.
     assert source_payload["producer_observation_id"] == session_id
     assert source_payload["root"] == str(workspace / ".happyranch/task-tmp" / task_id)
+    # This is an invocation-owned capture from the real writer before the
+    # test's downstream persistence corruption.  Do not derive an expected
+    # generated identity or time from the corrupted audit row, and do not let
+    # bool/int/text compare by Python's loose equality rules.  This remains
+    # after the retained source-derived static-field controls above so their
+    # original diagnostic fingerprints are preserved.
+    assert all(type(payload[key]) is type(source_payload[key]) for key in expected_keys), "scratch audit payload scalar type fidelity"
+    assert payload == source_payload, "scratch audit generated payload provenance fidelity"
 
 
 def _paths(org_state):
@@ -4088,3 +4115,29 @@ def test_r1_cancellation_scratch_audit_writer_mutation_controls(
                     _scratch_audit_mutation=field,
                 )
     assert f"scratch audit {field} fidelity" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("schedule", "field"),
+    [
+        *[("chain", field) for field in _U0_GENERATED_SCRATCH_AUDIT_FIELDS],
+        *[("fanout-first", field) for field in _U0_GENERATED_SCRATCH_AUDIT_FIELDS],
+        *[("fanout-second", field) for field in _U0_GENERATED_SCRATCH_AUDIT_FIELDS],
+    ],
+)
+def test_r1_cancellation_scratch_audit_generated_payload_mutation_controls(
+    tmp_path, monkeypatch, schedule: str, field: str,
+) -> None:
+    """The retained three schedules reject generated-value provenance drift."""
+    with monkeypatch.context() as control:
+        with pytest.raises(AssertionError, match="generated payload provenance") as raised:
+            if schedule == "chain":
+                test_r1_chain_cancel_before_first_callback_rejects_late_result(
+                    tmp_path, control, _scratch_audit_mutation=field,
+                )
+            else:
+                test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
+                    tmp_path, control, 0 if schedule == "fanout-first" else 1,
+                    _scratch_audit_mutation=field,
+                )
+    assert "scratch audit generated payload provenance fidelity" in str(raised.value)

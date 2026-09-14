@@ -200,3 +200,285 @@ def accept_current_join(
     except Exception:
         conn.rollback()
         raise
+
+
+class PublicationInterrupted(RuntimeError):
+    """A deterministic crash seam for the isolated F4/F5 protocol model."""
+
+
+def _publication_file(root: Path, namespace: str) -> Path:
+    return root / f"{namespace}.authority.json"
+
+
+def _acquire_publication_lease(conn: sqlite3.Connection, namespace: str, owner: str) -> None:
+    """Cooperative cross-process ownership; arbitrary same-UID mutation is excluded."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT owner_token, depth FROM workflow_publication_leases WHERE namespace=?", (namespace,),
+        ).fetchone()
+        if row is None:
+            conn.execute("INSERT INTO workflow_publication_leases VALUES (?,?,1)", (namespace, owner))
+        elif row[0] == owner:
+            conn.execute("UPDATE workflow_publication_leases SET depth=depth+1 WHERE namespace=?", (namespace,))
+        else:
+            raise ValueError("publication_lease_busy")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def _release_publication_lease(conn: sqlite3.Connection, namespace: str, owner: str) -> None:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT owner_token, depth FROM workflow_publication_leases WHERE namespace=?", (namespace,),
+        ).fetchone()
+        if row is None or row[0] != owner:
+            raise ValueError("publication_lease_owner_required")
+        if row[1] == 1:
+            conn.execute("DELETE FROM workflow_publication_leases WHERE namespace=?", (namespace,))
+        else:
+            conn.execute("UPDATE workflow_publication_leases SET depth=depth-1 WHERE namespace=?", (namespace,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def _pointer(conn: sqlite3.Connection, namespace: str) -> tuple[int, str | None, str | None, str]:
+    row = conn.execute(
+        "SELECT current_generation, journal_id, snapshot_digest, state FROM workflow_authority_pointers WHERE namespace=?",
+        (namespace,),
+    ).fetchone()
+    return (0, None, None, "ready") if row is None else tuple(row)  # type: ignore[return-value]
+
+
+def _active_journal(conn: sqlite3.Connection, namespace: str) -> tuple[object, ...] | None:
+    return conn.execute(
+        """SELECT id, generation, expected_generation, snapshot_bytes, snapshot_digest, state, recovery_owner
+           FROM workflow_publication_journals
+           WHERE namespace=? AND state NOT IN ('cache_installed','aborted')
+           ORDER BY generation DESC LIMIT 1""",
+        (namespace,),
+    ).fetchone()
+
+
+def _assert_ready_snapshot(conn: sqlite3.Connection, root: Path, cache: dict[str, tuple[int, str]], namespace: str) -> tuple[int, str]:
+    active = _active_journal(conn, namespace)
+    if active is not None:
+        raise ValueError(f"publication_fenced:{active[5]}")
+    generation, _journal_id, digest, state = _pointer(conn, namespace)
+    if generation == 0:
+        raise ValueError("authority_generation_missing")
+    if state != "ready" or digest is None:
+        raise ValueError("authority_pointer_not_ready")
+    path = _publication_file(root, namespace)
+    if not path.is_file() or sha256_bytes(path.read_bytes()) != digest:
+        raise ValueError("canonical_snapshot_mismatch")
+    if cache.get(namespace) != (generation, digest):
+        raise ValueError("authority_cache_stale")
+    return generation, digest
+
+
+def publish_authority_generation(
+    conn: sqlite3.Connection, *, root: Path, cache: dict[str, tuple[int, str]], namespace: str,
+    expected_generation: int, snapshot: bytes, publisher: str, journal_id: str,
+    interrupt_at: str | None = None,
+) -> int:
+    """Publish one proposed generation in four crash-visible durable stages.
+
+    The pointer commit is the publisher linearization point.  Cache installation
+    is deliberately later, so admission fences pointer-visible but incoherent
+    publications.  No lock spans filesystem work, a network operation, clone,
+    or later launch.
+    """
+    if interrupt_at not in {None, "prepared", "canonical", "pointer", "cache"}:
+        raise ValueError("unknown_publication_interrupt")
+    _acquire_publication_lease(conn, namespace, publisher)
+    try:
+        digest = sha256_bytes(snapshot)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            current, _old_id, _old_digest, _state = _pointer(conn, namespace)
+            if current != expected_generation or _active_journal(conn, namespace) is not None:
+                raise ValueError("expected_generation_cas_failed")
+            conn.execute(
+                "INSERT INTO workflow_publication_journals VALUES (?,?,?,?,?,?,?,?,?)",
+                (journal_id, namespace, expected_generation + 1, expected_generation, snapshot, digest,
+                 publisher, "prepared", "workflow_recovery"),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        if interrupt_at == "prepared":
+            raise PublicationInterrupted("publication_interrupted:prepared")
+        path = _publication_file(root, namespace)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        staging = path.with_suffix(".staging")
+        staging.write_bytes(snapshot)
+        staging.replace(path)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("UPDATE workflow_publication_journals SET state='canonical_published' WHERE id=? AND state='prepared'", (journal_id,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        if interrupt_at == "canonical":
+            raise PublicationInterrupted("publication_interrupted:canonical")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            current, _old_id, _old_digest, _state = _pointer(conn, namespace)
+            changed = conn.execute(
+                "UPDATE workflow_publication_journals SET state='pointer_committed' WHERE id=? AND state='canonical_published'",
+                (journal_id,),
+            ).rowcount
+            if current != expected_generation or changed != 1:
+                raise ValueError("pointer_cas_failed")
+            conn.execute(
+                """INSERT INTO workflow_authority_pointers(namespace,current_generation,journal_id,snapshot_digest,state)
+                   VALUES (?,?,?,?, 'ready')
+                   ON CONFLICT(namespace) DO UPDATE SET current_generation=excluded.current_generation,
+                     journal_id=excluded.journal_id,snapshot_digest=excluded.snapshot_digest,state='ready'""",
+                (namespace, expected_generation + 1, journal_id, digest),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        if interrupt_at == "pointer":
+            raise PublicationInterrupted("publication_interrupted:pointer")
+        if interrupt_at == "cache":
+            raise PublicationInterrupted("publication_interrupted:cache")
+        cache[namespace] = (expected_generation + 1, digest)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("UPDATE workflow_publication_journals SET state='cache_installed' WHERE id=? AND state='pointer_committed'", (journal_id,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return expected_generation + 1
+    finally:
+        _release_publication_lease(conn, namespace, publisher)
+
+
+def admit_authority_request(
+    conn: sqlite3.Connection, *, root: Path, cache: dict[str, tuple[int, str]], namespace: str,
+    request_id: str, request_bytes: bytes, admitted_by: str, expected_generation: int,
+) -> int:
+    """The sole proposed admission linearization point: ready check plus row insert."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        generation, _digest = _assert_ready_snapshot(conn, root, cache, namespace)
+        if generation != expected_generation:
+            raise ValueError("admission_generation_stale")
+        conn.execute(
+            "INSERT INTO workflow_admission_records VALUES (?,?,?,?,?)",
+            (request_id, namespace, generation, sha256_bytes(request_bytes), admitted_by),
+        )
+        conn.commit()
+        return generation
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def revalidate_authority_dispatch(
+    conn: sqlite3.Connection, *, root: Path, cache: dict[str, tuple[int, str]], namespace: str,
+    request_id: str,
+) -> str:
+    """A later consumer check; it never deletes or reassigns a committed admission."""
+    row = conn.execute(
+        "SELECT generation FROM workflow_admission_records WHERE namespace=? AND id=?", (namespace, request_id),
+    ).fetchone()
+    if row is None:
+        raise ValueError("admission_missing")
+    generation, _digest = _assert_ready_snapshot(conn, root, cache, namespace)
+    if row[0] != generation:
+        raise ValueError("dispatch_generation_stale")
+    return "dispatch_current"
+
+
+def compensate_authority_publication(conn: sqlite3.Connection, *, namespace: str, journal_id: str, publisher: str) -> None:
+    """Abort only an unpointed own journal; never restore a stale file/cache/pointer."""
+    _acquire_publication_lease(conn, namespace, publisher)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT expected_generation, state, publisher FROM workflow_publication_journals WHERE id=? AND namespace=?",
+                (journal_id, namespace),
+            ).fetchone()
+            current, _pointer_id, _digest, _state = _pointer(conn, namespace)
+            if row is None or row[2] != publisher or row[1] not in {"prepared", "canonical_published"} or current != row[0]:
+                raise ValueError("stale_compensation_fenced")
+            conn.execute("UPDATE workflow_publication_journals SET state='aborted' WHERE id=?", (journal_id,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    finally:
+        _release_publication_lease(conn, namespace, publisher)
+
+
+def recover_authority_publication(
+    conn: sqlite3.Connection, *, root: Path, cache: dict[str, tuple[int, str]], namespace: str,
+) -> str:
+    """Named recovery owner reconciles one journal twice safely without rollback."""
+    _acquire_publication_lease(conn, namespace, "workflow_recovery")
+    try:
+        active = _active_journal(conn, namespace)
+        if active is None:
+            _assert_ready_snapshot(conn, root, cache, namespace)
+            return "already_coherent"
+        journal_id, generation, expected, snapshot, digest, state, _owner = active
+        path = _publication_file(root, namespace)
+        current, _pointer_id, _pointer_digest, _pointer_state = _pointer(conn, namespace)
+        if state == "prepared":
+            if path.is_file() and sha256_bytes(path.read_bytes()) == digest:
+                conn.execute("UPDATE workflow_publication_journals SET state='canonical_published' WHERE id=?", (journal_id,))
+                conn.commit()
+                state = "canonical_published"
+            elif current == expected:
+                conn.execute("UPDATE workflow_publication_journals SET state='aborted' WHERE id=?", (journal_id,))
+                conn.commit()
+                return "aborted_unpublished"
+            else:
+                raise ValueError("prepared_generation_conflict")
+        if state == "canonical_published":
+            if path.is_file() and sha256_bytes(path.read_bytes()) != digest:
+                raise ValueError("canonical_snapshot_mismatch")
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(snapshot)
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                current, _pointer_id, _pointer_digest, _pointer_state = _pointer(conn, namespace)
+                if current != expected:
+                    raise ValueError("pointer_cas_failed")
+                conn.execute("UPDATE workflow_publication_journals SET state='pointer_committed' WHERE id=?", (journal_id,))
+                conn.execute(
+                    """INSERT INTO workflow_authority_pointers VALUES (?,?,?,?, 'ready')
+                       ON CONFLICT(namespace) DO UPDATE SET current_generation=excluded.current_generation,
+                       journal_id=excluded.journal_id,snapshot_digest=excluded.snapshot_digest,state='ready'""",
+                    (namespace, generation, journal_id, digest),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            state = "pointer_committed"
+        if state == "pointer_committed":
+            if not path.is_file() or sha256_bytes(path.read_bytes()) != digest:
+                raise ValueError("committed_snapshot_mismatch")
+            cache[namespace] = (generation, digest)
+            conn.execute("UPDATE workflow_publication_journals SET state='cache_installed' WHERE id=?", (journal_id,))
+            conn.commit()
+            return "recovered_coherent"
+        raise ValueError("unknown_publication_journal_state")
+    finally:
+        _release_publication_lease(conn, namespace, "workflow_recovery")

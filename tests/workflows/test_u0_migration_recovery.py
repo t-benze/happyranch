@@ -9,7 +9,16 @@ from pathlib import Path
 import pytest
 
 from runtime.infrastructure.database import Database
-from tests.workflows.u0_evidence_helpers import accept_current_join, sha256_bytes
+from tests.workflows.u0_evidence_helpers import (
+    PublicationInterrupted,
+    accept_current_join,
+    admit_authority_request,
+    compensate_authority_publication,
+    publish_authority_generation,
+    recover_authority_publication,
+    revalidate_authority_dispatch,
+    sha256_bytes,
+)
 
 
 def _adapter(path: Path) -> sqlite3.Connection:
@@ -461,3 +470,96 @@ def test_isolated_adapter_refuses_committed_partial_or_ambiguous_history_without
     check = sqlite3.connect(path)
     assert check.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall() == before
     assert check.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
+def _publication_rows(path: Path) -> dict[str, list[tuple[object, ...]]]:
+    """Independent durable observer; assertions never trust model return values."""
+    check = sqlite3.connect(path)
+    try:
+        return {
+            "pointers": check.execute("SELECT namespace,current_generation,journal_id,snapshot_digest,state FROM workflow_authority_pointers ORDER BY namespace").fetchall(),
+            "journals": check.execute("SELECT id,namespace,generation,expected_generation,snapshot_digest,state,recovery_owner FROM workflow_publication_journals ORDER BY generation").fetchall(),
+            "admissions": check.execute("SELECT id,namespace,generation,request_digest,admitted_by FROM workflow_admission_records ORDER BY id").fetchall(),
+            "leases": check.execute("SELECT namespace,owner_token,depth FROM workflow_publication_leases ORDER BY namespace").fetchall(),
+        }
+    finally:
+        check.close()
+
+
+def test_proposed_publication_generation_fences_admission_and_preserves_committed_owner(tmp_path: Path) -> None:
+    path, files, cache = tmp_path / "publication.db", tmp_path / "canonical", {}
+    writer = _adapter(path)
+    assert publish_authority_generation(writer, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b'{"grantor":"founder","target":"dev_agent","scope":"repo-a"}', publisher="agents-route", journal_id="j1") == 1
+    before = _publication_rows(path)
+    assert before["pointers"][0][1] == 1 and before["journals"][-1][5] == "cache_installed"
+    with pytest.raises(ValueError, match="admission_generation_stale"):
+        admit_authority_request(writer, root=files, cache=cache, namespace="engineering", request_id="stale-before-admission", request_bytes=b"request", admitted_by="workflow-route", expected_generation=0)
+    assert _publication_rows(path)["admissions"] == []
+    assert admit_authority_request(writer, root=files, cache=cache, namespace="engineering", request_id="admission-1", request_bytes=b"request", admitted_by="workflow-route", expected_generation=1) == 1
+    admitted = _publication_rows(path)["admissions"]
+    assert len(admitted) == 1 and admitted[0][:3] == ("admission-1", "engineering", 1)
+    assert publish_authority_generation(writer, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b'{"grantor":"founder","target":"qa_engineer","scope":"repo-b"}', publisher="teams-route", journal_id="j2") == 2
+    assert _publication_rows(path)["admissions"] == admitted
+    with pytest.raises(ValueError, match="dispatch_generation_stale"):
+        revalidate_authority_dispatch(writer, root=files, cache=cache, namespace="engineering", request_id="admission-1")
+    assert _publication_rows(path)["leases"] == []
+
+
+def test_proposed_publication_cas_and_stale_compensation_never_restore_newer_state(tmp_path: Path) -> None:
+    path, files, cache = tmp_path / "cas.db", tmp_path / "canonical", {}
+    first = _adapter(path)
+    second = sqlite3.connect(path)
+    second.execute("PRAGMA foreign_keys=ON")
+    publish_authority_generation(first, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"one", publisher="agents-route", journal_id="j1")
+    assert publish_authority_generation(second, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"two", publisher="teams-route", journal_id="j2") == 2
+    with pytest.raises(ValueError, match="expected_generation_cas_failed"):
+        publish_authority_generation(first, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"loser", publisher="policy-route", journal_id="j-loser")
+    stable = _publication_rows(path)
+    canonical = (files / "engineering.authority.json").read_bytes()
+    with pytest.raises(ValueError, match="stale_compensation_fenced"):
+        compensate_authority_publication(first, namespace="engineering", journal_id="j1", publisher="agents-route")
+    assert _publication_rows(path) == stable
+    assert (files / "engineering.authority.json").read_bytes() == canonical == b"two"
+    assert cache["engineering"][0] == 2
+    second.close()
+
+
+@pytest.mark.parametrize("stage", ("prepared", "canonical", "pointer", "cache"))
+def test_proposed_publication_recovery_fences_each_durable_stage_and_is_idempotent(tmp_path: Path, stage: str) -> None:
+    path, files, cache = tmp_path / f"{stage}.db", tmp_path / "canonical", {}
+    conn = _adapter(path)
+    publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"stable", publisher="bootstrap", journal_id="base")
+    with pytest.raises(PublicationInterrupted, match=stage):
+        publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"next", publisher="agents-route", journal_id=f"interrupt-{stage}", interrupt_at=stage)
+    fenced = _publication_rows(path)
+    assert fenced["journals"][-1][5] in {"prepared", "canonical_published", "pointer_committed"}
+    with pytest.raises(ValueError, match="publication_fenced"):
+        admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id=f"blocked-{stage}", request_bytes=b"blocked", admitted_by="workflow-route", expected_generation=1)
+    assert _publication_rows(path)["admissions"] == []
+    first = recover_authority_publication(conn, root=files, cache=cache, namespace="engineering")
+    second = recover_authority_publication(conn, root=files, cache=cache, namespace="engineering")
+    observed = _publication_rows(path)
+    assert observed["leases"] == [] and second == "already_coherent"
+    if stage == "prepared":
+        assert first == "aborted_unpublished" and observed["pointers"][0][1] == 1
+        assert cache["engineering"][0] == 1
+    else:
+        assert first == "recovered_coherent" and observed["pointers"][0][1] == 2
+        assert cache["engineering"][0] == 2
+    assert observed["journals"][-1][5] in {"aborted", "cache_installed"}
+    assert admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id=f"after-{stage}", request_bytes=b"ready", admitted_by="workflow-route", expected_generation=observed["pointers"][0][1]) == observed["pointers"][0][1]
+
+
+def test_proposed_recovery_refuses_corrupt_committed_snapshot_without_rollback(tmp_path: Path) -> None:
+    path, files, cache = tmp_path / "corrupt-publication.db", tmp_path / "canonical", {}
+    conn = _adapter(path)
+    publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"stable", publisher="bootstrap", journal_id="base")
+    with pytest.raises(PublicationInterrupted, match="pointer"):
+        publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"candidate", publisher="agents-route", journal_id="bad", interrupt_at="pointer")
+    (files / "engineering.authority.json").write_bytes(b"corrupt")
+    before = _publication_rows(path)
+    with pytest.raises(ValueError, match="committed_snapshot_mismatch"):
+        recover_authority_publication(conn, root=files, cache=cache, namespace="engineering")
+    assert _publication_rows(path) == before
+    assert (files / "engineering.authority.json").read_bytes() == b"corrupt"
+    assert cache["engineering"] == (1, sha256_bytes(b"stable"))

@@ -386,3 +386,72 @@ only: it recommends a distinct workflow-owned persistence/dispatch adapter,
 keeps legacy chain/fanout owners, and names Founder decisions before any
 protected implementation. U1--U6, cutover proof, and the NOT RUN study remain
 explicitly pending.
+
+### 2026-09-14 F4/F5 publication-protocol evidence (TASK-8357)
+
+This is a concrete proposed protocol plus executable isolated evidence, not a
+production approval, migration, runtime import, or a claim that same-UID
+processes are prevented from mutating files or SQLite directly. The study is
+**NOT RUN**; there is no detached lock and no frozen preregistration.
+
+The proposed org-scoped authority generation covers workflow grantor, target,
+team/role assignment, active policy, repository/input scope, and the concrete
+executor/model/adapter selection. Its durable pointer is
+`workflow_authority_pointers`; candidate bytes/digest are journaled in
+`workflow_publication_journals`; canonical file and cache must agree.
+Machine-global executor profiles are separate and cannot be represented by an
+org pointer alone.
+
+| Effective source writer/reader | classification / scope |
+| --- | --- |
+| agent create/approve/reject/terminate and `manage_agent` repo/model/executor writers; AgentDef readers | participate only for grantor/target/repo/executor/model/input scope; future writers join or activation is fenced |
+| `put_teams`, `TeamsRegistry.save/load`, `OrgState.load` | participate for team/role eligibility; display-only settings are irrelevant; snapshot is org-scoped |
+| org init/bootstrap/reload and `DaemonState.from_runtime` | setup/reader fence: partial org or incoherent pointer/file/cache refuses activation |
+| authority-policy release/activation | immutable release creation separate; active pointer participates, existing epoch is not universal authority |
+| `remove_runtime_executor_profile`, `bind_adapter_profile`, `_perform_adapter_profile_binding`, store/registry callers | participate only for a used profile; machine-global store/profile lock required; otherwise unsupported, not universal revocation |
+| activation/admission/receipt/final-join/recovery | proposed adapter readers; current run-step/queue/legacy chain/fanout remain separately owned |
+
+Journal states are `prepared`, canonical-file publish, `canonical_published`,
+pointer-CAS (`pointer_committed`, the publication linearization point), cache
+install, then `cache_installed`. Expected-generation CAS permits one winner.
+A stale compensator can abort only its own unpointed journal; it never restores
+file/cache/pointer. `workflow_recovery` either aborts unpublished preparation,
+completes a verified sequence, or returns the exact mismatch invariant without
+rollback. Readers refuse active journal, incorrect canonical digest, or stale
+cache.
+
+There is no false universal lock order. Publication uses a cooperative lease
+and short SQLite stage transactions; no lock spans launch/network/clone.
+Existing completion admission remains `org.db_lock -> binding_lease ->`
+synchronized DB callback, and does not acquire the publication coordinator.
+Profile binding retains its separate adapter-store/store-write/registry edge.
+A production decision must establish an acyclic route-specific graph.
+
+The isolated schema/helper implement journal, pointer, lease, admission,
+publisher, recovery, compensation, and later dispatch-revalidation. Focused
+Python 3.14 command `uv run --python /usr/bin/python3.14 pytest -q
+tests/workflows/test_u0_migration_recovery.py
+tests/workflows/test_u0_authority_feasibility.py -k 'publication or scratch_audit'`
+passed `36 passed, 65 deselected`. Independent SQLite connections observe
+journal/pointer/admission/lease rows and canonical bytes. Schedules prove stale
+generation denies before admission, admission ownership survives later publish
+but dispatch revalidates, one CAS wins, stale compensation cannot restore,
+prepared/canonical/pointer/cache crashes fence then recover twice, and corrupt
+committed snapshots refuse without destructive rollback. Atomic request/outbox
+and uncertain-launch remain the next unit, not complete here.
+
+The three retained cancellation schedules now compare the complete typed audit
+payload to the invocation-owned pre-corruption writer capture, with separate
+source-required ID shape/time ordering. Corruptions of `observation_id`,
+`candidate_identity`, `started_at_ns`, and `observed_at_ns` reach and fail that
+provenance assertion; existing bytes/inodes/root/producer-session controls stay
+intact.
+
+Founder decisions still pending: supported writer boundary, additive runtime
+schema/ownership, machine-global profile lock/cutover, disable-new-runs/drain
+and old-reader behavior, and uncertain-launch handling. Residuals: F5 atomic
+request/outbox/uncertain launch; F6 historical cutover/old-reader/implementation
+ledger; U1 templates/versions, U2 activation/identical-byte review, U3
+signatures, U4 revision, U5 reassignment/retry/cancel/recovery, U6 independent
+operator acceptance. TASK8349's early unpushed wording is superseded by its
+dated PR845 publication receipt; historical/failed claims are retained.
