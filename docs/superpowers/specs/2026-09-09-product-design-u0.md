@@ -1,6 +1,10 @@
 # Product-design workflow U0 feasibility evidence
 
-This U0 patch is deliberately non-production: it adds isolated proposed-schema and authority-limitation tests plus a frozen study preregistration. No route, daemon workflow, UI/CLI, migration, authority coordinator, or compatibility behavior is installed.
+This U0 patch is deliberately non-production: it adds isolated proposed-schema
+and authority-limitation tests plus unexecuted study-manifest evidence. The
+study is **NOT RUN** and no detached lock has been issued. No route, daemon
+workflow, UI/CLI, migration, authority coordinator, or compatibility behavior
+is installed.
 
 The executable fixture calls the actual `RuntimeDir.init -> DaemonState.from_runtime
 -> OrgState.load -> Database` initializer chain on an isolated **current control**
@@ -29,19 +33,29 @@ work on every rejection. It validates the specified instance/round/submission,
 active authorization bound to the instance snapshot, reviewing lifecycle,
 each Founder/implementation/test request and approved receipt (including
 generation, scope digest, submitted digest and outcome), and the instance-wide
-historical-contributor closure. One conditional terminal transition, one joined
-event, and one replay row commit together. Same-key/same-body replay is allowed
-only after that completed current instance has been revalidated; a different
-body conflicts. The Stage-1 fixture uses non-default instance, revision and
-assignment-generation values and deterministic independent-connection races.
-It is a negative feasibility probe, not a production transaction or a claim
-that SQLite constraints alone provide currentness, queue admission, authority
-fencing, or cutover safety.
+historical-contributor closure. Each signer is also joined to a separate,
+durable isolated task/session/result row and current role assignment; receipt
+proof bytes/digest, result bytes/digest, binding/context, and
+round/submission/evidence revision must agree. The actual finalizer assignment
+and generation are separately re-read, rather than accepting a role string.
+The thirteen executable rejections cover all ten reviewer counterexamples plus
+invented result identity, mismatched submission revision, and stale finalizer
+generation. Every rejection is independently checked for unchanged complete
+instance/event/replay/history rows and foreign-key integrity. One conditional
+terminal transition, one joined event, and one replay row commit together.
+Same-key/same-body replay revalidates all of those current signatures before
+returning the original effect; a different body conflicts. The Stage-1 fixture
+uses non-default instance, revision and assignment-generation values and
+deterministic independent-connection races. It is a negative feasibility probe,
+not a production transaction or a claim that SQLite constraints alone provide
+currentness, queue admission, authority fencing, publication/outbox protocol,
+or cutover safety. The recovered TASK-8339 publication-journal/outbox DDL stubs
+are deliberately excluded from this F2 extraction; F4/F5 proof remains pending.
 
-Stage-1 helper digest remains `68f60262bb8984a9f43d4cba013c0e72f0e68907377c677ff1f97b8b333b49d2`.
+Stage-1 helper digest is `4c620bdb8e3d6fbb4fe7d4b8bfb574c3cc3e77515ead05db96841ccf38c9a22c`.
 Stage-2 recovery evidence digests: recovery test
-`52127402680480e154a7f74648586a5091d744822147b1fe04030683f8d537f6`,
-proposed DDL `b1ebb10207e89a1f1d57e79246d369545f98e4fb0107b57c65e50a60b339999d`,
+`c10ddd2e47b8804413281435e0fa7996e5236ddab198744961525632f7d4c68e`,
+proposed DDL `c9e1f0b505a9bffaf8a44863dee917a0938d5586d6d81c9277d22215b63efb9a`,
 and historical-source inventory
 `bad48706cdeb9c54d774df6ba550c66926795d59b821705566d5e7452833434c`.
 This digest record is proposal parity only and does not replace the withheld

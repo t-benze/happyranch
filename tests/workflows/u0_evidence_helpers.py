@@ -66,7 +66,8 @@ def accept_current_join(
             hooks.after_begin()
         instance = conn.execute(
             """SELECT i.status, rd.state, rd.submission_id, s.submission_digest, s.submission_bytes,
-                      b.authorization_revision_id, aa.authorization_revision_id
+                      b.authorization_revision_id, aa.authorization_revision_id, s.revision,
+                      i.context_id, i.binding_snapshot_id, rd.current_revision
                FROM workflow_instances i
                JOIN workflow_rounds rd ON rd.instance_id=i.id
                JOIN workflow_submissions s ON s.id=rd.submission_id AND s.instance_id=i.id
@@ -76,10 +77,88 @@ def accept_current_join(
                WHERE i.id=? AND rd.id=?""",
             (instance_id, round_id),
         ).fetchone()
-        if instance is None or instance[1] != "reviewing" or instance[5] != instance[6]:
+        if (
+            instance is None
+            or instance[1] != "reviewing"
+            or instance[5] != instance[6]
+            or instance[7] != instance[10]
+        ):
             raise ValueError("current_binding_authority_required")
         if sha256_bytes(instance[4]) != instance[3]:
             raise ValueError("submitted_bytes_digest_required")
+        rows = conn.execute(
+            """SELECT q.principal, q.status, q.assignment_generation,
+                      q.request_scope_bytes, q.request_scope_digest, r.assignment_generation,
+                      r.request_scope_digest, r.submission_id, r.submission_digest,
+                      r.outcome, r.proof_bytes, r.proof_digest,
+                      e.signer_principal, e.task_id, e.session_id, e.result_id,
+                      e.context_id, e.binding_snapshot_id, e.round_revision,
+                      e.proof_bytes, e.proof_digest,
+                      a.principal, a.task_id, a.session_id, a.result_id, a.generation, a.lifecycle,
+                      it.role_key, it.generation, it.state,
+                      tr.principal, tr.generation, tr.lifecycle, tr.result_bytes, tr.result_digest
+               FROM workflow_review_requests q
+               JOIN workflow_review_receipts r ON r.request_id=q.id
+               JOIN workflow_receipt_evidence e ON e.receipt_id=r.id
+               JOIN workflow_current_assignments a ON a.instance_id=?
+                   AND a.role_key=('reviewer:' || q.principal)
+               JOIN workflow_instance_tasks it ON it.instance_id=a.instance_id
+                   AND it.task_id=a.task_id AND it.session_id=a.session_id
+               JOIN workflow_task_results tr ON tr.id=a.result_id
+                   AND tr.instance_id=a.instance_id AND tr.task_id=a.task_id AND tr.session_id=a.session_id
+               WHERE q.round_id=? ORDER BY q.principal""",
+            (instance_id, round_id),
+        ).fetchall()
+        required = {"founder", "implementation", "test"}
+        if (
+            {row[0] for row in rows} != required
+            or len(rows) != len(required)
+            or any(
+                row[1] != "approved" or sha256_bytes(row[3]) != row[4]
+                or row[2] != row[5] or row[4] != row[6]
+                or row[7] != instance[2] or row[8] != instance[3]
+                or row[9] != "approved" or sha256_bytes(row[10]) != row[11]
+                or row[0] != row[12] or row[0] != row[21] or row[0] != row[30]
+                or row[10] != row[19] or row[10] != row[33]
+                or row[11] != row[20] or row[11] != row[34]
+                or row[13:16] != row[22:25]
+                or row[16] != instance[8] or row[17] != instance[9] or row[18] != instance[10]
+                or row[2] != row[25] or row[2] != row[28] or row[2] != row[31]
+                or row[26] != "completed" or row[27] != f"reviewer:{row[0]}" or row[29] != "completed" or row[32] != "completed"
+                for row in rows
+            )
+        ):
+            raise ValueError("current_three_signature_join_required")
+        finalizer = conn.execute(
+            """SELECT a.principal, a.task_id, a.session_id, a.result_id, a.generation, a.lifecycle,
+                      it.role_key, it.generation, it.state, tr.principal, tr.generation, tr.lifecycle
+               FROM workflow_current_assignments a
+               JOIN workflow_instance_tasks it ON it.instance_id=a.instance_id AND it.task_id=a.task_id AND it.session_id=a.session_id
+               JOIN workflow_task_results tr ON tr.id=a.result_id AND tr.instance_id=a.instance_id AND tr.task_id=a.task_id AND tr.session_id=a.session_id
+               WHERE a.instance_id=? AND a.role_key=?""",
+            (instance_id, f"finalizer:{final_principal}"),
+        ).fetchone()
+        if (
+            finalizer is None
+            or finalizer[0] != final_principal
+            or finalizer[5] != "completed"
+            or finalizer[6] != f"finalizer:{final_principal}"
+            or finalizer[7] != finalizer[4]
+            or finalizer[8] != "completed"
+            or finalizer[9] != final_principal
+            or finalizer[10] != finalizer[4]
+            or finalizer[11] != "completed"
+        ):
+            raise ValueError("assigned_finalizer_required")
+        contributors = {
+            row[0]
+            for row in conn.execute(
+                "SELECT principal FROM workflow_instance_contributors WHERE instance_id=?",
+                (instance_id,),
+            )
+        }
+        if contributors.intersection(required | {final_principal}):
+            raise ValueError("historical_contributor_cannot_sign_or_finalize")
         prior = conn.execute(
             """SELECT request_digest, effect_id, instance_id FROM workflow_operation_replays
                WHERE org_slug='org' AND principal=? AND operation_key=?""",
@@ -94,38 +173,6 @@ def accept_current_join(
             return prior[1]
         if instance[0] != "reviewing":
             raise ValueError("instance_not_joinable")
-        rows = conn.execute(
-            """SELECT q.principal, q.status, q.assignment_generation,
-                      q.request_scope_bytes, q.request_scope_digest, r.assignment_generation,
-                      r.request_scope_digest, r.submission_id, r.submission_digest,
-                      r.outcome
-               FROM workflow_review_requests q
-               JOIN workflow_review_receipts r ON r.request_id=q.id
-               WHERE q.round_id=? ORDER BY q.principal""",
-            (round_id,),
-        ).fetchall()
-        required = {"founder", "implementation", "test"}
-        if (
-            {row[0] for row in rows} != required
-            or len(rows) != len(required)
-            or any(
-                row[1] != "approved" or sha256_bytes(row[3]) != row[4]
-                or row[2] != row[5] or row[4] != row[6]
-                or row[7] != instance[2] or row[8] != instance[3]
-                or row[9] != "approved"
-                for row in rows
-            )
-        ):
-            raise ValueError("current_three_signature_join_required")
-        contributors = {
-            row[0]
-            for row in conn.execute(
-                "SELECT principal FROM workflow_instance_contributors WHERE instance_id=?",
-                (instance_id,),
-            )
-        }
-        if final_principal in contributors:
-            raise ValueError("historical_contributor_cannot_finalize")
         effect_id = "effect-" + digest[:12]
         changed = conn.execute(
             "UPDATE workflow_instances SET status='complete' WHERE id=? AND status='reviewing'",

@@ -69,6 +69,9 @@ def _seed(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO workflow_contexts VALUES ('c','b',X'61','c0','task','TASK-0')")
     conn.execute("INSERT INTO workflow_instances VALUES ('instance-9','b','c','TASK-ROOT','founder','reviewing')")
     conn.execute("INSERT INTO workflow_instance_tasks VALUES ('instance-9','TASK-1','sess-1','maker',7,'completed')")
+    conn.execute("INSERT INTO workflow_instance_tasks VALUES ('instance-9','TASK-finalizer','sess-finalizer','finalizer:operator',7,'completed')")
+    for task, session, role in (("TASK-founder", "sess-founder", "founder"), ("TASK-implementation", "sess-implementation", "implementation"), ("TASK-test", "sess-test", "test")):
+        conn.execute("INSERT INTO workflow_instance_tasks VALUES ('instance-9',?,?,?,7,'completed')", (task, session, f"reviewer:{role}"))
     conn.execute("INSERT INTO workflow_events VALUES ('e','instance-9','submitted',X'61','e0','now')")
     digest = "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
     conn.execute("INSERT INTO workflow_submissions VALUES ('submission-9','instance-9',4,X'61',?,NULL,'TASK-1','sess-1','result-1','maker-a')", (digest,))
@@ -76,11 +79,37 @@ def _seed(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO workflow_instance_contributors VALUES ('instance-9','maker-a','TASK-1','sess-1','result-1','maker')")
     conn.execute("INSERT INTO workflow_instance_contributors VALUES ('instance-9','maker-b','TASK-0','sess-0','result-0','maker')")
     conn.execute("INSERT INTO workflow_rounds VALUES ('round-9','instance-9','submission-9',4,'reviewing')")
+    for task, session, principal, result, role in (
+        ("TASK-finalizer", "sess-finalizer", "operator", "result-finalizer", "finalizer:operator"),
+        ("TASK-founder", "sess-founder", "founder", "result-founder", "reviewer:founder"),
+        ("TASK-implementation", "sess-implementation", "implementation", "result-implementation", "reviewer:implementation"),
+        ("TASK-test", "sess-test", "test", "result-test", "reviewer:test"),
+    ):
+        proof = f"proof-{principal}".encode()
+        proof_digest = sha256_bytes(proof)
+        conn.execute(
+            "INSERT INTO workflow_task_results VALUES (?,?,?,?,?,7,'completed',?,?)",
+            (result, "instance-9", task, session, principal, proof, proof_digest),
+        )
+        conn.execute(
+            "INSERT INTO workflow_current_assignments VALUES (?,?,?,?,?,?,7,'completed')",
+            ("instance-9", role, principal, task, session, result),
+        )
+    # A durable but non-current result proves that matching proof bytes alone
+    # cannot turn an invented result identity into the assigned signer result.
+    conn.execute(
+        "INSERT INTO workflow_task_results VALUES ('invented-result','instance-9','TASK-founder','sess-founder','founder',7,'completed',X'70726f6f662d666f756e646572',?)",
+        (sha256_bytes(b"proof-founder"),),
+    )
     for request, principal in (("q-founder", "founder"), ("q-implementation", "implementation"), ("q-test", "test")):
         scope = principal.encode()
         scope_digest = sha256_bytes(scope)
         conn.execute("INSERT INTO workflow_review_requests VALUES (?,?,?,7,?,?, 'approved',NULL)", (request, "round-9", principal, scope, scope_digest))
-        conn.execute("INSERT INTO workflow_review_receipts VALUES (?,?,?,?,7,?,X'61',?,'approved',NULL,'now')", (f"receipt-{principal}", request, "submission-9", digest, scope_digest, f"proof-{principal}"))
+        proof = f"proof-{principal}".encode()
+        proof_digest = sha256_bytes(proof)
+        receipt = f"receipt-{principal}"
+        conn.execute("INSERT INTO workflow_review_receipts VALUES (?,?,?,?,7,?,?,?,'approved',NULL,'now')", (receipt, request, "submission-9", digest, scope_digest, proof, proof_digest))
+        conn.execute("INSERT INTO workflow_receipt_evidence VALUES (?,?,?,?,?,?,?,?,?,?)", (receipt, principal, f"TASK-{principal}", f"sess-{principal}", f"result-{principal}", "c", "b", 4, proof, proof_digest))
 
 
 def _assert_service_validation(conn: sqlite3.Connection, *, principal: str, digest: str) -> None:
@@ -146,33 +175,56 @@ def test_proposed_final_join_revalidates_all_current_signatures_and_exactly_once
         accept_current_join(conn, operation_key="join-1", body=b"changed", final_principal="operator", **kwargs)
     conn.execute("UPDATE workflow_review_requests SET assignment_generation=8 WHERE id='q-test'")
     conn.commit()
-    with pytest.raises(ValueError, match="instance_not_joinable"):
+    # Replays and later finalization attempts revalidate every signer before
+    # observing the already-complete terminal row.
+    with pytest.raises(ValueError, match="three_signature"):
         accept_current_join(conn, operation_key="join-2", body=b"next", final_principal="operator", **kwargs)
 
 
+def _complete_join_state(path: Path) -> dict[str, list[tuple[object, ...]]]:
+    """A separate reader observes all proposed instance/event/replay/history rows."""
+    check = sqlite3.connect(path)
+    try:
+        tables = [
+            row[0]
+            for row in check.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'workflow_%' ORDER BY name"
+            )
+        ]
+        return {table: check.execute(f"SELECT * FROM {table}").fetchall() for table in tables}
+    finally:
+        check.close()
+
+
 @pytest.mark.parametrize(
-    ("sql", "needle"),
+    ("name", "sql", "needle"),
     [
-        ("UPDATE workflow_review_receipts SET assignment_generation=8 WHERE id='receipt-founder'", "three_signature"),
-        ("UPDATE workflow_review_receipts SET outcome='changes_requested' WHERE id='receipt-implementation'", "three_signature"),
-        ("UPDATE workflow_review_receipts SET request_scope_digest='wrong' WHERE id='receipt-test'", "three_signature"),
-        ("UPDATE workflow_submissions SET submission_bytes=X'62' WHERE id='submission-9'", "submitted_bytes_digest"),
-        ("UPDATE workflow_rounds SET state='superseded'", "binding_authority"),
-        ("UPDATE workflow_instances SET status='cancelled'", "instance_not_joinable"),
-        ("DELETE FROM workflow_active_authorizations", "binding_authority"),
-        ("INSERT INTO workflow_instance_contributors VALUES ('instance-9','operator','old','old','old','maker')", "historical_contributor"),
+        ("unassigned_finalizer", "DELETE FROM workflow_current_assignments WHERE role_key='finalizer:operator'", "assigned_finalizer"),
+        ("wrong_round_revision", "UPDATE workflow_rounds SET current_revision=99 WHERE id='round-9'", "binding_authority"),
+        ("missing_task_session_result_bridge", "DELETE FROM workflow_current_assignments WHERE role_key='reviewer:founder'", "three_signature"),
+        ("cross_binding_context", "INSERT INTO workflow_contexts VALUES ('foreign-context','b',X'62','foreign-digest','task','OTHER'); UPDATE workflow_instances SET context_id='foreign-context'", "three_signature"),
+        ("historical_founder", "INSERT INTO workflow_instance_contributors VALUES ('instance-9','founder','old','old','old','maker')", "historical_contributor"),
+        ("corrupt_founder_proof", "UPDATE workflow_review_receipts SET proof_bytes=X'626164', proof_digest='bad-founder' WHERE id='receipt-founder'", "three_signature"),
+        ("historical_implementation", "INSERT INTO workflow_instance_contributors VALUES ('instance-9','implementation','old','old','old','maker')", "historical_contributor"),
+        ("corrupt_implementation_proof", "UPDATE workflow_review_receipts SET proof_bytes=X'626164', proof_digest='bad-implementation' WHERE id='receipt-implementation'", "three_signature"),
+        ("historical_test", "INSERT INTO workflow_instance_contributors VALUES ('instance-9','test','old','old','old','maker')", "historical_contributor"),
+        ("corrupt_test_proof", "UPDATE workflow_review_receipts SET proof_bytes=X'626164', proof_digest='bad-test' WHERE id='receipt-test'", "three_signature"),
+        ("invented_result_id", "UPDATE workflow_receipt_evidence SET result_id='invented-result' WHERE receipt_id='receipt-founder'", "three_signature"),
+        ("submission_revision_disagrees", "UPDATE workflow_submissions SET revision=99 WHERE id='submission-9'", "binding_authority"),
+        ("stale_finalizer_generation", "UPDATE workflow_instance_tasks SET generation=1 WHERE task_id='TASK-finalizer'", "assigned_finalizer"),
     ],
 )
-def test_proposed_join_rejects_each_invalid_signature_or_currentness_without_residue(tmp_path: Path, sql: str, needle: str) -> None:
-    conn = _adapter(tmp_path / "negative.db")
+def test_proposed_join_rejects_all_current_signature_counterexamples_without_residue(tmp_path: Path, name: str, sql: str, needle: str) -> None:
+    path = tmp_path / f"negative-{name}.db"
+    conn = _adapter(path)
     _seed(conn)
-    conn.execute(sql)
+    conn.executescript(sql)
     conn.commit()
+    before = _complete_join_state(path)
     with pytest.raises(ValueError, match=needle):
         accept_current_join(conn, operation_key="negative", body=b"body", final_principal="operator", instance_id="instance-9", round_id="round-9")
-    assert conn.execute("SELECT count(*) FROM workflow_events WHERE event_kind='joined'").fetchone() == (0,)
-    assert conn.execute("SELECT count(*) FROM workflow_operation_replays").fetchone() == (0,)
-    assert conn.execute("SELECT status FROM workflow_instances WHERE id='instance-9'").fetchone() != ("complete",)
+    assert _complete_join_state(path) == before
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def test_proposed_join_begins_before_every_authorizing_select_and_refuses_caller_transaction(tmp_path: Path) -> None:
