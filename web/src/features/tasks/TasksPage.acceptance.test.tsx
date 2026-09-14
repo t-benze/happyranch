@@ -4,6 +4,8 @@ import { http, HttpResponse } from 'msw';
 import { Link, MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { TaskListRow } from './TaskListRow';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { AppRoutes } from '@/routes';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import { mockDashboardApi } from '@/design-system/providers/_mock-dashboard';
@@ -290,13 +292,17 @@ test('C01/C02/C04/C05 common scroll/grid, seven groups, honest content and per-r
   expect(screen.getByText('subtask failed')).toBeInTheDocument();
   const list = screen.getByTestId('tasks-responsive-list');
   const headings = () => within(list).getAllByRole('heading');
-  expect(headings().map((h) => h.textContent)).toEqual(['Waiting on you1', 'In progress1', 'Pending1', 'Completed1', 'Failed1', 'Cancelled1', 'Resolved1']);
+  expect(headings().map((h) => h.textContent)).toEqual(['Waiting on you1', 'In progress1', 'Pending1', 'Failed1', 'Completed1', 'Cancelled1', 'Resolved1']);
   expect(screen.getByText(/LOADED MATCHING ROOT TASKS/)).toHaveTextContent('7 LOADED MATCHING ROOT TASKS');
   expect(screen.getByTestId('tasks-page-header').closest('.overflow-y-auto')).toBe(list.closest('.overflow-y-auto'));
   expect(list.firstElementChild).toHaveClass('tasks-grid');
   for (const group of ['Agent', 'Thread', 'Status']) {
     await userEvent.click(screen.getByRole('tab', { name: group }));
     expect(ids()).toEqual(fixtures.map((t) => t.task_id).sort());
+    expect(headings().map((h) => h.textContent)).toEqual(group === 'Agent'
+      ? ['agent-a6', 'Unassigned1']
+      : group === 'Thread' ? ['No thread1', 'THR-A6']
+        : ['Waiting on you1', 'In progress1', 'Pending1', 'Failed1', 'Completed1', 'Cancelled1', 'Resolved1']);
     for (const row of list.querySelectorAll('li > div')) {
       const anchor = row.querySelector('a')!;
       expect(anchor).toHaveClass('tasks-grid');
@@ -305,6 +311,49 @@ test('C01/C02/C04/C05 common scroll/grid, seven groups, honest content and per-r
     }
   }
   expect(screen.queryByRole('button', { name: /New task|show subtasks/i })).not.toBeInTheDocument();
+});
+
+test('Tasks resting surface covers rows and lineage with existing light/dark and hover tokens', async () => {
+  const fixtures = [task('ONE'), task('TWO'),
+    { ...task('OLD', 'superseded'), revisit_of_task_id: 'PREVIOUS', direct_revisits: ['NEXT'] }];
+  server.use(http.get('/api/v1/orgs/org-a/tasks/roots', () => HttpResponse.json({ tasks: fixtures, next_cursor: null })));
+  mount(client()); await screen.findByText('Brief ONE');
+  const list = screen.getByTestId('tasks-responsive-list');
+  expect(list.querySelectorAll('section')).toHaveLength(2);
+  for (const section of list.querySelectorAll('section')) {
+    expect(section).toHaveClass('bg-surface-raised', 'rounded-xl', 'border', 'shadow-sm');
+    expect(section).not.toHaveClass('bg-surface-page');
+  }
+  expect(list.querySelector('.tasks-column-header')).toHaveClass('bg-surface-page');
+  for (const row of list.querySelectorAll('li > div')) {
+    expect(row).toHaveClass('border-b', 'border-border-default');
+    const link = row.querySelector('a')!;
+    expect(link).toHaveClass('hover:bg-surface-hover');
+    // Transparent children expose the section surface, including dimmed lineage.
+    expect([...row.classList, ...link.classList].filter((c) => c.startsWith('bg-'))).toEqual([]);
+    expect(row.classList.contains('opacity-60')).toBe(link.getAttribute('href')?.endsWith('/OLD'));
+    link.focus(); expect(link).toHaveFocus();
+  }
+  for (const id of ['PREVIOUS', 'NEXT']) {
+    const link = list.querySelector(`a[href="/orgs/org-a/tasks/${id}"]`)!;
+    expect(link.closest('section')).toHaveClass('bg-surface-raised');
+    expect(link.closest('.opacity-60')).not.toBeNull();
+  }
+  expect(list.querySelector('a a')).toBeNull();
+  // Source linkage, not jsdom pixel/computed-color evidence: Tailwind consumes
+  // these @theme colors and the live theme selector supplies the dark override.
+  const tokensCss = readFileSync(resolve(process.cwd(), 'src/design-system/tokens/tokens.css'), 'utf8');
+  const appCss = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8');
+  expect(appCss).toContain('@import "./design-system/tokens/tokens.css"');
+  const [light, dark] = tokensCss.split(':root[data-theme="dark"]');
+  expect(light).toContain('@theme {');
+  expect(light).toMatch(/--color-surface-raised:\s*oklch\(1 0 0\);/);
+  expect(dark).toMatch(/--color-surface-raised:\s*oklch\(0\.245 0\.012 70\);/);
+  expect(light).toMatch(/--color-surface-hover:\s*oklch\(0\.982 0\.006 80\);/);
+  expect(dark).toMatch(/--color-surface-hover:\s*oklch\(0\.265 0\.012 70\);/);
+  await userEvent.click(screen.getByRole('button', { name: 'Filter' }));
+  expect(within(screen.getByLabelText('Task status')).getAllByRole('option').map((option) => option.getAttribute('value')))
+    .toEqual(['', 'escalated', 'in_progress', 'pending', 'completed', 'failed', 'cancelled', 'superseded']);
 });
 
 test.each([false, true])('C10/C11 duplicate sentinel, repeated retry and terminal empty=%s', async (emptyTerminal) => {

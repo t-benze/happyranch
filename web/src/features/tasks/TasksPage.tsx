@@ -149,8 +149,8 @@ const GROUP_ORDER_STATUS: Record<string, number> = {
   escalated: 0,
   in_progress: 1,
   pending: 2,
-  completed: 3,
-  failed: 4,
+  completed: 4,
+  failed: 3,
   cancelled: 5,
   superseded: 6,
 };
@@ -408,7 +408,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
                     count={tasks.length}
                     dot={groupDot(key, groupBy)}
                   />
-                  <section className="border-border-default bg-surface-page rounded-xl border shadow-sm">
+                  <section className="border-border-default bg-surface-raised rounded-xl border shadow-sm">
                     <ul>
                       {tasks.map((t) => (
                         <li key={t.task_id}>
