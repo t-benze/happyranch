@@ -479,13 +479,26 @@ def _publication_rows(path: Path) -> dict[str, list[tuple[object, ...]]]:
     check = sqlite3.connect(path)
     try:
         return {
-            "pointers": check.execute("SELECT namespace,current_generation,journal_id,snapshot_digest,state FROM workflow_authority_pointers ORDER BY namespace").fetchall(),
-            "journals": check.execute("SELECT id,namespace,generation,expected_generation,snapshot_digest,publisher,publisher_invocation,state,recovery_owner FROM workflow_publication_journals ORDER BY rowid").fetchall(),
+            "pointers": check.execute("SELECT namespace,current_generation,journal_id,snapshot_digest,state,profile_fence FROM workflow_authority_pointers ORDER BY namespace").fetchall(),
+            "journals": check.execute("SELECT id,namespace,generation,expected_generation,snapshot_digest,publisher,publisher_invocation,state,recovery_owner,snapshot_bytes,profile_fence,file_phase_owner FROM workflow_publication_journals ORDER BY rowid").fetchall(),
             "admissions": check.execute("SELECT id,namespace,generation,request_digest,admitted_by FROM workflow_admission_records ORDER BY id").fetchall(),
             "leases": check.execute("SELECT namespace,owner_token,owner_pid FROM workflow_publication_leases ORDER BY namespace").fetchall(),
         }
     finally:
         check.close()
+
+
+def _release_and_join(
+    release: threading.Event, worker: threading.Thread, errors: list[BaseException],
+    boundary_error: BaseException | None = None,
+) -> None:
+    """Always drain a real contender and retain every observed failure."""
+    release.set()
+    worker.join(5)
+    if worker.is_alive():
+        errors.append(AssertionError("contender_join_timeout"))
+    if boundary_error is not None:
+        errors.append(boundary_error)
 
 
 def test_proposed_publication_generation_fences_admission_and_preserves_committed_owner(tmp_path: Path) -> None:
@@ -534,7 +547,7 @@ def test_proposed_publication_recovery_fences_each_durable_stage_and_is_idempote
     with pytest.raises(PublicationInterrupted, match=stage):
         publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"next", publisher="agents-route", journal_id=f"interrupt-{stage}", interrupt_at=stage)
     fenced = _publication_rows(path)
-    assert fenced["journals"][-1][7] in {"prepared", "canonical_published", "pointer_committed"}
+    assert fenced["journals"][-1][7] in {"prepared", "file_phase_reserved", "canonical_published", "pointer_committed"}
     with pytest.raises(ValueError, match="publication_fenced"):
         admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id=f"blocked-{stage}", request_bytes=b"blocked", admitted_by="workflow-route", expected_generation=1)
     assert _publication_rows(path)["admissions"] == []
@@ -550,6 +563,38 @@ def test_proposed_publication_recovery_fences_each_durable_stage_and_is_idempote
         assert cache["engineering"][0] == 2
     assert observed["journals"][-1][7] in {"aborted", "cache_installed"}
     assert admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id=f"after-{stage}", request_bytes=b"ready", admitted_by="workflow-route", expected_generation=observed["pointers"][0][1]) == observed["pointers"][0][1]
+
+
+@pytest.mark.parametrize("stage", ("prepared", "staged", "replaced", "canonical", "pointer", "cache_written"))
+@pytest.mark.parametrize("initial,profile_fence", ((True, None), (False, 1)))
+def test_proposed_initial_and_current_fence_interruption_recovery_is_legal_and_idempotent(
+    tmp_path: Path, stage: str, initial: bool, profile_fence: int | None,
+) -> None:
+    path, files, cache = tmp_path / f"legal-{initial}-{stage}.db", tmp_path / "canonical", {}
+    conn = _adapter(path)
+    expected = 0
+    if not initial:
+        assert publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"base", publisher="bootstrap", journal_id="base") == 1
+        fence_authority_namespace(conn, cache=cache, namespace="engineering", reason="profile-change")
+        expected = 1
+    with pytest.raises(PublicationInterrupted, match=stage):
+        publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=expected, snapshot=b"next", publisher="profile-republish" if not initial else "bootstrap", journal_id=f"legal-{initial}-{stage}", profile_fence=profile_fence, interrupt_at=stage)
+    before = _publication_rows(path)
+    first = recover_authority_publication(conn, root=files, cache=cache, namespace="engineering")
+    second = recover_authority_publication(conn, root=files, cache=cache, namespace="engineering")
+    rows = _publication_rows(path)
+    assert rows["journals"][-1][9] == b"next" and rows["journals"][-1][10] == (0 if initial else 1)
+    assert rows["journals"][0 if initial else 1][0] == f"legal-{initial}-{stage}"
+    assert len(rows["journals"]) >= len(before["journals"])
+    if stage in {"prepared", "staged"}:
+        assert first == ("uninitialized_no_authority" if initial else "fenced_no_admission")
+        assert second == ("uninitialized_no_authority" if initial else "fenced_no_admission")
+        assert rows["pointers"] == ([] if initial else [("engineering", 1, "base", sha256_bytes(b"base"), "fenced", 1)])
+    else:
+        assert first == "recovered_coherent" and second == "rehydrated_coherent"
+        assert rows["pointers"] == [("engineering", expected + 1, f"legal-{initial}-{stage}", sha256_bytes(b"next"), "ready", 0 if initial else 1)]
+        assert admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id=f"admit-{initial}-{stage}", request_bytes=b"request", admitted_by="reader", expected_generation=expected + 1) == expected + 1
+    conn.close()
 
 
 def test_proposed_recovery_refuses_corrupt_committed_snapshot_without_rollback(tmp_path: Path) -> None:
@@ -619,7 +664,7 @@ def test_proposed_canonical_compensation_is_forward_only_and_recoverable(tmp_pat
     assert _publication_rows(path)["journals"][-1][7] == "forward_recovery_required"
     assert recover_authority_publication(conn, root=files, cache={}, namespace="engineering") == "recovered_coherent"
     after = _publication_rows(path)
-    assert after["pointers"] == [("engineering", 2, "forward", sha256_bytes(b"next"), "ready")]
+    assert after["pointers"] == [("engineering", 2, "forward", sha256_bytes(b"next"), "ready", 0)]
     assert after["journals"][-1][7] == "cache_installed"
     with pytest.raises(ValueError, match="stale_compensation_fenced"):
         compensate_authority_publication(conn, root=files, namespace="engineering", journal_id="forward", publisher="agents-route")
@@ -636,7 +681,7 @@ def test_proposed_replacement_before_journal_stamp_stays_forward_recoverable(tmp
     assert before["journals"][-1][7] == "forward_recovery_required"
     assert (files / "engineering.authority.json").read_bytes() == b"new"
     assert recover_authority_publication(conn, root=files, cache={}, namespace="engineering") == "recovered_coherent"
-    assert _publication_rows(path)["pointers"] == [("engineering", 2, "replaced", sha256_bytes(b"new"), "ready")]
+    assert _publication_rows(path)["pointers"] == [("engineering", 2, "replaced", sha256_bytes(b"new"), "ready", 0)]
 
 
 def test_proposed_initial_abort_is_stably_uninitialized_then_later_initializes(tmp_path: Path) -> None:
@@ -706,16 +751,18 @@ def test_proposed_profile_fence_rejects_a_prepared_old_profile_publisher_before_
     assert arrived.wait(5)
     fence = sqlite3.connect(path)
     fence.execute("PRAGMA foreign_keys=ON")
+    boundary_errors: list[BaseException] = []
     try:
         fence_authority_namespace(fence, cache={}, namespace="engineering", reason="profile-change")
+    except BaseException as exc:
+        boundary_errors.append(exc)
     finally:
-        release.set()
-        worker.join(5)
+        _release_and_join(release, worker, boundary_errors)
         fence.close()
-    assert not worker.is_alive() and len(outcomes) == 1
+    assert not boundary_errors and not worker.is_alive() and len(outcomes) == 1
     assert isinstance(outcomes[0], ValueError) and str(outcomes[0]) == "profile_fence_stale_publisher"
     residue = _publication_rows(path)
-    assert residue["pointers"] == [("engineering", 1, "base", sha256_bytes(b"stable"), "fenced")]
+    assert residue["pointers"] == [("engineering", 1, "base", sha256_bytes(b"stable"), "fenced", 1)]
     assert seed.execute("SELECT profile_fence FROM workflow_authority_pointers WHERE namespace='engineering'").fetchone() == (1,)
     assert residue["journals"][-1][0] == "stale-journal" and residue["journals"][-1][7] == "aborted"
     assert residue["admissions"] == [] and residue["leases"] == []
@@ -723,6 +770,138 @@ def test_proposed_profile_fence_rejects_a_prepared_old_profile_publisher_before_
     with pytest.raises(ValueError, match="authority_pointer_not_ready"):
         admit_authority_request(seed, root=files, cache=cache, namespace="engineering", request_id="stale-request", request_bytes=b"x", admitted_by="reader", expected_generation=1)
     assert publish_authority_generation(seed, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"profile-current", publisher="profile-republish", journal_id="current-journal", profile_fence=1) == 2
+
+
+@pytest.mark.parametrize("held_stage", ("staged", "canonical_replaced"))
+def test_proposed_file_phase_ownership_defers_profile_fence_until_publisher_drains(tmp_path: Path, held_stage: str) -> None:
+    path, files, cache = tmp_path / f"phase-{held_stage}.db", tmp_path / "canonical", {}
+    seed = _adapter(path)
+    assert publish_authority_generation(seed, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"base", publisher="bootstrap", journal_id="base") == 1
+    arrived, release = threading.Event(), threading.Event()
+    outcomes: list[object] = []
+
+    def publisher() -> None:
+        conn = _adapter(path)
+        try:
+            outcomes.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"owned", publisher="agents-route", journal_id=f"owned-{held_stage}", stage_hook=lambda stage: (arrived.set(), (_ for _ in ()).throw(AssertionError("phase_release_timeout")) if not release.wait(5) else None) if stage == held_stage else None))
+        except BaseException as exc:
+            outcomes.append(exc)
+        finally:
+            conn.close()
+
+    worker = threading.Thread(target=publisher, name=f"u0-phase-{held_stage}")
+    worker.start()
+    assert arrived.wait(5)
+    fence = _adapter(path)
+    boundary_errors: list[BaseException] = []
+    try:
+        with pytest.raises(ValueError, match="profile_fence_deferred:file_phase_reserved"):
+            fence_authority_namespace(fence, cache={}, namespace="engineering", reason="profile-change")
+        held = _publication_rows(path)
+        assert held["journals"][-1][0] == f"owned-{held_stage}" and held["journals"][-1][7] == "file_phase_reserved"
+        assert held["journals"][-1][9:] == (b"owned", 0, held["journals"][-1][11])
+        assert held["pointers"] == [("engineering", 1, "base", sha256_bytes(b"base"), "ready", 0)]
+    except BaseException as exc:
+        boundary_errors.append(exc)
+    finally:
+        _release_and_join(release, worker, boundary_errors)
+        fence.close()
+    assert not boundary_errors and outcomes == [2]
+    assert (files / "engineering.authority.json").read_bytes() == b"owned"
+    fence_authority_namespace(seed, cache=cache, namespace="engineering", reason="profile-change")
+    after = _publication_rows(path)
+    assert after["pointers"] == [("engineering", 2, f"owned-{held_stage}", sha256_bytes(b"owned"), "fenced", 1)]
+    assert after["journals"][-1][9:] == (b"owned", 0, after["journals"][-1][11])
+    seed.close()
+
+
+def test_proposed_admission_owned_transaction_and_publisher_contend_in_both_orders(tmp_path: Path) -> None:
+    path, files, cache = tmp_path / "admission-contends.db", tmp_path / "canonical", {}
+    seed = _adapter(path)
+    assert publish_authority_generation(seed, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"base", publisher="bootstrap", journal_id="base") == 1
+    admission_arrived, release_admission, publisher_started = threading.Event(), threading.Event(), threading.Event()
+    outcomes: list[object] = []
+
+    def admission_first() -> None:
+        conn = _adapter(path)
+        try:
+            outcomes.append(admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id="admission-first", request_bytes=b"request", admitted_by="reader", expected_generation=1, stage_hook=lambda stage: (admission_arrived.set(), (_ for _ in ()).throw(AssertionError("admission_release_timeout")) if not release_admission.wait(5) else None) if stage == "admission_begin_immediate" else None))
+        except BaseException as exc:
+            outcomes.append(exc)
+        finally:
+            conn.close()
+
+    def publisher_second() -> None:
+        conn = _adapter(path)
+        publisher_started.set()
+        try:
+            outcomes.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"after-admission", publisher="agents-route", journal_id="after-admission"))
+        except BaseException as exc:
+            outcomes.append(exc)
+        finally:
+            conn.close()
+
+    first, second = threading.Thread(target=admission_first, name="u0-admission-first"), threading.Thread(target=publisher_second, name="u0-publisher-second")
+    first.start()
+    assert admission_arrived.wait(5)
+    second.start()
+    assert publisher_started.wait(5)
+    held = _publication_rows(path)
+    assert held["pointers"] == [("engineering", 1, "base", sha256_bytes(b"base"), "ready", 0)]
+    assert held["journals"][-1][9:11] == (b"base", 0) and held["journals"][-1][11]
+    _release_and_join(release_admission, first, outcomes)
+    second.join(5)
+    assert not first.is_alive() and not second.is_alive() and outcomes == [1, 2]
+
+    publisher_arrived, release_publisher = threading.Event(), threading.Event()
+    reverse: list[object] = []
+
+    def publisher_first() -> None:
+        conn = _adapter(path)
+        try:
+            reverse.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=2, snapshot=b"publisher-first", publisher="teams-route", journal_id="publisher-first", stage_hook=lambda stage: (publisher_arrived.set(), (_ for _ in ()).throw(AssertionError("publisher_release_timeout")) if not release_publisher.wait(5) else None) if stage == "file_phase_reserved" else None))
+        except BaseException as exc:
+            reverse.append(exc)
+        finally:
+            conn.close()
+
+    worker = threading.Thread(target=publisher_first, name="u0-publisher-first")
+    worker.start()
+    assert publisher_arrived.wait(5)
+    denied = _adapter(path)
+    try:
+        with pytest.raises(ValueError, match="publication_fenced:file_phase_reserved"):
+            admit_authority_request(denied, root=files, cache=cache, namespace="engineering", request_id="denied-after-publisher", request_bytes=b"request", admitted_by="reader", expected_generation=2)
+        assert _publication_rows(path)["admissions"] == [("admission-first", "engineering", 1, sha256_bytes(b"request"), "reader")]
+    finally:
+        _release_and_join(release_publisher, worker, reverse)
+        denied.close()
+    assert reverse == [3]
+    seed.close()
+
+
+def test_proposed_release_join_harness_retains_worker_boundary_and_cleanup_errors() -> None:
+    arrived, release = threading.Event(), threading.Event()
+    errors: list[BaseException] = []
+
+    def failing_contender() -> None:
+        arrived.set()
+        assert release.wait(5)
+        try:
+            raise RuntimeError("injected_worker_failure")
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=failing_contender, name="u0-injected-contender")
+    worker.start()
+    assert arrived.wait(5)
+    try:
+        raise ValueError("injected_boundary_failure")
+    except BaseException as boundary:
+        _release_and_join(release, worker, errors, boundary)
+    assert not worker.is_alive()
+    errors.append(RuntimeError("injected_cleanup_failure"))
+    assert {str(error) for error in errors} == {"injected_worker_failure", "injected_boundary_failure", "injected_cleanup_failure"}
 
 
 def test_proposed_concurrent_same_label_publishers_and_admission_are_fenced_at_real_barriers(tmp_path: Path) -> None:
@@ -747,10 +926,15 @@ def test_proposed_concurrent_same_label_publishers_and_admission_are_fenced_at_r
     assert lease_arrived.wait(5)
     contender = sqlite3.connect(path)
     contender.execute("PRAGMA foreign_keys=ON")
-    with pytest.raises(ValueError, match="publication_lease_busy"):
-        publish_authority_generation(contender, root=files, cache={}, namespace="engineering", expected_generation=1, snapshot=b"loser", publisher="agents-route", journal_id="same-label-loser")
-    release_lease.set()
-    worker.join(5)
+    first_boundary_errors: list[BaseException] = []
+    try:
+        with pytest.raises(ValueError, match="publication_lease_busy"):
+            publish_authority_generation(contender, root=files, cache={}, namespace="engineering", expected_generation=1, snapshot=b"loser", publisher="agents-route", journal_id="same-label-loser")
+    except BaseException as exc:
+        first_boundary_errors.append(exc)
+    finally:
+        _release_and_join(release_lease, worker, first_boundary_errors)
+    assert not first_boundary_errors
     assert not worker.is_alive() and outcomes == [2]
     canonical_arrived, release_canonical = threading.Event(), threading.Event()
     outcomes.clear()
@@ -770,10 +954,15 @@ def test_proposed_concurrent_same_label_publishers_and_admission_are_fenced_at_r
     assert canonical_arrived.wait(5)
     admission = sqlite3.connect(path)
     admission.execute("PRAGMA foreign_keys=ON")
-    with pytest.raises(ValueError, match="publication_fenced:prepared"):
-        admit_authority_request(admission, root=files, cache=cache, namespace="engineering", request_id="blocked-during-publish", request_bytes=b"request", admitted_by="workflow-route", expected_generation=2)
-    release_canonical.set()
-    worker.join(5)
+    second_boundary_errors: list[BaseException] = []
+    try:
+        with pytest.raises(ValueError, match="publication_fenced:file_phase_reserved"):
+            admit_authority_request(admission, root=files, cache=cache, namespace="engineering", request_id="blocked-during-publish", request_bytes=b"request", admitted_by="workflow-route", expected_generation=2)
+    except BaseException as exc:
+        second_boundary_errors.append(exc)
+    finally:
+        _release_and_join(release_canonical, worker, second_boundary_errors)
+    assert not second_boundary_errors
     assert not worker.is_alive() and outcomes == [3]
     residue = _publication_rows(path)
     assert [row[0] for row in residue["journals"]] == ["base", "winner", "third"]

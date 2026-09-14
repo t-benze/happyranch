@@ -412,7 +412,8 @@ org pointer alone.
 | activation/admission/receipt/final-join/recovery | proposed adapter readers; current run-step/queue/legacy chain/fanout remain separately owned |
 
 Journal attempts have unique invocation identity; an aborted attempt does not
-reserve its generation. States are `prepared`, staged-file creation,
+reserve its generation. States are `prepared`, durable
+`file_phase_reserved` ownership, staged-file creation,
 canonical-file replacement, `canonical_published`, pointer-CAS
 (`pointer_committed`, the publication linearization point), cache write, then
 `cache_installed`. The durable lease is namespace plus unique invocation token
@@ -427,9 +428,12 @@ and canonical bytes. An absent/malformed/mismatched journal, active journal,
 incorrect canonical bytes, or stale cache refuses without a new admission,
 cache write, or history rewrite. Generation zero with no pointer has the stable
 `uninitialized_no_authority` recovery outcome: admission is denied and a later
-valid initial publication remains possible. A prepared record is never blindly
-discarded: compensation reads the canonical file and only aborts a verified
-pre-file attempt; replacement-before-journal-stamp becomes
+valid initial publication remains possible. An initial or current-fence
+predecessor is legal only when its selected active journal supplies the exact
+canonical bytes/digest/generation/fence; arbitrary files and malformed prior
+lineage still refuse before effect. A prepared or file-phase-reserved record is
+never blindly discarded: recovery/compensation reads the canonical file and
+only aborts a verified pre-file attempt; replacement-before-journal-stamp becomes
 `forward_recovery_required` and is completed forward. It never restores a
 stale file/cache/pointer. Active recovery and compensation first verify the
 entire selected transition: active journal bytes/digest/generation/profile-fence,
@@ -454,10 +458,13 @@ global lock nesting, or that the existing production routes already implement
 this protocol. Existing `teams_lock`, org DB RLock, and callback order remain
 separate; no coordinator spans clone/network/launch/callback. The proposed
 pointer carries a monotonic `profile_fence`; each prepared journal records the
-identity it observed. The profile coordinator aborts only a still-pre-file
-prepared old-profile journal before incrementing/fencing the pointer. A
-publisher rechecks that durable identity before its first staging-file write and
-again at pointer CAS. An old prepared publisher consequently cannot clear a
+identity it observed. Before its first filesystem effect, a publisher owns a
+durable invocation-bound `file_phase_reserved` state. The profile coordinator
+may abort only a still-pre-file `prepared` old-profile journal before
+incrementing/fencing the pointer; against a reserved or later phase it
+explicitly defers without global profile mutation until publication/recovery
+drains. A publisher rechecks that durable identity before reserving the phase
+and again at pointer CAS. An old prepared publisher consequently cannot clear a
 newer fence; only an explicitly profile-validated republisher with the current
 fence identity may return the pointer to ready. This is isolated-model proof,
 not a claim that current route locks already enforce it.
@@ -476,14 +483,18 @@ revalidates, same-label accidental reentrancy is refused, dead-owner recovery
 and cold-cache rehydration work, an aborted preparation can be retried with a
 new attempt ID, staged/replacement/pointer/cache windows fence and recover
 twice, canonical compensation is forward-only, missing pointer journals refuse,
-and corrupt committed snapshots refuse without destructive rollback. The new
-independent-connection profile schedule holds an old publisher at
-`journal_prepared`, commits the fence independently, releases/joins in `finally`,
-and observes the original publisher fail before files/cache/admission change;
-only a current-fence republisher is admitted. This is
-the Phase-1 minimum publication proof, not a general legacy or Phase-2
-serialization claim. Atomic request/outbox and uncertain-launch remain the next
-unit, not complete here.
+and corrupt committed snapshots refuse without destructive rollback. Independent
+profile schedules prove both outcomes: a fence at `journal_prepared` wins and
+the old publisher has no file/cache/admission effect; at `staged` and
+replacement-before-stamp the durable phase owner wins, the fence truthfully
+defers, and later succeeds after drain. The interruption table covers absent
+initial and explicit current-fence predecessors, `before_pointer` and
+`before_cache_stamp`, repeated recovery, and complete rows including snapshot
+bytes/profile-fence/phase owner. The actual admission-owned `BEGIN IMMEDIATE`
+contends with the publisher in both orders; release/join harnesses retain
+worker, boundary, and cleanup errors. This remains local evidence, not a
+complete Phase-1 publication proof, a general legacy/Phase-2 serialization
+claim, or F5 request/outbox/uncertain-launch completion.
 
 The three retained cancellation schedules now compare the complete typed audit
 payload to the invocation-owned pre-corruption writer capture, with separate
