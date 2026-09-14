@@ -32,9 +32,13 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 The Tasks heading, grouping controls, inline filters and root rows share one
 scroll owner. Status, Agent and Thread grouping use loaded matching roots;
 counts do not claim a server total or count subtasks. Status grouping preserves
-all seven lifecycle groups: Completed excludes superseded, which appears in
-Resolved. Only superseded rows are dimmed in every grouping. Tasks opts into
-blue in-progress and amber escalated badges and its own AppBar metrics; other
+all seven lifecycle groups in display order: Waiting on you, In progress,
+Pending, Failed, Completed, Cancelled, Resolved. Completed excludes superseded,
+which appears in Resolved; display order does not change severity rollups or
+filter-option order. Resting list rows and their lineage use the existing raised
+section surface (white in light mode, semantic raised override in dark mode),
+with distinct hover styling. Only superseded rows are dimmed in every grouping.
+Tasks opts into blue in-progress and amber escalated badges and its own AppBar metrics; other
 surfaces retain their defaults.
 
 Filter supports status and exact assigned-agent name. Apply submits both drafts;
