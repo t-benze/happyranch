@@ -72,6 +72,15 @@ export const realAgentsApi: AgentsApi = {
     });
   },
 
+  useCleanupActivity: (agentName) => {
+    const slug = useRealOrgSlug();
+    return useQuery({
+      queryKey: ['cleanup-activity', slug, agentName],
+      queryFn: () => agentsApi.getCleanupActivity(slug, agentName as string),
+      enabled: !!slug && !!agentName,
+    });
+  },
+
   useCreateAgent: () => {
     const slug = useRealOrgSlug();
     const qc = useQueryClient();

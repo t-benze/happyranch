@@ -29,6 +29,7 @@ export const MOCK_THREADS: ThreadRecord[] = [
     pinned: false,
     pinned_at: null,
     last_activity_at: null,
+    participants: ['engineering_head', 'support_lead'],
   },
   {
     thread_id: 'THR-002',
@@ -47,6 +48,7 @@ export const MOCK_THREADS: ThreadRecord[] = [
     pinned: false,
     pinned_at: null,
     last_activity_at: null,
+    participants: ['support_lead', 'ops_lead'],
   },
   {
     thread_id: 'THR-003',
@@ -65,6 +67,7 @@ export const MOCK_THREADS: ThreadRecord[] = [
     pinned: false,
     pinned_at: null,
     last_activity_at: null,
+    participants: ['ops_lead', 'engineering_head', 'support_lead'],
   },
   {
     thread_id: 'THR-004',
@@ -83,5 +86,6 @@ export const MOCK_THREADS: ThreadRecord[] = [
     pinned: false,
     pinned_at: null,
     last_activity_at: null,
+    participants: ['founder', 'support_lead'],
   },
 ];

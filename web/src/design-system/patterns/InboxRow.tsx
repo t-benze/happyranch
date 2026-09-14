@@ -16,21 +16,20 @@
  *     line-1 with right-pinned status/dream pills; IdBadge + AgentChip on
  *     line-2. Renders the `active`/`done` status pills (THREADS-05).
  *
- *   - `thread`  — THR-099 id-first single-line row (a-threads `.thread`): a
+ *   - `thread`  — THR-099 id-first grouped-list row (a-threads `.thread`): a
  *     leading STATUS-driven dot (open=green accent, archived=grey), then the
  *     mono thread id, the serif subject, the status BADGE routed through the
  *     shared `semanticTone` vocabulary (open→info/blue, archived→neutral/grey),
  *     an inline `from dream` pill, and `last <last_speaker>`; the relative
- *     timestamp (`meta`) is right-aligned. Line-2 (multi-participant list) is
- *     intentionally omitted — `participants` is not on the thread-LIST payload
- *     (honesty fence); only the backed `last_speaker` is shown.
+ *     timestamp (`meta`) is right-aligned. Line-2 renders backed current
+ *     participant names supplied by the bounded list response.
  *
  * The finer Direction-A states (waiting-on-you / review / merged / live / idle)
  * are intentionally absent — no field on the thread-list payload backs them.
  *
- * Founder-approved interactive-row mapping: bg-surface border-border-default
- * rounded-sm (8px) with shadow-pasture-sm. Active row uses accent-muted + left
- * marker; nested status/dream pills and indicators retain their own radii.
+ * Default rows retain their rounded bordered shell; thread rows are flush inside
+ * the enclosing bordered, divider-separated list. Active thread rows use the
+ * accent-muted marker; nested status/dream pills retain their own radii.
  */
 import type { ReactNode } from 'react';
 import { AgentChip } from './AgentChip';
@@ -50,7 +49,7 @@ interface InboxRowProps {
   fromDream?: boolean;
   /**
    * Row model. `default` is the historical two-line shape (unchanged);
-   * `thread` is the THR-099 id-first single-line thread-list row.
+   * `thread` is the THR-099 id-first grouped thread-list row.
    */
   layout?: 'default' | 'thread';
   /** Destination URL for the row. Used as the `<a href>`. */
@@ -67,6 +66,7 @@ interface InboxRowProps {
    * inside interactive is invalid HTML and breaks assistive tech.
    */
   pinControl?: ReactNode;
+  participants?: string[];
 }
 
 const FROM_DREAM_PILL =
@@ -85,6 +85,7 @@ export function InboxRow({
   href,
   onSelect,
   pinControl,
+  participants = [],
 }: InboxRowProps): JSX.Element {
   const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     if (e.defaultPrevented) return;
@@ -95,10 +96,10 @@ export function InboxRow({
     onSelect();
   };
 
-  const shellCls = `group relative block w-full rounded-sm border px-3 py-2 text-left no-underline transition-colors ${
+  const shellCls = `group relative block w-full ${layout === 'thread' ? 'px-3 py-2' : 'rounded-sm border px-3 py-2'} text-left no-underline ${
     active
-      ? 'bg-accent-muted border-accent-muted shadow-pasture-sm'
-      : 'bg-surface border-border-default shadow-pasture-sm hover:border-border-strong'
+      ? `bg-accent-muted ${layout === 'thread' ? '' : 'border-accent-muted shadow-pasture-sm'}`
+      : `bg-surface ${layout === 'thread' ? '' : 'border-border-default shadow-pasture-sm hover:border-border-strong'}`
   }`;
   const activeMarker = active && (
     <span
@@ -108,7 +109,7 @@ export function InboxRow({
   );
 
   if (layout === 'thread') {
-    // id-first single-line row (a-threads `.thread`). Status-driven leading dot
+    // id-first two-line row (a-threads `.thread`). Status-driven leading dot
     // (open=green accent, archived=grey); status badge routed through the shared
     // semanticTone vocabulary; inline `from dream` + `last <last_speaker>`.
     const dotCls = status === 'open' ? 'bg-accent' : 'bg-border-strong';
@@ -156,12 +157,15 @@ export function InboxRow({
             </span>
           )}
         </div>
+        <div className="text-caption text-text-muted mt-1 ml-[18px] truncate font-mono">
+          {participants.join(' · ')}
+        </div>
       </a>
     );
     return pinControl ? (
-      <div className="flex items-center gap-1">
-        <div className="min-w-0 flex-1">{rowEl}</div>
-        {pinControl}
+      <div className="relative">
+        <div className="min-w-0 pr-10">{rowEl}</div>
+        <div className="absolute right-2 top-2">{pinControl}</div>
       </div>
     ) : (
       rowEl

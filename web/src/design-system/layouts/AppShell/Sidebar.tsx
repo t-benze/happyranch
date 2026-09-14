@@ -124,6 +124,10 @@ export function Sidebar(): JSX.Element {
       ? location.pathname.match(new RegExp(`^/orgs/${activeSlug}/([^/]+)`))
       : null;
     const section = sectionMatch?.[1];
+    // Threads stays mounted for same-section org changes. Let its route-local
+    // list capture the outgoing ready owner before this navigation can reuse
+    // it for an uncached org's loading content.
+    window.dispatchEvent(new Event('threads:before-org-change'));
     navigate(section ? `/orgs/${target}/${section}` : `/orgs/${target}/dashboard`);
   };
 

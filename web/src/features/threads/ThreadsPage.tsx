@@ -12,7 +12,7 @@
  *
  * Composer: BROADCAST-ONLY ("Message the thread — all participants see it").
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/design-system/primitives/Button';
@@ -97,7 +97,8 @@ function threadStatusOrFallback(status: string): 'open' | 'archived' {
  * TaskCard / DashboardPage — no date library added. Pure over an injected
  * `nowMs` so it stays testable. Returns "just now" under a minute (no "ago").
  * `started_at` is always present on the thread-LIST payload (ThreadRecord);
- * per-row participants/preview/count are NOT and stay omitted (honesty fence).
+ * Per-row participant names come from the bounded list projection; previews
+ * and counts remain omitted because the list payload does not back them.
  */
 function relativeStartLabel(iso: string, nowMs: number): string {
   const min = Math.round((nowMs - new Date(iso).getTime()) / 60000);
@@ -356,10 +357,76 @@ export function ThreadsPage(): JSX.Element {
   const queryClient = useQueryClient();
   const { slug, thread_id: threadId } = useParams<{ slug: string; thread_id: string }>();
   const composerFocusRef = useRef<(() => void) | null>(null);
-
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
+  const listScrollByScopeRef = useRef(new Map<string, number>());
+  const restoredListScopeRef = useRef<string | null>(null);
+  const rowNavigationSavedScopeRef = useRef<string | null>(null);
   // Inbox state — segmented status filter (THREADS-02).
   const [bucket, setBucket] = useState<InboxBucket>('open');
   const [filter, setFilter] = useState('');
+  const scrollKey = `threads:list-scroll:${slug ?? ''}:${bucket}:${filter}`;
+  const setListScrollRef = useCallback((node: HTMLDivElement | null) => {
+    listScrollRef.current = node;
+  }, []);
+  const rememberListScroll = (owner = listScrollRef.current) => {
+    // Route-local, keyed state avoids leaking a position across orgs, buckets,
+    // or search terms while leaving router ownership untouched. The route
+    const scrollTop = owner ? owner.scrollTop : (listScrollByScopeRef.current.get(scrollKey) ?? 0);
+    listScrollByScopeRef.current.set(scrollKey, scrollTop);
+    sessionStorage.setItem(scrollKey, String(scrollTop));
+  };
+  const rememberListScrollSnapshot = () => {
+    // Scope cleanup can run after the descendant has rendered a new scope and
+    // browser layout has clamped its reused node. Prefer a nonzero observed
+    // position, which is authoritative for a real scroll event. A DOM-assisted
+    // initial setup has no scroll event, however, so take one connected-owner
+    // snapshot at the scope boundary rather than silently replacing it with
+    // the map's initial zero.
+    const observed = listScrollByScopeRef.current.get(scrollKey);
+    const owner = listScrollRef.current;
+    const scrollTop = observed ?? (owner?.isConnected ? owner.scrollTop : 0);
+    listScrollByScopeRef.current.set(scrollKey, scrollTop);
+    sessionStorage.setItem(scrollKey, String(scrollTop));
+  };
+  const observeListScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const scrollTop = event.currentTarget.scrollTop;
+    listScrollByScopeRef.current.set(scrollKey, scrollTop);
+    // Record real user movement while this scope owns the node. A later scope
+    // cleanup must never reinterpret a browser-clamped descendant as this
+    // scope's last position.
+    sessionStorage.setItem(scrollKey, String(scrollTop));
+  };
+  const rememberRowNavigationScroll = () => {
+    // A row activation observes the attached owner before navigation. Its
+    // subsequent route cleanup must not reread a detached/clamped node and
+    // overwrite this authoritative snapshot.
+    rememberListScroll();
+    rowNavigationSavedScopeRef.current = scrollKey;
+  };
+  useEffect(() => {
+    const captureReadyOrgScope = () => {
+      // Sidebar changes retain this route instance. Capture while the outgoing
+      // ready scope still owns the connected list before navigation renders an
+      // uncached org's loading content into the same owner. A pending scope has
+      // not restored yet, so its durable value must remain untouched.
+      if (restoredListScopeRef.current === scrollKey) rememberListScroll();
+    };
+    window.addEventListener('threads:before-org-change', captureReadyOrgScope);
+    return () => window.removeEventListener('threads:before-org-change', captureReadyOrgScope);
+  }, [scrollKey]);
+  const changeBucket = (nextBucket: InboxBucket) => {
+    // Unlike a row activation, a scope control reuses the list owner. Snapshot
+    // it before changing state, while it still represents the outgoing scope.
+    // This must not depend on a synthetic or browser-delivered scroll event.
+    rememberListScroll();
+    setBucket(nextBucket);
+  };
+  const changeFilter = (nextFilter: string) => {
+    // Filter changes are scope transitions too; snapshot the outgoing key
+    // before the reused owner is reset for the incoming filter.
+    rememberListScroll();
+    setFilter(nextFilter);
+  };
   useThreadsInboxSSE();
   const agentsQuery = useAgentsList();
   const agents = useMemo(() => agentsQuery.data?.agents ?? [], [agentsQuery.data]);
@@ -419,6 +486,51 @@ export function ThreadsPage(): JSX.Element {
         t.thread_id.toLowerCase().includes(needle),
     );
   }, [bucket, openQuery.data, archivedQuery.data, filter]);
+  useLayoutEffect(() => {
+    // A detail transition ends this list entry. Returning to the list must
+    // restore its saved offset, while ordinary query updates inside the entry
+    // must leave the live scroll owner alone.
+    if (threadId) {
+      restoredListScopeRef.current = null;
+      rowNavigationSavedScopeRef.current = null;
+      return;
+    }
+    // A scope enters with its ContentWrap already mounted, but restoration
+    // waits for the active bucket's list data. This keeps an initial delayed
+    // response from losing its route-local saved position and makes refetches
+    // (which do not create a new list entry) harmless.
+    if (bucketLoading || restoredListScopeRef.current === scrollKey) return;
+    const stored = sessionStorage.getItem(scrollKey);
+    // A missing key must reset the reused scroll owner. A stored zero is a
+    // valid saved position, so neither case may be treated as "leave it be".
+    const saved = stored === null ? 0 : Number(stored);
+    const target = Number.isFinite(saved) && saved >= 0 ? saved : 0;
+    // This must happen in the layout commit, rather than an animation frame:
+    // a returned list has a newly mounted owner and an unavailable frame must
+    // not turn a durable position into a no-op.
+    if (listScrollRef.current && restoredListScopeRef.current !== scrollKey) {
+      listScrollRef.current.scrollTop = target;
+      listScrollByScopeRef.current.set(scrollKey, target);
+      restoredListScopeRef.current = scrollKey;
+    }
+  }, [threadId, scrollKey, bucketLoading]);
+  useLayoutEffect(() => {
+    // The list ContentWrap is conditional on the detail route. Persist from
+    // its cleanup too, so browser history and the detail's ordinary Back link
+    // have the same route-local restoration point as an anchor activation.
+    // Persist only the position observed while this scope owned the node. A
+    // loading entry has not restored a position yet, so it must not overwrite
+    // its durable value with the browser's initial/clamped zero on teardown.
+    if (threadId) return;
+    return () => {
+      if (
+        restoredListScopeRef.current === scrollKey
+        && rowNavigationSavedScopeRef.current !== scrollKey
+      ) {
+        rememberListScrollSnapshot();
+      }
+    };
+  }, [threadId, scrollKey]);
   // THR-209 msg 9 (TASK-5976): the Pinned section is an OPEN-list concept
   // only. The server returns the open bucket pinned-first, ordered by
   // immutable numeric thread id DESC (THR-10 above THR-2) then unpinned in
@@ -672,7 +784,7 @@ export function ThreadsPage(): JSX.Element {
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Tabs
               value={bucket}
-              onValueChange={(v) => setBucket(v as InboxBucket)}
+              onValueChange={(v) => changeBucket(v as InboxBucket)}
             >
               <TabsList variant="segmented" aria-label="Status filter">
                 {INBOX_BUCKETS.map((b) => {
@@ -697,7 +809,7 @@ export function ThreadsPage(): JSX.Element {
             <Input
               type="text"
               value={filter}
-              onChange={(e) => setFilter(e.target.value)}
+              onChange={(e) => changeFilter(e.target.value)}
               placeholder={S.filterPlaceholder}
               className="text-caption h-7 w-full shrink-0 px-2 py-1 sm:w-44"
               aria-label="Filter threads"
@@ -712,7 +824,7 @@ export function ThreadsPage(): JSX.Element {
             `max-w-content` cap with 26px padding. The flex sizer owns the
             height; ContentWrap owns the scroll. */}
         <div className="min-h-0 flex-1">
-          <ContentWrap>
+          <ContentWrap scrollRef={setListScrollRef} onScroll={observeListScroll}>
           {/* Loading skeleton */}
           {bucketLoading && <InboxSkeleton />}
 
@@ -754,7 +866,7 @@ export function ThreadsPage(): JSX.Element {
               presentation effect there — while every row keeps its per-row
               pin toggle and the active query/filter still governs inclusion. */}
           {!bucketLoading && !bucketError && threads.length > 0 && (
-            <div className="flex flex-col gap-1">
+            <div className="overflow-hidden rounded-sm border border-border-default divide-y divide-border-default">
               {pinnedThreads.length > 0 && (
                 <h2 className="text-text-muted px-1 pt-2 pb-1 text-xs font-semibold tracking-wider uppercase">
                   {S.pinnedSection}
@@ -780,10 +892,11 @@ export function ThreadsPage(): JSX.Element {
                       </span>
                     }
                     href={path}
-                    onSelect={() => navigate(path)}
+                    onSelect={() => { rememberRowNavigationScroll(); navigate(path); }}
                     pinControl={
                       <RowPinControl thread={t} onError={setPinError} />
                     }
+                    participants={t.participants}
                   />
                 );
               })}
@@ -812,10 +925,11 @@ export function ThreadsPage(): JSX.Element {
                       </span>
                     }
                     href={path}
-                    onSelect={() => navigate(path)}
+                    onSelect={() => { rememberRowNavigationScroll(); navigate(path); }}
                     pinControl={
                       <RowPinControl thread={t} onError={setPinError} />
                     }
+                    participants={t.participants}
                   />
                 );
               })}
@@ -829,9 +943,6 @@ export function ThreadsPage(): JSX.Element {
   return (
     <>
       {threadId ? (
-        // Transcript-focus view (THREADDET-01): the list column collapses and
-        // the detail column (transcript + composer + right rail) takes the full
-        // width. The back link returns to the single-column list.
         <DetailColumn
           loading={activeThread.isLoading}
           errored={activeThread.isError || !activeThread.data}
@@ -1440,8 +1551,8 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
         const variant = messageVariant(m);
         return (
           <div key={`${m.seq}-${m.speaker}-${m.kind}`}>
-            {/* System rows — centered "· system event · broadcast to all"
-                divider (THR-061 a-thread-detail .sys), not a chat bubble.
+            {/* System rows — full-width separator above an inline, wrapping
+                event description and trailing metadata, not a chat bubble.
                 Terminal responder history (incl. a system-row-anchored REPLY
                 range that settled) renders as the same light strip below the
                 divider (TASK-5553): ResponderStatusStrip filters to terminal
@@ -1537,7 +1648,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
 }
 
 /* ------------------------------------------------------------------ */
-/*  System divider — centered "· system event · broadcast to all"      */
+/*  System divider — full-width rule above wrapping event text      */
 /* ------------------------------------------------------------------ */
 
 interface SystemDividerProps {
@@ -1549,18 +1660,17 @@ interface SystemDividerProps {
 function SystemDivider({ timestamp, systemPayload, slug }: SystemDividerProps): JSX.Element {
   const description = describeSystem(systemPayload, slug);
   return (
-    <div className="my-1 flex items-center gap-3" title={new Date(timestamp).toLocaleString()}>
-      <span aria-hidden="true" className="bg-border-subtle h-px flex-1" />
-      <span className="text-text-muted text-mono-sm flex min-w-0 items-center gap-1.5 font-mono">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0" aria-hidden="true">
+    <div className="my-1 w-full min-w-0" title={new Date(timestamp).toLocaleString()}>
+      <div aria-hidden="true" className="bg-border-subtle mb-2 h-px w-full" />
+      <div className="text-text-muted text-mono-sm break-words font-mono">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mr-1.5 inline-block align-text-bottom" aria-hidden="true">
           <path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2" />
           <circle cx="9" cy="7" r="3" />
           <path d="M22 21v-2a4 4 0 00-3-3.9" />
         </svg>
-        <span className="text-text-secondary">{description}</span>
-        <span className="text-text-disabled shrink-0 whitespace-nowrap">· {S.systemEventLabel} event · broadcast to all</span>
-      </span>
-      <span aria-hidden="true" className="bg-border-subtle h-px flex-1" />
+        <span className="text-text-secondary whitespace-pre-wrap">{description}</span>{' '}
+        <span className="text-text-disabled">· {S.systemEventLabel} event · broadcast to all</span>
+      </div>
     </div>
   );
 }
@@ -1611,7 +1721,7 @@ function describeSystem(payload: Record<string, unknown> | null, slug?: string):
         ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
         : taskId;
       const summary = payload.final_output_summary
-        ? String(payload.final_output_summary).slice(0, 240)
+        ? String(payload.final_output_summary)
         : null;
       return (
         <>
@@ -1647,7 +1757,7 @@ function describeSystem(payload: Record<string, unknown> | null, slug?: string):
       const taskLink = slug && taskId
         ? <Link to={`/orgs/${slug}/tasks/${taskId}`} className="underline">{taskId}</Link>
         : taskId;
-      const reason = payload.reason ? String(payload.reason).slice(0, 240) : null;
+      const reason = payload.reason ? String(payload.reason) : null;
       return (
         <>
           task {taskLink} escalated{reason ? ` · ${reason}` : ''}

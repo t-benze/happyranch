@@ -83,6 +83,14 @@ export interface TaskRecord {
   [extra: string]: unknown;
 }
 
+export interface CleanupActivity {
+  task_id: string;
+  status: TaskStatus;
+  created_at: string;
+  result_status: TaskStatus | null;
+  output_summary: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Task attachments (THR-109)
 // ---------------------------------------------------------------------------
@@ -256,6 +264,8 @@ export interface ThreadRecord {
    *  the wire (THR-209 msg 9: pinned ranking uses the immutable numeric
    *  thread ID, not activity). */
   last_activity_at: string | null;
+  /** Current participant names, projected only on bounded list rows. */
+  participants: string[];
 }
 
 export interface ThreadDetailResponse extends ThreadRecord {

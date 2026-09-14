@@ -18,7 +18,9 @@ escalated}.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+import time
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Callable
 
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator.org_config import load_org_config
@@ -209,6 +211,131 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             thread_id=task.dispatched_from_thread_id,
         )
 
+    # THR-247: a clean Codex provider return without the exact callback gets
+    # one durably-spent, provider-resumed recovery before ordinary failure.
+    # No timeout/error/cancel/recovery invocation is eligible, and a late
+    # origin callback loses to the transactional claim rather than being
+    # inferred from prose or a prior job/session outcome.
+    accepted_recovery_callback = False
+    recovery_session_id: str | None = None
+    recovery_claimed = False
+    # Resolution normally happened inside ``_run_agent``.  Preserve the
+    # historic fail-closed no-callback outcome for legacy rows/tests whose
+    # executor definition is no longer available: they are simply ineligible
+    # for the Codex-only recovery, not a new invocation error.
+    from runtime.orchestrator.orchestrator import AgentTerminatedError, AgentUnavailableError
+    try:
+        recovery_executor = orch._resolve_executor_name(agent)
+    except (AgentTerminatedError, AgentUnavailableError):
+        recovery_executor = None
+    if (
+        result.success and report is None
+        and recovery_executor == "codex"
+        and bool(result.agent_session_id)
+    ):
+        origin_session_id = result.session_id
+        recovery_session_id = orch._build_session_id()
+        # Establish the live budget before the durable claim.  Claim/SQLite
+        # contention is part of this one recovery attempt; it must never get
+        # a fresh 120 seconds after returning.
+        recovery_deadline_monotonic = time.monotonic() + 120.0
+        claimed_at = datetime.now(timezone.utc)
+        expires_at = claimed_at + timedelta(seconds=120)
+        if db.claim_task_completion_recovery(
+            task_id=task_id, agent=agent, origin_session_id=origin_session_id,
+            recovery_session_id=recovery_session_id,
+            provider_session_id=result.agent_session_id,
+            claimed_at=claimed_at.isoformat(), expires_at=expires_at.isoformat(),
+        ):
+            recovery_claimed = True
+            # Claim-before-launch deliberately spends the one attempt even if
+            # preparation/admission/launch refuses.  The short prompt carries
+            # the current binding and never replays the implementation brief.
+            recovery_prompt = (
+                "Your previous turn ended without a HappyRanch completion callback. "
+                "Submit the required callback now using the current task/session "
+                f"binding task={task_id} session={recovery_session_id} and the "
+                "work already performed. If waiting on a job, report blocked with "
+                "its actual job ID. Do not claim unverified success. Do not continue "
+                "implementation or start new work."
+            )
+            # Wall expiry is durable; this monotonic deadline fences the live
+            # invocation across preparation and admission waits.
+            remaining = max(0, int(recovery_deadline_monotonic - time.monotonic()))
+            if remaining > 0:
+                try:
+                    recovery_result, recovery_report = orch._run_agent(
+                        task_id, agent, recovery_prompt,
+                        runtime_session_id=recovery_session_id,
+                        resume_session_id=result.agent_session_id,
+                        origin_runtime_session_id=origin_session_id,
+                        timeout_seconds_override=remaining,
+                        recovery_deadline_monotonic=recovery_deadline_monotonic,
+                        recovery=True,
+                    )
+                    if recovery_result.token_usage is not None:
+                        db.insert_session_token_usage(
+                            task_id=task_id, agent=agent,
+                            session_id=recovery_result.session_id,
+                            executor=orch._resolve_executor_name(agent),
+                            token_usage=recovery_result.token_usage,
+                            scope_type="task", scope_id=task_id,
+                            thread_id=task.dispatched_from_thread_id,
+                        )
+                    result, report = recovery_result, recovery_report
+                except Exception as exc:
+                    result.error = f"completion recovery launch failed: {exc}"
+            else:
+                # The durable claim has already spent the sole recovery.  Do
+                # not leave a clean origin omission in progress merely
+                # because claim contention consumed the entire live budget.
+                result.success = False
+                result.error = "completion recovery live budget expired before launch"
+            accepted_row = db.get_accepted_task_completion_recovery_result(
+                task_id=task_id, agent=agent,
+            )
+            if accepted_row is not None:
+                from runtime.orchestrator.orchestrator import completion_report_from_result_row
+                report = completion_report_from_result_row(
+                    task_id, accepted_row, fallback_agent=agent,
+                )
+                # The accepted callback is the durable terminal authority.
+                # Keep the provider result untouched for honest diagnostics and
+                # usage accounting, but do not let a late provider error erase
+                # an already-admitted recovery result.
+                accepted_recovery_callback = True
+        else:
+            # An exact origin callback may have committed between the initial
+            # read and claim. Decode only that persisted invocation result.
+            accepted = orch._read_completion_from_db(task_id, agent, origin_session_id)
+            if accepted is not None:
+                report = accepted
+
+    # A newer ordinary generation can replace the claimed recovery while its
+    # preparation/admission path is waiting.  Its launch validator refuses to
+    # spawn, and its old unwind must not fail, clear, consume, or otherwise
+    # settle the newer owner.  The current durable binding is the authority;
+    # this is intentionally before ordinary result classification.
+    refetch = db.get_task(task_id)
+    if (
+        # A candidate recovery id is allocated before the transaction.  A
+        # losing claim can mean the exact origin callback won the race, in
+        # which case the task correctly remains owned by that origin session;
+        # comparing it to an unused candidate would strand the accepted row.
+        recovery_claimed
+        and refetch is not None
+        # An exhausted/pre-publication recovery legitimately leaves the
+        # durable origin binding in place.  Only a third generation is a
+        # replacement whose state this old invocation must preserve.
+        and refetch.current_session_id not in {recovery_session_id, origin_session_id}
+        and refetch.cancelled_at is None
+    ):
+        logger.debug(
+            "run_step %s: recovery ownership replaced before launch/settlement",
+            task_id,
+        )
+        return
+
     # Cancel-race Guard B: /cancel can land between try_claim_for_step and
     # subprocess exit. The l.41 entry guard only catches NEW enqueues. If we
     # observe cancelled_at != NULL here, the report (if any) is from a
@@ -246,7 +373,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         return
 
     # ---- 5. Classify outcome ----
-    if not result.success or report is None:
+    if (not result.success or report is None) and not accepted_recovery_callback:
         note = _session_failed_note(result, report)
         _fail(orch, task_id, note=note)
         _enqueue_parent_if_waiting(orch, task_id, root_auto_revisit_spawned=False)
@@ -262,13 +389,243 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     # candidate claim from it, so restart/recovery re-entry of the SAME row
     # maps to the SAME candidate (never a second evaluation).
     result_row_id = None
-    if report is not None and isinstance(
+    if accepted_recovery_callback:
+        accepted_row = db.get_accepted_task_completion_recovery_result(
+            task_id=task_id, agent=agent,
+        )
+        if accepted_row is None:
+            current = db.get_task(task_id)
+            if (
+                current is None
+                or current.cancelled_at is not None
+                or current.current_session_id != recovery_session_id
+            ):
+                # Cancellation or a newer owner won after the earlier lookup.
+                # This old runner has no authority to settle that generation.
+                return
+            # The ledger/result/current-owner binding changed after the
+            # callback was observed.  Never fall back to an unrelated latest
+            # result row; terminally fail closed instead.
+            _fail(orch, task_id, note="accepted completion recovery result no longer matches durable binding")
+            _enqueue_parent_if_waiting(orch, task_id, root_auto_revisit_spawned=False)
+            _maybe_post_thread_followup(
+                orch, task_id, status=TaskStatus.FAILED, auto_revisit_spawned=False,
+            )
+            return
+        result_row_id = accepted_row["id"]
+    if (not accepted_recovery_callback) and report is not None and isinstance(
         getattr(result, "session_id", None), str
     ) and result.session_id:
         _result_row = db.get_latest_task_result(task_id, agent, result.session_id)
         if _result_row is not None:
             result_row_id = _result_row["id"]
-    _consume_completion_report(orch, task_id, report, result_row_id=result_row_id)
+    if accepted_recovery_callback:
+        _consume_accepted_completion_recovery(
+            orch, task_id, report, agent=agent,
+            session_id=recovery_session_id or "", result_row_id=result_row_id,
+        )
+    else:
+        _consume_completion_report(orch, task_id, report, result_row_id=result_row_id)
+
+
+def _consume_accepted_completion_recovery(
+    orch: "Orchestrator", task_id: str, report, *, agent: str, session_id: str,
+    result_row_id: int,
+) -> None:
+    """Reconcile one ledger-selected recovery callback at the effect boundary.
+
+    Terminal effects retain their established reconciliation.  The blocked
+    branch uses a dedicated transaction because its completion audit, parked
+    carrier, blocked audit, and callback-consumed ledger receipt are one
+    effect.  A crash before its commit replays the immutable accepted result;
+    a crash after commit leaves ordinary startup to reconstruct queue delivery.
+    """
+    db = orch._db
+    current = db.get_task(task_id)
+    if current is None:
+        return
+    effects_applied = (
+        current.status in TERMINAL_STATES
+    )
+    if report.status == "blocked" and report.waiting_on_job_ids:
+        import json as _json
+        deduped = sorted(set(report.waiting_on_job_ids))
+        # Preserve the ordinary blocked-report validation before the special
+        # recovery transaction.  A missing job remains an ordinary fail-closed
+        # outcome; it is not a recoverable partial receipt.
+        if any(db.get_job_status(jid) is None for jid in deduped):
+            _consume_completion_report(orch, task_id, report, result_row_id=result_row_id)
+            return
+        transitioned = db.consume_accepted_blocked_task_completion_recovery(
+            task_id=task_id, agent=agent, session_id=session_id,
+            result_row_id=result_row_id, blocked_on_job_ids=deduped,
+            note=report.output_summary, completion_payload=report.model_dump(),
+            settled_at=datetime.now(timezone.utc).isoformat(),
+        )
+        if transitioned:
+            # This is deliberately post-commit.  A crash here leaves a fully
+            # durable parked receipt and startup reconstructs the one wake.
+            _maybe_resume_blocked_task(
+                orch, task_id, trigger="block_submit", triggering_job_id=None,
+            )
+        return
+    # A leaf completed callback has no manager decision side effects.  Make
+    # its durable audit, terminal row, and accepted-result receipt one unit;
+    # otherwise a crash after the independently committed audit replays it.
+    if report.status == "completed" and current.task_type == "subtask":
+        reviewer = None
+        if current.parent_task_id is not None and not orch.teams.is_team_manager(agent):
+            parent = db.get_task(current.parent_task_id)
+            try:
+                reviewer = orch.teams.manager_for_team(
+                    parent.team if parent is not None else current.team,
+                ).name
+            except KeyError:
+                reviewer = "unknown_manager"
+        transitioned = db.consume_accepted_completed_task_completion_recovery(
+            task_id=task_id, agent=agent, session_id=session_id,
+            result_row_id=result_row_id, note=report.output_summary,
+            output_dir=report.output_dir, completion_payload=report.model_dump(),
+            settled_at=datetime.now(timezone.utc).isoformat(),
+            reviewer=reviewer,
+            verdict=report.verdict if report.verdict is not None else "approved",
+        )
+        if transitioned:
+            orch._update_task_history(task_id)
+            _handoff_consumed_recovery_terminal_effects(
+                orch, task_id, agent, session_id, result_row_id,
+                TaskStatus.COMPLETED.value,
+                after_recovery_cleanup=lambda: _enqueue_parent_if_waiting(orch, task_id),
+            )
+        return
+    _recovery_decision = getattr(report, "decision", None)
+    _recovery_action = (
+        _recovery_decision.get("action") if isinstance(_recovery_decision, dict)
+        else getattr(_recovery_decision, "action", None)
+    )
+    # A successful authority CONTINUE_SAME_ROOT changes the root to PENDING
+    # before this recovery receipt is settled.  Re-entry after a crash must
+    # recognize only the committed exact causal continuation, rather than
+    # rerunning the authority evaluator or guessing from status alone.
+    if (
+        report.status == "completed" and current.task_type == "task"
+        and current.parent_task_id is None and _recovery_action == "escalate"
+        and current.status is TaskStatus.PENDING
+    ):
+        db.reconcile_accepted_recovery_continued_same_root(
+            task_id=task_id, agent=agent, session_id=session_id,
+            result_row_id=result_row_id,
+            completion_payload={**report.model_dump(), "_recovery_session_id": session_id,
+                                "_result_row_id": result_row_id},
+            settled_at=datetime.now(timezone.utc).isoformat(),
+        )
+        return
+    # The existing defensive non-root manager branch routes escalation to its
+    # parent.  Its recovery receipt must be durable with that FAILED effect,
+    # rather than suppressed by the root-escalation receipt special case.
+    if (
+        report.status == "completed" and current.task_type == "task"
+        and current.parent_task_id is not None and _recovery_action == "escalate"
+    ):
+        reason = getattr(_recovery_decision, "reason", None) or "Escalated"
+        transitioned = db.consume_accepted_nonroot_escalation_recovery(
+            task_id=task_id, agent=agent, session_id=session_id,
+            result_row_id=result_row_id,
+            note=f"non-root escalation requested ({reason}); routed to parent",
+            completion_payload={**report.model_dump(), "_recovery_session_id": session_id,
+                                "_result_row_id": result_row_id},
+            settled_at=datetime.now(timezone.utc).isoformat(),
+        )
+        if transitioned:
+            orch._update_task_history(task_id)
+            _handoff_consumed_recovery_terminal_effects(
+                orch, task_id, agent, session_id, result_row_id,
+                TaskStatus.FAILED.value,
+                after_recovery_cleanup=lambda: _enqueue_parent_if_waiting(orch, task_id),
+            )
+        return
+    if not effects_applied:
+        # An interrupted ordinary terminal transition may have committed its
+        # audit before _complete.  The immutable accepted session identifies
+        # that receipt; never emit a second audit while re-entering it.
+        # Root recovery escalation owns its completion receipt in the same
+        # final transaction as the escalation and consumed marker.  Writing it
+        # here would survive a later transaction rollback and duplicate it on
+        # the restart replay.
+        recovery_root_escalation = (
+            current.task_type == "task" and _recovery_action == "escalate"
+        )
+        if not recovery_root_escalation and not db.has_task_completion_report_audit(
+            task_id=task_id, agent=agent, session_id=session_id,
+            result_row_id=result_row_id,
+        ):
+            db.insert_audit_log(
+                task_id=task_id, agent=agent, action="completion_report",
+                payload={**report.model_dump(), "_recovery_session_id": session_id,
+                         "_result_row_id": result_row_id},
+            )
+        _consume_completion_report(
+            orch, task_id, report, result_row_id=result_row_id,
+            recovery_reentry=(current.task_type == "task"),
+            recovery_owner=(agent, session_id) if current.task_type == "task" else None,
+            recovery_result_id=result_row_id if current.task_type == "task" else None,
+        )
+        # ``run_authority_hook`` may have returned the already-authorized
+        # same root to pending.  Couple its exact recovery receipt now; a
+        # later startup will take the branch above if this process dies first.
+        continued = db.get_task(task_id)
+        if (
+            current.task_type == "task" and current.parent_task_id is None
+            and _recovery_action == "escalate" and continued is not None
+            and continued.status is TaskStatus.PENDING
+        ):
+            db.reconcile_accepted_recovery_continued_same_root(
+                task_id=task_id, agent=agent, session_id=session_id,
+                result_row_id=result_row_id,
+                completion_payload={**report.model_dump(), "_recovery_session_id": session_id,
+                                    "_result_row_id": result_row_id},
+                settled_at=datetime.now(timezone.utc).isoformat(),
+            )
+            return
+        # Manager decisions keep their ordinary authority-hook and delivery
+        # semantics.  A terminal decision may have committed before a crash;
+        # cleanup is therefore reconstructed from the durable terminal row.
+        settled = db.get_task(task_id)
+        # A losing final completion CAS may observe a cancellation installed
+        # immediately before it.  That cancellation owns its own cleanup and
+        # parent delivery; recovery must not replay those effects.  A durable
+        # completed manager-DONE effect, including crash re-entry, remains
+        # reconstructible here.
+        accepted = db.get_accepted_task_completion_recovery_result(
+            task_id=task_id, agent=agent,
+        )
+        if (
+            current.task_type == "task" and settled is not None
+            and settled.status is TaskStatus.COMPLETED
+            # A terminal row alone is not this recovery's authority.  A
+            # competing owner may have completed after the final CAS lost.
+            and settled.assigned_agent == agent
+            and settled.current_session_id == session_id
+            and accepted is not None and accepted["id"] == result_row_id
+        ):
+            if db.mark_task_completion_recovery_callback_consumed(
+                task_id=task_id, agent=agent, session_id=session_id,
+                result_row_id=result_row_id,
+                settled_at=datetime.now(timezone.utc).isoformat(),
+            ):
+                _handoff_consumed_recovery_terminal_effects(
+                    orch, task_id, agent, session_id, result_row_id,
+                    TaskStatus.COMPLETED.value,
+                    after_recovery_cleanup=lambda: _enqueue_parent_if_waiting(orch, task_id),
+                )
+    settled = db.get_task(task_id)
+    if (settled is not None and settled.status is TaskStatus.COMPLETED
+            and settled.assigned_agent == agent and settled.current_session_id == session_id):
+        db.mark_task_completion_recovery_callback_consumed(
+            task_id=task_id, agent=agent, session_id=session_id,
+            result_row_id=result_row_id,
+            settled_at=datetime.now(timezone.utc).isoformat(),
+        )
 
 
 def _is_continued_turn_decision(active_envelope, result_row_id: int | None) -> bool:
@@ -392,7 +749,9 @@ def _escalate_continued_turn_violation(
 
 def _consume_completion_report(
     orch: "Orchestrator", task_id: str, report,
-    *, result_row_id: int | None = None,
+    *, result_row_id: int | None = None, recovery_reentry: bool = False,
+    recovery_owner: tuple[str, str] | None = None,
+    recovery_result_id: int | None = None,
 ) -> None:
     """Consume a persisted CompletionReport and apply its transition.
 
@@ -499,9 +858,14 @@ def _consume_completion_report(
     # provenance, safe to read post-claim.
     if task.task_type == "task":
         decision = orch._parse_next_step(report)
-        _step_audit_id = orch._audit.log_orchestration_step(
-            task_id, next_count, decision.model_dump(exclude_none=True),
-        )
+        if recovery_reentry and db.has_orchestration_step_audit(
+            task_id=task_id, step_number=next_count,
+        ):
+            _step_audit_id = None
+        else:
+            _step_audit_id = orch._audit.log_orchestration_step(
+                task_id, next_count, decision.model_dump(exclude_none=True),
+            )
     else:
         from runtime.models import NextStep
         decision = NextStep(action="done", summary=report.output_summary)
@@ -531,16 +895,27 @@ def _consume_completion_report(
 
     # ---- 7. Dispatch on action ----
     if decision.action == "done":
-        _complete(
-            orch, task_id,
-            note=decision.summary or report.output_summary,
-            output_dir=report.output_dir,
-        )
-        _enqueue_parent_if_waiting(orch, task_id)
-        _maybe_post_thread_followup(
-            orch, task_id,
-            status=TaskStatus.COMPLETED, auto_revisit_spawned=False,
-        )
+        if recovery_owner is None:
+            completed = _complete(orch, task_id, note=decision.summary or report.output_summary, output_dir=report.output_dir)
+        else:
+            completed = _complete(orch, task_id, note=decision.summary or report.output_summary,
+                                  output_dir=report.output_dir,
+                                  recovery_owner=(*recovery_owner, recovery_result_id),
+                                  after_recovery_cleanup=lambda: _enqueue_parent_if_waiting(
+                                      orch, task_id),
+                                  after_recovery_parent_effect=lambda: _maybe_post_thread_followup(
+                                      orch, task_id,
+                                      status=TaskStatus.COMPLETED,
+                                      auto_revisit_spawned=False,
+                                  ))
+        if not completed:
+            return
+        if recovery_owner is None:
+            _enqueue_parent_if_waiting(orch, task_id)
+            _maybe_post_thread_followup(
+                orch, task_id,
+                status=TaskStatus.COMPLETED, auto_revisit_spawned=False,
+            )
         return
 
     if decision.action == "escalate":
@@ -590,13 +965,33 @@ def _consume_completion_report(
         # PR #34) by serializing against /cancel via the Database RLock.
         # If False: founder cancellation landed between Guard B's re-fetch and
         # here. Drop the escalate silently — the founder's terminal state wins.
-        if not db.try_escalate(task_id, reason=reason):
+        recovery_escalation = recovery_owner is not None
+        # Keep the ordinary Database contract (task_id + reason) intact.
+        # Recovery metadata is a separate, server-authorized transaction
+        # extension and must never leak into ordinary callers or their
+        # wrappers.
+        escalate_kwargs: dict = {"reason": reason}
+        if recovery_escalation:
+            escalate_kwargs.update(
+                recovery_owner=recovery_owner,
+                recovery_result_id=result_row_id,
+                recovery_completion_payload={
+                    **report.model_dump(), "_recovery_session_id": recovery_owner[1],
+                    "_result_row_id": result_row_id,
+                },
+                recovery_settled_at=datetime.now(timezone.utc).isoformat(),
+            )
+        if not db.try_escalate(task_id, **escalate_kwargs):
             logger.debug(
                 "run_step %s: cancelled between re-check and escalate, dropping",
                 task_id,
             )
             return
-        orch._audit.log_escalation(task_id, agent, reason)
+        # The recovery-aware CAS durably included this audit with its exact
+        # accepted-result receipt.  Ordinary consumers retain their existing
+        # independently committed audit path.
+        if not recovery_escalation:
+            orch._audit.log_escalation(task_id, agent, reason)
         orch.notify_escalated(
             task_id=task_id, agent=agent, reason=reason,
             last_summary=getattr(report, "output_summary", "") or "",
@@ -1882,25 +2277,42 @@ def _is_already_terminal(orch: "Orchestrator", task_id: str) -> bool:
     )
 
 
-def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str | None = None) -> None:
+def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str | None = None,
+              recovery_owner: tuple[str, str, int] | None = None,
+              after_recovery_cleanup: Callable[[], None] | None = None,
+              after_recovery_parent_effect: Callable[[], None] | None = None) -> bool:
     from datetime import datetime, timezone
     # Idempotence guard: /cancel may have already taken this task to FAILED
     # between Popen return and here. Don't resurrect a cancelled task back to
     # COMPLETED just because the subprocess happened to finish cleanly before
     # SIGTERM arrived.
     if _is_already_terminal(orch, task_id):
-        return
-    orch._db.update_task(
-        task_id,
-        status=TaskStatus.COMPLETED,
-        block_kind=None,
-        note=note,
-        final_output_dir=output_dir,
-        completed_at=datetime.now(timezone.utc).isoformat(),
-    )
+        return False
+    if recovery_owner is not None:
+        if not orch._db.complete_task_if_current_recovery_owner(
+            task_id=task_id, agent=recovery_owner[0], session_id=recovery_owner[1],
+            note=note, output_dir=output_dir, completed_at=datetime.now(timezone.utc).isoformat(),
+            result_row_id=recovery_owner[2],
+        ):
+            return False
+    else:
+        orch._db.update_task(task_id, status=TaskStatus.COMPLETED, block_kind=None,
+                             note=note, final_output_dir=output_dir,
+                             completed_at=datetime.now(timezone.utc).isoformat())
     _log_verdict_if_delegated(orch, task_id, success=True)
     orch._update_task_history(task_id)
-    _kill_jobs_for_terminating_task(orch, task_id)
+    if recovery_owner is None:
+        _kill_jobs_for_terminating_task(orch, task_id)
+    elif orch._db.mark_task_completion_recovery_callback_consumed(
+        task_id=task_id, agent=recovery_owner[0], session_id=recovery_owner[1],
+        result_row_id=recovery_owner[2], settled_at=datetime.now(timezone.utc).isoformat(),
+    ):
+        _handoff_consumed_recovery_terminal_effects(
+            orch, task_id, recovery_owner[0], recovery_owner[1], recovery_owner[2],
+            TaskStatus.COMPLETED.value, after_recovery_cleanup=after_recovery_cleanup,
+            after_recovery_parent_effect=after_recovery_parent_effect,
+        )
+    return True
 
 
 def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
@@ -1944,7 +2356,56 @@ def _fail(orch: "Orchestrator", task_id: str, *, note: str) -> None:
     _kill_jobs_for_terminating_task(orch, task_id)
 
 
-def _kill_jobs_for_terminating_task(orch: "Orchestrator", task_id: str) -> None:
+def _handoff_consumed_recovery_terminal_effects(
+    orch: "Orchestrator", task_id: str, agent: str, session_id: str,
+    result_row_id: int, terminal_status: str, *,
+    after_recovery_cleanup: Callable[[], None] | None = None,
+    after_recovery_parent_effect: Callable[[], None] | None = None,
+) -> None:
+    """Capture a consumed recovery's exact jobs before asynchronous effects.
+
+    The settlement transaction owns the current-receipt recheck and durable
+    ``task_ended`` write.  It releases SQLite before the runner's process wait;
+    the async cleanup receives only the captured IDs and fences parent delivery
+    with the same consumed owner predicate.
+    """
+    recovery_job_ids = orch._db.settle_consumed_task_completion_recovery_jobs(
+        task_id=task_id, agent=agent, recovery_session_id=session_id,
+        result_row_id=result_row_id, terminal_status=terminal_status,
+        finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    )
+    if recovery_job_ids is None:
+        return
+    # A valid zero-job receipt has no asynchronous termination boundary.  Its
+    # parent handoff must not be lost merely because there is nothing for the
+    # runner to drain.
+    if not recovery_job_ids:
+        handed_off = False
+        if after_recovery_cleanup is not None:
+            handed_off = orch._db.handoff_consumed_task_completion_recovery_parent_effect(
+                task_id=task_id, agent=agent, recovery_session_id=session_id,
+                result_row_id=result_row_id, terminal_status=terminal_status,
+                effect=after_recovery_cleanup,
+            )
+        if handed_off and after_recovery_parent_effect is not None:
+            after_recovery_parent_effect()
+        return
+    _kill_jobs_for_terminating_task(
+        orch, task_id,
+        recovery_owner=(agent, session_id, result_row_id, terminal_status),
+        recovery_job_ids=recovery_job_ids,
+        after_recovery_cleanup=after_recovery_cleanup,
+        after_recovery_parent_effect=after_recovery_parent_effect,
+    )
+
+
+def _kill_jobs_for_terminating_task(
+    orch: "Orchestrator", task_id: str, *,
+    recovery_owner: tuple[str, str, int, str] | None = None,
+    recovery_job_ids: tuple[str, ...] | None = None,
+    after_recovery_cleanup: Callable[[], None] | None = None,
+    after_recovery_parent_effect: Callable[[], None] | None = None,
+) -> None:
     """Fire-and-forget: kill all in-flight persistent jobs owned by ``task_id``.
 
     Called from ``_complete`` and ``_fail`` whenever a task transitions to a
@@ -1961,11 +2422,11 @@ def _kill_jobs_for_terminating_task(orch: "Orchestrator", task_id: str) -> None:
     worker with no event loop of its own.
     """
     db = orch._db
-    rows = db._conn.execute(
-        "SELECT id, task_id FROM jobs WHERE status='running'"
-    ).fetchall()
-    inflight_map = {row["id"]: row["task_id"] for row in rows}
-    if not any(v == task_id for v in inflight_map.values()):
+    inflight_map = (
+        {job_id: task_id for job_id in recovery_job_ids}
+        if recovery_job_ids is not None else db.get_running_job_task_ids()
+    )
+    if recovery_job_ids is None and not any(v == task_id for v in inflight_map.values()):
         return
 
     from datetime import datetime, timezone
@@ -1978,16 +2439,24 @@ def _kill_jobs_for_terminating_task(orch: "Orchestrator", task_id: str) -> None:
     async def _kill_and_backstop() -> None:
         await terminate_jobs_for_task(task_id, inflight_to_task=inflight_map)
         # Backstop DB update — guarded by status='running' so we don't trample
-        # the runner's own terminal write if it got there first.
+        # the runner's own terminal write if it got there first.  The database
+        # helper owns only this short transaction; never hold its lock across
+        # termination, signals, or the runner's grace-period wait above.
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        for row_id, row_task in inflight_map.items():
-            if row_task == task_id:
-                db._conn.execute(
-                    "UPDATE jobs SET status='failed', reason='task_ended', "
-                    "finished_at=? WHERE id=? AND status='running'",
-                    (now, row_id),
+        if recovery_owner is None:
+            db.backstop_terminated_task_jobs(task_id, finished_at=now)
+        else:
+            agent, session_id, result_row_id, terminal_status = recovery_owner
+            handed_off = False
+            if after_recovery_cleanup is not None:
+                handed_off = db.handoff_consumed_task_completion_recovery_parent_effect(
+                    task_id=task_id, agent=agent,
+                    recovery_session_id=session_id, result_row_id=result_row_id,
+                    terminal_status=terminal_status,
+                    effect=after_recovery_cleanup,
                 )
-        db._conn.commit()
+            if handed_off and after_recovery_parent_effect is not None:
+                after_recovery_parent_effect()
 
     try:
         loop = asyncio.get_running_loop()
@@ -2000,6 +2469,8 @@ def _kill_jobs_for_terminating_task(orch: "Orchestrator", task_id: str) -> None:
         ).start()
     else:
         loop.create_task(_kill_and_backstop())
+
+
 
 
 def _log_verdict_if_delegated(
@@ -2596,6 +3067,18 @@ def _enqueue_parent_if_waiting(
     if parent.block_kind != BlockKind.DELEGATED:
         return
 
+    def enqueue_parent_once() -> None:
+        """Keep a restart-reconstructed wake from duplicating a live tail."""
+        queue = getattr(orch, "_queue", None)
+        if queue is None:
+            return
+        queued = getattr(getattr(queue, "_queue", None), "_queue", ())
+        if not any(
+            queued_slug == orch._slug and queued_task_id == parent.id
+            for queued_slug, queued_task_id, _ in queued
+        ):
+            queue.put_nowait(orch._slug, parent.id)
+
     # Chain-advance branch: if the parent has an active chain and the just-
     # terminated subtask completed cleanly, try to auto-advance to the next
     # leg instead of waking the parent. FAILED subtasks clear the chain and
@@ -2712,23 +3195,17 @@ def _enqueue_parent_if_waiting(
             # it to inject structured join context (child verdict, confidence,
             # output_dir, failure note) via _inject_fanout_join_context.  The
             # CAS-winner clears active_fanout after injecting join context.
-            queue = getattr(orch, "_queue", None)
-            if queue is not None:
-                queue.put_nowait(orch._slug, parent.id)
+            enqueue_parent_once()
             return
 
         # All failures are retired (lineage has a later COMPLETED/SUPERSEDED
         # descendant). Treat this as a normal bounded parent wake: queue the
         # parent once, leaving active_chain, active_fanout, status, block_kind,
         # and note completely untouched. No escalation, no audit side effect.
-        queue = getattr(orch, "_queue", None)
-        if queue is not None:
-            queue.put_nowait(orch._slug, parent.id)
+        enqueue_parent_once()
         return
 
-    queue = getattr(orch, "_queue", None)
-    if queue is not None:
-        queue.put_nowait(orch._slug, parent.id)
+    enqueue_parent_once()
 
 
 # ---------------------------------------------------------------------------

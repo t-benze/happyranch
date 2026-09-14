@@ -21,6 +21,7 @@ import {
   useAgentLearnings,
   useAgentsList,
   useAgentTasks,
+  useCleanupActivity,
   useManageAgentRepo,
   useSetAgentExecutor,
   useSetAgentModel,
@@ -70,6 +71,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   const learningsQuery = useAgentLearnings(agentName);
   const jobsQuery = useJobsList({ agent: agentName, status: 'all', limit: 10 });
   const { done, total, tasksQuery } = useAccountabilityMetrics(agentName);
+  const cleanupQuery = useCleanupActivity(agentName);
 
   const setExecutor = useSetAgentExecutor();
   const setModel = useSetAgentModel();
@@ -634,6 +636,16 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
               No tasks where this agent was the assigned manager.
             </p>
           )}
+        </section>
+
+        <section>
+          <h3 className="text-overline text-text-muted mb-3 tracking-wider uppercase">Cleanup activity</h3>
+          {cleanupQuery.isLoading ? <p className="text-text-muted text-xs">Loading cleanup activity…</p>
+            : cleanupQuery.isError ? <div><p className="text-tier-red text-xs">Failed to load cleanup activity.</p><Button size="sm" variant="ghost" onClick={() => cleanupQuery.refetch()}>Retry</Button></div>
+            : cleanupQuery.data?.activities.length ? <ul className="space-y-2">{cleanupQuery.data.activities.map((activity) => {
+              const summary = activity.output_summary?.trim() || 'Summary unavailable';
+              return <li key={activity.task_id} className="border-border-default bg-surface shadow-pasture-sm rounded-lg border p-3"><Link to={taskRoutes.detail(activity.task_id)} className="text-accent-text break-all text-sm hover:underline">{activity.task_id}</Link><p className="text-text-muted mt-1 text-xs">Run date: {new Date(activity.created_at).toLocaleDateString()} · Task: {activity.status}{activity.result_status ? ` · Result: ${activity.result_status}` : ''}</p><p className="text-text-primary mt-2 break-words text-sm whitespace-pre-wrap">{summary}</p></li>;
+            })}</ul> : <p className="text-text-muted text-xs">No cleanup activity for this agent.</p>}
         </section>
 
         {/* Learnings */}

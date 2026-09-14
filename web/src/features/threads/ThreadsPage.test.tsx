@@ -1,24 +1,55 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
 import { QueryClient } from '@tanstack/react-query';
+import { http, HttpResponse } from 'msw';
+import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
+import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 
 const SLUG = 'alpha';
+const NativeRequest = globalThis.Request;
+
+afterEach(() => {
+  globalThis.Request = NativeRequest;
+});
 
 function mountAt(route: string) {
   server.use(
     http.get('/api/v1/orgs', () =>
-      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }, { slug: 'beta', root: '/y' }] }),
     ),
-    http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
+    http.get('/api/v1/orgs/:slug/agents', () =>
       HttpResponse.json({ agents: [] }),
     ),
   );
   return renderWithProviders(<AppRoutes />, { route });
+}
+
+function mountRouteHistory(route: string) {
+  server.use(
+    http.get('/api/v1/orgs', () =>
+      HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }, { slug: 'beta', root: '/y' }] }),
+    ),
+    http.get('/api/v1/orgs/:slug/agents', () =>
+      HttpResponse.json({ agents: [] }),
+    ),
+  );
+  // The data-memory router creates a jsdom AbortSignal that Node's undici
+  // Request rejects. This app has no route loaders, so tests can omit it.
+  globalThis.Request = class RouterTestRequest extends NativeRequest {
+    constructor(input: RequestInfo | URL, init?: RequestInit) {
+      super(input, init ? { ...init, signal: undefined } : init);
+    }
+  };
+  const client = makeQueryClient();
+  const router = createMemoryRouter(
+    [{ path: '*', element: <AppProvider client={client}><AppRoutes /></AppProvider> }],
+    { initialEntries: [route] },
+  );
+  return { router, client, ...render(<RouterProvider router={router} />) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -35,6 +66,7 @@ function mkThread(
     composed_from_dream_id: string | null;
     last_speaker: string | null;
     started_at: string;
+    archived_at: string | null;
     pinned: boolean;
     last_activity_at: string | null;
   }>,
@@ -56,6 +88,7 @@ function mkThread(
     pinned: false,
     pinned_at: null as string | null,
     last_activity_at: null as string | null,
+    participants: ['agent_a'],
     ...overrides,
   };
 }
@@ -120,6 +153,314 @@ function setupThreadWithMessages(
     http.get(`/api/v1/orgs/${SLUG}/tokens`, () => HttpResponse.json({ rollup: [] })),
   );
 }
+
+describe('ThreadsPage — route-local list scroll restoration', () => {
+  function setupScrollThread() {
+    const archivedThread = mkThread('THR-SCROLL', 'Long verification scroll target', {
+      status: 'archived', archived_at: '2026-05-15T00:00:00Z',
+    });
+    const openThread = mkThread('THR-SCROLL-OPEN', 'Long verification open target');
+    setupThreadWithMessages('THR-SCROLL', []);
+    server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) =>
+      HttpResponse.json({ threads: new URL(request.url).searchParams.get('status') === 'archived' ? [archivedThread] : [openThread] }),
+    ));
+  }
+
+  test('keeps the filtered Archived ContentWrap position through browser history and the real All threads link', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupScrollThread();
+    const user = userEvent.setup();
+    const { router } = mountRouteHistory(`/orgs/${SLUG}/threads`);
+
+    await user.click(await screen.findByRole('tab', { name: /archived/i }));
+    await user.type(screen.getByRole('textbox', { name: /filter threads/i }), 'Long verification');
+    const row = await screen.findByRole('link', { name: /THR-SCROLL/i });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+    expect(scroller).not.toBeNull();
+    scroller.scrollTop = 350;
+
+    await user.click(row);
+    expect(sessionStorage.getItem(`threads:list-scroll:${SLUG}:done:Long verification`)).toBe('350');
+
+    // This is the actual route history transition used by browser Back, not a
+    // storage-helper test. The list ref has detached while the detail route is
+    // mounted, so restoration proves the captured owner snapshot survives it.
+    await router.navigate(-1);
+    const browserBackRow = await screen.findByRole('link', { name: /THR-SCROLL/i });
+    const browserBackScroller = browserBackRow.closest('.overflow-y-auto') as HTMLDivElement;
+    await waitFor(() => expect(browserBackScroller.scrollTop).toBe(350));
+    expect(screen.getByRole('textbox', { name: /filter threads/i })).toHaveValue('Long verification');
+    expect(screen.getByRole('tab', { name: /archived/i })).toHaveAttribute('aria-selected', 'true');
+
+    await user.click(browserBackRow);
+    const allThreads = await screen.findByRole('link', { name: /all threads/i });
+
+    await user.click(allThreads);
+    const restoredRow = await screen.findByRole('link', { name: /THR-SCROLL/i });
+    const restoredScroller = restoredRow.closest('.overflow-y-auto') as HTMLDivElement;
+    await waitFor(() => expect(restoredScroller.scrollTop).toBe(350));
+    expect(screen.getByRole('textbox', { name: /filter threads/i })).toHaveValue('Long verification');
+    expect(screen.getByRole('tab', { name: /archived/i })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  test('does not let detail-entry cleanup overwrite the row snapshot when a detached owner reads as clamped', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupScrollThread();
+    const user = userEvent.setup();
+    mountRouteHistory(`/orgs/${SLUG}/threads`);
+
+    await user.click(await screen.findByRole('tab', { name: /archived/i }));
+    await user.type(screen.getByRole('textbox', { name: /filter threads/i }), 'Long verification');
+    const row = await screen.findByRole('link', { name: /THR-SCROLL/i });
+    const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+    let scrollTop = 350;
+    // JSDOM simulation: real Chromium can expose a detached/changed-layout
+    // owner as zero. This makes that read boundary explicit; browser proof is
+    // retained separately.
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => (scroller.isConnected ? scrollTop : 0),
+      set: (value: number) => { scrollTop = value; },
+    });
+
+    await user.click(row);
+    expect(sessionStorage.getItem(`threads:list-scroll:${SLUG}:done:Long verification`)).toBe('350');
+  });
+
+  test('restores a returned route owner even when no animation frame is delivered', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupScrollThread();
+    const user = userEvent.setup();
+    const { router } = mountRouteHistory(`/orgs/${SLUG}/threads`);
+    const row = await screen.findByRole('link', { name: /THR-SCROLL/i });
+    const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+    scroller.scrollTop = 350;
+
+    await user.click(row);
+    const unavailableFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 0);
+    try {
+      await router.navigate(-1);
+      const returnedRow = await screen.findByRole('link', { name: /THR-SCROLL/i });
+      expect((returnedRow.closest('.overflow-y-auto') as HTMLDivElement).scrollTop).toBe(350);
+    } finally {
+      unavailableFrame.mockRestore();
+    }
+  });
+
+  test('resets a newly selected bucket and filter to zero without erasing a valid saved zero', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupScrollThread();
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/threads`);
+
+    const row = await screen.findByRole('link', { name: /THR-SCROLL/i });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+    scroller.scrollTop = 350;
+    fireEvent.scroll(scroller);
+
+    const filter = screen.getByRole('textbox', { name: /filter threads/i });
+    await user.type(filter, 'Long verification open target');
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    await user.clear(filter);
+    await waitFor(() => expect(scroller.scrollTop).toBe(350));
+
+    await user.click(screen.getByRole('tab', { name: /archived/i }));
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    expect(sessionStorage.getItem(`threads:list-scroll:${SLUG}:open:`)).toBe('350');
+
+    sessionStorage.setItem(`threads:list-scroll:${SLUG}:done:`, '0');
+    await user.click(screen.getByRole('tab', { name: /open/i }));
+    await user.click(screen.getByRole('tab', { name: /archived/i }));
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+  });
+
+  test('snapshots the attached owner before bucket and filter scope actions without a scroll event', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupScrollThread();
+    const user = userEvent.setup();
+    mountAt(`/orgs/${SLUG}/threads`);
+
+    const row = await screen.findByRole('link', { name: /THR-SCROLL/i });
+    const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+    scroller.scrollTop = 350;
+
+    await user.click(screen.getByRole('tab', { name: /archived/i }));
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    await user.click(screen.getByRole('tab', { name: /open/i }));
+    await waitFor(() => expect(scroller.scrollTop).toBe(350));
+
+    scroller.scrollTop = 121;
+    const filter = screen.getByRole('textbox', { name: /filter threads/i });
+    await user.type(filter, 'Long verification open target');
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    await user.clear(filter);
+    await waitFor(() => expect(scroller.scrollTop).toBe(121));
+  });
+
+  test('restores a saved offset after delayed list data arrives at the real ContentWrap owner', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    sessionStorage.setItem(`threads:list-scroll:${SLUG}:open:`, '350');
+    let release!: () => void;
+    let requestPending!: () => void;
+    const delayed = new Promise<void>((resolve) => { release = resolve; });
+    const pending = new Promise<void>((resolve) => { requestPending = resolve; });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
+      if (new URL(request.url).searchParams.get('status') === 'open') {
+        requestPending();
+        await delayed;
+      }
+      return HttpResponse.json({ threads: [mkThread('THR-DELAY', 'Long verification delayed')] });
+    }));
+    mountRouteHistory(`/orgs/${SLUG}/threads`);
+    await pending;
+    expect(document.querySelector('.overflow-y-auto')).not.toBeNull();
+    expect(screen.queryByRole('link', { name: /THR-DELAY/i })).not.toBeInTheDocument();
+    release();
+    const row = await screen.findByRole('link', { name: /THR-DELAY/i });
+    const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+    await waitFor(() => expect(scroller.scrollTop).toBe(350));
+  });
+
+  test('does not reapply stale saved scroll after a mounted list refetch changes cardinality', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    sessionStorage.setItem(`threads:list-scroll:${SLUG}:open:`, '350');
+    let rows = [mkThread('THR-ONE', 'Long verification one')];
+    server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) =>
+      HttpResponse.json({ threads: new URL(request.url).searchParams.get('status') === 'open' ? rows : [] }),
+    ));
+    const { client } = mountRouteHistory(`/orgs/${SLUG}/threads`);
+    const row = await screen.findByRole('link', { name: /THR-ONE/i });
+    const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+    await waitFor(() => expect(scroller.scrollTop).toBe(350));
+    scroller.scrollTop = 121;
+    rows = [...rows, mkThread('THR-TWO', 'Long verification two')];
+    await client.invalidateQueries({ queryKey: ['threads', SLUG, { status: 'open' }] });
+    await screen.findByRole('link', { name: /THR-TWO/i });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await waitFor(() => expect(scroller.scrollTop).toBe(121));
+  });
+
+  test('preserves a ready owner through an uncached loading scope and restores it after a new owner is ready', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    sessionStorage.setItem('threads:list-scroll:alpha:open:', '350');
+    let releaseBeta!: () => void;
+    const betaPending = new Promise<void>((resolve) => { releaseBeta = resolve; });
+    server.use(http.get('/api/v1/orgs/:slug/threads', ({ params, request }) => {
+      const slug = String(params.slug);
+      const status = new URL(request.url).searchParams.get('status');
+      if (slug === 'beta' && status === 'open') {
+        return betaPending.then(() => HttpResponse.json({ threads: [mkThread('THR-BETA', 'beta route target')] }));
+      }
+      return HttpResponse.json({
+        threads: status === 'open' ? [mkThread(`THR-${slug.toUpperCase()}`, `${slug} route target`)] : [],
+      });
+    }));
+    const { router } = mountRouteHistory('/orgs/alpha/threads');
+    const alphaRow = await screen.findByRole('link', { name: /THR-ALPHA/i });
+    const alphaScroller = alphaRow.closest('.overflow-y-auto') as HTMLDivElement;
+    await waitFor(() => expect(alphaScroller.scrollTop).toBe(350));
+    // JSDOM layout emulation: the browser's reused owner can be clamped by
+    // beta's pending/shrunken content before alpha's scope cleanup reads it.
+    // A real user scroll event records the authoritative alpha geometry;
+    // assigning `scrollTop` alone intentionally does not pretend to do that.
+    let alphaTop = 350;
+    Object.defineProperty(alphaScroller, 'scrollTop', {
+      configurable: true,
+      get: () => router.state.location.pathname.includes('/beta/') ? 0 : alphaTop,
+      set: (value: number) => { alphaTop = value; },
+    });
+    fireEvent.scroll(alphaScroller);
+
+    window.dispatchEvent(new Event('threads:before-org-change'));
+    await router.navigate('/orgs/beta/threads');
+    await waitFor(() => expect(document.querySelector('.animate-pulse')).not.toBeNull());
+    // The old scope was ready and saves before beta's loading content can
+    // clamp the reused owner. Beta has no saved key, so zero is intentional.
+    expect(sessionStorage.getItem('threads:list-scroll:alpha:open:')).toBe('350');
+    expect(sessionStorage.getItem('threads:list-scroll:beta:open:')).toBeNull();
+    releaseBeta();
+    const betaRow = await screen.findByRole('link', { name: /THR-BETA/i });
+    const betaScroller = betaRow.closest('.overflow-y-auto') as HTMLDivElement;
+    await waitFor(() => expect(betaScroller.scrollTop).toBe(0));
+    // Beta is ready now: its own user scroll is observable rather than the
+    // pending-layout clamp emulated above.
+    Object.defineProperty(betaScroller, 'scrollTop', {
+      configurable: true,
+      get: () => alphaTop,
+      set: (value: number) => { alphaTop = value; },
+    });
+    betaScroller.scrollTop = 121;
+    fireEvent.scroll(betaScroller);
+
+    await router.navigate('/orgs/alpha/threads');
+    const restoredAlpha = await screen.findByRole('link', { name: /THR-ALPHA/i });
+    const restoredAlphaScroller = restoredAlpha.closest('.overflow-y-auto') as HTMLDivElement;
+    await waitFor(() => expect(restoredAlphaScroller.scrollTop).toBe(350));
+    expect(sessionStorage.getItem('threads:list-scroll:beta:open:')).toBe('121');
+  });
+
+  test('captures the ready outgoing org owner before an uncached loading scope can clamp it without a scroll event', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let releaseBeta!: () => void;
+    const betaPending = new Promise<void>((resolve) => { releaseBeta = resolve; });
+    server.use(http.get('/api/v1/orgs/:slug/threads', ({ params, request }) => {
+      const slug = String(params.slug);
+      const status = new URL(request.url).searchParams.get('status');
+      if (slug === 'beta' && status === 'open') {
+        return betaPending.then(() => HttpResponse.json({ threads: [mkThread('THR-BETA', 'org scope target')] }));
+      }
+      return HttpResponse.json({
+        threads: status === 'open' ? [mkThread(`THR-${slug.toUpperCase()}`, 'org scope target')] : [],
+      });
+    }));
+    const { router } = mountRouteHistory('/orgs/alpha/threads');
+    const alphaRow = await screen.findByRole('link', { name: /THR-ALPHA/i });
+    const scroller = alphaRow.closest('.overflow-y-auto') as HTMLDivElement;
+    let alphaTop = 350;
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => router.state.location.pathname.includes('/beta/') ? 0 : alphaTop,
+      set: (value: number) => { alphaTop = value; },
+    });
+
+    window.dispatchEvent(new Event('threads:before-org-change'));
+    await router.navigate('/orgs/beta/threads');
+    await waitFor(() => expect(document.querySelector('.animate-pulse')).not.toBeNull());
+    expect(sessionStorage.getItem('threads:list-scroll:alpha:open:')).toBe('350');
+    releaseBeta();
+    await screen.findByRole('link', { name: /THR-BETA/i });
+    await router.navigate('/orgs/alpha/threads');
+    const returned = await screen.findByRole('link', { name: /THR-ALPHA/i });
+    await waitFor(() => expect((returned.closest('.overflow-y-auto') as HTMLDivElement).scrollTop).toBe(350));
+  });
+
+  test('does not overwrite a pending scope saved position when leaving before its response', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    sessionStorage.setItem('threads:list-scroll:beta:open:', '350');
+    let releaseBeta!: () => void;
+    const betaPending = new Promise<void>((resolve) => { releaseBeta = resolve; });
+    server.use(http.get('/api/v1/orgs/:slug/threads', ({ params, request }) => {
+      const slug = String(params.slug);
+      const status = new URL(request.url).searchParams.get('status');
+      if (slug === 'beta' && status === 'open') {
+        return betaPending.then(() => HttpResponse.json({ threads: [mkThread('THR-BETA', 'beta route target')] }));
+      }
+      return HttpResponse.json({ threads: status === 'open' ? [mkThread('THR-ALPHA', 'alpha route target')] : [] });
+    }));
+    const { router } = mountRouteHistory('/orgs/alpha/threads');
+    await screen.findByRole('link', { name: /THR-ALPHA/i });
+    await router.navigate('/orgs/beta/threads');
+    await waitFor(() => expect(document.querySelector('.animate-pulse')).not.toBeNull());
+    await router.navigate('/orgs/alpha/threads');
+    expect(sessionStorage.getItem('threads:list-scroll:beta:open:')).toBe('350');
+    await router.navigate('/orgs/beta/threads');
+    releaseBeta();
+    const returnedBeta = await screen.findByRole('link', { name: /THR-BETA/i });
+    await waitFor(() => expect((returnedBeta.closest('.overflow-y-auto') as HTMLDivElement).scrollTop).toBe(350));
+  });
+});
 
 /* ------------------------------------------------------------------ */
 /*  List tests                                                         */
@@ -202,6 +543,31 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
       expect(screen.getByText(/dev_agent/)).toBeInTheDocument();
       expect(screen.getByText(/founder/)).toBeInTheDocument();
     });
+  });
+
+  test('owns the grouped list border and dividers outside flush thread rows', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
+        HttpResponse.json({ threads: [mkThread('THR-001', 'Grouped surface')] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
+        HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
+      ),
+    );
+    mountAt(`/orgs/${SLUG}/threads`);
+    await waitFor(() => expect(screen.getByText('Grouped surface')).toBeInTheDocument());
+    const row = screen.getByText('Grouped surface').closest('a');
+    expect(row).not.toBeNull();
+    expect(row).not.toHaveClass('rounded-sm', 'border', 'shadow-pasture-sm');
+    expect(row!.closest('.divide-y')).toHaveClass(
+      'overflow-hidden',
+      'rounded-sm',
+      'border',
+      'border-border-default',
+      'divide-y',
+      'divide-border-default',
+    );
   });
 
   test('shows a relative start-time per row (THR-061 a-threads .t-time)', async () => {
@@ -806,6 +1172,89 @@ describe('ThreadsPage — system message rendering (design-overhaul)', () => {
       // THR-061 a-thread-detail divider suffix replaces the old "system" badge.
       const dividers = screen.getAllByText(/system event · broadcast to all/);
       expect(dividers.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  test.each([
+    ['short event', { kind_tag: 'invited', agent: 'agent_c' }, 'invited agent_c'],
+    ['multiline escalation', {
+      kind_tag: 'task_escalated', task_id: 'TASK-3865',
+      reason: 'A direct verified custom-adapter blocker requires founder authority: TASK-3866 invoked the approved hash-pinned custom-adapter:kimi-adapter but failed provenance validation because the wrapper emitted adapter_metadata.adapter="kimi".',
+    }, 'task TASK-3865 escalated'],
+    ['unbroken identifier', { kind_tag: 'participant_added', agent_name: 'X'.repeat(400) }, `added ${'X'.repeat(400)}`],
+  ])('keeps %s content and metadata together below one separator in the real transcript', async (_name, payload, expected) => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupThreadWithMessages('THR-021', [
+      mkMessage(1, 'agent_a', 'message', 'Ordinary message before event'),
+      mkSystemMessage(2, 'agent_a', payload),
+      mkMessage(3, 'founder', 'message', 'Ordinary message after event'),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-021`);
+    const metadata = await screen.findByText(/system event · broadcast to all/);
+    const content = metadata.parentElement!;
+    const row = content.parentElement!;
+    expect(content).toHaveTextContent(expected);
+    if ('reason' in payload) expect(content).toHaveTextContent(payload.reason!);
+    expect(row).toHaveAttribute('title', new Date('2026-05-14T00:00:00Z').toLocaleString());
+    expect(row.children).toHaveLength(2);
+    expect(row.firstElementChild).toHaveAttribute('aria-hidden', 'true');
+    expect(content.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByText('Ordinary message before event')).toBeVisible();
+    expect(screen.getByText('Ordinary message after event')).toBeVisible();
+    if ('task_id' in payload) {
+      expect(within(content).getByRole('link', { name: 'TASK-3865' }))
+        .toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-3865`);
+    }
+    // Width, natural line wrapping, and overflow require browser geometry.
+  });
+
+  describe.each(['task_completed', 'task_escalated'])('%s full content', (kindTag) => {
+    test.each([
+      ['long prose', `${'A complete sentence remains visible. '.repeat(12)}The distinctive final sentence survives.`],
+      ['multiline', `${'First line with full context. '.repeat(12)}\nSecond line.\nThe distinctive multiline ending survives.`],
+      ['unbroken text', `${'X'.repeat(420)}DISTINCTIVE_UNBROKEN_TAIL`],
+      ['literal HTML', `${'Safe text. '.repeat(30)}<img src="x" onerror="alert(1)"> <script>alert(2)</script> Literal ending survives.`],
+    ])('preserves %s through the real API and transcript composition', async (_name, text) => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      setupThreadWithMessages('THR-022', [
+        mkMessage(1, 'agent_a', 'message', 'Ordinary message before event'),
+        mkSystemMessage(2, 'agent_a', {
+          kind_tag: kindTag, task_id: 'TASK-3865',
+          [kindTag === 'task_completed' ? 'final_output_summary' : 'reason']: text,
+          internal_unrendered_field: 'PRIVATE_FIELD_MUST_NOT_RENDER',
+        }),
+        mkMessage(3, 'founder', 'message', 'Ordinary message after event'),
+      ]);
+      mountAt(`/orgs/${SLUG}/threads/THR-022`);
+      const metadata = await screen.findByText(/system event · broadcast to all/);
+      const content = metadata.parentElement!;
+      const row = content.parentElement!;
+      const description = content.querySelector('.text-text-secondary')!;
+      expect(description.textContent).toBe(`task TASK-3865 ${kindTag === 'task_completed' ? 'completed' : 'escalated'} · ${text}`);
+      expect(description.textContent).toContain(text.slice(-40));
+      expect(description.querySelector('img, script')).toBeNull();
+      expect(row).not.toHaveTextContent('PRIVATE_FIELD_MUST_NOT_RENDER');
+      expect(within(content).getByRole('link', { name: 'TASK-3865' }))
+        .toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-3865`);
+      expect(row).toHaveAttribute('title', new Date('2026-05-14T00:00:00Z').toLocaleString());
+      expect(metadata).toHaveTextContent('system event · broadcast to all');
+      expect(screen.getByText('Ordinary message before event')).toBeVisible();
+      expect(screen.getByText('Ordinary message after event')).toBeVisible();
+      // DOM/CSS contract only: jsdom cannot establish pixel geometry or wrapping.
+      expect(row).toHaveClass('w-full', 'min-w-0');
+      expect(row.children).toHaveLength(2);
+      expect(row.firstElementChild).toHaveClass('w-full', 'h-px');
+      expect(row.firstElementChild).toHaveAttribute('aria-hidden', 'true');
+      expect(content).toHaveClass('break-words');
+      expect(description).toHaveClass('whitespace-pre-wrap');
+      let ancestor: HTMLElement | null = description as HTMLElement;
+      let scrollable = false;
+      while (ancestor) {
+        expect(ancestor.className).not.toMatch(/(?:^|\s)(?:truncate|line-clamp-\S+|whitespace-nowrap)(?:\s|$)/);
+        scrollable ||= ancestor.classList.contains('overflow-auto');
+        ancestor = ancestor.parentElement;
+      }
+      expect(scrollable).toBe(true);
     });
   });
 

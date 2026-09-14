@@ -5,6 +5,13 @@ description: Use this skill at the start of every task. Parses task_id, session_
 
 # start-task
 
+## THR-247 recovery-turn exception
+
+When the supplied runtime binding is a completion-recovery turn, use that
+fresh binding only to report already-performed work or observe an actual
+task-owned job wait. Do not execute the ordinary brief, create work, or submit
+new jobs. Ordinary resumed turns retain their normal policy.
+
 The orchestrator daemon spawns you with a prompt of this form:
 
 ```

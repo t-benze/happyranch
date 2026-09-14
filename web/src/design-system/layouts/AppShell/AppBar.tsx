@@ -45,15 +45,16 @@ function pageTitleFromPath(pathname: string): string {
 export interface AppBarProps {
   /** Prototypes have no AssistantDockHost, so they omit its unavailable control. */
   showAssistantControl?: boolean;
+  presentation?: 'tasks';
 }
 
-export function AppBar({ showAssistantControl = true }: AppBarProps): JSX.Element {
+export function AppBar({ showAssistantControl = true, presentation }: AppBarProps): JSX.Element {
   const location = useLocation();
   const title = pageTitleFromPath(location.pathname);
 
   return (
-    <div className="border-border bg-bg-subtle flex h-12 shrink-0 items-center gap-4 border-b px-5">
-      <span className="text-fg text-sm font-medium">{title}</span>
+    <div className={`border-border bg-bg-subtle flex shrink-0 items-center border-b ${presentation === 'tasks' ? 'tasks-appbar' : 'h-12 gap-4 px-5'}`}>
+      <span className={`text-fg font-medium ${presentation === 'tasks' ? 'font-display text-lg' : 'text-sm'}`}>{title}</span>
       <div className="ml-auto flex items-center gap-2">
         {showAssistantControl && (
           <button

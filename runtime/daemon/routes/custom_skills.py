@@ -224,6 +224,7 @@ def create_agent_custom_skill(slug: str, session_id: str, org: OrgDep, request: 
     lease = org.sessions._get_binding_lease(task_id, agent)
     with lease:
         if org.sessions.get_active(task_id, agent) != session_id: _error("session_not_current", 403)
+        if org.sessions.is_recovery_session(task_id, agent, session_id): _error("recovery_purpose_forbidden", 403)
         skill_slug, skill_md = body.get("slug", ""), body.get("skill_md", "")
         if not skill_slug or not body.get("name") or not skill_md: _error("invalid_request", 422)
         validation_result = service.validate_package(

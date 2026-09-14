@@ -91,7 +91,7 @@ describe('InboxRow — semantic status pills (THREADS-05)', () => {
 });
 
 /**
- * THR-099 — the `layout="thread"` row model is id-first and single-line: a
+ * THR-099 — the `layout="thread"` row model is id-first and two-line: a
  * status-driven leading dot (open=green accent, archived=grey), the mono thread
  * id, the serif subject, the status BADGE routed through the shared semanticTone
  * vocabulary (open→"open"/blue, archived→"archived"/grey — NOT active/done), an
@@ -167,5 +167,39 @@ describe('InboxRow — thread layout (THR-099 id-first row)', () => {
     expect(screen.getByLabelText(/Dream-originated/)).toBeInTheDocument();
     // Additive: the status badge still renders alongside the dream pill.
     expect(screen.getByText('open')).toHaveClass('text-info', 'bg-info-soft');
+  });
+
+  test('renders the bounded list participant projection on its second line', () => {
+    render(
+      <InboxRow
+        threadId="THR-006"
+        subject="Participant visibility"
+        status="open"
+        needsYou={false}
+        active={false}
+        layout="thread"
+        participants={['engineering_manager', 'dev_agent']}
+        href="#"
+      />,
+    );
+    expect(screen.getByText('engineering_manager · dev_agent')).toBeInTheDocument();
+  });
+
+  test('uses flush grouped-row geometry while the default consumer keeps its card shell', () => {
+    const { rerender } = render(
+      <InboxRow threadId="THR-007" subject="Long grouped row" status="open" needsYou={false} active={false} layout="thread" href="#" participants={['agent']} />,
+    );
+    expect(screen.getByRole('link')).not.toHaveClass('rounded-sm', 'border', 'shadow-pasture-sm');
+    expect(screen.getByText('agent')).toHaveClass('ml-[18px]');
+    rerender(<InboxRow threadId="THR-008" subject="Default row" status="open" needsYou={false} active={false} href="#" />);
+    expect(screen.getByRole('link')).toHaveClass('rounded-sm', 'border', 'shadow-pasture-sm');
+  });
+
+  test('keeps semantic row colors immediate when the theme changes', () => {
+    render(
+      <InboxRow threadId="THR-009" subject="Theme switch" status="open" needsYou={false} active={false} layout="thread" href="#" />,
+    );
+    expect(screen.getByRole('link')).toHaveClass('bg-surface');
+    expect(screen.getByRole('link')).not.toHaveClass('transition-colors');
   });
 });
