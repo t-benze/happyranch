@@ -351,6 +351,8 @@ def _require_team_manager_auth(body: ManageAgentBody, org: OrgState) -> tuple[st
             continue
         active = org.sessions.get_active(body.task_id, candidate)
         if active is not None and active == body.session_id:
+            if org.sessions.is_recovery_session(body.task_id, candidate, body.session_id):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={"code": "recovery_purpose_forbidden"})
             manager_team = org.teams.team_for_manager(candidate)
             assert manager_team is not None
             return candidate, manager_team
@@ -468,6 +470,15 @@ def list_agents(slug: str, org: OrgDep) -> dict:
             "revision": revision,
         })
     return {"agents": rows}
+
+
+@router.get("/agents/{agent_name}/cleanup-activity")
+def get_cleanup_activity(slug: str, agent_name: str, org: OrgDep) -> dict:
+    """Read the five newest scheduler-triggered workspace cleanup tasks."""
+    paths = OrgPaths(root=org.root)
+    if prompt_loader.load_agent(paths, agent_name) is None:
+        raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+    return {"activities": org.db.list_workspace_cleanup_activity(agent_name)}
 
 
 @router.post("/agents/init")
@@ -2217,6 +2228,11 @@ async def append_learning(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
+        )
+    if org.sessions.is_recovery_session(body.task_id, agent_name, body.session_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "recovery_purpose_forbidden"},
         )
 
     learnings_path = workspace / "learnings.md"

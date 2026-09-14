@@ -5,11 +5,13 @@
  * state transitions (Accept/Dismiss), pending-count tag, error states,
  * and shared candidate state via the merged STEP-1 route.
  */
-import { screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test, beforeEach } from 'vitest';
+import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { AppRoutes } from '@/routes';
+import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 
@@ -20,7 +22,7 @@ const SLUG = 'hk-macau-tourism';
 /* ------------------------------------------------------------------ */
 
 const ENTRY_A = {
-  slug: 'policy/refund-thresholds',
+  slug: 'refund-thresholds',
   title: 'Refund authority by tier',
   type: 'precedent',
   topic: 'finance',
@@ -29,11 +31,11 @@ const ENTRY_A = {
   updated_at: '2026-05-16T09:00:00Z',
   authored_by: 'founder',
   source_task: 'TASK-0042',
-  related_entries: ['intake/spanish-walk-ins'],
+  related_entries: ['spanish-walk-ins'],
 };
 
 const ENTRY_B = {
-  slug: 'intake/spanish-walk-ins',
+  slug: 'spanish-walk-ins',
   title: 'Spanish-speaking walk-in flow',
   type: 'sop',
   topic: 'intake',
@@ -112,6 +114,15 @@ function stubKBStats(stats?: { slug: string; view_count: number; last_viewed_at:
       HttpResponse.json({ entries: stats ?? [] }),
     ),
   );
+}
+
+/** Exercise App's shipping outer wildcard router, not only a bare KB mount. */
+function renderWithOuterAppRoute(route: string) {
+  const router = createMemoryRouter(
+    [{ path: '*', element: <AppProvider><AppRoutes /></AppProvider> }],
+    { initialEntries: [route] },
+  );
+  return render(<RouterProvider router={router} />);
 }
 
 /**
@@ -201,6 +212,92 @@ describe('KbPage — folder filtering', () => {
     await waitFor(() =>
       expect(screen.getByText(/Spanish-speaking walk-in flow/)).toBeInTheDocument(),
     );
+  });
+});
+
+describe('KbPage — App wildcard route regression', () => {
+  test('keeps the query-bearing KB index usable and closed below the shipping outer wildcard', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    const entryRequests: string[] = [];
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [ENTRY_A] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [] }),
+      ),
+      // Globally catches the former multi-segment `/kb/orgs/<org>/kb` request.
+      http.get(new RegExp(`/api/v1/orgs/${SLUG}/kb/(.+)$`), ({ request }) => {
+        const path = new URL(request.url).pathname;
+        if (!path.endsWith('/kb/stats')) entryRequests.push(path);
+        return HttpResponse.json(ENTRY_A);
+      }),
+    );
+
+    renderWithOuterAppRoute(`/orgs/${SLUG}/kb?source=nav`);
+
+    await screen.findByText('Refund authority by tier');
+    // The shipping shell may retain its inert assistant dialog.  A KB entry
+    // drawer, however, always contains the former inherited-splat pathname
+    // (or an entry loading/error state); prove neither can cover the usable
+    // index rather than relying on one accessible name.
+    expect(screen.queryByText(`orgs/${SLUG}/kb`)).not.toBeInTheDocument();
+    expect(screen.queryByText('Could not load entry')).not.toBeInTheDocument();
+    expect(entryRequests).toEqual([]);
+  });
+
+  test.each(['', '/', '?source=nav'])('keeps the direct KB index closed for suffix %s', async (suffix) => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    const entryRequests: string[] = [];
+    server.use(
+      http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] })),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () => HttpResponse.json({ entries: [ENTRY_A] })),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () => HttpResponse.json({ dreams: [] })),
+      http.get(new RegExp(`/api/v1/orgs/${SLUG}/kb/(.+)$`), ({ request }) => {
+        const path = new URL(request.url).pathname;
+        if (!path.endsWith('/kb/stats')) entryRequests.push(path);
+        return HttpResponse.json(ENTRY_A);
+      }),
+    );
+    renderWithOuterAppRoute(`/orgs/${SLUG}/kb${suffix}`);
+    await screen.findAllByText(ENTRY_A.title);
+    expect(entryRequests).toEqual([]);
+    expect(document.querySelector('[role="dialog"][data-state="open"]')).toBeNull();
+    expect(document.querySelector('[data-state="open"].fixed.inset-0')).toBeNull();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'finance' }));
+    expect(screen.getByRole('link', { name: new RegExp(ENTRY_A.title) })).toBeInTheDocument();
+  });
+
+  test('uses the explicit entry segment for direct detail URLs below the outer wildcard', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    const entryRequests: string[] = [];
+    server.use(
+      http.get('/api/v1/orgs', () =>
+        HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
+        HttpResponse.json({ entries: [ENTRY_A] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
+        HttpResponse.json({ dreams: [] }),
+      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb/:entrySlug`, ({ params }) => {
+        if (params.entrySlug !== 'stats') entryRequests.push(String(params.entrySlug));
+        return HttpResponse.json(ENTRY_A);
+      }),
+    );
+
+    renderWithOuterAppRoute(`/orgs/${SLUG}/kb/${ENTRY_A.slug}`);
+
+    await screen.findByText(/CX Manager may approve refunds/);
+    expect(entryRequests).toEqual([ENTRY_A.slug]);
   });
 });
 
@@ -678,20 +775,27 @@ describe('KbPage — loading & empty states', () => {
   test('shows error state with retry on kb list failure', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubKBStats();
+    let attempts = 0;
     server.use(
       http.get('/api/v1/orgs', () =>
         HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/kb`, () =>
-        HttpResponse.json({ detail: 'Server error' }, { status: 500 }),
-      ),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () => {
+        attempts += 1;
+        return attempts === 1
+          ? HttpResponse.json({ detail: 'Server error' }, { status: 500 })
+          : HttpResponse.json({ entries: [ENTRY_A] });
+      }),
       http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
         HttpResponse.json({ dreams: [] }),
       ),
     );
+    const user = userEvent.setup();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/kb` });
     await screen.findByText('Could not load Knowledge');
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await screen.findByText(ENTRY_A.title);
+    expect(attempts).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -713,7 +817,7 @@ describe('KbPage — entry detail', () => {
       http.get(`/api/v1/orgs/${SLUG}/dreams`, () =>
         HttpResponse.json({ dreams: [] }),
       ),
-      http.get(`/api/v1/orgs/${SLUG}/kb/policy/refund-thresholds`, () =>
+      http.get(`/api/v1/orgs/${SLUG}/kb/refund-thresholds`, () =>
         HttpResponse.json(ENTRY_A),
       ),
     );
@@ -738,7 +842,7 @@ describe('KbPage — viewed Nx (CLI) usage label', () => {
   test('shows viewed Nx (CLI) for entries with recorded views', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     stubKBStats([
-      { slug: 'policy/refund-thresholds', view_count: 7, last_viewed_at: '2026-06-17T09:00:00Z' },
+      { slug: 'refund-thresholds', view_count: 7, last_viewed_at: '2026-06-17T09:00:00Z' },
     ]);
     server.use(
       http.get('/api/v1/orgs', () =>
@@ -809,7 +913,7 @@ describe('KbPage — leading glyph on entry cards (KB-04)', () => {
     await screen.findByText(/Refund authority by tier/);
 
     // The entry card is an anchor (Link); locate it via its slug text.
-    const slugEl = screen.getByText('policy/refund-thresholds');
+    const slugEl = screen.getByText('refund-thresholds');
     const card = slugEl.closest('a');
     expect(card).not.toBeNull();
 
@@ -992,7 +1096,7 @@ describe('KbPage — debounced search', () => {
       ),
       http.get(`/api/v1/orgs/${SLUG}/kb/search`, () => {
         searchHit = true;
-        return HttpResponse.json({ entries: [ENTRY_A] });
+        return HttpResponse.json({ hits: [{ slug: ENTRY_A.slug, title: ENTRY_A.title, snippet: "Refund match", score: 7 }] });
       }),
     );
     const user = userEvent.setup();
@@ -1022,7 +1126,7 @@ describe('KbPage — debounced search', () => {
         HttpResponse.json({ dreams: [] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/kb/search`, () =>
-        HttpResponse.json({ entries: [] }),
+        HttpResponse.json({ hits: [] }),
       ),
     );
     const user = userEvent.setup();
@@ -1058,7 +1162,7 @@ describe('KbPage — debounced search', () => {
         }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/kb/search`, () =>
-        HttpResponse.json({ entries: [] }),
+        HttpResponse.json({ hits: [] }),
       ),
     );
     const user = userEvent.setup();
@@ -1260,4 +1364,190 @@ describe('KbPage — grouped folder rail (KB-01)', () => {
       expect(screen.getByText(/Refund authority by tier/)).toBeInTheDocument(),
     );
   });
+});
+
+describe('KB recovery at the shipping route', () => {
+  test('same-slug Retry requests the active org entry again and renders its body', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    let attempts = 0;
+    server.use(
+      http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] })),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, () => HttpResponse.json({ entries: [ENTRY_A] })),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () => HttpResponse.json({ dreams: [] })),
+      http.get(`/api/v1/orgs/${SLUG}/kb/${ENTRY_A.slug}`, () => {
+        attempts += 1;
+        return attempts === 1
+          ? HttpResponse.json({ detail: 'Controlled failure' }, { status: 500 })
+          : HttpResponse.json(ENTRY_A);
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithOuterAppRoute(`/orgs/${SLUG}/kb/${ENTRY_A.slug}`);
+    await screen.findByText('Could not load entry');
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await screen.findByText('The CX Manager may approve refunds up to $150.');
+    expect(attempts).toBe(2);
+    expect(screen.queryByText('Could not load entry')).not.toBeInTheDocument();
+  });
+});
+
+// Source-shaped search DTOs reach the shipping real provider; list summaries
+// deliberately omit detail-only fields. These are API fixtures, not store proof.
+describe('KB search wire contract recovery', () => {
+  const summaries = [ENTRY_A, { ...ENTRY_B, tags: ['alpha,beta', 'array-tag'] }].map(
+    ({ slug, title, type, topic, tags, updated_at }) => ({ slug, title, type, topic, tags, updated_at }),
+  );
+  const hits = [
+    { slug: ENTRY_B.slug, title: 'Ranked first', snippet: 'First server snippet', score: 9 },
+    { slug: ENTRY_A.slug, title: 'Ranked second', snippet: 'Second server snippet', score: 3 },
+  ];
+  beforeEach(() => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    stubKBStats();
+    server.use(
+      http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] })),
+      http.get(`/api/v1/orgs/${SLUG}/dreams`, () => HttpResponse.json({ dreams: [] })),
+      http.get(`/api/v1/orgs/${SLUG}/kb`, ({ request }) => {
+        const type = new URL(request.url).searchParams.get('type');
+        return HttpResponse.json({ entries: summaries.filter(e => !type || e.type === type) });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/kb/search`, () => HttpResponse.json({ hits })),
+    );
+  });
+  test('renders ranked source hits with real metadata and combined whole-tag/type facets', async () => {
+    const user = userEvent.setup();
+    renderWithOuterAppRoute(`/orgs/${SLUG}/kb`);
+    await screen.findByText(ENTRY_A.title);
+    await user.type(screen.getByPlaceholderText(/Search entries/i), 'match');
+    await screen.findByText('First server snippet');
+    const cards = screen.getAllByRole('link', { name: /Ranked/ });
+    expect(cards.map(e => e.getAttribute('href'))).toEqual([
+      `/orgs/${SLUG}/kb/${ENTRY_B.slug}`, `/orgs/${SLUG}/kb/${ENTRY_A.slug}`,
+    ]);
+    expect(within(cards[0]).getByText('alpha,beta')).toBeInTheDocument();
+    expect(within(cards[0]).getByText('array-tag')).toBeInTheDocument();
+    expect(within(cards[0]).getByText('sop')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'alpha,beta' }));
+    expect(screen.queryByText('Ranked second')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /precedent/i }));
+    await screen.findByText('No matches');
+    await user.click(screen.getByRole('button', { name: /sop/i }));
+    await screen.findByText('Ranked first');
+  });
+  test('search error Retry requests again and recovers an interactive result', async () => {
+    let calls = 0;
+    server.use(http.get(`/api/v1/orgs/${SLUG}/kb/search`, () => {
+      calls += 1;
+      return calls === 1 ? HttpResponse.json({ detail: 'Controlled search failure' }, { status: 500 }) : HttpResponse.json({ hits });
+    }));
+    const user = userEvent.setup();
+    renderWithOuterAppRoute(`/orgs/${SLUG}/kb`);
+    await screen.findByText(ENTRY_A.title);
+    await user.type(screen.getByPlaceholderText(/Search entries/i), 'match');
+    await screen.findByText('Could not load Knowledge');
+    expect(screen.queryByText('No matches')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await screen.findByText('First server snippet');
+    expect(calls).toBe(2);
+    await user.click(screen.getByRole('button', { name: 'alpha,beta' }));
+    expect(screen.queryByText('Ranked second')).not.toBeInTheDocument();
+  });
+
+  test.each(['loading', 'error', 'missing'] as const)('metadata %s never becomes successful empty and recovers', async (state) => {
+    let settle: (() => void) | undefined;
+    let recovered = false;
+    let searchSeen = false;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/kb`, async () => {
+        if (!recovered && state === 'loading') await new Promise<void>(resolve => { settle = resolve; });
+        if (!recovered && state === 'error') return HttpResponse.json({ detail: 'Metadata unavailable' }, { status: 500 });
+        return HttpResponse.json({ entries: !recovered && state === 'missing' ? [] : summaries });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/kb/search`, () => { searchSeen = true; return HttpResponse.json({ hits }); }),
+    );
+    const user = userEvent.setup();
+    renderWithOuterAppRoute(`/orgs/${SLUG}/kb`);
+    await user.type(screen.getByPlaceholderText(/Search entries/i), 'match');
+    await waitFor(() => expect(searchSeen).toBe(true));
+    expect(screen.queryByText('No matches')).not.toBeInTheDocument();
+    expect(screen.queryByText('Ranked first')).not.toBeInTheDocument();
+    if (state === 'loading') {
+      expect(screen.queryByText('Could not load Knowledge')).not.toBeInTheDocument();
+      recovered = true;
+      settle?.();
+    } else {
+      await screen.findByText('Could not load Knowledge');
+      recovered = true;
+      await user.click(screen.getByRole('button', { name: 'Retry' }));
+    }
+    await screen.findByText('First server snippet');
+  });
+
+  test('late old query cannot replace latest results or a cleared list', async () => {
+    const pending = new Map<string, () => void>();
+    const settled: string[] = [];
+    server.use(http.get(`/api/v1/orgs/${SLUG}/kb/search`, async ({ request }) => {
+      const q = new URL(request.url).searchParams.get('q')!;
+      if (q !== 'latest') await new Promise<void>(resolve => pending.set(q, resolve));
+      settled.push(q);
+      return HttpResponse.json({ hits: [{ ...hits[0], title: q + ' result' }] });
+    }));
+    const user = userEvent.setup();
+    renderWithOuterAppRoute(`/orgs/${SLUG}/kb`);
+    await screen.findByText(ENTRY_A.title);
+    const input = screen.getByPlaceholderText(/Search entries/i);
+    await user.type(input, 'old');
+    await waitFor(() => expect(pending.has('old')).toBe(true));
+    expect(screen.queryByText('No matches')).not.toBeInTheDocument();
+    await user.clear(input);
+    await user.type(input, 'latest');
+    await screen.findByText('latest result');
+    pending.get('old')?.();
+    await waitFor(() => expect(settled).toContain('old'));
+    expect(screen.queryByText('old result')).not.toBeInTheDocument();
+    expect(screen.getByText('latest result')).toBeInTheDocument();
+    await user.clear(input);
+    await user.type(input, 'delayed');
+    expect(screen.queryByText('latest result')).not.toBeInTheDocument();
+    await waitFor(() => expect(pending.has('delayed')).toBe(true));
+    await user.clear(input);
+    await screen.findByText(ENTRY_A.title);
+    pending.get('delayed')?.();
+    await waitFor(() => expect(settled).toContain('delayed'));
+    expect(screen.queryByText('delayed result')).not.toBeInTheDocument();
+    expect(screen.getByText(ENTRY_B.title)).toBeInTheDocument();
+  });
+
+  test('stale metadata is hidden during refresh and after refresh failure, then Retry recovers', async () => {
+    let calls = 0;
+    let settle: (() => void) | undefined;
+    server.use(http.get(`/api/v1/orgs/${SLUG}/kb`, async () => {
+      calls += 1;
+      if (calls === 2) {
+        await new Promise<void>(resolve => { settle = resolve; });
+        return HttpResponse.json({ detail: 'Refresh failed' }, { status: 500 });
+      }
+      return HttpResponse.json({ entries: summaries });
+    }));
+    const client = makeQueryClient();
+    const router = createMemoryRouter([{ path: '*', element: <AppProvider client={client}><AppRoutes /></AppProvider> }],
+      { initialEntries: [`/orgs/${SLUG}/kb`] });
+    const user = userEvent.setup();
+    render(<RouterProvider router={router} />);
+    await screen.findByText(ENTRY_A.title);
+    await user.type(screen.getByPlaceholderText(/Search entries/i), 'match');
+    await screen.findByText('First server snippet');
+    void client.invalidateQueries({ queryKey: ['kb-list', SLUG] });
+    await waitFor(() => expect(settle).toBeDefined());
+    await waitFor(() => expect(screen.queryByText('First server snippet')).not.toBeInTheDocument());
+    expect(screen.queryByText('No matches')).not.toBeInTheDocument();
+    settle?.();
+    await screen.findByText('Could not load Knowledge');
+    expect(screen.queryByText('First server snippet')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await screen.findByText('First server snippet');
+    expect(calls).toBe(3);
+  });
+
 });

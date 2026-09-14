@@ -1,226 +1,72 @@
-"""THR-080: thread-reachable resolve-escalation route tests."""
+"""Retirement coverage for the thread resolve-escalation surface.
+
+The former THR-166 acceptance/evaluator matrix is replaced with shipping-route
+rejection coverage. Retained manual supersede behavior remains covered here.
+"""
 from __future__ import annotations
 
-from dataclasses import replace
+import json
+from pathlib import Path
 
 import pytest
 
+from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.infrastructure.database import Database
 from runtime.models import (
-    BlockKind,
-    TaskRecord,
-    TaskStatus,
-    ThreadInvocationPurpose,
-    ThreadInvocationStatus,
-    ThreadMessageKind,
-    ThreadRecord,
-    ThreadStatus,
+    CompletionReport, NextStep, TaskRecord, TaskStatus, ThreadInvocationPurpose,
+    ThreadInvocationStatus, ThreadMessageKind, ThreadRecord, ThreadStatus,
 )
+from runtime.orchestrator.executors import ExecutorResult
 
 
-def test_thr166_compatibility_profile_and_evaluator_preserve_frozen_authority():
-    """The extracted kernel accepts only the deployed THR-166 profile."""
-    from runtime.daemon.routes import threads as thread_routes
-
-    profile = thread_routes.THR166_POLICY
-    assert profile.id == "THR-166-genuine-human-blocker"
-    assert profile.version == "1"
-    assert profile.provenance == "founder:THR-166:seq-29"
-    assert profile.continuation_class == "repair_review_reverify_reevaluate_original_gate"
-    presentation = thread_routes.ContinuationPresentation(
-        policy_id="THR-166-genuine-human-blocker",
-        policy_version="1",
-        policy_provenance="founder:THR-166:seq-29",
-        continuation_class="repair_review_reverify_reevaluate_original_gate",
-        attestation_checks=frozenset({
-            "no_schema_or_overloaded_column_change",
-            "no_permission_sandbox_or_allow_rule_change",
-            "no_auth_credentials_security_privacy_or_data_access_change",
-            "no_spend_or_budget_change",
-            "no_destructive_or_irreversible_action",
-            "no_external_contract_or_product_commitment",
-            "no_genuine_ambiguity_or_novel_situation",
-            "evidence_terminal_fresh_and_consistent",
-            "original_protected_gate_not_authorized",
-        }),
-        attestation_count=9,
-        evidence=(thread_routes.ContinuationEvidence(
-            task_id="T-1", terminal_status="completed",
-            verdict=None, output_summary=None,
-        ),),
-    )
-    facts = thread_routes.ContinuationFacts(
-        escalated_at="2026-08-17T00:00:00+00:00",
-        causal_evidence=thread_routes.CanonicalTerminalEvidence(
-            task_id="T-1", result_id=1, terminal_status="completed",
-            created_at="2026-08-16T23:59:00+00:00",
-            verdict=None, output_summary=None,
-        ),
-    )
-
-    accepted = thread_routes.evaluate_bounded_continuation(
-        profile, presentation=presentation, facts=facts,
-    )
-    assert accepted.rejection_code is None
-    assert accepted.snapshots == ({
-        "task_id": "T-1", "result_id": 1, "terminal_status": "completed",
-        "verdict": None, "output_summary": None,
-        "created_at": "2026-08-16T23:59:00+00:00",
-    },)
-
-    rejected = thread_routes.evaluate_bounded_continuation(
-        profile,
-        presentation=replace(presentation, policy_id="uninstalled-policy"),
-        facts=facts,
-    )
-    assert rejected.rejection_code == "policy_or_attestation_mismatch"
+def _seed(org) -> None:
+    org.db.insert_thread(ThreadRecord(id="THR-1", subject="Test", status=ThreadStatus.OPEN))
+    org.db.insert_task(TaskRecord(id="T-1", brief="test", dispatched_from_thread_id="THR-1"))
+    org.db.update_task("T-1", status=TaskStatus.ESCALATED, block_kind=None)
 
 
-def _mint_authorized_invocation(org, thread_id: str, agent: str) -> str:
-    """Add agent as thread participant and mint a REPLY invocation token.
-
-    Returns the invocation token string. The agent must be a team manager
-    for the resolve-escalation route to authorize them.
-    """
-    org.db.add_thread_participant(thread_id, agent, added_by="founder")
-    inv = org.db.mint_thread_invocation(
-        thread_id=thread_id,
-        agent_name=agent,
-        triggering_seq=0,
+def _token(org) -> str:
+    org.db.add_thread_participant("THR-1", "engineering_head", added_by="founder")
+    return org.db.mint_thread_invocation(
+        thread_id="THR-1", agent_name="engineering_head", triggering_seq=0,
         purpose=ThreadInvocationPurpose.REPLY,
-    )
-    return inv.invocation_token
+    ).invocation_token
 
 
-def _autonomous_continue_payload(org, *, thread_id: str, task_id: str, agent: str) -> dict:
-    """Seed a server-recorded causal terminal-result evidence seam."""
-    org.db.add_thread_participant(thread_id, agent, added_by="founder")
-    org.db.update_task(task_id, assigned_agent=agent)
-    org.db.insert_task_result(
-        task_id=task_id, agent=agent, session_id=f"sess-{task_id}",
-        status="completed", confidence_score=90, output_summary="bounded review result",
-    )
-    result = org.db.get_task_results(task_id)[-1]
-    org.db.insert_audit_log(task_id, "orchestrator", "escalation", {"reason": "revise"})
-    escalation_audit_id = org.db.get_audit_logs(task_id)[-1]["id"]
-    seq = org.db.append_thread_message(
-        thread_id=thread_id, speaker=agent, kind=ThreadMessageKind.SYSTEM,
-        system_payload={"kind_tag": "task_escalated", "task_id": task_id,
-                        "root_task_id": task_id,
-                        "causal_terminal_result": {
-                            "task_id": task_id, "result_id": result["id"],
-                            "terminal_status": result["status"],
-                            "verdict": result["verdict"],
-                            "output_summary": result["output_summary"],
-                            "created_at": result["created_at"],
-                        },
-                        "causal_escalation_audit_id": escalation_audit_id},
-    )
-    inv = org.db.mint_thread_invocation(
-        thread_id=thread_id, agent_name=agent, triggering_seq=seq,
-        purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
-    )
+def _thread_payload(token: str, **extra: object) -> dict[str, object]:
     return {
-        "task_id": task_id, "decision": "continue", "dispatcher": agent,
-        "invocation_token": inv.invocation_token,
-        "policy_id": "THR-166-genuine-human-blocker", "policy_version": "1",
-        "policy_provenance": "founder:THR-166:seq-29",
-        "continuation_class": "repair_review_reverify_reevaluate_original_gate",
-        "attestation_checks": [
-            "no_schema_or_overloaded_column_change", "no_permission_sandbox_or_allow_rule_change",
-            "no_auth_credentials_security_privacy_or_data_access_change", "no_spend_or_budget_change",
-            "no_destructive_or_irreversible_action", "no_external_contract_or_product_commitment",
-            "no_genuine_ambiguity_or_novel_situation", "evidence_terminal_fresh_and_consistent",
-            "original_protected_gate_not_authorized",
-        ],
-        "evidence": [{"task_id": task_id, "terminal_status": "completed",
-                      "output_summary": "bounded review result"}],
+        "task_id": "T-1", "decision": "supersede", "rationale": "reroute",
+        "brief": "successor task", "dispatcher": "engineering_head",
+        "invocation_token": token, **extra,
     }
 
 
-# ── Happy path tests (manager-authorized) ──────────────────────────
+def _frozen_formerly_valid_continue(org, monkeypatch) -> tuple[dict[str, object], str]:
+    """Build the pre-retirement causal lifecycle without removed route symbols.
 
-@pytest.mark.asyncio
-async def test_thread_resolve_escalation_continue_succeeds(
-    client_with_runtime, monkeypatch,
-):
-    """THR-080 Option A: continue from thread surface re-enqueues the task."""
-    client, org = client_with_runtime
-
-    org.db.insert_thread(ThreadRecord(
-        id="THR-1", subject="Test", composed_by="engineering_manager",
-        status=ThreadStatus.OPEN,
-    ))
-    org.db.insert_task(TaskRecord(
-        id="T-1", brief="test", dispatched_from_thread_id="THR-1",
-    ))
-    org.db.update_task("T-1", status=TaskStatus.ESCALATED, block_kind=None)
-
-    from runtime.daemon.routes import threads as thread_routes
-
-    original_evaluator = thread_routes.evaluate_bounded_continuation
-    evaluation_facts = []
-
-    def record_evaluation(*args, **kwargs):
-        evaluation_facts.append(kwargs.get("facts"))
-        return original_evaluator(*args, **kwargs)
-
-    monkeypatch.setattr(thread_routes, "evaluate_bounded_continuation", record_evaluation)
-
-    payload = _autonomous_continue_payload(
-        org, thread_id="THR-1", task_id="T-1", agent="engineering_head",
-    )
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/THR-1/resolve-escalation",
-        json=payload,
-    )
-    assert r.status_code == 200, f"got {r.status_code} {r.text}"
-    assert r.json()["new_status"] == "pending"
-
-    task = org.db.get_task("T-1")
-    assert task.status == TaskStatus.PENDING
-    assert evaluation_facts[0] is None
-    assert isinstance(evaluation_facts[1], thread_routes.ContinuationFacts)
-    invocation = org.db.get_invocation_any_status(payload["invocation_token"])
-    assert invocation is not None
-    assert invocation.status == ThreadInvocationStatus.CONSUMED
-    audits = [row for row in org.db.get_audit_logs("T-1")
-              if row["action"] == "escalation_continued_autonomously"]
-    assert len(audits) == 1
-    assert audits[0]["payload"]["policy_id"] == "THR-166-genuine-human-blocker"
-    assert audits[0]["payload"]["queue_intent"] == {"task_id": "T-1", "claimed": False}
-
-
-@pytest.mark.asyncio
-async def test_autonomous_continue_accepts_the_real_causal_terminal_result_lifecycle(
-    client_with_runtime, monkeypatch,
-):
-    """The normal escalation path binds its minted follow-up to its own result."""
-    from runtime.daemon.routes.threads import THR166_POLICY
-    from runtime.infrastructure.audit_logger import AuditLogger
-    from runtime.models import CompletionReport, NextStep
-    from runtime.orchestrator.executors import ExecutorResult
-
-    client, org = client_with_runtime
-    root_id = "T-LIFECYCLE"
-    thread_id = "THR-LIFECYCLE"
+    These literals are the former served THR-166 request contract, deliberately
+    frozen here so a deletion cannot make this regression test vacuous.
+    """
     agent = "engineering_head"
-    org.db.insert_thread(ThreadRecord(id=thread_id, subject="Test", status=ThreadStatus.OPEN))
-    org.db.add_thread_participant(thread_id, agent, added_by="founder")
-    org.db.insert_task(TaskRecord(
-        id=root_id, brief="original protected gate", assigned_agent=agent,
-        dispatched_from_thread_id=thread_id,
+    org.db.insert_thread(ThreadRecord(
+        id="THR-1", subject="Test", composed_by="engineering_manager", status=ThreadStatus.OPEN,
     ))
+    org.db.insert_task(TaskRecord(
+        id="T-1", brief="original protected gate", assigned_agent=agent,
+        dispatched_from_thread_id="THR-1",
+    ))
+    org.db.add_thread_participant("THR-1", agent, added_by="founder")
     AuditLogger(org.db).log_thread_dispatch(
-        thread_id, task_id=root_id, dispatcher=agent,
-        target_agent=agent, team="engineering",
+        "THR-1", task_id="T-1", dispatcher=agent, target_agent=agent,
+        team="engineering",
     )
     report = CompletionReport(
-        task_id=root_id, agent=agent, status="completed", confidence=90,
+        task_id="T-1", agent=agent, status="completed", confidence=90,
         verdict="REQUEST_CHANGES", output_summary="review found bounded repair work",
         decision=NextStep(action="escalate", reason="review requires founder decision"),
     )
     org.db.insert_task_result(
-        task_id=root_id, agent=agent, session_id="sess-lifecycle",
+        task_id="T-1", agent=agent, session_id="sess-lifecycle",
         status="completed", confidence_score=90, verdict="REQUEST_CHANGES",
         output_summary=report.output_summary,
     )
@@ -230,944 +76,599 @@ async def test_autonomous_continue_accepts_the_real_causal_terminal_result_lifec
             ExecutorResult(success=True, session_id="sess-lifecycle", duration_seconds=0), report,
         ),
     )
-
-    # Real run-step terminal handling writes escalation, the causal SYSTEM row,
-    # and its TASK_FOLLOWUP. No descendant task is inserted after this point.
-    org.orchestrator.run_step(root_id)
-    assert org.db.get_task(root_id).status == TaskStatus.ESCALATED
-    assert org.db.get_children(root_id) == []
+    org.orchestrator.run_step("T-1")
     causal_message = next(
-        message for message in org.db.list_thread_messages(thread_id)
+        message for message in org.db.list_thread_messages("THR-1")
         if (message.system_payload or {}).get("kind_tag") == "task_escalated"
     )
     invocation = next(
-        inv for inv in org.db.list_thread_invocations(thread_id)
-        if inv.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP
+        item for item in org.db.list_thread_invocations("THR-1")
+        if item.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP
     )
+    result = org.db.get_task_results("T-1")[0]
     assert causal_message.system_payload == {
-        "kind_tag": "task_escalated", "task_id": root_id,
-        "original_task_id": root_id, "root_task_id": root_id,
-        "status": "escalated", "reason": "review requires founder decision",
-        "revisit_chain_length": 1,
+        "kind_tag": "task_escalated", "task_id": "T-1", "original_task_id": "T-1",
+        "root_task_id": "T-1", "status": "escalated",
+        "reason": "review requires founder decision", "revisit_chain_length": 1,
         "causal_terminal_result": {
-            "task_id": root_id, "result_id": 1, "terminal_status": "completed",
+            "task_id": "T-1", "result_id": result["id"], "terminal_status": "completed",
             "verdict": "REQUEST_CHANGES", "output_summary": report.output_summary,
-            "created_at": org.db.get_task_results(root_id)[0]["created_at"],
+            "created_at": result["created_at"],
         },
         "causal_escalation_audit_id": next(
-            row["id"] for row in org.db.get_audit_logs(root_id)
-            if row["action"] == "escalation"
+            row["id"] for row in org.db.get_audit_logs("T-1") if row["action"] == "escalation"
         ),
     }
-    response = client.post(
-        f"/api/v1/orgs/alpha/threads/{thread_id}/resolve-escalation",
-        json={
-            "task_id": root_id, "decision": "continue", "dispatcher": agent,
-            "invocation_token": invocation.invocation_token,
-            "policy_id": "THR-166-genuine-human-blocker", "policy_version": "1",
-            "policy_provenance": "founder:THR-166:seq-29",
-            "continuation_class": "repair_review_reverify_reevaluate_original_gate",
-            "attestation_checks": sorted(THR166_POLICY.required_checks),
-            "evidence": [{
-                "task_id": root_id, "terminal_status": "completed",
-                "verdict": "REQUEST_CHANGES", "output_summary": report.output_summary,
-            }],
-        },
-    )
+    return ({"task_id": "T-1", "decision": "continue", "dispatcher": agent,
+             "invocation_token": invocation.invocation_token, "policy_id": "THR-166-genuine-human-blocker",
+             "policy_version": "1", "policy_provenance": "founder:THR-166:seq-29",
+             "continuation_class": "repair_review_reverify_reevaluate_original_gate",
+             "attestation_checks": [
+                 "no_schema_or_overloaded_column_change", "no_permission_sandbox_or_allow_rule_change",
+                 "no_auth_credentials_security_privacy_or_data_access_change", "no_spend_or_budget_change",
+                 "no_destructive_or_irreversible_action", "no_external_contract_or_product_commitment",
+                 "no_genuine_ambiguity_or_novel_situation", "evidence_terminal_fresh_and_consistent",
+                 "original_protected_gate_not_authorized",
+             ],
+             "evidence": [{"task_id": "T-1", "terminal_status": "completed",
+                           "verdict": "REQUEST_CHANGES", "output_summary": report.output_summary}]},
+            invocation.invocation_token)
 
-    assert response.status_code == 200, response.text
-    assert org.db.get_task(root_id).status == TaskStatus.PENDING
-    assert org.db.try_claim_for_step(root_id, TaskStatus.PENDING, None, new_count=2)
-    assert not [
-        row for row in org.db.get_audit_logs(root_id)
-        if row["action"] == "escalation_resolved"
-        and row["payload"].get("resolution_path") == "manual_break_glass"
-    ]
-    assert causal_message.system_payload is not None
+
+def _queue_contents(state, org) -> dict[str, object]:
+    """Snapshot queue identity, not just cardinality, without consuming it."""
+    return {
+        "task_queue": list(state.queue._queue._queue),
+        "thread_queue": [
+            {"org_slug": job.org_slug, "invocation_token": job.invocation_token}
+            for job in org.thread_queue._q._queue
+        ],
+    }
+
+
+def _durable_rows(db, table: str, where: str = "", values: tuple = ()) -> list[dict]:
+    """Use the shipping Database read API for an exact persisted-row snapshot."""
+    return [dict(row) for row in db.execute(f"SELECT * FROM {table} {where} ORDER BY 1", values)]
+
+
+def _rejection_snapshot(org, state, token: str, request_token: str | None = None) -> dict[str, object]:
+    """All causal lifecycle state a retired request must leave untouched.
+
+    Each named reader is deliberately separate: ``audit`` and ``intent`` are
+    distinct persistence surfaces, and equal queue depth is not queue identity.
+    """
+    task = org.db.get_task("T-1")
+    invocation = org.db.get_invocation_any_status(token)
+    return {
+        "task": task.model_dump(mode="json"),
+        "all_tasks": _durable_rows(org.db, "tasks"),
+        "results": org.db.get_task_results("T-1"),
+        "children": [org.db.get_task(child_id).model_dump(mode="json")
+                     for child_id in org.db.get_children("T-1")],
+        "invocation": invocation.model_dump(mode="json") if invocation else None,
+        # The request token can differ from the formerly-valid causal token.
+        # Keep both readers explicit for stale/wrong-owner/wrong-thread cases.
+        "request_invocation": (
+            request_invocation.model_dump(mode="json")
+            if (request_invocation := org.db.get_invocation_any_status(request_token or token))
+            else None
+        ),
+        "invocations": _durable_rows(org.db, "thread_invocations"),
+        "open_notifications": org.db.list_open_notifications_for_task("T-1"),
+        "notification_history": _durable_rows(org.db, "escalation_notifications"),
+        "task_audit": org.db.get_audit_logs("T-1"),
+        "thread_audit": org.db.get_audit_logs("THR-1"),
+        # There is no ``task_intents`` table in the shipping schema.  The
+        # persisted decision/intent surface is task_results.decision_json;
+        # retain it separately from audit rows rather than relabeling audit.
+        "result_intents": _durable_rows(org.db, "task_results"),
+        "thread_envelope": [message.model_dump(mode="json") for message in org.db.list_thread_messages("THR-1")],
+        # The active-envelope reader alone deliberately omits terminal and
+        # historical envelope rows.  Keep the raw durable surfaces separate.
+        "thread_row": _durable_rows(org.db, "threads", "WHERE id = ?", ("THR-1",)),
+        "thread_rows": _durable_rows(org.db, "threads"),
+        "thread_messages": _durable_rows(org.db, "thread_messages"),
+        "authority_envelope_rows": _durable_rows(org.db, "authority_continue_envelopes"),
+        "authority_envelope": org.db.get_active_authority_continue_envelope("T-1"),
+        "queues": _queue_contents(state, org),
+    }
+
+
+def _configure_retired_context(org, frozen_token: str, context: str) -> str:
+    """Make each retired-request context a real isolated fixture state."""
+    if context == "pending":
+        assert org.db.get_invocation_any_status(frozen_token).status is ThreadInvocationStatus.PENDING
+        return frozen_token
+    if context == "consumed":
+        assert org.db.consume_invocation(frozen_token)
+        assert org.db.get_invocation_any_status(frozen_token).status is ThreadInvocationStatus.CONSUMED
+        return frozen_token
+    if context == "stale_token":
+        assert org.db.get_invocation_any_status("stale-token") is None
+        return "stale-token"
+    if context == "wrong_token_owner":
+        token = org.db.mint_thread_invocation(
+            thread_id="THR-1", agent_name="other_manager", triggering_seq=1,
+            purpose=ThreadInvocationPurpose.REPLY,
+        ).invocation_token
+        assert org.db.get_invocation_any_status(token).agent_name == "other_manager"
+        return token
+    if context == "wrong_token_thread":
+        org.db.insert_thread(ThreadRecord(id="THR-OTHER", subject="Other", status=ThreadStatus.OPEN))
+        org.db.add_thread_participant("THR-OTHER", "engineering_head", added_by="founder")
+        token = org.db.mint_thread_invocation(
+            thread_id="THR-OTHER", agent_name="engineering_head", triggering_seq=1,
+            purpose=ThreadInvocationPurpose.REPLY,
+        ).invocation_token
+        assert org.db.get_invocation_any_status(token).thread_id == "THR-OTHER"
+        return token
+    if context == "missing_causal":
+        # The task-escalated message retains a result id whose actual causal
+        # task-result row is now absent, rather than adding an unrelated marker.
+        org.db.execute("DELETE FROM task_results WHERE task_id = ?", ("T-1",))
+        assert org.db.get_task_results("T-1") == []
+    elif context == "unrelated_causal":
+        org.db.execute("UPDATE task_results SET task_id = ? WHERE task_id = ?", ("T-UNRELATED", "T-1"))
+        assert org.db.get_task_results("T-1") == []
+    elif context == "malformed_causal":
+        org.db.execute("UPDATE task_results SET verdict = NULL WHERE task_id = ?", ("T-1",))
+        assert org.db.get_task_results("T-1")[0]["verdict"] is None
+    elif context == "root_task":
+        assert org.db.get_task("T-1").parent_task_id is None
+    elif context == "non_root_task":
+        org.db.insert_task(TaskRecord(id="T-PARENT", brief="parent"))
+        # parent_task_id is immutable to ordinary lifecycle callers; this is
+        # isolated fixture construction of an already-persisted non-root row.
+        org.db.execute("UPDATE tasks SET parent_task_id = ? WHERE id = ?", ("T-PARENT", "T-1"))
+        assert org.db.get_task("T-1").parent_task_id == "T-PARENT"
+    elif context == "cancelled_task":
+        org.db.update_task("T-1", status=TaskStatus.CANCELLED)
+        assert org.db.get_task("T-1").status is TaskStatus.CANCELLED
+    elif context == "live_child":
+        org.db.insert_task(TaskRecord(id="T-CHILD", brief="live", parent_task_id="T-1"))
+        assert org.db.get_children("T-1") == ["T-CHILD"]
+    elif context != "repeated_identical_replay":
+        raise AssertionError(f"unmapped context: {context}")
+    return frozen_token
+
+
+def _causal_transition_snapshot(org, state, token: str) -> dict[str, object]:
+    """Compact diagnostic emitted when the immutable baseline remains live."""
+    task = org.db.get_task("T-1")
+    invocation = org.db.get_invocation_any_status(token)
+    return {
+        "fixture_db_path": str(org.db.db_path),
+        "task_status": task.status.value if task else None,
+        "task_note": task.note if task else None,
+        "invocation_status": invocation.status.value if invocation else None,
+        "escalation_resolved_audits": [
+            row for row in org.db.get_audit_logs("T-1")
+            if row["action"] == "escalation_resolved"
+        ],
+        "queue_depth": state.queue._queue.qsize(),
+    }
+
+
+_RETIRED_FIELDS = (
+    "policy_id", "policy_version", "policy_provenance", "continuation_class",
+    "attestation_checks", "evidence", "invocation_token", "dispatcher",
+)
+
+
+def _presence_values(field: str) -> list[tuple[str, object]]:
+    """Formerly-valid, empty, null, wrong-type, and malformed cells per key."""
+    valid: dict[str, object] = {
+        "policy_id": "THR-166-genuine-human-blocker", "policy_version": "1",
+        "policy_provenance": "founder:THR-166:seq-29",
+        "continuation_class": "repair_review_reverify_reevaluate_original_gate",
+        # These values are copied from _frozen_formerly_valid_continue.  They
+        # are valid *field* values, not a claim that a partial request is a
+        # complete formerly-valid THR-166 request.
+        "attestation_checks": ["evidence_terminal_fresh_and_consistent"],
+        "evidence": [{"task_id": "T-1", "terminal_status": "completed",
+                      "verdict": "REQUEST_CHANGES",
+                      "output_summary": "review found bounded repair work"}],
+        "invocation_token": "formerly-valid-token", "dispatcher": "engineering_head",
+    }
+    malformed: dict[str, object] = {
+        "policy_id": "\x00bad", "policy_version": "not-a-version",
+        "policy_provenance": "not:a:provenance", "continuation_class": "???",
+        "attestation_checks": [None], "evidence": [{"task_id": None}],
+        "invocation_token": "not-a-token", "dispatcher": "not a dispatcher",
+    }
+    empty: object = [] if field in {"attestation_checks", "evidence"} else ""
+    wrong: object = {"wrong": True} if field not in {"attestation_checks", "evidence"} else "wrong"
+    return [("formerly_valid", valid[field]), ("empty", empty), ("null", None),
+            ("wrong_type", wrong), ("malformed", malformed[field])]
 
 
 @pytest.mark.asyncio
-async def test_manual_break_glass_does_not_invoke_autonomous_evaluator(
+@pytest.mark.parametrize("field,value_class,value", [
+    (field, value_class, value)
+    for field in _RETIRED_FIELDS
+    for value_class, value in _presence_values(field)
+], ids=lambda cell: str(cell))
+async def test_retired_presence_matrix_rejects_at_both_imported_resolver_lookups(
+    client_with_runtime, monkeypatch, field, value_class, value,
+):
+    client, org = client_with_runtime
+    _seed(org)
+    token = _token(org)
+    state = client.app.state.daemon
+    state.queue.put_nowait("alpha", "SENTINEL-TASK")
+    org.thread_queue._q.put_nowait(type("Sentinel", (), {"org_slug": "alpha", "invocation_token": "sentinel"})())
+    from runtime.daemon.routes import tasks
+    calls: list[object] = []
+
+    async def resolver_spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("retired request reached shared resolver")
+
+    # tasks.py is the direct task-route lookup and threads.py imports this
+    # exact symbol function-locally immediately before its actual call site.
+    monkeypatch.setattr(tasks, "resolve_escalation_in_process", resolver_spy)
+    routes = [
+        ("/api/v1/orgs/alpha/tasks/T-1/resolve-escalation", {
+            "decision": "continue", "rationale": "human", field: value,
+        }),
+    ]
+    # ``invocation_token``/``dispatcher`` are ordinary required transport
+    # fields at thread ingress, but retired task identity markers.  The six
+    # former policy/evidence keys are rejected at *both* ingress routes.
+    if field not in {"invocation_token", "dispatcher"}:
+        routes.insert(0, (
+            "/api/v1/orgs/alpha/threads/THR-1/resolve-escalation",
+            _thread_payload(token, **{field: value}),
+        ))
+    for route, payload in routes:
+        before = _rejection_snapshot(org, state, token)
+        response = client.post(route, json=payload)
+        assert response.status_code == 410, (field, value_class, route, response.text)
+        assert response.json()["detail"] == {"code": "retired_autonomous_continuation"}
+        assert _rejection_snapshot(org, state, token) == before
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_thread_rejects_full_legacy_envelope_without_reflection(client_with_runtime):
+    client, org = client_with_runtime
+    _seed(org)
+    response = client.post(
+        "/api/v1/orgs/alpha/threads/THR-1/resolve-escalation",
+        json=_thread_payload(_token(org), policy_id="secret-policy", policy_version=None,
+                             policy_provenance="secret-source", continuation_class="continue",
+                             attestation_checks=["secret-check"], evidence=[{"secret": "payload"}]),
+    )
+    assert response.status_code == 410
+    assert "secret" not in response.text
+    assert org.db.get_task("T-1").status is TaskStatus.ESCALATED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("actor", [None, "", "founder", "engineering_manager"])
+async def test_task_rejects_full_retired_envelope_for_every_actor_before_fallback(
+    client_with_runtime, actor,
+):
+    client, org = client_with_runtime
+    _seed(org)
+    payload: dict[str, object] = {
+        "decision": "continue", "rationale": "human", "policy_id": "THR-166-genuine-human-blocker",
+        "policy_version": "1", "policy_provenance": "founder:THR-166:seq-29",
+        "continuation_class": "repair_review_reverify_reevaluate_original_gate",
+        "attestation_checks": ["evidence_terminal_fresh_and_consistent"],
+        "evidence": [{"task_id": "T-1", "terminal_status": "completed"}],
+        "invocation_token": "former-token", "dispatcher": "engineering_head",
+    }
+    if actor is not None:
+        payload["actor"] = actor
+    before = _rejection_snapshot(org, client.app.state.daemon, "missing-token")
+    response = client.post("/api/v1/orgs/alpha/tasks/T-1/resolve-escalation", json=payload)
+    assert response.status_code == 410
+    assert _rejection_snapshot(org, client.app.state.daemon, "missing-token") == before
+
+
+@pytest.mark.asyncio
+async def test_thread_rejects_frozen_formerly_valid_causal_lifecycle_before_shared_resolver(
     client_with_runtime, monkeypatch,
 ):
-    """The direct task route remains the independent manual contract."""
-    from runtime.daemon.routes import threads as thread_routes
+    """The exact former causal continuation is now terminally retired.
 
+    The same test is RED on 5258bcad: that head continues this frozen request.
+    """
     client, org = client_with_runtime
-    org.db.insert_task(TaskRecord(id="T-MANUAL", brief="test"))
-    org.db.update_task("T-MANUAL", status=TaskStatus.ESCALATED, block_kind=None)
+    payload, token = _frozen_formerly_valid_continue(org, monkeypatch)
+    before = _rejection_snapshot(org, client.app.state.daemon, token)
+    from runtime.daemon.routes import tasks
 
-    def autonomous_evaluator_must_not_run(*args, **kwargs):
-        raise AssertionError("manual break-glass invoked autonomous evaluator")
+    async def must_not_enter(*args, **kwargs):
+        raise AssertionError("retired envelope entered shared human resolver")
 
-    monkeypatch.setattr(
-        thread_routes, "evaluate_bounded_continuation", autonomous_evaluator_must_not_run,
+    monkeypatch.setattr(tasks, "resolve_escalation_in_process", must_not_enter)
+    response = client.post("/api/v1/orgs/alpha/threads/THR-1/resolve-escalation", json=payload)
+    assert response.status_code == 410, json.dumps({
+        "response": {"status": response.status_code, "body": response.json()},
+        "causal_transition": _causal_transition_snapshot(
+            org, client.app.state.daemon, token,
+        ),
+    }, sort_keys=True)
+    assert response.json()["detail"] == {"code": "retired_autonomous_continuation"}
+    assert _rejection_snapshot(org, client.app.state.daemon, token) == before
+
+
+@pytest.mark.asyncio
+async def test_retired_rejection_survives_close_reopen_and_preserves_historical_causal_rows(
+    client_with_runtime, monkeypatch,
+):
+    """The real persisted fixture remains readable after a separate DB open."""
+    client, org = client_with_runtime
+    payload, token = _frozen_formerly_valid_continue(org, monkeypatch)
+    before = _rejection_snapshot(org, client.app.state.daemon, token)
+    # These are actual historical causal fixture records, not an assertion
+    # that the current task alone is a "legacy" proxy.
+    assert before["results"] and before["results"][0]["task_id"] == "T-1"
+    assert any(row["action"] == "escalation" for row in before["task_audit"])
+    assert any(row["action"] == "thread_dispatch" for row in before["thread_audit"])
+    assert any(
+        (message.get("system_payload") or {}).get("kind_tag") == "task_escalated"
+        for message in before["thread_envelope"]
     )
+    assert any(row["purpose"] == ThreadInvocationPurpose.TASK_FOLLOWUP.value for row in before["invocations"])
+    response = client.post("/api/v1/orgs/alpha/threads/THR-1/resolve-escalation", json=payload)
+    assert response.status_code == 410
+    db_path = Path(org.db.db_path)
+    org.db.close()
+    reopened = Database(db_path)
+    try:
+        reopened_snapshot = _rejection_snapshot(
+            type("Org", (), {"db": reopened, "thread_queue": org.thread_queue})(),
+            client.app.state.daemon, token,
+        )
+        # Queues are in-memory; they were compared before close.  Every
+        # persisted reader, including historical authority envelopes and the
+        # full thread record, remains byte-for-byte readable after reopen.
+        assert {key: value for key, value in reopened_snapshot.items() if key != "queues"} == {
+            key: value for key, value in before.items() if key != "queues"
+        }
+    finally:
+        reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_agent_continue_is_retired_without_legacy_fields(client_with_runtime):
+    client, org = client_with_runtime
+    _seed(org)
+    token = _token(org)
     response = client.post(
-        "/api/v1/orgs/alpha/tasks/T-MANUAL/resolve-escalation",
-        json={"decision": "continue", "rationale": "founder direction"},
+        "/api/v1/orgs/alpha/threads/THR-1/resolve-escalation",
+        json={**_thread_payload(token), "decision": "continue"},
     )
-
-    assert response.status_code == 200
-    audit = [row for row in org.db.get_audit_logs("T-MANUAL")
-             if row["action"] == "escalation_resolved"]
-    assert audit[0]["payload"]["resolution_path"] == "manual_break_glass"
-
-
-@pytest.mark.asyncio
-async def test_thread_resolve_escalation_rejects_task_not_in_lineage(
-    client_with_runtime,
-):
-    """THR-080: a task NOT in this thread's lineage -> 409."""
-    client, org = client_with_runtime
-
-    org.db.insert_thread(ThreadRecord(
-        id="THR-2", subject="Test", composed_by="engineering_manager",
-        status=ThreadStatus.OPEN,
-    ))
-    org.db.insert_task(TaskRecord(
-        id="T-2", brief="test", dispatched_from_thread_id="OTHER-THREAD",
-    ))
-    org.db.update_task("T-2", status=TaskStatus.ESCALATED, block_kind=None)
-
-    token = _mint_authorized_invocation(org, "THR-2", "engineering_head")
-
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/THR-2/resolve-escalation",
-        json={
-            "task_id": "T-2",
-            "decision": "continue",
-            "rationale": "nope",
-            "invocation_token": token,
-            "dispatcher": "engineering_head",
-        },
-    )
-    assert r.status_code == 400
-    assert r.json()["detail"]["code"] == "wrong_invocation_purpose"
-
-
-@pytest.mark.asyncio
-async def test_thread_resolve_escalation_rejects_invalid_decision(
-    client_with_runtime,
-):
-    """THR-080: 'cancel' is rejected on the thread route too."""
-    client, org = client_with_runtime
-
-    org.db.insert_thread(ThreadRecord(
-        id="THR-3", subject="Test", composed_by="engineering_manager",
-        status=ThreadStatus.OPEN,
-    ))
-    org.db.insert_task(TaskRecord(
-        id="T-3", brief="test", dispatched_from_thread_id="THR-3",
-    ))
-    org.db.update_task("T-3", status=TaskStatus.ESCALATED, block_kind=None)
-
-    token = _mint_authorized_invocation(org, "THR-3", "engineering_head")
-
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/THR-3/resolve-escalation",
-        json={
-            "task_id": "T-3",
-            "decision": "cancel",
-            "rationale": "nope",
-            "invocation_token": token,
-            "dispatcher": "engineering_head",
-        },
-    )
-    assert r.status_code == 400
-    assert r.json()["detail"]["code"] == "invalid_decision"
-
-
-@pytest.mark.asyncio
-async def test_thread_resolve_escalation_supersede_mints_successor(
-    client_with_runtime,
-):
-    """THR-080: supersede from thread surface works."""
-    client, org = client_with_runtime
-
-    org.db.insert_thread(ThreadRecord(
-        id="THR-4", subject="Test", composed_by="engineering_manager",
-        status=ThreadStatus.OPEN,
-    ))
-    org.db.insert_task(TaskRecord(
-        id="T-4", brief="original", dispatched_from_thread_id="THR-4",
-    ))
-    org.db.update_task("T-4", status=TaskStatus.ESCALATED, block_kind=None)
-
-    token = _mint_authorized_invocation(org, "THR-4", "engineering_head")
-
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/THR-4/resolve-escalation",
-        json={
-            "task_id": "T-4",
-            "decision": "supersede",
-            "rationale": "reroute",
-            "brief": "successor task",
-            "invocation_token": token,
-            "dispatcher": "engineering_head",
-        },
-    )
-    assert r.status_code == 200, f"got {r.status_code} {r.text}"
-    assert r.json()["new_status"] == "superseded"
-
-    predecessor = org.db.get_task("T-4")
-    assert predecessor.status == TaskStatus.SUPERSEDED
-
-
-@pytest.mark.asyncio
-async def test_thread_resolve_escalation_continue_rejects_live_children(
-    client_with_runtime,
-):
-    """THR-080 memo §3: continue from thread surface also rejects live children."""
-    client, org = client_with_runtime
-
-    org.db.insert_thread(ThreadRecord(
-        id="THR-5", subject="Test", composed_by="engineering_manager",
-        status=ThreadStatus.OPEN,
-    ))
-    org.db.insert_task(TaskRecord(
-        id="T-5", brief="parent", dispatched_from_thread_id="THR-5",
-    ))
-    org.db.update_task("T-5", status=TaskStatus.ESCALATED, block_kind=None)
-    org.db.insert_task(
-        TaskRecord(id="T-5-CHD", brief="child", parent_task_id="T-5")
-    )
-
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/THR-5/resolve-escalation",
-        json=_autonomous_continue_payload(org, thread_id="THR-5", task_id="T-5", agent="engineering_head"),
-    )
-    assert r.status_code == 409
-    detail = r.json()["detail"]
-    assert detail["code"] == "cannot_continue_live_children"
-    assert "supersede" in detail.get("remedy", "").lower()
-
-
-@pytest.mark.asyncio
-async def test_thread_resolve_escalation_checks_parent_chain_lineage(
-    client_with_runtime,
-):
-    """THR-080: lineage check walks parent chain, not just dispatched_from_thread_id."""
-    client, org = client_with_runtime
-
-    org.db.insert_thread(ThreadRecord(
-        id="THR-6", subject="Test", composed_by="engineering_manager",
-        status=ThreadStatus.OPEN,
-    ))
-    org.db.insert_task(TaskRecord(
-        id="T-ROOT", brief="root", dispatched_from_thread_id="THR-6",
-    ))
-    org.db.insert_task(TaskRecord(
-        id="T-CHD", brief="child", parent_task_id="T-ROOT",
-    ))
-    org.db.update_task("T-CHD", status=TaskStatus.ESCALATED, block_kind=None)
-
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/THR-6/resolve-escalation",
-        json=_autonomous_continue_payload(org, thread_id="THR-6", task_id="T-CHD", agent="engineering_head"),
-    )
-    assert r.status_code == 409
-    assert r.json()["detail"]["code"] == "continuation_not_root"
-
-
-# ── RED tests: authority enforcement (THR-080 #2) ──────────────────
-
-@pytest.mark.asyncio
-async def test_thread_resolve_escalation_rejects_unauthorized_worker(
-    client_with_runtime,
-):
-    """THR-080 #2: a non-manager worker is rejected with actionable error."""
-    client, org = client_with_runtime
-
-    org.db.insert_thread(ThreadRecord(
-        id="THR-AUTH", subject="Test", composed_by="engineering_manager",
-        status=ThreadStatus.OPEN,
-    ))
-    org.db.insert_task(TaskRecord(
-        id="T-AUTH", brief="test", dispatched_from_thread_id="THR-AUTH",
-    ))
-    org.db.update_task("T-AUTH", status=TaskStatus.ESCALATED, block_kind=None)
-
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/THR-AUTH/resolve-escalation",
-        json=_autonomous_continue_payload(org, thread_id="THR-AUTH", task_id="T-AUTH", agent="dev_agent"),
-    )
-    assert r.status_code == 403, f"got {r.status_code} {r.text}"
-    detail = r.json()["detail"]
-    assert detail["code"] == "resolve_escalation_not_authorized"
-    # Actionable error must name the supersede fallback.
-    assert "supersede" in detail.get("remedy", "").lower() or "manager" in detail.get("remedy", "").lower()
-
-
-@pytest.mark.asyncio
-async def test_thread_resolve_escalation_rejects_missing_invocation_token(
-    client_with_runtime,
-):
-    """THR-080 #2: missing invocation_token is rejected with 422."""
-    client, org = client_with_runtime
-
-    org.db.insert_thread(ThreadRecord(
-        id="THR-MISS", subject="Test", composed_by="engineering_manager",
-        status=ThreadStatus.OPEN,
-    ))
-    org.db.insert_task(TaskRecord(
-        id="T-MISS", brief="test", dispatched_from_thread_id="THR-MISS",
-    ))
-    org.db.update_task("T-MISS", status=TaskStatus.ESCALATED, block_kind=None)
-
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/THR-MISS/resolve-escalation",
-        json={
-            "task_id": "T-MISS",
-            "decision": "continue",
-            "rationale": "no token",
-        },
-    )
-    assert r.status_code == 422
-    assert r.json()["detail"]["code"] == "missing_invocation_token"
-
-
-@pytest.mark.asyncio
-async def test_thread_resolve_escalation_derives_actor_from_dispatcher(
-    client_with_runtime,
-):
-    """THR-080 #2: actor is derived from the validated dispatcher, not
-    a client-supplied spoof field. The legacy 'actor' body field is
-    ignored."""
-    client, org = client_with_runtime
-
-    org.db.insert_thread(ThreadRecord(
-        id="THR-ACTOR", subject="Test", composed_by="engineering_manager",
-        status=ThreadStatus.OPEN,
-    ))
-    org.db.insert_task(TaskRecord(
-        id="T-ACTOR", brief="test", dispatched_from_thread_id="THR-ACTOR",
-    ))
-    org.db.update_task("T-ACTOR", status=TaskStatus.ESCALATED, block_kind=None)
-
-    # Try to spoof actor as "founder" while presenting engineering_head's token.
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/THR-ACTOR/resolve-escalation",
-        json=_autonomous_continue_payload(org, thread_id="THR-ACTOR", task_id="T-ACTOR", agent="engineering_head"),
-    )
-    assert r.status_code == 200, f"got {r.status_code} {r.text}"
-
-    # The audit log should show the REAL actor (engineering_head), not
-    # any spoofed value.
-    logs = org.db.get_audit_logs("T-ACTOR")
-    resolved_logs = [e for e in logs if e["action"] == "escalation_continued_autonomously"]
-    assert len(resolved_logs) >= 1
-    assert resolved_logs[0]["agent"] == "engineering_head"
-
-
-# ── Token lifecycle: replay prevention (THR-080 review R2) ────────
-
-@pytest.mark.asyncio
-async def test_thread_resolve_escalation_rejects_replayed_token(
-    client_with_runtime,
-):
-    """A single invocation token can resolve at most once — a second
-    call with the same token must be rejected (mirrors reply/decline
-    lifecycle)."""
-    client, org = client_with_runtime
-
-    org.db.insert_thread(ThreadRecord(
-        id="THR-REPLAY", subject="Test", composed_by="engineering_manager",
-        status=ThreadStatus.OPEN,
-    ))
-    org.db.insert_task(TaskRecord(
-        id="T-REPLAY", brief="test", dispatched_from_thread_id="THR-REPLAY",
-    ))
-    org.db.update_task("T-REPLAY", status=TaskStatus.ESCALATED, block_kind=None)
-
-    payload = _autonomous_continue_payload(
-        org, thread_id="THR-REPLAY", task_id="T-REPLAY", agent="engineering_head",
-    )
-    token = payload["invocation_token"]
-
-    # First call: succeeds.
-    r1 = client.post(
-        "/api/v1/orgs/alpha/threads/THR-REPLAY/resolve-escalation",
-        json=payload,
-    )
-    assert r1.status_code == 200, f"first call: got {r1.status_code} {r1.text}"
-
-    # First turn must consume the token (not be classified no_callback).
-    inv = org.db.get_invocation_any_status(token)
-    assert inv is not None
-    assert inv.status == ThreadInvocationStatus.CONSUMED, (
-        f"first turn must consume the token (not no_callback), got {inv.status}"
-    )
-    assert inv.decline_reason is None, (
-        f"consumed callback must have no decline_reason, got {inv.decline_reason}"
-    )
-
-    # Reset task back to escalated so a replay would mutate again if not guarded.
-    org.db.update_task("T-REPLAY", status=TaskStatus.ESCALATED, block_kind=None)
-
-    # Second call with the SAME token: must reject.
-    r2 = client.post(
-        "/api/v1/orgs/alpha/threads/THR-REPLAY/resolve-escalation",
-        json={**payload, "rationale": "replay attempt"},
-    )
-    assert r2.status_code == 409, f"replay: got {r2.status_code} {r2.text}"
-    detail = r2.json()["detail"]
-    assert detail["code"] == "invocation_token_consumed"
-
-
-@pytest.mark.asyncio
-async def test_autonomous_continue_rejects_manager_prose_and_protected_attestation(
-    client_with_runtime,
-):
-    """A brief/rationale cannot replace the founder policy or waive a fence."""
-    client, org = client_with_runtime
-    org.db.insert_thread(ThreadRecord(id="THR-POL", subject="Test", status=ThreadStatus.OPEN))
-    org.db.insert_task(TaskRecord(id="T-POL", brief="manager says it is safe", dispatched_from_thread_id="THR-POL"))
-    org.db.update_task("T-POL", status=TaskStatus.ESCALATED, block_kind=None)
-    payload = _autonomous_continue_payload(
-        org, thread_id="THR-POL", task_id="T-POL", agent="engineering_head",
-    )
-    payload["policy_id"] = "manager-brief-authority"
-    payload["rationale"] = "this is only a frontend repair"
-    r = client.post("/api/v1/orgs/alpha/threads/THR-POL/resolve-escalation", json=payload)
-    assert r.status_code == 409
-    assert r.json()["detail"]["code"] == "policy_or_attestation_mismatch"
-    assert org.db.get_task("T-POL").status == TaskStatus.ESCALATED
-
-
-@pytest.mark.asyncio
-async def test_autonomous_continue_uses_only_bound_causal_terminal_result(
-    client_with_runtime,
-):
-    """Later repair/review/reverify records cannot replace the causal result."""
-    client, org = client_with_runtime
-    org.db.insert_thread(ThreadRecord(id="THR-5000", subject="THR-166", status=ThreadStatus.OPEN))
-    org.db.insert_task(TaskRecord(
-        id="TASK-5000", brief="original destructive gate", assigned_agent="engineering_head",
-        dispatched_from_thread_id="THR-5000", status=TaskStatus.ESCALATED,
-    ))
-    payload = _autonomous_continue_payload(
-        org, thread_id="THR-5000", task_id="TASK-5000", agent="engineering_head",
-    )
-    for task_id, parent_id in (
-        ("TASK-5001", "TASK-5000"),
-        ("TASK-5001-REPAIR", "TASK-5001"),
-        ("TASK-5001-REVIEW", "TASK-5001"),
-        ("TASK-5001-REVERIFY", "TASK-5001"),
-    ):
-        org.db.insert_task(TaskRecord(
-            id=task_id, brief="bounded repair evidence", parent_task_id=parent_id,
-            status=TaskStatus.COMPLETED,
-        ))
-    # This late result is neither a descendant nor evidence for the unpark.
-    org.db.insert_task(TaskRecord(id="TASK-5025", brief="later pass", status=TaskStatus.COMPLETED))
-    response = client.post("/api/v1/orgs/alpha/threads/THR-5000/resolve-escalation", json=payload)
-    assert response.status_code == 200, response.text
-    audit = [row for row in org.db.get_audit_logs("TASK-5000")
-             if row["action"] == "escalation_continued_autonomously"]
-    assert len(audit) == 1
-    assert audit[0]["payload"]["evidence"] == [{
-        "task_id": "TASK-5000", "result_id": 1, "terminal_status": "completed",
-        "verdict": None, "output_summary": "bounded review result",
-        "created_at": audit[0]["payload"]["evidence"][0]["created_at"],
-    }]
+    assert response.status_code == 410
+    assert response.json()["detail"]["code"] == "retired_autonomous_continuation"
+    assert org.db.get_task("T-1").status is TaskStatus.ESCALATED
+    assert org.db.get_invocation_any_status(token).status is ThreadInvocationStatus.PENDING
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("mutate", "expected"),
+    "context",
     [
-        (lambda payload: payload.update({"evidence": []}), "evidence_lineage_mismatch"),
-        (lambda payload: payload.update({"evidence": [{
-            "task_id": "UNRELATED", "terminal_status": "completed",
-        }]}), "evidence_lineage_mismatch"),
-        (lambda payload: payload["evidence"][0].update({"output_summary": "forged"}), "evidence_result_mismatch"),
-        (lambda payload: payload.update({"dispatcher": "other_manager"}), "invocation_token_invalid"),
+        "pending", "consumed", "stale_token", "wrong_token_owner",
+        "wrong_token_thread", "repeated_identical_replay", "missing_causal",
+        "unrelated_causal", "malformed_causal", "root_task", "non_root_task",
+        "cancelled_task", "live_child",
     ],
 )
-async def test_autonomous_continue_rejects_unrelated_conflicting_and_wrong_owner_proofs(
-    client_with_runtime, mutate, expected,
+async def test_retired_contexts_reject_before_both_shared_resolver_lookups(
+    client_with_runtime, monkeypatch, context,
 ):
-    """Structured evidence and ownership are server-derived and fail closed."""
+    """Each formerly-live context is rejected before auth/lineage/fallback.
+
+    The thread request transports an invocation token; task ingress treats
+    that same key as retired envelope evidence.  Both therefore prove the
+    source ``tasks.resolve_escalation_in_process`` lookup is unreachable.
+    """
     client, org = client_with_runtime
-    org.db.insert_thread(ThreadRecord(id="THR-FAIL", subject="Test", status=ThreadStatus.OPEN))
-    org.db.insert_task(TaskRecord(id="T-FAIL", brief="test", dispatched_from_thread_id="THR-FAIL"))
-    org.db.update_task("T-FAIL", status=TaskStatus.ESCALATED, block_kind=None)
-    payload = _autonomous_continue_payload(
-        org, thread_id="THR-FAIL", task_id="T-FAIL", agent="engineering_head",
+    payload, frozen_token = _frozen_formerly_valid_continue(org, monkeypatch)
+    token = _configure_retired_context(org, frozen_token, context)
+    state = client.app.state.daemon
+    state.queue.put_nowait("alpha", f"SENTINEL-{context}")
+    before = _rejection_snapshot(org, state, frozen_token, token)
+    from runtime.daemon.routes import tasks
+    calls: list[object] = []
+
+    async def resolver_spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("retired context reached shared resolver")
+
+    monkeypatch.setattr(tasks, "resolve_escalation_in_process", resolver_spy)
+    thread_payload = {**payload, "invocation_token": token}
+    task_payload = {"decision": "continue", "rationale": "retired", "policy_id": payload["policy_id"],
+                    "invocation_token": token, "dispatcher": "engineering_head"}
+    requests = (
+        ("/api/v1/orgs/alpha/threads/THR-1/resolve-escalation", thread_payload),
+        ("/api/v1/orgs/alpha/tasks/T-1/resolve-escalation", task_payload),
     )
-    mutate(payload)
-    response = client.post("/api/v1/orgs/alpha/threads/THR-FAIL/resolve-escalation", json=payload)
-    assert response.status_code in {401, 409}
-    assert response.json()["detail"]["code"] == expected
-    assert org.db.get_task("T-FAIL").status == TaskStatus.ESCALATED
+    for route, body in requests:
+        response = client.post(route, json=body)
+        assert response.status_code == 410, (context, route, response.text)
+        assert response.json()["detail"] == {"code": "retired_autonomous_continuation"}
+        assert _rejection_snapshot(org, state, frozen_token, token) == before
+    if context == "repeated_identical_replay":
+        for route, body in requests:
+            replay = client.post(route, json=body)
+            assert replay.status_code == 410, (context, route, replay.text)
+            assert _rejection_snapshot(org, state, frozen_token, token) == before
+    assert calls == []
 
 
 @pytest.mark.asyncio
-async def test_autonomous_continue_rejects_wrong_owner_and_noncausal_followup(
-    client_with_runtime,
-):
+async def test_thread_supersede_remains_supported_and_replay_is_rejected(client_with_runtime):
     client, org = client_with_runtime
-    org.db.insert_thread(ThreadRecord(id="THR-CAUSE", subject="Test", status=ThreadStatus.OPEN))
-    org.db.insert_task(TaskRecord(id="T-CAUSE", brief="test", dispatched_from_thread_id="THR-CAUSE"))
-    org.db.update_task("T-CAUSE", status=TaskStatus.ESCALATED, block_kind=None)
-    payload = _autonomous_continue_payload(
-        org, thread_id="THR-CAUSE", task_id="T-CAUSE", agent="engineering_head",
-    )
-    org.db.update_task("T-CAUSE", assigned_agent="other_manager")
-    wrong_owner = client.post("/api/v1/orgs/alpha/threads/THR-CAUSE/resolve-escalation", json=payload)
-    assert wrong_owner.status_code == 409
-    assert wrong_owner.json()["detail"]["code"] == "continuation_wrong_owner"
-
-    org.db.update_task("T-CAUSE", assigned_agent="engineering_head")
-    unrelated_seq = org.db.append_thread_message(
-        thread_id="THR-CAUSE", speaker="system", kind=ThreadMessageKind.SYSTEM,
-        system_payload={"kind_tag": "task_escalated", "task_id": "OTHER", "root_task_id": "OTHER"},
-    )
-    unrelated = org.db.mint_thread_invocation(
-        thread_id="THR-CAUSE", agent_name="engineering_head", triggering_seq=unrelated_seq,
-        purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
-    )
-    payload["invocation_token"] = unrelated.invocation_token
-    noncausal = client.post("/api/v1/orgs/alpha/threads/THR-CAUSE/resolve-escalation", json=payload)
-    assert noncausal.status_code == 409
-    assert noncausal.json()["detail"]["code"] == "continuation_noncausal_followup"
-    assert org.db.get_task("T-CAUSE").status == TaskStatus.ESCALATED
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("causal_terminal_result", [None, "malformed"])
-async def test_autonomous_continue_rejects_missing_or_malformed_causal_result(
-    client_with_runtime, causal_terminal_result,
-):
-    """A matching token/message never substitutes for a canonical result row."""
-    client, org = client_with_runtime
-    org.db.insert_thread(ThreadRecord(id="THR-CANON", subject="Test", status=ThreadStatus.OPEN))
-    org.db.insert_task(TaskRecord(id="T-CANON", brief="test", dispatched_from_thread_id="THR-CANON"))
-    org.db.update_task("T-CANON", status=TaskStatus.ESCALATED, block_kind=None)
-    payload = _autonomous_continue_payload(
-        org, thread_id="THR-CANON", task_id="T-CANON", agent="engineering_head",
-    )
-    system_payload = {
-        "kind_tag": "task_escalated", "task_id": "T-CANON", "root_task_id": "T-CANON",
-        "causal_escalation_audit_id": org.db.get_audit_logs("T-CANON")[-1]["id"],
-    }
-    if causal_terminal_result is not None:
-        system_payload["causal_terminal_result"] = causal_terminal_result
-    seq = org.db.append_thread_message(
-        thread_id="THR-CANON", speaker="engineering_head", kind=ThreadMessageKind.SYSTEM,
-        system_payload=system_payload,
-    )
-    inv = org.db.mint_thread_invocation(
-        thread_id="THR-CANON", agent_name="engineering_head", triggering_seq=seq,
-        purpose=ThreadInvocationPurpose.TASK_FOLLOWUP,
-    )
-    response = client.post(
-        "/api/v1/orgs/alpha/threads/THR-CANON/resolve-escalation",
-        json={**payload, "invocation_token": inv.invocation_token},
-    )
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] in {
-        "causal_result_missing", "causal_result_malformed",
-    }
-    assert org.db.get_task("T-CANON").status == TaskStatus.ESCALATED
-    assert org.db.get_invocation_any_status(inv.invocation_token).status == ThreadInvocationStatus.PENDING
-
-
-@pytest.mark.asyncio
-async def test_autonomous_continue_rejects_stale_evidence_and_live_children(
-    client_with_runtime, monkeypatch,
-):
-    client, org = client_with_runtime
-    org.db.insert_thread(ThreadRecord(id="THR-EVIDENCE", subject="Test", status=ThreadStatus.OPEN))
-    org.db.insert_task(TaskRecord(id="T-EVIDENCE", brief="test", dispatched_from_thread_id="THR-EVIDENCE"))
-    org.db.insert_task(TaskRecord(
-        id="T-EVIDENCE-OLD", brief="pre-escalation", parent_task_id="T-EVIDENCE",
-        status=TaskStatus.COMPLETED,
-    ))
-    org.db.update_task("T-EVIDENCE", status=TaskStatus.ESCALATED, block_kind=None)
-    stale = _autonomous_continue_payload(
-        org, thread_id="THR-EVIDENCE", task_id="T-EVIDENCE", agent="engineering_head",
-    )
-    original_logs = org.db.get_audit_logs
-
-    def stale_escalation(task_id):
-        logs = original_logs(task_id)
-        if task_id != "T-EVIDENCE":
-            return logs
-        return [
-            {**row, "timestamp": "2000-01-01T00:00:00+00:00"}
-            if row["action"] == "escalation" else row
-            for row in logs
-        ]
-
-    monkeypatch.setattr(org.db, "get_audit_logs", stale_escalation)
-    stale_response = client.post("/api/v1/orgs/alpha/threads/THR-EVIDENCE/resolve-escalation", json=stale)
-    assert stale_response.status_code == 409
-    assert stale_response.json()["detail"]["code"] == "evidence_stale"
-
-    monkeypatch.setattr(org.db, "get_audit_logs", original_logs)
-    org.db.update_task("T-EVIDENCE-OLD", status=TaskStatus.PENDING)
-    nonterminal = client.post("/api/v1/orgs/alpha/threads/THR-EVIDENCE/resolve-escalation", json=stale)
-    assert nonterminal.status_code == 409
-    assert nonterminal.json()["detail"]["code"] == "cannot_continue_live_children"
-
-
-@pytest.mark.asyncio
-async def test_autonomous_continue_rejects_same_token_duplicate_with_one_audit_and_queue(
-    client_with_runtime,
-):
-    """The route-level replay seam produces one durable continue and delivery."""
-    client, org = client_with_runtime
-    org.db.insert_thread(ThreadRecord(id="THR-ONCE", subject="Test", status=ThreadStatus.OPEN))
-    org.db.insert_task(TaskRecord(id="T-ONCE", brief="test", dispatched_from_thread_id="THR-ONCE"))
-    org.db.update_task("T-ONCE", status=TaskStatus.ESCALATED, block_kind=None)
-    payload = _autonomous_continue_payload(
-        org, thread_id="THR-ONCE", task_id="T-ONCE", agent="engineering_head",
-    )
-    queue = client.app.state.daemon.queue._queue
-    while not queue.empty():
-        queue.get_nowait()
-
-    assert client.post("/api/v1/orgs/alpha/threads/THR-ONCE/resolve-escalation", json=payload).status_code == 200
-    duplicate = client.post("/api/v1/orgs/alpha/threads/THR-ONCE/resolve-escalation", json=payload)
-    assert duplicate.status_code == 409
-    assert duplicate.json()["detail"]["code"] == "invocation_token_consumed"
-    assert [row[1] for row in list(queue._queue)] == ["T-ONCE"]
-    assert len([row for row in org.db.get_audit_logs("T-ONCE")
-                if row["action"] == "escalation_continued_autonomously"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_autonomous_continue_cancel_wins_and_late_queue_claim_cannot_resurrect(
-    client_with_runtime,
-):
-    """Cancel before continue fails closed; later cancel blocks stale delivery."""
-    client, org = client_with_runtime
-    org.db.insert_thread(ThreadRecord(id="THR-CANCEL", subject="Test", status=ThreadStatus.OPEN))
-    org.db.insert_task(TaskRecord(id="T-CANCEL-BEFORE", brief="test", dispatched_from_thread_id="THR-CANCEL"))
-    org.db.update_task("T-CANCEL-BEFORE", status=TaskStatus.ESCALATED, block_kind=None)
-    before = _autonomous_continue_payload(
-        org, thread_id="THR-CANCEL", task_id="T-CANCEL-BEFORE", agent="engineering_head",
-    )
-    assert client.post("/api/v1/orgs/alpha/tasks/T-CANCEL-BEFORE/cancel", json={}).status_code == 200
-    rejected = client.post("/api/v1/orgs/alpha/threads/THR-CANCEL/resolve-escalation", json=before)
-    assert rejected.status_code == 409
-    assert org.db.get_task("T-CANCEL-BEFORE").status == TaskStatus.CANCELLED
-
-    org.db.insert_task(TaskRecord(id="T-CANCEL-AFTER", brief="test", dispatched_from_thread_id="THR-CANCEL"))
-    org.db.update_task("T-CANCEL-AFTER", status=TaskStatus.ESCALATED, block_kind=None)
-    after = _autonomous_continue_payload(
-        org, thread_id="THR-CANCEL", task_id="T-CANCEL-AFTER", agent="engineering_head",
-    )
-    assert client.post("/api/v1/orgs/alpha/threads/THR-CANCEL/resolve-escalation", json=after).status_code == 200
-    assert client.post("/api/v1/orgs/alpha/tasks/T-CANCEL-AFTER/cancel", json={}).status_code == 200
-    assert not org.db.try_claim_for_step(
-        "T-CANCEL-AFTER", TaskStatus.PENDING, None, new_count=1,
-    )
-    assert org.db.get_task("T-CANCEL-AFTER").status == TaskStatus.CANCELLED
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("blocked_check", [
-    "schema_or_overloaded_column_change",
-    "permission_sandbox_or_allow_rule_change",
-    "auth_credentials_security_privacy_or_data_access_change",
-    "spend_or_budget_change",
-    "destructive_or_irreversible_action",
-    "external_contract_or_product_commitment",
-    "genuine_ambiguity_or_novel_situation",
-])
-async def test_autonomous_continue_keeps_each_protected_boundary_escalated(
-    client_with_runtime, blocked_check,
-):
-    """No structured attestation can turn a protected boundary into a continue."""
-    client, org = client_with_runtime
-    task_id = f"T-BLOCK-{blocked_check[:5]}"
-    org.db.insert_thread(ThreadRecord(id=task_id, subject="Test", status=ThreadStatus.OPEN))
-    org.db.insert_task(TaskRecord(id=task_id, brief="test", dispatched_from_thread_id=task_id))
-    org.db.update_task(task_id, status=TaskStatus.ESCALATED, block_kind=None)
-    payload = _autonomous_continue_payload(org, thread_id=task_id, task_id=task_id, agent="engineering_head")
-    payload["attestation_checks"][0] = blocked_check
-    response = client.post(f"/api/v1/orgs/alpha/threads/{task_id}/resolve-escalation", json=payload)
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "policy_or_attestation_mismatch"
-    assert org.db.get_task(task_id).status == TaskStatus.ESCALATED
-
-
-@pytest.mark.asyncio
-async def test_autonomous_continue_rejects_exhausted_step_budget(client_with_runtime):
-    client, org = client_with_runtime
-    org.db.insert_thread(ThreadRecord(id="THR-BUDGET", subject="Test", status=ThreadStatus.OPEN))
-    org.db.insert_task(TaskRecord(id="T-BUDGET", brief="test", dispatched_from_thread_id="THR-BUDGET"))
-    org.db.update_task(
-        "T-BUDGET", status=TaskStatus.ESCALATED, block_kind=None,
-        orchestration_step_count=org.orchestrator._settings.max_orchestration_steps,
-    )
-    payload = _autonomous_continue_payload(
-        org, thread_id="THR-BUDGET", task_id="T-BUDGET", agent="engineering_head",
-    )
-    response = client.post("/api/v1/orgs/alpha/threads/THR-BUDGET/resolve-escalation", json=payload)
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
-    assert org.db.get_task("T-BUDGET").status == TaskStatus.ESCALATED
-
-
-def _assert_budget_rejection_is_non_mutating(org, *, task_id: str, token: str, queue) -> None:
-    """All absolute-budget rejections leave the causal continuation untouched."""
-    assert org.db.get_task(task_id).status == TaskStatus.ESCALATED
-    invocation = org.db.get_invocation_any_status(token)
-    assert invocation is not None
-    assert invocation.status == ThreadInvocationStatus.PENDING
-    assert not [
-        row for row in org.db.get_audit_logs(task_id)
-        if row["action"] == "escalation_continued_autonomously"
-    ]
-    assert queue.empty()
-
-
-@pytest.mark.asyncio
-async def test_autonomous_continue_rejects_exhausted_revise_budget_at_route_and_cas(
-    client_with_runtime, monkeypatch,
-):
-    """A root escalated by the production revise-cap flow cannot continue."""
-    from runtime.models import NextStep
-    from tests.orchestrator.conftest import ScriptedRunAgent
-
-    client, org = client_with_runtime
-    org.orchestrator._paths.org_config_path.write_text("max_revise_rounds: 1\n")
-    org.db.insert_thread(ThreadRecord(id="THR-REVISION", subject="Test", status=ThreadStatus.OPEN))
-    org.db.insert_task(TaskRecord(
-        id="T-REVISION", brief="test", revision_count=1,
-        assigned_agent="engineering_head", dispatched_from_thread_id="THR-REVISION",
-    ))
-    org.db.insert_task(TaskRecord(
-        id="T-REVISION-WORKER", brief="first revision", parent_task_id="T-REVISION",
-        assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
-    ))
-    (org.root / "workspaces" / "dev_agent").mkdir(parents=True, exist_ok=True)
-    scripted = ScriptedRunAgent()
-    scripted.enqueue(
-        "engineering_head",
-        decision=NextStep(action="delegate", agent="dev_agent", prompt="one more revision"),
-        summary="attempting a capped revision",
-    )
-    monkeypatch.setattr(org.orchestrator, "_run_agent", scripted)
-    org.orchestrator.run_step("T-REVISION")
-    assert org.db.get_task("T-REVISION").status == TaskStatus.ESCALATED
-    assert "iteration_budget_exhausted" in (org.db.get_task("T-REVISION").note or "")
-    payload = _autonomous_continue_payload(
-        org, thread_id="THR-REVISION", task_id="T-REVISION", agent="engineering_head",
-    )
-    queue = client.app.state.daemon.queue._queue
-    while not queue.empty():
-        queue.get_nowait()
-
-    response = client.post(
-        "/api/v1/orgs/alpha/threads/THR-REVISION/resolve-escalation", json=payload,
-    )
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
-    _assert_budget_rejection_is_non_mutating(
-        org, task_id="T-REVISION", token=payload["invocation_token"], queue=queue,
-    )
-
-
-@pytest.mark.asyncio
-async def test_autonomous_continue_rejects_exhausted_per_slice_retry_at_route_and_cas(
-    client_with_runtime,
-):
-    """A root escalated by the production slice-retry flow cannot continue."""
-    from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
-
-    client, org = client_with_runtime
-    org.db.insert_thread(ThreadRecord(id="THR-RETRY", subject="Test", status=ThreadStatus.OPEN))
-    org.db.insert_task(TaskRecord(
-        id="T-RETRY", brief="test", assigned_agent="engineering_head",
-        dispatched_from_thread_id="THR-RETRY",
-    ))
-    org.db.update_task(
-        "T-RETRY", status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED,
-    )
-    org.db.insert_task(TaskRecord(
-        id="T-RETRY-ORIGINAL", brief="first slice failure", parent_task_id="T-RETRY",
-        status=TaskStatus.FAILED,
-    ))
-    org.db.insert_task(TaskRecord(
-        id="T-RETRY-RETRY", brief="second slice failure", parent_task_id="T-RETRY",
-        revisit_of_task_id="T-RETRY-ORIGINAL", status=TaskStatus.FAILED,
-    ))
-    _enqueue_parent_if_waiting(org.orchestrator, "T-RETRY-RETRY")
-    assert org.db.get_task("T-RETRY").status == TaskStatus.ESCALATED
-    assert "per-slice retry ceiling" in (org.db.get_task("T-RETRY").note or "")
-    payload = _autonomous_continue_payload(
-        org, thread_id="THR-RETRY", task_id="T-RETRY", agent="engineering_head",
-    )
-    queue = client.app.state.daemon.queue._queue
-    while not queue.empty():
-        queue.get_nowait()
-
-    response = client.post(
-        "/api/v1/orgs/alpha/threads/THR-RETRY/resolve-escalation", json=payload,
-    )
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
-    _assert_budget_rejection_is_non_mutating(
-        org, task_id="T-RETRY", token=payload["invocation_token"], queue=queue,
-    )
-
-
-@pytest.mark.asyncio
-async def test_autonomous_continue_cas_rechecks_budget_after_stale_prevalidation(
-    client_with_runtime, monkeypatch,
-):
-    """A revise cap reached after the precheck still rolls back the atomic edge."""
-    client, org = client_with_runtime
-    org.orchestrator._paths.org_config_path.write_text("max_revise_rounds: 1\n")
-    org.db.insert_thread(ThreadRecord(id="THR-RACE", subject="Test", status=ThreadStatus.OPEN))
-    org.db.insert_task(TaskRecord(id="T-RACE", brief="test", dispatched_from_thread_id="THR-RACE"))
-    org.db.update_task("T-RACE", status=TaskStatus.ESCALATED, block_kind=None)
-    payload = _autonomous_continue_payload(
-        org, thread_id="THR-RACE", task_id="T-RACE", agent="engineering_head",
-    )
-    original = org.db.autonomous_continuation_budget_exhausted
-    injected = False
-
-    def stale_precheck(*args, **kwargs):
-        nonlocal injected
-        exhausted = original(*args, **kwargs)
-        if not exhausted and not injected:
-            injected = True
-            org.db.update_task("T-RACE", revision_count=1)
-        return exhausted
-
-    monkeypatch.setattr(org.db, "autonomous_continuation_budget_exhausted", stale_precheck)
-    queue = client.app.state.daemon.queue._queue
-    while not queue.empty():
-        queue.get_nowait()
-
-    response = client.post(
-        "/api/v1/orgs/alpha/threads/THR-RACE/resolve-escalation", json=payload,
-    )
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
-    _assert_budget_rejection_is_non_mutating(
-        org, task_id="T-RACE", token=payload["invocation_token"], queue=queue,
-    )
-
-
-@pytest.mark.asyncio
-async def test_autonomous_continue_cas_rechecks_slice_retry_after_stale_prevalidation(
-    client_with_runtime, monkeypatch,
-):
-    """The final SQL CAS rejects a retry lineage persisted after route precheck."""
-    client, org = client_with_runtime
-    org.db.insert_thread(ThreadRecord(id="THR-RETRY-RACE", subject="Test", status=ThreadStatus.OPEN))
-    org.db.insert_task(TaskRecord(
-        id="T-RETRY-RACE", brief="test", assigned_agent="engineering_head",
-        dispatched_from_thread_id="THR-RETRY-RACE",
-    ))
-    org.db.update_task("T-RETRY-RACE", status=TaskStatus.ESCALATED, block_kind=None)
-    payload = _autonomous_continue_payload(
-        org, thread_id="THR-RETRY-RACE", task_id="T-RETRY-RACE", agent="engineering_head",
-    )
-    from runtime.daemon.routes import threads as thread_routes
-
-    original_budget_precheck = org.db.autonomous_continuation_budget_exhausted
-    original_evidence_validation = thread_routes._validate_th166_evidence
-    precheck_results = []
-    injected = False
-
-    def observe_budget_precheck(*args, **kwargs):
-        exhausted = original_budget_precheck(*args, **kwargs)
-        precheck_results.append(exhausted)
-        return exhausted
-
-    def inject_after_evidence_validation(*args, **kwargs):
-        nonlocal injected
-        snapshots = original_evidence_validation(*args, **kwargs)
-        if not injected:
-            injected = True
-            org.db.insert_task(TaskRecord(
-                id="T-RETRY-RACE-ORIGINAL", brief="first slice failure",
-                parent_task_id="T-RETRY-RACE", status=TaskStatus.FAILED,
-            ))
-            org.db.insert_task(TaskRecord(
-                id="T-RETRY-RACE-RETRY", brief="second slice failure",
-                parent_task_id="T-RETRY-RACE", revisit_of_task_id="T-RETRY-RACE-ORIGINAL",
-                status=TaskStatus.FAILED,
-            ))
-        return snapshots
-
-    monkeypatch.setattr(org.db, "autonomous_continuation_budget_exhausted", observe_budget_precheck)
-    monkeypatch.setattr(thread_routes, "_validate_th166_evidence", inject_after_evidence_validation)
-    queue = client.app.state.daemon.queue._queue
-    while not queue.empty():
-        queue.get_nowait()
-
-    response = client.post(
-        "/api/v1/orgs/alpha/threads/THR-RETRY-RACE/resolve-escalation", json=payload,
-    )
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "continuation_budget_exhausted"
-    assert injected
-    assert precheck_results == [False, True]
-    _assert_budget_rejection_is_non_mutating(
-        org, task_id="T-RETRY-RACE", token=payload["invocation_token"], queue=queue,
-    )
-
-
-# ── Thread followup test (THR-080 #3) ──────────────────────────────
-
-@pytest.mark.asyncio
-async def test_thread_supersede_emits_thread_followup(
-    client_with_runtime,
-):
-    """THR-080 #3: supersede from the thread route emits a thread followup
-    (TASK_FOLLOWUP invocation) for thread-originated tasks."""
-    client, org = client_with_runtime
-
-    org.db.insert_thread(ThreadRecord(
-        id="THR-FUP", subject="Test", composed_by="engineering_manager",
-        status=ThreadStatus.OPEN,
-    ))
-    org.db.insert_task(TaskRecord(
-        id="T-FUP", brief="original", dispatched_from_thread_id="THR-FUP",
-    ))
-    org.db.update_task("T-FUP", status=TaskStatus.ESCALATED, block_kind=None)
-
-    # Insert a synthetic thread_dispatch audit row so _maybe_post_thread_followup
-    # can resolve the dispatcher identity.
+    _seed(org)
+    # The retained followup seam resolves the dispatcher from its durable
+    # thread-dispatch audit provenance, as shipping thread dispatch does.
     org.db.insert_audit_log(
-        task_id="THR-FUP",
-        agent="engineering_head",
-        action="thread_dispatch",
-        payload={"task_id": "T-FUP", "dispatcher": "engineering_head",
+        task_id="THR-1", agent="engineering_head", action="thread_dispatch",
+        payload={"task_id": "T-1", "dispatcher": "engineering_head",
                  "target_agent": "dev_agent", "team": "engineering"},
     )
+    token = _token(org)
+    payload = _thread_payload(token)
+    payload["actor"] = "founder"  # Untrusted extra: the validated dispatcher remains the actor.
+    first = client.post("/api/v1/orgs/alpha/threads/THR-1/resolve-escalation", json=payload)
+    assert first.status_code == 200, first.text
+    assert first.json()["new_status"] == "superseded"
+    assert org.db.get_task("T-1").status is TaskStatus.SUPERSEDED
+    assert org.db.get_invocation_any_status(token).status is ThreadInvocationStatus.CONSUMED
+    org.db.update_task("T-1", status=TaskStatus.ESCALATED, block_kind=None)
+    replay = client.post("/api/v1/orgs/alpha/threads/THR-1/resolve-escalation", json=payload)
+    assert replay.status_code == 409
+    assert replay.json()["detail"]["code"] == "invocation_token_consumed"
+    audits = org.db.get_audit_logs("T-1")
+    superseded = next(row for row in audits if row["action"] == "escalation_superseded")
+    successor = org.db.get_task(superseded["payload"]["successor_root"])
+    assert successor is not None
+    assert successor.dispatched_from_thread_id == "THR-1"
+    assert successor.parent_task_id is None
+    assert successor.brief == "successor task"
+    resolved = next(row for row in audits if row["action"] == "escalation_resolved")
+    assert resolved["agent"] == "engineering_head"
+    assert resolved["payload"]["resolution_path"] == "thread_manual_supersede"
+    followups = [
+        invocation for invocation in org.db.list_thread_invocations("THR-1")
+        if invocation.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP
+    ]
+    assert len(followups) == 1
+    assert followups[0].agent_name == "engineering_head"
+    assert ("alpha", successor.id, None) in list(client.app.state.daemon.queue._queue._queue)
 
-    token = _mint_authorized_invocation(org, "THR-FUP", "engineering_head")
 
-    r = client.post(
-        "/api/v1/orgs/alpha/threads/THR-FUP/resolve-escalation",
+@pytest.mark.asyncio
+async def test_thread_supersede_rejects_non_manager_and_wrong_lineage(client_with_runtime):
+    """Retained thread authorization and lineage fences remain independent."""
+    client, org = client_with_runtime
+    _seed(org)
+    org.db.add_thread_participant("THR-1", "dev_agent", added_by="founder")
+    worker_token = org.db.mint_thread_invocation(
+        thread_id="THR-1", agent_name="dev_agent", triggering_seq=0,
+        purpose=ThreadInvocationPurpose.REPLY,
+    ).invocation_token
+    worker = client.post(
+        "/api/v1/orgs/alpha/threads/THR-1/resolve-escalation",
+        json={**_thread_payload(worker_token), "dispatcher": "dev_agent"},
+    )
+    assert worker.status_code == 403
+    assert worker.json()["detail"]["code"] == "resolve_escalation_not_authorized"
+
+    org.db.insert_task(TaskRecord(id="T-OTHER", brief="other", dispatched_from_thread_id="THR-OTHER"))
+    org.db.update_task("T-OTHER", status=TaskStatus.ESCALATED, block_kind=None)
+    response = client.post(
+        "/api/v1/orgs/alpha/threads/THR-1/resolve-escalation",
+        json={**_thread_payload(_token(org)), "task_id": "T-OTHER"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "task_not_in_thread_lineage"
+
+
+@pytest.mark.asyncio
+async def test_thread_invalid_decision_preserves_pending_invocation(client_with_runtime):
+    client, org = client_with_runtime
+    _seed(org)
+    token = _token(org)
+    response = client.post(
+        "/api/v1/orgs/alpha/threads/THR-1/resolve-escalation",
+        json={**_thread_payload(token), "decision": "cancel"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "invalid_decision"
+    assert org.db.get_invocation_any_status(token).status is ThreadInvocationStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_thread_supersede_requires_its_authorized_invocation_token(client_with_runtime):
+    """Retained thread supersede cannot fall back to a caller-declared actor."""
+    client, org = client_with_runtime
+    _seed(org)
+    response = client.post(
+        "/api/v1/orgs/alpha/threads/THR-1/resolve-escalation",
         json={
-            "task_id": "T-FUP",
-            "decision": "supersede",
-            "rationale": "reroute",
-            "brief": "successor task",
-            "invocation_token": token,
-            "dispatcher": "engineering_head",
+            "task_id": "T-1", "decision": "supersede", "rationale": "reroute",
+            "brief": "successor task", "dispatcher": "engineering_head",
         },
     )
-    assert r.status_code == 200, f"got {r.status_code} {r.text}"
-    assert r.json()["new_status"] == "superseded"
+    assert response.status_code == 422
+    assert response.json()["detail"] == {"code": "missing_invocation_token"}
+    assert org.db.get_task("T-1").status is TaskStatus.ESCALATED
+    assert not org.db.get_audit_logs("T-1")
 
-    # Assert a TASK_FOLLOWUP invocation was minted for the predecessor.
-    invs = org.db.list_thread_invocations("THR-FUP")
-    followup_invs = [
-        i for i in invs if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP
-    ]
-    assert len(followup_invs) >= 1, (
-        f"Expected at least one TASK_FOLLOWUP invocation for T-FUP, "
-        f"got invocations: {[(i.agent_name, i.purpose) for i in invs]}"
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field,value", [
+    ("policy_id", "old"), ("policy_version", ""), ("policy_provenance", None),
+    ("continuation_class", []), ("attestation_checks", {}), ("evidence", [{"bad": True}]),
+    ("invocation_token", "old-token"), ("dispatcher", "engineering_head"),
+])
+@pytest.mark.parametrize("actor", [None, "", "founder", "engineering_manager"])
+async def test_task_ingress_rejects_retired_markers_before_human_fallback(
+    client_with_runtime, field, value, actor,
+):
+    client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="T-MANUAL", brief="test"))
+    org.db.update_task("T-MANUAL", status=TaskStatus.ESCALATED, block_kind=None)
+    payload = {"decision": "continue", "rationale": "human", field: value}
+    if actor is not None:
+        payload["actor"] = actor
+    response = client.post("/api/v1/orgs/alpha/tasks/T-MANUAL/resolve-escalation", json=payload)
+    assert response.status_code == 410
+    assert response.json()["detail"] == {"code": "retired_autonomous_continuation"}
+    assert org.db.get_task("T-MANUAL").status is TaskStatus.ESCALATED
+    assert not org.db.get_audit_logs("T-MANUAL")
+
+
+@pytest.mark.asyncio
+async def test_plain_task_human_continue_remains_supported(client_with_runtime):
+    client, org = client_with_runtime
+    org.db.insert_task(TaskRecord(id="T-MANUAL", brief="test"))
+    org.db.update_task("T-MANUAL", status=TaskStatus.ESCALATED, block_kind=None)
+    response = client.post(
+        "/api/v1/orgs/alpha/tasks/T-MANUAL/resolve-escalation",
+        json={"decision": "continue", "rationale": "founder direction"},
     )
+    assert response.status_code == 200
+    assert org.db.get_task("T-MANUAL").status is TaskStatus.PENDING
+    audit = org.db.get_audit_logs("T-MANUAL")[-1]
+    assert audit["action"] == "escalation_resolved"
+    assert audit["agent"] == "founder"
+    assert audit["payload"] == {
+        "decision": "continue", "rationale": "founder direction",
+        "resolution_path": "manual_break_glass",
+    }
+    assert ("alpha", "T-MANUAL", None) in list(client.app.state.daemon.queue._queue._queue)
+    assert not [
+        row for row in org.db.get_audit_logs("T-MANUAL")
+        if row["action"] == "escalation_continued_autonomously"
+    ]
+
+
+def test_resolve_escalation_openapi_declares_retired_410(app):
+    paths = app.openapi()["paths"]
+    task_response = paths["/api/v1/orgs/{slug}/tasks/{task_id}/resolve-escalation"]["post"]["responses"]["410"]
+    thread_response = paths["/api/v1/orgs/{slug}/threads/{thread_id}/resolve-escalation"]["post"]["responses"]["410"]
+    task_description = task_response["description"]
+    thread_description = thread_response["description"]
+    legacy_fields = (
+        "policy_id", "policy_version", "policy_provenance", "continuation_class",
+        "attestation_checks", "evidence",
+    )
+    for description in (task_description, thread_description):
+        assert "retired_autonomous_continuation" in description
+        assert all(field in description for field in legacy_fields)
+        assert "presence" in description.lower()
+    assert "invocation_token" in task_description
+    assert "dispatcher" in task_description
+    assert "before human actor fallback or resolution" in task_description
+    assert "an agent thread continue is retired even without those fields" in thread_description
+    # The operation-level rule is independent of the decision value: a
+    # supersede request carrying any legacy key is still rejected before the
+    # retained resolver. The field matrix above executes that served cell.
+    assert "any presence" in thread_description

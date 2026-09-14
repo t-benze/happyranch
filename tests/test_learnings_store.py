@@ -341,16 +341,16 @@ def test_update_entry_rejects_self_reference_in_supersedes(store: LearningsStore
 
 # --- THR-032 Phase 1: harness-agnostic memory layer (additive store generalization) ---
 
-# A REAL pre-Phase-1 entry (workspace LRN-001) — carries NONE of the four new
-# frontmatter keys. Used as the golden corpus for the no-churn round-trip proof.
+# Adapted from a pre-Phase-1 entry (workspace LRN-001), with tool-neutral text.
+# Carries NONE of the four new frontmatter keys; tests the no-churn round trip.
 GOLDEN_RAW_ENTRY = """---
 id: LRN-001
-slug: rename-gotchas-and-gitnexus-worktree-blindspot
-title: Package-rename safety + gitnexus_detect_changes is blind to worktrees
+slug: rename-gotchas-and-worktree-change-detection
+title: Package-rename safety + verify changes in the active worktree
 topic: refactoring
 tags:
 - rename
-- gitnexus
+- change-detection
 - worktree
 - imports
 authored_by: dev_agent
@@ -371,7 +371,7 @@ def test_alias_exports_resolve_to_renamed_symbols():
 
 
 def test_golden_entry_round_trips_with_no_new_key_churn(store: LearningsStore):
-    """A real existing entry (none of the 4 new keys) must serialize identically
+    """A legacy-format entry (none of the 4 new keys) must serialize identically
     under the new code — all-default new fields are omitted, so no byte churn."""
     # Capture the canonical (fixpoint) form: serialize(parse(raw)). This avoids a
     # false failure if the raw file's key order isn't already canonical.

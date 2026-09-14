@@ -161,17 +161,17 @@ Artifact dir: workspaces/senior_dev/artifacts/TASK-579/
 
 The string template lives in one helper (`src/orchestrator/chain.py:build_prior_leg_context(child_task, report) -> str`) so audit reproduction and tests can call it directly.
 
-### Step-budget accounting
+### Step-telemetry accounting
 
-The 50-step cap (`HAPPYRANCH_MAX_ORCHESTRATION_STEPS`, enforced via `tasks.orchestration_step_count`) was designed to detect runaway manager indecision. A chain is one decision; auto-advances are the orchestrator executing it.
+`tasks.orchestration_step_count` is monotonic telemetry. The historical 50-step cap (`HAPPYRANCH_MAX_ORCHESTRATION_STEPS`) is accepted only as an inert legacy setting; it is not enforced. A chain is one decision; auto-advances are the orchestrator executing it.
 
 - **Declaring a chain** increments `orchestration_step_count` by exactly **1** (same as a single-leg delegate today — uses the existing `try_claim_for_step` CAS on the manager's session).
 - **Each `chain_auto_advance`** writes an audit row but does **NOT** bump `orchestration_step_count`.
-- **The final-leg wake** (when chain completes successfully and parent wakes) goes through the existing wake path; the manager's next session starts and consumes one step against the cap normally.
+- **The final-leg wake** (when chain completes successfully and parent wakes) goes through the existing wake path; the manager's next session increments telemetry normally.
 
 This is the budget unlock. A clean small-item run (dev_agent build → senior_dev review → qa_engineer QA → manager merge+done) takes **4 step-count today** (one per manager wake); under chains it takes **2 step-count** (declare-chain + final-wake-to-merge). The two auto-advances in between are free. Revise-heavy items still benefit on their non-revise portion — every REVISE iteration that the manager handles is one step today, one step under chains; only the routine forward-motion portion compresses.
 
-Concrete projection on TASK-577's small-item wakes: items 7 and 8 (no REVISE iterations) drop 3 → 2; items 1a, 1c, 2 (each had one REVISE round) drop 5 → 4. The bigger payoff is on Item 6's six phases — each phase has a 3-leg gate chain, and the LARGE workflow consumed ~23 of the 50 wakes.
+Concrete historical projection on TASK-577's small-item wakes: items 7 and 8 (no REVISE iterations) drop 3 → 2; items 1a, 1c, 2 (each had one REVISE round) drop 5 → 4. The bigger payoff is on Item 6's six phases — each phase has a 3-leg gate chain. These counts are telemetry, not an execution ceiling.
 
 ### Observability
 
@@ -270,7 +270,7 @@ The manager doesn't need to re-derive the chain's history from raw child task re
 ## Load-bearing invariants
 
 - **`active_chain` is cleared on every parent wake.** No code path that wakes the parent may leave a stale chain pointer. Centralize the clear in `_enqueue_parent_if_waiting`.
-- **Chain auto-advances do NOT bump `orchestration_step_count`.** This is the whole point of the feature. Test it directly; regression would silently re-poison the budget calculus.
+- **Chain auto-advances do NOT bump `orchestration_step_count`.** Test this directly so the telemetry remains accurate.
 - **Cross-team validation runs on every leg, at declaration time.** Don't lazy-validate when the leg is about to spawn — by then the manager's session has ended and the feedback loop is broken.
 - **`first_leg_expect_verdict` lives in the chain payload, not derived from audit.** Audit-row recovery would couple the orchestrator to audit-log durability for routing decisions; the chain payload is the source of truth.
 - **Workers don't author chains.** The `is_team_manager(agent)` gate in `run_step.py` already blocks workers from emitting `decision` payloads; do not relax this when adding chain support.

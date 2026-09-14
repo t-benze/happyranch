@@ -42,6 +42,35 @@ from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
 
 
+@pytest.fixture(autouse=True)
+def _dormant_consumer_tripwires(monkeypatch):
+    """Every ordinary scheduler path must remain disconnected from G1's consumer."""
+    from runtime.daemon import task_scratch_reclamation
+
+    dormant_consumer_calls = []
+    executor_calls = []
+
+    def forbid_dormant_consumer(*args, **kwargs):
+        dormant_consumer_calls.append((args, kwargs))
+        raise AssertionError("dormant synchronous consumer called")
+
+    def forbid_executor(*args, **kwargs):
+        executor_calls.append((args, kwargs))
+        raise AssertionError("ledger executor called")
+
+    # Patch the consumer's actual module-global lookup sites. The teardown
+    # assertions remain observable even if a scheduler path swallows errors.
+    monkeypatch.setattr(
+        task_scratch_reclamation,
+        "collect_revalidate_seal_consume_disposable",
+        forbid_dormant_consumer,
+    )
+    monkeypatch.setattr(task_scratch_reclamation, "execute_ledger", forbid_executor)
+    yield
+    assert not dormant_consumer_calls
+    assert not executor_calls
+
+
 def test_fail_open_threshold_contract_is_consistent_across_surviving_surfaces():
     """Unavailable measurements remain advisory; only numeric low values skip."""
     root = Path(__file__).parents[1]
@@ -506,6 +535,23 @@ async def test_due_scheduler_tick_spawns_when_measurement_is_unavailable(
     unavailable size as a failed numeric threshold comparison."""
     db = Database(tmp_path / "db.sqlite")
     org = _org_with_workspaces(tmp_path, db, test_settings)
+    from runtime.daemon import task_scratch_report as reports, task_scratch_reclamation
+    from runtime.orchestrator.task_scratch import prepare_task_scratch
+    from tests.test_task_scratch_report import _proc, _snapshot
+    org.sessions = SessionTracker()
+    monkeypatch.setattr(reports, "_PROC_ROOT", _proc(tmp_path))
+    monkeypatch.setattr(reports, "_STARTED_MONOTONIC", 0)
+    workspace = org.root / "workspaces/dev_agent"
+    candidate_id = db.next_task_id()
+    db.insert_task(TaskRecord(id=candidate_id, brief="missed teardown", assigned_agent="dev_agent",
+                             current_session_id="old-session", status=TaskStatus.COMPLETED))
+    scratch = prepare_task_scratch(workspace=workspace, task_id=candidate_id,
+                                  producer_kind="agent", producer_id="old-session")
+    for index in range(100):
+        (scratch.root / str(index)).write_bytes(b"x" * 8192)
+    (workspace / "repos").mkdir()
+    (workspace / "repos/keep").write_bytes(b"repository")
+    before = _snapshot(workspace)
     cfg_path = org.root / "org" / "config.yaml"
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     cfg_path.write_text("timezone: UTC\n")
@@ -538,6 +584,16 @@ async def test_due_scheduler_tick_spawns_when_measurement_is_unavailable(
         "measurement truncated/unavailable" in task.brief for task in tasks
     )
     assert all("deadline exceeded" in task.brief for task in tasks)
+
+    rows = [row for row in db.get_audit_logs(candidate_id) if row["action"] == reports.AUDIT_ACTION]
+    assert len(rows) == 1
+    payload = rows[0]["payload"]
+    assert payload["decision"] == "would_reclaim", payload["reasons"]
+    assert payload["source"] == "weekly" and payload["report_only"]
+    assert payload["allocated_bytes"] > 0 and payload["entries"] >= 100
+    assert payload["actual_reclaimed_bytes"] == payload["actual_reclaimed_inodes"] == 0
+    assert payload["candidate_identity"] and payload["boot_id"] == payload["coverage_boot_id"]
+    assert before == _snapshot(workspace)
 
 
 @pytest.mark.asyncio

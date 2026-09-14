@@ -287,15 +287,28 @@ def test_real_diy_acceptance(tmp_path) -> None:
             log("scenario 4b: connector restarted over the same files -> revocation persisted, still denied")
 
             # ── 11. scenario 6b: removed credential denies like absent ─────
+            # A ceremony publishes snapshot then anchor. A concurrent readiness
+            # read may stop the old listener, even after the CLI has completed.
+            # This scenario checks durable removal on a fresh process; live
+            # remove/revoke and stream reopening are covered separately below.
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=20)
             remove_proc = subprocess.run(
                 [sys.executable, "-m", "runtime.remote_access.cli", "remove-device", "--config", str(config_path), "--device", "macbook-pro"],
                 capture_output=True,
                 text=True,
                 timeout=20,
             )
-            assert remove_proc.returncode == 0
+            assert remove_proc.returncode == 0, remove_proc.stderr
+            proc = start_connector()
+            # TCP reachability is only a transport probe, not reload readiness.
+            # The old process is reaped and publication finished before this
+            # process started. Require the actual fresh denial without retries.
+            _wait_until(lambda: _connector_reachable(host, connector_port), what="post-removal connector transport")
+            requests_before_removed = len(daemon.requests)
             removed = _run_client(host, connector_port, ["request", "--path", "/api/v1/health", "--credential", credential2])
             assert removed["status"] == 403
+            assert len(daemon.requests) == requests_before_removed
             log("scenario 6b: removed credential -> 403 (identical deny)")
 
             # ── 12. scenario 7: network/control-plane outage fail-closed ───
@@ -427,6 +440,18 @@ def test_acceptance_cross_process_revoke_closes_live_sse_stream(tmp_path) -> Non
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps(config))
 
+        # Publish the initial code before listener startup. Pair publication
+        # can transiently fail readiness and stop an already listening socket.
+        # Redemption and all stream/revocation operations below remain live.
+        pair_proc = subprocess.run(
+            [sys.executable, "-m", "runtime.remote_access.cli", "pair", "--config", str(config_path), "--device", "macbook-pro"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert pair_proc.returncode == 0, pair_proc.stderr
+        code = [l for l in pair_proc.stdout.splitlines() if "pairing code for device" in l][0].split(": ")[-1].strip()
+
         proc = subprocess.Popen(
             [
                 sys.executable,
@@ -446,14 +471,6 @@ def test_acceptance_cross_process_revoke_closes_live_sse_stream(tmp_path) -> Non
         try:
             _wait_until(lambda: _connector_reachable(host, connector_port), what="connector listener")
 
-            pair_proc = subprocess.run(
-                [sys.executable, "-m", "runtime.remote_access.cli", "pair", "--config", str(config_path), "--device", "macbook-pro"],
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-            assert pair_proc.returncode == 0, pair_proc.stderr
-            code = [l for l in pair_proc.stdout.splitlines() if "pairing code for device" in l][0].split(": ")[-1].strip()
             redeem = _run_client(host, connector_port, ["redeem", "--code", code])
             assert redeem["status"] == 200
             credential = redeem["body"]["credential"]
@@ -564,6 +581,20 @@ def test_acceptance_cross_process_revoke_remove_then_reopen_streams(tmp_path) ->
         }
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps(config))
+        def pair_device(device: str) -> str:
+            pair_proc = subprocess.run(
+                [sys.executable, "-m", "runtime.remote_access.cli", "pair", "--config", str(config_path), "--device", device],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            assert pair_proc.returncode == 0, pair_proc.stderr
+            line = [l for l in pair_proc.stdout.splitlines() if "pairing code for device" in l][0]
+            return line.split(": ")[-1].strip()
+
+        # Only initial setup is ordered before listener startup. Re-pair,
+        # revoke, remove and unaffected reopening stay in this process lifetime.
+        initial_code = pair_device("macbook-pro")
         proc = subprocess.Popen(
             [
                 sys.executable,
@@ -581,17 +612,6 @@ def test_acceptance_cross_process_revoke_remove_then_reopen_streams(tmp_path) ->
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
         _wait_until(lambda: _connector_reachable(host, connector_port), what="connector listener")
-
-        def pair_device(device: str) -> str:
-            pair_proc = subprocess.run(
-                [sys.executable, "-m", "runtime.remote_access.cli", "pair", "--config", str(config_path), "--device", device],
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-            assert pair_proc.returncode == 0, pair_proc.stderr
-            line = [l for l in pair_proc.stdout.splitlines() if "pairing code for device" in l][0]
-            return line.split(": ")[-1].strip()
 
         def redeem(code: str) -> str:
             result = _run_client(host, connector_port, ["redeem", "--code", code])
@@ -646,7 +666,7 @@ def test_acceptance_cross_process_revoke_remove_then_reopen_streams(tmp_path) ->
             return status
 
         # ── revoke path ───────────────────────────────────────────────────
-        cred_a = redeem(pair_device("macbook-pro"))
+        cred_a = redeem(initial_code)
         stream_a = open_stream(cred_a)
         revoke_proc = subprocess.run(
             [sys.executable, "-m", "runtime.remote_access.cli", "revoke", "--config", str(config_path), "--device", "macbook-pro"],

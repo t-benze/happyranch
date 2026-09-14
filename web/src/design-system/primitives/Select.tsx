@@ -1,6 +1,6 @@
 /**
  * Select primitive — shadcn/ui canonical (Radix Select), styled to match
- * the previous native `<select>` in the TopBar so the visual swap is
+ * the previous native `<select>` in the legacy tab bar so the visual swap is
  * invisible. Trigger uses `components.input` styling per DESIGN.md.
  *
  * Usage:

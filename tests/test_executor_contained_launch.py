@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import subprocess
 import time
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -144,6 +146,182 @@ def test_run_command_uncontained_honors_throttle_backoff_override():
     assert result.success is True
     _, _, _, kwargs = recording.calls[0]
     assert kwargs.get("backoff_seconds") == ()
+
+
+@pytest.mark.parametrize("backoff, expected_launches, expected_sleeps", [
+    ((), 1, []),
+    (None, 2, [9.0]),
+])
+def test_run_command_uncontained_429_override_controls_real_popen_boundary(
+    tmp_path, backoff, expected_launches, expected_sleeps,
+):
+    """The recovery override reaches the real executor launch loop, not a spy.
+
+    Fake only the OS process and clock: ``_run_command`` still classifies the
+    429 and asks the configured throttle whether a second Popen is allowed.
+    """
+    from runtime.orchestrator import executors as exec_mod
+
+    launches: list[object] = []
+    sleeps: list[float] = []
+    throttle = ProviderThrottle(
+        ceiling_default=1, spacing_seconds=0.0, backoff_seconds=(9.0,),
+        sleep=sleeps.append,
+    )
+
+    def launch_executor(*_args, **_kwargs):
+        launches.append(object())
+        return SimpleNamespace(
+            pid=100 + len(launches), returncode=1,
+            communicate=lambda **_kw: ("", "HTTP 429 rate limit"),
+        )
+
+    old = get_throttle()
+    set_throttle(throttle)
+    try:
+        with patch.object(exec_mod, "detect_platform_isolation", return_value=SimpleNamespace(
+            launch_executor=launch_executor,
+        )):
+            result = _run_command(
+                ["fake-codex"], workspace=tmp_path, session_id=_SID,
+                timeout_seconds=10, input_text="prompt", provider="codex",
+                throttle_backoff_seconds=backoff,
+            )
+    finally:
+        set_throttle(old)
+
+    assert result.success is False
+    assert result.rate_limited is True
+    assert len(launches) == expected_launches
+    assert sleeps == expected_sleeps
+
+
+def test_run_command_recovery_deadline_refuses_after_setup_before_launch(tmp_path):
+    """The absolute recovery budget is checked at the real Popen boundary."""
+    from runtime.orchestrator import executors as exec_mod
+
+    clock = [0.0]
+    launches: list[object] = []
+
+    def validator():
+        clock[0] = 1.0
+
+    # Replace this module's clock object, rather than its shared stdlib time
+    # module: supervisor/event infrastructure elsewhere must retain real time.
+    with patch.object(exec_mod, "time", SimpleNamespace(monotonic=lambda: clock[0])), patch.object(
+        exec_mod, "detect_platform_isolation",
+        return_value=SimpleNamespace(launch_executor=lambda *_a, **_kw: launches.append(object())),
+    ):
+        result = _run_command(
+            ["fake-codex"], workspace=tmp_path, session_id=_SID,
+            timeout_seconds=30, input_text="prompt", provider="codex",
+            pre_launch_validator=validator, recovery_deadline_monotonic=1.0,
+        )
+
+    assert result.success is False
+    assert result.failure_category == "pre_launch"
+    assert launches == []
+
+
+def test_run_command_recovery_communicate_uses_fractional_live_remainder(tmp_path):
+    """No integer round-up extends a recovery provider opportunity."""
+    from runtime.orchestrator import executors as exec_mod
+
+    clock = [10.0]
+    observed_timeouts: list[float] = []
+
+    class Process:
+        pid = 701
+        returncode = 0
+
+        def communicate(self, **kwargs):
+            observed_timeouts.append(kwargs["timeout"])
+            return "", ""
+
+    with patch.object(exec_mod, "time", SimpleNamespace(monotonic=lambda: clock[0])), patch.object(
+        exec_mod, "detect_platform_isolation",
+        return_value=SimpleNamespace(launch_executor=lambda *_a, **_kw: Process()),
+    ):
+        result = _run_command(
+            ["fake-codex"], workspace=tmp_path, session_id=_SID,
+            timeout_seconds=30, input_text="prompt", provider="codex",
+            recovery_deadline_monotonic=10.75,
+        )
+
+    assert result.success is True
+    assert observed_timeouts == [pytest.approx(0.75)]
+
+
+def test_run_command_recovery_deadline_after_launch_kills_owned_process(tmp_path):
+    """Expiry during launch retains launch provenance and reaps the process."""
+    from runtime.orchestrator import executors as exec_mod
+
+    clock = [0.0]
+    events: list[object] = []
+
+    class Process:
+        pid = 702
+        returncode = None
+
+        def kill(self):
+            events.append("kill")
+
+        def communicate(self, **kwargs):
+            events.append(("communicate", kwargs["timeout"]))
+            return "", ""
+
+    def launch(*_args, **_kwargs):
+        clock[0] = 1.0
+        events.append("launch")
+        return Process()
+
+    with patch.object(exec_mod, "time", SimpleNamespace(monotonic=lambda: clock[0])), patch.object(
+        exec_mod, "detect_platform_isolation",
+        return_value=SimpleNamespace(launch_executor=launch),
+    ):
+        result = _run_command(
+            ["fake-codex"], workspace=tmp_path, session_id=_SID,
+            timeout_seconds=30, input_text="prompt", provider="codex",
+            recovery_deadline_monotonic=1.0,
+        )
+
+    assert result.success is False
+    assert result.provider_launched is True
+    assert result.failure_category == "provider_timeout"
+    assert events == ["launch", "kill", ("communicate", 5)]
+
+
+def test_run_command_contained_recovery_expiry_reaps_backend_process(tmp_path):
+    """A backend launch that used the budget is still finished by its owner."""
+    from runtime.orchestrator import executors as exec_mod
+
+    events: list[object] = []
+
+    class Process:
+        pid = 703
+        returncode = None
+
+        def kill(self):
+            events.append("kill")
+
+        def communicate(self, **kwargs):
+            events.append(("communicate", kwargs["timeout"]))
+            return "", ""
+
+    running = RunningHandle(
+        backend="fake", token="tok", request_id="inv", root_pid=703,
+        start_identity="start", process=Process(),
+    )
+    with patch.object(exec_mod, "time", SimpleNamespace(monotonic=lambda: 2.0)):
+        result = _run_command(
+            ["ignored"], workspace=tmp_path, session_id=_SID,
+            timeout_seconds=30, input_text="prompt", running=running,
+            recovery_deadline_monotonic=1.0,
+        )
+
+    assert result.success is False
+    assert result.provider_launched is True
+    assert events == ["kill", ("communicate", 5)]
 
 
 def test_run_command_contained_passthrough_handle_fails_closed():
@@ -289,6 +467,87 @@ def test_custom_adapter_contained_uses_backend_process(tmp_path):
     assert result.session_id == "sess-adapter-1"
     assert on_started_calls == []
     running.process.wait()
+
+
+@pytest.mark.parametrize("contained", [False, True], ids=["fallback", "contained"])
+def test_ordinary_task_producers_run_each_concrete_executor_body(tmp_path, monkeypatch, contained):
+    """The two shipping producers reach all ordinary executor bodies.
+
+    This deliberately exercises ``_launch_agent_with_scratch``, rather than
+    calling ``executor.run`` directly: both fallback and contained launch
+    forms must preserve the ordinary validator/retry contract while the real
+    Claude, OpenCode, Pi, and adapter bodies communicate with their process.
+    """
+    import json
+    from types import MethodType
+
+    from runtime.config import Settings
+    from runtime.orchestrator import executors as ex
+    from runtime.orchestrator import workspace_adapters
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    observed: list[str | None] = []
+
+    class Process:
+        pid, returncode = 70001, 0
+
+        def communicate(self, input=None, timeout=None):
+            observed.append(input)
+            if input and input.startswith('{"contract_version":'):
+                return json.dumps({
+                    "contract_version": 1, "session_id": "sess-adapter-1",
+                    "success": True, "returncode": 0, "duration_seconds": 1,
+                    "stdout_tail": "ok", "stderr_tail": "",
+                    "adapter_metadata": {"contract_version": 1, "adapter": "adapter-1", "adapter_version": "v1"},
+                    "token_usage": None,
+                }), ""
+            return "", ""
+
+    class Supervisor:
+        def run(self, request, **kwargs):
+            assert kwargs["allow_retries"] is True
+            assert kwargs["final_prelaunch_validator"] is None
+            kwargs["pre_launch_validator"]()
+            running = RunningHandle(
+                backend="fake", token="token", request_id="ordinary",
+                root_pid=70001, start_identity="fake", process=Process(),
+            )
+            result = kwargs["launch_body"](running)
+            kwargs["on_terminal"](None)
+            return SimpleNamespace(payload=result)
+
+    monkeypatch.setattr(ex, "_resolve_binary", lambda *_a, **_k: "/bin/true")
+    monkeypatch.setattr(ex, "_callee_env", lambda *_a, **_k: {})
+    monkeypatch.setattr(workspace_adapters, "allow_rules_for_agent", lambda *_a, **_k: ())
+    monkeypatch.setattr(ex.subprocess, "Popen", lambda *_a, **_k: Process())
+    monkeypatch.setattr(ex, "detect_platform_isolation", lambda: SimpleNamespace(launch_executor=lambda *_a, **_k: Process()))
+
+    executors = (
+        ex.ClaudeExecutor("claude", "default", Settings()),
+        ex.OpencodeExecutor("opencode"),
+        ex.PiExecutor("pi"),
+        _make_adapter_executor(tmp_path),
+    )
+    orch = SimpleNamespace(
+        _host_supervisor=Supervisor() if contained else None,
+        _sessions=None, _slug="test",
+    )
+    orch._run_agent_launch_contained = MethodType(
+        Orchestrator._run_agent_launch_contained, orch,
+    )
+    for executor in executors:
+        before = len(observed)
+        result = Orchestrator._launch_agent_with_scratch(
+            orch, task_id="TASK-PRODUCER", agent_name="dev_agent",
+            workspace=tmp_path, provider="ordinary", model_name=None,
+            executor=executor, session_id="sess-adapter-1",
+            full_prompt="ordinary task", timeout_seconds=10,
+            on_started=lambda _pid: None, on_throttle_event=None,
+            pre_launch_integrity_validator=lambda: None,
+            recovery_launch_validator=lambda: None,
+        )
+        assert result.success, result.error
+        assert len(observed) == before + 1
 
 
 def test_custom_adapter_contained_verifies_launch_ready(tmp_path):

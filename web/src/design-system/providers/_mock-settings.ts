@@ -1,9 +1,8 @@
 /**
  * Mock implementation of `SettingsApi` for the prototype sandbox.
  *
- * Returns a static, realistic fixture so the TopBar-mounted SettingsDialog
- * can render without a real daemon. Prototype users see a read-only
- * preview — no backend calls, no org routing.
+ * Retained for direct SettingsDialog tests; no application or prototype route
+ * mounts that dialog. The fixture remains read-only and makes no backend calls.
  */
 import { vi } from 'vitest';
 import type { SettingsApi, QueryLike } from './DataContext';
@@ -24,7 +23,6 @@ const FIXTURE: SettingsSnapshot = {
     opencode_cli_path: { value: '/usr/local/bin/opencode', restart_required: true },
     pi_cli_path: { value: '/usr/local/bin/pi', restart_required: true },
     session_timeout_seconds: { value: 1800, restart_required: false },
-    max_orchestration_steps: { value: 50, restart_required: true },
     queue_workers: { value: 3, restart_required: true },
     host_global_session_cap: { value: 13, restart_required: true },
     protocol_dir: { value: 'protocol', restart_required: true },

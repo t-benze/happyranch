@@ -46,7 +46,7 @@ function roleLabel(role: string | null): string {
 }
 
 export function AgentsPage(): JSX.Element {
-  const { agent_name: openAgentName } = useParams<{ agent_name?: string }>();
+  const { agent_name: openAgentName, slug } = useParams<{ agent_name?: string; slug?: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const routes = useAgentsRoutes();
@@ -92,7 +92,12 @@ export function AgentsPage(): JSX.Element {
   // instead of immediately re-selecting. Deep-links, the empty roster, and
   // the pending view are all left untouched.
   const didAutoSelect = useRef(false);
+  const selectedOrgSlug = useRef<string | undefined>(slug);
   useEffect(() => {
+    if (selectedOrgSlug.current !== slug) {
+      selectedOrgSlug.current = slug;
+      didAutoSelect.current = false;
+    }
     if (didAutoSelect.current) return;
     if (agentsQuery.isLoading) return;
     if (searchParams.get('view') === 'pending') return;
@@ -107,6 +112,7 @@ export function AgentsPage(): JSX.Element {
     agents,
     navigate,
     routes,
+    slug,
   ]);
 
   const handleStartThread = (agent: AgentSummary) => {

@@ -190,7 +190,6 @@ class SystemSettingsView(BaseModel):
     opencode_cli_path: SystemSettingEntry
     pi_cli_path: SystemSettingEntry
     session_timeout_seconds: SystemSettingEntry
-    max_orchestration_steps: SystemSettingEntry
     queue_workers: SystemSettingEntry
     host_global_session_cap: SystemSettingEntry
     protocol_dir: SystemSettingEntry
@@ -206,7 +205,6 @@ class SystemSettingsView(BaseModel):
             opencode_cli_path=entry(s.opencode_cli_path, True),
             pi_cli_path=entry(s.pi_cli_path, True),
             session_timeout_seconds=entry(s.session_timeout_seconds, True),
-            max_orchestration_steps=entry(s.max_orchestration_steps, True),
             queue_workers=entry(s.queue_workers, True),
             host_global_session_cap=entry(s.host_global_session_cap, True),
             protocol_dir=entry(s.protocol_dir, True),

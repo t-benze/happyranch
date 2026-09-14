@@ -37,7 +37,7 @@ def test_settings_returns_200_with_system_and_org(tmp_home, app, org_state, auth
     sys_ = body["system"]
     for key in (
         "claude_cli_path", "codex_cli_path", "opencode_cli_path",
-        "pi_cli_path", "session_timeout_seconds", "max_orchestration_steps",
+        "pi_cli_path", "session_timeout_seconds",
         "queue_workers", "host_global_session_cap", "protocol_dir",
     ):
         assert key in sys_, f"missing system field: {key}"
@@ -73,7 +73,7 @@ def test_settings_system_entries_carry_correct_restart_flags(
 
     restart_true = {
         "claude_cli_path", "codex_cli_path", "opencode_cli_path",
-        "pi_cli_path", "session_timeout_seconds", "max_orchestration_steps",
+        "pi_cli_path", "session_timeout_seconds",
         "queue_workers", "host_global_session_cap", "protocol_dir",
     }
     for key in restart_true:
@@ -633,7 +633,7 @@ def test_settings_system_only_has_allow_listed_fields(
 
     expected = {
         "claude_cli_path", "codex_cli_path", "opencode_cli_path",
-        "pi_cli_path", "session_timeout_seconds", "max_orchestration_steps",
+        "pi_cli_path", "session_timeout_seconds",
         "queue_workers", "host_global_session_cap", "protocol_dir",
     }
     assert system_keys == expected, (

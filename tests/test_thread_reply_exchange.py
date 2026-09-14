@@ -204,6 +204,42 @@ def test_reply_delivery_projection_distinguishes_authoritative_hold_from_retry(
     assert projections[EM].state == "retry_required"
 
 
+@pytest.mark.parametrize("outcome", ["reply", "decline"])
+def test_settled_held_pair_is_omitted_until_new_obligation(
+    tmp_path, outcome: str,
+) -> None:
+    """A mention-pierced delivery can settle while its exchange stays open."""
+    db = Database(tmp_path / "settled-held.db")
+    tid = _make_thread(db)
+    _arrival(db, tid, mentions_body=f"@{CH} priority")
+    seq, _ = _arrival(db, tid, mentions_body=f"@{EM} your view?")
+    token = _pair_row(db, tid, EM)["queued_invocation_token"]
+    projection = {p.agent_name: p for p in db.list_reply_delivery_projections(tid)}
+    assert projection[EM].state == "queued"
+    assert _claim(db, token) is not None
+    projection = {p.agent_name: p for p in db.list_reply_delivery_projections(tid)}
+    assert projection[EM].state == "running"
+    assert _settle(db, token, outcome) is not None
+
+    pair = _pair_row(db, tid, EM)
+    assert pair["acknowledged_through_seq"] == pair["required_through_seq"] == seq
+    assert pair["queued_invocation_token"] is None
+    assert pair["running_invocation_token"] is None
+    exchange = _open_exchange(db, tid)
+    assert exchange is not None
+    assert _deferral_rows(db, tid, exchange["exchange_id"])[0]["state"] == "held"
+    projection = {p.agent_name: p for p in db.list_reply_delivery_projections(tid)}
+    assert EM not in projection
+
+    # Frozen deferral membership still applies to later unmentioned messages.
+    new_seq, _ = _arrival(db, tid, body="more context")
+    projection = {p.agent_name: p for p in db.list_reply_delivery_projections(tid)}
+    assert projection[EM].state == "held"
+    assert projection[EM].from_seq == projection[EM].through_seq == new_seq
+    assert projection[EM].coalesced_message_count == 1
+    assert _pair_row(db, tid, EM)["queued_invocation_token"] is None
+
+
 @pytest.mark.parametrize("missing_half", ["exchange", "deferral"])
 def test_reply_delivery_projection_requires_both_open_exchange_and_held_row(
     tmp_path, missing_half: str,

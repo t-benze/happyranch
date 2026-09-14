@@ -30,8 +30,8 @@
 > **Branch discipline:** all overhaul work lands on the shared `design-overhaul`
 > integration branch (cut from `origin/main @ 77150e0`, TASK-412). Every PR
 > targets `design-overhaul` — **never `main`**. Each sub-task: worktree off
-> `design-overhaul`; TDD for logic; `gitnexus_impact` before editing any
-> symbol (report **collateral** HIGH/CRITICAL); `qa_engineer` PASS + CI green
+> `design-overhaul`; TDD for logic; inspect affected definitions and callers,
+> summarize scope and material risks per `CLAUDE.md`; `qa_engineer` PASS + CI green
 > before merge into `design-overhaul`; doc-parity
 > (`docs/agent-guides/features-and-invariants.md`) in the same PR when behavior
 > changes. **Nothing under `protocol/`. No auth / permission-model / Codex-sandbox /

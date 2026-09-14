@@ -13,6 +13,14 @@
 
 When starting a feature, read the relevant design doc first and follow existing patterns in `runtime/orchestrator/`.
 
+## Workspace Cleanup Configuration
+
+`OrgConfig` parses `workspace_cleanup.enabled` as the existing scheduler switch:
+it is boolean and defaults to `true`. Its separate
+`workspace_cleanup.reclamation_actions_enabled` key is also strictly boolean,
+defaults to `false`, and is inert/reserved for a later hook. No action consumer
+exists, so `true` currently triggers no reclamation.
+
 ## Org Content APIs
 
 `AgentDef` in `runtime/orchestrator/agent_def.py` represents an agent file: markdown with YAML frontmatter parsed/rendered by `parse_agent_text` and `render_agent_text`.
@@ -303,25 +311,24 @@ Contract (founder-approved in THR-028, refined in THR-078):
    decision step. The failed subtask's reason is available so the task owner can
    author an updated brief.
 
-2. **Per-slice retry ceiling (THR-078).** A delegated slot gets exactly one
-   retry: the Ceiling is `_SLICE_RETRY_CEILING = 1` — a slice that already had a
-   FAILED predecessor under the same parent (tracked via `revisit_of_task_id`
-   lineage, evaluated by `_is_slice_retry_exhausted`) and fails again exhausts
-   the ceiling. Retry of a COMPLETED predecessor does not count toward the
-   ceiling, and a later COMPLETED or SUPERSEDED descendant in the same lineage
-   retires earlier FAILED ancestors for ceiling evaluation (THR-183).
+2. **Mechanical retry provenance (THR-078).** A manager may re-dispatch
+   unchanged work or direct revised work with a valid `revisit_of_task_id`
+   link to a FAILED same-parent predecessor. The link records history; it
+   neither compares briefs nor itself authorizes root escalation. A later
+   COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors from
+   causal selection (THR-183).
 
-3. **Escalation on exhaustion.** When a slice's retry ceiling is exhausted
-   (its 2nd failure), a root parent transitions to `escalated` via
-   `try_escalate()`, carrying the causal terminal event — the current
-   unresolved FAILED leaf of the slice's lineage — in the escalation reason;
-   a completed-child wake cannot select a stale sibling reason. A non-root
-   parent fails and recurses upward (THR-033 root-only escalation). The parent
-   does NOT cascade-fail.
+3. **Manager ownership after failure.** An unresolved failed child keeps its
+   durable lineage and wakes its owning parent for a manager decision. The
+   runtime neither commits `runtime_retry_ceiling` escalation nor fails a
+   nested decision owner upward. A manager-proposed escalation uses the
+   existing THR-181 hook and its configured outcome; committed escalations
+   remain human-resolved.
 
-4. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
-   COMPLETED) clears the active chain and hands the parent back to its
-   bounded-wake path (same per-slice ceiling + escalation).
+4. **Chain-leg failure.** A failed workflow chain leg clears the active chain
+   and returns its decision owner to bounded wake. A passive fan-out pipeline
+   carrier instead fails closed and preserves its causal leaf for the outer
+   fan-out barrier; a fanout-dispatched `task` manager remains its local owner.
 
 5. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
    next decision step. REVISE-verdict auto-advance in chains is unchanged.
@@ -333,15 +340,13 @@ Contract (founder-approved in THR-028, refined in THR-078):
 
 Traps:
 
-- Retry ceiling is per-slice: `_is_slice_retry_exhausted` walks the failing
-  child's `revisit_of_task_id` chain; only a FAILED predecessor under the
-  same parent triggers escalation. COMPLETED/SUPERSEDED predecessors retire
-  earlier FAILED ancestors for ceiling evaluation (THR-183).
-- Ceiling constant: `_SLICE_RETRY_CEILING = 1` (one retry after a slice's
-  first failure).
-- The exhaustion escalation uses `try_escalate` (atomic CAS under Database
-  RLock) for roots and names the current unresolved FAILED leaf, not a stale
-  sibling reason; non-root parents fail and hand upward.
+- A linked historical failure is causal context, not a runtime escalation
+  trigger: the owner decides unchanged re-execution, revised recovery, or a
+  THR-181 escalation proposal.
+- Retry links are mechanical provenance, never a semantic brief comparison:
+  unchanged assignment re-execution and manager-directed revised work both
+  require an explicit valid predecessor link, and the daemon creates neither
+  retry nor successor loops.
 - Chain-advance in `_enqueue_parent_if_waiting` handles FAILED subtasks:
   failed chain legs clear the chain and fall through to bounded-wake.
 - Self-block (`status=blocked` + empty `waiting_on_job_ids`) is a malformed
@@ -357,6 +362,26 @@ Inline traps:
 ## Daemon-Restart Sweep (THR-064)
 
 On daemon restart, `_sweep_on_startup` recovers tasks that were killed mid-flight.
+Before Branch 1, a claimed but unaccepted THR-247 completion recovery is
+settled fail-closed in its dedicated ledger transaction when its durable
+origin or recovery binding is still current. This spends the episode,
+terminalizes the task, and invokes ordinary owned-job `task_ended` cleanup;
+it never launches a second recovery or uses a persisted PID as containment.
+An accepted callback, cancellation, or newer binding wins unchanged. Accepted consumed
+receipts settle only their captured running jobs. The bounded parent/chain effect is
+rechecked under that same owner predicate; any thread followup is deliberately after
+the guarded handoff and can be superseded by a later replacement. A manager
+DONE whose terminal owner CAS committed before its recovery marker is
+reconciled only for the exact task/agent/runtime-session/result receipt; its
+post-commit cleanup and delivery are not part of that terminal transaction, so
+a competing completed owner receives no stale recovery effects. The live
+120-second deadline ends at callback admission, not descendant work,
+settlement, or cleanup. This is a partial purpose gate: it makes no deployment
+claim and retains the accepted bearer/sessionless/shell residual powers. If an
+accepted root-manager escalation is instead committed by the existing
+authority hook as `CONTINUE_SAME_ROOT`, the completion receipt is reconciled
+only from that committed causal result/candidate/envelope tuple and current
+owner; restart never reruns the evaluator or guesses from `pending` alone.
 Branch 1 (in_progress + block_kind IS NULL — a live subprocess killed by the restart):
 
 1. **Mark failed with restart context.** The killed child's note is enriched to

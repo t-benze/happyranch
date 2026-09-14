@@ -16,7 +16,6 @@ const SETTINGS_PAYLOAD = {
     opencode_cli_path: { value: 'opencode', restart_required: true },
     pi_cli_path: { value: 'pi', restart_required: true },
     session_timeout_seconds: { value: 1800, restart_required: true },
-    max_orchestration_steps: { value: 50, restart_required: true },
     queue_workers: { value: 3, restart_required: true },
     host_global_session_cap: { value: 13, restart_required: true },
     protocol_dir: { value: 'protocol', restart_required: true },
@@ -1324,5 +1323,24 @@ describe('SettingsPage — Executors panel (THR-107 S3 registered-list-first man
     await waitFor(() =>
       expect(within(content).getByText('⌘S to save')).toBeInTheDocument(),
     );
+  });
+});
+
+
+describe('active SettingsPage — retired maximum absence', () => {
+  beforeEach(() => {
+    stubBaseHandlers();
+    server.use(http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, () => HttpResponse.error()));
+  });
+  test.each([false, true])('organization populated/optional-empty=%s has no maximum', async (empty) => {
+    if (empty) server.use(http.get(`/api/v1/orgs/${SLUG}/settings`, () =>
+      HttpResponse.json({ ...SETTINGS_PAYLOAD, org: { ...SETTINGS_PAYLOAD.org,
+        session_timeout_seconds: null, reviewer_agents: [], dreaming: {
+          ...SETTINGS_PAYLOAD.org.dreaming, agents: { mode: 'all', include: [], exclude: [] }
+        } } })));
+    mountAt(`/orgs/${SLUG}/settings/organization`);
+    expect(await screen.findByTestId('settings-content')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Organization' })).toBeInTheDocument();
+    expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
   });
 });

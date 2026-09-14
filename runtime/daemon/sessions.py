@@ -48,6 +48,12 @@ class SessionTracker:
         # (legacy, tests) leave it empty and get_by_session still returns
         # only (task_id, agent_name) for backward compatibility.
         self._context_by_session: dict[str, tuple[str, str, str]] = {}
+        # Server-owned purpose is scoped to an exact active runtime generation.
+        self._recovery_sessions: set[str] = set()
+        # A live monotonic recovery budget is deliberately process-local.  Its
+        # durable companion is the wall expiry in the recovery ledger; never
+        # persist this value across a restart.
+        self._recovery_deadlines: dict[str, float] = {}
         self._lock = Lock()
         # Per-(task_id, agent_name) lease map for linearizing session-bound
         # B2 custom-skill creation against clear()/set_active() on the SAME
@@ -76,29 +82,121 @@ class SessionTracker:
                 self._binding_leases[key] = lock
             return lock
 
+    def binding_lease(self, task_id: str, agent: str) -> Lock:
+        """Return the binding lease for a short synchronous admission section.
+
+        Route callers may hold this only while they recheck the active
+        generation and synchronously enter the database admission transaction.
+        They must not await while holding it.
+        """
+        return self._get_binding_lease(task_id, agent)
+
+    def _set_active_locked(
+        self, task_id: str, agent: str, session_id: str, *, org_slug: str | None,
+        recovery: bool,
+    ) -> Callable[[], None] | None:
+        """Install one server-selected generation while holding its binding lease.
+
+        An ordinary publication that displaces an in-flight recovery must also
+        revoke that recovery's already-registered opaque containment control.
+        The supervisor owns the resulting first-wins cancellation and pending
+        handle abandonment; this tracker only preserves generation ownership.
+        """
+        with self._lock:
+            old_session_id = self._active.get((task_id, agent))
+            old_recovery_cancel = None
+            if (
+                old_session_id is not None
+                and old_session_id != session_id
+                and old_session_id in self._recovery_sessions
+                and not recovery
+            ):
+                old_recovery_cancel = self._cancel_controls.get(
+                    (task_id, agent), {}
+                ).get(old_session_id)
+            if old_session_id is not None and old_session_id != session_id:
+                self._pids.pop((task_id, agent), None)
+                self._cancel_controls.pop((task_id, agent), None)
+                self._context_by_session.pop(old_session_id, None)
+                self._recovery_sessions.discard(old_session_id)
+                self._recovery_deadlines.pop(old_session_id, None)
+            self._active[(task_id, agent)] = session_id
+            # An ordinary replacement is always ordinary, including a same-id
+            # re-publication after a prior recovery marker.
+            if recovery:
+                self._recovery_sessions.add(session_id)
+            else:
+                self._recovery_sessions.discard(session_id)
+                self._recovery_deadlines.pop(session_id, None)
+            if org_slug is not None:
+                self._context_by_session[session_id] = (org_slug, task_id, agent)
+            return old_recovery_cancel
+
     def set_active(self, task_id: str, agent: str, session_id: str, *, org_slug: str | None = None) -> None:
         binding_lease = self._get_binding_lease(task_id, agent)
         with binding_lease:
-            with self._lock:
-                old_session_id = self._active.get((task_id, agent))
-                if old_session_id is not None and old_session_id != session_id:
-                    # Supersession: the (task_id, agent) binding is owned by
-                    # exactly ONE generation. The superseded generation's PID
-                    # diagnostics and opaque cancel control die with the
-                    # active flip (atomically, under the same lock), so a
-                    # stale control can never cancel a later session of the
-                    # same pair. Its context is invalidated too, so stale
-                    # opaque capabilities cannot create B2 custom skills.
-                    self._pids.pop((task_id, agent), None)
-                    self._cancel_controls.pop((task_id, agent), None)
-                    self._context_by_session.pop(old_session_id, None)
-                self._active[(task_id, agent)] = session_id
-                if org_slug is not None:
-                    self._context_by_session[session_id] = (org_slug, task_id, agent)
+            superseded_recovery_cancel = self._set_active_locked(
+                task_id, agent, session_id, org_slug=org_slug, recovery=False,
+            )
+            if superseded_recovery_cancel is not None:
+                superseded_recovery_cancel()
+
+    def register_recovery_session(
+        self, task_id: str, agent: str, session_id: str, *, org_slug: str | None = None,
+        recovery_deadline_monotonic: float | None = None,
+    ) -> None:
+        """Atomically publish the server-authorized recovery generation.
+
+        This deliberately has no request/provider-purpose parameter: only the
+        recovery launcher may select this registration seam.
+        """
+        binding_lease = self._get_binding_lease(task_id, agent)
+        with binding_lease:
+            self._set_active_locked(task_id, agent, session_id, org_slug=org_slug, recovery=True)
+            if recovery_deadline_monotonic is not None:
+                self._recovery_deadlines[session_id] = recovery_deadline_monotonic
+
+    def publish_recovery_session(
+        self, task_id: str, agent: str, session_id: str, *, org_slug: str | None,
+        publish: Callable[[], bool], recovery_deadline_monotonic: float | None = None,
+    ) -> bool:
+        """Atomically pair the durable recovery CAS with tracker visibility.
+
+        ``publish`` must be synchronous: callback/cancellation paths use this
+        same lease and no await may occur while it is held.
+        """
+        binding_lease = self._get_binding_lease(task_id, agent)
+        with binding_lease:
+            if not publish():
+                return False
+            self._set_active_locked(task_id, agent, session_id, org_slug=org_slug, recovery=True)
+            if recovery_deadline_monotonic is not None:
+                self._recovery_deadlines[session_id] = recovery_deadline_monotonic
+            return True
 
     def get_active(self, task_id: str, agent: str) -> str | None:
         with self._lock:
             return self._active.get((task_id, agent))
+
+    def mark_recovery_session(self, task_id: str, agent: str, session_id: str) -> bool:
+        """Mark only the current server-owned generation as recovery purpose."""
+        with self._lock:
+            if self._active.get((task_id, agent)) != session_id:
+                return False
+            self._recovery_sessions.add(session_id)
+            return True
+
+    def is_recovery_session(self, task_id: str, agent: str, session_id: str) -> bool:
+        """True only for the exact currently-active recovery generation."""
+        with self._lock:
+            return self._active.get((task_id, agent)) == session_id and session_id in self._recovery_sessions
+
+    def recovery_deadline_monotonic(self, task_id: str, agent: str, session_id: str) -> float | None:
+        """Return the live server-owned deadline only for the active recovery."""
+        with self._lock:
+            if self._active.get((task_id, agent)) != session_id or session_id not in self._recovery_sessions:
+                return None
+            return self._recovery_deadlines.get(session_id)
 
     def get_by_session(self, session_id: str) -> tuple[str, str] | None:
         """Reverse lookup: given an opaque session_id, return (task_id, agent_name).
@@ -266,6 +364,8 @@ class SessionTracker:
                     # Invalidate the cleared session's context so completed/
                     # cancelled/revoked opaque capabilities cannot create B2 custom skills.
                     self._context_by_session.pop(old_session_id, None)
+                    self._recovery_sessions.discard(old_session_id)
+                    self._recovery_deadlines.pop(old_session_id, None)
 
     def clear_if_active_session(self, task_id: str, agent: str, session_id: str) -> bool:
         """Clear the session binding only when it still belongs to ``session_id``.
@@ -294,4 +394,6 @@ class SessionTracker:
                     # Invalidate the cleared session's context so completed/
                     # cancelled/revoked opaque capabilities cannot create B2 custom skills.
                     self._context_by_session.pop(old_session_id, None)
+                    self._recovery_sessions.discard(old_session_id)
+                    self._recovery_deadlines.pop(old_session_id, None)
                 return True

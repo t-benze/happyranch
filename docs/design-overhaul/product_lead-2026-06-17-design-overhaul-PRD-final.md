@@ -518,6 +518,24 @@ to **§A**.
 
 ### 4.5 Knowledge (KB) — RENDER-ONLY + 1 DERIVE
 
+Current restoration contract (THR-252): the plain, query-bearing, and trailing-slash
+KB index stays closed and interactive; only explicit entry segments select a
+drawer, including nested slugs. Escape/outside dismissal returns to the index.
+Detail Retry re-fetches the same org/entry; legacy scalar tags remain whole.
+The shared desktop drawer has no close button; this restoration adds none.
+
+KB search consumes the server's `hits[{slug,title,snippet,score}]` in ranked order.
+The UI joins the existing unfiltered list summaries by slug for type, whole tags,
+and update time; it never casts a hit to a full entry or invents missing metadata.
+Cards show the hit title/snippet. Type and tag facets intersect after the join,
+preserving rank. Pending input/search or metadata refresh hides stale results;
+metadata errors or missing hit metadata show the existing recoverable Knowledge
+error, never successful-empty. Retry refreshes search and list metadata. Clearing
+search restores the list immediately, and old query settlements cannot replace
+the current query. Narrow 390px clipping remains an existing desktop-only
+limitation; shared App/Drawer layout is unchanged.
+
+
 - **Purpose.** The org knowledge library, browsable by folder, with a
   dream-candidate review gate.
 - **v1 scope** (unchanged): **List** — folder rail + stacked entry feed;

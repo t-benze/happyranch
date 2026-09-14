@@ -108,7 +108,12 @@ function useThreadsList(
       const filtered = status
         ? store.threads.filter((t) => t.status === status)
         : [...store.threads];
-      return { threads: filtered };
+      return {
+        threads: filtered.map((thread) => ({
+          ...thread,
+          participants: store.participants[thread.thread_id] ?? [],
+        })),
+      };
     },
   });
   return {
@@ -262,6 +267,7 @@ function useComposeThread(): MutationLike<ComposeArgs, ComposeResult> {
         pinned: false,
         pinned_at: null,
         last_activity_at: startedAt,
+        participants: ['founder', ...body.recipients],
       };
       store.threads = [rec, ...store.threads];
       store.participants[newId] = ['founder', ...body.recipients];

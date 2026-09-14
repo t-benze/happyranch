@@ -2,7 +2,7 @@
  * Settings dialog — System (read-only) + Org (editable in Phase 2)
  * + System Assistant (read-only status glance).
  *
- * Opened from a button in the TopBar. Renders three sections:
+ * Retained unmounted/test-only compatibility component. Renders three sections:
  * - System Assistant: read-only status glance + a link to the one place that
  *   configures the assistant (Settings → Assistant). All setup/register/repair
  *   logic lives in features/settings/sections/AssistantSection.tsx — the dialog
@@ -84,7 +84,7 @@ function SystemSection({ sys }: { sys: SystemSettings }): JSX.Element {
     { label: 'OpenCode CLI path', entry: sys.opencode_cli_path },
     { label: 'Pi CLI path', entry: sys.pi_cli_path },
     { label: 'Session timeout (s)', entry: sys.session_timeout_seconds },
-    { label: 'Max orchestration steps', entry: sys.max_orchestration_steps },
+    // The retired total step setting has no UI row.
     { label: 'Queue workers', entry: sys.queue_workers },
     { label: 'Protocol dir', entry: sys.protocol_dir },
   ];
@@ -480,7 +480,7 @@ function BooleanToggle({
 }
 
 // ----------------------------------------------------------------
-// TopBar trigger button
+// Prototype settings trigger button
 // ----------------------------------------------------------------
 
 export function SettingsTriggerButton({

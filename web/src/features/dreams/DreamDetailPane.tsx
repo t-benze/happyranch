@@ -34,7 +34,6 @@ import {
   useDismissCandidate,
 } from '@/hooks/dreams';
 import { CrescentMoonBadge } from '@/design-system/patterns/CrescentMoonBadge';
-import { cn } from '@/lib/utils';
 import { DREAM_STRINGS } from './strings';
 import { isValidCount } from './count-helpers';
 import type { DreamKbCandidate } from '@/hooks/dreams';
@@ -225,10 +224,10 @@ export function DreamDetailPane({
           </DrawerTitle>
           {dream && (
             <div className="mt-1 flex items-center gap-2">
-              <span className={cn(
-                'text-[10px] px-1.5 py-0.5 rounded-full font-medium uppercase tracking-wide',
+              <span className={[
+                'text-overline px-1.5 py-0.5 rounded-full font-medium uppercase tracking-wide',
                 statusPill(dream.status),
-              )}>
+              ].join(' ')}>
                 {DREAM_STRINGS.statusLabel(dream.status)}
               </span>
               {dream.ended_at && (

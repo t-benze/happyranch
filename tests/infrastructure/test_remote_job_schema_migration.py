@@ -703,12 +703,17 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
     added = {
         "remote_runner_enrollment_challenges",
         "remote_enrollment_challenge_expiry",
+        "task_completion_recoveries",
     }
     def unrelated(schema: list[tuple]) -> list[tuple]:
         return [
             row for row in schema
-            if row[1] not in added | {"remote_runners"}
-            and row[2] not in {"remote_runners", "remote_runner_enrollment_challenges"}
+            if row[1] not in added | {"remote_runners", "idx_task_completion_recoveries_task"}
+            and row[2] not in {
+                "remote_runners",
+                "remote_runner_enrollment_challenges",
+                "task_completion_recoveries",
+            }
         ]
     assert unrelated(after_schema) == unrelated(before_schema)
     for table, rows in before_rows.items():

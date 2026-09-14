@@ -211,15 +211,10 @@ def _purpose_note(
             return (
                 f"Task {task_id} that you dispatched from this thread has "
                 f"ESCALATED to the founder{reason_clause}. The task is blocked "
-                f"awaiting a bounded-continuation assessment. First evaluate the "
-                f"existing THR-166 policy against the server-recorded causal "
-                f"terminal result; if it is eligible, submit the structured "
-                f"continuation request. Otherwise post the precise founder decision "
-                f"needed (pull details via `happyranch details {task_id}`). Do not "
-                f"dispatch repair work from this turn. Acceptance only resumes this "
-                f"SAME root's ordinary lifecycle, which must delegate repair, review, "
-                f"and reverify before returning to the original protected gate; this "
-                f"follow-up never authorizes that gate."
+                f"awaiting a founder decision (pull details via `happyranch details "
+                f"{task_id}`). Reply with the precise founder decision needed, or decline if "
+                f"there is nothing substantive to add. Do not dispatch repair work "
+                f"from this turn. Autonomous escalation continuation is retired."
             )
         return (
             f"Task {task_id} that you dispatched from this thread reached "

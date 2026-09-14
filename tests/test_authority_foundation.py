@@ -39,6 +39,7 @@ from runtime.models import (
     TaskRecord,
     TaskStatus,
 )
+from runtime.orchestrator.authority_policy import ENGINEERING_PRE_ESCALATION_POLICY
 
 
 # ── Claim-parameter factory (synthetic, deterministic per root) ──────────
@@ -75,6 +76,17 @@ def _claim_kwargs(root: str = "TASK-0001", **overrides) -> dict:
 
 def _claim(db: Database, **overrides) -> tuple[str, bool]:
     return db.claim_authority_candidate(**_claim_kwargs(**overrides))
+
+
+def test_bootstrap_exhausted_limit_clause_excludes_delegated_child_retry_only():
+    """The shipped bootstrap policy must not recategorize owner-routed retry
+    exhaustion as a generic exhausted-limit escalation predicate."""
+    clause = next(
+        clause for clause in ENGINEERING_PRE_ESCALATION_POLICY.clauses
+        if clause.id == "esc-exhausted-limits"
+    )
+    assert "delegated child retry exhaustion alone is excluded" in clause.condition
+    assert "other bounded or cumulative limit" in clause.condition
 
 
 def _derived_candidate_id(kw: dict) -> tuple[str, str]:

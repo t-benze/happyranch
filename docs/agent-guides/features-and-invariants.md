@@ -14,6 +14,28 @@ route/store tests exercise the accepted and rejected operations. Long-lived,
 cross-agent relevance and preferring supersession are editorial guidance in task
 and reflection skills, not a server semantic-admission guarantee.
 
+KB tags are projected as strings: the current writer/API contract emits a list,
+while a legacy scalar frontmatter value is one tag (never an iterable of
+characters). Missing, empty, or unsupported tag shapes project as no tags. The
+Knowledge index is `/orgs/:slug/kb`; detail selection is only the explicit
+`/orgs/:slug/kb/:entrySlug/...` route segment, so an enclosing router wildcard
+must never open a detail drawer on the index. Detail Retry invalidates the
+active org-and-entry query so the same slug can recover without navigation.
+Escape or outside dismissal clears the selected URL; late responses must not
+reopen the drawer. The shared drawer currently has no close-button control.
+
+KB search consumes the server's `hits[{slug,title,snippet,score}]` in ranked order.
+The UI joins the existing unfiltered list summaries by slug for type, whole tags,
+and update time; it never casts a hit to a full entry or invents missing metadata.
+Cards show the hit title/snippet. Type and tag facets intersect after the join,
+preserving rank. Pending input/search or metadata refresh hides stale results;
+metadata errors or missing hit metadata show the existing recoverable Knowledge
+error, never successful-empty. Retry refreshes search and list metadata. Clearing
+search restores the list immediately, and old query settlements cannot replace
+the current query. Narrow 390px clipping remains an existing desktop-only
+limitation; shared App/Drawer layout is unchanged.
+
+
 Generic remote jobs remain dormant. `runtime/remote_jobs/` provides contextual
 v1 models and canonical validation. `remote_job_schema.py` installs the six
 runner/workspace/attempt/receipt/observation/frame domain tables, enrollment
@@ -22,55 +44,83 @@ The identity migration validates exact shapes and empty legacy runner graphs;
 existing local-job semantics are preserved. Model/migration tests provide the
 contract; no production runner authentication, transport, or execution is implied.
 
-`task_scratch_reclamation.py` remains production-unreferenced. Its assertion
+`task_scratch_reclamation.py` remains production-unreferenced. Its private
+`collect_revalidate_seal_consume_disposable` seam is test-only: it retains each
+bounded E1/C1/E2/C2/seal/E3/C3/E4 collector admission, compares stable typed
+lifecycle/session/PID-start and complete public/private coverage projections
+(including bucket classification/accounting and dominance, but not timestamps), and
+binds C3's canonical workspace/root/manifest/census projection to its
+successfully sealed stack-local row. It returns `None` before action on changed,
+malformed/private-identity/boot-mismatched, unavailable, deadline-exhausted, or
+finite-cap-exhausted observations; an executor partial failure claims zero and
+leaves the remainder for a fresh refusal. It neither activates cleanup nor excludes future
+writers or hostile same-UID swaps. Its assertion
 shapes do not establish lifecycle/liveness provenance; Git evidence and ambiguous
 identity/device evidence refuse reclamation. POSIX pathname removal does not
 guarantee survival of hostile same-UID replacement in the final check/syscall
 window. Existing dormant-engine tests retain this boundary; this cleanup adds no
 caller, scheduler activation, legacy-backlog eligibility, or live deletion.
 
-### Dormant B2a task-scratch observation
+### Task-scratch report-only observations
 
-The THR-195 B2a task-scratch collector is not an executor permission or action
-surface: it is a dormant, production-unreferenced finite observation. It reports
-full durable lifecycle/recovery rows plus bounded Linux process references, and
-never converts missing, partial, capped, or timed-out reads into safe zeroes.
+`task_scratch_report.py` consumes the existing lifecycle/process and coverage
+collectors after `_launch_agent_with_scratch` returns and `_run_agent` resets
+scratch context. Ordinary settlement can follow this observation: a still
+nonterminal task retains its scratch. The existing due `_tick_org` reaches the
+same coordinator through `trigger_cleanup`, off the event loop and before the
+unchanged atomic cleanup-task allocation block. No new scheduler, threshold,
+cooldown, counter, history reset, receipt, API or UI is introduced.
 
-THR-195 B2a separately supplies a dormant, short-lived evidence collector from
-current durable task/revisit/job/result records, advisory session state, and
-fresh Linux boot/PID root/cwd/open-fd reads. It admits each bounded read or
-enumeration, source open, and iterator advance against one shared deadline (without pretending to preempt an
-already-started read), including aggregate linked-job reads. Ambiguous,
-missing, capped, changing, warm-up, recovery, permission, or live-reference
-evidence is ineligible. A complete fresh root/cwd/fd measurement remains
-truthful, including zero, when only an independent lifecycle, session, or durable-authority reason applies;
-partial or invalid scans remain unavailable rather than fabricated zeros. It
-has no production caller or engine/ledger import; B2b must
-recollect at action time and B3 remains coverage authority.
+The coordinator appends `task_scratch_report` to the existing audit log with the
+actual candidate task ID. Read these rows through the existing audit reader or
+`happyranch audit --org <slug> <task-id> --json`. Each append has a unique
+observation ID, caller source and producer observation ID, timestamps, boot,
+identity digest, provenance and freshness limits. `would_reclaim` means only a
+report/no-op; actual reclaimed bytes and inodes are always zero. Missing or
+partial measurements are absent/null, distinct from a complete measured zero.
+Coverage failures preserve applicable lifecycle/process retention reasons.
+Publication and observer failures cannot change the producer result.
 
-THR-195 B2a is only a dormant evidence producer: it has no orchestrator caller,
-does not seal a ledger or authorize coverage, and cannot exclude future writers.
-It makes a finite shared-deadline observation from complete durable task/job/result
-rows, advisory sessions, and Linux boot/PID/root/cwd/fd identity. It fails closed
-on changed, missing, capped, timed-out, partial, or unavailable observations; an
-unavailable measurement is not a measured zero. Each bounded source, including
-an iterator advance, is admitted
-against the collector's shared deadline (a blocking source read cannot be forcibly
-interrupted); complete fresh counts, including zero, remain measurements when an
-independent lifecycle, session, or durable-authority reason rejects eligibility. B2b recollects before any later action and B3 owns
-current-boot coverage.
+Literal no-follow workspace/parent/root/manifest observations bracket collection;
+changed identity, boot mismatch or stale/unordered observations fail closed.
+Supplied coverage is recollected because a relative path alone does not correlate
+its candidate identity. The observer has a 12-second admission deadline, a
+30-second observer-local startup warmup, at most 64 weekly candidates and 256
+inspected discovery entries (including rejected names). Unattributable discovery
+caps/unavailability produce bounded operational warnings, never fabricated task
+IDs. Candidate failures are isolated. A blocking admitted OS/DB read cannot be
+preempted; these bounds govern further work, not a hard syscall timeout.
+
+The evidence collector observes full durable task/revisit/job/result records,
+advisory sessions, and bounded Linux boot/PID/root/cwd/open-fd references. Terminal
+flags and cleared trackers are not process-exit evidence. Partial, missing,
+capped, warmup, changing, timed-out or unavailable evidence prevents eligibility;
+independently complete process counts remain truthful even when lifecycle or
+session state requires retention. The coverage collector compares two finite
+boot-bound snapshots of the fixed workspace partition, with allocated bytes and
+entries (hardlinks count per observed entry). Each source operation has shared
+bounds and deadline admission; missing optional parents are not invented as
+residual partitions. Repositories, special entries, malformed literal parents,
+unknown, zero, incomplete or nonready coverage cannot authorize eligibility.
+
+The collectors are now observed by these report-only production callers. The
+reclamation engine remains dormant and unreferenced: observations neither seal
+an executable ledger nor authorize deletion. Any future action requires fresh
+recollection, coverage, independent review and explicit activation. Legacy,
+shared `/tmp` and pre-contract roots remain ineligible. Portable observations
+cannot exclude future writers or a hostile same-UID race.
 
 ### Orchestration core
 
 - **Orchestrator & task state machine.** The daemon-side loop that advances each task one step at a time, drives manager-decision turns, spawns children, and records terminal state. Spec `docs/superpowers/specs/2026-04-14-orchestrator-daemon-design.md`; current contract `docs/agent-guides/orchestrator-contracts.md`; impl `runtime/orchestrator/run_step.py`, `runtime/orchestrator/orchestrator.py`.
-- **Task-owner decision loop & completion contract.** Task owners (task_type='task') end every turn with a `decision` (`delegate`/`fanout`/`done`/`escalate`; the `parallel` alias is accepted for `fanout`); subtask agents report a plain completion. **Only root tasks (`parent_task_id is None`) escalate to the founder; a non-root task that would escalate (via `decision:escalate` or by exceeding the step budget) instead fails and hands back to its parent, and bounded failure-recovery carries it up (THR-033 Change A).** Contract `docs/agent-guides/orchestrator-contracts.md`; guide `docs/agent-guides/orchestrator-contracts.md`; impl in `runtime/orchestrator/run_step.py`.
+- **Task-owner decision loop & completion contract.** Task owners (task_type='task') end every turn with a `decision` (`delegate`/`fanout`/`done`/`escalate`; the `parallel` alias is accepted for `fanout`); subtask agents report a plain completion. **Only root tasks (`parent_task_id is None`) escalate to the founder; a non-root task that would escalate via `decision:escalate` instead fails and hands back to its parent, and bounded failure-recovery carries it up (THR-033 Change A).** `orchestration_step_count` remains monotonic telemetry and never independently escalates or fails a task. Contract and guide `docs/agent-guides/orchestrator-contracts.md`; implementation in `runtime/orchestrator/run_step.py`.
 - **Inline delegation chains.** A task owner can declare a multi-leg subtask chain inline via `then: [...]`; the orchestrator auto-advances routine legs on matching verdict without consuming orchestration steps. Spec `docs/superpowers/specs/2026-05-30-inline-delegation-chain-design.md` (current); impl `runtime/orchestrator/chain.py`.
 - **Task status model.** The canonical task status vocabulary and transition rules (`pending`, `in_progress`, `escalated`, `completed`, `failed`, `cancelled`, `superseded`). Under THR-037 Change B (Path B) a parent waiting on its children/jobs is `in_progress` with the reason in `block_kind`; the await-founder state is the top-level `escalated`; `cancelled` is a founder-initiated terminal. Specs `docs/superpowers/specs/2026-04-19-task-status-redesign.md` + `docs/superpowers/specs/2026-06-27-task-status-pathB-stored-design.md` (current); current vocabulary `docs/agent-guides/orchestrator-contracts.md`.
 - **Subtask / composite tasks.** Subtask agents spawn bounded subtasks under a parent task, for decomposing a single delegation into iterative steps. Spec `docs/superpowers/specs/2026-06-03-subtask-composite-task-design.md`; impl in `runtime/orchestrator/run_step.py`.
 - **Revisit.** `happyranch revisit <task-id>` spawns a fresh root task inheriting brief and team from a terminal predecessor; old lineage freezes. Specs `docs/superpowers/specs/2026-04-21-opc-revisit-design.md`, `docs/superpowers/specs/2026-04-23-revisit-root-link-design.md`. See [Revisit](#revisit) below for traps.
 - **Session-timeout auto-route (RETIRED — TASK-3604).** Automatic daemon successor creation on opaque agent failures has been removed per founder direction. Opaque failures now end FAILED and hand to the existing parent/founder recovery paths (bounded manager-wake, escalation, explicit founder revisit). Legacy `auto_revisit_of` audit rows remain readable for historical compatibility. Original spec `docs/superpowers/specs/2026-05-25-session-timeout-auto-route-design.md` (retired).
 - **Cancel (race + actor attribution).** Founder/agent task cancellation with race-safe state handling and audit attribution of who cancelled. Specs `docs/superpowers/specs/2026-05-26-cancel-race-design.md`, `docs/superpowers/specs/2026-06-06-cancel-actor-attribution-design.md`; impl in task routes and run-step helpers.
-- **Bounded failure-recovery (TASK-573 / THR-078 / THR-183).** When a subtask fails, the parent task is re-enqueued for a bounded manager-wake decision step (not cascade-failed). Each delegated slot gets exactly one retry: the current unresolved FAILED leaf of a slice's `revisit_of_task_id` lineage exhausts the slot on its second failure and triggers root-only escalation via `is_root(parent)+try_escalate`; a later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors so a completed-child wake cannot select a stale reason. Other child failures give the parent a bounded manager wake. Retry is determined via the failing child's `revisit_of_task_id` lineage within the parent (no sibling counting, no schema migration). Failed chain legs also wake the parent instead of cascading. Happy path (all subtasks COMPLETED) and REVISE-verdict auto-advance are unchanged. Threads: THR-028, THR-078. Implementation: `runtime/orchestrator/run_step.py:_enqueue_parent_if_waiting`, `_is_slice_retry_exhausted`. See [Bounded failure-recovery](#bounded-failure-recovery).
+- **Bounded failure-recovery (TASK-573 / THR-078 / THR-183).** When a subtask fails, the parent task is re-enqueued for a bounded manager-wake decision step (not cascade-failed). A linked historical failure remains durable causal context for the owning manager, never a runtime retry-ceiling escalation or upward cascade. A later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors so a completed-child wake cannot select a stale reason. A manager may mechanically re-dispatch unchanged work or direct revised work with a valid predecessor link; the daemon neither compares briefs nor creates retry/successor loops. A manager may explicitly propose escalation through the configured THR-181 path; inactive/static policy is not evaluator CONTINUE, and committed escalations remain human-resolved. Passive pipeline carriers fail closed through their outer barrier with causal-leaf context, while fanout-dispatched `task` managers decide locally. Implementation: `runtime/orchestrator/run_step.py:_enqueue_parent_if_waiting`. See [Bounded failure-recovery](#bounded-failure-recovery).
 
 ### Agent runtime & executors
 
@@ -167,6 +217,24 @@ Implementation: `runtime/infrastructure/kb_store.py` and `runtime/daemon/routes/
 
 ## Per-Agent Learnings
 
+### Memory telemetry guard (THR-091, TASK-7767)
+
+`AuditLogger.compute_memory_telemetry_report` and `happyranch memory report`
+currently report `insufficient_instrumentation`. Current audit rows have no
+versioned, production-canary-accepted epoch and no independently demonstrated
+automatic transport, so counts, elapsed time, manually attributed reads, and
+diagnostic ratios are observation-only and must never select tuning. This guard
+does not start collection or change memory get/search behavior, audit rows, or
+ranking. The frozen next-phase measurement definitions are in
+`docs/superpowers/specs/2026-09-11-memory-telemetry-corrective-guard.md`.
+Fail-closed output explicitly marks thresholds as not met and collection as not
+started; malformed diagnostic rows also remain ineligible rather than being
+credited or crashing the report.
+The report-local backend and CLI validators intentionally remain separate.
+Observation-only malformed read/search diagnostic parity and the full
+controlled-clock whole-report matrix are frozen acceptance obligations for the
+versioned reporting implementation; this guard does not claim either as passed.
+
 Per-agent memory lives under `<runtime>/orgs/<slug>/workspaces/<agent>/memory/`, one `MEM-NNN-<slug>.md` per entry. CLI: `happyranch memory list|get|search|add|update|promote|reindex`.
 
 Implementation: `runtime/infrastructure/learnings_store.py` and `runtime/daemon/routes/agents.py`. Spec: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`.
@@ -248,36 +316,32 @@ Contract (founder-approved in THR-028; refined in THR-078):
    decision step. The failed subtask's reason (`note` + completion report /
    error context) is available so the task owner can author an updated brief.
 
-2. **Per-slice retry ceiling.** Each delegated slot gets exactly one retry
-   (THR-078, `_SLICE_RETRY_CEILING = 1`). A second failure of the **same**
-   retried slice exhausts the slot and escalates. Determination uses existing
-   `revisit_of_task_id` lineage within the same parent — the orchestrator
-   walks the revisit chain backward looking for a FAILED ancestor with
-   `parent_task_id == parent.id` (`_is_slice_retry_exhausted`). A later
-   COMPLETED or SUPERSEDED descendant in the lineage retires earlier FAILED
-   ancestors for ceiling evaluation (THR-183). No schema migration, no sibling
-   counting.
+2. **Mechanical retry provenance.** A manager may re-dispatch unchanged work
+   or direct revised work with a valid `revisit_of_task_id` link to a FAILED
+   same-parent predecessor. The link records lineage; it does not classify a
+   brief, authorize root escalation, or cause daemon retry/successor creation.
+   A later COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors
+   from causal selection (THR-183). No schema migration or sibling counting.
 
-3. **Root-only escalation on exhaustion.** When the per-slice ceiling is
-   exhausted (the retried slice's second failure), the parent transitions to
-   `escalated` via `try_escalate()` — **only if `is_root(parent)`** (THR-033
-   Change A) — carrying the causal terminal event (the current unresolved
-   FAILED leaf) in the escalation reason, not a stale sibling. A non-root
-   parent would fail and route upward instead.
+3. **Manager ownership on exhaustion.** A retried slice's second failure
+   retains its durable causal lineage and wakes its owning manager. It is not
+   a runtime escalation or upward cascade; a later manager-proposed escalation
+   uses the configured THR-181 hook, and committed escalations remain
+   human-resolved.
 
-4. **Other child failures → bounded manager wake.** A child failure that is
-   **not** a retry of a previously-FAILED slice does not count toward the
-   ceiling; the parent wakes for a fresh decision step. Multiple independent
-   slice failures each produce their own wake, but each distinct slice
-   exhausts independently only after its own retry fails.
+4. **Other child failures → bounded manager wake.** Every unresolved child
+   failure preserves its causal lineage and wakes the owning manager for a
+   fresh decision step. Multiple independent failures remain distinct durable
+   context; they do not activate a runtime ceiling, reset, or upward route.
 
 5. **Fan-out join context.** On a fan-out parent, per-slice terminal context
    (including the exhausted-slice trigger) is injected via
    `_inject_fanout_join_context`, giving the task owner per-slice detail.
 
 6. **Chain-leg failure.** A failed workflow chain leg (subtask FAILED, not
-   COMPLETED) clears the active chain and hands the parent back to the
-   bounded-wake path (same per-slice ceiling + escalation).
+   COMPLETED) clears the active chain and hands the actual decision owner back
+   to the bounded-wake path. Passive pipeline carriers instead fail closed
+   through their outer fanout barrier with causal-leaf context.
 
 7. **Happy path unchanged.** All subtasks COMPLETED → parent enqueued for
    next decision step. REVISE-verdict auto-advance in chains is unchanged.
@@ -288,20 +352,13 @@ Contract (founder-approved in THR-028; refined in THR-078):
 
 Traps:
 
-- `_SLICE_RETRY_CEILING = 1`: exactly one retry after a slice's first failure;
-  the same slice's second failure escalates. `_FAILURE_ROUND_BOUND = 2` is
-  kept as a doc-only reference (historical failure-recovery design).
-- Retry detection: `_is_slice_retry_exhausted` walks the child's
-  `revisit_of_task_id` chain; only FAILED ancestors with the same
-  `parent_task_id` count toward the ceiling, and a COMPLETED/SUPERSEDED
-  ancestor retires earlier FAILED ancestors for ceiling evaluation
-  (THR-183). A retry of a previously COMPLETED slice is a fresh dispatch,
-  not an escalation trigger.
-- Root-only escalation: `is_root(parent)` guard before `try_escalate`; the
-  escalation reason names the current unresolved FAILED leaf, not a stale
-  sibling. Non-root parents on exhaustion fail and route upward (THR-033
-  Change A).
-- Escalation clears any active chain/fanout before escalating.
+- Retry links are mechanical provenance: unchanged-assignment re-execution
+  and manager-directed revised work both require a valid predecessor link;
+  neither is a semantic brief comparison or automatic escalation trigger.
+- A manager may propose escalation through the configured THR-181 hook; a
+  committed escalation remains human-resolved. The causal reason names the
+  current unresolved FAILED leaf rather than a stale sibling. Non-root owners
+  do not route failure upward merely because a linked retry failed.
 - Chain-advance branch handles FAILED subtasks as well as COMPLETED:
   FAILED subtasks clear the chain and fall through to sibling-check +
   bounded-wake.
@@ -496,3 +553,17 @@ later obligation.
 ## Feishu Notifications (REMOVED)
 
 Feishu was removed in TASK-302 (THR-022). The web UI and threads are the sole control path for dispatch / revisit / resolve-escalation. Legacy `feishu_notifications` config blocks are tolerated on load but ignored. Database correlation tables (`escalation_notifications`, `processed_event_ids`) remain dormant in place.
+
+## Retired autonomous thread continuation
+
+Both served resolution contracts — `POST /tasks/{task_id}/resolve-escalation`
+and `POST /threads/{thread_id}/resolve-escalation` — return the stable `410`
+error code `retired_autonomous_continuation` when a former THR-166 envelope is
+present. Presence includes null, empty, malformed, and otherwise valid values
+for `policy_id`, `policy_version`, `policy_provenance`,
+`continuation_class`, `attestation_checks`, or `evidence`; the task route also
+rejects the former autonomous identity markers `invocation_token` and
+`dispatcher`. Rejection happens before actor fallback, invocation consumption,
+or the shared human resolver. A field-free agent thread `continue` is also
+retired. Ordinary human task resolution and thread `supersede` remain
+unchanged.

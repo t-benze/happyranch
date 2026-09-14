@@ -524,7 +524,7 @@ def _project_release(release: AuthorityPolicyRelease) -> dict:
 
 
 def _bootstrap_template() -> dict:
-    """Project the one canonical server definition used by validation/runtime."""
+    """Project the current canonical definition; step count is not a policy limit."""
     return {
         "title": _POLICY.title,
         "normative_text": _POLICY.normative_text,

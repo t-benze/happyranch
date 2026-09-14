@@ -8,7 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from runtime.config import Settings
-from runtime.orchestrator.workspace_adapters import _compute_dir_hash
+from runtime.orchestrator.workspace_adapters import (
+    _compute_dir_hash,
+    materialize_workspace_skills,
+)
 from runtime.skills.sources import bundled_skills_dir
 from runtime.skills.system_contracts import list_system_contracts
 
@@ -57,6 +60,68 @@ def test_nondefault_legacy_source_requires_explicit_migration(
 
 def test_explicit_legacy_default_is_inert() -> None:
     assert Settings(protocol_dir="protocol").get_bundled_skills_dir() == bundled_skills_dir()
+
+
+def test_start_task_source_is_generic_and_preserves_callback_contract(
+    tmp_path: Path,
+) -> None:
+    """The real projected generic skill keeps callback mechanics, not engineering policy."""
+    source = bundled_skills_dir() / "start-task" / "SKILL.md"
+    workspace = tmp_path / "workspace"
+    settings = Settings()
+    materialize_workspace_skills(
+        workspace,
+        settings,
+        slug="test",
+        context="task",
+        provider="codex",
+        agent_name="dev_agent",
+        team="engineering",
+        skills_root=tmp_path / "no-managed-skills",
+    )
+    body = (workspace / ".agents" / "skills" / "start-task" / "SKILL.md").read_text()
+
+    assert body == source.read_text()
+    assert "Follow applicable task and role instructions for verification and review." in body
+    assert "Report incomplete work and blockers with concrete evidence" in body
+    assert "After the initial scope/progress checkpoint" in body
+    assert "Include verification evidence fields when the applicable task or role" in body
+    assert "happyranch report-completion --org {ORG_SLUG} --from-file" in body
+    assert '"session_id": "<session_id>"' in body
+    assert '"decision": {"action": "delegate"' in body
+    assert "Engineering frontend readiness gate" not in body
+    assert "After initial Native Impact Evidence" not in body
+    assert "TASK-5522" not in body
+    assert "per-PR merge gate" not in body
+    assert "scripts/local_ci.sh all" not in body
+    assert "reviewer APPROVE + qa PASS" not in body
+    assert "Running full web suite" not in body
+    assert "Web suite green" not in body
+
+
+def test_repository_scoped_local_ci_guidance_matches_ci_and_receipt_contract() -> None:
+    """Keep engineering CI/receipt policy out of the generic projected skill."""
+    checkout = Path(__file__).resolve().parents[1]
+    guidance = (checkout / "docs" / "local-ci.md").read_text()
+    workflow = (checkout / ".github" / "workflows" / "ci.yml").read_text()
+    normalized_guidance = " ".join(guidance.split())
+
+    assert '{"command":"scripts/local_ci.sh all","exit_code":0}' in guidance
+    assert "failed, skipped, or other-target outcomes" in normalized_guidance
+    for check in (
+        "Python units on 3.14",
+        "Web CI on Node 24",
+        "Linux Canonical Store Validation (Ubuntu)",
+        "macOS Canonical Store Validation (macOS 15)",
+    ):
+        assert check in normalized_guidance
+    assert "Python 3.12/3.13/3.14" in normalized_guidance
+    assert "nightly integration" in normalized_guidance
+    assert "local `all` does not replace canonical-store validation" in normalized_guidance
+    assert "The local `all` target covers the Python and Web commands only" in normalized_guidance
+    assert "does **not** run the canonical-store validations" in guidance
+    assert "Linux Canonical Store Validation (Ubuntu)" in workflow
+    assert "macOS Canonical Store Validation (macOS 15)" in workflow
 
 
 def test_source_relocation_preserves_hash_but_member_mutation_does_not(tmp_path: Path) -> None:

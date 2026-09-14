@@ -69,7 +69,7 @@ function AppShell(): JSX.Element {
     <div className="flex h-full flex-row">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
-        <AppBar />
+        <AppBar presentation={/^\/orgs\/[^/]+\/tasks\/?$/.test(location.pathname) ? 'tasks' : undefined} />
         <main className="flex-1 overflow-hidden">
           <ErrorBoundary resetKey={location.pathname}>
             <Outlet />
@@ -86,7 +86,7 @@ function AppShell(): JSX.Element {
 export function AppRoutes(): JSX.Element {
   return (
     <Routes>
-      {/* Prototype routes mount OUTSIDE AppShell so the TopBar + nav inside
+      {/* Prototype routes mount OUTSIDE AppShell so the shell primitives inside
           `PrototypesLayout` run under `<PrototypeProvider>`'s QueryClient
           and OrgSlugContext — keeping mock-only behaviour fully isolated
           from the daemon-backed routes. */}
@@ -107,7 +107,7 @@ export function AppRoutes(): JSX.Element {
           <Route path="todos" element={<TodosPage />} />
           <Route path="todos/:scheduleId" element={<TodosPage />} />
           <Route path="kb" element={<KbPage />} />
-          <Route path="kb/*" element={<KbPage />} />
+          <Route path="kb/:entrySlug/*" element={<KbPage />} />
 
           <Route path="audit" element={<AuditPage />} />
           <Route path="skills" element={<SkillsPage />} />

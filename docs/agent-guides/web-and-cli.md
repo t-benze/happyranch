@@ -27,6 +27,46 @@ Every browser-callable daemon route maps to one TypeScript function in `web/src/
 - Python: `tests/contract/test_openapi_snapshot.py` pins OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
 - TypeScript: `web/src/test/openapi-coverage.test.ts` asserts every documented path is either included with a TS mirror or excluded with justification.
 
+### Tasks list
+
+The Tasks heading, grouping controls, inline filters and root rows share one
+scroll owner. Status, Agent and Thread grouping use loaded matching roots;
+counts do not claim a server total or count subtasks. Status grouping preserves
+all seven lifecycle groups in display order: Waiting on you, In progress,
+Pending, Failed, Completed, Cancelled, Resolved. Completed excludes superseded,
+which appears in Resolved; display order does not change severity rollups or
+filter-option order. Resting list rows and their lineage use the existing raised
+section surface (white in light mode, semantic raised override in dark mode),
+with distinct hover styling. Only superseded rows are dimmed in every grouping.
+Tasks opts into blue in-progress and amber escalated badges and its own AppBar metrics; other
+surfaces retain their defaults.
+
+Filter supports status and exact assigned-agent name. Apply submits both drafts;
+closing the panel leaves applied values unchanged. Clear omits both parameters.
+An empty agent means no agent filter, not an unassigned-only request. Applied
+values remain visible, including for successful empty results. A new org/filter
+request starts without another context's cursor; returning to a cached context
+retains its own pages. Local recovery ownership resets on context changes.
+Initial failures show an
+explicit Retry; failed refreshes retain cached rows and a stale warning;
+failed pagination retains loaded rows and requires its separate page Retry.
+Manual refresh retries the active context's loaded pages. Subtask severity
+rollups are count-free; task detail owns subtask browsing. No New task flow is
+exposed by this list.
+
+### Thread-detail system rows
+
+The live `ThreadDetailTranscript` renders system events through its local
+`SystemDivider`: one separator above a monospaced description, inline icon
+and task links, then trailing system-event metadata. Short and long rows use
+the transcript content width inside the existing padding. Text and unbroken
+identifiers wrap; the timestamp remains available in the row tooltip.
+`describeSystem` displays the complete supplied task-completion summary and
+escalation reason without a character limit, preserving line breaks and safely
+rendering HTML-like content as literal text. It does not expose additional
+payload fields. Ordinary message bubbles and terminal responder strips retain
+their separate rendering paths. CLI transcript formatting is unchanged.
+
 ### Sidebar height and scrolling
 
 The AppShell keeps the sidebar within the window height. Its organization
@@ -53,13 +93,13 @@ fidelity.
 
 ### Settings
 
-The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with exactly three left sub-nav panels: Assistant · Organization · Executors. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (The TopBar gear button and `SettingsDialog` are prototype/design-preview surfaces only — not production entry points.) It shows:
+The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with exactly three left sub-nav panels: Assistant · Organization · Executors. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (`SettingsDialog` is retained unmounted for direct tests; it is not an application or prototype entry point.) It shows:
 
 - **Assistant** — assistant status, setup/recovery, and assistant executor binding.
 - **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), browser-managed threads config (enabled and invocation timeout), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
 - **Executors** — effective machine executor registry, custom CLI lifecycle, and recovery.
 
-The response includes operator-only `reviewer_agents` and `threads.default_turn_cap`; neither has a browser control. Removing the former System rail does not move queue-worker or maximum-orchestration-step facts into Health.
+The response includes operator-only `reviewer_agents` and `threads.default_turn_cap`; neither has a browser control. Removing the former System rail does not move queue-worker facts into Health. The retired maximum orchestration step setting is absent from the settings API and browser surfaces; the historical step counter remains monotonic telemetry, not an execution limit.
 
 **Backend routes:**
 
@@ -76,7 +116,7 @@ The serializer is an allow-list: no secret fields (permission_mode, codex_sandbo
 
 **Hot-reload:** Changes apply on next consumer read — dreaming scheduler picks up changes within ~1 min; threads/compose read on next request; session timeout applies to next session spawn. No daemon restart required.
 
-The shipped frontend surface is `web/src/features/settings/SettingsPage.tsx` (left sub-nav + field panel per sub-route) with `lib/api/settings.ts`, `hooks/settings.ts`, and a `settings` domain in `DataContext`; the older `SettingsDialog.tsx` remains in use only inside prototype/design-preview surfaces.
+The shipped frontend surface is `web/src/features/settings/SettingsPage.tsx` (left sub-nav + field panel per sub-route) with `lib/api/settings.ts`, `hooks/settings.ts`, and a `settings` domain in `DataContext`; the older `SettingsDialog.tsx` is unmounted retained test-only code.
 
 ### Agents page
 
@@ -89,6 +129,8 @@ The Agents page (`web/src/features/agents/`) shows the active agent roster plus 
 Teams membership editing (add/remove workers only — manager reassignment is founder-gated) is available via `PUT /settings/teams`, wrapping `TeamsRegistry` mutators with `validate_team_membership` consistency checks and 409 rollback on drift.
 
 **Backend:** The `GET /agents` response now includes `repos`, `system_prompt`, and `model` fields (additive, `allow_rules` remains excluded). The `PUT /agents/{agent}/model` route sets or clears the per-agent model (see below).
+
+The agent detail pane also reads `GET /agents/{agent}/cleanup-activity`. It returns at most five newest distinct tasks that have the authoritative `workspace_cleanup_triggered` audit marker and are currently assigned to that agent. A task's lifecycle status and latest same-agent result status remain separate; missing summaries are rendered as unavailable. This GET is a read-only projection and does not start or perform cleanup.
 
 Build and dev commands:
 
@@ -164,7 +206,7 @@ Work status: Stale-but-alive — no substantive update recorded
 The full audit log (including inline `progress` messages) is unchanged.
 
 The founder-facing web surface is the **A-mode Cmd-K dock** (structured chat
-docked in the AppShell, toggled via the TopBar / Cmd-K shortcut). Assistant
+docked in the AppShell, toggled via the AppBar / Cmd-K shortcut). Assistant
 configuration (status / init / register / repair) is served over four HTTP routes
 (in `INCLUDED_PATHS` with TS mirrors in `web/src/lib/api/assistant.ts`).
 There is no standalone `/assistant` web page, no xterm terminal, and no
@@ -198,6 +240,21 @@ reporting, the conservative schedule policy (any armed or firing schedule
 refuses, with existing-control remedies only), and reconciliation limits.
 
 Full founder-facing CLI docs: `skills/happyranch/SKILL.md`.
+
+### Memory report guard
+
+`happyranch memory report` paginates the existing audit read surface but is
+currently fail-closed: JSON and text both return `insufficient_instrumentation`.
+There is no CLI flag or input that can override the invalid current/unversioned
+epoch. Existing explicit `--session-id` get/search behavior remains unchanged;
+the report neither begins collection nor recommends push, alias, embedding, or
+ranking changes.
+Its cursor pages are exhausted before report calculation; malformed diagnostic
+rows fail closed, with text never presenting the observation thresholds as met.
+The current backend and command use report-local validation, so this guard does
+not assert unchanged shared-helper parity for observation-only malformed
+read/search diagnostics or a full controlled-clock whole-report matrix. Those
+remain frozen obligations of versioned reporting rather than passed guard work.
 
 ### PR CI wait / guarded merge entrypoints
 

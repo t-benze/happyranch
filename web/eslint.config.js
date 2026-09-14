@@ -25,95 +25,6 @@ import react from "eslint-plugin-react";
 import reactHooks from "eslint-plugin-react-hooks";
 import tailwind from "eslint-plugin-tailwindcss";
 
-const frozenFeatureArbitraryValues = [
-  {
-    file: "src/features/dreams/DreamsPage.tsx",
-    value: "text-[10px]",
-    count: 1,
-    reason: "Known live status-pill residue; replacement is owned by the approved text-scale cleanup.",
-  },
-  {
-    file: "src/features/dreams/DreamDetailPane.tsx",
-    value: "text-[10px]",
-    count: 1,
-    reason: "Known live status-pill residue; replacement is owned by the approved text-scale cleanup.",
-  },
-  {
-    file: "src/features/work-hours-config/WakesView.tsx",
-    value: "text-[10px]",
-    count: 1,
-    reason: "Known live status-pill residue; replacement is owned by the approved text-scale cleanup.",
-  },
-  {
-    file: "src/features/schedule/SchedulePage.tsx",
-    value: "text-[10px]",
-    count: 1,
-    reason: "Known retired-source residue; removal is owned by the approved retirement cleanup.",
-  },
-];
-
-const localBaselinePlugin = {
-  rules: {
-    "baselined-no-arbitrary-value": {
-      meta: {
-        ...tailwind.rules["no-arbitrary-value"].meta,
-        schema: [{
-          type: "object",
-          required: ["value"],
-          properties: { value: { type: "string" } },
-          additionalProperties: false,
-        }],
-      },
-      create(context) {
-        const [{ value }] = context.options;
-        const filteredContext = Object.create(context);
-        Object.defineProperty(filteredContext, "report", {
-          value(descriptor) {
-            if (descriptor.data?.classname !== value) {
-              context.report(descriptor);
-            }
-          },
-        });
-        return tailwind.rules["no-arbitrary-value"].create(filteredContext);
-      },
-    },
-    "frozen-tailwind-arbitrary-baseline": {
-      meta: {
-        type: "problem",
-        schema: [{
-          type: "object",
-          required: ["value", "count", "reason"],
-          properties: {
-            value: { type: "string" },
-            count: { type: "integer", minimum: 0 },
-            reason: { type: "string", minLength: 1 },
-          },
-          additionalProperties: false,
-        }],
-        messages: {
-          changed: "Frozen arbitrary-value baseline for '{{value}}' expected {{expected}} occurrence(s), found {{actual}}. {{reason}}",
-        },
-      },
-      create(context) {
-        const [{ value, count, reason }] = context.options;
-        return {
-          Program(node) {
-            const source = context.sourceCode.text;
-            const actual = source.split(value).length - 1;
-            if (actual !== count) {
-              context.report({
-                node,
-                messageId: "changed",
-                data: { value, expected: count, actual, reason },
-              });
-            }
-          },
-        };
-      },
-    },
-  },
-};
-
 export default tseslint.config(
   {
     ignores: [
@@ -295,18 +206,4 @@ export default tseslint.config(
       "tailwindcss/no-arbitrary-value": "error",
     },
   },
-
-  // Keep the instrument green while four pre-existing text-scale residues are
-  // removed by their separately approved cleanup. Each exception is bound to
-  // one exact file/value/count: additions fail, and deletions deliberately make
-  // the baseline stale so this list must strictly shrink with the cleanup.
-  ...frozenFeatureArbitraryValues.map(({ file, value, count, reason }) => ({
-    files: [file],
-    plugins: { local: localBaselinePlugin },
-    rules: {
-      "tailwindcss/no-arbitrary-value": "off",
-      "local/baselined-no-arbitrary-value": ["error", { value }],
-      "local/frozen-tailwind-arbitrary-baseline": ["error", { value, count, reason }],
-    },
-  })),
 );

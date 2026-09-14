@@ -68,7 +68,7 @@ Common environment variables:
 | `HAPPYRANCH_DAEMON_PORT` | `8765` | Local port |
 | `HAPPYRANCH_QUEUE_WORKERS` | `3` | Concurrent agent sessions |
 | `HAPPYRANCH_SESSION_TIMEOUT_SECONDS` | `1800` | Agent session timeout |
-| `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Manager decision limit |
+| `HAPPYRANCH_MAX_ORCHESTRATION_STEPS` | `50` | Legacy accepted setting; no longer limits decisions |
 
 Restart the daemon after changing these.
 

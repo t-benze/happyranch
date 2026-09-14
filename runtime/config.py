@@ -77,7 +77,8 @@ class Settings(BaseSettings):
     # Task constraints
     session_timeout_seconds: int = 1800  # 30 minutes
 
-    # Orchestration loop
+    # Legacy compatibility only: accepted from existing YAML/env configuration,
+    # but no longer read by runtime admission or continuation logic.
     max_orchestration_steps: int = 50
 
     # Daemon

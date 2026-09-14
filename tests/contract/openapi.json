@@ -588,6 +588,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/cleanup-activity": {
+      "GET": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/agents/{agent_name}/executor": {
       "PUT": {
         "params": [
@@ -3027,6 +3049,7 @@
         ],
         "responses": [
           "200",
+          "410",
           "422"
         ]
       }
@@ -3549,6 +3572,7 @@
         ],
         "responses": [
           "200",
+          "410",
           "422"
         ]
       }

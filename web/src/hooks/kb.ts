@@ -5,7 +5,7 @@
  */
 import { useData } from '@/design-system/providers/DataContext';
 
-export type { KBViewStat } from '@/lib/api/kb';
+export type { KBViewStat, KBEntrySummary } from '@/lib/api/kb';
 
 export const useKbRoutes = () => useData().useKbRoutes();
 

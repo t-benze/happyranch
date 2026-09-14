@@ -51,6 +51,9 @@ export const mockAgentsApi: AgentsApi = {
       staleTime: Infinity,
     }),
 
+  useCleanupActivity: (agentName) =>
+    useQuery({ queryKey: ['mock-cleanup-activity', agentName], queryFn: async () => ({ activities: [] }), enabled: !!agentName, staleTime: Infinity }),
+
   useCreateAgent: () =>
     useMutation({
       mutationFn: async (body: import('@/lib/api/agents').CreateAgentBody) => ({

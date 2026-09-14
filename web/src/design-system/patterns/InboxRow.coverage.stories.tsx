@@ -7,8 +7,10 @@ const meta = {
     <div className="grid max-w-2xl gap-3" data-radius-coverage="inbox-row">
       <Story />
       <InboxRow threadId="THR-DONE" subject="Archived default row" status="archived" needsYou={false} active={false} href="#done" onSelect={() => { window.location.hash = 'action-done'; }} />
-      <InboxRow threadId="THR-LIVE" subject="Active thread row" status="open" needsYou active layout="thread" meta="2m" href="#live" onSelect={() => { window.location.hash = 'action-live'; }} />
-      <InboxRow threadId="THR-ARCHIVED" subject="Archived thread row" status="archived" needsYou={false} active={false} layout="thread" fromDream meta="1h" href="#archived" onSelect={() => { window.location.hash = 'action-archived'; }} />
+      <div className="overflow-hidden rounded-sm border border-border-default divide-y divide-border-default" data-thread-list-group>
+        <InboxRow threadId="THR-LIVE" subject="Active thread row" status="open" needsYou active layout="thread" participants={['engineering_manager', 'dev_agent']} meta="2m" href="#live" onSelect={() => { window.location.hash = 'action-live'; }} />
+        <InboxRow threadId="THR-ARCHIVED" subject="Archived thread row" status="archived" needsYou={false} active={false} layout="thread" participants={['qa_engineer']} fromDream meta="1h" href="#archived" onSelect={() => { window.location.hash = 'action-archived'; }} />
+      </div>
     </div>
   )],
 } satisfies Meta<typeof InboxRow>;
