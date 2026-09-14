@@ -82,9 +82,9 @@ def test_connector_builder_installs_real_wheel_without_ambient_pip(
 
 
 def test_generated_connector_entry_executes_actual_wheel_cli_capability_and_retirement_cases(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Exercise the shipping entry bytes with the real candidate wheel, not a stand-in main."""
+    """Exercise the builder-generated shipping entry with the real candidate wheel."""
     wheel_dir = tmp_path / "wheel"
     subprocess.run(
         ["uv", "build", "--wheel", "--out-dir", str(wheel_dir)],
@@ -94,14 +94,25 @@ def test_generated_connector_entry_executes_actual_wheel_cli_capability_and_reti
     )
     wheel, = wheel_dir.glob("happyranch-*.whl")
     installed = tmp_path / "installed"
-    from app.linux.package.build_connector import _extract_wheel
-    _extract_wheel(wheel, installed)
     entry = tmp_path / "connector_entry.py"
-    entry.write_text(
+    output = tmp_path / "happyranch-connector"
+    real_run = subprocess.run
+
+    def capture_generated_entry(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        generated_installed = Path(command[command.index("--paths") + 1])
+        generated_entry = Path(command[-1])
+        shutil.copytree(generated_installed, installed)
+        shutil.copy2(generated_entry, entry)
+        output.write_bytes(b"frozen-placeholder")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", capture_generated_entry)
+    assert build_connector(wheel, output) == output
+    assert entry.read_text(encoding="utf-8") == (
         "from runtime.remote_access.cli import main\n"
-        "if __name__ == '__main__': raise SystemExit(main())\n",
-        encoding="utf-8",
+        "if __name__ == '__main__': raise SystemExit(main())\n"
     )
+    monkeypatch.setattr(subprocess, "run", real_run)
     launcher = (
         "import runpy, sys; installed, entry, *arguments = sys.argv[1:]; "
         "sys.path.insert(0, installed); sys.argv = [entry, *arguments]; "
