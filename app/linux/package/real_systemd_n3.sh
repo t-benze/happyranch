@@ -74,49 +74,84 @@ work="$(mktemp -d)"
 evidence_driver="$PWD/app/linux/package/n3_evidence.py"
 evidence_artifact="$diagnostics/execution-evidence.json"
 run_id="$(cat /proc/sys/kernel/random/uuid)"
+barrier_dir="/var/lib/happyranch-tsnet-sidecar/.n3-barrier-$run_id"
 package_sha="$(sha256sum "$PACKAGE_TAR" | cut -d' ' -f1)"
 python "$evidence_driver" init "$evidence_artifact" --git-head "$PROOF_SUBJECT_SHA" --package-sha256 "$package_sha" --run-id "$run_id"
 headscale_pid=""; peer_pid=""; daemon_pid=""
 safe_systemctl_value() {
-  # Each observer has a one-second deadline, one-second kill grace and a
-  # 512-byte input cap; unavailable data is explicit and never blocks teardown.
-  local unit="$1" property="$2" value file status
-  (( SECONDS < observe_deadline )) || { printf unknown; return; }
-  file="$(mktemp "$diagnostics/.n3-observe.XXXXXX")" || { printf unknown; return; }
+  observe_systemctl_value "$1" "$2"
+  printf '%s' "$observation_value"
+}
+observe_presence() {
+  # A failed/late existence probe is unknown, never a false claim of absence.
+  local path="$1" kind="$2" status
+  presence_value=false; presence_loss=observed_absent
+  (( SECONDS < observe_deadline )) || { presence_value='"unknown"'; presence_loss=unattempted; return; }
+  set +e
+  timeout --kill-after=1 1 sudo test "$kind" "$path"
+  status=$?
+  set -e
+  case "$status" in
+    0) presence_value=true; presence_loss=observed_present ;;
+    1) presence_value=false; presence_loss=observed_absent ;;
+    124) presence_value='"unknown"'; presence_loss=timeout ;;
+    *) presence_value='"unknown"'; presence_loss=query_error ;;
+  esac
+}
+observe_systemctl_value() {
+  # Each observation has a one-second deadline, one-second kill grace and a
+  # 512-byte cap.  `observation_loss` is a closed term: it distinguishes a
+  # successful empty response, failed query, real timeout, truncation, parse
+  # loss and work which was not attempted. Raw command output is never kept.
+  local unit="$1" property="$2" value file status bytes
+  observation_value=unknown; observation_loss=unattempted
+  (( SECONDS < observe_deadline )) || return
+  file="$(mktemp "$diagnostics/.n3-observe.XXXXXX")" || { observation_loss=launch_failure; return; }
   set +e
   timeout --kill-after=1 1 systemctl show "$unit" -p "$property" --value 2>/dev/null | head -c 512 >"$file"
   status=${PIPESTATUS[0]}
   set -e
-  value="$(<"$file")"; rm -f "$file"
-  (( status == 0 )) || { printf unknown; return; }
+  value="$(<"$file")"; bytes="$(wc -c <"$file")"; rm -f "$file"
+  if (( status == 124 )); then observation_loss=timeout; return; fi
+  if (( bytes >= 512 )) && (( status != 0 )); then observation_loss=truncated; return; fi
+  if (( status != 0 )); then observation_loss=query_error; return; fi
+  if [[ -z "$value" ]]; then observation_loss=empty; return; fi
   case "$property:$value" in
-    ActiveState:active|ActiveState:inactive|ActiveState:failed|ActiveState:activating|ActiveState:deactivating|ActiveState:unknown|SubState:running|SubState:dead|SubState:failed|SubState:exited|SubState:waiting|Result:success|Result:exit-code|Result:signal|Result:timeout|Result:resources|Result:unknown) printf '%s' "$value" ;;
-    ExecMainStatus:*) [[ "$value" =~ ^[0-9]{1,6}$ ]] && printf '%s' "$value" || printf unknown ;;
+    ActiveState:active|ActiveState:inactive|ActiveState:failed|ActiveState:activating|ActiveState:deactivating|ActiveState:unknown|SubState:running|SubState:dead|SubState:failed|SubState:exited|SubState:waiting|Result:success|Result:exit-code|Result:signal|Result:timeout|Result:resources|Result:unknown)
+      observation_value="$value"; observation_loss=observed ;;
+    ExecMainStatus:*)
+      if [[ "$value" =~ ^[0-9]{1,6}$ ]]; then observation_value="$value"; observation_loss=observed; else observation_loss=parse_loss; fi ;;
     # ExecStartPre contains argv/path text and must never become evidence prose.
-    ExecStartPre:*) printf unknown ;;
-    *) printf unknown ;;
+    *) observation_loss=parse_loss ;;
   esac
 }
 capture_failure_snapshot() {
   # Snapshot work has an eight-second aggregate budget. No observation changes
   # the exit status that entered cleanup; all retained values are closed terms.
-  local name="${1:-failure-snapshot}" snapshot unit first=1 active sub result main pre source held marker dropin staging
+  local name="${1:-failure-snapshot}" snapshot unit first=1 active sub result main pre source held marker dropin staging source_loss held_loss marker_loss dropin_loss staging_loss loss_first=1 losses_file
   snapshot="$diagnostics/$name.json"
+  losses_file="$(mktemp "$diagnostics/.n3-losses.XXXXXX")" || return 1
   observe_deadline=$((SECONDS + 8))
-  source=false; held=false; marker=false; dropin=false; staging=false
-  if (( SECONDS < observe_deadline )); then timeout --kill-after=1 1 sudo test -e /etc/happyranch/enrollment.key && source=true; fi
-  if (( SECONDS < observe_deadline )); then timeout --kill-after=1 1 sudo test -e /etc/happyranch/enrollment.key.held && held=true; fi
-  if (( SECONDS < observe_deadline )); then timeout --kill-after=1 1 sudo test -e /var/lib/happyranch-tsnet-sidecar/credential.consumed && marker=true; fi
-  if (( SECONDS < observe_deadline )); then timeout --kill-after=1 1 sudo test -e /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf && dropin=true; fi
-  if (( SECONDS < observe_deadline )); then timeout --kill-after=1 1 sudo test -d /run/credentials/happyranch-tsnet-sidecar.service && staging=true; fi
+  observe_presence /etc/happyranch/enrollment.key -e; source="$presence_value"; source_loss="$presence_loss"
+  observe_presence /etc/happyranch/enrollment.key.held -e; held="$presence_value"; held_loss="$presence_loss"
+  observe_presence /var/lib/happyranch-tsnet-sidecar/credential.consumed -e; marker="$presence_value"; marker_loss="$presence_loss"
+  observe_presence /etc/systemd/system/happyranch-tsnet-sidecar.service.d/10-enrollment-credential.conf -e; dropin="$presence_value"; dropin_loss="$presence_loss"
+  observe_presence /run/credentials/happyranch-tsnet-sidecar.service -d; staging="$presence_value"; staging_loss="$presence_loss"
   {
     printf '{"schema":"happyranch.n3.failure-snapshot","version":1,"id":"%s","units":{' "$name"
     for unit in happyranch-managed.target happyranch-connector.service happyranch-tsnet-sidecar.service; do
-      active="$(safe_systemctl_value "$unit" ActiveState)"; sub="$(safe_systemctl_value "$unit" SubState)"
-      result="$(safe_systemctl_value "$unit" Result)"; main="$(safe_systemctl_value "$unit" ExecMainStatus)"
-      pre="$(safe_systemctl_value "$unit" ExecStartPre)"
+      observe_systemctl_value "$unit" ActiveState; active="$observation_value"; active_loss="$observation_loss"
+      observe_systemctl_value "$unit" SubState; sub="$observation_value"; sub_loss="$observation_loss"
+      observe_systemctl_value "$unit" Result; result="$observation_value"; result_loss="$observation_loss"
+      observe_systemctl_value "$unit" ExecMainStatus; main="$observation_value"; main_loss="$observation_loss"
+      observe_systemctl_value "$unit" ExecStartPre; pre="$observation_value"; pre_loss="$observation_loss"
       (( first )) || printf ','; first=0
       printf '"%s":{"active":"%s","sub":"%s","result":"%s","exec_main_status":"%s","exec_start_pre_status":"%s"}' "$unit" "$active" "$sub" "$result" "$main" "$pre"
+      for property_loss in "active:$active_loss" "sub:$sub_loss" "result:$result_loss" "exec_main_status:$main_loss" "exec_start_pre_status:$pre_loss"; do
+        [[ "$property_loss" == *:observed ]] && continue
+        (( loss_first )) || printf ',' >>"$losses_file"; loss_first=0
+        printf '"%s.%s":"%s"' "$unit" "${property_loss%%:*}" "${property_loss#*:}" >>"$losses_file"
+      done
     done
     printf '},"jobs":['
     first=1
@@ -127,8 +162,16 @@ capture_failure_snapshot() {
           (( first )) || printf ','; first=0; printf '{"id":%s,"unit":"%s","state":"%s"}' "$job" "$unit" "$state" ;;
       esac
     done < <(if (( SECONDS < observe_deadline )); then timeout --kill-after=1 1 systemctl list-jobs --no-legend --plain 2>/dev/null | head -c 1024; fi)
-    printf '],"credential_presence":{"source":%s,"held_source":%s,"consumed_marker":%s,"transient_dropin":%s,"staged_directory":%s}}\n' "$source" "$held" "$marker" "$dropin" "$staging"
+    printf '],"credential_presence":{"source":%s,"held_source":%s,"consumed_marker":%s,"transient_dropin":%s,"staged_directory":%s},"collection":{"run_id":"%s","boot_id":"%s","window_seconds":8,"source":"systemctl-closed-values"},"observation_loss":{' "$source" "$held" "$marker" "$dropin" "$staging" "${run_id:-unknown}" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf unavailable)"
+    for property_loss in "credential.source:$source_loss" "credential.held_source:$held_loss" "credential.consumed_marker:$marker_loss" "credential.transient_dropin:$dropin_loss" "credential.staged_directory:$staging_loss"; do
+      [[ "$property_loss" == *:observed_present || "$property_loss" == *:observed_absent ]] && continue
+      (( loss_first )) || printf ',' >>"$losses_file"; loss_first=0
+      printf '"%s":"%s"' "${property_loss%%:*}" "${property_loss#*:}" >>"$losses_file"
+    done
+    cat "$losses_file"
+    printf '}}\n'
   } >"$snapshot" || true
+  rm -f "$losses_file"
 }
 start_managed_target() {
   # Keep the initiating positive-start status authoritative even when bounded
@@ -144,7 +187,15 @@ start_managed_target() {
 cleanup() {
   local original_status="${1:-$?}" cleanup_failed=0
   set +e
+  printf 'cleanup\n' >>"$diagnostics/cleanup-events.log"
   (( original_status == 0 )) || capture_failure_snapshot failure-before-teardown || true
+  # A trap can arrive while either real service barrier is held. Release both
+  # controller-owned latches before stopping units so teardown cannot strand a
+  # service in its existing ExecStartPre/ExecStopPost loop.
+  if [[ -n "${barrier_dir:-}" ]] && sudo test -d "$barrier_dir"; then
+    : | sudo tee "$barrier_dir/start-release" >/dev/null
+    : | sudo tee "$barrier_dir/stop-release" >/dev/null
+  fi
   sudo systemctl stop happyranch-managed.target
   if [[ -n "${sidecar_ip:-}" ]] && [[ -n "$peer_pid" ]] && sudo kill -0 "$peer_pid" 2>/dev/null; then
     ! tsnet_open || cleanup_failed=1
@@ -527,19 +578,20 @@ evidence "partial_failure" "fresh_composite_gates"
 
 # semantic evidence: concurrency_reentry. A shipping-unit ExecStartPre barrier
 # proves start has entered before stop is queued; stop must win after release.
+sudo install -d -m 0700 -o happyranch -g happyranch "$barrier_dir"
 sudo install -d -m 0755 /etc/systemd/system/happyranch-tsnet-sidecar.service.d
 sudo tee /etc/systemd/system/happyranch-tsnet-sidecar.service.d/90-ci-barrier.conf >/dev/null <<EOF
 [Service]
-ExecStartPre=/bin/sh -c 'touch $work/start-entered; while test ! -e $work/start-release; do sleep .05; done'
+ExecStartPre=/bin/sh -c 'touch $barrier_dir/start-entered; while test ! -e $barrier_dir/start-release; do sleep .05; done'
 EOF
 sudo systemctl daemon-reload
 sudo systemctl stop happyranch-managed.target
 sudo systemctl start happyranch-managed.target & start_job=$!
-wait_for "start barrier entered" test -e "$work/start-entered"
+wait_for "start barrier entered" sudo test -e "$barrier_dir/start-entered"
 sudo systemctl stop happyranch-managed.target & stop_job=$!
 systemctl list-jobs --no-legend | grep -q 'happyranch-managed.target' || fail "stop was not queued behind entered start"
 evidence "concurrency_reentry" "start_then_stop_barrier"
-: >"$work/start-release"; wait "$start_job" || true; wait "$stop_job"
+: | sudo tee "$barrier_dir/start-release" >/dev/null; wait "$start_job" || true; wait "$stop_job"
 ! active happyranch-tsnet-sidecar.service || fail "start-then-stop did not stop"
 evidence "concurrency_reentry" "stop_wins"
 
@@ -547,18 +599,19 @@ evidence "concurrency_reentry" "stop_wins"
 # queued behind an ExecStopPost barrier, so stale admission cannot survive.
 sudo tee /etc/systemd/system/happyranch-tsnet-sidecar.service.d/90-ci-barrier.conf >/dev/null <<EOF
 [Service]
-ExecStopPost=/bin/sh -c 'touch $work/stop-entered; while test ! -e $work/stop-release; do sleep .05; done'
+ExecStopPost=/bin/sh -c 'touch $barrier_dir/stop-entered; while test ! -e $barrier_dir/stop-release; do sleep .05; done'
 EOF
 sudo systemctl daemon-reload
 sudo systemctl start happyranch-managed.target
 sudo systemctl stop happyranch-managed.target & stop_job=$!
-wait_for "stop barrier entered" test -e "$work/stop-entered"
+wait_for "stop barrier entered" sudo test -e "$barrier_dir/stop-entered"
 ! tsnet_open || fail "TSNet admission survived production Stop"
 sudo systemctl start happyranch-managed.target & start_job=$!
 systemctl list-jobs --no-legend | grep -q 'happyranch-managed.target' || fail "start was not queued behind entered stop"
 evidence "concurrency_reentry" "stop_then_start_barrier"
-: >"$work/stop-release"; wait "$stop_job"; wait "$start_job"
+: | sudo tee "$barrier_dir/stop-release" >/dev/null; wait "$stop_job"; wait "$start_job"
 sudo rm -f /etc/systemd/system/happyranch-tsnet-sidecar.service.d/90-ci-barrier.conf
+sudo rmdir "$barrier_dir" || fail "barrier residue"
 sudo systemctl daemon-reload
 
 # semantic evidence: readiness_loss. Compare the real systemd monotonic

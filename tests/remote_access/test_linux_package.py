@@ -46,14 +46,27 @@ def test_connector_builder_installs_real_wheel_without_ambient_pip(
 ) -> None:
     wheel = tmp_path / "happyranch-1-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as built:
-        built.writestr("runtime/remote_access/cli.py", "REAL_WHEEL = True\n")
+        built.writestr("runtime/__init__.py", "")
+        built.writestr("runtime/remote_access/__init__.py", "")
+        built.writestr("runtime/remote_access/cli.py", "REAL_WHEEL = True\ndef main(): return 7\n")
         built.writestr("happyranch-1.dist-info/METADATA", "Name: happyranch\nVersion: 1\n")
     commands: list[list[str]] = []
+    real_run = subprocess.run
 
     def run(command, **_kwargs):
         commands.append(command)
         installed = Path(command[command.index("--paths") + 1])
-        assert (installed / "runtime/remote_access/cli.py").read_text() == "REAL_WHEEL = True\n"
+        assert (installed / "runtime/remote_access/cli.py").read_text() == "REAL_WHEEL = True\ndef main(): return 7\n"
+        entry_path = Path(command[-1])
+        entry = entry_path.read_text()
+        assert "raise SystemExit(main())" in entry
+        generated = real_run(
+            [sys.executable, "-c", "import runpy,sys; sys.path.insert(0, sys.argv[1]); runpy.run_path(sys.argv[2], run_name='__main__')", str(installed), str(entry_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert generated.returncode == 7
         (tmp_path / "happyranch-connector").write_bytes(b"frozen-real-wheel")
         return subprocess.CompletedProcess(command, 0)
 
@@ -288,13 +301,31 @@ def test_real_systemd_failure_snapshot_executes_shipping_source_and_is_secret_fr
         "source": False, "held_source": False, "consumed_marker": False,
         "transient_dropin": False, "staged_directory": False,
     }
+    assert snapshot["collection"]["source"] == "systemctl-closed-values"
+    assert snapshot["collection"]["window_seconds"] == 8
+    # The raw ExecStartPre command is deliberately rejected as parse loss;
+    # absence of a retained value is never represented as a clean observation.
+    assert set(snapshot["observation_loss"].values()) == {"parse_loss"}
 
 
 def test_real_systemd_failure_snapshot_bounds_malformed_observations(tmp_path: Path) -> None:
     result = _run_real_systemd_failure_snapshot(tmp_path, malformed=True)
     assert result.returncode == 0, result.stderr
     assert "SECRET_CANARY" not in result.stdout + result.stderr
-    assert {unit["active"] for unit in json.loads(result.stdout)["units"].values()} == {"unknown"}
+    snapshot = json.loads(result.stdout)
+    assert {unit["active"] for unit in snapshot["units"].values()} == {"unknown"}
+    assert set(snapshot["observation_loss"].values()) == {"parse_loss"}
+
+
+def test_real_systemd_barriers_use_restrictive_service_state_directory_and_controller_sudo() -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    assert 'barrier_dir="/var/lib/happyranch-tsnet-sidecar/.n3-barrier-$run_id"' in harness
+    assert 'install -d -m 0700 -o happyranch -g happyranch "$barrier_dir"' in harness
+    assert 'sudo test -e "$barrier_dir/start-entered"' in harness
+    assert 'sudo test -e "$barrier_dir/stop-entered"' in harness
+    assert 'sudo tee "$barrier_dir/start-release"' in harness
+    assert 'sudo tee "$barrier_dir/stop-release"' in harness
+    assert 'sudo rmdir "$barrier_dir" || fail "barrier residue"' in harness
 
 
 def test_real_systemd_failure_capture_precedes_teardown_and_preserves_exit_37() -> None:

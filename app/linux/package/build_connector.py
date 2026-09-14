@@ -44,7 +44,7 @@ def build_connector(wheel: Path, output: Path) -> Path:
         _extract_wheel(wheel.resolve(), installed)
         entry.write_text(
             "from runtime.remote_access.cli import main\n"
-            "if __name__ == '__main__': main()\n",
+            "if __name__ == '__main__': raise SystemExit(main())\n",
             encoding="utf-8",
         )
         subprocess.run(

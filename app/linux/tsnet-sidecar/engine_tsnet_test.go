@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -253,5 +254,52 @@ func TestProductionAdapterViaSidecarRejectsApparentSuccessAfterCancellation(t *t
 	}
 	if _, err := os.Stat(cfg.CredentialFile); err != nil {
 		t.Fatalf("credential should remain before positive receipt: %v", err)
+	}
+}
+
+func TestProductionAdapterViaSidecarDoesNotAdmitAfterCancelledPeerPoll(t *testing.T) {
+	release := make(chan struct{})
+	server := &fakeTSNetServer{
+		upStatus:      runningWithPeer("other", ""),
+		statusEntered: make(chan struct{}),
+		statusRelease: release,
+		statuses:      []*ipnstate.Status{runningWithPeer("expected", "")},
+		ignoreContext: true,
+	}
+	cfg := validConfig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- New(cfg, testTSNetEngine(server), &net.Dialer{}).Start(ctx) }()
+	<-server.statusEntered
+	cancel()
+	close(release)
+	if err := <-result; !errors.Is(err, ErrNetworkJoin) {
+		t.Fatalf("err=%v", err)
+	}
+	if server.listenCalls != 0 || server.closeCalls != 1 {
+		t.Fatalf("listen=%d close=%d", server.listenCalls, server.closeCalls)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, consumedMarker)); !os.IsNotExist(err) {
+		t.Fatalf("marker was committed before receipt: %v", err)
+	}
+	if _, err := os.Stat(cfg.CredentialFile); err != nil {
+		t.Fatalf("credential was consumed before receipt: %v", err)
+	}
+}
+
+func TestTSNetEngineRejectsNilAndEmptyPeerStatusWithoutReceipt(t *testing.T) {
+	for name, server := range map[string]*fakeTSNetServer{
+		"nil-up":     {upStatus: nil},
+		"nil-poll":   {upStatus: runningWithPeer("other", ""), statuses: []*ipnstate.Status{nil}},
+		"empty-peer": {upStatus: &ipnstate.Status{BackendState: "Running"}, statuses: []*ipnstate.Status{&ipnstate.Status{BackendState: "Running"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
+			defer cancel()
+			receipt, err := testTSNetEngine(server).Start(ctx, engineConfig(), []byte("one-use"))
+			if !errors.Is(err, ErrNetworkJoin) || receipt.Redeemed || receipt.Durable || receipt.ExpectedPeerVisible {
+				t.Fatalf("receipt=%+v err=%v", receipt, err)
+			}
+		})
 	}
 }
