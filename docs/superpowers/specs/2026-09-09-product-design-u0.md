@@ -387,7 +387,7 @@ keeps legacy chain/fanout owners, and names Founder decisions before any
 protected implementation. U1--U6, cutover proof, and the NOT RUN study remain
 explicitly pending.
 
-### 2026-09-14 F4/F5 publication-protocol evidence (TASK-8363 correction)
+### 2026-09-15 F4/F5 publication-protocol evidence (TASK-8368 correction)
 
 This is a concrete proposed protocol plus executable isolated evidence, not a
 production approval, migration, runtime import, or a claim that same-UID
@@ -412,42 +412,60 @@ org pointer alone.
 | activation/admission/receipt/final-join/recovery | proposed adapter readers; current run-step/queue/legacy chain/fanout remain separately owned |
 
 Journal attempts have unique invocation identity; an aborted attempt does not
-reserve its generation. States are `prepared`, canonical-file replacement,
-`canonical_published`, pointer-CAS (`pointer_committed`, the publication
-linearization point), cache write, then `cache_installed`. The durable lease is
-namespace plus unique invocation token and PID: same-label callers are busy,
-not reentrant; a fresh process reclaims only a proven-dead PID. This is a
-cooperative same-host process-crash guarantee, not a power-loss durability
-claim. Expected-generation CAS permits one winner. A stale compensator may
-abort only verified pre-file work; canonical-written work is explicitly
-`forward_recovery_required` and recovery completes it forward. It never
-restores a stale file/cache/pointer. `workflow_recovery` verifies pointer plus
-canonical bytes before cold-cache rehydration, aborts only safe unpublished
-preparation, completes a verified sequence, or returns the exact mismatch
-invariant without rollback. Readers refuse active journal, incorrect canonical
-digest, or stale cache.
+reserve its generation. States are `prepared`, staged-file creation,
+canonical-file replacement, `canonical_published`, pointer-CAS
+(`pointer_committed`, the publication linearization point), cache write, then
+`cache_installed`. The durable lease is namespace plus unique invocation token
+and PID: same-label callers are busy, not reentrant; a fresh process reclaims
+only a proven-dead PID. This is a cooperative same-host process-crash guarantee,
+not a power-loss durability claim. Expected-generation CAS permits one winner.
+
+Readiness, cold recovery, admission, and dispatch share one verifier: a ready
+pointer must name an extant same-namespace journal with matching generation,
+predecessor, stored snapshot bytes/digest, terminal `cache_installed` state,
+and canonical bytes. An absent/malformed/mismatched journal, active journal,
+incorrect canonical bytes, or stale cache refuses without a new admission,
+cache write, or history rewrite. Generation zero with no pointer has the stable
+`uninitialized_no_authority` recovery outcome: admission is denied and a later
+valid initial publication remains possible. A prepared record is never blindly
+discarded: compensation reads the canonical file and only aborts a verified
+pre-file attempt; replacement-before-journal-stamp becomes
+`forward_recovery_required` and is completed forward. It never restores a
+stale file/cache/pointer.
 
 There is no false universal lock order. Publication uses a cooperative lease
 and short SQLite stage transactions; no lock spans launch/network/clone.
 Existing completion admission remains `org.db_lock -> binding_lease ->`
 synchronized DB callback, and does not acquire the publication coordinator.
-Profile binding retains its separate adapter-store/store-write/registry edge.
-A production decision must establish an acyclic route-specific graph.
+For a profile-store/registry update, the selected future protocol first places
+every dependent org pointer in a durable fail-closed `fenced` state (and drops
+its process cache), then performs the existing profile store/registry work and
+its compensation under the machine-global profile coordinator, releases that
+coordinator, and republishes each org before admitting it again. The isolated
+model proves the material edge: a concurrent admission after the pre-fence and
+before republish is rejected. It does not claim a distributed atomic commit,
+global lock nesting, or that the existing production routes already implement
+this protocol. Existing `teams_lock`, org DB RLock, and callback order remain
+separate; no coordinator spans clone/network/launch/callback.
 
 The isolated schema/helper implement journal, pointer, invocation/PID lease,
 admission, publisher, recovery, forward-only compensation, and later
 dispatch-revalidation. Focused Python 3.14 proof uses independent SQLite
-connections, empty process caches, deterministic publisher/publisher and
-publisher/admission barriers, and an actual child `os._exit` that cannot run
-the helper's `finally`. It observes complete journal/pointer/admission/lease
-rows and canonical bytes. Schedules prove stale generation denies before
+connections, empty process caches, deterministic publisher/publisher plus both
+publisher-before-admission and admission-before-publisher barriers, recovery
+interruption/restart, and an actual child `os._exit` that cannot run the
+helper's `finally`. It observes complete journal/pointer/admission/lease rows,
+canonical and staging files, and cache transitions. Schedules prove stale
+generation denies before
 admission, admission ownership survives later publication but dispatch
 revalidates, same-label accidental reentrancy is refused, dead-owner recovery
 and cold-cache rehydration work, an aborted preparation can be retried with a
-new attempt ID, replacement/pointer/cache windows fence and recover twice,
-canonical compensation is forward-only, and corrupt committed snapshots refuse
-without destructive rollback. Atomic request/outbox and uncertain-launch remain
-the next unit, not complete here.
+new attempt ID, staged/replacement/pointer/cache windows fence and recover
+twice, canonical compensation is forward-only, missing pointer journals refuse,
+and corrupt committed snapshots refuse without destructive rollback. This is
+the Phase-1 minimum publication proof, not a general legacy or Phase-2
+serialization claim. Atomic request/outbox and uncertain-launch remain the next
+unit, not complete here.
 
 The three retained cancellation schedules now compare the complete typed audit
 payload to the invocation-owned pre-corruption writer capture, with separate

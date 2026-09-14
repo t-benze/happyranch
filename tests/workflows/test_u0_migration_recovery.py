@@ -15,6 +15,7 @@ from tests.workflows.u0_evidence_helpers import (
     accept_current_join,
     admit_authority_request,
     compensate_authority_publication,
+    fence_authority_namespace,
     publish_authority_generation,
     recover_authority_publication,
     revalidate_authority_dispatch,
@@ -518,14 +519,14 @@ def test_proposed_publication_cas_and_stale_compensation_never_restore_newer_sta
     stable = _publication_rows(path)
     canonical = (files / "engineering.authority.json").read_bytes()
     with pytest.raises(ValueError, match="stale_compensation_fenced"):
-        compensate_authority_publication(first, namespace="engineering", journal_id="j1", publisher="agents-route")
+        compensate_authority_publication(first, root=files, namespace="engineering", journal_id="j1", publisher="agents-route")
     assert _publication_rows(path) == stable
     assert (files / "engineering.authority.json").read_bytes() == canonical == b"two"
     assert cache["engineering"][0] == 2
     second.close()
 
 
-@pytest.mark.parametrize("stage", ("prepared", "replaced", "canonical", "pointer", "cache_written"))
+@pytest.mark.parametrize("stage", ("prepared", "staged", "replaced", "canonical", "pointer", "cache_written"))
 def test_proposed_publication_recovery_fences_each_durable_stage_and_is_idempotent(tmp_path: Path, stage: str) -> None:
     path, files, cache = tmp_path / f"{stage}.db", tmp_path / "canonical", {}
     conn = _adapter(path)
@@ -541,7 +542,7 @@ def test_proposed_publication_recovery_fences_each_durable_stage_and_is_idempote
     second = recover_authority_publication(conn, root=files, cache=cache, namespace="engineering")
     observed = _publication_rows(path)
     assert observed["leases"] == [] and second == "rehydrated_coherent"
-    if stage == "prepared":
+    if stage in {"prepared", "staged"}:
         assert first == "aborted_unpublished" and observed["pointers"][0][1] == 1
         assert cache["engineering"][0] == 1
     else:
@@ -614,14 +615,73 @@ def test_proposed_canonical_compensation_is_forward_only_and_recoverable(tmp_pat
     publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"stable", publisher="bootstrap", journal_id="base")
     with pytest.raises(PublicationInterrupted, match="canonical"):
         publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"next", publisher="agents-route", journal_id="forward", interrupt_at="canonical")
-    assert compensate_authority_publication(conn, namespace="engineering", journal_id="forward", publisher="agents-route") == "forward_recovery_required"
+    assert compensate_authority_publication(conn, root=files, namespace="engineering", journal_id="forward", publisher="agents-route") == "forward_recovery_required"
     assert _publication_rows(path)["journals"][-1][7] == "forward_recovery_required"
     assert recover_authority_publication(conn, root=files, cache={}, namespace="engineering") == "recovered_coherent"
     after = _publication_rows(path)
     assert after["pointers"] == [("engineering", 2, "forward", sha256_bytes(b"next"), "ready")]
     assert after["journals"][-1][7] == "cache_installed"
     with pytest.raises(ValueError, match="stale_compensation_fenced"):
-        compensate_authority_publication(conn, namespace="engineering", journal_id="forward", publisher="agents-route")
+        compensate_authority_publication(conn, root=files, namespace="engineering", journal_id="forward", publisher="agents-route")
+
+
+def test_proposed_replacement_before_journal_stamp_stays_forward_recoverable(tmp_path: Path) -> None:
+    path, files, cache = tmp_path / "replacement.db", tmp_path / "canonical", {}
+    conn = _adapter(path)
+    publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"old", publisher="bootstrap", journal_id="base")
+    with pytest.raises(PublicationInterrupted, match="replaced"):
+        publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"new", publisher="agents-route", journal_id="replaced", interrupt_at="replaced")
+    assert compensate_authority_publication(conn, root=files, namespace="engineering", journal_id="replaced", publisher="agents-route") == "forward_recovery_required"
+    before = _publication_rows(path)
+    assert before["journals"][-1][7] == "forward_recovery_required"
+    assert (files / "engineering.authority.json").read_bytes() == b"new"
+    assert recover_authority_publication(conn, root=files, cache={}, namespace="engineering") == "recovered_coherent"
+    assert _publication_rows(path)["pointers"] == [("engineering", 2, "replaced", sha256_bytes(b"new"), "ready")]
+
+
+def test_proposed_initial_abort_is_stably_uninitialized_then_later_initializes(tmp_path: Path) -> None:
+    path, files, cache = tmp_path / "initial.db", tmp_path / "canonical", {}
+    conn = _adapter(path)
+    with pytest.raises(PublicationInterrupted, match="prepared"):
+        publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"first", publisher="bootstrap", journal_id="first", interrupt_at="prepared")
+    assert recover_authority_publication(conn, root=files, cache={}, namespace="engineering") == "uninitialized_no_authority"
+    assert recover_authority_publication(conn, root=files, cache={}, namespace="engineering") == "uninitialized_no_authority"
+    with pytest.raises(ValueError, match="authority_uninitialized"):
+        admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id="denied", request_bytes=b"x", admitted_by="reader", expected_generation=1)
+    assert _publication_rows(path)["admissions"] == []
+    assert publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"valid", publisher="bootstrap", journal_id="valid") == 1
+
+
+def test_proposed_readiness_refuses_missing_or_invalid_pointer_journal_without_writes(tmp_path: Path) -> None:
+    path, files, cache = tmp_path / "pointer-journal.db", tmp_path / "canonical", {}
+    conn = _adapter(path)
+    publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"stable", publisher="bootstrap", journal_id="base")
+    conn.execute("UPDATE workflow_authority_pointers SET journal_id='missing' WHERE namespace='engineering'")
+    conn.commit()
+    before, file_before, cache_before = _publication_rows(path), (files / "engineering.authority.json").read_bytes(), dict(cache)
+    with pytest.raises(ValueError, match="pointer_journal_missing"):
+        recover_authority_publication(conn, root=files, cache={}, namespace="engineering")
+    with pytest.raises(ValueError, match="pointer_journal_missing"):
+        admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id="must-not-admit", request_bytes=b"x", admitted_by="reader", expected_generation=1)
+    assert _publication_rows(path) == before
+    assert (files / "engineering.authority.json").read_bytes() == file_before and cache == cache_before
+
+
+def test_proposed_recovery_interruptions_and_profile_pre_fence_deny_admission(tmp_path: Path) -> None:
+    path, files, cache = tmp_path / "recovery-fence.db", tmp_path / "canonical", {}
+    conn = _adapter(path)
+    publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"one", publisher="bootstrap", journal_id="base")
+    with pytest.raises(PublicationInterrupted, match="canonical"):
+        publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"two", publisher="agents-route", journal_id="next", interrupt_at="canonical")
+    with pytest.raises(PublicationInterrupted, match="before_pointer"):
+        recover_authority_publication(conn, root=files, cache={}, namespace="engineering", interrupt_at="before_pointer")
+    assert recover_authority_publication(conn, root=files, cache={}, namespace="engineering") == "recovered_coherent"
+    fence_authority_namespace(conn, cache=cache, namespace="engineering", reason="profile-digest-change")
+    before = _publication_rows(path)
+    with pytest.raises(ValueError, match="authority_pointer_not_ready"):
+        admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id="profile-gap", request_bytes=b"x", admitted_by="reader", expected_generation=2)
+    assert _publication_rows(path) == before
+    assert publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=2, snapshot=b"three", publisher="profile-republish", journal_id="profile-next") == 3
 
 
 def test_proposed_concurrent_same_label_publishers_and_admission_are_fenced_at_real_barriers(tmp_path: Path) -> None:
@@ -635,7 +695,7 @@ def test_proposed_concurrent_same_label_publishers_and_admission_are_fenced_at_r
         conn = sqlite3.connect(path)
         conn.execute("PRAGMA foreign_keys=ON")
         try:
-            outcomes.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"next", publisher="agents-route", journal_id="winner", stage_hook=lambda stage: (lease_arrived.set(), release_lease.wait(5)) if stage == "lease_acquired" else None))
+            outcomes.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"next", publisher="agents-route", journal_id="winner", stage_hook=lambda stage: (lease_arrived.set(), (_ for _ in ()).throw(AssertionError("lease_release_timeout")) if not release_lease.wait(5) else None) if stage == "lease_acquired" else None))
         except BaseException as exc:  # original worker error is preserved for the parent assertion
             outcomes.append(exc)
         finally:
@@ -658,7 +718,7 @@ def test_proposed_concurrent_same_label_publishers_and_admission_are_fenced_at_r
         conn = sqlite3.connect(path)
         conn.execute("PRAGMA foreign_keys=ON")
         try:
-            outcomes.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=2, snapshot=b"third", publisher="teams-route", journal_id="third", stage_hook=lambda stage: (canonical_arrived.set(), release_canonical.wait(5)) if stage == "canonical_replaced" else None))
+            outcomes.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=2, snapshot=b"third", publisher="teams-route", journal_id="third", stage_hook=lambda stage: (canonical_arrived.set(), (_ for _ in ()).throw(AssertionError("canonical_release_timeout")) if not release_canonical.wait(5) else None) if stage == "canonical_replaced" else None))
         except BaseException as exc:
             outcomes.append(exc)
         finally:

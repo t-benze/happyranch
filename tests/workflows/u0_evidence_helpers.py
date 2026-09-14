@@ -289,18 +289,46 @@ def _active_journal(conn: sqlite3.Connection, namespace: str) -> tuple[object, .
     ).fetchone()
 
 
-def _assert_ready_snapshot(conn: sqlite3.Connection, root: Path, cache: dict[str, tuple[int, str]], namespace: str) -> tuple[int, str]:
+def _journal_by_id(conn: sqlite3.Connection, namespace: str, journal_id: str) -> tuple[object, ...]:
+    row = conn.execute(
+        """SELECT id, namespace, generation, expected_generation, snapshot_bytes,
+                  snapshot_digest, state
+           FROM workflow_publication_journals WHERE id=? AND namespace=?""",
+        (journal_id, namespace),
+    ).fetchone()
+    if row is None:
+        raise ValueError("pointer_journal_missing")
+    if (
+        row[2] != row[3] + 1
+        or sha256_bytes(row[4]) != row[5]
+    ):
+        raise ValueError("pointer_journal_invalid")
+    return row
+
+
+def _verified_ready_pointer(
+    conn: sqlite3.Connection, root: Path, namespace: str,
+) -> tuple[int, str, bytes]:
+    """Verify the complete pointer/journal/file identity before any readiness use."""
     active = _active_journal(conn, namespace)
     if active is not None:
         raise ValueError(f"publication_fenced:{active[5]}")
-    generation, _journal_id, digest, state = _pointer(conn, namespace)
+    generation, journal_id, digest, state = _pointer(conn, namespace)
     if generation == 0:
-        raise ValueError("authority_generation_missing")
-    if state != "ready" or digest is None:
+        raise ValueError("authority_uninitialized")
+    if state != "ready" or journal_id is None or digest is None:
         raise ValueError("authority_pointer_not_ready")
+    journal = _journal_by_id(conn, namespace, journal_id)
+    if journal[2] != generation or journal[5] != digest or journal[6] != "cache_installed":
+        raise ValueError("pointer_journal_mismatch")
     path = _publication_file(root, namespace)
-    if not path.is_file() or sha256_bytes(path.read_bytes()) != digest:
+    if not path.is_file() or path.read_bytes() != journal[4]:
         raise ValueError("canonical_snapshot_mismatch")
+    return generation, digest, journal[4]
+
+
+def _assert_ready_snapshot(conn: sqlite3.Connection, root: Path, cache: dict[str, tuple[int, str]], namespace: str) -> tuple[int, str]:
+    generation, digest, _snapshot = _verified_ready_pointer(conn, root, namespace)
     if cache.get(namespace) != (generation, digest):
         raise ValueError("authority_cache_stale")
     return generation, digest
@@ -314,15 +342,7 @@ def _rehydrate_verified_cache(conn: sqlite3.Connection, root: Path, cache: dict[
 
 
 def _ready_without_cache(conn: sqlite3.Connection, root: Path, namespace: str) -> tuple[int, str]:
-    active = _active_journal(conn, namespace)
-    if active is not None:
-        raise ValueError(f"publication_fenced:{active[5]}")
-    generation, _journal_id, digest, state = _pointer(conn, namespace)
-    path = _publication_file(root, namespace)
-    if generation == 0 or state != "ready" or digest is None:
-        raise ValueError("authority_pointer_not_ready")
-    if not path.is_file() or sha256_bytes(path.read_bytes()) != digest:
-        raise ValueError("canonical_snapshot_mismatch")
+    generation, digest, _snapshot = _verified_ready_pointer(conn, root, namespace)
     return generation, digest
 
 
@@ -339,7 +359,7 @@ def publish_authority_generation(
     or later launch.
     """
     _require_idle(conn)
-    if interrupt_at not in {None, "process_exit_after_lease", "process_exit_prepared", "prepared", "replaced", "canonical", "pointer", "cache_written"}:
+    if interrupt_at not in {None, "process_exit_after_lease", "process_exit_prepared", "prepared", "staged", "replaced", "canonical", "pointer", "cache_written"}:
         raise ValueError("unknown_publication_interrupt")
     owner = f"{publisher}:{uuid.uuid4().hex}"
     _acquire_publication_lease(conn, namespace, owner)
@@ -373,6 +393,10 @@ def publish_authority_generation(
         path.parent.mkdir(parents=True, exist_ok=True)
         staging = path.with_name(f"{path.name}.{journal_id}.staging")
         staging.write_bytes(snapshot)
+        if stage_hook is not None:
+            stage_hook("staged")
+        if interrupt_at == "staged":
+            raise PublicationInterrupted("publication_interrupted:staged")
         staging.replace(path)
         if stage_hook is not None:
             stage_hook("canonical_replaced")
@@ -465,7 +489,9 @@ def revalidate_authority_dispatch(
     return "dispatch_current"
 
 
-def compensate_authority_publication(conn: sqlite3.Connection, *, namespace: str, journal_id: str, publisher: str) -> str:
+def compensate_authority_publication(
+    conn: sqlite3.Connection, *, root: Path, namespace: str, journal_id: str, publisher: str,
+) -> str:
     """Abort pre-file work or retain a forward-only recovery obligation."""
     _require_idle(conn)
     owner = f"{publisher}:{uuid.uuid4().hex}"
@@ -474,18 +500,34 @@ def compensate_authority_publication(conn: sqlite3.Connection, *, namespace: str
         conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute(
-                "SELECT expected_generation, state, publisher FROM workflow_publication_journals WHERE id=? AND namespace=?",
+                "SELECT expected_generation, snapshot_bytes, snapshot_digest, state, publisher FROM workflow_publication_journals WHERE id=? AND namespace=?",
                 (journal_id, namespace),
             ).fetchone()
-            current, _pointer_id, _digest, _state = _pointer(conn, namespace)
-            if row is None or row[2] != publisher or row[1] not in {"prepared", "canonical_published"} or current != row[0]:
+            current, pointer_id, pointer_digest, pointer_state = _pointer(conn, namespace)
+            if row is None or row[4] != publisher or row[3] not in {"prepared", "canonical_published"} or current != row[0] or sha256_bytes(row[1]) != row[2]:
                 raise ValueError("stale_compensation_fenced")
-            if row[1] == "prepared":
-                conn.execute("UPDATE workflow_publication_journals SET state='aborted' WHERE id=?", (journal_id,))
-                result = "aborted_unpublished"
-            else:
+            path = _publication_file(root, namespace)
+            if row[3] == "prepared":
+                if path.is_file() and path.read_bytes() == row[1]:
+                    conn.execute("UPDATE workflow_publication_journals SET state='forward_recovery_required' WHERE id=?", (journal_id,))
+                    result = "forward_recovery_required"
+                elif current == 0 and not path.exists():
+                    conn.execute("UPDATE workflow_publication_journals SET state='aborted' WHERE id=?", (journal_id,))
+                    result = "aborted_unpublished"
+                elif (
+                    path.is_file() and pointer_state == "ready" and pointer_id is not None
+                    and pointer_digest == sha256_bytes(path.read_bytes())
+                    and _journal_by_id(conn, namespace, pointer_id)[6] == "cache_installed"
+                ):
+                    conn.execute("UPDATE workflow_publication_journals SET state='aborted' WHERE id=?", (journal_id,))
+                    result = "aborted_unpublished"
+                else:
+                    raise ValueError("prepared_snapshot_ambiguous")
+            elif row[3] == "canonical_published":
                 conn.execute("UPDATE workflow_publication_journals SET state='forward_recovery_required' WHERE id=?", (journal_id,))
                 result = "forward_recovery_required"
+            else:
+                raise ValueError("stale_compensation_fenced")
             conn.commit()
             return result
         except Exception:
@@ -497,6 +539,7 @@ def compensate_authority_publication(conn: sqlite3.Connection, *, namespace: str
 
 def recover_authority_publication(
     conn: sqlite3.Connection, *, root: Path, cache: dict[str, tuple[int, str]], namespace: str,
+    interrupt_at: str | None = None,
 ) -> str:
     """Named recovery reconciles dead owners, cold caches, and forward states."""
     _require_idle(conn)
@@ -505,19 +548,30 @@ def recover_authority_publication(
     try:
         active = _active_journal(conn, namespace)
         if active is None:
+            if _pointer(conn, namespace)[0] == 0:
+                cache.pop(namespace, None)
+                return "uninitialized_no_authority"
             _rehydrate_verified_cache(conn, root, cache, namespace)
             return "rehydrated_coherent"
         journal_id, generation, expected, snapshot, digest, state, _owner = active
+        if sha256_bytes(snapshot) != digest or generation != expected + 1:
+            raise ValueError("active_journal_invalid")
         path = _publication_file(root, namespace)
         current, _pointer_id, _pointer_digest, _pointer_state = _pointer(conn, namespace)
         if state == "prepared":
             if path.is_file() and sha256_bytes(path.read_bytes()) == digest:
-                conn.execute("UPDATE workflow_publication_journals SET state='canonical_published' WHERE id=?", (journal_id,))
+                conn.execute("UPDATE workflow_publication_journals SET state='forward_recovery_required' WHERE id=?", (journal_id,))
                 conn.commit()
-                state = "canonical_published"
+                state = "forward_recovery_required"
             elif current == expected and (not path.exists() or (current and _pointer(conn, namespace)[2] == sha256_bytes(path.read_bytes()))):
                 conn.execute("UPDATE workflow_publication_journals SET state='aborted' WHERE id=?", (journal_id,))
                 conn.commit()
+                staging = path.with_name(f"{path.name}.{journal_id}.staging")
+                if staging.exists():
+                    staging.unlink()
+                if current == 0:
+                    cache.pop(namespace, None)
+                    return "uninitialized_no_authority"
                 _rehydrate_verified_cache(conn, root, cache, namespace)
                 return "aborted_unpublished"
             else:
@@ -528,6 +582,8 @@ def recover_authority_publication(
             if not path.exists():
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(snapshot)
+            if interrupt_at == "before_pointer":
+                raise PublicationInterrupted("recovery_interrupted:before_pointer")
             conn.execute("BEGIN IMMEDIATE")
             try:
                 current, _pointer_id, _pointer_digest, _pointer_state = _pointer(conn, namespace)
@@ -549,9 +605,36 @@ def recover_authority_publication(
             if not path.is_file() or sha256_bytes(path.read_bytes()) != digest:
                 raise ValueError("committed_snapshot_mismatch")
             cache[namespace] = (generation, digest)
+            if interrupt_at == "before_cache_stamp":
+                raise PublicationInterrupted("recovery_interrupted:before_cache_stamp")
             conn.execute("UPDATE workflow_publication_journals SET state='cache_installed' WHERE id=?", (journal_id,))
             conn.commit()
             return "recovered_coherent"
         raise ValueError("unknown_publication_journal_state")
     finally:
         _release_publication_lease(conn, namespace, owner)
+
+
+def fence_authority_namespace(
+    conn: sqlite3.Connection, *, cache: dict[str, tuple[int, str]], namespace: str, reason: str,
+) -> None:
+    """Proposed prepublication org fence for a changed global profile identity.
+
+    The profile coordinator must fence each dependent organization *before*
+    changing store/registry state; a subsequent verified publication is the only
+    route back to ready. This model does not claim a distributed atomic commit.
+    """
+    _require_idle(conn)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        changed = conn.execute(
+            "UPDATE workflow_authority_pointers SET state='fenced' WHERE namespace=? AND state='ready'",
+            (namespace,),
+        ).rowcount
+        if changed != 1:
+            raise ValueError(f"authority_fence_required:{reason}")
+        conn.commit()
+        cache.pop(namespace, None)
+    except Exception:
+        conn.rollback()
+        raise
