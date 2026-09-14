@@ -39,7 +39,15 @@ describe('C14 Tasks stories render shipping components with local state', () => 
   test('long fixture preserves all seven statuses and full identity access', async () => {
     render(<MemoryRouter><LongContent /></MemoryRouter>);
     await screen.findByText('End of list');
-    await waitFor(() => expect(document.querySelectorAll('[data-tasks-responsive-list] li')).toHaveLength(7));
+    // Waiting-on-you roots are deliberately owned by their separate exact-status
+    // traversal, so the ordinary chronological list has the other six rows.
+    await waitFor(() => {
+      const ordinaryRows = document.querySelectorAll('[data-tasks-responsive-list] li');
+      const waitingRows = document.querySelectorAll('[aria-labelledby="waiting-on-you-heading"] li');
+      expect(ordinaryRows).toHaveLength(6);
+      expect(waitingRows).toHaveLength(1);
+      expect(ordinaryRows.length + waitingRows.length).toBe(7);
+    });
     expect(screen.getAllByTitle('long_exact_agent_name')).toHaveLength(7);
     expect(screen.getAllByTitle('THR-LONG-IDENTIFIER')).toHaveLength(7);
     expect(document.querySelectorAll('[data-tasks-responsive-list] .opacity-60')).toHaveLength(1);

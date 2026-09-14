@@ -48,6 +48,7 @@ const LIST_KEYS = {
   tasksInfinite: ['tasks-infinite', SLUG, undefined],
   tasksRoots: ['tasks-roots', SLUG, undefined],
   tasksRootsInfinite: ['tasks-roots-infinite', SLUG, undefined],
+  attentionRootsInfinite: ['tasks-roots-infinite', SLUG, { status: 'escalated' }],
 } as const;
 const DETAIL_KEY = ['task', SLUG, TASK_ID];
 // Control keys that MUST NOT be invalidated: 'task-recall' doesn't start with
@@ -85,6 +86,7 @@ function expectAllListFamiliesInvalidated(qc: QueryClient): void {
   // The regression that caused THR-069 msg78: the roots-infinite family the
   // task LIST actually reads was left stale.
   expect(isInvalidated(qc, LIST_KEYS.tasksRootsInfinite)).toBe(true);
+  expect(isInvalidated(qc, LIST_KEYS.attentionRootsInfinite)).toBe(true);
   // Different slug and the recall key are correctly excluded.
   expect(isInvalidated(qc, OTHER_SLUG_KEY)).toBe(false);
   expect(isInvalidated(qc, RECALL_KEY)).toBe(false);
