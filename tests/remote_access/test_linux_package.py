@@ -81,6 +81,72 @@ def test_connector_builder_installs_real_wheel_without_ambient_pip(
     assert "pip" not in commands[0]
 
 
+def test_generated_connector_entry_executes_actual_wheel_cli_capability_and_retirement_cases(
+    tmp_path: Path,
+) -> None:
+    """Exercise the shipping entry bytes with the real candidate wheel, not a stand-in main."""
+    wheel_dir = tmp_path / "wheel"
+    subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(wheel_dir)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    wheel, = wheel_dir.glob("happyranch-*.whl")
+    installed = tmp_path / "installed"
+    from app.linux.package.build_connector import _extract_wheel
+    _extract_wheel(wheel, installed)
+    entry = tmp_path / "connector_entry.py"
+    entry.write_text(
+        "from runtime.remote_access.cli import main\n"
+        "if __name__ == '__main__': raise SystemExit(main())\n",
+        encoding="utf-8",
+    )
+    launcher = (
+        "import runpy, sys; installed, entry, *arguments = sys.argv[1:]; "
+        "sys.path.insert(0, installed); sys.argv = [entry, *arguments]; "
+        "runpy.run_path(entry, run_name='__main__')"
+    )
+
+    def invoke(*arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-I", "-c", launcher, str(installed), str(entry), *arguments],
+            cwd=tmp_path,
+            env={key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "CREDENTIALS_DIRECTORY"}},
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    absent = invoke("credential-capability", "--name", "daemon.token", "--unit", "happyranch-connector.service")
+    assert (absent.returncode, absent.stderr.strip()) == (1, "credential_absent")
+    incompatible = invoke("credential-capability", "--name", "daemon.token", "--unit", "happyranch-tsnet-sidecar.service")
+    assert (incompatible.returncode, incompatible.stderr.strip()) == (1, "credential_staging_incompatible")
+    source = tmp_path / "enrollment.key"
+    source.write_text("one-use\n")
+    source.chmod(0o600)
+    marker = tmp_path / "credential.consumed"
+    marker.write_text("durable\n")
+    marker.chmod(0o600)
+    consumed = invoke("credential-capability", "--name", "enrollment.key", "--unit", "happyranch-tsnet-sidecar.service", "--consumed-marker", str(marker))
+    assert (consumed.returncode, consumed.stdout, consumed.stderr) == (0, "", "")
+    retired = invoke("retire-enrollment-source", "--source", str(source), "--marker", str(marker))
+    assert retired.returncode == 0 and not source.exists() and marker.exists()
+    assert invoke("retire-enrollment-source", "--source", str(source), "--marker", str(marker)).returncode == 0
+    invalid_root = tmp_path / "invalid"
+    invalid_root.mkdir()
+    invalid_source = invalid_root / "enrollment.key"
+    invalid_source.write_text("one-use\n")
+    invalid_source.chmod(0o600)
+    invalid_marker = invalid_root / "credential.consumed"
+    invalid_marker.write_text("bad\n")
+    invalid_marker.chmod(0o644)
+    invalid = invoke("retire-enrollment-source", "--source", str(invalid_source), "--marker", str(invalid_marker))
+    assert (invalid.returncode, invalid.stderr.strip()) == (1, "error: enrollment_source_retirement_failed")
+    assert invalid_source.exists() and not invalid_source.with_name("enrollment.key.retiring").exists()
+
+
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
     sidecar = tmp_path / "sidecar"
     sidecar.write_bytes(b"sidecar-binary")
