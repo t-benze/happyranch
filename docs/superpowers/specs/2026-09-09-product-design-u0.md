@@ -387,7 +387,7 @@ keeps legacy chain/fanout owners, and names Founder decisions before any
 protected implementation. U1--U6, cutover proof, and the NOT RUN study remain
 explicitly pending.
 
-### 2026-09-14 F4/F5 publication-protocol evidence (TASK-8357)
+### 2026-09-14 F4/F5 publication-protocol evidence (TASK-8363 correction)
 
 This is a concrete proposed protocol plus executable isolated evidence, not a
 production approval, migration, runtime import, or a claim that same-UID
@@ -411,14 +411,21 @@ org pointer alone.
 | `remove_runtime_executor_profile`, `bind_adapter_profile`, `_perform_adapter_profile_binding`, store/registry callers | participate only for a used profile; machine-global store/profile lock required; otherwise unsupported, not universal revocation |
 | activation/admission/receipt/final-join/recovery | proposed adapter readers; current run-step/queue/legacy chain/fanout remain separately owned |
 
-Journal states are `prepared`, canonical-file publish, `canonical_published`,
-pointer-CAS (`pointer_committed`, the publication linearization point), cache
-install, then `cache_installed`. Expected-generation CAS permits one winner.
-A stale compensator can abort only its own unpointed journal; it never restores
-file/cache/pointer. `workflow_recovery` either aborts unpublished preparation,
-completes a verified sequence, or returns the exact mismatch invariant without
-rollback. Readers refuse active journal, incorrect canonical digest, or stale
-cache.
+Journal attempts have unique invocation identity; an aborted attempt does not
+reserve its generation. States are `prepared`, canonical-file replacement,
+`canonical_published`, pointer-CAS (`pointer_committed`, the publication
+linearization point), cache write, then `cache_installed`. The durable lease is
+namespace plus unique invocation token and PID: same-label callers are busy,
+not reentrant; a fresh process reclaims only a proven-dead PID. This is a
+cooperative same-host process-crash guarantee, not a power-loss durability
+claim. Expected-generation CAS permits one winner. A stale compensator may
+abort only verified pre-file work; canonical-written work is explicitly
+`forward_recovery_required` and recovery completes it forward. It never
+restores a stale file/cache/pointer. `workflow_recovery` verifies pointer plus
+canonical bytes before cold-cache rehydration, aborts only safe unpublished
+preparation, completes a verified sequence, or returns the exact mismatch
+invariant without rollback. Readers refuse active journal, incorrect canonical
+digest, or stale cache.
 
 There is no false universal lock order. Publication uses a cooperative lease
 and short SQLite stage transactions; no lock spans launch/network/clone.
@@ -427,18 +434,20 @@ synchronized DB callback, and does not acquire the publication coordinator.
 Profile binding retains its separate adapter-store/store-write/registry edge.
 A production decision must establish an acyclic route-specific graph.
 
-The isolated schema/helper implement journal, pointer, lease, admission,
-publisher, recovery, compensation, and later dispatch-revalidation. Focused
-Python 3.14 command `uv run --python /usr/bin/python3.14 pytest -q
-tests/workflows/test_u0_migration_recovery.py
-tests/workflows/test_u0_authority_feasibility.py -k 'publication or scratch_audit'`
-passed `36 passed, 65 deselected`. Independent SQLite connections observe
-journal/pointer/admission/lease rows and canonical bytes. Schedules prove stale
-generation denies before admission, admission ownership survives later publish
-but dispatch revalidates, one CAS wins, stale compensation cannot restore,
-prepared/canonical/pointer/cache crashes fence then recover twice, and corrupt
-committed snapshots refuse without destructive rollback. Atomic request/outbox
-and uncertain-launch remain the next unit, not complete here.
+The isolated schema/helper implement journal, pointer, invocation/PID lease,
+admission, publisher, recovery, forward-only compensation, and later
+dispatch-revalidation. Focused Python 3.14 proof uses independent SQLite
+connections, empty process caches, deterministic publisher/publisher and
+publisher/admission barriers, and an actual child `os._exit` that cannot run
+the helper's `finally`. It observes complete journal/pointer/admission/lease
+rows and canonical bytes. Schedules prove stale generation denies before
+admission, admission ownership survives later publication but dispatch
+revalidates, same-label accidental reentrancy is refused, dead-owner recovery
+and cold-cache rehydration work, an aborted preparation can be retried with a
+new attempt ID, replacement/pointer/cache windows fence and recover twice,
+canonical compensation is forward-only, and corrupt committed snapshots refuse
+without destructive rollback. Atomic request/outbox and uncertain-launch remain
+the next unit, not complete here.
 
 The three retained cancellation schedules now compare the complete typed audit
 payload to the invocation-owned pre-corruption writer capture, with separate

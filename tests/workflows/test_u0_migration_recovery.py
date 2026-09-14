@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -478,9 +479,9 @@ def _publication_rows(path: Path) -> dict[str, list[tuple[object, ...]]]:
     try:
         return {
             "pointers": check.execute("SELECT namespace,current_generation,journal_id,snapshot_digest,state FROM workflow_authority_pointers ORDER BY namespace").fetchall(),
-            "journals": check.execute("SELECT id,namespace,generation,expected_generation,snapshot_digest,state,recovery_owner FROM workflow_publication_journals ORDER BY generation").fetchall(),
+            "journals": check.execute("SELECT id,namespace,generation,expected_generation,snapshot_digest,publisher,publisher_invocation,state,recovery_owner FROM workflow_publication_journals ORDER BY rowid").fetchall(),
             "admissions": check.execute("SELECT id,namespace,generation,request_digest,admitted_by FROM workflow_admission_records ORDER BY id").fetchall(),
-            "leases": check.execute("SELECT namespace,owner_token,depth FROM workflow_publication_leases ORDER BY namespace").fetchall(),
+            "leases": check.execute("SELECT namespace,owner_token,owner_pid FROM workflow_publication_leases ORDER BY namespace").fetchall(),
         }
     finally:
         check.close()
@@ -491,7 +492,7 @@ def test_proposed_publication_generation_fences_admission_and_preserves_committe
     writer = _adapter(path)
     assert publish_authority_generation(writer, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b'{"grantor":"founder","target":"dev_agent","scope":"repo-a"}', publisher="agents-route", journal_id="j1") == 1
     before = _publication_rows(path)
-    assert before["pointers"][0][1] == 1 and before["journals"][-1][5] == "cache_installed"
+    assert before["pointers"][0][1] == 1 and before["journals"][-1][7] == "cache_installed"
     with pytest.raises(ValueError, match="admission_generation_stale"):
         admit_authority_request(writer, root=files, cache=cache, namespace="engineering", request_id="stale-before-admission", request_bytes=b"request", admitted_by="workflow-route", expected_generation=0)
     assert _publication_rows(path)["admissions"] == []
@@ -524,7 +525,7 @@ def test_proposed_publication_cas_and_stale_compensation_never_restore_newer_sta
     second.close()
 
 
-@pytest.mark.parametrize("stage", ("prepared", "canonical", "pointer", "cache"))
+@pytest.mark.parametrize("stage", ("prepared", "replaced", "canonical", "pointer", "cache_written"))
 def test_proposed_publication_recovery_fences_each_durable_stage_and_is_idempotent(tmp_path: Path, stage: str) -> None:
     path, files, cache = tmp_path / f"{stage}.db", tmp_path / "canonical", {}
     conn = _adapter(path)
@@ -532,21 +533,21 @@ def test_proposed_publication_recovery_fences_each_durable_stage_and_is_idempote
     with pytest.raises(PublicationInterrupted, match=stage):
         publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"next", publisher="agents-route", journal_id=f"interrupt-{stage}", interrupt_at=stage)
     fenced = _publication_rows(path)
-    assert fenced["journals"][-1][5] in {"prepared", "canonical_published", "pointer_committed"}
+    assert fenced["journals"][-1][7] in {"prepared", "canonical_published", "pointer_committed"}
     with pytest.raises(ValueError, match="publication_fenced"):
         admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id=f"blocked-{stage}", request_bytes=b"blocked", admitted_by="workflow-route", expected_generation=1)
     assert _publication_rows(path)["admissions"] == []
     first = recover_authority_publication(conn, root=files, cache=cache, namespace="engineering")
     second = recover_authority_publication(conn, root=files, cache=cache, namespace="engineering")
     observed = _publication_rows(path)
-    assert observed["leases"] == [] and second == "already_coherent"
+    assert observed["leases"] == [] and second == "rehydrated_coherent"
     if stage == "prepared":
         assert first == "aborted_unpublished" and observed["pointers"][0][1] == 1
         assert cache["engineering"][0] == 1
     else:
         assert first == "recovered_coherent" and observed["pointers"][0][1] == 2
         assert cache["engineering"][0] == 2
-    assert observed["journals"][-1][5] in {"aborted", "cache_installed"}
+    assert observed["journals"][-1][7] in {"aborted", "cache_installed"}
     assert admit_authority_request(conn, root=files, cache=cache, namespace="engineering", request_id=f"after-{stage}", request_bytes=b"ready", admitted_by="workflow-route", expected_generation=observed["pointers"][0][1]) == observed["pointers"][0][1]
 
 
@@ -563,3 +564,128 @@ def test_proposed_recovery_refuses_corrupt_committed_snapshot_without_rollback(t
     assert _publication_rows(path) == before
     assert (files / "engineering.authority.json").read_bytes() == b"corrupt"
     assert cache["engineering"] == (1, sha256_bytes(b"stable"))
+
+
+def test_proposed_recovery_reclaims_actual_dead_process_owner_and_cold_rehydrates_cache(tmp_path: Path) -> None:
+    path, files, warm_cache = tmp_path / "dead-owner.db", tmp_path / "canonical", {}
+    parent = _adapter(path)
+    publish_authority_generation(parent, root=files, cache=warm_cache, namespace="engineering", expected_generation=0, snapshot=b"stable", publisher="bootstrap", journal_id="base")
+    script = """import sqlite3, sys
+from pathlib import Path
+from tests.workflows.u0_evidence_helpers import publish_authority_generation
+conn = sqlite3.connect(sys.argv[1]); conn.execute('PRAGMA foreign_keys=ON')
+publish_authority_generation(conn, root=Path(sys.argv[2]), cache={}, namespace='engineering', expected_generation=1, snapshot=b'next', publisher='agents-route', journal_id='dead-prepared', interrupt_at=sys.argv[3])
+"""
+    for crash_stage, status in (("process_exit_after_lease", 72), ("process_exit_prepared", 73)):
+        if crash_stage == "process_exit_after_lease":
+            before = _publication_rows(path)
+        result = subprocess.run([sys.executable, "-c", script, str(path), str(files), crash_stage], cwd=Path(__file__).parents[2], capture_output=True, text=True)
+        assert result.returncode == status, result.stderr
+        stranded = _publication_rows(path)
+        assert stranded["leases"], "os._exit must bypass the helper finally release"
+        fresh = sqlite3.connect(path)
+        fresh.execute("PRAGMA foreign_keys=ON")
+        cold_cache: dict[str, tuple[int, str]] = {}
+        recovered = recover_authority_publication(fresh, root=files, cache=cold_cache, namespace="engineering")
+        assert recovered in {"rehydrated_coherent", "aborted_unpublished"}
+        assert _publication_rows(path)["leases"] == []
+        assert cold_cache["engineering"] == (1, sha256_bytes(b"stable"))
+        if crash_stage == "process_exit_after_lease":
+            assert _publication_rows(path)["journals"] == before["journals"]
+        fresh.close()
+    parent.close()
+
+
+def test_proposed_aborted_attempt_keeps_history_but_allows_valid_same_generation_retry(tmp_path: Path) -> None:
+    path, files, cache = tmp_path / "retry-after-abort.db", tmp_path / "canonical", {}
+    conn = _adapter(path)
+    publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"stable", publisher="bootstrap", journal_id="base")
+    with pytest.raises(PublicationInterrupted, match="prepared"):
+        publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"aborted", publisher="agents-route", journal_id="aborted-attempt", interrupt_at="prepared")
+    assert recover_authority_publication(conn, root=files, cache=cache, namespace="engineering") == "aborted_unpublished"
+    assert publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"replacement", publisher="agents-route", journal_id="replacement-attempt") == 2
+    rows = _publication_rows(path)["journals"]
+    assert [(row[0], row[2], row[7]) for row in rows] == [("base", 1, "cache_installed"), ("aborted-attempt", 2, "aborted"), ("replacement-attempt", 2, "cache_installed")]
+
+
+def test_proposed_canonical_compensation_is_forward_only_and_recoverable(tmp_path: Path) -> None:
+    path, files, cache = tmp_path / "forward-compensation.db", tmp_path / "canonical", {}
+    conn = _adapter(path)
+    publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"stable", publisher="bootstrap", journal_id="base")
+    with pytest.raises(PublicationInterrupted, match="canonical"):
+        publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"next", publisher="agents-route", journal_id="forward", interrupt_at="canonical")
+    assert compensate_authority_publication(conn, namespace="engineering", journal_id="forward", publisher="agents-route") == "forward_recovery_required"
+    assert _publication_rows(path)["journals"][-1][7] == "forward_recovery_required"
+    assert recover_authority_publication(conn, root=files, cache={}, namespace="engineering") == "recovered_coherent"
+    after = _publication_rows(path)
+    assert after["pointers"] == [("engineering", 2, "forward", sha256_bytes(b"next"), "ready")]
+    assert after["journals"][-1][7] == "cache_installed"
+    with pytest.raises(ValueError, match="stale_compensation_fenced"):
+        compensate_authority_publication(conn, namespace="engineering", journal_id="forward", publisher="agents-route")
+
+
+def test_proposed_concurrent_same_label_publishers_and_admission_are_fenced_at_real_barriers(tmp_path: Path) -> None:
+    path, files, cache = tmp_path / "concurrent.db", tmp_path / "canonical", {}
+    seed = _adapter(path)
+    publish_authority_generation(seed, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"stable", publisher="bootstrap", journal_id="base")
+    lease_arrived, release_lease = threading.Event(), threading.Event()
+    outcomes: list[object] = []
+
+    def first_publisher() -> None:
+        conn = sqlite3.connect(path)
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            outcomes.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=1, snapshot=b"next", publisher="agents-route", journal_id="winner", stage_hook=lambda stage: (lease_arrived.set(), release_lease.wait(5)) if stage == "lease_acquired" else None))
+        except BaseException as exc:  # original worker error is preserved for the parent assertion
+            outcomes.append(exc)
+        finally:
+            conn.close()
+
+    worker = threading.Thread(target=first_publisher)
+    worker.start()
+    assert lease_arrived.wait(5)
+    contender = sqlite3.connect(path)
+    contender.execute("PRAGMA foreign_keys=ON")
+    with pytest.raises(ValueError, match="publication_lease_busy"):
+        publish_authority_generation(contender, root=files, cache={}, namespace="engineering", expected_generation=1, snapshot=b"loser", publisher="agents-route", journal_id="same-label-loser")
+    release_lease.set()
+    worker.join(5)
+    assert not worker.is_alive() and outcomes == [2]
+    canonical_arrived, release_canonical = threading.Event(), threading.Event()
+    outcomes.clear()
+
+    def second_publisher() -> None:
+        conn = sqlite3.connect(path)
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            outcomes.append(publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=2, snapshot=b"third", publisher="teams-route", journal_id="third", stage_hook=lambda stage: (canonical_arrived.set(), release_canonical.wait(5)) if stage == "canonical_replaced" else None))
+        except BaseException as exc:
+            outcomes.append(exc)
+        finally:
+            conn.close()
+
+    worker = threading.Thread(target=second_publisher)
+    worker.start()
+    assert canonical_arrived.wait(5)
+    admission = sqlite3.connect(path)
+    admission.execute("PRAGMA foreign_keys=ON")
+    with pytest.raises(ValueError, match="publication_fenced:prepared"):
+        admit_authority_request(admission, root=files, cache=cache, namespace="engineering", request_id="blocked-during-publish", request_bytes=b"request", admitted_by="workflow-route", expected_generation=2)
+    release_canonical.set()
+    worker.join(5)
+    assert not worker.is_alive() and outcomes == [3]
+    residue = _publication_rows(path)
+    assert [row[0] for row in residue["journals"]] == ["base", "winner", "third"]
+    assert residue["admissions"] == [] and residue["leases"] == []
+    assert (files / "engineering.authority.json").read_bytes() == b"third"
+    contender.close(); admission.close(); seed.close()
+
+
+def test_proposed_publication_helpers_refuse_caller_transactions_without_committing_them(tmp_path: Path) -> None:
+    path, files, cache = tmp_path / "caller-transaction.db", tmp_path / "canonical", {}
+    conn = _adapter(path)
+    conn.execute("BEGIN")
+    with pytest.raises(ValueError, match="caller_transaction_not_allowed"):
+        publish_authority_generation(conn, root=files, cache=cache, namespace="engineering", expected_generation=0, snapshot=b"never", publisher="agents-route", journal_id="never")
+    assert conn.in_transaction
+    conn.rollback()
