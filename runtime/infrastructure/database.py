@@ -5717,7 +5717,7 @@ class Database:
             marker_payload = json.loads(marker_rows[0]["payload"])
             run_number = marker_payload["run_number"]
             brief_kind = marker_payload["brief_kind"]
-        except (TypeError, KeyError, json.JSONDecodeError):
+        except (TypeError, KeyError, UnicodeDecodeError, json.JSONDecodeError):
             return None
         if type(run_number) is not int or run_number < 3 or brief_kind != "cleanup":
             return None
@@ -5758,23 +5758,33 @@ class Database:
         # owner (including an unreadable/orphaned one) exists.
         if not admit("newer_owner"):
             return None
+        # SQLite's date functions accept and normalize values that the
+        # history/candidate parser rejects, and they recognize only a subset
+        # of accepted ISO representations.  Register the same pure validator
+        # for this one bounded query, then immediately unregister it.  This
+        # adds no SQL observation or connection-wide policy.
+        timestamp_predicate = "_workspace_cleanup_is_aware_datetime"
+        registered_timestamp_predicate = False
         try:
+            self._conn.create_function(
+                timestamp_predicate, 1, lambda value: int(_is_aware_datetime(value)),
+            )
+            registered_timestamp_predicate = True
             newer = self._conn.execute(
-            """SELECT a.task_id, a.agent, a.payload, t.created_at, t.status
+            f"""SELECT a.task_id, a.agent, a.payload, t.created_at, t.status
                FROM audit_log a LEFT JOIN tasks t ON t.id=a.task_id
                WHERE a.action='workspace_cleanup_triggered' AND a.task_id<>?
-                 AND (t.id IS NULL OR t.created_at NOT GLOB '????-??-??T??:??:??*'
-                      OR datetime(t.created_at) IS NULL
-                      OR substr(t.created_at, 1, 4)='0000'
-                      OR (substr(t.created_at, 20, 1) NOT IN ('+', '-')
-                          AND substr(t.created_at, 20, 1) <> 'Z')
+                 AND (t.id IS NULL OR {timestamp_predicate}(t.created_at)=0
                       OR t.created_at>? OR (t.created_at=? AND t.id>?))
-               ORDER BY CASE WHEN t.id IS NULL OR t.created_at NOT GLOB '????-??-??T??:??:??*' THEN 0 ELSE 1 END,
+               ORDER BY CASE WHEN t.id IS NULL OR {timestamp_predicate}(t.created_at)=0 THEN 0 ELSE 1 END,
                         t.created_at DESC, a.task_id DESC LIMIT 2""",
                 (owner_task_id, owner_tuple[0], owner_tuple[0], owner_task_id),
             ).fetchall()
         except sqlite3.Error:
             return None
+        finally:
+            if registered_timestamp_predicate:
+                self._conn.create_function(timestamp_predicate, 1, None)
         if newer:
             return None
 

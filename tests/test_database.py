@@ -472,6 +472,268 @@ def test_workspace_cleanup_selection_edge_boundary_is_explicit_cursor_unit(db, t
     assert len(selects) == (8 if count == 20000 else 7)
 
 
+# The following finite matrix is repository-resident regression coverage for
+# the dormant helper.  It deliberately models the future hook's post-selection
+# config/owner reads without importing or implementing that hook.
+@pytest.fixture
+def cleanup_selection_matrix(tmp_path):
+    database = Database(tmp_path / "cleanup-selection-matrix.sqlite")
+    now = datetime(2026, 1, 3, tzinfo=timezone.utc)
+
+    def insert(task_id, *, cleanup=False, agent="dev_agent", status="completed", age=10):
+        when = now - timedelta(days=age)
+        database.insert_task(TaskRecord(
+            id=task_id, brief=_CLEANUP_MARKER if cleanup else "ordinary",
+            assigned_agent=agent, status=TaskStatus(status), created_at=when,
+            updated_at=when, completed_at=when if status == "completed" else None,
+            orchestration_step_count=1 if task_id == "TASK-100" else 0,
+            current_session_id=f"session-{task_id}",
+        ))
+        if status == "completed":
+            database.insert_task_result(
+                task_id=task_id, agent=agent, session_id=f"session-{task_id}",
+                output_summary="done", confidence_score=90, status="completed",
+            )
+
+    insert("TASK-1", cleanup=True, age=20)
+    insert("TASK-2", cleanup=True, age=19)
+    insert("TASK-100", cleanup=True, status="in_progress", age=0)
+    database.insert_audit_log(
+        task_id="TASK-100", agent="dev_agent", action="workspace_cleanup_triggered",
+        payload={"run_number": 3, "brief_kind": "cleanup"},
+    )
+    insert("TASK-10")
+    queries: list[str] = []
+
+    def select(**kwargs):
+        queries.clear()
+        database._conn.set_trace_callback(queries.append)
+        try:
+            options = dict(
+                owner_task_id="TASK-100", agent="dev_agent",
+                stale_orchestration_step_count=0, claimed_next_step_count=1,
+                canonical_workspace=tmp_path / "workspaces" / "dev_agent",
+                authoritative_workspace=tmp_path / "workspaces" / "dev_agent",
+            )
+            options.update(kwargs)
+            return database.select_workspace_cleanup_reclamation_candidates(**options)
+        finally:
+            database._conn.set_trace_callback(None)
+
+    yield database, insert, select, queries, now
+    database.close()
+
+
+@pytest.mark.parametrize("value", [
+    "2025-02-29T00:00:00+00:00", "2025-02-30T00:00:00+00:00",
+    "2025-04-31T00:00:00+00:00", "2025-01-01T24:00:00+00:00",
+])
+def test_workspace_cleanup_selection_newer_marker_uses_parser_for_invalid_calendar(
+    cleanup_selection_matrix, value,
+) -> None:
+    database, insert, select, queries, _ = cleanup_selection_matrix
+    insert("TASK-200", status="pending")
+    database.execute("UPDATE tasks SET created_at=? WHERE id='TASK-200'", (value,))
+    database.insert_audit_log(task_id="TASK-200", agent="dev_agent",
+        action="workspace_cleanup_triggered", payload={"run_number": 4, "brief_kind": "cleanup"})
+    assert select() is None
+    assert len(queries) == 4
+
+
+@pytest.mark.parametrize("value", [
+    "2025-01-01T00:00:00+00:00", "2025-01-01T00:00:00.123456+00:00",
+    "2025-01-01T00:00:00.123Z", "2025-01-01 00:00:00+00:00",
+    "2025-01-01T00:00:00+23:00", "20250101T000000+0000",
+    "2025-01-01T00:00:00+00:00:01",
+])
+def test_workspace_cleanup_selection_newer_marker_accepts_all_parser_valid_forms(
+    cleanup_selection_matrix, value,
+) -> None:
+    database, _, select, queries, _ = cleanup_selection_matrix
+    database.execute("UPDATE tasks SET created_at=? WHERE id='TASK-1'", (value,))
+    database.insert_audit_log(task_id="TASK-1", agent="dev_agent",
+        action="workspace_cleanup_triggered", payload={"run_number": 1, "brief_kind": "report_only"})
+    selection = select()
+    assert selection is not None and len(selection.candidates) == 3
+    assert len(queries) == 10
+
+
+def test_workspace_cleanup_selection_marker_blob_refuses_without_later_sql(cleanup_selection_matrix) -> None:
+    database, _, select, queries, _ = cleanup_selection_matrix
+    database.execute("UPDATE audit_log SET payload=?", (b"\x80",))
+    assert select() is None
+    assert len(queries) == 2
+    database.execute("UPDATE audit_log SET payload=?", (b'{"run_number":3,"brief_kind":"cleanup"}',))
+    assert select() is not None
+
+
+@pytest.mark.parametrize("status", ["pending", "in_progress", "escalated", "completed", "failed", "cancelled", "superseded"])
+def test_workspace_cleanup_selection_all_newer_statuses_refuse(cleanup_selection_matrix, status) -> None:
+    database, insert, select, queries, _ = cleanup_selection_matrix
+    insert("TASK-200", cleanup=True, status=status, age=-1)
+    database.insert_audit_log(task_id="TASK-200", agent="dev_agent",
+        action="workspace_cleanup_triggered", payload={"run_number": 4, "brief_kind": "cleanup"})
+    assert select() is None and len(queries) == 4
+
+
+@pytest.mark.parametrize("change", ["missing", "cancelled", "state", "block", "agent", "count", "stale", "claimed", "workspace"])
+def test_workspace_cleanup_selection_owner_and_claim_mismatches_stop_at_owner(cleanup_selection_matrix, change) -> None:
+    database, _, select, queries, now = cleanup_selection_matrix
+    kwargs = {}
+    if change == "missing":
+        database.execute("DELETE FROM tasks WHERE id='TASK-100'")
+    elif change == "cancelled":
+        database.execute("UPDATE tasks SET cancelled_at=? WHERE id='TASK-100'", (now.isoformat(),))
+    elif change == "state":
+        database.execute("UPDATE tasks SET status='pending' WHERE id='TASK-100'")
+    elif change == "block":
+        database.execute("UPDATE tasks SET block_kind='delegated' WHERE id='TASK-100'")
+    elif change == "agent":
+        database.execute("UPDATE tasks SET assigned_agent='foreign' WHERE id='TASK-100'")
+    elif change == "count":
+        database.execute("UPDATE tasks SET orchestration_step_count=2 WHERE id='TASK-100'")
+    elif change == "stale":
+        kwargs["stale_orchestration_step_count"] = 1
+    elif change == "claimed":
+        kwargs["claimed_next_step_count"] = 2
+    else:
+        kwargs["authoritative_workspace"] = Path("/other")
+    assert select(**kwargs) is None
+    assert len(queries) == 1
+
+
+@pytest.mark.parametrize("kind", ["zero", "two", "mixed", "wrong", "list", "bad_json", "bool", "kind", "first", "second"])
+def test_workspace_cleanup_selection_marker_identity_and_ordinal_refuse(cleanup_selection_matrix, kind) -> None:
+    database, _, select, queries, _ = cleanup_selection_matrix
+    if kind == "zero":
+        database.execute("DELETE FROM audit_log")
+    elif kind in {"two", "mixed"}:
+        database.insert_audit_log(task_id="TASK-100", agent="foreign" if kind == "mixed" else "dev_agent",
+            action="workspace_cleanup_triggered", payload={"run_number": 3, "brief_kind": "cleanup"})
+    elif kind == "wrong":
+        database.execute("UPDATE audit_log SET agent='foreign'")
+    else:
+        payload = {"list":"[]", "bad_json":"not-json", "bool":'{"run_number":true,"brief_kind":"cleanup"}',
+                   "kind":'{"run_number":3,"brief_kind":"report"}', "first":'{"run_number":1,"brief_kind":"cleanup"}',
+                   "second":'{"run_number":2,"brief_kind":"cleanup"}'}[kind]
+        database.execute("UPDATE audit_log SET payload=?", (payload,))
+    assert select() is None and len(queries) == 2
+
+
+def test_workspace_cleanup_selection_filtered_five_no_refill_and_future_hook_budget_model(cleanup_selection_matrix) -> None:
+    database, insert, select, queries, now = cleanup_selection_matrix
+    database.execute("UPDATE tasks SET status='pending', completed_at=NULL WHERE id IN ('TASK-1', 'TASK-2')")
+    insert("TASK-11", age=21)
+    insert("TASK-12", age=-1)
+    insert("TASK-13", age=-2)
+    insert("TASK-14", age=22)
+    selection = select()
+    assert selection is not None and [item.task_id for item in selection.candidates] == ["TASK-14", "TASK-11", "TASK-10"]
+    assert len(queries) == 10
+    database.execute("DELETE FROM tasks WHERE id IN ('TASK-12', 'TASK-13')")
+    database.execute("UPDATE tasks SET status='completed', completed_at=created_at WHERE id IN ('TASK-1', 'TASK-2')")
+    selection = select()
+    assert selection is not None and len(selection.candidates) == 5 and len(queries) == 12
+    reads, config_loads, calls = 12, 1, []
+    for candidate in selection.candidates:
+        config_loads += 1
+        owner = database.get_task("TASK-100")
+        reads += 1
+        assert owner is not None and owner.orchestration_step_count == 1
+        calls.append(candidate.task_id)
+    assert reads == 17 and config_loads == 6 and len(calls) == 5
+    # Model only: five helper owner rereads plus six config loads make 23;
+    # prospective observation 24 performs neither a SQL read nor a load.
+    assert reads + config_loads == 23
+    before = (reads, config_loads)
+    assert reads + config_loads >= 23
+    assert before == (reads, config_loads)
+
+
+@pytest.mark.parametrize("variant", ["parent", "revisit", "mixed", "self", "longer", "missing", "owner"])
+def test_workspace_cleanup_selection_relevant_graph_cycles_and_relatives_refuse(cleanup_selection_matrix, variant) -> None:
+    database, insert, select, queries, _ = cleanup_selection_matrix
+    insert("TASK-20", status="pending")
+    insert("TASK-30", status="pending")
+    if variant == "parent":
+        database.execute("UPDATE tasks SET parent_task_id='TASK-20' WHERE id='TASK-10'")
+        database.execute("UPDATE tasks SET parent_task_id='TASK-10' WHERE id='TASK-20'")
+    elif variant == "revisit":
+        database.execute("UPDATE tasks SET revisit_of_task_id='TASK-20' WHERE id='TASK-10'")
+        database.execute("UPDATE tasks SET revisit_of_task_id='TASK-10' WHERE id='TASK-20'")
+    elif variant == "mixed":
+        database.execute("UPDATE tasks SET parent_task_id='TASK-20' WHERE id='TASK-10'")
+        database.execute("UPDATE tasks SET revisit_of_task_id='TASK-10' WHERE id='TASK-20'")
+    elif variant == "self":
+        database.execute("UPDATE tasks SET parent_task_id=id WHERE id='TASK-10'")
+    elif variant == "longer":
+        database.execute("UPDATE tasks SET parent_task_id='TASK-20' WHERE id='TASK-10'")
+        database.execute("UPDATE tasks SET parent_task_id='TASK-30' WHERE id='TASK-20'")
+        database.execute("UPDATE tasks SET parent_task_id='TASK-10' WHERE id='TASK-30'")
+    elif variant == "missing":
+        database.execute("UPDATE tasks SET parent_task_id='TASK-404' WHERE id='TASK-10'")
+    else:
+        database.execute("UPDATE tasks SET parent_task_id='TASK-100' WHERE id='TASK-10'")
+    assert select() is None and len(queries) == 7
+
+
+@pytest.mark.parametrize("change", ["task", "agent", "session", "terminal", "decode"])
+def test_workspace_cleanup_selection_requires_exact_current_terminal_result(cleanup_selection_matrix, change) -> None:
+    database, _, select, queries, _ = cleanup_selection_matrix
+    column, value = {
+        "task": ("task_id", "TASK-404"), "agent": ("agent", "foreign"),
+        "session": ("session_id", "old-session"), "terminal": ("status", "failed"),
+        "decode": ("risks_flagged", "bad-json"),
+    }[change]
+    database.execute(f"UPDATE task_results SET {column}=? WHERE task_id='TASK-1'", (value,))
+    assert select() is None and len(queries) == 8
+
+
+@pytest.mark.parametrize("column,value,late", [
+    ("created_at", "!bad", False), ("completed_at", None, False),
+    ("completed_at", "!bad", False), ("completed_at", "2099-bad", True),
+])
+def test_workspace_cleanup_selection_validates_all_raw_candidate_times_before_age_filter(
+    cleanup_selection_matrix, column, value, late,
+) -> None:
+    database, _, select, queries, now = cleanup_selection_matrix
+    if late:
+        database.execute("UPDATE tasks SET completed_at=? WHERE id='TASK-10'", ((now + timedelta(days=1)).isoformat(),))
+    database.execute(f"UPDATE tasks SET {column}=? WHERE id='TASK-10'", (value,))
+    assert select() is None and len(queries) == 5
+
+
+@pytest.mark.parametrize("kind", ["orphan", "duplicate"])
+def test_workspace_cleanup_selection_orphan_and_duplicate_newer_evidence_refuse(cleanup_selection_matrix, kind) -> None:
+    database, insert, select, queries, _ = cleanup_selection_matrix
+    if kind == "orphan":
+        database.insert_audit_log(task_id="TASK-404", agent="dev_agent",
+            action="workspace_cleanup_triggered", payload={"run_number": 4, "brief_kind": "cleanup"})
+    else:
+        insert("TASK-200", cleanup=True, status="pending", age=-1)
+        database.insert_audit_log(task_id="TASK-200", agent="dev_agent",
+            action="workspace_cleanup_triggered", payload={"run_number": 4, "brief_kind": "cleanup"})
+        database.insert_audit_log(task_id="TASK-200", agent="dev_agent",
+            action="workspace_cleanup_triggered", payload={"run_number": 4, "brief_kind": "cleanup"})
+    assert select() is None and len(queries) == 4
+
+
+def test_workspace_cleanup_selection_timestamp_scalar_is_removed_after_success_and_sql_error(cleanup_selection_matrix) -> None:
+    database, _, select, _, _ = cleanup_selection_matrix
+    original = database._conn
+    row_factory, isolation, changes = original.row_factory, original.isolation_level, original.total_changes
+    assert select() is not None
+    with pytest.raises(sqlite3.OperationalError):
+        original.execute("SELECT _workspace_cleanup_is_aware_datetime('2026-01-01T00:00:00+00:00')").fetchone()
+    original.set_authorizer(lambda *_: sqlite3.SQLITE_DENY)
+    try:
+        assert select() is None
+    finally:
+        original.set_authorizer(None)
+    assert database._conn is original
+    assert original.row_factory is row_factory and original.isolation_level == isolation and original.total_changes == changes
+
+
 def test_init_creates_tables(db):
     tables = db.list_tables()
     assert "tasks" in tables
