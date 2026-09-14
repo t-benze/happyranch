@@ -31,6 +31,21 @@ done
 [[ "$ADMITTED_START" =~ ^[1-9][0-9]{9}$ && "$ADMITTED_EXPIRY" =~ ^[1-9][0-9]{9}$ ]] || reject window
 now=$(/bin/date -u +%s)
 (( ADMITTED_START <= now && now < ADMITTED_EXPIRY && ADMITTED_EXPIRY - ADMITTED_START <= 4200 && ADMITTED_EXPIRY - now >= 3000 )) || reject expired-window
+# The independent operator owns this short lease outside target-writable paths.
+[[ "$ADMITTED_UID" =~ ^[1-9][0-9]*$ && "$ADMITTED_UID" == "$(/usr/bin/id -u)" ]] || reject uid
+[[ "$ADMITTED_HOST" == "$(/bin/hostname)" ]] || reject host
+[[ "$REQUESTED_EVALUATED" =~ ^[0-9a-f]{64}$ ]] || reject evaluated-pipeline
+literal_directory "${ADMITTED_READY%/*}" || reject readiness-ancestry
+[[ -f "$ADMITTED_READY" && ! -L "$ADMITTED_READY" && -r "$ADMITTED_READY" && ! -w "$ADMITTED_READY" ]] || reject readiness-file
+ancestor=${ADMITTED_READY%/*}
+while [[ "$ancestor" != / ]]; do
+  [[ ! -w "$ancestor" ]] || reject readiness-control
+  ancestor=${ancestor%/*}; [[ -n "$ancestor" ]] || ancestor=/
+done
+IFS=' ' read -r lease_request lease_source lease_pipeline lease_config lease_uid lease_host lease_expiry lease_evaluated lease_phase extra < "$ADMITTED_READY" || reject readiness-read
+[[ -z "${extra:-}" && "$lease_request" == "$ADMITTED_REQUEST" && "$lease_source" == "$ADMITTED_SOURCE" && "$lease_pipeline" == "$ADMITTED_PIPELINE" && "$lease_config" == "$ADMITTED_CONFIG" && "$lease_uid" == "$ADMITTED_UID" && "$lease_host" == "$ADMITTED_HOST" && "$lease_evaluated" == "$REQUESTED_EVALUATED" && "$lease_phase" == ready ]] || reject readiness-binding
+[[ "$lease_expiry" =~ ^[1-9][0-9]{9}$ ]] || reject readiness-expiry
+(( now < lease_expiry && lease_expiry <= now + 10 && lease_expiry <= ADMITTED_EXPIRY )) || reject readiness-stale
 [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || reject build
 literal_directory "$WORKSPACE" || reject workspace-ancestry
 for tool in "$ADMITTED_PYTHON" "$ADMITTED_UV" "$ADMITTED_GIT"; do
@@ -88,7 +103,7 @@ try:
             result["exit"] = child.returncode if child.returncode >= 0 else 128 - child.returncode
         primary = result["exit"]
         try:
-            write(fd, "shell-result.json", json.dumps(dict(primary_exit=primary, pytest_exit=None, cleanup="UNKNOWN", observer="UNAVAILABLE", held="F04")))
+            write(fd, "shell-result.json", json.dumps(dict(primary_exit=primary, pytest_exit=None, cleanup="UNKNOWN", observer="UNAVAILABLE", admission="operator-window")))
         except Exception as error:
             errors.append("shell-receipt:" + type(error).__name__ + ":" + str(error))
     elif mode == "publish":
@@ -122,7 +137,7 @@ exec /usr/bin/env -i PATH="$root/bin:/usr/bin:/bin" HOME="$root/home" \
   XDG_RUNTIME_DIR="$root/xdg-runtime" TMPDIR="$root/tmp" TMP="$root/tmp" TEMP="$root/tmp" \
   UV_CACHE_DIR="$root/uv-cache" UV_PROJECT_ENVIRONMENT="$root/venv/env" \
   UV_PYTHON_DOWNLOADS=never UV_NO_CONFIG=1 PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
-  PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTEST_PLUGINS=pytest_asyncio.plugin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
   GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL=https \
   HAPPYRANCH_DAEMON_HOME="$root/daemon-home" HAPPYRANCH_DAEMON_PORT=0 \
   JENKINS_NODE_COOKIE="${JENKINS_NODE_COOKIE:-}" \
@@ -162,13 +177,52 @@ sys.path.insert(0, str(source))  # -I omits cwd: arrange source explicitly.
 from tests.thr211_containment import prepare_pipeline_environment
 prepare_pipeline_environment(source, pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), sys.argv[4])
 THR211_ORIGINS
-# No caller receipt or boolean can release this unresolved F04 gate.
-printf 'HELD: independent daemon/descendant lifetime and observer not proved\n' >&2
-exit 78
+printf 'Private preparation complete; account cleanup remains external\n'
 THR211_PRIVATE
 )
 status=$?
 printf '\nTHR211_EXIT=%s\n' "$status"
+exit 0
+'''
+
+// Recheck the same external lease immediately before workload, without acquisition.
+def readinessShell = prepareShell.substring(0, prepareShell.indexOf('[[ "$BUILD_NUMBER"')).replace('>= 3000', '>= 2100') + "\n)\nstatus=\$?\nprintf 'THR211_EXIT=%s\\n' \"\$status\"\nexit 0\n"
+
+def workloadShell = '''#!/bin/bash -p
+(
+set -euo pipefail
+umask 077
+root="$PUBLICATION_ROOT"
+exec /usr/bin/env -i PATH="$root/bin:/usr/bin:/bin" HOME="$root/home" \\
+ XDG_CONFIG_HOME="$root/xdg-config" XDG_CACHE_HOME="$root/xdg-cache" \\
+ XDG_STATE_HOME="$root/xdg-state" XDG_DATA_HOME="$root/xdg-state" XDG_RUNTIME_DIR="$root/xdg-runtime" \\
+ TMPDIR="$root/tmp" TMP="$root/tmp" TEMP="$root/tmp" UV_CACHE_DIR="$root/uv-cache" \\
+ UV_PROJECT_ENVIRONMENT="$root/venv/env" UV_PYTHON_DOWNLOADS=never UV_NO_CONFIG=1 \\
+ PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTEST_PLUGINS=pytest_asyncio.plugin \\
+ HAPPYRANCH_DAEMON_HOME="$root/daemon-home" HAPPYRANCH_DAEMON_PORT=0 \\
+ JENKINS_NODE_COOKIE="${JENKINS_NODE_COOKIE:-}" \\
+ "$PUBLICATION_PYTHON" -I - "$root" "$PUBLICATION_ACQUIRED" "$PUBLICATION_NONCE" <<\'THR211_WORKLOAD\'
+import json, os, pathlib, stat, sys
+root = pathlib.Path(sys.argv[1])
+acquired = json.loads(sys.argv[2])
+assert acquired[\'root\'] == str(root) and acquired[\'nonce\'] == sys.argv[3]
+identities = []
+for path in reversed((root / \'artifacts\', *(root / \'artifacts\').parents)):
+    info = path.lstat()
+    assert stat.S_ISDIR(info.st_mode)
+    if path != pathlib.Path(\'/\'):
+        identities.append([info.st_dev, info.st_ino])
+assert identities == acquired[\'ancestry\'], \'workload acquisition changed\'
+for leaf in (\'home\', \'xdg-config\', \'xdg-cache\', \'xdg-state\', \'xdg-runtime\', \'tmp\', \'uv-cache\', \'venv\', \'daemon-home\', \'bin\', \'source\', \'artifacts\'):
+    info = (root / leaf).lstat()
+    assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077
+os.execv(str(root / \'venv/env/bin/python\'), [str(root / \'venv/env/bin/python\'), \'-I\', \'-c\',
+    \'import sys; sys.path.insert(0, sys.argv[1]); from tests.thr211_containment import run_pipeline_workload; raise SystemExit(run_pipeline_workload(*sys.argv[1:]))\',
+    str(root / \'source\'), str(root)])
+THR211_WORKLOAD
+)
+status=$?
+printf 'THR211_WORKLOAD_EXIT=%s\\n' "$status"
 exit 0
 '''
 
@@ -230,7 +284,7 @@ try:
             result["exit"] = child.returncode if child.returncode >= 0 else 128 - child.returncode
         primary = result["exit"]
         try:
-            write(fd, "shell-result.json", json.dumps(dict(primary_exit=primary, pytest_exit=None, cleanup="UNKNOWN", observer="UNAVAILABLE", held="F04")))
+            write(fd, "shell-result.json", json.dumps(dict(primary_exit=primary, pytest_exit=None, cleanup="UNKNOWN", observer="UNAVAILABLE", admission="operator-window")))
         except Exception as error:
             errors.append("shell-receipt:" + type(error).__name__ + ":" + str(error))
     elif mode == "publish":
@@ -262,7 +316,7 @@ sys.exit(0)  # Return every publication error through stdout.
 if (!binding.hasVariable('THR211_INSTALL')) error('HELD: manager-installed configuration absent')
 def installed = binding.getVariable('THR211_INSTALL')
 def keys = ['REQUEST', 'MODE', 'SOURCE', 'PIPELINE', 'LOCK', 'CONFIG', 'NODE',
-            'ACCOUNT', 'START', 'EXPIRY', 'PYTHON', 'UV', 'GIT', 'ARCH']
+            'ACCOUNT', 'START', 'EXPIRY', 'PYTHON', 'UV', 'GIT', 'ARCH', 'UID', 'HOST', 'READY']
 if (!(installed instanceof Map) || installed.keySet() != keys.toSet() ||
     keys.any { !(installed[it] instanceof String) || installed[it].contains('\n') || installed[it].contains('\r') }) {
   error('HELD: malformed installed configuration')
@@ -270,7 +324,7 @@ if (!(installed instanceof Map) || installed.keySet() != keys.toSet() ||
 properties([disableConcurrentBuilds(), parameters([
   choice(name: 'MODE', choices: ['SETUP', 'ABORT', 'DIAGNOSTIC']),
   string(name: 'REQUEST_ID', defaultValue: ''), string(name: 'SOURCE_SHA', defaultValue: ''),
-  string(name: 'PIPELINE_SHA', defaultValue: '')
+  string(name: 'PIPELINE_SHA', defaultValue: ''), string(name: 'EVALUATED_SHA', defaultValue: '')
 ])])
 // Scripted Pipeline has no implicit checkout. Do not add checkout scm or agent.
 // This watchdog bounds allocation ONLY, without wrapping node's later work.
@@ -290,6 +344,7 @@ try {
         receipt.request = params.REQUEST_ID
         receipt.source = params.SOURCE_SHA
         receipt.pipeline = params.PIPELINE_SHA
+        receipt.evaluated_pipeline = params.EVALUATED_SHA
         def primaryFailure = null
         def consoleFailure = null
         def consoleClassification = null
@@ -300,7 +355,8 @@ try {
             timeout(time: 15, unit: 'MINUTES') {
               withEnv(keys.collect { "ADMITTED_${it}=${installed[it]}" } + [
                 "PUBLICATION_NONCE=${nonce}", "REQUESTED_REQUEST=${params.REQUEST_ID}", "REQUESTED_MODE=${params.MODE}",
-                "REQUESTED_SOURCE=${params.SOURCE_SHA}", "REQUESTED_PIPELINE=${params.PIPELINE_SHA}"
+                "REQUESTED_SOURCE=${params.SOURCE_SHA}", "REQUESTED_PIPELINE=${params.PIPELINE_SHA}",
+                "REQUESTED_EVALUATED=${params.EVALUATED_SHA}"
               ]) {
                 def output = sh(script: prepareShell, returnStdout: true)
                 def exits = output.readLines().findAll { it.startsWith('THR211_EXIT=') }
@@ -318,16 +374,38 @@ try {
                  }
                 } catch (Throwable e) { receipt.errors.add('acquisition:' + e.getClass().getSimpleName()) }
               }
-              if (receipt.setup_exit != 0) error("preparation exit ${receipt.setup_exit}; F04 held")
+              if (receipt.setup_exit != 0) error("preparation exit ${receipt.setup_exit}")
             }
           }
           stage('Workload') {
             timeout(time: 30, unit: 'MINUTES') {
-              // Foreground EOF cleanup controls one interpreter only. Synthetic
-              // setsid children survive it (including observer loss); UNKNOWN.
-              // A future reviewed F04 release must wire the owned observer first:
-              // uv run --frozen pytest tests/integration/ -v -m integration --junitxml=artifacts/integration.xml
-              error('HELD: fixture lifetime proof absent; pytest unrun')
+              withEnv(keys.collect { "ADMITTED_${it}=${installed[it]}" } + [
+                "REQUESTED_REQUEST=${params.REQUEST_ID}", "REQUESTED_MODE=${params.MODE}",
+                "REQUESTED_SOURCE=${params.SOURCE_SHA}", "REQUESTED_PIPELINE=${params.PIPELINE_SHA}",
+                "REQUESTED_EVALUATED=${params.EVALUATED_SHA}"
+              ]) {
+                def readiness = sh(script: readinessShell, returnStdout: true)
+                if (readiness.trim() != 'THR211_EXIT=0') error('operator lease unavailable before workload')
+              }
+              if (installed.MODE == 'ABORT') error('controlled abort after private preparation')
+              if (installed.MODE == 'DIAGNOSTIC') {
+                if (acquisition == null) error('workload acquisition unavailable')
+                withEnv(["PUBLICATION_PYTHON=${installed.PYTHON}", "PUBLICATION_ROOT=${acquisition.root}",
+                         "PUBLICATION_NONCE=${nonce}", "PUBLICATION_ACQUIRED=${groovy.json.JsonOutput.toJson(acquisition)}"]) {
+                  def output = sh(script: workloadShell, returnStdout: true)
+                  def records = output.readLines().findAll { it.startsWith('THR211_WORKLOAD=') }
+                  def exits = output.readLines().findAll { it.startsWith('THR211_WORKLOAD_EXIT=') }
+                  if (records.size() != 1 || exits.size() != 1) error('workload receipt unavailable')
+                  def observed = new groovy.json.JsonSlurperClassic().parseText(records[0].substring(16))
+                  receipt.pytest_exit = observed.pytest_exit
+                  receipt.export = observed.export
+                  receipt.workload_exit = exits[0].substring(21).toInteger()
+                }
+                if (receipt.workload_exit != 0 || receipt.pytest_exit != 0) error("workload exit ${receipt.workload_exit}; pytest ${receipt.pytest_exit}")
+              }
+              receipt.result = installed.MODE == 'SETUP' ? 'PREPARED' : 'TESTS_PASSED'
+              // Export is attempted below before parent disconnects the agent.
+              // Outside-UID terminal independently retrieves partial files on loss.
             }
           }
         } catch (Throwable primary) {

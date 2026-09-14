@@ -21,6 +21,18 @@ def _pipeline_shell(name: str ="prepareShell") -> str:
     return re.sub(r"\\([\s\S])", lambda m: escapes[m[1]], body)
 
 
+def _controlled_prepare_shell() -> str:
+    """Model an outside-UID immutable lease on non-root CI workers.
+
+    Only native UID/host and kernel write-access checks are substituted. Refusal
+    tests below separately exercise the unmodified shell against writable files.
+    """
+    return (_pipeline_shell().replace('$(/usr/bin/id -u)', '999')
+            .replace('$(/bin/hostname)', 'controlled-host')
+            .replace('! -w "$ADMITTED_READY"', '-r "$ADMITTED_READY"')
+            .replace('[[ ! -w "$ancestor" ]]', '[[ -d "$ancestor" ]]'))
+
+
 def _shell_exit(result: subprocess.CompletedProcess[bytes]) -> int:
     lines = result.stdout.decode().splitlines()
     assert result.returncode == 0, result.stderr
@@ -70,26 +82,28 @@ def _pipeline_tools(tmp_path: Path, *, failure: str = "") -> tuple[dict, Path]:
                 "PIPELINE": "b" * 64, "LOCK": "c" * 64, "CONFIG": "d" * 64,
                 "NODE": "controlled-node", "ACCOUNT": getpass.getuser(), "START": str(now - 1),
                 "EXPIRY": str(now + 4190), "PYTHON": str(python), "UV": str(uv), "GIT": str(git),
-                "ARCH": "controlled-arch"}
+                "ARCH": "controlled-arch", "UID": "999", "HOST": "controlled-host", "READY": str(tools / "ready")}
     env = {"PATH": "/usr/bin:/bin", "WORKSPACE": str(root), "BUILD_NUMBER": "1", "NODE_NAME": "controlled-node", "PUBLICATION_NONCE": "controlled-nonce"}
     env.update({f"ADMITTED_{key}": value for key, value in admitted.items()})
     env.update({f"REQUESTED_{key}": admitted[key] for key in ("REQUEST", "MODE", "SOURCE", "PIPELINE")})
+    env['REQUESTED_EVALUATED'] = 'e' * 64
+    (tools / 'ready').write_text(' '.join([admitted['REQUEST'], admitted['SOURCE'], admitted['PIPELINE'], admitted['CONFIG'], '999', 'controlled-host', str(now + 8), 'e' * 64, 'ready']) + '\n')
     return env, trace
 
 
 @pytest.mark.parametrize("mode", ["SETUP", "ABORT", "DIAGNOSTIC"])
-def test_actual_pipeline_prepares_privately_then_holds_every_daemon_mode(tmp_path, mode):
+def test_actual_pipeline_prepares_privately_for_each_admitted_mode(tmp_path, mode):
     env, trace = _pipeline_tools(tmp_path)
     env.update(ADMITTED_MODE=mode, REQUESTED_MODE=mode, HTTPS_PROXY="credential-canary",
                BASH_ENV="/no-such-startup", PYTHONPATH="credential-canary", FAKE_CLAUDE_PLAN="foreign",
                SSH_AUTH_SOCK="foreign", GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.sshCommand",
                GIT_CONFIG_VALUE_0="foreign", HAPPYRANCH_TASK_TMP_ROOT="foreign", JENKINS_NODE_COOKIE="controlled-cookie")
-    result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=8)
-    assert _shell_exit(result) == 78, result.stderr
+    result = subprocess.run(["/bin/bash", "-p", "-c", _controlled_prepare_shell()], env=env, capture_output=True, timeout=8)
+    assert _shell_exit(result) == 0, result.stderr
     root = Path(env["WORKSPACE"]) / "thr211-1"
     receipt = json.loads((root / "artifacts/shell-result.json").read_text())
-    assert receipt == {"primary_exit": 78, "pytest_exit": None,
-                       "cleanup": "UNKNOWN", "observer": "UNAVAILABLE", "held": "F04"}
+    assert receipt == {"primary_exit": 0, "pytest_exit": None,
+                       "cleanup": "UNKNOWN", "observer": "UNAVAILABLE", "admission": "operator-window"}
     child_env = dict(line.split("=", 1) for line in Path(str(trace) + ".env").read_text().splitlines())
     assert "credential-canary" not in str(child_env)
     assert all(name not in child_env for name in ("BASH_ENV", "PYTHONPATH", "SSH_AUTH_SOCK", "GIT_CONFIG_COUNT", "FAKE_CLAUDE_PLAN", "HAPPYRANCH_TASK_TMP_ROOT"))
@@ -113,13 +127,15 @@ def test_actual_pipeline_prepares_privately_then_holds_every_daemon_mode(tmp_pat
     ("NODE_NAME", "foreign"), ("ADMITTED_ACCOUNT", "foreign"), ("ADMITTED_START", "bad"),
     ("ADMITTED_EXPIRY", "1000000000"), ("ADMITTED_START", "9999999999"),
     ("ADMITTED_PYTHON", "python3"), ("BUILD_NUMBER", "../escape"),
+    ("ADMITTED_UID", "0"), ("ADMITTED_UID", "998"), ("ADMITTED_HOST", "other"),
+    ("REQUESTED_EVALUATED", "x"), ("ADMITTED_READY", "/absent/ready"),
 ])
 def test_actual_pipeline_rejects_untrusted_admission_before_tools(tmp_path, key, value):
     env, trace = _pipeline_tools(tmp_path)
     env[key] = value
     if key in ("ADMITTED_REQUEST", "ADMITTED_SOURCE", "ADMITTED_PIPELINE"):
         env[key.replace("ADMITTED_", "REQUESTED_")] = value
-    result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=5)
+    result = subprocess.run(["/bin/bash", "-p", "-c", _controlled_prepare_shell()], env=env, capture_output=True, timeout=5)
     assert _shell_exit(result) == 64, result.stderr
     assert not trace.exists()
     assert list(Path(env["WORKSPACE"]).iterdir()) == []
@@ -128,7 +144,7 @@ def test_actual_pipeline_rejects_untrusted_admission_before_tools(tmp_path, key,
 @pytest.mark.parametrize("failure,expected", [("clone", 37), ("head", 1), ("python", 38), ("uv", 39), ("abort", 143), ("publication", 37)])
 def test_actual_pipeline_failure_abort_and_publication_preserve_primary(tmp_path, failure, expected):
     env, trace = _pipeline_tools(tmp_path, failure=failure)
-    result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=8)
+    result = subprocess.run(["/bin/bash", "-p", "-c", _controlled_prepare_shell()], env=env, capture_output=True, timeout=8)
     assert _shell_exit(result) == expected, result.stderr
     artifacts = Path(env["WORKSPACE"]) / "thr211-1/artifacts"
     if failure == "publication":
@@ -181,7 +197,7 @@ def test_actual_pipeline_rejects_foreign_paths_without_touching_them(tmp_path, c
             env["WORKSPACE"] = str(alias)
     else:
         (Path(env["WORKSPACE"]) / "thr211-1").symlink_to(foreign if case == "preexisting" else foreign / "absent")
-    result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=5)
+    result = subprocess.run(["/bin/bash", "-p", "-c", _controlled_prepare_shell()], env=env, capture_output=True, timeout=5)
     assert _shell_exit(result) != 0
     assert not trace.exists()
     assert sentinel.stat().st_ino == inode and sentinel.read_text() == "untouched"
@@ -431,8 +447,11 @@ def passed = []
   b.setVariable('pwd', { -> input.env.WORKSPACE })
   b.setVariable('stage', { String x, Closure body ->
     // This controlled branch covers aggregation with no earlier primary. It
-    // does not claim the currently held live Workload can finish successfully.
-    if (x == 'Workload' && scenario == 'console-only') return
+    // does not substitute for the actual workload-shell tests.
+    if (x == 'Workload') {
+      if (scenario == 'console-only') return
+      throw primary
+    }
     body()
   })
   b.setVariable('timeout', { Map x, Closure body -> body() })
@@ -717,7 +736,7 @@ def test_actual_pipeline_environment_probe(tmp_path, monkeypatch, failure):
         assert not (root / "artifacts/preparation.json").exists()
     else:
         receipt = containment.prepare_pipeline_environment(source, root, Path(sys.executable), platform.machine())
-        assert receipt["result"] == "HELD" and receipt["pytest_exit"] is None and receipt["port"] is None
+        assert receipt["result"] == "PREPARED" and receipt["pytest_exit"] is None and receipt["port"] is None
         assert json.loads((root / "artifacts/preparation.json").read_text()) == receipt
         assert saved == {name: str(root / f"bin/fake_{name}.sh") for name in ("claude", "codex", "opencode")}
         for path in saved.values():
@@ -1184,7 +1203,7 @@ def test_pipeline_early_exit_has_no_acquisition_and_preserves_foreign(tmp_path, 
         root.symlink_to(foreign)
     before = (foreign.stat().st_ino, foreign.read_bytes(), root.lstat().st_ino)
     del env[missing]
-    result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=5)
+    result = subprocess.run(["/bin/bash", "-p", "-c", _controlled_prepare_shell()], env=env, capture_output=True, timeout=5)
     assert _shell_exit(result) != 0
     assert b"THR211_ACQUIRED=" not in result.stdout
     assert not trace.exists()
@@ -1194,7 +1213,7 @@ def test_pipeline_early_exit_has_no_acquisition_and_preserves_foreign(tmp_path, 
 @pytest.mark.parametrize("change", ["none", "root", "artifacts", "ancestor", "file", "hardlink", "directory", "nonce", "stale", "root-directory"])
 def test_actual_pipeline_writer_rechecks_acquisition_and_never_follows(tmp_path, change):
     env, trace = _pipeline_tools(tmp_path, failure="clone")
-    result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=5)
+    result = subprocess.run(["/bin/bash", "-p", "-c", _controlled_prepare_shell()], env=env, capture_output=True, timeout=5)
     assert _shell_exit(result) == 37
     acquisition = _acquired(result)
     root = Path(acquisition["root"])
@@ -1255,7 +1274,7 @@ def test_setup_replacement_cannot_redirect_supervisor_receipt(tmp_path, changed,
     git.write_text("#!/bin/bash -p\nset -eu\n" +
                    f"mv {shlex.quote(str(target))} {shlex.quote(str(renamed))}\n" +
                    f"ln -s {shlex.quote(str(foreign))} {shlex.quote(str(target))}\n" + terminal + "\n")
-    result = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=5)
+    result = subprocess.run(["/bin/bash", "-p", "-c", _controlled_prepare_shell()], env=env, capture_output=True, timeout=5)
     assert _shell_exit(result) == expected
     acquired = _acquired(result)
     assert acquired["exit"] == expected
@@ -1267,7 +1286,7 @@ def test_setup_replacement_cannot_redirect_supervisor_receipt(tmp_path, changed,
 def test_publication_retains_writer_and_every_descriptor_close_error(tmp_path):
     import shlex
     env, trace = _pipeline_tools(tmp_path, failure="clone")
-    setup = subprocess.run(["/bin/bash", "-p", "-c", _pipeline_shell()], env=env, capture_output=True, timeout=5)
+    setup = subprocess.run(["/bin/bash", "-p", "-c", _controlled_prepare_shell()], env=env, capture_output=True, timeout=5)
     assert _shell_exit(setup) == 37
     acquired = _acquired(setup)
     target = Path(acquired["root"]) / "artifacts/pipeline.json"
@@ -1283,3 +1302,235 @@ def test_publication_retains_writer_and_every_descriptor_close_error(tmp_path):
     assert errors[0].startswith("publication:FileExistsError:")
     assert len([error for error in errors if error.startswith("close:OSError:")]) == len(acquired["ancestry"]) + 1
     assert target.read_text() == "EXISTING"
+
+
+@pytest.mark.parametrize('failure', ['absent', 'stale', 'request', 'source', 'evaluated', 'phase'])
+def test_operator_lease_refuses_before_tools(tmp_path, failure):
+    env, trace = _pipeline_tools(tmp_path)
+    ready = Path(env['ADMITTED_READY'])
+    if failure == 'absent':
+        ready.unlink()
+    else:
+        fields = ready.read_text().split()
+        index = {'stale': 6, 'request': 0, 'source': 1, 'evaluated': 7, 'phase': 8}[failure]
+        fields[index] = '1000000000' if failure == 'stale' else 'invalid'
+        ready.write_text(' '.join(fields) + '\n')
+    result = subprocess.run(['/bin/bash', '-p', '-c', _controlled_prepare_shell()], env=env, capture_output=True, timeout=5)
+    assert _shell_exit(result) == 64
+    assert not trace.exists()
+
+
+def test_actual_lease_rejects_target_writable_control(tmp_path):
+    import socket
+    env, trace = _pipeline_tools(tmp_path)
+    env.update(ADMITTED_UID=str(os.getuid()), ADMITTED_HOST=socket.gethostname())
+    result = subprocess.run(['/bin/bash', '-p', '-c', _pipeline_shell()], env=env, capture_output=True, timeout=5)
+    assert _shell_exit(result) == 64
+    assert not trace.exists()
+
+
+@pytest.mark.parametrize('code,junit,expected', [(0, True, 0), (3, True, 3), (0, False, 74), (7, False, 7)])
+def test_actual_workload_command_and_private_export(tmp_path, monkeypatch, code, junit, expected):
+    root = tmp_path / 'private'
+    root.mkdir(mode=0o700)
+    source = root / 'source'
+    source.mkdir(mode=0o700)
+    (root / 'artifacts').mkdir(mode=0o700)
+    calls = []
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs['cwd']))
+        kwargs['stdout'].write('controlled workload log\n')
+        if junit:
+            (source / 'artifacts/integration.xml').write_text('<testsuite tests="1"/>')
+        return subprocess.CompletedProcess(argv, code)
+    monkeypatch.setattr(containment.subprocess, 'run', run)
+    assert containment.run_pipeline_workload(str(source), str(root)) == expected
+    assert calls == [(['uv', 'run', '--frozen', 'pytest', 'tests/integration/', '-v', '-m', 'integration', '--junitxml=artifacts/integration.xml'], source)]
+    receipt = json.loads((root / 'artifacts/workload-result.json').read_text())
+    assert receipt['pytest_exit'] == code and receipt['cleanup'] == 'UNKNOWN'
+    assert receipt['export'] == ('EXPORTED' if junit else 'INCOMPLETE')
+    assert (root / 'artifacts/integration.xml').exists() is junit
+
+
+def test_actual_emitted_workload_environment_registers_async_plugin_and_archives_junit(tmp_path):
+    """Run a separate tiny async probe through the emitted shell's real environment.
+
+    A controlled uv shim checks the selected argv and runs ONLY probe_async.py.
+    The selected integration directory does not exist in this test's source.
+    """
+    import shlex
+    import shutil
+    root = tmp_path / 'private'
+    root.mkdir(mode=0o700)
+    for leaf in ('home', 'xdg-config', 'xdg-cache', 'xdg-state', 'xdg-runtime', 'tmp', 'uv-cache', 'venv', 'daemon-home', 'bin', 'source', 'artifacts'):
+        (root / leaf).mkdir(mode=0o700)
+    (root / 'venv/env/bin').mkdir(mode=0o700, parents=True)
+    python = root / 'venv/env/bin/python'
+    python.write_text('#!/bin/bash -p\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+    python.chmod(0o700)
+    source = root / 'source'
+    (source / 'tests').mkdir(mode=0o700)
+    (source / 'tests/__init__.py').write_text('')
+    shutil.copyfile(Path(containment.__file__), source / 'tests/thr211_containment.py')
+    (source / 'pytest.ini').write_text('[pytest]\nasyncio_mode = auto\n')
+    (source / 'probe_async.py').write_text('''import asyncio, json, os, sys
+import pytest_asyncio.plugin
+async def test_real_async():
+    await asyncio.sleep(0)
+    assert os.environ['PYTEST_PLUGINS'] == 'pytest_asyncio.plugin'
+    assert os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] == '1'
+    assert 'credential-canary' not in str(dict(os.environ))
+    print(json.dumps(dict(python=sys.executable, version=sys.version, plugin=pytest_asyncio.plugin.__file__, home=os.environ['HOME'])))
+''')
+    uv = root / 'bin/uv'
+    uv.write_text('#!/bin/bash -p\nset -eu\n' +
+                  '[[ "$*" == "run --frozen pytest tests/integration/ -v -m integration --junitxml=artifacts/integration.xml" ]]\n' +
+                  'exec ' + shlex.quote(sys.executable) + ' -m pytest probe_async.py -v -s --junitxml=artifacts/integration.xml\n')
+    uv.chmod(0o700)
+    acquired = dict(root=str(root), nonce='probe', ancestry=[])
+    for path in reversed((root / 'artifacts', *(root / 'artifacts').parents)):
+        if path != Path('/'):
+            info = path.stat()
+            acquired['ancestry'].append([info.st_dev, info.st_ino])
+    env = dict(PUBLICATION_ROOT=str(root), PUBLICATION_ACQUIRED=json.dumps(acquired), PUBLICATION_NONCE='probe',
+               PUBLICATION_PYTHON=sys.executable, HTTPS_PROXY='credential-canary', PYTHONPATH='credential-canary', BASH_ENV='/absent')
+    result = subprocess.run(['/bin/bash', '-p', '-c', _pipeline_shell('workloadShell')], env=env, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+    assert 'THR211_WORKLOAD_EXIT=0' in result.stdout, result.stdout + result.stderr
+    receipt = json.loads((root / 'artifacts/workload-result.json').read_text())
+    assert receipt['pytest_exit'] == 0 and receipt['export'] == 'EXPORTED'
+    log = (root / 'artifacts/workload.log').read_text()
+    assert '1 passed' in log and 'pytest_asyncio' in log and str(root / 'home') in log
+    assert (root / 'artifacts/integration.xml').read_bytes() == (source / 'artifacts/integration.xml').read_bytes()
+    # The actual preparation shell emits the same explicit registration.
+    assert 'PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTEST_PLUGINS=pytest_asyncio.plugin' in _pipeline_shell()
+    print(log)
+
+
+def test_evaluated_pipeline_all_finite_outcomes(tmp_path):
+    import hashlib
+    jar = os.environ.get('THR211_GROOVY_JAR')
+    if not jar:
+        pytest.skip('evaluated Pipeline requires the task-provisioned Groovy jar')
+    env, _ = _pipeline_tools(tmp_path)
+    installed = {key.removeprefix('ADMITTED_'): value for key, value in env.items() if key.startswith('ADMITTED_')}
+    installed['MODE'] = 'DIAGNOSTIC'
+    prefix = "binding.setVariable('THR211_INSTALL', [" + ','.join(json.dumps(k)+':'+json.dumps(v) for k,v in installed.items()) + '])\n'
+    evaluated = tmp_path / 'installed.groovy'
+    evaluated.write_text(prefix + (Path(__file__).parents[1] / 'Jenkinsfile').read_text())
+    digest = hashlib.sha256(evaluated.read_bytes()).hexdigest()
+    inputs = tmp_path / 'input.json'
+    inputs.write_text(json.dumps(dict(workspace=env['WORKSPACE'], evaluated=digest)))
+    probe = tmp_path / 'outcomes.groovy'
+    probe.write_text(PIPELINE_OUTCOMES_GROOVY)
+    result = subprocess.run(['/usr/bin/java', f'-Djava.io.tmpdir={tmp_path}', '-cp', jar, 'groovy.ui.GroovyMain', str(probe), str(evaluated), str(inputs)], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)['passed'] == ['normal', 'setup-failure', 'abort', 'allocation-failure', 'lost-agent', 'publication-failure', 'test-failure', 'export-failure', 'lease-loss']
+
+
+PIPELINE_OUTCOMES_GROOVY = r'''
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurperClassic
+class FlowInterruptedException extends RuntimeException {}
+def input = new JsonSlurperClassic().parseText(new File(args[1]).text)
+def passed = []
+['normal', 'setup-failure', 'abort', 'allocation-failure', 'lost-agent', 'publication-failure', 'test-failure', 'export-failure', 'lease-loss'].each { scenario ->
+  def b = new Binding()
+  b.setVariable('params', [REQUEST_ID:'controlled-1', MODE:'DIAGNOSTIC', SOURCE_SHA:'a'*40, PIPELINE_SHA:'b'*64, EVALUATED_SHA:input.evaluated])
+  b.setVariable('env', [BUILD_NUMBER:'1'])
+  b.setVariable('currentBuild', [result:null])
+  b.setVariable('properties', { List x -> })
+  b.setVariable('disableConcurrentBuilds', { -> [:] })
+  b.setVariable('parameters', { List x -> x })
+  b.setVariable('choice', { Map x -> x })
+  b.setVariable('string', { Map x -> x })
+  b.setVariable('parallel', { Map x -> x.execution(); x.allocation() })
+  def primary = scenario == 'abort' ? new FlowInterruptedException() : new IOException(scenario)
+  def calls = []
+  def childEnv = [:]
+  def stageName = ''
+  def observed = null
+  b.setVariable('node', { String x, Closure body ->
+    if (scenario == 'allocation-failure') throw primary
+    body()
+  })
+  b.setVariable('pwd', { -> input.workspace })
+  b.setVariable('stage', { String x, Closure body -> stageName=x; body() })
+  def budgets = []
+  b.setVariable('timeout', { Map x, Closure body -> budgets.add(x.time); body() })
+  b.setVariable('withEnv', { List x, Closure body ->
+    def old=[:] + childEnv
+    x.each { def parts=it.toString().split('=', 2); childEnv[parts[0]]=parts[1] }
+    try { body() } finally { childEnv=old }
+  })
+  b.setVariable('sh', { Map x ->
+    assert x.returnStdout
+    if (childEnv.containsKey('PUBLICATION_RECEIPT')) {
+      calls.add('publish')
+      if (scenario == 'lost-agent') throw new IOException('agent still absent')
+      return 'THR211_ACQUIRED=' + JsonOutput.toJson([published:true, nonce:childEnv.PUBLICATION_NONCE, root:childEnv.PUBLICATION_ROOT, errors:[]])
+    }
+    if (stageName == 'Private frozen preparation') {
+      calls.add('prepare')
+      def code=scenario == 'setup-failure' ? 37 : 0
+      return 'THR211_ACQUIRED=' + JsonOutput.toJson([nonce:childEnv.PUBLICATION_NONCE, root:input.workspace+'/thr211-1', ancestry:[[1,2]], exit:code, errors:[]]) + '\nTHR211_EXIT='+code+'\n'
+    }
+    if (!childEnv.containsKey('PUBLICATION_ROOT')) {
+      calls.add('lease')
+      return scenario == 'lease-loss' ? 'THR211_EXIT=64\n' : 'THR211_EXIT=0\n'
+    }
+    calls.add('workload')
+    if (scenario in ['abort','lost-agent']) throw primary
+    def code=scenario == 'test-failure' ? 3 : 0
+    def exported=scenario != 'export-failure'
+    return 'THR211_WORKLOAD=' + JsonOutput.toJson([pytest_exit:code, export:exported?'EXPORTED':'INCOMPLETE']) + '\nTHR211_WORKLOAD_EXIT=' + (exported?code:74) + '\n'
+  })
+  b.setVariable('archiveArtifacts', { Map x ->
+    calls.add('archive')
+    assert x.followSymlinks == false && x.allowEmptyArchive == false
+    if (scenario == 'publication-failure') throw new IOException('archive failed')
+  })
+  b.setVariable('echo', { String x -> observed=new JsonSlurperClassic().parseText(x) })
+  b.setVariable('error', { String x -> throw primary })
+  Throwable thrown
+  try { new GroovyShell(b).evaluate(new File(args[0])) } catch(Throwable e) { thrown=e }
+  if (scenario == 'normal') {
+    assert thrown == null
+    assert observed.result == 'TESTS_PASSED' && observed.pytest_exit == 0
+    assert budgets == [15,30,5,15]
+  } else {
+    assert thrown.is(primary)
+  }
+  if (scenario in ['setup-failure','allocation-failure','lease-loss']) assert !calls.contains('workload')
+  if (scenario == 'allocation-failure') assert calls == []
+  else {
+    assert observed.evaluated_pipeline == input.evaluated
+    assert observed.cleanup == 'UNKNOWN'
+  }
+  if (scenario == 'abort') assert observed.result == 'ABORTED'
+  if (scenario == 'test-failure') assert observed.pytest_exit == 3
+  if (scenario == 'export-failure') assert observed.pytest_exit == 0 && observed.workload_exit == 74 && observed.export == 'INCOMPLETE'
+  if (scenario == 'lost-agent') assert observed.pytest_exit == null && !calls.contains('archive') && observed.errors
+  if (scenario == 'publication-failure') {
+    assert observed.errors == ['receipt-archive:IOException', 'artifacts:IOException']
+    assert b.getVariable('currentBuild').result == 'FAILURE'
+  }
+  passed.add(scenario)
+}
+println(JsonOutput.toJson([passed:passed]))
+'''
+
+
+def test_workload_refuses_linked_junit_without_copying_foreign_bytes(tmp_path, monkeypatch):
+    root = tmp_path / 'private'
+    (root / 'source').mkdir(parents=True)
+    (root / 'artifacts').mkdir()
+    foreign = tmp_path / 'foreign'
+    foreign.write_text('DO NOT EXPORT')
+    def run(argv, **kwargs):
+        (root / 'source/artifacts/integration.xml').symlink_to(foreign)
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setattr(containment.subprocess, 'run', run)
+    assert containment.run_pipeline_workload(str(root / 'source'), str(root)) == 74
+    assert not (root / 'artifacts/integration.xml').exists()
+    assert foreign.read_text() == 'DO NOT EXPORT'

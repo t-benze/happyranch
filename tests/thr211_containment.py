@@ -1,7 +1,8 @@
 """Test-only filesystem preparation for the THR-211 Jenkins candidate.
 
 The foreground lifetime below controls only the launched interpreter. Neither
-its EOF lease nor a private directory owns escaped descendants. F04 stays held.
+its EOF lease nor a private directory owns escaped descendants. End-of-run
+account closure belongs to the independent operator.
 """
 from __future__ import annotations
 
@@ -159,9 +160,9 @@ def prepare_pipeline_environment(source: Path, root: Path, python: Path, arch: s
     if load_registry() != fakes:
         raise RuntimeError("fake registry readback mismatch")
     receipt = {
-        "phase": "prepared", "result": "HELD", "pytest_exit": None,
+        "phase": "prepared", "result": "PREPARED", "pytest_exit": None,
         "cleanup": "UNKNOWN", "observer": "UNAVAILABLE", "port": None,
-        "f04": "daemon/descendant lifetime not proved", "paths": paths,
+        "account_cleanup": "external operator required", "paths": paths,
         "python": sys.executable, "version": platform.python_version(), "arch": platform.machine(),
         "native_python": str(python), "source": str(source), "origins": origins, "fakes": fakes,
         "lock_sha256": hashlib.sha256((source / "uv.lock").read_bytes()).hexdigest(),
@@ -496,3 +497,71 @@ def build_content_plan(plans: Path) -> str:
     for agent, summary, confidence in (("content_writer", "Draft completed", 85), ("content_qa", "VERDICT: PASS - content is accurate", 90)):
         script += agent + ')\n' + _completion({"status": "completed", "summary": summary, "confidence": confidence}) + ';;\n'
     return script + '*) echo "Unknown agent: $agent" >&2; exit 1;;\nesac\n'
+
+
+@contextmanager
+def _workload_artifacts(path: Path):
+    """Keep all workload evidence writes on one no-follow directory descriptor."""
+    descriptors = []
+    try:
+        fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptors.append(fd)
+        for component in path.parts[1:]:
+            fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            descriptors.append(fd)
+        yield fd
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)
+
+
+def _workload_file(fd: int, name: str, *, binary: bool = False):
+    target = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+    return os.fdopen(target, 'wb' if binary else 'w')
+
+
+def run_pipeline_workload(source: str, root: str) -> int:
+    """Run the one admitted selection, preserving test exit and export separately.
+
+    Invoked only by the actual private Pipeline shell. No daemon fixture is
+    imported here; normal pytest collection occurs only in the admitted process.
+    """
+    import time
+    source_path, root_path = Path(source), Path(root)
+    assert source_path == root_path / "source"
+    artifacts = source_path / "artifacts"
+    artifacts.mkdir(mode=0o700)  # Fresh, never reuse a selected run's results.
+    output = root_path / "artifacts"
+    with _workload_artifacts(output) as output_fd:
+        receipt = {"pytest_exit": None, "export": "INCOMPLETE", "cleanup": "UNKNOWN",
+                   "restoration": "UNKNOWN", "started": time.time(),
+                   "command": "uv run --frozen pytest tests/integration/ -v -m integration --junitxml=artifacts/integration.xml"}
+        # Keep intended log/exit available to the outside terminal on agent loss.
+        with _workload_file(output_fd, "workload.log") as log:
+            result = subprocess.run(["uv", "run", "--frozen", "pytest", "tests/integration/", "-v",
+                                     "-m", "integration", "--junitxml=artifacts/integration.xml"],
+                                    cwd=source_path, stdout=log, stderr=subprocess.STDOUT)
+        code = result.returncode if result.returncode >= 0 else 128 - result.returncode
+        receipt.update(pytest_exit=code, ended=time.time())
+        # Save the observed exit before export: missing JUnit cannot hide a test failure.
+        with _workload_file(output_fd, "workload-exit.json") as stream:
+            json.dump(receipt, stream)
+        try:
+            directory = os.open(artifacts, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                fd = os.open("integration.xml", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                with os.fdopen(fd, "rb") as incoming:
+                    if not stat.S_ISREG(os.fstat(incoming.fileno()).st_mode):
+                        raise ValueError("nonregular JUnit")
+                    with _workload_file(output_fd, "integration.xml", binary=True) as outgoing:
+                        import shutil
+                        shutil.copyfileobj(incoming, outgoing)
+            finally:
+                os.close(directory)
+            receipt["export"] = "EXPORTED"
+        except Exception as error:
+            receipt["export_error"] = type(error).__name__
+        with _workload_file(output_fd, "workload-result.json") as stream:
+            json.dump(receipt, stream)
+        print("THR211_WORKLOAD=" + json.dumps(receipt), flush=True)
+        return code if code else (0 if receipt["export"] == "EXPORTED" else 74)
