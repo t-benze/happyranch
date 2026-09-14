@@ -28,7 +28,21 @@ function client() {
   qc.setQueryDefaults(['orgs'], { staleTime: Infinity });
   qc.setQueryDefaults(['dashboard-summary'], { staleTime: Infinity });
   qc.setQueryData(['orgs'], orgs);
-  for (const slug of ['org-a', 'org-b']) qc.setQueryData(['dashboard-summary', slug], summary);
+  for (const slug of ['org-a', 'org-b']) {
+    qc.setQueryData(['dashboard-summary', slug], summary);
+    // These acceptance cases exercise the ordinary roots reader's recovery
+    // contract. Seed an exhausted, fresh attention reader so its independent
+    // status=escalated request cannot alter their ordinary-request ledgers or
+    // introduce an unrelated Retry control. Dedicated TasksPage cases cover
+    // the attention reader itself, including its loading/error/pagination
+    // behavior and cross-org isolation.
+    const attentionKey = ['tasks-roots-infinite', slug, { status: 'escalated' }];
+    qc.setQueryDefaults(attentionKey, { staleTime: Infinity });
+    qc.setQueryData(attentionKey, {
+      pages: [{ tasks: [], next_cursor: null }],
+      pageParams: [undefined],
+    });
+  }
   clients.push(qc);
   return qc;
 }

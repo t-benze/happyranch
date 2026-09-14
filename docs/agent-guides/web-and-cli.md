@@ -43,6 +43,12 @@ An empty agent means no agent filter, not an unassigned-only request. Applied
 values remain visible, including for successful empty results. A new org/filter
 request starts without another context's cursor; returning to a cached context
 retains its own pages. Local recovery ownership resets on context changes.
+`Waiting on you` uses a separate root traversal with exact
+`status=escalated`; it is never derived from loaded ordinary pages or a
+severity rollup. Its rows are root-only and own the presentation when an
+ordinary page contains the same task id. While its cursor remains, wording is
+non-exact (`50+ waiting on you`); only an exhausted traversal may show an
+exact count. The ordinary cursor order is unchanged.
 Initial failures show an
 explicit Retry; failed refreshes retain cached rows and a stale warning;
 failed pagination retains loaded rows and requires its separate page Retry.

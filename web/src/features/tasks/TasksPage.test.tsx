@@ -87,6 +87,176 @@ const JOB: JobRecord = {
 };
 
 describe('TasksPage — read path (roots endpoint)', () => {
+  test('uses a non-exact count until every status=escalated page is exhausted', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const firstPage = Array.from({ length: 50 }, (_, index) => rootTask({
+      task_id: `TASK-ESC-${index + 11}`,
+      brief: `Escalation ${index + 11}`,
+      status: 'escalated',
+      severity_rollup: 'escalated',
+    }));
+    const finalPage = Array.from({ length: 10 }, (_, index) => rootTask({
+      task_id: `TASK-ESC-${index + 1}`,
+      brief: `Escalation ${index + 1}`,
+      status: 'escalated',
+      severity_rollup: 'escalated',
+    }));
+    const attentionRequests: Record<string, string>[] = [];
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+      const params = Object.fromEntries(new URL(request.url).searchParams);
+      if (params.status !== 'escalated') return HttpResponse.json({ tasks: [], next_cursor: null });
+      attentionRequests.push(params);
+      return HttpResponse.json(params.before
+        ? { tasks: finalPage, next_cursor: null }
+        : { tasks: firstPage, next_cursor: 'TASK-ESC-11' });
+    }));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    expect(await screen.findByText('50+ waiting on you')).toBeInTheDocument();
+    expect(screen.queryByText('50 waiting on you')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Load more waiting-on-you tasks' }));
+    expect(await screen.findByText('60 waiting on you')).toBeInTheDocument();
+    expect(attentionRequests).toEqual([
+      { status: 'escalated', limit: '50' },
+      { status: 'escalated', limit: '50', before: 'TASK-ESC-11' },
+    ]);
+  });
+
+  test('deduplicates an escalated root that occurs in both traversals', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const shared = rootTask({
+      task_id: 'TASK-SHARED-ESC', brief: 'Shared escalation', status: 'escalated', severity_rollup: 'escalated',
+    });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) =>
+      HttpResponse.json(new URL(request.url).searchParams.get('status') === 'escalated'
+        ? { tasks: [shared], next_cursor: null }
+        : { tasks: [shared, rootTask({ task_id: 'TASK-ORDINARY', brief: 'Ordinary root' })], next_cursor: null }),
+    ));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    expect(await screen.findByText('Shared escalation')).toBeInTheDocument();
+    expect(screen.getAllByText('Shared escalation')).toHaveLength(1);
+    expect(screen.getByText('Ordinary root')).toBeInTheDocument();
+  });
+
+  test('keeps ordinary results usable when the attention traversal fails and retries independently', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let attentionAttempts = 0;
+    const escalated = rootTask({
+      task_id: 'TASK-RECOVERED-ESC', brief: 'Recovered escalation', status: 'escalated', severity_rollup: 'escalated',
+    });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+      if (new URL(request.url).searchParams.get('status') !== 'escalated') {
+        return HttpResponse.json({ tasks: [rootTask({ task_id: 'TASK-ORDINARY', brief: 'Ordinary remains visible' })], next_cursor: null });
+      }
+      attentionAttempts += 1;
+      return attentionAttempts === 1
+        ? new HttpResponse(null, { status: 500 })
+        : HttpResponse.json({ tasks: [escalated], next_cursor: null });
+    }));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    expect(await screen.findByText('Ordinary remains visible')).toBeInTheDocument();
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not load waiting-on-you tasks');
+    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Recovered escalation')).toBeInTheDocument();
+    expect(attentionAttempts).toBe(2);
+  });
+
+  test('does not render a late attention response from a prior org', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    let releaseOld!: () => void;
+    const oldAttention = new Promise<void>((resolve) => { releaseOld = resolve; });
+    const oldEscalation = rootTask({
+      task_id: 'TASK-ORG-A-ESC', brief: 'Old org escalation', status: 'escalated', severity_rollup: 'escalated',
+    });
+    const newEscalation = rootTask({
+      task_id: 'TASK-ORG-B-ESC', brief: 'Current org escalation', status: 'escalated', severity_rollup: 'escalated',
+    });
+    server.use(http.get('/api/v1/orgs/:slug/tasks/roots', async ({ request, params }) => {
+      const status = new URL(request.url).searchParams.get('status');
+      if (status !== 'escalated') return HttpResponse.json({ tasks: [], next_cursor: null });
+      if (params.slug === 'org-a') {
+        await oldAttention;
+        return HttpResponse.json({ tasks: [oldEscalation], next_cursor: null });
+      }
+      return HttpResponse.json({ tasks: [newEscalation], next_cursor: null });
+    }));
+    const queryClient = makeQueryClient();
+    render(
+      <MemoryRouter initialEntries={['/orgs/org-a/tasks']}>
+        <AppProvider client={queryClient}>
+          <Link to="/orgs/org-b/tasks">Go org b</Link><AppRoutes />
+        </AppProvider>
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(screen.getByRole('link', { name: 'Go org b' }));
+    expect(await screen.findByText('Current org escalation')).toBeInTheDocument();
+    releaseOld();
+    await waitFor(() => expect(screen.queryByText('Old org escalation')).not.toBeInTheDocument());
+    expect(screen.getByText('Current org escalation')).toBeInTheDocument();
+    await queryClient.cancelQueries();
+    queryClient.clear();
+  });
+
+  test('shows an older escalated root from its independent status query without claiming a partial exact count', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const requests: Record<string, string>[] = [];
+    const ordinary = rootTask({ task_id: 'TASK-ORD', brief: 'Newest ordinary root' });
+    const escalated = rootTask({
+      task_id: 'TASK-ESC-OLD',
+      brief: 'Older founder decision',
+      status: 'escalated',
+      severity_rollup: 'escalated',
+    });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+      const params = Object.fromEntries(new URL(request.url).searchParams);
+      requests.push(params);
+      return HttpResponse.json(params.status === 'escalated'
+        ? { tasks: [escalated], next_cursor: 'TASK-ESC-OLD' }
+        : { tasks: [ordinary], next_cursor: null });
+    }));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    expect(await screen.findByRole('heading', { name: 'Waiting on you' })).toBeInTheDocument();
+    expect(screen.getByText('Older founder decision')).toBeInTheDocument();
+    expect(screen.getByText('50+ waiting on you')).toBeInTheDocument();
+    expect(screen.queryByText('1 WAITING ON YOU')).not.toBeInTheDocument();
+    expect(requests).toEqual([
+      { limit: '50' },
+      { status: 'escalated', limit: '50' },
+    ]);
+  });
+
+  test('keeps Waiting on you visible when the ordinary roots traversal is empty', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const escalated = rootTask({
+      task_id: 'TASK-ESC-ONLY',
+      brief: 'Founder decision without ordinary roots',
+      status: 'escalated',
+      severity_rollup: 'escalated',
+    });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
+      const status = new URL(request.url).searchParams.get('status');
+      return HttpResponse.json(status === 'escalated'
+        ? { tasks: [escalated], next_cursor: null }
+        : { tasks: [], next_cursor: null });
+    }));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+
+    expect(await screen.findByRole('heading', { name: 'Waiting on you' })).toBeInTheDocument();
+    expect(screen.getByText('Founder decision without ordinary roots')).toBeInTheDocument();
+    expect(screen.getByText('1 waiting on you')).toBeInTheDocument();
+    expect(screen.getByText('No tasks')).toBeInTheDocument();
+  });
+
   test('keeps initial loading distinct from empty', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
@@ -124,7 +294,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     expect(retry).toHaveFocus();
     await user.keyboard('{Enter}');
     expect(await screen.findByText(/Draft Hong Kong visa guide/)).toBeInTheDocument();
-    expect(requests).toBe(2);
+    expect(requests).toBe(3);
   });
 
   test('reserves the empty state for a successful zero-row response', async () => {
@@ -167,6 +337,9 @@ describe('TasksPage — read path (roots endpoint)', () => {
       const ledger: { pathname: string; params: Record<string, string>; bearer: string | null }[] = [];
       server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
         const url = new URL(request.url);
+        if (url.searchParams.get('status') === 'escalated') {
+          return HttpResponse.json({ tasks: [], next_cursor: null });
+        }
         ledger.push({ pathname: url.pathname, params: Object.fromEntries(url.searchParams),
           bearer: request.headers.get('authorization') });
         if (shouldFail) return new HttpResponse(null, { status: 500 });
@@ -271,6 +444,9 @@ describe('TasksPage — read path (roots endpoint)', () => {
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
         const before = new URL(request.url).searchParams.get('before') ?? 'first';
+        if (new URL(request.url).searchParams.get('status') === 'escalated') {
+          return HttpResponse.json({ tasks: [], next_cursor: null });
+        }
         requestedBefore.push(before);
         if (before === 'first') {
           return HttpResponse.json({ tasks: [TASK], next_cursor: 'page-2' });
@@ -741,15 +917,15 @@ describe('TasksPage — Direction-A list reshape (THR-030 TASKS-01/02/03)', () =
       await screen.findByRole('heading', { name: 'What the org is working on' }),
     ).toBeInTheDocument();
 
-    // Eyebrow derives from loaded list data: 3 roots · 1 waiting on you
-    // (escalated) · 1 failed (rollup). Wait for the roots query to populate
+    // Eyebrow derives from the ordinary list: escalated roots are owned by the
+    // separate Waiting-on-you presentation. Wait for the roots query to populate
     // (the static header renders before the fetch resolves).
     await waitFor(() =>
-      expect(screen.getByText(/ROOT TASKS/)).toHaveTextContent('3 LOADED MATCHING ROOT TASKS'),
+      expect(screen.getByText(/ROOT TASKS/)).toHaveTextContent('2 LOADED MATCHING ROOT TASKS'),
     );
     const eyebrow = screen.getByText(/ROOT TASKS/);
     expect(eyebrow).toHaveTextContent('SUBTASKS ROLL UP');
-    expect(eyebrow).toHaveTextContent('1 WAITING ON YOU');
+    expect(eyebrow).not.toHaveTextContent('WAITING ON YOU');
     expect(eyebrow).toHaveTextContent('1 FAILED');
   });
 

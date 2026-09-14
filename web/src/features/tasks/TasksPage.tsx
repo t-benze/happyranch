@@ -183,36 +183,53 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
   const orgSlug = useOrgSlugOptional();
   const queryClient = useQueryClient();
   const tasksQuery = useTasksRootsInfinite(filters);
+  // This is deliberately not derived from the ordinary pages. The roots
+  // endpoint has no total, so its independent status traversal is the only
+  // truthful source for a Waiting-on-you presentation.
+  const attentionParams = { status: 'escalated' };
+  const attentionQuery = useTasksRootsInfinite(attentionParams);
 
   const allTasks = useMemo(
     () => tasksQuery.data?.pages.flatMap((p) => p.tasks) ?? [],
     [tasksQuery.data],
   );
+  const attentionTasks = useMemo(
+    () => (attentionQuery.data?.pages.flatMap((p) => p.tasks) ?? [])
+      // Keep the presentation rooted in the exact status contract even when
+      // a test/double or stale intermediary returns an over-broad payload.
+      .filter((task) => task.status === 'escalated'),
+    [attentionQuery.data],
+  );
+  const attentionTaskIds = useMemo(
+    () => new Set(attentionTasks.map((task) => task.task_id)),
+    [attentionTasks],
+  );
+  // A waiting root owns its presentation. If it also occurs in the ordinary
+  // chronological traversal, keep one row rather than duplicating it.
+  const ordinaryTasks = useMemo(
+    () => allTasks.filter((task) => !attentionTaskIds.has(task.task_id)),
+    [allTasks, attentionTaskIds],
+  );
 
   // Page eyebrow — derived ONLY from already-loaded roots-list fields
-  // (no extra fetch, no fabrication). "Waiting on you" = roots escalated to
-  // the founder (THR-037 Change B: the top-level `escalated` status); "Failed"
-  // uses the same severity rollup the rows display. "Subtasks roll up" is a
-  // static, honest descriptor of the roots payload (it carries severity_rollup).
+  // (no extra fetch, no fabrication). "Failed" uses the same severity rollup
+  // the rows display. "Subtasks roll up" is a static, honest descriptor of
+  // the roots payload (it carries severity_rollup).
   const eyebrow = useMemo(() => {
-    const waitingOnYou = allTasks.filter(
-      (t) => t.status === 'escalated',
-    ).length;
-    const failed = allTasks.filter(
+    const failed = ordinaryTasks.filter(
       (t) => severityRollupStatus(t) === 'failed',
     ).length;
     return [
-      `${allTasks.length} LOADED MATCHING ROOT TASKS`,
+      `${ordinaryTasks.length} LOADED MATCHING ROOT TASKS`,
       'SUBTASKS ROLL UP',
-      `${waitingOnYou} WAITING ON YOU`,
       `${failed} FAILED`,
     ].join(' · ');
-  }, [allTasks]);
+  }, [ordinaryTasks]);
 
   // Group tasks by the active dimension, sorted by group priority then recency.
   const groups = useMemo(() => {
     const map = new Map<string, TaskRecord[]>();
-    for (const t of allTasks) {
+    for (const t of ordinaryTasks) {
       const k = groupKey(t, groupBy);
       const list = map.get(k);
       if (list) list.push(t);
@@ -237,7 +254,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
       entries.sort((a, b) => a[0].localeCompare(b[0]));
     }
     return entries;
-  }, [allTasks, groupBy]);
+  }, [ordinaryTasks, groupBy]);
 
   // Sentinel observer for infinite scroll.
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -292,6 +309,15 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
       setIsRetrying(false);
     }
   };
+  const retryAttention = async () => {
+    await queryClient.refetchQueries({
+      queryKey: ['tasks-roots-infinite', orgSlug, attentionParams],
+      exact: true,
+    });
+  };
+  const attentionCount = attentionQuery.hasNextPage
+    ? '50+ waiting on you'
+    : `${attentionTasks.length} waiting on you`;
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
@@ -353,6 +379,40 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
           </form>
         )}
         {filters && <p className="text-text-secondary mb-4 text-sm">Applied filters: {filters.status && `status = ${filters.status}`} {filters.assigned_agent && `assigned agent = ${filters.assigned_agent}`}</p>}
+        {attentionQuery.isLoading ? (
+          <p className="text-text-muted px-6 text-sm">Loading waiting-on-you tasks…</p>
+        ) : attentionQuery.isError ? (
+          <div role="alert" className="border-feedback-danger bg-danger-soft mx-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
+            <p className="text-text-primary text-sm font-medium">Could not load waiting-on-you tasks</p>
+            <Button size="sm" variant="outline" onClick={() => void retryAttention()}>
+              <RefreshCw size={14} aria-hidden /> Retry
+            </Button>
+          </div>
+        ) : attentionTasks.length > 0 ? (
+          <section aria-labelledby="waiting-on-you-heading" className="border-border-default mx-6 mb-6 space-y-2 rounded-xl border p-3">
+            <div className="flex items-center justify-between gap-3">
+              <h2 id="waiting-on-you-heading" className="flex items-center gap-2 text-task-group text-text-primary font-semibold tracking-tight">
+                <span aria-hidden className="inline-block h-2 w-2 rounded-full text-attention-text" />
+                Waiting on you
+              </h2>
+              <span className="text-text-muted text-xs tabular-nums">{attentionCount}</span>
+            </div>
+            <div className="border-border-default bg-surface-page rounded-xl border shadow-sm">
+              <ul>
+                {attentionTasks.map((task) => (
+                  <li key={task.task_id}>
+                    <TaskListRow task={task} to={routes.detail(task.task_id)} taskRoutes={routes} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+            {attentionQuery.hasNextPage && (
+              <Button size="sm" variant="outline" onClick={() => void attentionQuery.fetchNextPage()} loading={attentionQuery.isFetchingNextPage}>
+                Load more waiting-on-you tasks
+              </Button>
+            )}
+          </section>
+        ) : null}
         {isLoading && !isRetrying ? (
           <p className="text-text-muted py-6 text-center text-sm">Loading…</p>
         ) : (tasksQuery.isError || isRetrying) && !hasUsableTasks ? (
