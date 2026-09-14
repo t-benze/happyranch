@@ -13,6 +13,14 @@
 
 When starting a feature, read the relevant design doc first and follow existing patterns in `runtime/orchestrator/`.
 
+## Workspace Cleanup Configuration
+
+`OrgConfig` parses `workspace_cleanup.enabled` as the existing scheduler switch:
+it is boolean and defaults to `true`. Its separate
+`workspace_cleanup.reclamation_actions_enabled` key is also strictly boolean,
+defaults to `false`, and is inert/reserved for a later hook. No action consumer
+exists, so `true` currently triggers no reclamation.
+
 ## Org Content APIs
 
 `AgentDef` in `runtime/orchestrator/agent_def.py` represents an agent file: markdown with YAML frontmatter parsed/rendered by `parse_agent_text` and `render_agent_text`.

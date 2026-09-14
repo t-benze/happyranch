@@ -344,6 +344,15 @@ before any `ZoneInfo()` call. (Pre-TASK-976 an omitted value defaulted to the
 literal `UTC`; orgs relying on that implicit default now schedule on
 machine-local time — host-local night, as intended.)
 
+## Org Config: Workspace Cleanup
+
+`workspace_cleanup.enabled` is a boolean scheduler switch that defaults to
+`true`; setting it to `false` disables the daemon-managed cleanup scheduler.
+`workspace_cleanup.reclamation_actions_enabled` is separately strictly boolean
+and defaults to `false`. It is reserved for a later reclamation hook: no action
+consumer currently exists, so setting it to `true` does not enable or perform
+reclamation.
+
 ## Agent Configuration: Single Source of Truth (THR-095)
 
 **Founder-ratified invariant (THR-095 option B):** Every piece of agent
