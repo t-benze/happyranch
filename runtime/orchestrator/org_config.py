@@ -194,6 +194,9 @@ class OrgConfig:
     # an existing daemon/org config mechanism only — no new public
     # API/CLI/UI surface.
     workspace_cleanup_enabled: bool = True
+    # Reserved for a later reclamation hook. There is no action consumer yet,
+    # so true is inert and does not enable reclamation.
+    workspace_cleanup_reclamation_actions_enabled: bool = False
     # THR-032 Phase 2: char budget for the per-task MEMORY-DIGEST push block.
     # Default ~1500 chars ≈ a dozen pointer lines; set to 0 to disable the
     # digest entirely. Must be >= 0.
@@ -742,8 +745,10 @@ def _parse_workspace_cleanup(block: dict, path: str) -> dict:
     THR-195 / TASK-6036: an enabled-by-default kill switch for the
     daemon-managed workspace cleanup scheduler. ``workspace_cleanup.enabled``
     defaults to True when the block or the key is absent; set it to false to
-    disable the capability for the org. Existing daemon/org config mechanism
-    only (no new public API/CLI/UI surface).
+    disable the capability for the org. The strictly boolean
+    ``reclamation_actions_enabled`` key defaults to False and is reserved for
+    a later hook; it currently has no action consumer. Existing daemon/org
+    config mechanism only (no new public API/CLI/UI surface).
     """
     if not isinstance(block, dict):
         raise OrgConfigError(f"{path}: workspace_cleanup must be a mapping")
@@ -757,6 +762,15 @@ def _parse_workspace_cleanup(block: dict, path: str) -> dict:
                 f"{path}: workspace_cleanup.enabled must be a boolean, got {enabled!r}"
             )
         kwargs["workspace_cleanup_enabled"] = enabled
+
+    if "reclamation_actions_enabled" in block:
+        actions_enabled = block["reclamation_actions_enabled"]
+        if not isinstance(actions_enabled, bool):
+            raise OrgConfigError(
+                f"{path}: workspace_cleanup.reclamation_actions_enabled must be a boolean, "
+                f"got {actions_enabled!r}"
+            )
+        kwargs["workspace_cleanup_reclamation_actions_enabled"] = actions_enabled
 
     return kwargs
 

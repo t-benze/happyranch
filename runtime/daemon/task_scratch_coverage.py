@@ -49,6 +49,13 @@ class TaskScratchCoverageObservation:
 
 
 @dataclass(frozen=True)
+class _CoverageBinding:
+    """Private comparison-ready snapshot; never part of report serialization."""
+    observation: TaskScratchCoverageObservation
+    snapshot: _Snapshot | None
+
+
+@dataclass(frozen=True)
 class _Item:
     rel: str
     dev: int
@@ -374,8 +381,13 @@ def _snapshot(workspace: Path, proc_root: Path, budget: _Budget) -> _Snapshot:
     return _Snapshot(boot, workspace_id, tuple(buckets), tuple(items), tuple(populations), tuple(manifests))
 
 
-def collect_task_scratch_coverage(*, workspace: Path, proc_root: Path = Path("/proc"), deadline_ns: int | None = None) -> TaskScratchCoverageObservation:
-    """Collect two bounded snapshots; the returned description never permits action."""
+def _collect_coverage_binding(*, workspace: Path, proc_root: Path = Path("/proc"), deadline_ns: int | None = None) -> _CoverageBinding:
+    """One existing two-pass admission plus its private comparison snapshot.
+
+    The public observation intentionally remains the same compact description.
+    The private companion is derived from, rather than re-collecting after, the
+    very admission that established that description.
+    """
     reasons: set[str] = set(); deadline = time.monotonic_ns() + SCAN_NS if deadline_ns is None else deadline_ns
     budget = _Budget(deadline, reasons)
     before = _snapshot(Path(workspace), Path(proc_root), budget)
@@ -393,4 +405,15 @@ def collect_task_scratch_coverage(*, workspace: Path, proc_root: Path = Path("/p
     if not buckets or not sum(row.allocated_bytes for row in buckets) or not sum(row.entries for row in buckets) or not any(row.relative_path.startswith(".happyranch/task-tmp/") for row in buckets): reasons.add("zero_or_empty_observation")
     by_path = {row.relative_path: row for row in buckets}
     ready = bool(dominant) and not reasons and all(by_path[name].classification == "canonical_regenerable" for name in dominant)
-    return TaskScratchCoverageObservation(str(workspace), before.boot, not reasons, ready, tuple(sorted(reasons)), tuple(buckets), tuple(sorted(dominant)), time.time_ns())
+    observation = TaskScratchCoverageObservation(str(workspace), before.boot, not reasons, ready, tuple(sorted(reasons)), tuple(buckets), tuple(sorted(dominant)), time.time_ns())
+    return _CoverageBinding(observation, before if not reasons else None)
+
+
+def collect_task_scratch_coverage(*, workspace: Path, proc_root: Path = Path("/proc"), deadline_ns: int | None = None) -> TaskScratchCoverageObservation:
+    """Collect two bounded snapshots; the returned description never permits action."""
+    return _collect_coverage_binding(workspace=workspace, proc_root=proc_root, deadline_ns=deadline_ns).observation
+
+
+def _collect_private_coverage(**kwargs: object) -> _CoverageBinding:
+    """Retain a bounded private binding alongside the unchanged public view."""
+    return _collect_coverage_binding(**kwargs)  # type: ignore[arg-type]

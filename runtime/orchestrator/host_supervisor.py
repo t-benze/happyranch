@@ -1329,7 +1329,9 @@ class HostSessionSupervisor:
         grace_seconds: float | None = None,
         timeout: float | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
+        final_prelaunch_validator: Callable[[], None] | None = None,
         on_terminal: "Callable[[SessionOutcome | None], None] | None" = None,
+        allow_retries: bool = True,
     ) -> SessionOutcome:
         """Run one logical invocation to a terminal outcome.
 
@@ -1345,6 +1347,19 @@ class HostSessionSupervisor:
         including supervisor-level 429 retries — after the grant-to-
         registration ownership gate and before ``backend.prepare``/launch, so
         a failing integrity check never creates a containment handle.
+
+        ``final_prelaunch_validator`` is an optional, caller-selected final
+        check after ``backend.prepare`` and cancellation registration, but
+        immediately before launch commitment. It is intentionally distinct
+        from the ordinary validator: only callers with a post-prepare
+        ownership/deadline boundary opt in, so ordinary validation timing and
+        count remain unchanged. A failure abandons the prepared handle and
+        follows normal finalization/release without calling ``backend.launch``.
+
+        ``allow_retries`` is a per-invocation override for the configured
+        retry schedule.  It defaults to ``True`` so ordinary callers retain
+        the daemon policy; a bounded recovery can pass ``False`` to make a
+        rate-limited attempt final without a sleep or re-admission.
 
         ``on_terminal`` is an optional caller-owned hook invoked on the
         invocation's **final** terminal path — AFTER the attempt's
@@ -1383,6 +1398,7 @@ class HostSessionSupervisor:
                     grace_seconds=grace,
                     attempt=attempt,
                     pre_launch_validator=pre_launch_validator,
+                    final_prelaunch_validator=final_prelaunch_validator,
                 )
             except BaseException:
                 # Unexpected exception: the lease still releases exactly
@@ -1399,12 +1415,16 @@ class HostSessionSupervisor:
                 # and re-acquire). Fires AFTER ``_execute_attempt`` finished
                 # containment/reconcile/publish and BEFORE lease release.
                 if on_terminal is not None and not (
-                    outcome.retry_worthy and attempt < self._max_retry_attempts
+                    allow_retries and outcome.retry_worthy
+                    and attempt < self._max_retry_attempts
                 ):
                     self._invoke_terminal_hook(on_terminal, outcome)
             finally:
                 lease.release()
-            if outcome.retry_worthy and attempt < self._max_retry_attempts:
+            if (
+                allow_retries and outcome.retry_worthy
+                and attempt < self._max_retry_attempts
+            ):
                 attempt += 1
                 idx = attempt - 1
                 backoff = self._backoff_seconds[idx] if idx < len(self._backoff_seconds) else 0.0
@@ -1441,6 +1461,7 @@ class HostSessionSupervisor:
         grace_seconds: float,
         attempt: int,
         pre_launch_validator: Callable[[], None] | None = None,
+        final_prelaunch_validator: Callable[[], None] | None = None,
     ) -> SessionOutcome:
         """Run one granted attempt to a terminal outcome under its ownership
         record.
@@ -1489,6 +1510,22 @@ class HostSessionSupervisor:
         if ctx.terminal_reason() is not None:
             self._abandon_pre_launch(ctx, pending, attempt)
             return self._outcome(request, ctx, attempt)
+        # ── recovery-only final launch validation ────────────────────
+        # Preparation may consume a bounded recovery interval or permit a
+        # replacement/cancellation. This hook deliberately runs after that
+        # window, and immediately before the existing atomic commitment. It
+        # is opt-in so ordinary callers do not re-run their validators here.
+        if final_prelaunch_validator is not None:
+            try:
+                final_prelaunch_validator()
+            except Exception as exc:
+                ctx.freeze_terminal(TerminalReason.FAILURE)
+                ctx.set_error(f"final pre-launch validation failed: {exc}")
+                # Keep the actionable validation error; _abandon_pre_launch
+                # intentionally replaces it with the concurrent terminal
+                # winner's generic text for cancellation/shutdown paths.
+                self._safe_abandon(self._backend, pending)
+                return self._outcome(request, ctx, attempt)
         # ── launch commitment: the single atomic gate ──
         if not ctx.commit_launch():
             self._abandon_pre_launch(ctx, pending, attempt)

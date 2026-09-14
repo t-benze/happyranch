@@ -1175,6 +1175,89 @@ describe('ThreadsPage — system message rendering (design-overhaul)', () => {
     });
   });
 
+  test.each([
+    ['short event', { kind_tag: 'invited', agent: 'agent_c' }, 'invited agent_c'],
+    ['multiline escalation', {
+      kind_tag: 'task_escalated', task_id: 'TASK-3865',
+      reason: 'A direct verified custom-adapter blocker requires founder authority: TASK-3866 invoked the approved hash-pinned custom-adapter:kimi-adapter but failed provenance validation because the wrapper emitted adapter_metadata.adapter="kimi".',
+    }, 'task TASK-3865 escalated'],
+    ['unbroken identifier', { kind_tag: 'participant_added', agent_name: 'X'.repeat(400) }, `added ${'X'.repeat(400)}`],
+  ])('keeps %s content and metadata together below one separator in the real transcript', async (_name, payload, expected) => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    setupThreadWithMessages('THR-021', [
+      mkMessage(1, 'agent_a', 'message', 'Ordinary message before event'),
+      mkSystemMessage(2, 'agent_a', payload),
+      mkMessage(3, 'founder', 'message', 'Ordinary message after event'),
+    ]);
+    mountAt(`/orgs/${SLUG}/threads/THR-021`);
+    const metadata = await screen.findByText(/system event · broadcast to all/);
+    const content = metadata.parentElement!;
+    const row = content.parentElement!;
+    expect(content).toHaveTextContent(expected);
+    if ('reason' in payload) expect(content).toHaveTextContent(payload.reason!);
+    expect(row).toHaveAttribute('title', new Date('2026-05-14T00:00:00Z').toLocaleString());
+    expect(row.children).toHaveLength(2);
+    expect(row.firstElementChild).toHaveAttribute('aria-hidden', 'true');
+    expect(content.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByText('Ordinary message before event')).toBeVisible();
+    expect(screen.getByText('Ordinary message after event')).toBeVisible();
+    if ('task_id' in payload) {
+      expect(within(content).getByRole('link', { name: 'TASK-3865' }))
+        .toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-3865`);
+    }
+    // Width, natural line wrapping, and overflow require browser geometry.
+  });
+
+  describe.each(['task_completed', 'task_escalated'])('%s full content', (kindTag) => {
+    test.each([
+      ['long prose', `${'A complete sentence remains visible. '.repeat(12)}The distinctive final sentence survives.`],
+      ['multiline', `${'First line with full context. '.repeat(12)}\nSecond line.\nThe distinctive multiline ending survives.`],
+      ['unbroken text', `${'X'.repeat(420)}DISTINCTIVE_UNBROKEN_TAIL`],
+      ['literal HTML', `${'Safe text. '.repeat(30)}<img src="x" onerror="alert(1)"> <script>alert(2)</script> Literal ending survives.`],
+    ])('preserves %s through the real API and transcript composition', async (_name, text) => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      setupThreadWithMessages('THR-022', [
+        mkMessage(1, 'agent_a', 'message', 'Ordinary message before event'),
+        mkSystemMessage(2, 'agent_a', {
+          kind_tag: kindTag, task_id: 'TASK-3865',
+          [kindTag === 'task_completed' ? 'final_output_summary' : 'reason']: text,
+          internal_unrendered_field: 'PRIVATE_FIELD_MUST_NOT_RENDER',
+        }),
+        mkMessage(3, 'founder', 'message', 'Ordinary message after event'),
+      ]);
+      mountAt(`/orgs/${SLUG}/threads/THR-022`);
+      const metadata = await screen.findByText(/system event · broadcast to all/);
+      const content = metadata.parentElement!;
+      const row = content.parentElement!;
+      const description = content.querySelector('.text-text-secondary')!;
+      expect(description.textContent).toBe(`task TASK-3865 ${kindTag === 'task_completed' ? 'completed' : 'escalated'} · ${text}`);
+      expect(description.textContent).toContain(text.slice(-40));
+      expect(description.querySelector('img, script')).toBeNull();
+      expect(row).not.toHaveTextContent('PRIVATE_FIELD_MUST_NOT_RENDER');
+      expect(within(content).getByRole('link', { name: 'TASK-3865' }))
+        .toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-3865`);
+      expect(row).toHaveAttribute('title', new Date('2026-05-14T00:00:00Z').toLocaleString());
+      expect(metadata).toHaveTextContent('system event · broadcast to all');
+      expect(screen.getByText('Ordinary message before event')).toBeVisible();
+      expect(screen.getByText('Ordinary message after event')).toBeVisible();
+      // DOM/CSS contract only: jsdom cannot establish pixel geometry or wrapping.
+      expect(row).toHaveClass('w-full', 'min-w-0');
+      expect(row.children).toHaveLength(2);
+      expect(row.firstElementChild).toHaveClass('w-full', 'h-px');
+      expect(row.firstElementChild).toHaveAttribute('aria-hidden', 'true');
+      expect(content).toHaveClass('break-words');
+      expect(description).toHaveClass('whitespace-pre-wrap');
+      let ancestor: HTMLElement | null = description as HTMLElement;
+      let scrollable = false;
+      while (ancestor) {
+        expect(ancestor.className).not.toMatch(/(?:^|\s)(?:truncate|line-clamp-\S+|whitespace-nowrap)(?:\s|$)/);
+        scrollable ||= ancestor.classList.contains('overflow-auto');
+        ancestor = ancestor.parentElement;
+      }
+      expect(scrollable).toBe(true);
+    });
+  });
+
   test('renders task_completed system card with task id and summary', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     setupThreadWithMessages('THR-010', [

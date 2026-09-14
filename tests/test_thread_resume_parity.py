@@ -1212,44 +1212,69 @@ async def test_mixed_executors_resume_their_own_sessions(tmp_path, monkeypatch):
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def test_orchestrator_task_path_source_never_references_resume():
-    """Regression (TASK-5977): the orchestrator's task-execution surfaces
-    must never pass a resume id. thread_runner.run_invocation is the ONLY
-    production caller that wires resume_session_id; a task run that starts
-    referencing it must update this pin + the protocol docs together."""
-    import inspect
-    from runtime.orchestrator.orchestrator import Orchestrator
+def test_ordinary_task_style_executor_runs_never_resume(tmp_path, monkeypatch):
+    """Task-style provider launches are behavioral fresh starts.
 
-    for member in ("_run_agent", "_run_agent_launch_contained"):
-        src = inspect.getsource(getattr(Orchestrator, member))
-        assert "resume_session_id" not in src, (
-            f"Orchestrator.{member} must not reference resume_session_id — "
-            f"task execution never resumes provider sessions."
-        )
+    This deliberately executes the real Codex and Pi executor bodies at the
+    subprocess boundary.  The thread recovery tests above separately exercise
+    their provider-resume/runtime binding; a normal task must never inherit it.
+    """
+    from runtime.orchestrator import executors as executor_mod
+    from runtime.orchestrator.executors import CodexExecutor, PiExecutor, ExecutorResult
+
+    _patch_resolve_binary(monkeypatch)
+    seen: list[tuple[tuple, dict]] = []
+
+    def fake_run_command(*_args, **kwargs):
+        seen.append((_args, kwargs))
+        return ExecutorResult(success=True, duration_seconds=1, session_id="runtime-task")
+
+    monkeypatch.setattr(executor_mod, "_run_command", fake_run_command)
+    for executor in (CodexExecutor("codex", "workspace-write"), PiExecutor("pi")):
+        result = executor.run(workspace=tmp_path, prompt="ordinary task", session_id="runtime-task")
+        assert result.success
+    assert len(seen) == 2
+    assert all(args[2] == "runtime-task" for args, _kwargs in seen)
+    assert all(kwargs.get("resume_session_id") is None for _args, kwargs in seen)
+    assert all(kwargs.get("recovery_deadline_monotonic") is None for _args, kwargs in seen)
 
 
-def test_executor_run_default_never_resumes_across_providers():
-    """The resume parameter defaults to None on every resume-capable
-    executor, so any caller that omits it (tasks, wakes, dreams) gets a
-    fresh invocation. PR-1 gives custom adapters a dormant uniform parameter,
-    but thread_runner still excludes custom profiles from resume eligibility."""
-    import inspect
+def test_builtin_executor_ordinary_runs_are_behaviorally_fresh(tmp_path, monkeypatch):
+    """Each real built-in run body accepts the ordinary producer signature.
+
+    This is deliberately a behavioral regression, not a signature/source
+    assertion: the shared subprocess boundary records the actual kwargs after
+    Claude, Codex, OpenCode, and Pi have each run their production body.
+    """
+    from runtime.config import Settings
     from runtime.orchestrator import executors as ex_mod
+    from runtime.orchestrator.executors import (
+        ClaudeExecutor, CodexExecutor, ExecutorResult, OpencodeExecutor,
+        PiExecutor,
+    )
+    import runtime.orchestrator.workspace_adapters as workspace_adapters
 
-    for cls_name in ("ClaudeExecutor", "CodexExecutor", "PiExecutor",
-                      "OpencodeExecutor"):
-        cls = getattr(ex_mod, cls_name)
-        sig = inspect.signature(cls.run)
-        param = sig.parameters["resume_session_id"]
-        assert param.default is None, (
-            f"{cls_name}.run resume_session_id default must be None"
+    _patch_resolve_binary(monkeypatch)
+    monkeypatch.setattr(workspace_adapters, "allow_rules_for_agent", lambda *_a, **_k: ())
+    calls: list[dict] = []
+
+    def fake_run_command(*_args, **kwargs):
+        calls.append(kwargs)
+        return ExecutorResult(success=True, duration_seconds=1, session_id="ordinary")
+
+    monkeypatch.setattr(ex_mod, "_run_command", fake_run_command)
+    executors = (
+        ClaudeExecutor("claude", "default", Settings()),
+        CodexExecutor("codex", "workspace-write"),
+        OpencodeExecutor("opencode"),
+        PiExecutor("pi"),
+    )
+    for executor in executors:
+        result = executor.run(
+            workspace=tmp_path, prompt="ordinary task", session_id="runtime-task",
         )
-    custom_param = inspect.signature(ex_mod.CustomAdapterExecutor.run).parameters[
-        "resume_session_id"
-    ]
-    assert custom_param.default is None
+        assert result.success
 
-    from runtime.daemon import thread_runner
-    assert thread_runner._RESUME_CAPABLE_EXECUTORS == frozenset(
-        {"claude", "codex", "pi", "opencode"}
-    ), "PR-1 must not earn or consume custom-adapter resume capability"
+    assert len(calls) == 4
+    assert all(call.get("resume_session_id") is None for call in calls)
+    assert all(call.get("recovery_deadline_monotonic") is None for call in calls)

@@ -565,6 +565,18 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "session_mismatch", "active": expected, "got": body.session_id},
         )
+    # Recovery may report the work already performed, but cannot create or
+    # redirect work through a manager decision before its own completion is
+    # consumed. Validate before any result insertion or downstream dispatch.
+    if (
+        org.sessions.is_recovery_session(task_id, body.agent, body.session_id)
+        and body.decision is not None
+        and body.decision.get("action") in {"delegate", "fanout", "parallel", "supersede"}
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "recovery_purpose_forbidden"},
+        )
     # Spec §6.2: validate waiting_on_job_ids if EXPLICITLY present. We check
     # model_fields_set rather than truthiness so we can distinguish "client
     # omitted the field" (legacy escalate path, no validation) from "client
@@ -668,23 +680,49 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
         decision_payload["_manager_self_evaluation"] = sanitized
     decision_json = _json.dumps(decision_payload) if decision_payload is not None else None
     async with org.db_lock:
-        org.db.insert_task_result(
-            task_id=task_id,
-            agent=body.agent,
-            session_id=body.session_id,
-            status=body.status,
-            output_summary=body.output_summary,
-            decision_json=decision_json,
-            confidence_score=body.confidence,
-            risks_flagged=body.risks_flagged,
-            output_dir=body.output_dir,
-            waiting_on_job_ids=body.waiting_on_job_ids or None,
-            verdict=body.verdict,
-            local_ci_json=local_ci_json,
-        )
-    # Clear the tracker so a duplicate POST for the same session is rejected as
-    # unknown_session rather than silently persisting a second row.
-    org.sessions.clear(task_id, body.agent)
+        # The pre-await guards above give callers stable error ordering.  They
+        # are not admission authority: cancellation or a newer generation can
+        # land while this callback waits for the shared DB lock.
+        _require_task_active(task_id, org.db.get_task(task_id))
+        # Do not await under this lease.  It bridges get_active() and the
+        # synchronized SQLite transaction, closing the old post-get_active
+        # generation-replacement gap without inverting the DB RLock.
+        with org.sessions.binding_lease(task_id, body.agent):
+            current = org.sessions.get_active(task_id, body.agent)
+            if current != body.session_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": "unknown_session" if current is None else "session_mismatch",
+                            "task_id": task_id, "agent": body.agent},
+                )
+            recovery_deadline_monotonic = org.sessions.recovery_deadline_monotonic(
+                task_id, body.agent, body.session_id,
+            )
+            # The recovery ledger is the durable authority for a callback after a
+            # clean provider omission.  In particular, a late callback from the
+            # origin invocation must not overwrite a recovery claim.
+            if not org.db.admit_task_completion_callback(
+                task_id=task_id,
+                agent=body.agent,
+                session_id=body.session_id,
+                status=body.status,
+                output_summary=body.output_summary,
+                decision_json=decision_json,
+                confidence_score=body.confidence,
+                risks_flagged=body.risks_flagged,
+                output_dir=body.output_dir,
+                waiting_on_job_ids=body.waiting_on_job_ids or None,
+                verdict=body.verdict,
+                local_ci_json=local_ci_json,
+                recovery_deadline_monotonic=recovery_deadline_monotonic,
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": "recovery_callback_not_admissible"},
+                )
+    # Generation-owned cleanup preserves a newer invocation that may have
+    # replaced this callback while the route was awaiting its DB lock.
+    org.sessions.clear_if_active_session(task_id, body.agent, body.session_id)
     # TODO(events): subscribers that connect after this point won't replay
     # `completion_reported`. The terminal task_* event is still synthesized
     # from the DB status, but per-agent completion beats are lost. Acceptable
@@ -734,6 +772,11 @@ async def submit_progress(task_id: str, body: ProgressBody, org: OrgDep) -> dict
         raise HTTPException(
             status_code=400,
             detail={"code": "message_required"},
+        )
+    if org.sessions.is_recovery_session(task_id, body.agent, body.session_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "recovery_purpose_forbidden"},
         )
     async with org.db_lock:
         AuditLogger(org.db).log_progress(

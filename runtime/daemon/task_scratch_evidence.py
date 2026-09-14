@@ -30,6 +30,19 @@ class TaskScratchEvidence:
     freshness_limited: bool = True
 
 
+@dataclass(frozen=True)
+class _EvidenceObservation:
+    """Private typed companion for the dormant consumer.
+
+    This deliberately retains the collector's existing durable snapshot rather
+    than promoting it into the report/API shape.
+    """
+    evidence: TaskScratchEvidence
+    snapshot: tuple[tuple[object, ...], ...] | None
+    sessions: tuple[object, ...] | None
+    process_identities: tuple[tuple[str, str], ...] | None
+
+
 def _under(value: str, root: Path) -> bool:
     value = os.path.normpath(value.removesuffix(" (deleted)")); base = os.path.normpath(str(root))
     return value == base or value.startswith(base + os.sep)
@@ -154,7 +167,9 @@ def _snapshot(db: Database, task_id: str, reasons: set[str], deadline: int) -> t
         try: task = db.get_task(listed.id)
         except Exception: reasons.add("task_authority_unavailable"); return None
         if task is None or task.id != listed.id: reasons.add("task_authority_unavailable"); return None
-        out.append(("task", task.id, _shape(task)))
+        # Keep the typed record only in the private in-memory snapshot.  The
+        # public TaskScratchEvidence remains deliberately compact.
+        out.append(("task", task.id, _shape(task), task))
         if task.executor_pid is not None:
             if not isinstance(task.executor_pid, int) or isinstance(task.executor_pid, bool) or task.executor_pid <= 0:
                 reasons.add("executor_pid_unavailable")
@@ -166,7 +181,11 @@ def _snapshot(db: Database, task_id: str, reasons: set[str], deadline: int) -> t
             if _expired(deadline): reasons.add("observation_timeout"); return None
             try:
                 result = db.get_latest_task_result(task.id, task.assigned_agent, task.current_session_id)
-                out.append(("result", task.id, repr(result)))
+                # The report deliberately keeps no result payload.  The
+                # dormant consumer needs this existing typed read, however:
+                # ``None`` must not be silently promoted into a private
+                # consumption permit.
+                out.append(("result", task.id, repr(result), result))
                 # A retained blocked receipt is not itself authority that recovery is
                 # pending: the real consumer may have failed the task and cleared its
                 # block state while retaining that audit/result row.
@@ -220,7 +239,7 @@ def _executor_pids(snapshot: tuple[tuple[object, ...], ...] | None) -> set[str] 
     return values
 
 
-def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, task_id: str, root: Path, proc_root: Path = Path("/proc"), monotonic_now: float | None = None, daemon_started_monotonic: float | None = None) -> TaskScratchEvidence:
+def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, task_id: str, root: Path, proc_root: Path = Path("/proc"), monotonic_now: float | None = None, daemon_started_monotonic: float | None = None, _private: bool = False) -> TaskScratchEvidence | _EvidenceObservation:
     """Finite shared-deadline observation; blocking OS/DB calls are not preemptible."""
     reasons: set[str] = set(); now = time.monotonic() if monotonic_now is None else monotonic_now
     if daemon_started_monotonic is None or now - daemon_started_monotonic < WARMUP_SECONDS: reasons.add("zombie_warmup")
@@ -289,4 +308,26 @@ def collect_task_scratch_evidence(*, db: Database, sessions: SessionTracker, tas
     }
     if roots is None or cwds is None or fds is None or old_boot is None or before_scan_boot is None or final_boot is None or reasons & measurement_invalid:
         roots = cwds = fds = None
-    return TaskScratchEvidence(task_id, not reasons, tuple(sorted(reasons)), final_boot, time.time_ns(), roots, cwds, fds)
+    evidence = TaskScratchEvidence(task_id, not reasons, tuple(sorted(reasons)), final_boot, time.time_ns(), roots, cwds, fds)
+    if _private:
+        # ``after`` and the process/session values above are from this exact
+        # bounded admission.  Do not start a third snapshot just to decorate a
+        # private consumer result.
+        return _EvidenceObservation(
+            evidence,
+            after if not reasons else None,
+            tuple(sorted(sessions_before)) if not reasons else None,
+            tuple(final_identities) if not reasons and final_identities is not None else None,
+        )
+    return evidence
+
+
+def _collect_private_evidence(**kwargs: object) -> _EvidenceObservation:
+    """Return a fresh private binding without changing the public result.
+
+    The extra snapshot is bounded by the same collector limits and is used only
+    by the production-unreferenced synchronous test consumer.
+    """
+    value = collect_task_scratch_evidence(**kwargs, _private=True)  # type: ignore[arg-type]
+    assert isinstance(value, _EvidenceObservation)
+    return value

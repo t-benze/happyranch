@@ -83,6 +83,14 @@ export interface TaskRecord {
   [extra: string]: unknown;
 }
 
+export interface CleanupActivity {
+  task_id: string;
+  status: TaskStatus;
+  created_at: string;
+  result_status: TaskStatus | null;
+  output_summary: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Task attachments (THR-109)
 // ---------------------------------------------------------------------------

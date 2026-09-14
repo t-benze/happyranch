@@ -1636,10 +1636,17 @@ class TestFanoutPipeline:
         enqueued = []
 
         class SweepQueue:
+            def __init__(self):
+                # _sweep_on_startup's duplicate guard intentionally examines
+                # the shipping asyncio.Queue deque before enqueueing.
+                from types import SimpleNamespace
+                self._queue = SimpleNamespace(_queue=[])
+
             def put_nowait(self, slug, tid):
                 enqueued.append((slug, tid))
             def enqueue(self, slug, tid):
                 enqueued.append((slug, tid))
+                self._queue._queue.append((slug, tid, None))
         orch._queue = SweepQueue()
 
         _sweep_on_startup(db, orch._queue, slug="test", orchestrator=orch)

@@ -20,6 +20,9 @@ export const useAgentTasks: ReturnType<typeof useData>['agents']['useAgentTasks'
   agentName,
 ) => useData().agents.useAgentTasks(agentName);
 
+export const useCleanupActivity: ReturnType<typeof useData>['agents']['useCleanupActivity'] = (agentName) =>
+  useData().agents.useCleanupActivity(agentName);
+
 export const useApproveAgent: ReturnType<typeof useData>['agents']['useApproveAgent'] = () =>
   useData().agents.useApproveAgent();
 
