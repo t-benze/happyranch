@@ -50,6 +50,14 @@ def _u0_hosted_source_contract() -> _U0HostedSourceContract:
         ("e6b5b869b3ec3f1a6e597594b9e27f5e48dad4ff9f361646d19c924d771ea86e",
          "65606c50ee41224fdb8fe48193adffd045a0d6977fd7eed7e4342c0ec876e73d"):
             _U0HostedSourceContract(True, True),
+        # Current PR845 evidence venue: source bytes from the authenticated
+        # `13ea23be` main-derived tree inspected for this correction.  Its
+        # expanded prior-step serializer and teardown report are exercised
+        # below; this hash pair prevents a later source drift from borrowing
+        # those expectations.
+        ("6e474df928458a7a122003722957a16853c6f81799c375a2d68273a6da30aa3e",
+         "4dd0550d39b80375a2ddaea2c045272f41c40cb84a904542eb50950670295b11"):
+            _U0HostedSourceContract(True, True),
     }
     try:
         return contracts[source_pair]
@@ -129,6 +137,18 @@ def _expected_plain_fanout_join_context(parent_id: str, children: list[str]) -> 
         "=========================================",
     ))
     return "\n".join(lines)
+
+
+class _U0CurrentLaunchSpecAdapter:
+    """Adapt legacy fixture executors to the current optional resume argument."""
+
+    def build_launch_spec(self, *, workspace, prompt, session_id=None,
+                          model=None, org_slug=None, timeout_seconds=1800,
+                          resume_session_id=None):
+        return super().build_launch_spec(
+            workspace=workspace, prompt=prompt, session_id=session_id,
+            model=model, org_slug=org_slug, timeout_seconds=timeout_seconds,
+        )
 
 
 def _paths(org_state):
@@ -504,7 +524,7 @@ def test_r1_cancelled_pending_subtree_is_durable_before_queue_drain(tmp_path, mo
     errors: list[BaseException] = []
     observed: dict[str, object] = {}
 
-    class CallbackExecutor(_RecordingExecutor):
+    class CallbackExecutor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs):
             self.context = kwargs
 
@@ -548,7 +568,11 @@ def test_r1_cancelled_pending_subtree_is_durable_before_queue_drain(tmp_path, mo
     before = _r1_snapshot(db=db, tracker=tracker, paths=paths, queue=state.queue, task_ids=(parent.id,), agent_names=("dev_agent",))
     drain_thread.start()
     try:
-        assert reached.wait(2), "real delegation never reached child enqueue"
+        assert reached.wait(2), (
+            "real delegation never reached child enqueue; "
+            f"drain errors={errors!r}; parent={db.get_task(parent.id)!r}; "
+            f"executor_calls={executor.calls!r}"
+        )
         child_id = observed["child_id"]
         assert observed["durable_child"] == (child_id, parent.id, TaskStatus.PENDING.value)
         result = asyncio.run(cancel_task(parent.id, CancelBody(rationale="fixture drain", cascade=True), org))
@@ -603,7 +627,7 @@ def test_r1_cancelled_launched_child_rejects_late_callback_and_drains(tmp_path, 
     cancel_errors: list[BaseException] = []
     observed: dict[str, object] = {}
 
-    class CallbackExecutor(_RecordingExecutor):
+    class CallbackExecutor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs):
             self.context = kwargs
 
@@ -741,7 +765,7 @@ def test_r1_cancel_after_persisted_callback_keeps_history_and_no_control(tmp_pat
     reached, release = threading.Event(), threading.Event()
     errors: list[BaseException] = []
     observed: dict[str, object] = {}
-    class CallbackExecutor(_RecordingExecutor):
+    class CallbackExecutor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs): self.context = kwargs
         def run(self, **kwargs):
             task_id = self.context["task_id"]
@@ -949,7 +973,7 @@ def test_contained_queue_dispatch_callback_readback_and_parent_resume(tmp_path, 
         db=db, sessions=tracker, db_lock=asyncio.Lock(), event_bus=EventSink(),
     )
 
-    class CallbackExecutor(_RecordingExecutor):
+    class CallbackExecutor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs):
             self.context = kwargs
 
@@ -1056,7 +1080,7 @@ def test_r1_termination_before_validate_denies_real_contained_delegation(tmp_pat
 
     monkeypatch.setattr(run_step_mod, "_validate_delegate", terminate_at_boundary)
 
-    class CallbackExecutor(_RecordingExecutor):
+    class CallbackExecutor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs):
             self.context = kwargs
         def run(self, **kwargs):
@@ -1196,7 +1220,7 @@ def test_r1_termination_after_try_delegate_before_enqueue_refuses_quiescence(tmp
         assert release.wait(2), "post-commit pre-enqueue boundary was not released"
         return committed
 
-    class CallbackExecutor(_RecordingExecutor):
+    class CallbackExecutor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs):
             self.context = kwargs
         def run(self, **kwargs):
@@ -1405,7 +1429,7 @@ def test_r1_termination_after_original_enqueue_refuses_quiescence(tmp_path, monk
             # threads. This wrapper only retains the shipping queue boundary.
             pass
 
-    class CallbackExecutor(_RecordingExecutor):
+    class CallbackExecutor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs):
             self.context = kwargs
         def run(self, **kwargs):
@@ -1628,7 +1652,7 @@ def test_r1_termination_after_child_launch_distinguishes_callback_order(tmp_path
         finally:
             writer_done.set()
 
-    class CallbackExecutor(_RecordingExecutor):
+    class CallbackExecutor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs):
             self.context = kwargs
         def run(self, **kwargs):
@@ -1756,7 +1780,7 @@ def test_r1_real_delegate_then_chain_publication_and_fail_closed_wake(
         return original_consume(consume_orch, task_id, report, result_row_id=result_row_id)
     monkeypatch.setattr(run_step_module, "_consume_completion_report", observed_consume)
 
-    class Executor(_RecordingExecutor):
+    class Executor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs) -> None:
             assert not hasattr(self, "context"), "executor was reused across invocations"
             self.context = kwargs.copy()
@@ -1959,7 +1983,7 @@ def test_r1_chain_cancel_before_first_callback_rejects_late_result(tmp_path, mon
 
     org = SimpleNamespace(db=db, sessions=tracker, db_lock=asyncio.Lock(), event_bus=EventSink(), orchestrator=orch)
 
-    class Executor(_RecordingExecutor):
+    class Executor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs) -> None:
             self.context = kwargs.copy()
 
@@ -2190,7 +2214,7 @@ def test_r1_chain_cancel_after_advance_before_next_publication(tmp_path, monkeyp
 
     org = SimpleNamespace(db=db, sessions=tracker, db_lock=asyncio.Lock(), event_bus=EventSink(), orchestrator=orch)
 
-    class Executor(_RecordingExecutor):
+    class Executor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs) -> None:
             self.context = kwargs.copy()
 
@@ -2468,7 +2492,7 @@ def test_r1_plain_fanout_joins_only_after_both_original_children_complete(
 
     org = SimpleNamespace(db=db, sessions=tracker, db_lock=asyncio.Lock(), event_bus=EventSink(), orchestrator=orch)
 
-    class Executor(_RecordingExecutor):
+    class Executor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs):
             self.context = kwargs.copy()
 
@@ -2630,7 +2654,7 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
 
     org = SimpleNamespace(db=db, sessions=tracker, db_lock=asyncio.Lock(), event_bus=EventSink(), orchestrator=orch)
 
-    class Executor(_RecordingExecutor):
+    class Executor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs) -> None:
             self.context = kwargs.copy()
 
@@ -2708,7 +2732,10 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         assert len(events) == 1, f"{kind} invocation must own exactly one SQL write: {events!r}"
         return invocation, events[0]
 
-    original_insert_task_result = db.insert_task_result
+    # Callback admission owns one transaction and calls the private no-commit
+    # writer directly; observing only the public convenience wrapper silently
+    # misses every real callback result. Interpose at the actual SQL boundary.
+    original_insert_task_result = db._insert_task_result
     def observed_insert_task_result(*args, **kwargs):
         task_id = kwargs.get("task_id", args[0] if args else None)
         invocation, write = observe_writer(
@@ -2718,7 +2745,7 @@ def test_r1_plain_fanout_real_workers_join_in_each_callback_order(
         result_writer_observations.append({
             "arguments": dict(kwargs), "invocation": invocation, "write": write,
         })
-    monkeypatch.setattr(db, "insert_task_result", observed_insert_task_result)
+    monkeypatch.setattr(db, "_insert_task_result", observed_insert_task_result)
     original_update_task = db.update_task
     def observed_update_task(task_id, **fields):
         invocation, write = observe_writer(
@@ -3345,7 +3372,7 @@ def test_r1_plain_fanout_cancel_after_commit_before_original_child_publication(
 
     org = SimpleNamespace(db=db, sessions=tracker, db_lock=asyncio.Lock(), event_bus=EventSink(), orchestrator=orch)
 
-    class Executor(_RecordingExecutor):
+    class Executor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs) -> None:
             self.context = kwargs.copy()
 
@@ -3614,7 +3641,7 @@ def test_r1_plain_fanout_cancel_live_sibling_after_original_callback(
             return None
     org = SimpleNamespace(db=db, sessions=tracker, db_lock=asyncio.Lock(), event_bus=EventSink(), orchestrator=orch)
 
-    class Executor(_RecordingExecutor):
+    class Executor(_U0CurrentLaunchSpecAdapter, _RecordingExecutor):
         def set_invocation_context(self, **kwargs):
             self.context = kwargs.copy()
 
