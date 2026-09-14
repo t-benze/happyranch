@@ -1,3 +1,4 @@
+import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -135,7 +136,10 @@ def test_workspace_cleanup_selection_refuses_sixth_raw_before_age_filter_without
     ))
     # The newer row is raw candidate number six.  It cannot be filtered away
     # to make the five older roots actionable.
-    assert _select(db, tmp_path) is None
+    value, selects = _selection_sql(db, tmp_path)
+    assert value is None
+    assert len(selects) == 5
+    assert "LIMIT 6" in selects[-1]
 
 
 def test_workspace_cleanup_selection_refuses_newer_marker_and_relevant_foreign_live_graph(db, tmp_path) -> None:
@@ -204,7 +208,268 @@ def test_workspace_cleanup_selection_includes_terminal_cleanup_rows_in_raw_six(d
                       completed_at=now - timedelta(days=20), status=TaskStatus.COMPLETED)
         db.insert_task_result(task_id=task_id, agent="dev_agent", session_id=f"session-{task_id}",
                               output_summary="done", confidence_score=90, status="completed")
-    assert _select(db, tmp_path) is None
+    # Owner plus two original older cleanup rows and these two terminal cleanup
+    # rows is a complete ordinal-five history.  Only then can this regression
+    # reach the sixth raw candidate observation it names.
+    db.execute(
+        "UPDATE audit_log SET payload=? WHERE task_id='TASK-OWNER'",
+        ('{"run_number": 5, "brief_kind": "cleanup"}',),
+    )
+    admissions: list[str] = []
+    assert _select(db, tmp_path, lambda name: admissions.append(name) is None or True) is None
+    assert admissions == ["owner", "marker", "history", "newer_owner", "candidates"]
+
+
+def _selection_sql(db: Database, tmp_path, **kwargs):
+    """Run the helper with literal SQLite observation accounting."""
+    statements: list[str] = []
+    db._conn.set_trace_callback(statements.append)
+    try:
+        value = _select(db, tmp_path, **kwargs)
+    finally:
+        db._conn.set_trace_callback(None)
+    selects = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
+    return value, selects
+
+
+@pytest.mark.parametrize(
+    ("stop", "expected_reads"),
+    [
+        ("owner", 0), ("marker", 1), ("history", 2), ("newer_owner", 3),
+        ("candidates", 4), ("graph_tasks", 5), ("graph_edges", 6),
+        ("result:TASK-1000", 7),
+    ],
+)
+def test_workspace_cleanup_selection_sql_errors_refuse_without_later_reads(
+    db, tmp_path, stop, expected_reads,
+) -> None:
+    _selection_fixture(db)
+    admissions: list[str] = []
+
+    def admit(name: str) -> bool:
+        admissions.append(name)
+        if name == stop:
+            db._conn.set_authorizer(lambda *_: sqlite3.SQLITE_DENY)
+        return True
+
+    try:
+        value, selects = _selection_sql(db, tmp_path, admissions=admit)
+    finally:
+        db._conn.set_authorizer(None)
+    assert value is None
+    assert admissions[-1] == stop
+    assert len(selects) == expected_reads
+
+
+@pytest.mark.parametrize("result_index", range(5))
+def test_workspace_cleanup_selection_each_selected_result_sql_error_stops_sql(
+    db, tmp_path, result_index,
+) -> None:
+    _selection_fixture(db, targets=5)
+    result_names = [f"result:TASK-{1004 - ordinal}" for ordinal in range(5)]
+    stop = result_names[result_index]
+    admissions: list[str] = []
+
+    def admit(name: str) -> bool:
+        admissions.append(name)
+        if name == stop:
+            db._conn.set_authorizer(lambda *_: sqlite3.SQLITE_DENY)
+        return True
+
+    try:
+        value, selects = _selection_sql(db, tmp_path, admissions=admit)
+    finally:
+        db._conn.set_authorizer(None)
+    assert value is None
+    assert admissions[-1] == stop
+    assert len(selects) == 7 + result_index
+
+
+def test_workspace_cleanup_selection_all_twelve_pre_admission_denials_stop_sql(db, tmp_path) -> None:
+    _selection_fixture(db, targets=5)
+    denied_index = []
+    for stop in range(12):
+        admissions: list[str] = []
+
+        def admit(name: str, *, index=stop) -> bool:
+            admissions.append(name)
+            return len(admissions) - 1 != index
+
+        value, selects = _selection_sql(db, tmp_path, admissions=admit)
+        assert value is None
+        assert len(admissions) == stop + 1
+        assert len(selects) == stop
+        denied_index.append(admissions[-1])
+    assert denied_index[:7] == [
+        "owner", "marker", "history", "newer_owner", "candidates", "graph_tasks", "graph_edges",
+    ]
+    assert all(name.startswith("result:TASK-") for name in denied_index[7:])
+
+
+@pytest.mark.parametrize(
+    "malformed_created_at",
+    [
+        "2025-99-99T00:00:00+00:00",
+        "0000-01-01T00:00:00+00:00",
+        "2025-01-01T00:00:00",
+    ],
+)
+def test_workspace_cleanup_selection_refuses_malformed_marker_ordering_before_candidates(
+    db, tmp_path, malformed_created_at,
+) -> None:
+    now, _ = _selection_fixture(db)
+    db.insert_task(TaskRecord(
+        id="TASK-MALFORMED-MARKER", brief="ordinary", assigned_agent="dev_agent",
+        status=TaskStatus.PENDING, created_at=now - timedelta(days=1),
+        updated_at=now - timedelta(days=1),
+    ))
+    db.execute(
+        "UPDATE tasks SET created_at=? WHERE id='TASK-MALFORMED-MARKER'",
+        (malformed_created_at,),
+    )
+    db.insert_audit_log(
+        task_id="TASK-MALFORMED-MARKER", agent="dev_agent",
+        action="workspace_cleanup_triggered",
+        payload={"run_number": 4, "brief_kind": "cleanup"},
+    )
+    value, selects = _selection_sql(db, tmp_path)
+    assert value is None
+    assert len(selects) == 4
+    assert not any("status IN ('completed'" in sql for sql in selects)
+
+
+def test_workspace_cleanup_selection_deep_acyclic_component_is_iterative(db, tmp_path) -> None:
+    """A real 10,000-row graph must not rely on the Python recursion limit."""
+    now, targets = _selection_fixture(db, targets=3)
+    assert all(target is not None for target in targets)
+    chain_rows = [
+        (
+            f"TASK-DEEP-{ordinal}", "ordinary", "pending", "dev_agent",
+            now.isoformat(), now.isoformat(),
+            f"TASK-DEEP-{ordinal + 1}" if ordinal < 9993 else None,
+        )
+        for ordinal in range(9994)
+    ]
+    db._conn.executemany(
+        "INSERT INTO tasks (id,brief,status,assigned_agent,created_at,updated_at,parent_task_id) "
+        "VALUES (?,?,?,?,?,?,?)",
+        chain_rows,
+    )
+    db._conn.commit()
+    db.execute("UPDATE tasks SET parent_task_id='TASK-DEEP-0' WHERE id='TASK-1000'")
+    value, selects = _selection_sql(db, tmp_path)
+    assert value is not None
+    assert len(value.candidates) == 3
+    assert len(selects) == 10
+
+
+def test_workspace_cleanup_selection_five_raw_includes_terminal_cleanup_and_no_refill(db, tmp_path) -> None:
+    now, _ = _selection_fixture(db, targets=3)
+    for task_id in ("TASK-3000", "TASK-3001"):
+        _cleanup_task(
+            db, task_id, created_at=now - timedelta(days=20),
+            completed_at=now - timedelta(days=20), status=TaskStatus.COMPLETED,
+        )
+        db.insert_task_result(
+            task_id=task_id, agent="dev_agent", session_id=f"session-{task_id}",
+            output_summary="done", confidence_score=90, status="completed",
+        )
+    db.execute(
+        "UPDATE audit_log SET payload=? WHERE task_id='TASK-OWNER'",
+        ('{"run_number": 5, "brief_kind": "cleanup"}',),
+    )
+    value, selects = _selection_sql(db, tmp_path)
+    assert value is not None
+    assert len(value.candidates) == 5
+    assert len(selects) == 12
+    # A sixth raw row refuses even when it would be age-rejected; the helper
+    # cannot refill filtered slots with a later page.
+    db.insert_task(TaskRecord(
+        id="TASK-TOO-NEW", brief="ordinary", assigned_agent="dev_agent",
+        status=TaskStatus.COMPLETED, created_at=now + timedelta(days=1),
+        updated_at=now + timedelta(days=1), completed_at=now + timedelta(days=1),
+        current_session_id="session-TASK-TOO-NEW",
+    ))
+    refused, refused_selects = _selection_sql(db, tmp_path)
+    assert refused is None
+    assert len(refused_selects) == 5
+
+
+@pytest.mark.parametrize("count", [1000, 1001])
+def test_workspace_cleanup_selection_history_boundary_is_complete(db, tmp_path, count) -> None:
+    now, _ = _selection_fixture(db)
+    for ordinal in range(3, count):
+        _cleanup_task(
+            db, f"TASK-HISTORY-{ordinal}", created_at=now - timedelta(days=ordinal),
+            status=TaskStatus.PENDING,
+        )
+    db.execute(
+        "UPDATE audit_log SET payload=? WHERE task_id='TASK-OWNER'",
+        (f'{{"run_number": {count}, "brief_kind": "cleanup"}}',),
+    )
+    value, selects = _selection_sql(db, tmp_path)
+    assert (value is not None) is (count == 1000)
+    if count == 1001:
+        assert len(selects) == 3
+
+
+@pytest.mark.parametrize("count", [10000, 10001])
+def test_workspace_cleanup_selection_graph_task_boundary(db, tmp_path, count) -> None:
+    now, _ = _selection_fixture(db)
+    rows = [
+        (f"TASK-UNRELATED-{ordinal}", "ordinary", "broken-unrelated", "foreign", now.isoformat(), now.isoformat())
+        for ordinal in range(count - 4)
+    ]
+    db._conn.executemany(
+        "INSERT INTO tasks (id,brief,status,assigned_agent,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+        rows,
+    )
+    db._conn.commit()
+    value, selects = _selection_sql(db, tmp_path)
+    assert (value is not None) is (count == 10000)
+    if count == 10001:
+        assert len(selects) == 6
+
+
+@pytest.mark.parametrize("count", [20000, 20001])
+def test_workspace_cleanup_selection_edge_boundary_is_explicit_cursor_unit(db, tmp_path, count) -> None:
+    """Synthetic cursor boundary only; real SQL cannot form a valid 20k-edge graph."""
+    now, _ = _selection_fixture(db)
+    db.insert_task(TaskRecord(
+        id="TASK-UNRELATED-EDGE", brief="ordinary", assigned_agent="foreign",
+        status=TaskStatus.PENDING, created_at=now, updated_at=now,
+        parent_task_id="TASK-UNRELATED-EDGE", revisit_of_task_id="TASK-UNRELATED-EDGE",
+    ))
+    original = db._conn
+    actual_sizes: list[int] = []
+
+    class Cursor:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def __getattr__(self, key):
+            return getattr(original, key)
+
+        def execute(self, sql, *args):
+            cursor = original.execute(sql, *args)
+            if "SELECT child_id, relative_id FROM (" in sql:
+                rows = cursor.fetchall()
+                actual_sizes.append(len(rows))
+                return Cursor([rows[0]] * count)
+            return cursor
+
+    db._conn = Connection()
+    try:
+        value, selects = _selection_sql(db, tmp_path)
+    finally:
+        db._conn = original
+    assert actual_sizes == [2]
+    assert (value is not None) is (count == 20000)
+    assert len(selects) == (8 if count == 20000 else 7)
 
 
 def test_init_creates_tables(db):

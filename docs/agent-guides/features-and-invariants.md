@@ -66,7 +66,7 @@ read-only, currently uncalled planning helper. It validates only a supplied
 initial `0 -> 1` claimed owner, then performs the bounded marker/history,
 newer-owner, six-raw-candidate, graph, and exact-result reads. It exposes each
 read admission to the future hook and returns `None` on every malformed,
-oversized, related-live, or inconsistent observation. It neither reads config
+oversized, related-live, inconsistent, or unavailable SQL/decode observation. It neither reads config
 nor imports or invokes the reclamation consumer, writes an audit, or grants an
 action permit. The helper performs seven base SQL observations plus at most
 five exact result reads; the future hook's initial config read and five fresh

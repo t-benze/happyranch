@@ -72,6 +72,21 @@ def _parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _is_aware_datetime(value: object) -> bool:
+    """Return whether one persisted ordering value is a usable aware ISO time.
+
+    This deliberately shares the helper's existing parser rather than treating
+    SQLite's permissive date functions as the timestamp authority.  It is used
+    after the one bounded SQL observation; it never creates a second lookup.
+    """
+    if not isinstance(value, str):
+        return False
+    try:
+        return _parse_dt(value).tzinfo is not None
+    except (TypeError, ValueError):
+        return False
+
+
 _WORKSPACE_CLEANUP_BRIEF_MARKER = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)"
 _WORKSPACE_CLEANUP_TERMINAL_STATUSES = frozenset({
     TaskStatus.COMPLETED.value,
@@ -5687,12 +5702,15 @@ class Database:
         # 2. Exactly one marker on this owner, without an agent prefilter.
         if not admit("marker"):
             return None
-        marker_rows = self._conn.execute(
-            """SELECT agent, payload FROM audit_log
-               WHERE task_id=? AND action='workspace_cleanup_triggered'
-               ORDER BY id ASC LIMIT 2""",
-            (owner_task_id,),
-        ).fetchall()
+        try:
+            marker_rows = self._conn.execute(
+                """SELECT agent, payload FROM audit_log
+                   WHERE task_id=? AND action='workspace_cleanup_triggered'
+                   ORDER BY id ASC LIMIT 2""",
+                (owner_task_id,),
+            ).fetchall()
+        except sqlite3.Error:
+            return None
         if len(marker_rows) != 1 or marker_rows[0]["agent"] != agent:
             return None
         try:
@@ -5709,17 +5727,20 @@ class Database:
         if not admit("history"):
             return None
         escaped_marker = _WORKSPACE_CLEANUP_BRIEF_MARKER.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        history = self._conn.execute(
-            """SELECT id, created_at FROM tasks
-               WHERE assigned_agent=? AND brief LIKE ? ESCAPE '\\'
-               ORDER BY created_at DESC, id DESC LIMIT 1001""",
-            (agent, escaped_marker + "%"),
-        ).fetchall()
+        try:
+            history = self._conn.execute(
+                """SELECT id, created_at FROM tasks
+                   WHERE assigned_agent=? AND brief LIKE ? ESCAPE '\\'
+                   ORDER BY created_at DESC, id DESC LIMIT 1001""",
+                (agent, escaped_marker + "%"),
+            ).fetchall()
+        except sqlite3.Error:
+            return None
         if len(history) == 1001:
             return None
         try:
             history_tuples = [(str(row["created_at"]), str(row["id"])) for row in history]
-            if any(_parse_dt(created_at).tzinfo is None for created_at, _ in history_tuples):
+            if any(not _is_aware_datetime(created_at) for created_at, _ in history_tuples):
                 return None
         except (TypeError, ValueError):
             return None
@@ -5743,6 +5764,10 @@ class Database:
                FROM audit_log a LEFT JOIN tasks t ON t.id=a.task_id
                WHERE a.action='workspace_cleanup_triggered' AND a.task_id<>?
                  AND (t.id IS NULL OR t.created_at NOT GLOB '????-??-??T??:??:??*'
+                      OR datetime(t.created_at) IS NULL
+                      OR substr(t.created_at, 1, 4)='0000'
+                      OR (substr(t.created_at, 20, 1) NOT IN ('+', '-')
+                          AND substr(t.created_at, 20, 1) <> 'Z')
                       OR t.created_at>? OR (t.created_at=? AND t.id>?))
                ORDER BY CASE WHEN t.id IS NULL OR t.created_at NOT GLOB '????-??-??T??:??:??*' THEN 0 ELSE 1 END,
                         t.created_at DESC, a.task_id DESC LIMIT 2""",
@@ -5756,15 +5781,18 @@ class Database:
         # 5. Read six raw terminal candidates before applying the age filter.
         if not admit("candidates"):
             return None
-        raw_candidates = self._conn.execute(
-            """SELECT id, status, assigned_agent, created_at, completed_at,
-                      current_session_id
-               FROM tasks
-               WHERE assigned_agent=?
-                 AND status IN ('completed','failed','cancelled','superseded')
-               ORDER BY completed_at ASC, id ASC LIMIT 6""",
-            (agent,),
-        ).fetchall()
+        try:
+            raw_candidates = self._conn.execute(
+                """SELECT id, status, assigned_agent, created_at, completed_at,
+                          current_session_id
+                   FROM tasks
+                   WHERE assigned_agent=?
+                     AND status IN ('completed','failed','cancelled','superseded')
+                   ORDER BY completed_at ASC, id ASC LIMIT 6""",
+                (agent,),
+            ).fetchall()
+        except sqlite3.Error:
+            return None
         if len(raw_candidates) == 6:
             return None
         candidate_rows: list[sqlite3.Row] = []
@@ -5775,8 +5803,8 @@ class Database:
                 if (
                     not isinstance(created_at, str)
                     or not isinstance(completed_at, str)
-                    or _parse_dt(created_at).tzinfo is None
-                    or _parse_dt(completed_at).tzinfo is None
+                    or not _is_aware_datetime(created_at)
+                    or not _is_aware_datetime(completed_at)
                 ):
                     return None
                 if row["status"] not in _WORKSPACE_CLEANUP_TERMINAL_STATUSES:
@@ -5791,22 +5819,28 @@ class Database:
         # deliberately ignored.
         if not admit("graph_tasks"):
             return None
-        graph_tasks = self._conn.execute(
-            """SELECT id, assigned_agent, status FROM tasks ORDER BY id ASC LIMIT 10001""",
-        ).fetchall()
+        try:
+            graph_tasks = self._conn.execute(
+                """SELECT id, assigned_agent, status FROM tasks ORDER BY id ASC LIMIT 10001""",
+            ).fetchall()
+        except sqlite3.Error:
+            return None
         if len(graph_tasks) == 10001:
             return None
         if not admit("graph_edges"):
             return None
-        graph_edges = self._conn.execute(
-            """SELECT child_id, relative_id FROM (
-                    SELECT id AS child_id, parent_task_id AS relative_id FROM tasks
-                    WHERE parent_task_id IS NOT NULL
-                    UNION ALL
-                    SELECT id AS child_id, revisit_of_task_id AS relative_id FROM tasks
-                    WHERE revisit_of_task_id IS NOT NULL
-                ) ORDER BY child_id ASC, relative_id ASC LIMIT 20001""",
-        ).fetchall()
+        try:
+            graph_edges = self._conn.execute(
+                """SELECT child_id, relative_id FROM (
+                        SELECT id AS child_id, parent_task_id AS relative_id FROM tasks
+                        WHERE parent_task_id IS NOT NULL
+                        UNION ALL
+                        SELECT id AS child_id, revisit_of_task_id AS relative_id FROM tasks
+                        WHERE revisit_of_task_id IS NOT NULL
+                    ) ORDER BY child_id ASC, relative_id ASC LIMIT 20001""",
+            ).fetchall()
+        except sqlite3.Error:
+            return None
         if len(graph_edges) == 20001:
             return None
         nodes = {str(row["id"]): row for row in graph_tasks}
@@ -5848,24 +5882,36 @@ class Database:
                     stack.append((neighbour, node_id))
             if root != owner_task_id and owner_task_id in visited:
                 return None
-            visiting: set[str] = set()
-            visited_directed: set[str] = set()
-
-            def has_directed_cycle(node_id: str) -> bool:
-                if node_id in visiting:
-                    return True
-                if node_id in visited_directed:
-                    return False
-                visiting.add(node_id)
-                for relative_id in directed.get(node_id, ()):
-                    if relative_id in visited and has_directed_cycle(relative_id):
-                        return True
-                visiting.remove(node_id)
-                visited_directed.add(node_id)
-                return False
-
-            if any(has_directed_cycle(node_id) for node_id in visited):
-                return None
+            # Directed parent/revisit cycles need a second traversal because
+            # undirected deduplication intentionally suppresses reciprocal
+            # edges.  Keep it iterative: a valid component may contain all
+            # 10,000 admitted rows and must not depend on Python's recursion
+            # limit.
+            directed_state: dict[str, int] = {}
+            for start in visited:
+                if directed_state.get(start, 0) == 2:
+                    continue
+                directed_state[start] = 1
+                directed_stack: list[tuple[str, object]] = [
+                    (start, iter(relative for relative in directed.get(start, ()) if relative in visited)),
+                ]
+                while directed_stack:
+                    node_id, relatives = directed_stack[-1]
+                    try:
+                        relative_id = next(relatives)
+                    except StopIteration:
+                        directed_state[node_id] = 2
+                        directed_stack.pop()
+                        continue
+                    state = directed_state.get(relative_id, 0)
+                    if state == 1:
+                        return None
+                    if state == 0:
+                        directed_state[relative_id] = 1
+                        directed_stack.append((
+                            relative_id,
+                            iter(relative for relative in directed.get(relative_id, ()) if relative in visited),
+                        ))
 
         # One and only one exact persisted-result read follows for each
         # selected target.  A refusal starts no later result read.

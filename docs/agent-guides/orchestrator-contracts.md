@@ -24,7 +24,9 @@ exists, so `true` currently triggers no reclamation.
 The database-only reclamation selection helper has no `run_step` or scheduler
 caller. Its named per-read admission callback is reserved for the later hook's
 deadline/read accounting; it does not load this config, create a claim, or call
-the consumer itself.
+the consumer itself. Every helper SQL/decode observation fails closed as `None`;
+this preserves the bounded later-hook admission accounting without implying SQL
+preemption.
 
 ## Org Content APIs
 
