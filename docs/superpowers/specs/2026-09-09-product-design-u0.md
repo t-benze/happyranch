@@ -33,18 +33,28 @@ work on every rejection. It validates the specified instance/round/submission,
 active authorization bound to the instance snapshot, reviewing lifecycle,
 each Founder/implementation/test request and approved receipt (including
 generation, scope digest, submitted digest and outcome), and the instance-wide
-historical-contributor closure. Each signer is also joined to a separate,
-durable isolated task/session/result row and current role assignment; receipt
-proof bytes/digest, result bytes/digest, binding/context, and
-round/submission/evidence revision must agree. The actual finalizer assignment
-and generation are separately re-read, rather than accepting a role string.
-The thirteen executable rejections cover all ten reviewer counterexamples plus
-invented result identity, mismatched submission revision, and stale finalizer
-generation. Every rejection is independently checked for unchanged complete
-instance/event/replay/history rows and foreign-key integrity. One conditional
-terminal transition, one joined event, and one replay row commit together.
-Same-key/same-body replay revalidates all of those current signatures before
-returning the original effect; a different body conflicts. The Stage-1 fixture
+historical-contributor closure. The transaction resolves the actual
+`workflow_contexts` row and requires its `binding_snapshot_id` to equal the
+instance binding before it can create an effect or return a replay; matching
+self-asserted instance/evidence context IDs are not ownership proof. Each
+signer is also joined to a separate, durable isolated task/session/result row
+and current role assignment; receipt proof bytes/digest, result bytes/digest,
+binding/context, and round/submission/evidence revision must agree. The actual
+finalizer assignment and generation are separately re-read, rather than
+accepting a role string.
+
+The prior TASK-8341 thirteen-case coverage claim is superseded: those thirteen
+cases remain, and the finite correction adds the actual foreign-binding-context
+counterexample plus all eight parent-`0771c3c1` rejection scenarios. The
+original unassigned non-maker finalizer remains a service rejection, while
+removing the original task/session bridge is separately proved to fail on its
+durable `workflow_task_results` foreign key without residue. Every service
+rejection is independently checked for unchanged complete instance/event/
+replay/history rows and foreign-key integrity. One conditional terminal
+transition, one joined event, and one replay row commit together. Same-key,
+same-body replay revalidates the original operation after independently
+mutating each Founder/implementation/test signature slot and actual context
+owner before returning the original effect; a different body conflicts. The Stage-1 fixture
 uses non-default instance, revision and assignment-generation values and
 deterministic independent-connection races. It is a negative feasibility probe,
 not a production transaction or a claim that SQLite constraints alone provide
@@ -52,9 +62,9 @@ currentness, queue admission, authority fencing, publication/outbox protocol,
 or cutover safety. The recovered TASK-8339 publication-journal/outbox DDL stubs
 are deliberately excluded from this F2 extraction; F4/F5 proof remains pending.
 
-Stage-1 helper digest is `4c620bdb8e3d6fbb4fe7d4b8bfb574c3cc3e77515ead05db96841ccf38c9a22c`.
+Stage-1 helper digest is `a63a1312f3319bc820c90795a3fdcf7c3569c48ed8da2208b03521fc10823ca2`.
 Stage-2 recovery evidence digests: recovery test
-`c10ddd2e47b8804413281435e0fa7996e5236ddab198744961525632f7d4c68e`,
+`2c7c205ad4a10c22b52ed216c2b81647cc223a5a571e4bf29ad75a7669896b97`,
 proposed DDL `c9e1f0b505a9bffaf8a44863dee917a0938d5586d6d81c9277d22215b63efb9a`,
 and historical-source inventory
 `bad48706cdeb9c54d774df6ba550c66926795d59b821705566d5e7452833434c`.

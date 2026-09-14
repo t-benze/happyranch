@@ -67,13 +67,15 @@ def accept_current_join(
         instance = conn.execute(
             """SELECT i.status, rd.state, rd.submission_id, s.submission_digest, s.submission_bytes,
                       b.authorization_revision_id, aa.authorization_revision_id, s.revision,
-                      i.context_id, i.binding_snapshot_id, rd.current_revision
+                      i.context_id, i.binding_snapshot_id, rd.current_revision,
+                      c.binding_snapshot_id
                FROM workflow_instances i
                JOIN workflow_rounds rd ON rd.instance_id=i.id
                JOIN workflow_submissions s ON s.id=rd.submission_id AND s.instance_id=i.id
                JOIN workflow_binding_snapshots b ON b.id=i.binding_snapshot_id
                JOIN workflow_template_versions tv ON tv.id=b.template_version_id
                LEFT JOIN workflow_active_authorizations aa ON aa.namespace=tv.namespace
+               LEFT JOIN workflow_contexts c ON c.id=i.context_id
                WHERE i.id=? AND rd.id=?""",
             (instance_id, round_id),
         ).fetchone()
@@ -84,6 +86,11 @@ def accept_current_join(
             or instance[7] != instance[10]
         ):
             raise ValueError("current_binding_authority_required")
+        # IDs copied into evidence can agree with each other while the actual
+        # context row is now owned by another valid binding.  Resolve that row
+        # in this transaction before either an initial effect or replay return.
+        if instance[11] != instance[9]:
+            raise ValueError("context_binding_owner_required")
         if sha256_bytes(instance[4]) != instance[3]:
             raise ValueError("submitted_bytes_digest_required")
         rows = conn.execute(

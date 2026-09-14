@@ -173,12 +173,7 @@ def test_proposed_final_join_revalidates_all_current_signatures_and_exactly_once
     assert accept_current_join(conn, operation_key="join-1", body=b"same", final_principal="operator", **kwargs) == "effect-0967115f2813"
     with pytest.raises(ValueError, match="body_conflict"):
         accept_current_join(conn, operation_key="join-1", body=b"changed", final_principal="operator", **kwargs)
-    conn.execute("UPDATE workflow_review_requests SET assignment_generation=8 WHERE id='q-test'")
-    conn.commit()
-    # Replays and later finalization attempts revalidate every signer before
-    # observing the already-complete terminal row.
-    with pytest.raises(ValueError, match="three_signature"):
-        accept_current_join(conn, operation_key="join-2", body=b"next", final_principal="operator", **kwargs)
+    conn.close()
 
 
 def _complete_join_state(path: Path) -> dict[str, list[tuple[object, ...]]]:
@@ -212,6 +207,20 @@ def _complete_join_state(path: Path) -> dict[str, list[tuple[object, ...]]]:
         ("invented_result_id", "UPDATE workflow_receipt_evidence SET result_id='invented-result' WHERE receipt_id='receipt-founder'", "three_signature"),
         ("submission_revision_disagrees", "UPDATE workflow_submissions SET revision=99 WHERE id='submission-9'", "binding_authority"),
         ("stale_finalizer_generation", "UPDATE workflow_instance_tasks SET generation=1 WHERE task_id='TASK-finalizer'", "assigned_finalizer"),
+        # This is the retained manager counterexample: the context ID remains
+        # self-consistent on the instance/evidence rows, while its actual row
+        # owner becomes a second otherwise-valid binding.
+        ("context_owner_foreign_binding", "INSERT INTO workflow_binding_snapshots SELECT 'foreign-binding', template_version_id, authorization_revision_id, X'62', 'foreign-digest', 'now' FROM workflow_binding_snapshots WHERE id='b'; UPDATE workflow_contexts SET binding_snapshot_id='foreign-binding' WHERE id='c'", "context_binding_owner"),
+        # Restored parent-0771c3c1 rejection scenarios.  These are retained
+        # alongside, rather than substituted by, the thirteen F2 cases above.
+        ("receipt_founder_generation_mismatch", "UPDATE workflow_review_receipts SET assignment_generation=8 WHERE id='receipt-founder'", "three_signature"),
+        ("implementation_receipt_changes_requested", "UPDATE workflow_review_receipts SET outcome='changes_requested' WHERE id='receipt-implementation'", "three_signature"),
+        ("test_request_scope_mismatch", "UPDATE workflow_review_receipts SET request_scope_digest='wrong' WHERE id='receipt-test'", "three_signature"),
+        ("mutated_submission_bytes", "UPDATE workflow_submissions SET submission_bytes=X'62' WHERE id='submission-9'", "submitted_bytes_digest"),
+        ("superseded_round", "UPDATE workflow_rounds SET state='superseded' WHERE id='round-9'", "binding_authority"),
+        ("cancelled_instance", "UPDATE workflow_instances SET status='cancelled' WHERE id='instance-9'", "instance_not_joinable"),
+        ("missing_active_authorization", "DELETE FROM workflow_active_authorizations", "binding_authority"),
+        ("historical_contributor_finalizer", "INSERT INTO workflow_instance_contributors VALUES ('instance-9','operator','old','old','old','maker')", "historical_contributor"),
     ],
 )
 def test_proposed_join_rejects_all_current_signature_counterexamples_without_residue(tmp_path: Path, name: str, sql: str, needle: str) -> None:
@@ -223,6 +232,57 @@ def test_proposed_join_rejects_all_current_signature_counterexamples_without_res
     before = _complete_join_state(path)
     with pytest.raises(ValueError, match=needle):
         accept_current_join(conn, operation_key="negative", body=b"body", final_principal="operator", instance_id="instance-9", round_id="round-9")
+    assert _complete_join_state(path) == before
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_proposed_schema_rejects_original_task_session_bridge_removal_without_residue(tmp_path: Path) -> None:
+    """The original bridge-absence probe now fails at its durable FK edge."""
+    path = tmp_path / "missing-task-session-bridge.db"
+    conn = _adapter(path)
+    _seed(conn)
+    conn.commit()
+    before = _complete_join_state(path)
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY constraint failed"):
+        conn.execute("DELETE FROM workflow_instance_tasks WHERE instance_id='instance-9' AND task_id='TASK-founder' AND session_id='sess-founder'")
+    assert _complete_join_state(path) == before
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_proposed_join_rejects_original_unassigned_nonmaker_finalizer_without_residue(tmp_path: Path) -> None:
+    path = tmp_path / "unassigned-nonmaker-finalizer.db"
+    conn = _adapter(path)
+    _seed(conn)
+    conn.commit()
+    before = _complete_join_state(path)
+    with pytest.raises(ValueError, match="assigned_finalizer"):
+        accept_current_join(conn, operation_key="negative", body=b"body", final_principal="unassigned-person", instance_id="instance-9", round_id="round-9")
+    assert _complete_join_state(path) == before
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+@pytest.mark.parametrize(
+    ("name", "sql", "needle"),
+    [
+        ("founder", "UPDATE workflow_review_requests SET assignment_generation=8 WHERE id='q-founder'", "three_signature"),
+        ("implementation", "UPDATE workflow_review_requests SET assignment_generation=8 WHERE id='q-implementation'", "three_signature"),
+        ("test", "UPDATE workflow_review_requests SET assignment_generation=8 WHERE id='q-test'", "three_signature"),
+        ("context", "INSERT INTO workflow_binding_snapshots SELECT 'foreign-binding', template_version_id, authorization_revision_id, X'62', 'foreign-digest', 'now' FROM workflow_binding_snapshots WHERE id='b'; UPDATE workflow_contexts SET binding_snapshot_id='foreign-binding' WHERE id='c'", "context_binding_owner"),
+    ],
+)
+def test_proposed_join_revalidates_same_key_same_body_stale_replay_without_residue(tmp_path: Path, name: str, sql: str, needle: str) -> None:
+    """Every retained replay re-runs current signature/context validation."""
+    path = tmp_path / f"stale-replay-{name}.db"
+    conn = _adapter(path)
+    _seed(conn)
+    conn.commit()
+    kwargs = dict(operation_key="join-1", body=b"same", final_principal="operator", instance_id="instance-9", round_id="round-9")
+    assert accept_current_join(conn, **kwargs) == "effect-0967115f2813"
+    conn.executescript(sql)
+    conn.commit()
+    before = _complete_join_state(path)
+    with pytest.raises(ValueError, match=needle):
+        accept_current_join(conn, **kwargs)
     assert _complete_join_state(path) == before
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
