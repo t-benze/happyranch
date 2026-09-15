@@ -173,6 +173,7 @@ def test_workspace_cleanup_hook_records_literal_none_result_before_agent_launch(
         stale_orchestration_step_count=0, claimed_next_step_count=1,
     )
     assert "refused_or_unavailable" in prompt
+    assert "target=TASK-OLD refused_or_unavailable" in prompt
     audits = [row for row in db.get_audit_logs("TASK-HOOK")
               if row["action"] == "workspace_cleanup_reclamation_attempt"]
     assert len(audits) == 1
@@ -5493,3 +5494,393 @@ async def test_workspace_cleanup_hook_real_selector_relevant_foreign_live_relati
     ) == ""
     assert calls == []
     assert _reclamation_audits(db, owner_id) == []
+
+
+# ---------------------------------------------------------------------------
+# Group 7: literal returned-field transport, remainder from the real
+# ``after`` accounting, preserved reason, publication_unavailable and the
+# no-fabricated-None contract (repair correction 5).
+# ---------------------------------------------------------------------------
+
+
+def _hook_owner_with_mocked_selection(runtime, db, monkeypatch, *, candidates):
+    """Owner in the exact claimed shape plus a canned selection."""
+    from runtime.infrastructure.database import (
+        WorkspaceCleanupReclamationCandidate, WorkspaceCleanupReclamationSelection,
+    )
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    _enable_reclamation_actions(runtime)
+    db.insert_task(TaskRecord(id="TASK-HOOK", brief="cleanup", assigned_agent="dev_agent"))
+    db.update_task("TASK-HOOK", status=TaskStatus.IN_PROGRESS, block_kind=None,
+                   orchestration_step_count=1)
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._sessions = object()
+    selection = WorkspaceCleanupReclamationSelection(
+        owner_task_id="TASK-HOOK",
+        candidates=tuple(WorkspaceCleanupReclamationCandidate(
+            task_id=task_id, session_id=f"session-{task_id}",
+            scratch_path=runtime.workspaces_dir / "dev_agent" / ".happyranch"
+            / "task-tmp" / task_id,
+            result={"status": "completed"},
+        ) for task_id in candidates),
+        read_observations=(),
+    )
+    monkeypatch.setattr(
+        db, "select_workspace_cleanup_reclamation_candidates", lambda **_: selection,
+    )
+    return orch, SimpleNamespace(id="TASK-HOOK")
+
+
+def _install_result_consumer(monkeypatch, results):
+    """Canned consumer sequence; returns the observed call list."""
+    import runtime.daemon.task_scratch_reclamation as reclamation
+
+    calls: list[str] = []
+
+    def wrapper(**kwargs):
+        calls.append(kwargs["task_id"])
+        return results[len(calls) - 1]
+
+    monkeypatch.setattr(
+        reclamation, "collect_revalidate_seal_consume_disposable", wrapper,
+    )
+    return calls
+
+
+def _manual_third_run_owner(runtime, db, *, owner_id="TASK-120", target_id="TASK-050"):
+    """Run #3 owner with two older non-terminal marker rows and one target.
+
+    Used where a case needs exactly one selected slot without the scheduler's
+    terminal history rows becoming candidates themselves.
+    """
+    now = datetime.now(timezone.utc)
+    for index in range(2):
+        db.insert_task(TaskRecord(
+            id=f"TASK-{110 + index}",
+            brief=wcs._CLEANUP_BRIEF_MARKER + "\nprior cleanup run",
+            assigned_agent="dev_agent", status=TaskStatus.PENDING,
+            created_at=now - timedelta(days=40 - index),
+        ))
+    completed = datetime.fromtimestamp(
+        (_SCRATCH_OLD_NS + 120_000_000_000) / 1_000_000_000, tz=timezone.utc,
+    )
+    db.insert_task(TaskRecord(
+        id=target_id, brief="prior cleanup target", assigned_agent="dev_agent",
+        status=TaskStatus.COMPLETED, current_session_id=f"session-{target_id}",
+        created_at=completed, completed_at=completed,
+    ))
+    db.insert_task_result(target_id, "dev_agent", f"session-{target_id}", "done", 1,
+                          status="completed")
+    db.insert_job(JobRecord(
+        id=f"JOB-{target_id}", task_id=target_id, agent_name="dev_agent",
+        title="terminal", rationale="test", script_text="true",
+        interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED,
+        created_at=completed.isoformat(),
+    ))
+    db.insert_task(TaskRecord(
+        id=owner_id, brief=wcs._CLEANUP_BRIEF_MARKER + "\ncleanup run",
+        assigned_agent="dev_agent", created_at=now,
+    ))
+    db.insert_audit_log(owner_id, "dev_agent", "workspace_cleanup_triggered",
+                        {"run_number": 3, "brief_kind": "cleanup"})
+    return owner_id, target_id
+
+
+@pytest.mark.parametrize("outcome,after_tuple,reason,claimed_bytes,claimed_inodes,expected_remainder", [
+    ("completed", (0, 0, 0), None, 8192, 3,
+     {"allocated_bytes": 0, "apparent_bytes": 0, "inodes": 0}),
+    ("failed", (4096, 8192, 1), "fail-closed filesystem error", 0, 0,
+     {"allocated_bytes": 4096, "apparent_bytes": 8192, "inodes": 1}),
+    ("failed", None, "fail-closed filesystem error", 0, 0, None),
+])
+def test_workspace_cleanup_hook_transports_remainder_and_reason(
+    runtime, db, monkeypatch, outcome, after_tuple, reason, claimed_bytes,
+    claimed_inodes, expected_remainder,
+):
+    """Returned fields are literal; remainder is the serialized real ``after``
+    accounting (``None`` when ``after`` is None) and the prompt keeps reason."""
+    from runtime.daemon.task_scratch_reclamation import Accounting, ReclamationResult
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    orch, owner = _hook_owner_with_mocked_selection(
+        runtime, db, monkeypatch, candidates=["TASK-OLD"],
+    )
+    after = Accounting(*after_tuple) if after_tuple is not None else None
+    result = ReclamationResult(
+        "TASK-OLD", outcome, reason, Accounting(8192, 8192, 3), after,
+        claimed_bytes, claimed_inodes,
+    )
+    calls = _install_result_consumer(monkeypatch, [result])
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls == ["TASK-OLD"]
+    audits = _reclamation_audits(db, "TASK-HOOK")
+    assert len(audits) == 1
+    assert audits[0]["payload"] == {
+        "target_task_id": "TASK-OLD", "outcome": outcome,
+        "claimed_bytes": claimed_bytes, "claimed_inodes": claimed_inodes,
+        "remainder": expected_remainder, "reason": reason,
+        "publication": "attempted",
+    }
+    assert f"target=TASK-OLD outcome={outcome}" in prompt
+    assert f"reason={reason}" in prompt
+    assert f"claimed_bytes={claimed_bytes}" in prompt
+    assert f"claimed_inodes={claimed_inodes}" in prompt
+
+
+def test_workspace_cleanup_hook_escaped_consumer_exception_publishes_no_audit_and_stops(
+    runtime, db, monkeypatch,
+):
+    """An escaped ordinary consumer failure is unknown: no fabricated None
+    audit/claims and no later target starts."""
+    import runtime.daemon.task_scratch_reclamation as reclamation
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    orch, owner = _hook_owner_with_mocked_selection(
+        runtime, db, monkeypatch, candidates=["TASK-OLD", "TASK-OLD-2"],
+    )
+    calls: list[str] = []
+
+    def boom(**kwargs):
+        calls.append(kwargs["task_id"])
+        raise RuntimeError("consumer exploded")
+
+    monkeypatch.setattr(
+        reclamation, "collect_revalidate_seal_consume_disposable", boom,
+    )
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == ["TASK-OLD"]
+    assert _reclamation_audits(db, "TASK-HOOK") == []
+
+
+def test_workspace_cleanup_hook_baseexception_interruption_escapes(
+    runtime, db, monkeypatch,
+):
+    """BaseException-class interruption is never swallowed as a refusal."""
+    import runtime.daemon.task_scratch_reclamation as reclamation
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    class _Interruption(BaseException):
+        pass
+
+    orch, owner = _hook_owner_with_mocked_selection(
+        runtime, db, monkeypatch, candidates=["TASK-OLD", "TASK-OLD-2"],
+    )
+    calls: list[str] = []
+
+    def interrupt(**kwargs):
+        calls.append(kwargs["task_id"])
+        raise _Interruption("cancelled")
+
+    monkeypatch.setattr(
+        reclamation, "collect_revalidate_seal_consume_disposable", interrupt,
+    )
+    with pytest.raises(_Interruption):
+        _prepare_workspace_cleanup_reclamation_context(
+            orch, owner, "dev_agent", stale_orchestration_step_count=0,
+            claimed_next_step_count=1,
+        )
+    assert calls == ["TASK-OLD"]
+    assert _reclamation_audits(db, "TASK-HOOK") == []
+
+
+def test_workspace_cleanup_hook_audit_failure_keeps_known_facts_and_stops(
+    runtime, db, monkeypatch,
+):
+    """A known return whose audit publication fails transports only the known
+    facts plus ``publication_unavailable`` and starts no later target."""
+    from runtime.daemon.task_scratch_reclamation import Accounting, ReclamationResult
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    orch, owner = _hook_owner_with_mocked_selection(
+        runtime, db, monkeypatch, candidates=["TASK-OLD", "TASK-OLD-2"],
+    )
+    result = ReclamationResult(
+        "TASK-OLD", "failed", "fail-closed filesystem error",
+        Accounting(8192, 8192, 3), Accounting(4096, 4096, 1), 0, 0,
+    )
+    calls = _install_result_consumer(monkeypatch, [result, result])
+
+    def failing_audit(*args, **kwargs):
+        raise RuntimeError("audit store unavailable")
+
+    monkeypatch.setattr(db, "insert_audit_log", failing_audit)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls == ["TASK-OLD"]
+    assert "target=TASK-OLD outcome=failed" in prompt
+    assert "reason=fail-closed filesystem error" in prompt
+    assert "publication_unavailable" in prompt
+    assert "TASK-OLD-2" not in prompt
+    assert _reclamation_audits(db, "TASK-HOOK") == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_real_between_ec_mutation_returns_one_none_audit(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """A real mutation between the consumer's compared E/C observations invokes
+    ``None`` with no executor and exactly one literal None audit."""
+    from dataclasses import replace
+    import runtime.daemon.task_scratch_reclamation as reclamation
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    _enable_reclamation_actions(runtime)
+    owner_id, target_id = _manual_third_run_owner(runtime, db)
+    workspace = runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    contract = _prepare_manifested_scratch(
+        workspace, target_id, f"session-{target_id}", old_ns=_SCRATCH_OLD_NS,
+    )
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    real_coverage = reclamation._collect_private_coverage
+    coverage_calls: list = []
+
+    def mutated(**kwargs):
+        value = real_coverage(**kwargs)
+        coverage_calls.append(value)
+        if len(coverage_calls) == 1:
+            snapshot = replace(
+                value.snapshot,
+                populations=(*value.snapshot.populations, ("injected", ("42",))),
+            )
+            return replace(value, snapshot=snapshot)
+        return value
+
+    monkeypatch.setattr(reclamation, "_collect_private_coverage", mutated)
+    executed: list = []
+    monkeypatch.setattr(reclamation, "execute_ledger", lambda rows: executed.extend(rows))
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls == [target_id]
+    assert not executed
+    assert contract.root.is_dir()  # no executor ran, so the literal root survives
+    audits = _reclamation_audits(db, owner_id)
+    assert len(audits) == 1
+    assert audits[0]["payload"] == {
+        "target_task_id": target_id, "outcome": "none", "claimed_bytes": 0,
+        "claimed_inodes": 0, "remainder": None, "reason": None,
+        "publication": "attempted",
+    }
+    assert f"target={target_id} refused_or_unavailable" in prompt
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_harmless_pre_e1_mutation_is_not_a_refusal(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """A completed change observed consistently from E1 onward still removes
+    the root; it is not automatically a mismatch refusal."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    _enable_reclamation_actions(runtime)
+    owner_id, target_id = _manual_third_run_owner(runtime, db)
+    workspace = runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    contract = _prepare_manifested_scratch(
+        workspace, target_id, f"session-{target_id}", old_ns=_SCRATCH_OLD_NS,
+    )
+    extra = contract.root / "nested" / "extra-before-e1"
+    extra.write_bytes(b"y" * 4096)
+    for path in (extra, contract.root / "nested", contract.root):
+        os.utime(path, ns=(_SCRATCH_OLD_NS, _SCRATCH_OLD_NS), follow_symlinks=False)
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls == [target_id]
+    assert not contract.root.exists()
+    audits = _reclamation_audits(db, owner_id)
+    assert len(audits) == 1
+    assert audits[0]["payload"]["outcome"] == "completed"
+    assert f"target={target_id} outcome=completed" in prompt
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_action_audit_precedes_prompt_and_latest_five(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """Action -> owner audit -> prompt ordering, and the target-only reclamation
+    audit never becomes a trigger-marked latest-five row."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    _enable_reclamation_actions(runtime)
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    workspace = runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    _seed_cleanup_target_and_history(db, agent="dev_agent", old_ns=_SCRATCH_OLD_NS, now=now)
+    _prepare_manifested_scratch(workspace, "TASK-100", "session-100", old_ns=_SCRATCH_OLD_NS)
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    owner_id = await wcs.trigger_cleanup(
+        _build_cleanup_org(runtime, db, test_settings),
+        agent="dev_agent", enqueue=lambda *_: None,
+    )
+    assert owner_id is not None
+
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=5),
+                        paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._sessions = SessionTracker()
+    orch._queue = _SlugQueue()
+    observed: dict = {}
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        records = _reclamation_audits(db, owner_id)
+        observed["targets_at_prompt"] = [
+            row["payload"]["target_task_id"] for row in records
+        ]
+        observed["prompt"] = prompt
+        # Simulate the ordinary post-launch completion callback, which is the
+        # real writer of the durable task_results summary.
+        db.insert_task_result(
+            task_id, agent, "session-owner",
+            json.dumps({"action": "done", "summary": "cleanup done"}),
+            1, status="completed",
+        )
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "done", "summary": "cleanup done"}),
+        )
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    orch.run_step(owner_id)
+
+    # Every owner-side audit (including TASK-100's completed removal) is durable
+    # before the prompt reaches the agent.
+    assert "TASK-100" in observed["targets_at_prompt"]
+    assert "target=TASK-100 outcome=completed" in observed["prompt"]
+    # The ordinary completion summary is persisted for the owner.
+    reports = db.get_task_results(owner_id)
+    assert reports
+    assert reports[-1]["output_summary"] == json.dumps(
+        {"action": "done", "summary": "cleanup done"}
+    )
+    # latest-five is trigger-marker scoped: the target-only reclamation audit
+    # neither adds a row nor displaces the owner.
+    activity = db.list_workspace_cleanup_activity("dev_agent", limit=5)
+    assert [row["task_id"] for row in activity] == [owner_id]

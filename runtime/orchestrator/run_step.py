@@ -1783,6 +1783,23 @@ def _default_agent_for_root(orch: "Orchestrator", task) -> str:
     return orch.teams.manager_for_team(task.team).name
 
 
+def _workspace_cleanup_remainder(after) -> dict | None:
+    """Serialize the consumer's actual post-action accounting as remainder.
+
+    ``ReclamationResult`` exposes ``before``/``after`` ``Accounting`` values and
+    has no ``remainder`` attribute.  The only real remainder evidence is the
+    returned ``after`` accounting; it stays ``None`` when ``after`` is ``None``
+    (an unknown or unrecoverable post-action state is never invented).
+    """
+    if after is None:
+        return None
+    return {
+        "allocated_bytes": after.allocated_bytes,
+        "apparent_bytes": after.apparent_bytes,
+        "inodes": after.inodes,
+    }
+
+
 def _prepare_workspace_cleanup_reclamation_context(
     orch: "Orchestrator", task: "TaskRecord", agent: str, *,
     stale_orchestration_step_count: int, claimed_next_step_count: int,
@@ -1870,27 +1887,33 @@ def _prepare_workspace_cleanup_reclamation_context(
                 daemon_started_monotonic=_STARTED_MONOTONIC,
             )
         except Exception:
-            # An escaped consumer failure is unknown: do not publish a
+            # An escaped ordinary consumer failure is unknown: do not publish a
             # synthetic None outcome and do not start another target.
+            # BaseException-class interruption (cancellation/KeyboardInterrupt)
+            # is deliberately not caught here and propagates unchanged.
             break
 
         if result is None:
+            # Two indistinguishable refusal causes (invoked None / returned
+            # unknown) publish the literal refusal prose plus the target id.
             payload = {
                 "target_task_id": candidate.task_id, "outcome": "none",
                 "claimed_bytes": 0, "claimed_inodes": 0, "remainder": None,
                 "reason": None, "publication": "attempted",
             }
-            fact = "refused_or_unavailable"
+            fact = f"target={candidate.task_id} refused_or_unavailable"
         else:
+            remainder = _workspace_cleanup_remainder(result.after)
             payload = {
                 "target_task_id": candidate.task_id, "outcome": result.outcome,
                 "claimed_bytes": result.reclaimed_bytes,
                 "claimed_inodes": result.reclaimed_inodes,
-                "remainder": None, "reason": result.reason,
+                "remainder": remainder, "reason": result.reason,
                 "publication": "attempted",
             }
             fact = (
                 f"target={candidate.task_id} outcome={result.outcome} "
+                f"reason={result.reason} "
                 f"claimed_bytes={result.reclaimed_bytes} "
                 f"claimed_inodes={result.reclaimed_inodes}"
             )
