@@ -1835,11 +1835,23 @@ def _prepare_workspace_cleanup_reclamation_context(
         # actual reads/loads; a fifth call is therefore allowed at read 23.
         if not admit_observation("config"):
             break
-        if not load_org_config(orch._paths).workspace_cleanup_reclamation_actions_enabled:
+        # Only the initial shared-config load keeps the ordinary escaping
+        # behavior.  A per-target fresh load or owner read that fails is one
+        # refusal: stop later admissions, keep already-known facts.
+        try:
+            enabled = load_org_config(
+                orch._paths
+            ).workspace_cleanup_reclamation_actions_enabled
+        except Exception:
+            break
+        if not enabled:
             break
         if not admit_observation("owner"):
             break
-        owner = orch._db.get_task(task.id)
+        try:
+            owner = orch._db.get_task(task.id)
+        except Exception:
+            break
         if (
             owner is None or owner.id != task.id or owner.assigned_agent != agent
             or owner.status is not TaskStatus.IN_PROGRESS or owner.block_kind is not None
