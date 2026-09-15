@@ -20,7 +20,10 @@ it is boolean and defaults to `true`. Its separate
 `workspace_cleanup.reclamation_actions_enabled` key is also strictly boolean,
 defaults to `false`, and gates the bounded pre-agent reclamation hook. A true
 value does not bypass the hook's fresh owner, provenance, deadline, or consumer
-admissions.
+admissions. The hook acts only on a third-or-later cleanup ordinal whose
+scheduler-created preclaim owner reconciles to the invocation's initial
+successful `0 -> 1` claim (the first two runs stay report-only); disabling the
+key affects later admissions only and cannot revoke an already admitted call.
 
 The database-only reclamation selection helper is called only by `run_step`'s
 pre-agent hook, never by the scheduler. Supplied claim counts other than initial `0 -> 1` refuse before its
@@ -28,7 +31,7 @@ per-read admission callback or SQL; a valid supplied pair still needs a fresh
 durable-owner read. Its named per-read admission callback is supplied by the
 hook's deadline/read accounting; it does not load this config, create a
 claim, or call the consumer itself. Every helper SQL/decode observation fails closed as `None`;
-this preserves the bounded later-hook admission accounting without implying SQL
+this preserves the bounded hook admission accounting without implying SQL
 preemption.
 
 ## Org Content APIs

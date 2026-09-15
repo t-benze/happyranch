@@ -351,8 +351,13 @@ machine-local time — host-local night, as intended.)
 `workspace_cleanup.reclamation_actions_enabled` is separately strictly boolean
 and defaults to `false`. When true, the bounded pre-agent reclamation hook may
 select and revalidate finite canonical targets before invoking the existing
-consumer. `false` prevents those action admissions; malformed values retain
-the shared loader's existing error behavior.
+consumer; it acts only on a third-or-later cleanup ordinal whose preclaim owner
+reconciles to the invocation's initial successful claim (the first two runs stay
+report-only), under one shared one-second deadline and at most 23 read/load
+admissions with at most five best-effort consumer calls and no refill or
+recovery. `false` prevents those action admissions and affects later admissions
+only; it cannot revoke an already admitted call. Malformed values retain the
+shared loader's existing error behavior.
 
 ## Agent Configuration: Single Source of Truth (THR-095)
 

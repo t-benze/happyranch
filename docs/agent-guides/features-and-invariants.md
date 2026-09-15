@@ -67,11 +67,11 @@ claim-count inputs other than initial `0 -> 1` before admission or SQL, then
 uses a fresh durable owner read to validate a valid supplied pair before the
 bounded marker/history,
 newer-owner, six-raw-candidate, graph, and exact-result reads. It exposes each
-read admission to the future hook and returns `None` on every malformed,
+read admission to the pre-agent `run_step` hook and returns `None` on every malformed,
 oversized, related-live, inconsistent, or unavailable SQL/decode observation. It neither reads config
 nor imports or invokes the reclamation consumer, writes an audit, or grants an
 action permit. The helper performs seven base SQL observations plus at most
-five exact result reads; the future hook's initial config read and five fresh
+five exact result reads; the hook's initial config read and five fresh
 config/owner pairs make the complete admission model 23 reads. A fifth consumer
 admission at read 23 is allowed; prospective read 24 refuses before another
 load. These admissions bound later work rather than preempting an in-flight SQL
