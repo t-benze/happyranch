@@ -226,3 +226,69 @@ def test_synthesize_terminal_event_includes_durable_timestamp(org_state):
     assert legacy_event["timestamp"] == legacy.updated_at.isoformat()
     assert isinstance(legacy_event["timestamp"], str)
     assert legacy_event["timestamp"] != ""
+
+
+@pytest.mark.asyncio
+async def test_worker_loop_held_reporter_blocks_worker_return_while_loop_advances() -> None:
+    """Group 9 (TASK-8399): the ordinary ``TaskQueue`` worker runs ``run_step``
+    on a thread (``run_in_executor``), so a held reporter blocks that worker's
+    return/completion read while the daemon event loop keeps advancing; once
+    released the worker completes normally."""
+    import threading
+
+    q = TaskQueue()
+    q.enqueue("org", "T-HELD")
+
+    entered = threading.Event()
+    release = threading.Event()
+    returned = threading.Event()
+
+    class _HeldReporterDispatcher:
+        """Stands in for the orchestrator: ``run_step`` blocks on its reporter."""
+
+        def run_step(self, slug: str, task_id: str, metadata: dict | None = None) -> None:
+            entered.set()
+            assert release.wait(timeout=10.0), "held reporter was never released"
+            returned.set()
+
+        def heartbeat(self, slug: str, task_id: str) -> None:
+            return None
+
+    ticks = 0
+
+    async def _ticker() -> None:
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0.002)
+
+    ticker = asyncio.create_task(_ticker())
+    worker = asyncio.create_task(q._worker_loop(_HeldReporterDispatcher()))
+    try:
+        for _ in range(500):
+            if entered.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert entered.is_set(), "worker never reached the held reporter"
+        before = ticks
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+        assert ticks > before, "event loop did not advance while the worker was held"
+        assert not returned.is_set(), "worker returned while its reporter was held"
+        release.set()
+        for _ in range(500):
+            if returned.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert returned.is_set(), "worker did not complete after its reporter was released"
+    finally:
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+        ticker.cancel()
+        try:
+            await ticker
+        except asyncio.CancelledError:
+            pass

@@ -44,8 +44,8 @@ The identity migration validates exact shapes and empty legacy runner graphs;
 existing local-job semantics are preserved. Model/migration tests provide the
 contract; no production runner authentication, transport, or execution is implied.
 
-`task_scratch_reclamation.py` remains production-unreferenced. Its private
-`collect_revalidate_seal_consume_disposable` seam is test-only: it retains each
+`task_scratch_reclamation.py` is invoked only by the bounded pre-agent
+`run_step` hook. Its private `collect_revalidate_seal_consume_disposable` seam retains each
 bounded E1/C1/E2/C2/seal/E3/C3/E4 collector admission, compares stable typed
 lifecycle/session/PID-start and complete public/private coverage projections
 (including bucket classification/accounting and dominance, but not timestamps), and
@@ -58,20 +58,20 @@ writers or hostile same-UID swaps. Its assertion
 shapes do not establish lifecycle/liveness provenance; Git evidence and ambiguous
 identity/device evidence refuse reclamation. POSIX pathname removal does not
 guarantee survival of hostile same-UID replacement in the final check/syscall
-window. Existing dormant-engine tests retain this boundary; this cleanup adds no
-caller, scheduler activation, legacy-backlog eligibility, or live deletion.
+window. The scheduler remains a trigger/marker producer only; this cleanup adds
+no scheduler activation, legacy-backlog eligibility, or unbounded deletion.
 
 `Database.select_workspace_cleanup_reclamation_candidates` is likewise a
-read-only, currently uncalled planning helper. It first rejects supplied
+read-only planning helper called only by the `run_step` hook. It first rejects supplied
 claim-count inputs other than initial `0 -> 1` before admission or SQL, then
 uses a fresh durable owner read to validate a valid supplied pair before the
 bounded marker/history,
 newer-owner, six-raw-candidate, graph, and exact-result reads. It exposes each
-read admission to the future hook and returns `None` on every malformed,
+read admission to the pre-agent `run_step` hook and returns `None` on every malformed,
 oversized, related-live, inconsistent, or unavailable SQL/decode observation. It neither reads config
 nor imports or invokes the reclamation consumer, writes an audit, or grants an
 action permit. The helper performs seven base SQL observations plus at most
-five exact result reads; the future hook's initial config read and five fresh
+five exact result reads; the hook's initial config read and five fresh
 config/owner pairs make the complete admission model 23 reads. A fifth consumer
 admission at read 23 is allowed; prospective read 24 refuses before another
 load. These admissions bound later work rather than preempting an in-flight SQL
@@ -127,9 +127,9 @@ residual partitions. Repositories, special entries, malformed literal parents,
 unknown, zero, incomplete or nonready coverage cannot authorize eligibility.
 
 The collectors are now observed by these report-only production callers. The
-reclamation engine remains dormant and unreferenced: observations neither seal
-an executable ledger nor authorize deletion. Any future action requires fresh
-recollection, coverage, independent review and explicit activation. Legacy,
+reclamation hook separately makes its own fresh bounded consumer admission;
+report-only observations neither seal an executable ledger nor authorize that
+action. Legacy,
 shared `/tmp` and pre-contract roots remain ineligible. Portable observations
 cannot exclude future writers or a hostile same-UID race.
 
