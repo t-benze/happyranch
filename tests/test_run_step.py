@@ -4768,3 +4768,353 @@ async def test_workspace_cleanup_hook_duplicate_live_claim_is_refused_at_existin
     assert calls == []
     assert db.get_task(owner_id).orchestration_step_count == 1
     assert _reclamation_audits(db, owner_id) == []
+
+
+def _set_actions_enabled(runtime, enabled: bool) -> None:
+    runtime.org_config_path.write_text(
+        "workspace_cleanup:\n"
+        f"  reclamation_actions_enabled: {str(enabled).lower()}\n"
+    )
+
+
+def _install_never_consumer(monkeypatch, calls):
+    """A consumer wrapper that is only observable if it is wrongly reached."""
+    import runtime.daemon.task_scratch_reclamation as reclamation
+
+    def wrapper(**kwargs):
+        calls.append(kwargs.get("task_id"))
+        raise AssertionError("consumer must not run")
+
+    monkeypatch.setattr(
+        reclamation, "collect_revalidate_seal_consume_disposable", wrapper,
+    )
+
+
+def _owner_read_fault(monkeypatch, db, owner_id, *, on_call, raises=False):
+    real = db.get_task
+    state = {"n": 0}
+
+    def wrapper(task_id, *args, **kwargs):
+        if task_id == owner_id:
+            state["n"] += 1
+            if state["n"] == on_call:
+                if raises:
+                    raise ValueError("owner read failed")
+                return None
+        return real(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(db, "get_task", wrapper)
+    return state
+
+
+async def _third_run_owner_and_newer_owner(runtime, db, test_settings, monkeypatch):
+    owner_id, workspace = await _make_third_run_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    newer_id = await wcs.trigger_cleanup(
+        _build_cleanup_org(runtime, db, test_settings),
+        agent="dev_agent", enqueue=lambda *_: None,
+    )
+    assert newer_id is not None and newer_id != owner_id
+    return owner_id, newer_id, workspace
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("newer_status", [TaskStatus.PENDING, TaskStatus.IN_PROGRESS])
+async def test_workspace_cleanup_hook_refuses_newer_live_owner(
+    runtime, db, test_settings, monkeypatch, newer_status,
+):
+    """A later live marker-bearing cleanup owner is a whole selection refusal."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, newer_id, _ws = await _third_run_owner_and_newer_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    db.update_task(newer_id, status=newer_status)
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert prompt == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_refuses_newer_terminal_owner(
+    runtime, db, test_settings, monkeypatch,
+):
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, newer_id, _ws = await _third_run_owner_and_newer_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    db.update_task(newer_id, status=TaskStatus.COMPLETED)
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_refuses_unreadable_newer_owner(
+    runtime, db, test_settings, monkeypatch,
+):
+    """An orphan marker audit (no task row) is an unreadable newer owner."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    db.insert_audit_log(
+        "TASK-999", "dev_agent", "workspace_cleanup_triggered",
+        {"run_number": 99, "brief_kind": "cleanup"},
+    )
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_refuses_duplicate_owner_marker(
+    runtime, db, test_settings, monkeypatch,
+):
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    db.insert_audit_log(
+        owner_id, "dev_agent", "workspace_cleanup_triggered",
+        {"run_number": 3, "brief_kind": "cleanup"},
+    )
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_delayed_original_with_newer_ordinary_task_succeeds(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """Only marker-bearing newer owners refuse; a newer ordinary task does not."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, workspace = await _make_third_run_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    contract = _add_disposable_target(db, workspace)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    _insert_terminal_task_with_result(
+        db, task_id="TASK-130", agent="dev_agent", session_id="session-130",
+        created_at=later, completed_at=later + timedelta(minutes=1),
+        brief="ordinary newer task",
+    )
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls and calls[0] == "TASK-100"
+    assert not contract.root.exists()
+    assert "outcome=completed" in prompt
+    assert len(_reclamation_audits(db, owner_id)) >= 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["cancelled", "agent", "count", "state", "block"])
+async def test_workspace_cleanup_hook_fresh_owner_invalidation_stops_next_admission(
+    runtime, db, test_settings, monkeypatch, mutation,
+):
+    """A fresh owner read that no longer matches refuses with zero consumer/audit."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+
+    def mutate():
+        if mutation == "cancelled":
+            db.update_task(owner_id, cancelled_at=datetime.now(timezone.utc))
+        elif mutation == "agent":
+            db.update_task(owner_id, assigned_agent="content_agent")
+        elif mutation == "count":
+            db.update_task(owner_id, orchestration_step_count=2)
+        elif mutation == "state":
+            db.update_task(owner_id, status=TaskStatus.COMPLETED)
+        elif mutation == "block":
+            db.update_task(owner_id, block_kind=BlockKind.BLOCKED_ON_JOB)
+
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    _config_wrapper(monkeypatch, when=2, after=mutate)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raises", [False, True])
+async def test_workspace_cleanup_hook_unreadable_owner_read_is_a_refusal(
+    runtime, db, test_settings, monkeypatch, raises,
+):
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    _owner_read_fault(monkeypatch, db, owner_id, on_call=2, raises=raises)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_held_latch_disable_stops_next_admission(
+    runtime, db, test_settings, monkeypatch,
+):
+    """A fresh config admission that now reads disabled performs zero next action."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    _config_wrapper(monkeypatch, when=2, before=lambda: _set_actions_enabled(runtime, False))
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_failed_per_target_config_does_not_escape(
+    runtime, db, test_settings, monkeypatch,
+):
+    """A per-target load failure is one bounded refusal, not an escape."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    _config_wrapper(monkeypatch, when=2, raises=True)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_post_admission_disable_keeps_admitted_consumer(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """Disabling after the fresh admission does not cancel the admitted call."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, workspace = await _make_third_run_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    contract = _add_disposable_target(db, workspace)
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    _config_wrapper(monkeypatch, when=2, after=lambda: _set_actions_enabled(runtime, False))
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls and calls[0] == "TASK-100"
+    assert not contract.root.exists()
+    assert "outcome=completed" in prompt
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_retains_earlier_fact_when_next_admission_disabled(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """Earlier known facts survive a later fresh-config refusal."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, workspace = await _make_third_run_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    contract = _add_disposable_target(db, workspace)
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    # Candidate order is TASK-100 (removable) then TASK-110/TASK-111.  Disable
+    # before the second candidate's fresh config admission.
+    _config_wrapper(monkeypatch, when=3, before=lambda: _set_actions_enabled(runtime, False))
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls == ["TASK-100"]
+    assert not contract.root.exists()
+    assert "outcome=completed" in prompt
+    audits = _reclamation_audits(db, owner_id)
+    assert len(audits) == 1
+    assert audits[0]["payload"]["target_task_id"] == "TASK-100"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["maybe", 1])
+async def test_workspace_cleanup_hook_invalid_initial_shared_config_still_escapes(
+    runtime, db, test_settings, monkeypatch, invalid,
+):
+    """The initial shared-config load keeps its ordinary escaping error."""
+    from runtime.orchestrator.org_config import OrgConfigError
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    runtime.org_config_path.write_text(
+        "workspace_cleanup:\n"
+        f"  reclamation_actions_enabled: {invalid}\n"
+    )
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    with pytest.raises(OrgConfigError):
+        _prepare_workspace_cleanup_reclamation_context(
+            orch, owner, "dev_agent", stale_orchestration_step_count=0,
+            claimed_next_step_count=1,
+        )
+    assert calls == []
