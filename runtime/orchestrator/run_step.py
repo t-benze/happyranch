@@ -182,6 +182,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         db.update_task(task_id, assigned_agent=agent)
 
     prompt = _build_agent_prompt(orch, task, agent)
+    prompt += _prepare_workspace_cleanup_reclamation_context(
+        orch, task, agent, stale_orchestration_step_count=task.orchestration_step_count,
+        claimed_next_step_count=next_count,
+    )
     try:
         result, report = orch._run_agent(task_id, agent, prompt)
     except Exception as exc:
@@ -1777,6 +1781,123 @@ def _legs_out_of_scope(orch: "Orchestrator", owner: str, decision) -> list[tuple
 def _default_agent_for_root(orch: "Orchestrator", task) -> str:
     """Root tasks default to the manager for their team."""
     return orch.teams.manager_for_team(task.team).name
+
+
+def _prepare_workspace_cleanup_reclamation_context(
+    orch: "Orchestrator", task: "TaskRecord", agent: str, *,
+    stale_orchestration_step_count: int, claimed_next_step_count: int,
+) -> str:
+    """Best-effort, bounded reclamation immediately before an agent launch.
+
+    The selector owns its read-only provenance and finite-shortlist checks.
+    This hook deliberately owns only the action-phase admissions: one initial
+    config read, then one fresh config/owner pair before each consumer call.
+    It never turns a refusal into a permit or manufactures a consumer result.
+    """
+    # The default is disabled.  Preserve the shared loader's strict parsing:
+    # malformed configuration escapes exactly as it does at other consumers.
+    if not load_org_config(orch._paths).workspace_cleanup_reclamation_actions_enabled:
+        return ""
+
+    deadline = time.monotonic() + 1.0
+    reads = 1  # Initial enabled-config load is outside the timed phase.
+
+    def admit_observation(_name: str) -> bool:
+        nonlocal reads
+        if reads >= 23 or time.monotonic() > deadline:
+            return False
+        reads += 1
+        return True
+
+    workspace = orch._paths.workspaces_dir / agent
+    selection = orch._db.select_workspace_cleanup_reclamation_candidates(
+        owner_task_id=task.id,
+        agent=agent,
+        stale_orchestration_step_count=stale_orchestration_step_count,
+        claimed_next_step_count=claimed_next_step_count,
+        canonical_workspace=workspace,
+        authoritative_workspace=workspace,
+        admit_observation=admit_observation,
+    )
+    if selection is None:
+        return ""
+
+    # Importing here keeps the formerly dormant engine unreachable except at
+    # this explicitly bounded hook.  Its startup clock remains authoritative.
+    from runtime.daemon.task_scratch_reclamation import (
+        collect_revalidate_seal_consume_disposable,
+    )
+    from runtime.daemon.task_scratch_report import _STARTED_MONOTONIC
+
+    facts: list[str] = []
+    for candidate in selection.candidates:
+        # The post-selection checks are fresh by design.  They are counted as
+        # actual reads/loads; a fifth call is therefore allowed at read 23.
+        if not admit_observation("config"):
+            break
+        if not load_org_config(orch._paths).workspace_cleanup_reclamation_actions_enabled:
+            break
+        if not admit_observation("owner"):
+            break
+        owner = orch._db.get_task(task.id)
+        if (
+            owner is None or owner.id != task.id or owner.assigned_agent != agent
+            or owner.status is not TaskStatus.IN_PROGRESS or owner.block_kind is not None
+            or owner.cancelled_at is not None or owner.orchestration_step_count != 1
+        ):
+            break
+        # Consumer admission consumes no hook read budget, but it must still
+        # begin before the shared one-second deadline expires.
+        if time.monotonic() > deadline or orch._sessions is None:
+            break
+        try:
+            result = collect_revalidate_seal_consume_disposable(
+                db=orch._db, sessions=orch._sessions, workspace=workspace,
+                task_id=candidate.task_id, agent_name=agent,
+                monotonic_now=time.monotonic(),
+                daemon_started_monotonic=_STARTED_MONOTONIC,
+            )
+        except Exception:
+            # An escaped consumer failure is unknown: do not publish a
+            # synthetic None outcome and do not start another target.
+            break
+
+        if result is None:
+            payload = {
+                "target_task_id": candidate.task_id, "outcome": "none",
+                "claimed_bytes": 0, "claimed_inodes": 0, "remainder": None,
+                "reason": None, "publication": "attempted",
+            }
+            fact = "refused_or_unavailable"
+        else:
+            payload = {
+                "target_task_id": candidate.task_id, "outcome": result.outcome,
+                "claimed_bytes": result.reclaimed_bytes,
+                "claimed_inodes": result.reclaimed_inodes,
+                "remainder": None, "reason": result.reason,
+                "publication": "attempted",
+            }
+            fact = (
+                f"target={candidate.task_id} outcome={result.outcome} "
+                f"claimed_bytes={result.reclaimed_bytes} "
+                f"claimed_inodes={result.reclaimed_inodes}"
+            )
+        try:
+            orch._db.insert_audit_log(
+                task.id, agent, "workspace_cleanup_reclamation_attempt", payload,
+            )
+        except Exception:
+            # Publication loss leaves the known result intact but bars later
+            # actions; the prompt exposes only that limited known fact.
+            facts.append(f"{fact} publication_unavailable")
+            break
+        facts.append(fact)
+
+    if not facts:
+        return ""
+    return "\n\nWorkspace cleanup reclamation:\n" + "\n".join(
+        f"- {fact}" for fact in facts
+    )
 
 
 def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:

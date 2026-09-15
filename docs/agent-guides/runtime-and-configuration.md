@@ -349,9 +349,10 @@ machine-local time — host-local night, as intended.)
 `workspace_cleanup.enabled` is a boolean scheduler switch that defaults to
 `true`; setting it to `false` disables the daemon-managed cleanup scheduler.
 `workspace_cleanup.reclamation_actions_enabled` is separately strictly boolean
-and defaults to `false`. It is reserved for a later reclamation hook: no action
-consumer currently exists, so setting it to `true` does not enable or perform
-reclamation.
+and defaults to `false`. When true, the bounded pre-agent reclamation hook may
+select and revalidate finite canonical targets before invoking the existing
+consumer. `false` prevents those action admissions; malformed values retain
+the shared loader's existing error behavior.
 
 ## Agent Configuration: Single Source of Truth (THR-095)
 

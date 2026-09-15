@@ -1,5 +1,17 @@
 # Web And CLI
 
+## Daemon-managed workspace cleanup
+
+`workspace_cleanup.reclamation_actions_enabled` is an internal, strict boolean
+configuration key that defaults to `false`; it creates no Web or CLI setting.
+When enabled, only the pre-agent cleanup hook may act after its current-owner,
+bounded provenance, one-second deadline, and at-most-23 read/load admissions.
+It makes at most five best-effort consumer calls. A fresh `false` value stops a
+later admission but cannot preempt an already admitted call. A `None` consumer
+result is reported literally as `refused_or_unavailable`; known partial/failure
+facts are retained, while publication failure stops later calls. The ordinary
+agent completion summary remains the normal callback/CLI result surface.
+
 ## Web UI
 
 ### Dashboard projection
