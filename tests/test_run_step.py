@@ -5431,3 +5431,65 @@ async def test_workspace_cleanup_hook_admitted_consumer_overrun_keeps_result_the
     # the next candidate's fresh-config admission is refused by the deadline.
     assert len(admissions["names"]) == 12
     assert len(loads) == 2  # 1 initial + the one admitted fresh config
+
+
+# ---------------------------------------------------------------------------
+# Group 5/6: selection and graph boundaries observed through the real selector
+# at the shipping hook.  The deeper selector regressions (complete 1000/1001,
+# raw sixth without refill, bytewise ties, graph row/edge sentinels, relevant
+# foreign-live components) live in tests/test_database.py and are mapped in the
+# handoff; these cases prove the hook turns the same refusal into zero consumer
+# calls and zero action audits.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_real_selector_sixth_raw_candidate_refuses(
+    runtime, db, test_settings, monkeypatch,
+):
+    """Six raw canonical terminal rows refuse the whole phase (no refill)."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    now = datetime.now(timezone.utc)
+    for index in range(4):
+        _insert_terminal_task_with_result(
+            db, task_id=f"TASK-{130 + index}", agent="dev_agent",
+            session_id=f"session-{130 + index}",
+            created_at=now - timedelta(days=20 + index),
+            completed_at=now - timedelta(days=19 + index),
+            brief=f"ordinary older target {index}",
+        )
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_real_selector_relevant_foreign_live_relative_refuses(
+    runtime, db, test_settings, monkeypatch,
+):
+    """A relevant foreign live relative refuses the owner/candidate component."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, workspace = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    _add_disposable_target(db, workspace)
+    db.insert_task(TaskRecord(
+        id="TASK-200", brief="foreign live relative", assigned_agent="content_agent",
+        status=TaskStatus.PENDING, parent_task_id="TASK-100",
+    ))
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
