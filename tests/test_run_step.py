@@ -5118,3 +5118,316 @@ async def test_workspace_cleanup_hook_invalid_initial_shared_config_still_escape
             claimed_next_step_count=1,
         )
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Groups 4/5/6: action-phase read/load budget, controlled monotonic clock and
+# real-selector refusal parity at the shipping hook (repair correction 4).
+# Group 5/6 prior selector regression evidence is mapped in the handoff; the
+# cases here exercise selection/graph boundaries through the real hook.
+# ---------------------------------------------------------------------------
+
+
+class _CleanupMonotonicClock:
+    """Controlled ``time.monotonic`` as seen by ``runtime.orchestrator.run_step``.
+
+    ``expire_at_call`` returns a value past the hook's one-second deadline for
+    every 1-based call at/after that index; ``expire`` flips the same behaviour
+    on demand (used to model an already-admitted consumer that overruns 1s).
+    """
+
+    def __init__(self, *, start: float = 1000.0, expire_at_call: int | None = None):
+        self.start = start
+        self.calls = 0
+        self.expire = False
+        self.expire_at_call = expire_at_call
+
+    def __call__(self) -> float:
+        self.calls += 1
+        if self.expire or (
+            self.expire_at_call is not None and self.calls >= self.expire_at_call
+        ):
+            return self.start + 10.0
+        return self.start
+
+
+class _RunStepTimeProxy:
+    """Replaces only ``run_step``'s module-level ``time`` binding.
+
+    The stdlib module is shared, so patching ``time.monotonic`` globally would
+    also perturb the Database lock's own timing.  This proxy exposes the
+    controlled monotonic to the hook while every other ``time`` attribute (and
+    every other module's ``import time``) stays real.
+    """
+
+    def __init__(self, monotonic):
+        self._monotonic = monotonic
+
+    def monotonic(self) -> float:
+        return self._monotonic()
+
+    def __getattr__(self, name):
+        import time as real_time
+
+        return getattr(real_time, name)
+
+
+def _install_run_step_clock(monkeypatch, clock):
+    import runtime.orchestrator.run_step as run_step_module
+
+    monkeypatch.setattr(run_step_module, "time", _RunStepTimeProxy(clock))
+    return clock
+
+
+def _install_counting_config_loads(monkeypatch):
+    """Count the hook's actual ``load_org_config`` calls (1 initial + 1/slot)."""
+    import runtime.orchestrator.run_step as run_step_module
+
+    real = run_step_module.load_org_config
+    loads: list[int] = []
+
+    def wrapper(paths):
+        loads.append(len(loads) + 1)
+        return real(paths)
+
+    monkeypatch.setattr(run_step_module, "load_org_config", wrapper)
+    return loads
+
+
+def _install_admission_counter(monkeypatch, db):
+    """Wrap the real selector and count its ``admit_observation`` admissions.
+
+    The names recorded are exactly the hook's own config/owner admissions and
+    the real selector's owner/marker/history/newer_owner/candidates/graph_tasks/
+    graph_edges/result reads.  Consumer-internal collector admissions and test
+    verification reads are deliberately not routed through this callback.
+    """
+    real = db.select_workspace_cleanup_reclamation_candidates
+    state: dict = {"names": [], "raw_admit": None}
+
+    def wrapper(**kwargs):
+        raw_admit = kwargs["admit_observation"]
+        state["raw_admit"] = raw_admit
+
+        def admit(name):
+            ok = raw_admit(name)
+            state["names"].append((name, ok))
+            return ok
+
+        kwargs["admit_observation"] = admit
+        return real(**kwargs)
+
+    monkeypatch.setattr(db, "select_workspace_cleanup_reclamation_candidates", wrapper)
+    return state
+
+
+def _install_owner_read_counter(monkeypatch, db, owner_id):
+    """Count ``get_task(owner_id)`` reads (selector owner read + fresh hook reads)."""
+    real = db.get_task
+    state = {"count": 0}
+
+    def wrapper(task_id, *args, **kwargs):
+        if task_id == owner_id:
+            state["count"] += 1
+        return real(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(db, "get_task", wrapper)
+    return state
+
+
+async def _third_run_owner_with_five_slots(runtime, db, test_settings, monkeypatch):
+    """Real run-#3 owner whose two marker history rows plus three ordinary
+    terminal rows give the selector exactly five eligible slots."""
+    owner_id, workspace = await _make_third_run_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    now = datetime.now(timezone.utc)
+    for index in range(3):
+        _insert_terminal_task_with_result(
+            db, task_id=f"TASK-{120 + index}", agent="dev_agent",
+            session_id=f"session-{120 + index}",
+            created_at=now - timedelta(days=20 + index),
+            completed_at=now - timedelta(days=19 + index),
+            brief=f"ordinary older target {index}",
+        )
+    return owner_id, workspace
+
+
+_FIVE_SLOT_ORDER = ["TASK-110", "TASK-111", "TASK-122", "TASK-121", "TASK-120"]
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_exact_23_reads_admits_fifth_consumer(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """Five eligible slots reach exactly 23 reads/loads; the fifth call is allowed.
+
+    Read 1 is the initial enabled config load, taken outside the one-second
+    clock.  The real selector then admits owner, marker, history, newer_owner,
+    candidates, graph_tasks, graph_edges and five persisted-result reads (12).
+    Each of the five candidates then admits one fresh config and one fresh owner
+    (10).  ``admit_observation`` is invoked 22 times, so 1 + 22 = 23 actual
+    reads/loads; a prospective 24th admission is refused by the same latch.
+    """
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, workspace = await _third_run_owner_with_five_slots(
+        runtime, db, test_settings, monkeypatch,
+    )
+    admissions = _install_admission_counter(monkeypatch, db)
+    loads = _install_counting_config_loads(monkeypatch)
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    # Installed only for the action phase: the selector's one owner read plus
+    # the hook's five fresh owner reads.
+    owner_reads = _install_owner_read_counter(monkeypatch, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+
+    selector_names = [name for name, _ok in admissions["names"]]
+    assert [ok for _name, ok in admissions["names"]] == [True] * 12
+    assert selector_names == [
+        "owner", "marker", "history", "newer_owner", "candidates", "graph_tasks",
+        "graph_edges", "result:TASK-110", "result:TASK-111", "result:TASK-122",
+        "result:TASK-121", "result:TASK-120",
+    ]
+    assert len(loads) == 6  # 1 initial + 5 fresh per-candidate loads
+    # 6 config loads + 12 real selector admissions + 5 fresh owner reads = 23.
+    fresh_owner_reads = owner_reads["count"] - 1  # selector already read the owner
+    assert fresh_owner_reads == 5
+    assert len(loads) + len(admissions["names"]) + fresh_owner_reads == 23
+    assert calls == _FIVE_SLOT_ORDER  # fifth consumer call admitted at read 23
+    # 1 initial config + 22 admitted callback observations = exactly 23 reads.
+    assert admissions["raw_admit"]("probe") is False  # no 24th observation
+    assert len(_reclamation_audits(db, owner_id)) == 5
+    assert prompt.count("refused_or_unavailable") == 5
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_initial_config_load_is_outside_the_clock(
+    runtime, db, test_settings, monkeypatch,
+):
+    """The initial enabled config load precedes the one-second deadline."""
+    import runtime.orchestrator.run_step as run_step_module
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    clock = _CleanupMonotonicClock()
+    _install_run_step_clock(monkeypatch, clock)
+    real_load = run_step_module.load_org_config
+    loads_at: list[int] = []
+
+    def load(paths):
+        loads_at.append(clock.calls)
+        return real_load(paths)
+
+    monkeypatch.setattr(run_step_module, "load_org_config", load)
+    monkeypatch.setattr(db, "select_workspace_cleanup_reclamation_candidates", lambda **_: None)
+
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert loads_at == [0]   # enabled decision made before any clock read
+    assert clock.calls == 1  # only the deadline start is taken
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop,expire_at_call,expect_selector,expect_loads", [
+    ("selector_read", 4, 3, 1),
+    ("fresh_config", 14, 12, 1),
+    ("fresh_owner", 15, 12, 2),
+    ("consumer_call", 16, 12, 2),
+])
+async def test_workspace_cleanup_hook_deadline_stops_next_read_or_call(
+    runtime, db, test_settings, monkeypatch, stop, expire_at_call, expect_selector, expect_loads,
+):
+    """A clock past the deadline refuses the next observation/call and stops.
+
+    Monotonic call order on the five-slot fixture: 1 deadline; 2..13 the twelve
+    real selector admissions; then per candidate config(14/18/...),
+    owner(15/19/...), the pre-consumer deadline check(16/20/...) and the
+    consumer ``monotonic_now``(17/21/...).  The parametrised index expires
+    exactly at the named boundary.
+    """
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _third_run_owner_with_five_slots(
+        runtime, db, test_settings, monkeypatch,
+    )
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    clock = _CleanupMonotonicClock(expire_at_call=expire_at_call)
+    _install_run_step_clock(monkeypatch, clock)
+    admissions = _install_admission_counter(monkeypatch, db)
+    loads = _install_counting_config_loads(monkeypatch)
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert len(admissions["names"]) == expect_selector
+    if stop == "selector_read":
+        # The boundary selector admission itself was refused by the deadline.
+        assert admissions["names"][-1][1] is False
+    else:
+        assert all(ok for _name, ok in admissions["names"])
+    assert len(loads) == expect_loads
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_admitted_consumer_overrun_keeps_result_then_stops(
+    runtime, db, test_settings, monkeypatch,
+):
+    """An already-admitted consumer that overruns 1s keeps its result/audit,
+    then no later candidate observation or call starts."""
+    import runtime.daemon.task_scratch_reclamation as reclamation
+    from runtime.daemon.task_scratch_reclamation import Accounting, ReclamationResult
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _third_run_owner_with_five_slots(
+        runtime, db, test_settings, monkeypatch,
+    )
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    clock = _CleanupMonotonicClock()
+    _install_run_step_clock(monkeypatch, clock)
+    admissions = _install_admission_counter(monkeypatch, db)
+    loads = _install_counting_config_loads(monkeypatch)
+    calls: list[str] = []
+
+    def overrunning(**kwargs):
+        calls.append(kwargs["task_id"])
+        clock.expire = True  # crossed the deadline while the admitted call ran
+        return ReclamationResult(
+            kwargs["task_id"], "completed", None,
+            Accounting(100, 100, 1), Accounting(0, 0, 0), 100, 1,
+        )
+
+    monkeypatch.setattr(
+        reclamation, "collect_revalidate_seal_consume_disposable", overrunning,
+    )
+
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls == ["TASK-110"]
+    audits = _reclamation_audits(db, owner_id)
+    assert len(audits) == 1
+    assert audits[0]["payload"]["outcome"] == "completed"
+    assert audits[0]["payload"]["claimed_bytes"] == 100
+    assert "target=TASK-110" in prompt and "outcome=completed" in prompt
+    # 12 real selector admissions, then only the first candidate's fresh config;
+    # the next candidate's fresh-config admission is refused by the deadline.
+    assert len(admissions["names"]) == 12
+    assert len(loads) == 2  # 1 initial + the one admitted fresh config
