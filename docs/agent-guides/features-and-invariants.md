@@ -61,6 +61,29 @@ guarantee survival of hostile same-UID replacement in the final check/syscall
 window. Existing dormant-engine tests retain this boundary; this cleanup adds no
 caller, scheduler activation, legacy-backlog eligibility, or live deletion.
 
+`Database.select_workspace_cleanup_reclamation_candidates` is likewise a
+read-only, currently uncalled planning helper. It first rejects supplied
+claim-count inputs other than initial `0 -> 1` before admission or SQL, then
+uses a fresh durable owner read to validate a valid supplied pair before the
+bounded marker/history,
+newer-owner, six-raw-candidate, graph, and exact-result reads. It exposes each
+read admission to the future hook and returns `None` on every malformed,
+oversized, related-live, inconsistent, or unavailable SQL/decode observation. It neither reads config
+nor imports or invokes the reclamation consumer, writes an audit, or grants an
+action permit. The helper performs seven base SQL observations plus at most
+five exact result reads; the future hook's initial config read and five fresh
+config/owner pairs make the complete admission model 23 reads. A fifth consumer
+admission at read 23 is allowed; prospective read 24 refuses before another
+load. These admissions bound later work rather than preempting an in-flight SQL
+or OS operation, and the six raw rows are never refilled after age filtering.
+Persisted ISO ordering accepts parser-valid aware forms but explicitly refuses
+the parser-selected raw hour-24 field on every supported interpreter across
+calendar and ISO-week extended/basic forms (including parser-supported
+one-character separators). The narrow boundary check follows the standard
+parser's one date/time boundary; it does not mistake an overlapping ISO-week
+minute field for hour 24, while a runtime parser's next-day normalization still
+cannot change selector ordering.
+
 ### Task-scratch report-only observations
 
 `task_scratch_report.py` consumes the existing lifecycle/process and coverage
