@@ -77,9 +77,12 @@ admission at read 23 is allowed; prospective read 24 refuses before another
 load. These admissions bound later work rather than preempting an in-flight SQL
 or OS operation, and the six raw rows are never refilled after age filtering.
 Persisted ISO ordering accepts parser-valid aware forms but explicitly refuses
-raw hour-24 values on every supported interpreter across calendar and ISO-week
-extended/basic forms (including parser-supported one-character separators), so
-a runtime parser's next-day normalization cannot change selector ordering.
+the parser-selected raw hour-24 field on every supported interpreter across
+calendar and ISO-week extended/basic forms (including parser-supported
+one-character separators). The narrow boundary check follows the standard
+parser's one date/time boundary; it does not mistake an overlapping ISO-week
+minute field for hour 24, while a runtime parser's next-day normalization still
+cannot change selector ordering.
 
 ### Task-scratch report-only observations
 

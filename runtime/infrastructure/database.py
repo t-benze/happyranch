@@ -72,30 +72,41 @@ def _parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def _has_raw_iso_hour_24(value: str) -> bool:
-    """Identify hour 24 without narrowing ``datetime.fromisoformat`` inputs.
+def _iso_datetime_separator_index(value: str) -> int | None:
+    """Return CPython's single ISO date/time boundary for raw-hour checks.
 
-    The parser accepts calendar and ISO-week dates in extended/basic forms,
-    with or without a week weekday.  They place the one-character datetime
-    separator after a 10-, 8-, or 7-character date portion respectively.  A
-    raw check at those possible time offsets catches parser normalization of
-    24:00 while leaving all other parsing and timezone validation to the
-    standard parser.
+    This intentionally mirrors only the standard parser's date-boundary
+    choice, not its timestamp parser.  In the extended week-date overlap,
+    ``YYYY-Www-`` is the separator at offset 8 when a digit at offset 10
+    makes both readings possible.  Guessing both offsets would turn a valid
+    minute field into an apparent hour 24.
     """
-    date_lengths: list[int] = []
-    if len(value) >= 13 and value[:4].isdigit():
-        if value[4] == "-" and value[7] == "-" and value[5:7].isdigit() and value[8:10].isdigit():
-            date_lengths.append(10)  # YYYY-MM-DD
-        if value[4:6] == "-W" and value[6:8].isdigit() and value[8] == "-" and value[9].isdigit():
-            date_lengths.append(10)  # YYYY-Www-D
-    if len(value) >= 11 and value[:4].isdigit():
-        if value[:8].isdigit() or (value[4:6] == "-W" and value[6:8].isdigit()):
-            date_lengths.append(8)  # YYYYMMDD or YYYY-Www
-        if value[4] == "W" and value[5:8].isdigit():
-            date_lengths.append(8)  # YYYYWwwD
-    if len(value) >= 10 and value[:4].isdigit() and value[4] == "W" and value[5:7].isdigit():
-        date_lengths.append(7)  # YYYYWww
-    return any(value[length + 1:length + 3] == "24" for length in date_lengths)
+    if len(value) <= 7:
+        return None
+    if value[4] == "-":
+        if len(value) > 5 and value[5] == "W":
+            if len(value) > 8 and value[8] == "-":
+                if len(value) > 10 and value[10].isascii() and value[10].isdigit():
+                    return 8
+                return 10
+            return 8
+        return 10
+    if value[4] == "W":
+        index = 7
+        while index < len(value) and value[index].isascii() and value[index].isdigit():
+            index += 1
+        if index < 9:
+            return index
+        return 7 if index % 2 == 0 else 8
+    return 8
+
+
+def _has_raw_iso_hour_24(value: str) -> bool:
+    """Identify parser-selected raw hour 24 without narrowing ISO parsing."""
+    # ``_parse_dt`` replaces Z before delegating to the standard parser; that
+    # replacement is after the date/time boundary and cannot alter this index.
+    boundary = _iso_datetime_separator_index(value)
+    return boundary is not None and value[boundary + 1:boundary + 3] == "24"
 
 
 def _is_aware_datetime(value: object) -> bool:
@@ -113,12 +124,11 @@ def _is_aware_datetime(value: object) -> bool:
     # hour-24 value is malformed.  Keep this a narrow exception around the
     # standard parser rather than a format whitelist, so all other parser-valid
     # ISO forms retain their existing behavior.
-    if _has_raw_iso_hour_24(value):
-        return False
     try:
-        return _parse_dt(value).tzinfo is not None
+        parsed = _parse_dt(value)
     except (TypeError, ValueError):
         return False
+    return parsed.tzinfo is not None and not _has_raw_iso_hour_24(value)
 
 
 _WORKSPACE_CLEANUP_BRIEF_MARKER = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)"

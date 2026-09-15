@@ -555,6 +555,41 @@ def test_workspace_cleanup_selection_newer_marker_uses_parser_for_invalid_calend
     assert len(queries) == 4
 
 
+@pytest.mark.parametrize(("value", "hour", "minute"), [
+    # These are distinct parser-selected boundaries, not candidate-offset
+    # guesses.  In particular the extended week-without-weekday form chooses
+    # its hyphen at offset 8 when the following digit makes the spelling
+    # ambiguous; its apparent offset-10 ``24`` is the minute field.
+    ("2025-W01-002400+0000", 0, 24),
+    ("2025-W01-012400+0000", 1, 24),
+    ("2025-W01-122400+0000", 12, 24),
+    ("2025-W01-232400+0000", 23, 24),
+    # Fixed examples cover the other actual separator decisions: calendar
+    # extended/basic, week extended/basic with weekday, and Unicode/digit
+    # separators.  The wider existing matrix retains colon/compact and T/space
+    # coverage for all six calendar/week shapes.
+    ("2025-01-01T002400+0000", 0, 24),
+    ("20250101 002400+0000", 0, 24),
+    ("2025-W01-1-002400+0000", 0, 24),
+    ("2025W0112002400+0000", 0, 24),
+    ("2025-01-01🕛002400+0000", 0, 24),
+])
+def test_workspace_cleanup_selection_uses_parser_selected_hour_boundary(
+    cleanup_selection_matrix, value, hour, minute,
+) -> None:
+    database, insert, select, queries, _ = cleanup_selection_matrix
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    assert parsed.tzinfo is not None and (parsed.hour, parsed.minute) == (hour, minute)
+    insert("TASK-200", status="pending")
+    database.execute("UPDATE tasks SET created_at=? WHERE id='TASK-200'", (value,))
+    database.insert_audit_log(task_id="TASK-200", agent="dev_agent",
+        action="workspace_cleanup_triggered", payload={"run_number": 4, "brief_kind": "cleanup"})
+    selection = select()
+    assert selection is not None
+    assert [candidate.task_id for candidate in selection.candidates] == ["TASK-1", "TASK-2", "TASK-10"]
+    assert len(queries) == 10
+
+
 @pytest.mark.parametrize("value", [
     *[
         f"{date}{separator}{time}"
