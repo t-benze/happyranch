@@ -5630,6 +5630,9 @@ def test_workspace_cleanup_hook_transports_remainder_and_reason(
     assert f"reason={reason}" in prompt
     assert f"claimed_bytes={claimed_bytes}" in prompt
     assert f"claimed_inodes={claimed_inodes}" in prompt
+    # The hook publishes only the audit/prompt facts; it never writes a
+    # synthetic completion summary for the owner.
+    assert db.get_task_results("TASK-HOOK") == []
 
 
 def test_workspace_cleanup_hook_escaped_consumer_exception_publishes_no_audit_and_stops(
@@ -5658,6 +5661,8 @@ def test_workspace_cleanup_hook_escaped_consumer_exception_publishes_no_audit_an
     ) == ""
     assert calls == ["TASK-OLD"]
     assert _reclamation_audits(db, "TASK-HOOK") == []
+    # Unknown outcome is never reconstructed into a summary or result row.
+    assert db.get_task_results("TASK-HOOK") == []
 
 
 def test_workspace_cleanup_hook_baseexception_interruption_escapes(
