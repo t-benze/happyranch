@@ -205,7 +205,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
     expect(screen.getAllByText('Escalation now resolved')).toHaveLength(1);
     await userEvent.click(screen.getByRole('button', { name: 'Resolve waiting task' }));
     await screen.findByText('New escalation after refetch');
-    const waiting = screen.getByRole('heading', { name: 'Waiting on you' }).closest('section')!;
+    const waiting = screen.getByRole('heading', { name: 'Waiting on you' }).closest('.tasks-group') as HTMLElement;
     expect(within(waiting).queryByText('Escalation now resolved')).not.toBeInTheDocument();
     expect(within(waiting).getByText('New escalation after refetch')).toBeInTheDocument();
     expect(screen.getAllByText('New escalation after refetch')).toHaveLength(1);
@@ -427,11 +427,20 @@ describe('TasksPage — read path (roots endpoint)', () => {
 
     mountAt(`/orgs/${SLUG}/tasks`);
 
-    expect(await screen.findByRole('heading', { name: 'Waiting on you' })).toBeInTheDocument();
+    const heading = await screen.findByRole('heading', { name: 'Waiting on you' });
     expect(screen.getByText('Founder decision without ordinary roots')).toBeInTheDocument();
     expect(screen.getByText('1 waiting on you')).toBeInTheDocument();
-    expect(screen.getByText('No tasks')).toBeInTheDocument();
-    expect(screen.getByTestId('tasks-responsive-styles')).toHaveTextContent('data-waiting-on-you-responsive-list');
+    // The escalated group is rendered inside the shared list shell, after the
+    // column header, even when the ordinary traversal returns zero rows.
+    const list = screen.getByTestId('tasks-responsive-list');
+    expect(within(list).getByRole('heading', { name: 'Waiting on you' })).toBe(heading);
+    expect(list.querySelector('.tasks-column-header')).not.toBeNull();
+    expect(list.querySelector('[aria-labelledby="waiting-on-you-heading"] li')).not.toBeNull();
+    // 'No tasks' would contradict the visible escalated row.
+    expect(screen.queryByText('No tasks')).not.toBeInTheDocument();
+    // Responsive coverage now flows through the shared list shell.
+    expect(screen.getByTestId('tasks-responsive-styles')).toHaveTextContent('@media (max-width: 767px)');
+    expect(screen.getByTestId('tasks-responsive-styles')).not.toHaveTextContent('data-waiting-on-you-responsive-list');
   });
 
   test('keeps initial loading distinct from empty', async () => {
@@ -961,6 +970,139 @@ describe('TasksPage — read path (roots endpoint)', () => {
       // Empty state, not a loading indicator
       expect(screen.getByText(/No tasks match/)).toBeInTheDocument();
     });
+  });
+});
+
+// THR-221 seq448: the escalated 'Waiting on you' group must be an ordinary
+// group (same wrapper/heading/rows-card) ranked FIRST inside the shared list
+// shell — not a separate padded box above the column header. Its independent
+// status=escalated traversal contract is unchanged.
+describe('TasksPage — escalated group is the first ordinary-styled group (THR-221 seq448)', () => {
+  function escalatedHandler(escalated: TaskRecord[], ordinary: TaskRecord[]) {
+    return http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) =>
+      HttpResponse.json(new URL(request.url).searchParams.get('status') === 'escalated'
+        ? { tasks: escalated, next_cursor: null }
+        : { tasks: ordinary, next_cursor: null }),
+    );
+  }
+
+  test('renders the escalated group first inside the list shell with the ordinary group styling', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const escalated = rootTask({ task_id: 'TASK-ESC-A', brief: 'Founder decision A', status: 'escalated', severity_rollup: 'escalated' });
+    const running = rootTask({ task_id: 'TASK-RUN-A', brief: 'Running root A', status: 'in_progress', severity_rollup: 'in_progress' });
+    const failed = rootTask({ task_id: 'TASK-FAIL-A', brief: 'Failed root A', status: 'failed', severity_rollup: 'failed' });
+    const completed = rootTask({ task_id: 'TASK-COMP-A', brief: 'Completed root A', status: 'completed', severity_rollup: 'completed' });
+    server.use(escalatedHandler([escalated], [running, failed, completed]));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await screen.findByText('Founder decision A');
+
+    const list = screen.getByTestId('tasks-responsive-list');
+    const headings = within(list).getAllByRole('heading');
+    expect(headings.map((h) => h.textContent)).toEqual([
+      'Waiting on you',
+      'In progress1',
+      'Failed1',
+      'Completed1',
+    ]);
+
+    const header = list.querySelector('.tasks-column-header');
+    const escalatedSection = list.querySelector('[aria-labelledby="waiting-on-you-heading"]') as HTMLElement | null;
+    expect(header).not.toBeNull();
+    expect(escalatedSection).not.toBeNull();
+    // The escalated group is a descendant of the shared list shell, positioned
+    // after the column header and before every ordinary group.
+    expect(header!.compareDocumentPosition(escalatedSection!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(list.querySelector('section')).toBe(escalatedSection);
+    expect(within(escalatedSection!).getByText('Founder decision A')).toBeInTheDocument();
+    expect(escalatedSection!.querySelectorAll('li')).toHaveLength(1);
+
+    // Same class-token set as an ordinary group rows-card (classList.contains,
+    // never a substring/word-boundary match).
+    for (const token of ['bg-surface-raised', 'rounded-xl', 'border', 'shadow-sm']) {
+      expect(escalatedSection!.classList.contains(token)).toBe(true);
+    }
+    expect(escalatedSection!.classList.contains('bg-surface-page')).toBe(false);
+    expect(escalatedSection!.classList.contains('mx-6')).toBe(false);
+    expect(escalatedSection!.classList.contains('p-3')).toBe(false);
+
+    // No outer padded/inset wrapper — the group is exactly the shared wrapper.
+    const group = headings[0].closest('.tasks-group') as HTMLElement | null;
+    expect(group).not.toBeNull();
+    expect(group!.classList.contains('mx-6')).toBe(false);
+    expect(group!.classList.contains('p-3')).toBe(false);
+    expect(group!.classList.contains('bg-surface-page')).toBe(false);
+    // Truthful count note from the independent traversal (exact when exhausted).
+    expect(within(group!).getByText('1 waiting on you')).toBeInTheDocument();
+  });
+
+  test('renders no escalated group when the attention traversal is empty and keeps ordinary order', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const running = rootTask({ task_id: 'TASK-RUN-B', brief: 'Running root B', status: 'in_progress', severity_rollup: 'in_progress' });
+    const failed = rootTask({ task_id: 'TASK-FAIL-B', brief: 'Failed root B', status: 'failed', severity_rollup: 'failed' });
+    const completed = rootTask({ task_id: 'TASK-COMP-B', brief: 'Completed root B', status: 'completed', severity_rollup: 'completed' });
+    server.use(escalatedHandler([], [running, failed, completed]));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await screen.findByText('Running root B');
+
+    const list = screen.getByTestId('tasks-responsive-list');
+    expect(within(list).queryByRole('heading', { name: /Waiting on you/ })).toBeNull();
+    expect(screen.queryByText(/waiting on you/)).not.toBeInTheDocument();
+    expect(list.querySelector('[aria-labelledby="waiting-on-you-heading"]')).toBeNull();
+    const headings = within(list).getAllByRole('heading');
+    // First heading is the first ordinary status group; Failed still precedes
+    // Completed (GROUP_ORDER_STATUS unchanged).
+    expect(headings.map((h) => h.textContent)).toEqual(['In progress1', 'Failed1', 'Completed1']);
+  });
+
+  test.each(['loading', 'error'] as const)(
+    'keeps the list shell and escalated group when the ordinary traversal is %s',
+    async (mode) => {
+      sessionStorage.setItem('happyranch.token', 'tok');
+      const escalated = rootTask({ task_id: 'TASK-ESC-C', brief: 'Founder decision C', status: 'escalated', severity_rollup: 'escalated' });
+      server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, async ({ request }) => {
+        if (new URL(request.url).searchParams.get('status') === 'escalated') {
+          return HttpResponse.json({ tasks: [escalated], next_cursor: null });
+        }
+        if (mode === 'error') return new HttpResponse(null, { status: 500 });
+        await new Promise(() => undefined);
+        return HttpResponse.json({ tasks: [], next_cursor: null });
+      }));
+
+      mountAt(`/orgs/${SLUG}/tasks`);
+      const heading = await screen.findByRole('heading', { name: 'Waiting on you' });
+      const list = screen.getByTestId('tasks-responsive-list');
+      expect(within(list).getByRole('heading', { name: 'Waiting on you' })).toBe(heading);
+      expect(screen.getByText('Founder decision C')).toBeInTheDocument();
+      if (mode === 'error') {
+        // Ordinary initial error stays truthful and visible below the shell.
+        expect(await screen.findByText('Could not load tasks')).toBeInTheDocument();
+      } else {
+        expect(screen.getByText('Loading…')).toBeInTheDocument();
+      }
+      // The visible escalated row is never contradicted by an empty-ordinary claim.
+      expect(screen.queryByText('No tasks')).not.toBeInTheDocument();
+    },
+  );
+
+  test('keeps ordinary rows visible while the attention traversal is still loading', async () => {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const running = rootTask({ task_id: 'TASK-RUN-D', brief: 'Running root D', status: 'in_progress', severity_rollup: 'in_progress' });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, async ({ request }) => {
+      if (new URL(request.url).searchParams.get('status') === 'escalated') {
+        await new Promise(() => undefined);
+      }
+      return HttpResponse.json({ tasks: [running], next_cursor: null });
+    }));
+
+    mountAt(`/orgs/${SLUG}/tasks`);
+    await screen.findByText('Running root D');
+    expect(screen.getByText('Loading waiting-on-you tasks…')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Waiting on you' })).toBeNull();
+    const list = screen.getByTestId('tasks-responsive-list');
+    expect(within(list).getByText('Running root D')).toBeInTheDocument();
+    expect(screen.queryByText('No tasks')).not.toBeInTheDocument();
   });
 });
 
