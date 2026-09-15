@@ -4988,11 +4988,18 @@ def _hold_group9_teardown_reporter(monkeypatch, orchestrator, *, raise_on_report
     report_entered = threading.Event()
     release = threading.Event()
 
-    monkeypatch.setattr(
-        orchestrator_module,
-        "reset_task_scratch",
-        lambda token: order.append("reset"),
-    )
+    # Record the shipping reset WITHOUT replacing its effect: the real
+    # ``reset_task_scratch`` must still clear the active task-scratch
+    # ContextVar, otherwise the activation leaks into every later test in the
+    # same xdist worker and unrelated ``_callee_env`` tests fail closed with
+    # ``TaskScratchError: inherited task containment override refused``.
+    real_reset_task_scratch = orchestrator_module.reset_task_scratch
+
+    def _reset(token):
+        order.append("reset")
+        real_reset_task_scratch(token)
+
+    monkeypatch.setattr(orchestrator_module, "reset_task_scratch", _reset)
 
     def _report(**kwargs):
         order.append("report")
