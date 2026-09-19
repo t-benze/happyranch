@@ -383,6 +383,67 @@ def test_run_agent_shipping_seam_injects_manager_policy_binds_session_and_omits_
     assert RESERVED_TEAM_POLICY_HEADER not in mock_executor.run.call_args.kwargs["prompt"]
 
 
+def test_run_agent_v2_shipping_seam_renders_dual_text_and_persists_binding(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """C1 real launch seam: selected v2 renders BOTH texts and binds the session."""
+    from runtime.orchestrator.active_authority_policy import (
+        RESERVED_TEAM_POLICY_HEADER, load_session_policy_binding,
+    )
+    from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
+    from runtime.orchestrator.teams import TeamManager
+    from tests.conftest import seed_test_agents
+
+    what_to = "Escalate 产品 / external-contract change — explicitly."
+    what_not = "Continue 実装 and review corrections within scope."
+    seed_test_agents(test_runtime, ("engineering_manager", "dev_agent"))
+    _setup_workspaces(test_runtime, ["engineering_manager", "dev_agent"])
+    orchestrator._teams._teams["engineering"] = TeamManager(
+        name="engineering_manager", team="engineering", workers=("dev_agent",),
+    )
+    store = AuthorityPolicyStore(orchestrator._db)
+    selector = store.ensure_authority_selector("engineering")
+    receipt = store.create_and_activate_v2({
+        "team": "engineering", "policy_id": "engineering-dual-text", "title": "Dual",
+        "create_request_id": "req-create-v2", "activation_request_id": "req-activate-v2",
+        "based_on_selector_id": selector.selector_id,
+        "expected_selector_id": selector.selector_id,
+        "action": "bootstrap", "what_to_escalate": what_to,
+        "what_not_to_escalate": what_not,
+    })
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="provider-session",
+    )
+    task_id = orchestrator.create_task("manager work")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-v2-launch")
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        orchestrator._run_agent(task_id, "engineering_manager", "decide")
+
+    prompt = mock_executor.run.call_args.kwargs["prompt"]
+    assert prompt.count(RESERVED_TEAM_POLICY_HEADER) == 1
+    assert prompt.count("What to escalate:") == 1
+    assert prompt.count("What not to escalate:") == 1
+    assert what_to in prompt and what_not in prompt
+    assert receipt.release_id in prompt and receipt.activation_id in prompt
+    assert receipt.selector_id in prompt
+    binding = orchestrator._db.get_authority_policy_v2_session_binding(
+        root_task_id=task_id, manager_agent="engineering_manager",
+        manager_session_id="sess-v2-launch",
+    )
+    assert binding is not None
+    assert binding.selector_id == receipt.selector_id
+    assert binding.activation_id == receipt.activation_id
+    assert binding.release_id == receipt.release_id
+    assert binding.root_task_id == task_id
+    # No legacy self-evaluation binding is fabricated for a v2 launch.
+    legacy = load_session_policy_binding(
+        db=orchestrator._db, task_id=task_id, session_id="sess-v2-launch",
+        agent_name="engineering_manager",
+    )
+    assert legacy is not None and legacy.get("mode") == "v2"
+
+
 def test_manager_policy_shipping_seam_consumes_authenticated_self_evaluation(
     orchestrator, test_runtime, monkeypatch,
 ):

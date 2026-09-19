@@ -26,6 +26,7 @@ from runtime.models import (
     AuthorityPolicyV2ControlReceipt,
     AuthorityPolicyV2PairedControlRequest,
     AuthorityPolicyV2Release,
+    AuthorityPolicyV2SessionBinding,
 )
 
 
@@ -140,6 +141,36 @@ class AuthorityPolicyStore:
         self, request: AuthorityPolicyLegacyReactivationRequest
     ) -> AuthorityPolicyLegacyControlReceipt:
         return self._db.reactivate_authority_policy_legacy(request)
+
+    # -- THR-229 checkpoint C1: immutable launch session bindings. The Database
+    # owns the transaction/lock boundary; these forwarders never commit.
+
+    def bind_v2_session(
+        self, binding: AuthorityPolicyV2SessionBinding
+    ) -> AuthorityPolicyV2SessionBinding:
+        return self._db.bind_authority_policy_v2_session(binding)
+
+    def get_v2_session_binding(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str
+    ) -> AuthorityPolicyV2SessionBinding | None:
+        return self._db.get_authority_policy_v2_session_binding(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id,
+        )
+
+    def bind_legacy_session(
+        self,
+        *,
+        task_id: str,
+        agent_name: str,
+        session_id: str,
+        legacy_payload: dict,
+        selector_payload: dict | None,
+    ) -> None:
+        return self._db.bind_authority_policy_legacy_session(
+            task_id=task_id, agent_name=agent_name, session_id=session_id,
+            legacy_payload=legacy_payload, selector_payload=selector_payload,
+        )
 
     @staticmethod
     def _encode_cursor(payload: dict) -> str:

@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time as _time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +34,7 @@ from runtime.models import (
     AuthorityPolicyV2ControlReceipt,
     AuthorityPolicyV2PairedControlRequest,
     AuthorityPolicyV2Release,
+    AuthorityPolicyV2SessionBinding,
     AuthorityFenceResult,
     AuthorityRedactionClass,
     AuthorityRetentionClass,
@@ -399,6 +401,41 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
             CREATE TRIGGER IF NOT EXISTS authority_policy_v2_control_audit_no_delete
                 BEFORE DELETE ON authority_policy_v2_control_audit
                 BEGIN SELECT RAISE(ABORT, 'v2 authority control audit is append-only'); END;
+
+            CREATE TABLE IF NOT EXISTS authority_policy_v2_session_bindings (
+                binding_id TEXT PRIMARY KEY,
+                team TEXT NOT NULL,
+                root_task_id TEXT NOT NULL,
+                manager_agent TEXT NOT NULL,
+                manager_session_id TEXT NOT NULL,
+                selector_id TEXT NOT NULL,
+                activation_epoch INTEGER NOT NULL
+                    CHECK(activation_epoch > 0 AND activation_epoch <= 2147483647),
+                release_id TEXT NOT NULL
+                    REFERENCES authority_policy_v2_releases(id) ON DELETE RESTRICT,
+                policy_version INTEGER NOT NULL
+                    CHECK(policy_version > 0 AND policy_version <= 2147483647),
+                policy_digest TEXT NOT NULL,
+                activation_id TEXT NOT NULL
+                    REFERENCES authority_policy_v2_activations(id) ON DELETE RESTRICT,
+                contract_id TEXT NOT NULL,
+                contract_version TEXT NOT NULL,
+                contract_digest TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                executor_kind TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                canonical_payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(root_task_id, manager_agent, manager_session_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_session_bindings_team_selector
+                ON authority_policy_v2_session_bindings(team, selector_id);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_session_bindings_no_update
+                BEFORE UPDATE ON authority_policy_v2_session_bindings
+                BEGIN SELECT RAISE(ABORT, 'v2 authority session bindings are immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_session_bindings_no_delete
+                BEFORE DELETE ON authority_policy_v2_session_bindings
+                BEGIN SELECT RAISE(ABORT, 'v2 authority session bindings cannot be deleted'); END;
 """
 
 
@@ -486,6 +523,12 @@ _AUTHORITY_TERMINAL_STATUSES = frozenset({
 
 # Child task-result verdicts that do NOT block a same-root continuation.
 _AUTHORITY_APPROVED_VERDICTS = frozenset({"APPROVE", "PASS"})
+
+# Existing and additive supplemental launch-binding audit actions (THR-229 C1).
+# The first is unchanged historical legacy binding; the second is the additive
+# selector supplement written in the SAME transaction for a selected-v1 launch.
+_AUTHORITY_POLICY_SESSION_BINDING_ACTION = "authority_policy_session_binding"
+_AUTHORITY_POLICY_SELECTOR_SESSION_BINDING_ACTION = "authority_policy_selector_session_binding"
 
 
 def _authority_claim_key(
@@ -13415,6 +13458,244 @@ class Database:
         ).fetchone()
         return None if row is None else self._authority_policy_v2_activation_from_row(row)
 
+    # -- THR-229 checkpoint C1: immutable launch session bindings --
+    #
+    # The v2 binding table stores the authenticated launch tuple for a session.
+    # The Database owns every lock/BEGIN IMMEDIATE/commit boundary; the caller
+    # never nests a committing facade inside these writers.
+
+    def _authority_begin(self) -> bool:
+        """Begin a write transaction; return True when nested under an outer one."""
+        if self._conn.in_transaction:
+            self._conn.execute("SAVEPOINT authority_write")
+            return True
+        self._conn.execute("BEGIN IMMEDIATE")
+        return False
+
+    def _authority_commit(self, nested: bool) -> None:
+        if nested:
+            self._conn.execute("RELEASE authority_write")
+        else:
+            self._conn.commit()
+
+    def _authority_rollback(self, nested: bool) -> None:
+        if nested:
+            self._conn.execute("ROLLBACK TO authority_write")
+            self._conn.execute("RELEASE authority_write")
+        else:
+            self._conn.rollback()
+
+    @contextmanager
+    def _authority_write_transaction(self):
+        """Own a write transaction, degrading to a savepoint if one is open.
+
+        The launch path may be entered with an already-open implicit
+        transaction (for example a caller that used the raw ``execute``
+        passthrough). In that case a nested ``BEGIN IMMEDIATE`` would fail, so
+        the write joins the outer transaction under a savepoint instead; a
+        failure rolls back only this savepoint and never the caller's work.
+        """
+        nested = self._authority_begin()
+        try:
+            yield
+        except Exception:
+            self._authority_rollback(nested)
+            raise
+        else:
+            self._authority_commit(nested)
+
+    def _authority_policy_v2_session_binding_from_row(
+        self, row
+    ) -> AuthorityPolicyV2SessionBinding:
+        try:
+            binding = AuthorityPolicyV2SessionBinding.model_validate_json(
+                row["canonical_payload_json"]
+            )
+        except Exception as exc:
+            raise ValueError(
+                "authority v2 session binding has a corrupt canonical payload"
+            ) from exc
+        if binding.binding_id != row["binding_id"]:
+            raise ValueError("authority v2 session binding identity mismatch")
+        for column, value in binding.model_dump(mode="json").items():
+            if row[column] != value:
+                raise ValueError("authority v2 session binding column/preimage mismatch")
+        return binding
+
+    @_synchronized
+    def get_authority_policy_v2_session_binding(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+    ) -> AuthorityPolicyV2SessionBinding | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_session_bindings "
+            "WHERE root_task_id=? AND manager_agent=? AND manager_session_id=?",
+            (root_task_id, manager_agent, manager_session_id),
+        ).fetchone()
+        return None if row is None else self._authority_policy_v2_session_binding_from_row(row)
+
+    def _authenticate_v2_session_binding_uncommitted(
+        self, binding: AuthorityPolicyV2SessionBinding
+    ) -> None:
+        """Authenticate a binding against its sealed release/activation/selector."""
+        activation = self.get_authority_policy_v2_activation(binding.activation_id)
+        if activation is None or activation.team != binding.team:
+            raise ValueError("v2 session binding activation is not durable")
+        release = self.get_authority_policy_v2_release(binding.release_id)
+        if release is None or release.team != binding.team:
+            raise ValueError("v2 session binding release is not durable")
+        if (
+            activation.release_id != binding.release_id
+            or activation.release_digest != binding.policy_digest
+            or activation.selector_epoch != binding.activation_epoch
+            or release.policy_digest != binding.policy_digest
+            or release.version != binding.policy_version
+            or release.contract_digest != binding.contract_digest
+        ):
+            raise ValueError(
+                "v2 session binding does not match its sealed release/activation"
+            )
+        selector = self.get_authority_policy_selector_by_id(
+            binding.team, binding.selector_id
+        )
+        if (
+            selector is None or selector.family != "v2"
+            or selector.selector_epoch != binding.activation_epoch
+            or selector.v2_activation_id != binding.activation_id
+        ):
+            raise ValueError("v2 session binding selector is not authenticated")
+
+    @_synchronized
+    def bind_authority_policy_v2_session(
+        self, binding: AuthorityPolicyV2SessionBinding | dict
+    ) -> AuthorityPolicyV2SessionBinding:
+        """Persist one immutable v2 launch binding in its own transaction.
+
+        Exact-repeat idempotency returns the prior immutable row; a changed
+        tuple for the same session, or a conflicting legacy binding, refuses.
+        Authentication happens against the sealed release, activation and the
+        pinned selector's own predecessor chain.
+        """
+        if not isinstance(binding, AuthorityPolicyV2SessionBinding):
+            binding = AuthorityPolicyV2SessionBinding.model_validate(binding)
+        with self._authority_write_transaction():
+            self._authenticate_v2_session_binding_uncommitted(binding)
+            existing = self._conn.execute(
+                "SELECT * FROM authority_policy_v2_session_bindings "
+                "WHERE root_task_id=? AND manager_agent=? AND manager_session_id=?",
+                (binding.root_task_id, binding.manager_agent, binding.manager_session_id),
+            ).fetchone()
+            if existing is not None:
+                prior = self._authority_policy_v2_session_binding_from_row(existing)
+                if prior.binding_id != binding.binding_id:
+                    raise ValueError(
+                        "v2 session binding conflicts with an existing binding"
+                    )
+                return prior
+            legacy_rows = self._legacy_session_binding_rows_uncommitted(
+                binding.root_task_id, binding.manager_agent, binding.manager_session_id
+            )
+            if legacy_rows:
+                raise ValueError(
+                    "v2 session binding conflicts with a legacy session binding"
+                )
+            snapshot = binding.model_dump(mode="json")
+            self._conn.execute(
+                """INSERT INTO authority_policy_v2_session_bindings
+                   (binding_id,team,root_task_id,manager_agent,manager_session_id,
+                    selector_id,activation_epoch,release_id,policy_version,policy_digest,
+                    activation_id,contract_id,contract_version,contract_digest,
+                    provider_id,executor_kind,model_id,canonical_payload_json,created_at)
+                   VALUES (:binding_id,:team,:root_task_id,:manager_agent,
+                           :manager_session_id,:selector_id,:activation_epoch,:release_id,
+                           :policy_version,:policy_digest,:activation_id,:contract_id,
+                           :contract_version,:contract_digest,:provider_id,:executor_kind,
+                           :model_id,:canonical_payload_json,:created_at)""",
+                {
+                    **snapshot,
+                    "binding_id": binding.binding_id,
+                    "canonical_payload_json": authority_policy_v2_canonical_json_bytes(
+                        snapshot
+                    ).decode("utf-8"),
+                },
+            )
+            return binding
+
+    def _legacy_session_binding_rows_uncommitted(
+        self, task_id: str, agent_name: str, session_id: str
+    ) -> list[dict]:
+        return [
+            row for row in self.get_audit_logs(task_id)
+            if row["action"] == _AUTHORITY_POLICY_SESSION_BINDING_ACTION
+            and row.get("agent") == agent_name
+            and (row.get("payload") or {}).get("session_id") == session_id
+        ]
+
+    def _selector_session_binding_rows_uncommitted(
+        self, task_id: str, agent_name: str, session_id: str
+    ) -> list[dict]:
+        return [
+            row for row in self.get_audit_logs(task_id)
+            if row["action"] == _AUTHORITY_POLICY_SELECTOR_SESSION_BINDING_ACTION
+            and row.get("agent") == agent_name
+            and (row.get("payload") or {}).get("session_id") == session_id
+        ]
+
+    @_synchronized
+    def bind_authority_policy_legacy_session(
+        self,
+        *,
+        task_id: str,
+        agent_name: str,
+        session_id: str,
+        legacy_payload: dict,
+        selector_payload: dict | None,
+    ) -> None:
+        """Write the unchanged legacy binding and its supplemental selector audit.
+
+        Both audit rows commit in ONE transaction (R2); a changed payload or a
+        conflicting v2 binding for the session refuses without partial writes.
+        """
+        with self._authority_write_transaction():
+            v2 = self.get_authority_policy_v2_session_binding(
+                root_task_id=task_id, manager_agent=agent_name,
+                manager_session_id=session_id,
+            )
+            if v2 is not None:
+                raise ValueError(
+                    "legacy session binding conflicts with a v2 session binding"
+                )
+            legacy_rows = self._legacy_session_binding_rows_uncommitted(
+                task_id, agent_name, session_id
+            )
+            selector_rows = self._selector_session_binding_rows_uncommitted(
+                task_id, agent_name, session_id
+            )
+            if legacy_rows or selector_rows:
+                selector_ok = (
+                    (selector_payload is None and not selector_rows)
+                    or (
+                        selector_payload is not None
+                        and len(selector_rows) == 1
+                        and selector_rows[0].get("payload") == selector_payload
+                    )
+                )
+                if (
+                    len(legacy_rows) != 1
+                    or legacy_rows[0].get("payload") != legacy_payload
+                    or not selector_ok
+                ):
+                    raise ValueError("session policy binding is ambiguous")
+                return
+            self.insert_audit_log_uncommitted(
+                task_id, agent_name,
+                _AUTHORITY_POLICY_SESSION_BINDING_ACTION, legacy_payload,
+            )
+            if selector_payload is not None:
+                self.insert_audit_log_uncommitted(
+                    task_id, agent_name,
+                    _AUTHORITY_POLICY_SELECTOR_SESSION_BINDING_ACTION, selector_payload,
+                )
+
     def _authority_policy_selector_from_row(self, row) -> AuthorityPolicySelector:
         try:
             selector = AuthorityPolicySelector.model_validate(dict(row))
@@ -13433,9 +13714,16 @@ class Database:
         return selector
 
     def _load_authority_selector_history_chain(
-        self, team: str
+        self, team: str, *, up_to_selector_id: str | None = None
     ) -> list[AuthorityPolicySelector]:
-        """Load and authenticate the complete immutable selector history chain."""
+        """Load and authenticate the immutable selector history chain.
+
+        With ``up_to_selector_id`` the read is bounded: only the initializer
+        through the pinned selector is validated, and later legitimate
+        activations can neither replace nor invalidate that older prefix. The
+        current-selector and control-writer readers still require the complete
+        chain and tip coherence through the unbounded callers.
+        """
         rows = self._conn.execute(
             "SELECT * FROM authority_policy_active_selector_history "
             "WHERE team=? ORDER BY selector_epoch",
@@ -13443,6 +13731,16 @@ class Database:
         ).fetchall()
         if not rows:
             return []
+        if up_to_selector_id is not None:
+            prefix: list = []
+            for row in rows:
+                prefix.append(row)
+                if row["selector_id"] == up_to_selector_id:
+                    break
+            else:
+                # The pin is not in this team's authenticated history.
+                return []
+            rows = prefix
         selectors = [self._authority_policy_selector_from_row(row) for row in rows]
         first = selectors[0]
         if first.family == "empty":
@@ -13467,7 +13765,9 @@ class Database:
         # selector's authority: a missing/mutated/duplicated initializer or
         # selection audit, or a receipt without its durable activation/release,
         # refuses without reconstructing anything.
-        self._authenticate_authority_selector_control_audit(team, selectors)
+        self._authenticate_authority_selector_control_audit(
+            team, selectors, bounded=up_to_selector_id is not None,
+        )
         return selectors
 
     @_synchronized
@@ -13490,8 +13790,16 @@ class Database:
     def get_authority_policy_selector_by_id(
         self, team: str, selector_id: str
     ) -> AuthorityPolicySelector | None:
+        """Authenticate one pinned selector through its own predecessor chain.
+
+        Bounded historical authentication: rows AFTER the pin are never
+        consulted, so a later legitimate v1/v2 activation cannot replace or
+        invalidate an older authentic launch binding.
+        """
         team = self._validate_authority_selector_team(team)
-        for selector in self._load_authority_selector_history_chain(team):
+        for selector in self._load_authority_selector_history_chain(
+            team, up_to_selector_id=selector_id
+        ):
             if selector.selector_id == selector_id:
                 return selector
         return None
@@ -13779,16 +14087,22 @@ class Database:
         return selector
 
     def _authenticate_authority_selector_control_audit(
-        self, team: str, selectors: list[AuthorityPolicySelector]
+        self, team: str, selectors: list[AuthorityPolicySelector], *, bounded: bool = False
     ) -> None:
         """Authenticate the accepted control audit/preimage/receipt links.
 
-        Every live selector must be backed by exactly one accepted control-audit
-        event; orphan or duplicated audit rows, a missing initializer, a
-        mismatched preimage/receipt or a receipt whose durable activation or
-        release is absent all refuse. Diagnostic ``activation_rejected`` events
-        are not successful write authority and are ignored. Read-only: never
-        allocates, reconstructs or replaces anything.
+        Every selector in ``selectors`` must be backed by exactly one accepted
+        control-audit event; orphan or duplicated audit rows, a missing
+        initializer, a mismatched preimage/receipt or a receipt whose durable
+        activation or release is absent all refuse. Diagnostic
+        ``activation_rejected`` events are not successful write authority and
+        are ignored. Read-only: never allocates, reconstructs or replaces
+        anything.
+
+        ``bounded`` restricts the same authentication to the supplied prefix:
+        audit evidence for selectors AFTER the pinned selector is neither
+        required nor treated as orphaned, so a later legitimate activation
+        cannot invalidate an older pin.
         """
         rows = self._conn.execute(
             "SELECT * FROM authority_policy_v2_control_audit WHERE team=? ORDER BY id",
@@ -13820,6 +14134,13 @@ class Database:
                 raise ValueError("authority selector control audit kind is invalid")
 
         first = selectors[0]
+        if bounded:
+            # Authenticate only the pinned prefix: later selections/creates are
+            # legitimate future history, not residue of this pin.
+            initializers = {key: value for key, value in initializers.items()
+                            if key == first.selector_id}
+            selections = {key: value for key, value in selections.items()
+                          if key in {s.selector_id for s in selectors[1:]}}
         initializer_rows = initializers.get(first.selector_id, [])
         if len(initializer_rows) != 1:
             raise ValueError(
@@ -13910,6 +14231,9 @@ class Database:
                 receipt = self._authority_policy_legacy_receipt_from_audit_row(row)
                 self._authenticate_authority_legacy_control_receipt(receipt, team, selectors)
 
+        if bounded:
+            created = {key: value for key, value in created.items()
+                       if key in paired_create_ids}
         if set(created) != paired_create_ids:
             raise ValueError("authority v2 create audit is missing or orphaned")
         for request_id, request_rows in created.items():
@@ -13953,7 +14277,7 @@ class Database:
         returned unchanged (never reconstructed).
         """
         team = self._validate_authority_selector_team(team)
-        self._conn.execute("BEGIN IMMEDIATE")
+        nested = self._authority_begin()
         try:
             existing = self._conn.execute(
                 "SELECT * FROM authority_policy_active_selector WHERE team=?", (team,)
@@ -13966,7 +14290,7 @@ class Database:
                         "authority selector initialization_unavailable: "
                         "live selector does not match its history tip"
                     )
-                self._conn.commit()
+                self._authority_commit(nested)
                 return selector
             history_count = self._conn.execute(
                 "SELECT COUNT(*) AS n FROM authority_policy_active_selector_history WHERE team=?",
@@ -14077,10 +14401,10 @@ class Database:
                 raise ValueError(
                     "authority selector initialization_unavailable: unsupported family"
                 )
-            self._conn.commit()
+            self._authority_commit(nested)
             return selector
         except Exception:
-            self._conn.rollback()
+            self._authority_rollback(nested)
             raise
 
     @_synchronized

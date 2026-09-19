@@ -555,6 +555,39 @@ def authority_policy_v2_candidate_claim_digest(values: Mapping[str, object]) -> 
     return authority_policy_v2_sha256(dict(values))
 
 
+def authority_policy_v2_session_binding_preimage(
+    *, activation_epoch: int, activation_id: str, contract_digest: str,
+    contract_id: str, contract_version: str, executor_kind: str, manager_agent: str,
+    manager_session_id: str, model_id: str, policy_digest: str, policy_version: int,
+    provider_id: str, release_id: str, root_task_id: str, selector_id: str, team: str,
+) -> dict[str, object]:
+    """Frozen R2 launch-binding preimage.
+
+    This is exactly the accepted launch-binding object (the sixteen identity
+    fields); the creation timestamp is deliberately outside the content
+    identity so an exact repeat of the same launch tuple is byte-identical and
+    therefore idempotent.
+    """
+    return {
+        "activation_epoch": activation_epoch,
+        "activation_id": activation_id,
+        "contract_digest": contract_digest,
+        "contract_id": contract_id,
+        "contract_version": contract_version,
+        "executor_kind": executor_kind,
+        "manager_agent": manager_agent,
+        "manager_session_id": manager_session_id,
+        "model_id": model_id,
+        "policy_digest": policy_digest,
+        "policy_version": policy_version,
+        "provider_id": provider_id,
+        "release_id": release_id,
+        "root_task_id": root_task_id,
+        "selector_id": selector_id,
+        "team": team,
+    }
+
+
 _AUTHORITY_POLICY_V2_POLICY_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 # Mirrors the existing saved-policy secret-shape rejection in
 # ``runtime/daemon/routes/authority_policy.py`` byte-for-byte. B1 keeps the
@@ -798,6 +831,100 @@ class AuthorityPolicySelector(BaseModel):
         if self.selector_id != expected:
             raise ValueError("selector_id does not match the frozen selector preimage")
         return self
+
+
+class AuthorityPolicyV2SessionBinding(BaseModel):
+    """Immutable authenticated launch binding for one manager runtime session.
+
+    The binding records exactly the selector/epoch, immutable release and
+    activation, contract, and resolved provider/executor/model identity that a
+    launch used. Its content identity is the frozen R2 launch-binding preimage;
+    ``binding_id`` is ``APV2B-`` followed by that SHA-256, so an exact repeat of
+    the same tuple yields the same immutable row and a changed tuple refuses.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    activation_epoch: StrictInt = Field(ge=1, le=2147483647)
+    activation_id: StrictStr
+    contract_digest: StrictStr
+    contract_id: Literal[AUTHORITY_POLICY_V2_CONTRACT_ID]
+    contract_version: Literal[AUTHORITY_POLICY_V2_CONTRACT_VERSION]
+    executor_kind: StrictStr
+    manager_agent: StrictStr
+    manager_session_id: StrictStr
+    model_id: StrictStr
+    policy_digest: StrictStr
+    policy_version: StrictInt = Field(ge=1, le=2147483647)
+    provider_id: StrictStr
+    release_id: StrictStr
+    root_task_id: StrictStr
+    selector_id: StrictStr
+    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    created_at: datetime = Field(default_factory=_now)
+
+    @field_validator("contract_digest", "policy_digest")
+    @classmethod
+    def _v2_binding_digests_are_lower_hex(cls, value: str) -> str:
+        if not _AUTHORITY_POLICY_V2_DIGEST_RE.fullmatch(value):
+            raise ValueError("binding digest must be 64 lowercase hexadecimal characters")
+        return value
+
+    @field_validator("activation_id")
+    @classmethod
+    def _v2_binding_activation_id(cls, value: str) -> str:
+        if not value.startswith("APV2A-"):
+            raise ValueError("activation_id must start with APV2A-")
+        _validate_authority_policy_v2_digest(value[len("APV2A-"):], "activation_id")
+        return value
+
+    @field_validator("release_id")
+    @classmethod
+    def _v2_binding_release_id(cls, value: str) -> str:
+        if not value.startswith("APV2-"):
+            raise ValueError("release_id must start with APV2-")
+        _validate_authority_policy_v2_digest(value[len("APV2-"):], "release_id")
+        return value
+
+    @field_validator("selector_id")
+    @classmethod
+    def _v2_binding_selector_ref(cls, value: str) -> str:
+        return _validate_authority_policy_v2_selector_ref(value, "selector_id")
+
+    @field_validator(
+        "executor_kind", "manager_agent", "manager_session_id", "model_id",
+        "provider_id", "root_task_id",
+    )
+    @classmethod
+    def _v2_binding_identity_scalars(cls, value: str) -> str:
+        return _validate_authority_policy_v2_text(value, "binding identity field", 128)
+
+    @model_validator(mode="after")
+    def _v2_binding_is_contract_bound(self) -> AuthorityPolicyV2SessionBinding:
+        if self.contract_digest != authority_policy_v2_contract_digest():
+            raise ValueError("contract_digest does not match the v2 contract")
+        if self.release_id != f"APV2-{self.policy_digest}":
+            raise ValueError("release_id must contain policy_digest")
+        return self
+
+    def preimage(self) -> dict[str, object]:
+        return authority_policy_v2_session_binding_preimage(
+            activation_epoch=self.activation_epoch, activation_id=self.activation_id,
+            contract_digest=self.contract_digest, contract_id=self.contract_id,
+            contract_version=self.contract_version, executor_kind=self.executor_kind,
+            manager_agent=self.manager_agent, manager_session_id=self.manager_session_id,
+            model_id=self.model_id, policy_digest=self.policy_digest,
+            policy_version=self.policy_version, provider_id=self.provider_id,
+            release_id=self.release_id, root_task_id=self.root_task_id,
+            selector_id=self.selector_id, team=self.team,
+        )
+
+    @property
+    def binding_digest(self) -> str:
+        return authority_policy_v2_sha256(self.preimage())
+
+    @property
+    def binding_id(self) -> str:
+        return f"APV2B-{self.binding_digest}"
 
 
 class AuthorityPolicyV2PairedControlRequest(BaseModel):

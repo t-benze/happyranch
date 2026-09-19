@@ -965,7 +965,7 @@ class Orchestrator:
         from runtime.orchestrator.active_authority_policy import (
             assert_no_reserved_team_policy_header,
             persist_session_policy_binding,
-            render_active_team_policy,
+            render_selected_team_policy,
             resolve_active_team_policy_snapshot,
         )
         from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
@@ -975,13 +975,17 @@ class Orchestrator:
         assert_no_reserved_team_policy_header(managed_skills_index, source="managed skills index")
         assert_no_reserved_team_policy_header(repo_refresh_note, source="repository refresh note")
         assert_no_reserved_team_policy_header(attachments_block, source="attachment manifest")
+        # One snapshot is resolved, rendered and persisted for this launch; the
+        # resolved executor tuple is carried into both the rendered section and
+        # the durable binding. A binding/audit failure raises before the
+        # external launch, so no success is ever fabricated.
         policy_snapshot = resolve_active_team_policy_snapshot(
             store=AuthorityPolicyStore(self._db), team=team, agent_name=agent_name,
             eligible=self._teams.is_team_manager(agent_name),
         )
         active_policy_section = (
-            render_active_team_policy(
-                release=policy_snapshot.release, activation=policy_snapshot.activation,
+            render_selected_team_policy(
+                policy_snapshot,
                 provider_id=provider, executor_kind=provider,
                 model_id=model_name or "default",
                 root_task_id=task_id, manager_session_id=session_id,
