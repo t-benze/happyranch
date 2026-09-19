@@ -23,6 +23,7 @@ from runtime.models import (
     AuthorityPolicySelector,
     AuthorityPolicyV2Activation,
     AuthorityPolicyV2ActivationControlRequest,
+    AuthorityPolicyV2Attempt,
     AuthorityPolicyV2ControlReceipt,
     AuthorityPolicyV2PairedControlRequest,
     AuthorityPolicyV2Release,
@@ -156,6 +157,31 @@ class AuthorityPolicyStore:
         return self._db.get_authority_policy_v2_session_binding(
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id,
+        )
+
+    # -- THR-229 checkpoint C2: result-keyed admitted attempt journal. These are
+    # authenticated reads only; admission itself is owned by the Database
+    # callback transaction and no continuation/evaluation entry point exists.
+
+    def get_v2_attempt_for_result(
+        self, result_id: int
+    ) -> AuthorityPolicyV2Attempt | None:
+        return self._db.get_authority_policy_v2_attempt_for_result(result_id)
+
+    def get_v2_attempt(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int,
+    ) -> AuthorityPolicyV2Attempt | None:
+        return self._db.get_authority_policy_v2_attempt(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+        )
+
+    def list_v2_result_stage_audits(
+        self, *, root_task_id: str, manager_agent: str
+    ) -> list[dict]:
+        return self._db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_task_id, manager_agent=manager_agent,
         )
 
     def bind_legacy_session(

@@ -927,6 +927,138 @@ class AuthorityPolicyV2SessionBinding(BaseModel):
         return f"APV2B-{self.binding_digest}"
 
 
+# THR-229 checkpoint C2: result-keyed immutable attempt journal.  The attempt
+# is created by the callback admission transaction and this unit only ever
+# writes the ``admitted`` stage; later claim/evaluate/consume/finalize
+# transitions remain subsequent C work and must extend the closed set below,
+# never add an early continuation entry point.
+AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED = "admitted"
+AUTHORITY_POLICY_V2_ATTEMPT_STAGES = frozenset({
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+})
+AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_STATES = frozenset({
+    "unfinalized", "continued", "refused", "owner_lost",
+})
+AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION = "authority_policy_v2_result_stage"
+
+
+class AuthorityPolicyV2Attempt(BaseModel):
+    """Immutable admitted attempt journal row for one v2 callback result.
+
+    The unique identity is ``(root_task_id, manager_agent,
+    manager_session_id, result_id)`` and ``attempt_id`` is the deterministic
+    ``APV2R-`` preimage over exactly those four identities plus the team.  The
+    row is bound to the admitted result, the authenticated launch binding, the
+    v2 contract and the admitted family.  ``origin_boot_id`` is the owning
+    daemon-process UUID and ``owner_attempt_id`` is the randomly allocated UUID
+    fixed by the winning insert; neither is a credential.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    attempt_id: StrictStr
+    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    root_task_id: StrictStr
+    manager_agent: StrictStr
+    manager_session_id: StrictStr
+    result_id: StrictInt = Field(ge=1, le=9223372036854775807)
+    binding_id: StrictStr
+    contract_id: Literal[AUTHORITY_POLICY_V2_CONTRACT_ID]
+    contract_version: Literal[AUTHORITY_POLICY_V2_CONTRACT_VERSION]
+    contract_digest: StrictStr
+    release_id: StrictStr
+    activation_id: StrictStr
+    activation_epoch: StrictInt = Field(ge=1, le=2147483647)
+    selector_id: StrictStr
+    stage: StrictStr
+    finalization_state: StrictStr
+    refusal_code: StrictStr | None = None
+    origin_boot_id: StrictStr
+    owner_attempt_id: StrictStr
+    assessment_digest: StrictStr
+    created_at: datetime = Field(default_factory=_now)
+
+    @field_validator("contract_digest", "assessment_digest")
+    @classmethod
+    def _v2_attempt_digests_are_lower_hex(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_digest(value, info.field_name)
+
+    @field_validator("activation_id")
+    @classmethod
+    def _v2_attempt_activation_id(cls, value: str) -> str:
+        if not value.startswith("APV2A-"):
+            raise ValueError("activation_id must start with APV2A-")
+        _validate_authority_policy_v2_digest(value[len("APV2A-"):], "activation_id")
+        return value
+
+    @field_validator("release_id")
+    @classmethod
+    def _v2_attempt_release_id(cls, value: str) -> str:
+        if not value.startswith("APV2-"):
+            raise ValueError("release_id must start with APV2-")
+        _validate_authority_policy_v2_digest(value[len("APV2-"):], "release_id")
+        return value
+
+    @field_validator("binding_id")
+    @classmethod
+    def _v2_attempt_binding_id(cls, value: str) -> str:
+        if not value.startswith("APV2B-"):
+            raise ValueError("binding_id must start with APV2B-")
+        _validate_authority_policy_v2_digest(value[len("APV2B-"):], "binding_id")
+        return value
+
+    @field_validator("selector_id")
+    @classmethod
+    def _v2_attempt_selector_ref(cls, value: str) -> str:
+        return _validate_authority_policy_v2_selector_ref(value, "selector_id")
+
+    @field_validator(
+        "manager_agent", "manager_session_id", "origin_boot_id", "owner_attempt_id",
+        "root_task_id",
+    )
+    @classmethod
+    def _v2_attempt_identity_scalars(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, 128)
+
+    @field_validator("attempt_id")
+    @classmethod
+    def _v2_attempt_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2R-"):
+            raise ValueError("attempt_id must start with APV2R-")
+        _validate_authority_policy_v2_digest(value[len("APV2R-"):], "attempt_id")
+        return value
+
+    @field_validator("stage")
+    @classmethod
+    def _v2_attempt_stage_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_ATTEMPT_STAGES:
+            raise ValueError("attempt stage is not a current admitted stage")
+        return value
+
+    @field_validator("finalization_state")
+    @classmethod
+    def _v2_attempt_finalization_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_STATES:
+            raise ValueError("attempt finalization_state is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_attempt_identity_is_deterministic(self) -> AuthorityPolicyV2Attempt:
+        expected = authority_policy_v2_attempt_id(
+            manager_agent=self.manager_agent,
+            manager_session_id=self.manager_session_id,
+            result_id=self.result_id,
+            root_task_id=self.root_task_id,
+            team=self.team,
+        )
+        if self.attempt_id != expected:
+            raise ValueError("attempt_id does not match the frozen attempt preimage")
+        if self.contract_digest != authority_policy_v2_contract_digest():
+            raise ValueError("contract_digest does not match the v2 contract")
+        if not self.release_id.startswith("APV2-"):
+            raise ValueError("release_id is not a v2 release reference")
+        return self
+
+
 class AuthorityPolicyV2PairedControlRequest(BaseModel):
     """Strict paired create+activate request; client version/digest/ids are rejected."""
     model_config = {"extra": "forbid", "strict": True, "frozen": True}

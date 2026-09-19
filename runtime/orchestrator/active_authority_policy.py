@@ -316,6 +316,7 @@ def load_session_policy_binding(*, db, task_id: str, session_id: str, agent_name
             "session_id": session_id,
             "mode": "v2",
             "team": v2.team,
+            "binding_id": v2.binding_id,
             "selector_id": v2.selector_id,
             "selector_epoch": v2.activation_epoch,
             "release_id": v2.release_id,

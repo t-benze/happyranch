@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -62,6 +63,11 @@ class OrgState:
     # every 10s by a coalesced asyncio scheduler. The HTTP route reads ONLY
     # from this projection; it never calls compose_dashboard_summary directly.
     dashboard_projection: DashboardProjectionManager = field(init=False)
+    # THR-229 checkpoint C2: owning daemon-process UUID recorded as the
+    # ``origin_boot_id`` on every admitted v2 attempt.  It is allocated once per
+    # live OrgState (daemon process), never per request and never from an OS
+    # boot identifier.  It is an ownership marker, not a credential.
+    authority_v2_origin_boot_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     _TERMINAL_STATUS_TO_EVENT = {
         TaskStatus.COMPLETED: "task_complete",

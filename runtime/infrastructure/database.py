@@ -31,6 +31,7 @@ from runtime.models import (
     AuthorityPolicySelector,
     AuthorityPolicyV2Activation,
     AuthorityPolicyV2ActivationControlRequest,
+    AuthorityPolicyV2Attempt,
     AuthorityPolicyV2ControlReceipt,
     AuthorityPolicyV2PairedControlRequest,
     AuthorityPolicyV2Release,
@@ -38,6 +39,11 @@ from runtime.models import (
     AuthorityFenceResult,
     AuthorityRedactionClass,
     AuthorityRetentionClass,
+    AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_STATES,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGES,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+    authority_policy_v2_attempt_id,
     authority_policy_v2_canonical_json_bytes,
     authority_policy_v2_initializer_selector_id,
     authority_policy_v2_initializer_selector_preimage,
@@ -436,6 +442,71 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
             CREATE TRIGGER IF NOT EXISTS authority_policy_v2_session_bindings_no_delete
                 BEFORE DELETE ON authority_policy_v2_session_bindings
                 BEGIN SELECT RAISE(ABORT, 'v2 authority session bindings cannot be deleted'); END;
+
+            -- THR-229 checkpoint C2: result-keyed immutable attempt journal.
+            -- The callback admission transaction inserts exactly one
+            -- ``admitted`` row bound to the immutable task result, the
+            -- authenticated launch binding and the v2 contract.  The identity
+            -- columns (including owner_attempt_id) never change; later C work
+            -- advances ``stage``/``finalization_state`` under its own
+            -- transaction-owned methods, which this unit deliberately does not
+            -- implement or expose.
+            CREATE TABLE IF NOT EXISTS authority_policy_v2_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                team TEXT NOT NULL,
+                root_task_id TEXT NOT NULL,
+                manager_agent TEXT NOT NULL,
+                manager_session_id TEXT NOT NULL,
+                result_id INTEGER NOT NULL
+                    REFERENCES task_results(id) ON DELETE RESTRICT,
+                binding_id TEXT NOT NULL,
+                contract_id TEXT NOT NULL,
+                contract_version TEXT NOT NULL,
+                contract_digest TEXT NOT NULL,
+                release_id TEXT NOT NULL,
+                activation_id TEXT NOT NULL,
+                activation_epoch INTEGER NOT NULL
+                    CHECK(activation_epoch > 0 AND activation_epoch <= 2147483647),
+                selector_id TEXT NOT NULL,
+                stage TEXT NOT NULL CHECK(stage IN ('admitted')),
+                finalization_state TEXT NOT NULL
+                    CHECK(finalization_state IN
+                        ('unfinalized','continued','refused','owner_lost')),
+                refusal_code TEXT,
+                origin_boot_id TEXT NOT NULL,
+                owner_attempt_id TEXT NOT NULL,
+                assessment_digest TEXT NOT NULL,
+                canonical_payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(root_task_id, manager_agent, manager_session_id, result_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_attempts_result
+                ON authority_policy_v2_attempts(result_id);
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_attempts_team_root
+                ON authority_policy_v2_attempts(team, root_task_id);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_attempts_identity_immutable
+                BEFORE UPDATE ON authority_policy_v2_attempts
+                WHEN OLD.attempt_id IS NOT NEW.attempt_id
+                  OR OLD.team IS NOT NEW.team
+                  OR OLD.root_task_id IS NOT NEW.root_task_id
+                  OR OLD.manager_agent IS NOT NEW.manager_agent
+                  OR OLD.manager_session_id IS NOT NEW.manager_session_id
+                  OR OLD.result_id IS NOT NEW.result_id
+                  OR OLD.binding_id IS NOT NEW.binding_id
+                  OR OLD.contract_id IS NOT NEW.contract_id
+                  OR OLD.contract_version IS NOT NEW.contract_version
+                  OR OLD.contract_digest IS NOT NEW.contract_digest
+                  OR OLD.release_id IS NOT NEW.release_id
+                  OR OLD.activation_id IS NOT NEW.activation_id
+                  OR OLD.activation_epoch IS NOT NEW.activation_epoch
+                  OR OLD.selector_id IS NOT NEW.selector_id
+                  OR OLD.origin_boot_id IS NOT NEW.origin_boot_id
+                  OR OLD.owner_attempt_id IS NOT NEW.owner_attempt_id
+                  OR OLD.assessment_digest IS NOT NEW.assessment_digest
+                BEGIN SELECT RAISE(ABORT, 'v2 attempt identity is immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_attempts_no_delete
+                BEFORE DELETE ON authority_policy_v2_attempts
+                BEGIN SELECT RAISE(ABORT, 'v2 attempt journal cannot be deleted'); END;
 """
 
 
@@ -5722,8 +5793,22 @@ class Database:
         decision_json: str | None = None, waiting_on_job_ids: list[str] | None = None,
         verdict: str | None = None, local_ci_json: str | None = None,
         recovery_deadline_monotonic: float | None = None,
+        v2_admission: dict | None = None,
     ) -> bool:
-        """Atomically admit, persist, and ledger-accept one completion callback."""
+        """Atomically admit, persist, and ledger-accept one completion callback.
+
+        ``v2_admission`` (THR-229 checkpoint C2) carries the authenticated
+        versioned evidence for a v2-bound manager session: the exact launch
+        binding identity, the v2 contract/family references, the sanitized
+        assessment digest and the owning daemon-process boot UUID.  When
+        supplied, the immutable result, the admitted attempt journal row and
+        the ``authority_policy_v2_result_stage`` admission audit are inserted in
+        the SAME transaction as the existing result/receipt writes, so any
+        failure rolls back every newly admitted result/attempt/audit/receipt
+        change.  An exact transport retry compares the admitted assessment
+        digest and never allocates a second result/attempt/audit; a changed
+        assessment digest refuses.
+        """
         try:
             self._conn.execute("BEGIN IMMEDIATE")
             task = self._conn.execute(
@@ -5783,11 +5868,54 @@ class Database:
                        WHERE task_id=? AND agent=? AND state='claimed'""",
                     (now, task_id, agent),
                 )
+            if v2_admission is not None:
+                # Authenticate the supplied evidence against the session's
+                # immutable launch binding before any write.  A missing,
+                # corrupt, or mismatched binding refuses with zero writes.
+                if not self._authenticate_v2_attempt_admission_uncommitted(
+                    task_id=task_id, agent=agent, session_id=session_id,
+                    admission=v2_admission,
+                ):
+                    self._conn.rollback()
+                    return False
             existing = self._conn.execute(
-                "SELECT 1 FROM task_results WHERE task_id=? AND agent=? AND session_id=?",
+                "SELECT id FROM task_results WHERE task_id=? AND agent=? AND session_id=?",
                 (task_id, agent, session_id),
             ).fetchone()
             if existing is not None:
+                if v2_admission is None:
+                    # Unchanged legacy idempotency: any persisted same-session
+                    # result short-circuits an exact retry.
+                    self._conn.rollback()
+                    return True
+                # Narrowed v2 retry seam: an existing result is only an exact
+                # replay when the admitted attempt matches the supplied
+                # contract/family references and assessment digest.  A changed
+                # payload refuses rather than silently succeeding.
+                admitted = self._conn.execute(
+                    """SELECT attempt_id, binding_id, contract_id, contract_version,
+                              contract_digest, release_id, activation_id,
+                              activation_epoch, selector_id, assessment_digest,
+                              stage, finalization_state
+                       FROM authority_policy_v2_attempts
+                       WHERE root_task_id=? AND manager_agent=?
+                         AND manager_session_id=? AND result_id=?""",
+                    (task_id, agent, session_id, existing["id"]),
+                ).fetchone()
+                if admitted is None:
+                    self._conn.rollback()
+                    return False
+                if (
+                    admitted["assessment_digest"] != v2_admission["assessment_digest"]
+                    or admitted["binding_id"] != v2_admission["binding_id"]
+                    or admitted["release_id"] != v2_admission["release_id"]
+                    or admitted["activation_id"] != v2_admission["activation_id"]
+                    or admitted["activation_epoch"] != v2_admission["activation_epoch"]
+                    or admitted["selector_id"] != v2_admission["selector_id"]
+                    or admitted["contract_digest"] != v2_admission["contract_digest"]
+                ):
+                    self._conn.rollback()
+                    return False
                 self._conn.rollback()
                 return True
             self._insert_task_result(
@@ -5805,11 +5933,185 @@ class Database:
                    WHERE task_id=? AND agent=? AND recovery_session_id=? AND state='claimed'""",
                 (accepted_result_id, session_id, now, task_id, agent, session_id),
             )
+            if v2_admission is not None:
+                self._insert_authority_policy_v2_attempt_uncommitted(
+                    task_id=task_id, agent=agent, session_id=session_id,
+                    result_id=accepted_result_id, admission=v2_admission, now=now,
+                )
             self._conn.commit()
             return True
         except Exception:
             self._conn.rollback()
             raise
+
+    def _authenticate_v2_attempt_admission_uncommitted(
+        self, *, task_id: str, agent: str, session_id: str, admission: dict,
+    ) -> bool:
+        """Match the supplied v2 admission against the durable launch binding."""
+        required = (
+            "team", "binding_id", "contract_id", "contract_version",
+            "contract_digest", "release_id", "activation_id", "activation_epoch",
+            "selector_id", "assessment_digest", "assessment_canonical_json",
+            "origin_boot_id",
+        )
+        if any(admission.get(key) in (None, "") for key in required):
+            return False
+        if len(str(admission["assessment_canonical_json"]).encode("utf-8")) > 65536:
+            return False
+        binding = self.get_authority_policy_v2_session_binding(
+            root_task_id=task_id, manager_agent=agent, manager_session_id=session_id,
+        )
+        if binding is None:
+            return False
+        return (
+            binding.binding_id == admission["binding_id"]
+            and binding.team == admission["team"]
+            and binding.contract_id == admission["contract_id"]
+            and binding.contract_version == admission["contract_version"]
+            and binding.contract_digest == admission["contract_digest"]
+            and binding.release_id == admission["release_id"]
+            and binding.activation_id == admission["activation_id"]
+            and binding.activation_epoch == admission["activation_epoch"]
+            and binding.selector_id == admission["selector_id"]
+        )
+
+    def _insert_authority_policy_v2_attempt_uncommitted(
+        self, *, task_id: str, agent: str, session_id: str, result_id: int,
+        admission: dict, now: str,
+    ) -> AuthorityPolicyV2Attempt:
+        """Insert one admitted attempt row plus its admission audit.
+
+        Runs inside the callback admission transaction.  The deterministic
+        attempt ID and the randomly allocated ``owner_attempt_id`` are fixed by
+        this winning insert; no second result/attempt/audit is ever allocated
+        for the same exact tuple.
+        """
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=agent, manager_session_id=session_id,
+            result_id=result_id, root_task_id=task_id, team=admission["team"],
+        )
+        attempt = AuthorityPolicyV2Attempt(
+            attempt_id=attempt_id,
+            team=admission["team"],
+            root_task_id=task_id,
+            manager_agent=agent,
+            manager_session_id=session_id,
+            result_id=result_id,
+            binding_id=admission["binding_id"],
+            contract_id=admission["contract_id"],
+            contract_version=admission["contract_version"],
+            contract_digest=admission["contract_digest"],
+            release_id=admission["release_id"],
+            activation_id=admission["activation_id"],
+            activation_epoch=admission["activation_epoch"],
+            selector_id=admission["selector_id"],
+            stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+            finalization_state="unfinalized",
+            refusal_code=None,
+            origin_boot_id=admission["origin_boot_id"],
+            owner_attempt_id=str(uuid.uuid4()),
+            assessment_digest=admission["assessment_digest"],
+        )
+        snapshot = attempt.model_dump(mode="json")
+        self._conn.execute(
+            """INSERT INTO authority_policy_v2_attempts
+               (attempt_id, team, root_task_id, manager_agent, manager_session_id,
+                result_id, binding_id, contract_id, contract_version, contract_digest,
+                release_id, activation_id, activation_epoch, selector_id, stage,
+                finalization_state, refusal_code, origin_boot_id, owner_attempt_id,
+                assessment_digest, canonical_payload_json, created_at)
+               VALUES (:attempt_id,:team,:root_task_id,:manager_agent,
+                       :manager_session_id,:result_id,:binding_id,:contract_id,
+                       :contract_version,:contract_digest,:release_id,:activation_id,
+                       :activation_epoch,:selector_id,:stage,:finalization_state,
+                       :refusal_code,:origin_boot_id,:owner_attempt_id,
+                       :assessment_digest,:canonical_payload_json,:created_at)""",
+            {
+                **snapshot,
+                "attempt_id": attempt_id,
+                "finalization_state": "unfinalized",
+                "refusal_code": None,
+                "owner_attempt_id": attempt.owner_attempt_id,
+                "canonical_payload_json": authority_policy_v2_canonical_json_bytes(
+                    snapshot
+                ).decode("utf-8"),
+            },
+        )
+        self.insert_audit_log_uncommitted(
+            task_id, agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            {
+                "stage": AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+                "attempt_id": attempt_id,
+                "result_id": result_id,
+                "binding_id": admission["binding_id"],
+                "contract_id": admission["contract_id"],
+                "contract_version": admission["contract_version"],
+                "contract_digest": admission["contract_digest"],
+                "release_id": admission["release_id"],
+                "activation_id": admission["activation_id"],
+                "activation_epoch": admission["activation_epoch"],
+                "selector_id": admission["selector_id"],
+                "assessment_digest": admission["assessment_digest"],
+                "owner_attempt_id": attempt.owner_attempt_id,
+                "origin_boot_id": admission["origin_boot_id"],
+                "finalization_state": "unfinalized",
+            },
+        )
+        return attempt
+
+    @_synchronized
+    def get_authority_policy_v2_attempt_for_result(
+        self, result_id: int,
+    ) -> AuthorityPolicyV2Attempt | None:
+        """Authenticated read of the admitted attempt bound to one result."""
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_attempts WHERE result_id=?",
+            (result_id,),
+        ).fetchone()
+        return None if row is None else self._authority_policy_v2_attempt_from_row(row)
+
+    @_synchronized
+    def get_authority_policy_v2_attempt(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int,
+    ) -> AuthorityPolicyV2Attempt | None:
+        row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_attempts
+               WHERE root_task_id=? AND manager_agent=?
+                 AND manager_session_id=? AND result_id=?""",
+            (root_task_id, manager_agent, manager_session_id, result_id),
+        ).fetchone()
+        return None if row is None else self._authority_policy_v2_attempt_from_row(row)
+
+    def _authority_policy_v2_attempt_from_row(self, row) -> AuthorityPolicyV2Attempt:
+        try:
+            attempt = AuthorityPolicyV2Attempt.model_validate_json(
+                row["canonical_payload_json"]
+            )
+        except Exception as exc:
+            raise ValueError("authority v2 attempt has a corrupt canonical payload") from exc
+        if attempt.attempt_id != row["attempt_id"]:
+            raise ValueError("authority v2 attempt identity mismatch")
+        for column, value in attempt.model_dump(mode="json").items():
+            if column == "finalization_state":
+                continue
+            if row[column] != value:
+                raise ValueError("authority v2 attempt column/preimage mismatch")
+        if row["finalization_state"] != attempt.finalization_state:
+            raise ValueError("authority v2 attempt finalization mismatch")
+        return attempt
+
+    @_synchronized
+    def list_authority_policy_v2_result_stage_audits(
+        self, *, root_task_id: str, manager_agent: str,
+    ) -> list[dict]:
+        """Return the closed admission-stage audit rows for one root/agent."""
+        return [
+            row for row in self.get_audit_logs(root_task_id)
+            if row["action"] == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+            and row.get("agent") == manager_agent
+        ]
+
 
     @_synchronized
     def get_task_results(self, task_id: str) -> list[dict]:

@@ -7,6 +7,7 @@ import logging
 import os
 import signal
 import sqlite3
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -523,6 +524,84 @@ class CompletionBody(BaseModel):
     local_ci: object | None = None
 
 
+def _completion_v2_evidence(
+    *, org, body: "CompletionBody", binding: dict, task_id: str,
+) -> tuple[dict, dict]:
+    """Validate and authenticate one v2 self-evaluation against its launch binding.
+
+    Returns ``(carrier, admission)``.  ``carrier`` is the sanitized value
+    persisted through the existing result decision carrier: either the exact
+    validated assessment or a bounded digest-only fail-closed diagnostic.
+    ``admission`` carries the authenticated binding/family references and the
+    sanitized-assessment digest consumed by the atomic admission transaction.
+    No raw unknown prose or secret-shaped content is ever carried.
+    """
+    import hashlib as _hashlib
+
+    from runtime.models import (
+        AuthorityPolicyV2ManagerSelfEvaluation,
+        authority_policy_v2_canonical_json_bytes,
+    )
+
+    present = "manager_self_evaluation" in body.model_fields_set
+    raw = body.manager_self_evaluation
+    if not present:
+        carrier: dict = {"_error_code": "missing_assessment"}
+    elif raw is None:
+        carrier = {"_error_code": "null_assessment"}
+    else:
+        try:
+            validated = AuthorityPolicyV2ManagerSelfEvaluation.model_validate(raw)
+        except ValidationError:
+            literal = _json.dumps(raw, sort_keys=True, default=str)
+            carrier = {
+                "_error_code": "malformed_output",
+                "payload_digest": _hashlib.sha256(literal.encode()).hexdigest(),
+            }
+        else:
+            snapshot = validated.model_dump(mode="json")
+            if (
+                snapshot["root_task_id"] != task_id
+                or snapshot["manager_session_id"] != body.session_id
+                or snapshot["release_id"] != binding.get("release_id")
+                or snapshot["policy_digest"] != binding.get("policy_digest")
+                or snapshot["policy_version"] != binding.get("policy_version")
+                or snapshot["activation_id"] != binding.get("activation_id")
+                or snapshot["activation_epoch"] != binding.get("selector_epoch")
+                or snapshot["contract_id"] != binding.get("contract_id")
+                or snapshot["contract_version"] != binding.get("contract_version")
+                or snapshot["contract_digest"] != binding.get("contract_digest")
+                or snapshot["provider_id"] != binding.get("provider_id")
+                or snapshot["executor_kind"] != binding.get("executor_kind")
+                or snapshot["model_id"] != binding.get("model_id")
+            ):
+                literal = authority_policy_v2_canonical_json_bytes(snapshot)
+                carrier = {
+                    "_error_code": "binding_mismatch",
+                    "payload_digest": _hashlib.sha256(literal).hexdigest(),
+                }
+            else:
+                carrier = snapshot
+    canonical = authority_policy_v2_canonical_json_bytes(carrier)
+    admission = {
+        "team": binding["team"],
+        "binding_id": binding["binding_id"],
+        "contract_id": binding["contract_id"],
+        "contract_version": binding["contract_version"],
+        "contract_digest": binding["contract_digest"],
+        "release_id": binding["release_id"],
+        "activation_id": binding["activation_id"],
+        "activation_epoch": binding["selector_epoch"],
+        "selector_id": binding["selector_id"],
+        "assessment_digest": _hashlib.sha256(canonical).hexdigest(),
+        "assessment_canonical_json": canonical.decode("utf-8"),
+        "origin_boot_id": (
+            getattr(org, "authority_v2_origin_boot_id", None) or str(uuid.uuid4())
+        ),
+    }
+    return carrier, admission
+
+
 @router.get("/tasks/{task_id}/events")
 async def task_events(task_id: str, org: OrgDep):
     # Reject unknown task IDs up front — otherwise EventBus.subscribe() replays
@@ -542,6 +621,68 @@ async def task_events(task_id: str, org: OrgDep):
 async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> dict:
     # Task-active gate runs BEFORE session ownership (see _require_task_active).
     _require_task_active(task_id, org.db.get_task(task_id))
+    # Versioned evidence is validated and authenticated against the immutable
+    # launch binding BEFORE the session/idempotency branches, so an exact v2
+    # transport retry can authenticate its stored attempt instead of returning
+    # an unconditional success, and a changed payload cannot bypass validation.
+    decision_payload = dict(body.decision) if body.decision is not None else None
+    if decision_payload is not None:
+        # Server-reserved carrier key: a client-injected value is never
+        # authority and is discarded here.
+        decision_payload.pop("_manager_self_evaluation", None)
+    v2_admission: dict | None = None
+    mse_present = "manager_self_evaluation" in body.model_fields_set
+    _teams = getattr(org, "teams", None)
+    _is_manager = bool(_teams is not None and _teams.is_team_manager(body.agent))
+    if mse_present or _is_manager:
+        task = org.db.get_task(task_id)
+        from runtime.orchestrator.active_authority_policy import (
+            ActiveAuthorityPolicyError,
+            load_session_policy_binding,
+        )
+        binding = None
+        try:
+            if task is not None and _is_manager:
+                binding = load_session_policy_binding(
+                    db=org.db, task_id=task_id, session_id=body.session_id,
+                    agent_name=body.agent,
+                )
+        except ActiveAuthorityPolicyError:
+            if mse_present:
+                raise HTTPException(status_code=400, detail={"code": "manager_self_evaluation_not_available"})
+            binding = None
+        mode = binding.get("mode") if binding else None
+        if mode == "v2":
+            carrier, v2_admission = _completion_v2_evidence(
+                org=org, body=body, binding=binding, task_id=task_id,
+            )
+            if decision_payload is None:
+                decision_payload = {}
+            decision_payload["_manager_self_evaluation"] = carrier
+        elif body.manager_self_evaluation is not None:
+            # Unchanged legacy v1 path: non-null evidence with no v2 launch
+            # binding still requires the authenticated db_release binding.
+            if task is None or not _is_manager:
+                raise HTTPException(status_code=400, detail={"code": "manager_self_evaluation_not_available"})
+            if not binding or mode != "db_release":
+                raise HTTPException(status_code=400, detail={"code": "manager_self_evaluation_not_available"})
+            from runtime.models import ManagerSelfEvaluation
+            import hashlib as _hashlib
+            raw_canonical = _json.dumps(
+                body.manager_self_evaluation, sort_keys=True, default=str,
+            )
+            try:
+                sanitized = ManagerSelfEvaluation.model_validate(
+                    body.manager_self_evaluation
+                ).model_dump(mode="json")
+            except ValidationError:
+                sanitized = {
+                    "_error_code": "malformed_output",
+                    "payload_digest": _hashlib.sha256(raw_canonical.encode()).hexdigest(),
+                }
+            if decision_payload is None:
+                decision_payload = {}
+            decision_payload["_manager_self_evaluation"] = sanitized
     expected = org.sessions.get_active(task_id, body.agent)
     # Reject callbacks the daemon never spawned. Both branches are 409 — the
     # tracker is the source of truth for "is this a real session". Unknown
@@ -553,6 +694,35 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
         # unknown / fabricated) session remains unknown_session.
         prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id)
         if prior is not None:
+            if v2_admission is None:
+                return {"ok": True}
+            # Narrowed v2 retry seam: an exact transport retry is read-only
+            # success only when the stored admitted attempt matches the
+            # supplied contract/family references and assessment digest.
+            # A changed payload refuses here instead of bypassing validation
+            # after the tracker cleared.
+            try:
+                admitted = org.db.get_authority_policy_v2_attempt_for_result(prior["id"])
+            except ValueError:
+                admitted = None
+            if admitted is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": "v2_attempt_missing", "task_id": task_id},
+                )
+            if (
+                admitted.assessment_digest != v2_admission["assessment_digest"]
+                or admitted.binding_id != v2_admission["binding_id"]
+                or admitted.release_id != v2_admission["release_id"]
+                or admitted.activation_id != v2_admission["activation_id"]
+                or admitted.activation_epoch != v2_admission["activation_epoch"]
+                or admitted.selector_id != v2_admission["selector_id"]
+                or admitted.contract_digest != v2_admission["contract_digest"]
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": "v2_attempt_payload_mismatch", "task_id": task_id},
+                )
             return {"ok": True}
         # No persisted row for this session -> genuinely-unknown / fabricated
         # session. Preserve the security gate: STILL 409.
@@ -649,35 +819,6 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                 },
             )
     local_ci_json = _json.dumps(local_ci.model_dump()) if local_ci is not None else None
-    decision_payload = dict(body.decision) if body.decision is not None else None
-    if body.manager_self_evaluation is not None:
-        task = org.db.get_task(task_id)
-        if task is None or not org.teams.is_team_manager(body.agent):
-            raise HTTPException(status_code=400, detail={"code": "manager_self_evaluation_not_available"})
-        from runtime.orchestrator.active_authority_policy import load_session_policy_binding
-        binding = load_session_policy_binding(
-            db=org.db, task_id=task_id, session_id=body.session_id,
-            agent_name=body.agent,
-        )
-        if not binding or binding.get("mode") != "db_release":
-            raise HTTPException(status_code=400, detail={"code": "manager_self_evaluation_not_available"})
-        from runtime.models import ManagerSelfEvaluation
-        import hashlib as _hashlib
-        raw_canonical = _json.dumps(
-            body.manager_self_evaluation, sort_keys=True, default=str,
-        )
-        try:
-            sanitized = ManagerSelfEvaluation.model_validate(
-                body.manager_self_evaluation
-            ).model_dump(mode="json")
-        except ValidationError:
-            sanitized = {
-                "_error_code": "malformed_output",
-                "payload_digest": _hashlib.sha256(raw_canonical.encode()).hexdigest(),
-            }
-        if decision_payload is None:
-            decision_payload = {}
-        decision_payload["_manager_self_evaluation"] = sanitized
     decision_json = _json.dumps(decision_payload) if decision_payload is not None else None
     async with org.db_lock:
         # The pre-await guards above give callers stable error ordering.  They
@@ -715,6 +856,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                 verdict=body.verdict,
                 local_ci_json=local_ci_json,
                 recovery_deadline_monotonic=recovery_deadline_monotonic,
+                v2_admission=v2_admission,
             ):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,

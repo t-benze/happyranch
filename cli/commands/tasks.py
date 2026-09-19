@@ -628,11 +628,40 @@ def _completion_payload_from_file(path: str) -> tuple[str, dict]:
     <path>` keeps the tool call a single line.
 
     Returns ``(task_id, body)`` shaped for the daemon's completion endpoint.
+
+    THR-229 checkpoint C2: when the payload carries a v2
+    ``manager_self_evaluation`` the affected transport is decoded with the
+    repository's strict decoder *before* the ordinary lossy parse is trusted,
+    so duplicate JSON members, UTF-16/32, a BOM, non-finite numbers and
+    invalid JSON are rejected at the wire boundary with no durable write and
+    no raw-content echo.  Omission versus an explicit ``null`` is preserved
+    (membership check, never truthiness).
     """
     import json as _json
+
+    from runtime.models import decode_authority_policy_v2_json
+
     _shared.require_absolute_payload_path(path, kind="completion")
-    with open(path) as f:
-        data = _json.load(f)
+    with open(path, "rb") as f:
+        raw = f.read()
+    strict: dict | None = None
+    try:
+        strict = decode_authority_policy_v2_json(raw)
+    except ValueError:
+        strict = None
+    data = _json.loads(raw)
+    # Classify the transport from the lossless-enough ordinary parse and
+    # require the strict decode whenever the payload declares v2 evidence; a
+    # strict failure (duplicate member, BOM, non-finite number, invalid
+    # UTF-8) then refuses with a bounded message that never echoes content.
+    _mse = data.get("manager_self_evaluation") if isinstance(data, dict) else None
+    if isinstance(_mse, dict) and _mse.get("contract_id") == "authority_policy_v2":
+        if strict is None:
+            raise ValueError(
+                "v2 manager_self_evaluation transport must be strict UTF-8 JSON "
+                "with no duplicate members, BOM, or non-finite numbers"
+            )
+        data = strict
     required = ["task_id", "session_id", "agent", "status", "summary"]
     missing = [k for k in required if not data.get(k)]
     if missing:
