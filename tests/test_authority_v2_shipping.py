@@ -600,6 +600,13 @@ def test_shipping_real_launch_cli_admission_and_fail_closed_consumer(shipping):
     assert captured["task_id"] == root_id
     assert captured["agent_name"] == MANAGER
 
+    # The atomic claim really happened before `_run_agent`: run_step_impl
+    # incremented the persisted step count and left the task live/unblocked.
+    claimed = fixture.org.db.get_task(root_id)
+    assert claimed.status is TaskStatus.IN_PROGRESS
+    assert claimed.orchestration_step_count == 1
+    assert claimed.block_kind is None
+
     # Real persisted binding + tracker must agree with the captured launch.
     task = fixture.org.db.get_task(root_id)
     assert task.current_session_id == session_id
