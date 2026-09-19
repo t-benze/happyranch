@@ -285,7 +285,7 @@ def test_shipping_fixture_foreground_cleanup(tmp_path, monkeypatch, fixture, sce
             with pytest.raises(StopIteration):
                 next(generator)
             assert calls[-1][0] == "stop"
-    assert all(kwargs["timeout"] == 4 for name, kwargs in calls if name == "stop")
+    assert all(kwargs["timeout"] == 35 for name, kwargs in calls if name == "stop")
 
 
 @pytest.mark.parametrize("fixture", ["live_daemon", "live_daemon_idle"])
@@ -542,6 +542,100 @@ def test_native_foreground_interpreter_lifetime(tmp_path, failure):
         assert observer.connect_ex(("127.0.0.1", port)) != 0
 
 
+def test_foreground_real_runtime_slow_jobs_shutdown(tmp_path):
+    """Real main/Uvicorn/lifespan/jobs hook; only in-flight job IO is controlled."""
+    import time
+    source = Path(__file__).parents[1]
+    events = tmp_path / "events"
+    ready = tmp_path / "ready"
+    daemon_home = tmp_path / "daemon-home"
+    probe = tmp_path / "runtime_probe.py"
+    probe.write_text("import sys\nsys.path.insert(0, " + repr(str(source)) + ")\n" + r'''
+import asyncio, atexit, os, signal
+from contextlib import asynccontextmanager
+from pathlib import Path
+from types import SimpleNamespace
+from runtime.daemon import __main__ as entry, app as app_module, jobs_runner, paths
+from runtime.daemon.state import DaemonState
+root = Path(os.environ['PROBE_ROOT'])
+def record(event):
+    with (root / 'events').open('a') as stream:
+        stream.write(event + '\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+def build(settings):
+    settings.daemon_bind_host = '127.0.0.1'
+    settings.daemon_port = 0
+    state = DaemonState.idle(settings)
+    stop, close = state.queue.stop, state.close_all
+    async def observed_stop():
+        record('queue.stop')
+        await stop()
+    async def observed_close():
+        record('state.close_all')
+        await close()
+    state.queue.stop, state.close_all = observed_stop, observed_close
+    return state
+entry._build_state = build
+real_lifespan = app_module._lifespan
+@asynccontextmanager
+async def observed_lifespan(app):
+    async with real_lifespan(app):
+        terminated = asyncio.Event()
+        proc = SimpleNamespace(pid=987654321, returncode=None)
+        def controlled_signal(pid, sig):
+            assert pid == proc.pid and sig == signal.SIGTERM
+            record('job.TERM')
+            proc.returncode = 0
+            terminated.set()
+        jobs_runner.os.killpg = controlled_signal
+        jobs_runner._INFLIGHT['probe'] = proc
+        async def persist():
+            await terminated.wait()
+            # 5 seconds process grace then real runner-persistence wait.
+            await asyncio.sleep(5.5)
+            record('job.persisted')
+        jobs_runner._RUNNER_TASKS['probe'] = asyncio.create_task(persist())
+        (root / 'ready').write_text('ready')
+        yield
+    record('lifespan.closed')
+app_module._lifespan = observed_lifespan
+def exited():
+    assert not paths.pid_file().exists() and not paths.port_file().exists()
+    record('runtime.handler.cleaned')
+atexit.register(exited)
+raise SystemExit(entry.main([]))
+''')
+    env = dict(os.environ, PROBE_ROOT=str(tmp_path), HOME=str(tmp_path),
+               HAPPYRANCH_DAEMON_HOME=str(daemon_home), XDG_CONFIG_HOME=str(tmp_path / "config"),
+               XDG_CACHE_HOME=str(tmp_path / "cache"), XDG_DATA_HOME=str(tmp_path / "data"))
+    with containment.foreground_daemon(tmp_path, env, module="runtime_probe") as process:
+        _await_file(ready, timeout=10)
+        started = time.monotonic()
+    assert process.returncode == 0
+    assert time.monotonic() - started > 5
+    assert events.read_text().splitlines() == [
+        'job.TERM', 'job.persisted', 'queue.stop', 'state.close_all',
+        'lifespan.closed', 'runtime.handler.cleaned',
+    ]
+
+
+@pytest.mark.parametrize("scenario,expected", [("stall", 124), ("nonzero", 17)])
+def test_foreground_shutdown_error_is_not_success(tmp_path, scenario, expected):
+    ready = tmp_path / 'ready'
+    (tmp_path / 'synthetic.py').write_text(
+        "import signal,time,sys\n"
+        + ("signal.signal(signal.SIGTERM, lambda *_: None)\n" if scenario == 'stall'
+           else "signal.signal(signal.SIGTERM, lambda *_: sys.exit(17))\n")
+        + f"open({str(ready)!r}, 'w').write('ready')\n"
+        + "while True: time.sleep(.01)\n")
+    with pytest.raises(BaseExceptionGroup) as caught:
+        with containment.foreground_daemon(tmp_path, dict(os.environ), module='synthetic', lifetime=2, grace=.1):
+            _await_file(ready)
+    assert len(caught.value.exceptions) == 1
+    assert caught.value.exceptions[0].returncode == expected
+
+
 def test_native_parent_loss_closes_foreground_listener(tmp_path):
     import socket
     import time
@@ -619,13 +713,13 @@ def test_foreground_preserves_primary_and_all_cleanup_error_objects(monkeypatch,
     import types
     primary = KeyboardInterrupt("abort")
     close_errors = [OSError("writer close"), OSError("reader close")]
-    wait_error = subprocess.TimeoutExpired("synthetic", 4)
+    wait_error = subprocess.TimeoutExpired("synthetic", 35)
     calls = []
     def close(fd):
         calls.append(fd)
         raise close_errors[len(calls) - 1]
     def wait(**kwargs):
-        assert kwargs == {"timeout": 4}
+        assert kwargs == {"timeout": 35}
         raise wait_error
     monkeypatch.setattr(containment, "os", types.SimpleNamespace(pipe=lambda: (10, 11), close=close))
     monkeypatch.setattr(containment, "subprocess", types.SimpleNamespace(Popen=lambda *a, **k: types.SimpleNamespace(wait=wait)))
@@ -671,7 +765,7 @@ def test_native_post_spawn_pre_registration_failure_releases_lease(monkeypatch, 
         os.fstat(readers[0])
 
 
-@pytest.mark.parametrize("lifetime,grace", [(0, 1), (1801, 1), (1, 0), (1, 6), (float('nan'), 1)])
+@pytest.mark.parametrize("lifetime,grace", [(0, 1), (1801, 1), (1, 0), (1, 31), (float('nan'), 1)])
 def test_foreground_invalid_bounds_fail_before_acquisition(monkeypatch, tmp_path, lifetime, grace):
     import types
     monkeypatch.setattr(containment, "os", types.SimpleNamespace())
@@ -1449,7 +1543,7 @@ def test_evaluated_pipeline_all_finite_outcomes(tmp_path):
     probe.write_text(PIPELINE_OUTCOMES_GROOVY)
     result = subprocess.run(['/usr/bin/java', f'-Djava.io.tmpdir={tmp_path}', '-cp', jar, 'groovy.ui.GroovyMain', str(probe), str(evaluated), str(inputs)], capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout)['passed'] == ['normal', 'setup-failure', 'abort', 'allocation-failure', 'lost-agent', 'publication-failure', 'test-failure', 'export-failure', 'lease-loss']
+    assert json.loads(result.stdout)['passed'] == ['normal', 'setup', 'controlled-abort', 'setup-failure', 'abort', 'allocation-failure', 'lost-agent', 'publication-failure', 'test-failure', 'export-failure', 'lease-loss', 'missing', 'empty', 'empty-file', 'malformed', 'parser-failure', 'parser-primary-archive-console', 'barrier-failure']
 
 
 PIPELINE_OUTCOMES_GROOVY = r'''
@@ -1458,9 +1552,10 @@ import groovy.json.JsonSlurperClassic
 class FlowInterruptedException extends RuntimeException {}
 def input = new JsonSlurperClassic().parseText(new File(args[1]).text)
 def passed = []
-['normal', 'setup-failure', 'abort', 'allocation-failure', 'lost-agent', 'publication-failure', 'test-failure', 'export-failure', 'lease-loss'].each { scenario ->
+['normal', 'setup', 'controlled-abort', 'setup-failure', 'abort', 'allocation-failure', 'lost-agent', 'publication-failure', 'test-failure', 'export-failure', 'lease-loss', 'missing', 'empty', 'empty-file', 'malformed', 'parser-failure', 'parser-primary-archive-console', 'barrier-failure'].each { scenario ->
   def b = new Binding()
-  b.setVariable('params', [REQUEST_ID:'controlled-1', MODE:'DIAGNOSTIC', SOURCE_SHA:'a'*40, PIPELINE_SHA:'b'*64, EVALUATED_SHA:input.evaluated])
+  def mode = scenario == 'setup' ? 'SETUP' : scenario == 'controlled-abort' ? 'ABORT' : 'DIAGNOSTIC'
+  b.setVariable('params', [REQUEST_ID:'controlled-1', MODE:mode, SOURCE_SHA:'a'*40, PIPELINE_SHA:'b'*64, EVALUATED_SHA:input.evaluated])
   b.setVariable('env', [BUILD_NUMBER:'1'])
   b.setVariable('currentBuild', [result:null])
   b.setVariable('properties', { List x -> })
@@ -1470,10 +1565,14 @@ def passed = []
   b.setVariable('string', { Map x -> x })
   b.setVariable('parallel', { Map x -> x.execution(); x.allocation() })
   def primary = scenario == 'abort' ? new FlowInterruptedException() : new IOException(scenario)
+  def console = new IOException('console unavailable')
   def calls = []
   def childEnv = [:]
   def stageName = ''
   def observed = null
+  def xml = new File(input.workspace, 'thr211-1/artifacts/integration.xml')
+  xml.parentFile.mkdirs()
+  xml.delete()
   b.setVariable('node', { String x, Closure body ->
     if (scenario == 'allocation-failure') throw primary
     body()
@@ -1492,7 +1591,7 @@ def passed = []
     if (childEnv.containsKey('PUBLICATION_RECEIPT')) {
       calls.add('publish')
       if (scenario == 'lost-agent') throw new IOException('agent still absent')
-      return 'THR211_ACQUIRED=' + JsonOutput.toJson([published:true, nonce:childEnv.PUBLICATION_NONCE, root:childEnv.PUBLICATION_ROOT, errors:[]])
+      return 'THR211_ACQUIRED=' + JsonOutput.toJson([published:scenario != 'barrier-failure', nonce:childEnv.PUBLICATION_NONCE, root:childEnv.PUBLICATION_ROOT, errors:[]])
     }
     if (stageName == 'Private frozen preparation') {
       calls.add('prepare')
@@ -1505,40 +1604,76 @@ def passed = []
     }
     calls.add('workload')
     if (scenario in ['abort','lost-agent']) throw primary
-    def code=scenario == 'test-failure' ? 3 : 0
+    def code=scenario in ['test-failure','parser-primary-archive-console'] ? 3 : 0
     def exported=scenario != 'export-failure'
+    if (!(scenario in ['missing','export-failure'])) {
+      xml.text = scenario == 'empty-file' ? '' : scenario == 'malformed' ? '<testsuite' : scenario == 'empty' ? '<testsuite tests="0"/>' :
+        '<testsuite tests="1"><testcase name="partial">' + (code ? '<failure message="failed"/>' : '') + '</testcase></testsuite>'
+    }
     return 'THR211_WORKLOAD=' + JsonOutput.toJson([pytest_exit:code, export:exported?'EXPORTED':'INCOMPLETE']) + '\nTHR211_WORKLOAD_EXIT=' + (exported?code:74) + '\n'
+  })
+  // Actual evaluated Pipeline calls this controlled installed-step seam.
+  // JAXP parses small real XML; this is not a live Jenkins/plugin acceptance.
+  b.setVariable('junit', { Map x ->
+    calls.add('junit')
+    assert calls.indexOf('publish') < calls.indexOf('junit')
+    assert x.testResults == 'thr211-1/artifacts/integration.xml'
+    assert x.allowEmptyResults == false && x.skipPublishingChecks == true
+    if (scenario in ['parser-failure','parser-primary-archive-console']) throw new IOException('parser unavailable')
+    def doc = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(xml)
+    assert doc != null
+    if (!doc.getElementsByTagName('testcase').length) throw new IOException('empty results')
+    if (doc.getElementsByTagName('failure').length) b.getVariable('currentBuild').result='UNSTABLE'
   })
   b.setVariable('archiveArtifacts', { Map x ->
     calls.add('archive')
     assert x.followSymlinks == false && x.allowEmptyArchive == false
-    if (scenario == 'publication-failure') throw new IOException('archive failed')
+    if (scenario in ['publication-failure','parser-primary-archive-console']) throw new IOException('archive failed')
   })
-  b.setVariable('echo', { String x -> observed=new JsonSlurperClassic().parseText(x) })
+  b.setVariable('echo', { String x ->
+    calls.add('console')
+    observed=new JsonSlurperClassic().parseText(x)
+    if (scenario == 'parser-primary-archive-console') throw console
+  })
   b.setVariable('error', { String x -> throw primary })
   Throwable thrown
-  try { new GroovyShell(b).evaluate(new File(args[0])) } catch(Throwable e) { thrown=e }
-  if (scenario == 'normal') {
+  def script = new File(args[0]).text.replace('"MODE":"DIAGNOSTIC"', '"MODE":"' + mode + '"')
+  try { new GroovyShell(b).evaluate(script) } catch(Throwable e) { thrown=e }
+  if (scenario in ['normal','setup']) {
     assert thrown == null
-    assert observed.result == 'TESTS_PASSED' && observed.pytest_exit == 0
+    assert observed.result == (scenario == 'normal' ? 'TESTS_PASSED' : 'PREPARED')
     assert budgets == [15,30,5,15]
+    assert observed.pytest_exit == (scenario == 'normal' ? 0 : null)
+  } else assert thrown.is(primary)
+  if (scenario in ['setup','controlled-abort','setup-failure','allocation-failure','lease-loss']) {
+    assert !calls.contains('workload') && !calls.contains('junit')
+    assert observed.junit_report == 'NOT_RUN'
+  } else if (scenario in ['lost-agent','barrier-failure']) {
+    assert !calls.contains('junit') && !calls.contains('archive')
+    assert observed.junit_report == 'UNKNOWN'
   } else {
-    assert thrown.is(primary)
+    assert calls.contains('junit')
+    assert calls.findAll { it == 'archive' }.size() == 2
+    def failed = scenario in ['missing','empty','empty-file','malformed','parser-failure','parser-primary-archive-console','export-failure','abort']
+    assert observed.junit_report == (failed ? 'FAILED' : 'PARSED')
+    if (failed) assert observed.errors.any { it.startsWith('junit:') }
   }
-  if (scenario in ['setup-failure','allocation-failure','lease-loss']) assert !calls.contains('workload')
-  if (scenario == 'allocation-failure') assert calls == []
+  assert calls[-1] == 'console'
+  if (scenario == 'allocation-failure') assert calls == ['console']
   else {
     assert observed.evaluated_pipeline == input.evaluated
     assert observed.cleanup == 'UNKNOWN'
   }
   if (scenario == 'abort') assert observed.result == 'ABORTED'
-  if (scenario == 'test-failure') assert observed.pytest_exit == 3
+  if (scenario in ['test-failure','parser-primary-archive-console']) assert observed.pytest_exit == 3
   if (scenario == 'export-failure') assert observed.pytest_exit == 0 && observed.workload_exit == 74 && observed.export == 'INCOMPLETE'
-  if (scenario == 'lost-agent') assert observed.pytest_exit == null && !calls.contains('archive') && observed.errors
-  if (scenario == 'publication-failure') {
-    assert observed.errors == ['receipt-archive:IOException', 'artifacts:IOException']
-    assert b.getVariable('currentBuild').result == 'FAILURE'
+  if (scenario == 'lost-agent') assert observed.pytest_exit == null && observed.errors
+  if (scenario == 'publication-failure') assert observed.errors == ['receipt-archive:IOException', 'artifacts:IOException']
+  if (scenario == 'parser-primary-archive-console') {
+    assert thrown.suppressed*.message == ['junit:IOException','receipt-archive:IOException','artifacts:IOException','console:IOException']
+    assert thrown.suppressed[-1].cause.is(console)
   }
+  if (observed.errors && scenario != 'allocation-failure') assert b.getVariable('currentBuild').result == 'FAILURE'
   passed.add(scenario)
 }
 println(JsonOutput.toJson([passed:passed]))

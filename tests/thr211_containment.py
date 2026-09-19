@@ -46,15 +46,19 @@ runpy.run_module(module, run_name='__main__', alter_sys=True)
 
 @contextmanager
 def foreground_daemon(source: Path, env: dict[str, str], *, lifetime: float = 1800,
-                      grace: float = 3, module: str = "runtime.daemon"):
+                      grace: float = 30, module: str = "runtime.daemon"):
     """Bound the foreground interpreter; descendant cleanup remains UNKNOWN.
 
+    The 30s default/max allows 5s jobs grace + 5s persistence + 20s for
+    scheduling/other teardown; the parent adds 5s to observe the hard deadline.
+    This is a test watchdog policy, not a bound on production shutdown: Uvicorn
+    connection draining and other lifespan awaits can hang. Exit124 stays error.
     Cleanup never signals a numeric process identity. Every acquired descriptor
     is closed, even on launch failure. A bounded wait observes interpreter exit;
     it does not assert listener/descendant absence. Secondary exception objects
     are retained on the exact primary under ``thr211_cleanup_errors``.
     """
-    if not (0 < lifetime <= 1800 and 0 < grace <= 5):
+    if not (0 < lifetime <= 1800 and 0 < grace <= 30):
         raise ValueError("foreground lifetime/grace outside finite bounds")
     descriptors = []
     process = None
@@ -81,7 +85,7 @@ def foreground_daemon(source: Path, env: dict[str, str], *, lifetime: float = 18
                 errors.append(error)
         if process is not None:
             try:
-                code = process.wait(timeout=grace + 1)
+                code = process.wait(timeout=grace + 5)
                 if code not in (0, -15):
                     errors.append(subprocess.CalledProcessError(code, process.args))
             except BaseException as error:

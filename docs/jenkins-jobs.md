@@ -135,12 +135,19 @@ fixtures now execute `runtime.daemon` in a test-owned foreground interpreter,
 using the selected Python executable and source root. Both health/yield seams
 are inside unconditional context cleanup, with a monotonic five-second health
 deadline. The interpreter observes a pipe whose writer stays with the fixture:
-EOF requests SIGTERM **on itself**, followed by a three-second hard-exit grace;
+EOF requests SIGTERM **on itself**, followed by a thirty-second hard-exit grace;
 the observer also enforces a thirty-minute interpreter lifetime. Cleanup closes
-both acquired descriptors and waits at most four seconds. It never signals a
+both acquired descriptors and waits at most thirty-five seconds. It never signals a
 saved PID/PGID. Startup, body and abort exceptions retain their exact identity,
 with every observed cleanup exception on `thr211_cleanup_errors`; cleanup-only
-failures raise an exception group. A nonzero stop or wait timeout is not success.
+failures raise an exception group. A nonzero stop or wait timeout is not success, including hard exit 124.
+The helper accepts grace values only in `(0,30]`. Its default 30s allows the
+runtime jobs hook's 5s process grace plus 5s persistence and 20s scheduling/other
+cleanup allowance; the parent's extra 5s observes that deadline. Uvicorn 0.44.0
+captures SIGTERM, drains connections/tasks, calls the app lifespan (jobs, queue,
+state), then restores/re-raises to the runtime signal handler. Some awaits and
+Uvicorn's default connection drain have no finite bound. This is a test watchdog
+policy, never proof that production shutdown must finish within 30s.
 
 This is ordinary bounded foreground teardown. Account closure is performed once
 at the end of the admitted operator window (THR211 seq144/151). The
@@ -154,8 +161,13 @@ synthetic foreground listener's closure, not all descendants' disappearance.
 No pipe, directory, environment cookie or timeout supplies an independent
 descendant ownership facility. The independent outside-UID operator window still
 needs native facts and proof; editing production `daemon.sh` is not shown
-necessary by these results. No integration module is imported or real daemon
-launched in these repair checks. Native-Mac guarantees remain UNPROVED.
+necessary by these results. A focused isolated check runs the actual runtime
+entry point/Uvicorn/app lifespan with controlled in-flight job IO and delayed
+persistence, observing persistence before queue/state closure and restored-handler
+cleanup. No integration module is imported. Native-Mac guarantees remain UNPROVED.
+The selected fixtures cover the foreground module, **not** native
+`scripts/daemon.sh start` end-to-end. A separately scoped launcher preparation
+check must receive parent disposition; it is not added to SETUP, ABORT or ONE.
 
 Every mode (`SETUP`, `ABORT`, `DIAGNOSTIC`) requires a fresh outside-UID
 operator lease before private preparation and again before workload. SETUP
@@ -401,6 +413,22 @@ exact regular no-follow file to `root/artifacts/integration.xml` for the existin
 archive pattern. `workload.log`, `workload-exit.json`, and `workload-result.json`
 retain test exit separately from export. Missing JUnit after pytest exit0 fails
 the workload with export exit74; a nonzero pytest exit remains the primary exit.
+After the acquisition/publication barrier succeeds, the installed `junit` step
+parses exactly `thr211-BUILD/artifacts/integration.xml`, with
+`allowEmptyResults:false` and `skipPublishingChecks:true` (no SCM checks emission).
+The final console receipt distinguishes `junit_report`: NOT_RUN before suite
+dispatch (including SETUP, controlled ABORT and setup/allocation failures), UNKNOWN
+after dispatch when publication is unavailable, PARSED when the step returns,
+and FAILED when it throws (including missing, empty or malformed XML). PARSED
+is not a test PASS: valid partial failures remain available and pytest's original
+exit/exception is preserved. Both XML/log archive attempts still run after parser
+failure. Archive errors, parser errors and final-console errors remain independent
+secondary failures. Failed acquisition/publication never attempts parser/archives.
+The initial archived pipeline receipt predates parser/archive results; consult
+final console and actual archived files for publication outcome. An agent lost
+before verified publication has no claimed parsed report; outside-UID retrieval
+of partial XML is archival evidence only. These controlled checks do not prove
+live Jenkins/CPS plugin acceptance. See the [JUnit step contract](https://www.jenkins.io/doc/pipeline/steps/junit/).
 Jenkins/observer/test/export/cleanup/restoration outcomes stay separate.
 
 On normal finish or agent loss, the operator writes `run_receipt` with the actual

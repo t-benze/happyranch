@@ -330,7 +330,7 @@ properties([disableConcurrentBuilds(), parameters([
 // This watchdog bounds allocation ONLY, without wrapping node's later work.
 def allocated = false
 def executionEnded = false
-def receipt = [pytest_exit: null, result: 'UNKNOWN', cleanup: 'UNKNOWN', observer: 'UNAVAILABLE', errors: []]
+def receipt = [pytest_exit: null, junit_report: 'NOT_RUN', result: 'UNKNOWN', cleanup: 'UNKNOWN', observer: 'UNAVAILABLE', errors: []]
 try {
   parallel allocation: {
     timeout(time: 15, unit: 'MINUTES') {
@@ -392,6 +392,8 @@ try {
                 if (acquisition == null) error('workload acquisition unavailable')
                 withEnv(["PUBLICATION_PYTHON=${installed.PYTHON}", "PUBLICATION_ROOT=${acquisition.root}",
                          "PUBLICATION_NONCE=${nonce}", "PUBLICATION_ACQUIRED=${groovy.json.JsonOutput.toJson(acquisition)}"]) {
+                  // Once dispatch is attempted, agent loss may leave partial XML.
+                  receipt.junit_report = 'UNKNOWN'
                   def output = sh(script: workloadShell, returnStdout: true)
                   def records = output.readLines().findAll { it.startsWith('THR211_WORKLOAD=') }
                   def exits = output.readLines().findAll { it.startsWith('THR211_WORKLOAD_EXIT=') }
@@ -433,6 +435,17 @@ try {
                   }
                 } catch (Throwable e) { receipt.errors.add('receipt:' + e.getClass().getSimpleName()) }
                 if (published) {
+                  if (receipt.junit_report != 'NOT_RUN') {
+                    try {
+                      junit(testResults: "thr211-${env.BUILD_NUMBER}/artifacts/integration.xml",
+                            allowEmptyResults: false, skipPublishingChecks: true)
+                      receipt.junit_report = 'PARSED'
+                    } catch (Throwable e) {
+                      receipt.junit_report = 'FAILED'
+                      receipt.errors.add('junit:' + e.getClass().getSimpleName())
+                    }
+                  }
+                  // XML/log archival remains independent of parsed reporting.
                   try {
                     archiveArtifacts(artifacts: "thr211-${env.BUILD_NUMBER}/artifacts/pipeline.json", allowEmptyArchive: false, followSymlinks: false)
                   } catch (Throwable e) { receipt.errors.add('receipt-archive:' + e.getClass().getSimpleName()) }
@@ -478,7 +491,7 @@ try {
   if (!allocated) {
     try {
       echo groovy.json.JsonOutput.toJson([result: 'ALLOCATION_FAILED', workspace: null,
-          pytest_exit: null, errors: [primary.getClass().getSimpleName()]])
+          pytest_exit: null, junit_report: 'NOT_RUN', errors: [primary.getClass().getSimpleName()]])
     } catch (Throwable e) {
       // There is no verified workspace before allocation, so console is the
       // only publication channel. Preserve its failure on the original
