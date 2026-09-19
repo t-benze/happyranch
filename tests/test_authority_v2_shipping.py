@@ -237,9 +237,13 @@ class _ShippingFixture:
     fabricated Pending/enqueue continuation).
     """
 
-    def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        *, seed_historical: bool = False,
+    ) -> None:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
+        self.seed_historical = seed_historical
         self.home = tmp_path / "daemon-home"
         self.home.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(self.home))
@@ -274,6 +278,19 @@ class _ShippingFixture:
         # Everything the fixture owns must resolve inside tmp_path.
         assert self.rt.root.resolve().is_relative_to(self.tmp_path.resolve())
         assert self.org_root.resolve().is_relative_to(self.tmp_path.resolve())
+
+        # Optional historical venue: reconstruct the FULL old schema and let
+        # the actual current Database open/migration path converge it.  This
+        # reuses the same checked-in historical fixture as the targeted
+        # schema-integrity tests so later continuation cases share one venue.
+        if self.seed_historical:
+            from tests.authority_v2_historical_schema import (
+                reconstruct_historical_database,
+            )
+
+            reconstruct_historical_database(
+                OrgPaths(root=self.org_root).db_path
+            )
 
         paths_mod.ensure_daemon_home()
         token = paths_mod.ensure_token()
@@ -577,23 +594,16 @@ def _provenance(fixture: _ShippingFixture) -> dict:
 # --------------------------------------------------------------------------
 
 
-def test_shipping_real_launch_cli_admission_and_fail_closed_consumer(shipping):
-    fixture = shipping
-    provenance = _provenance(fixture)
-    assert Path(provenance["executable"]).resolve() == Path(sys.executable).resolve()
-    assert Path(provenance["cli_main"]).resolve().is_relative_to(CHECKOUT)
-    assert Path(provenance["runtime"]).resolve().is_relative_to(CHECKOUT)
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=str(CHECKOUT),
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    assert len(head) == 40 and all(c in "0123456789abcdef" for c in head)
-
+def _run_positive_core(fixture: _ShippingFixture) -> dict:
+    """The accepted R3 real launch -> CLI -> admission -> fail-closed consumer
+    flow.  Shared by the fresh and the historically migrated venues."""
     receipt = fixture.activate_v2_pair()
     assert receipt.get("family") == "v2" or receipt.get("activation_id")
 
-    root_id = fixture.create_and_enqueue_root()
+    # Install the sole launch hold BEFORE enqueue so the real queue cannot win
+    # the race and launch the provider process before the double is installed.
     fixture.install_launch_hold()
+    root_id = fixture.create_and_enqueue_root()
     captured = fixture.wait_for_launch()
 
     session_id = captured["session_id"]
@@ -689,6 +699,59 @@ def test_shipping_real_launch_cli_admission_and_fail_closed_consumer(shipping):
     assert hook_rows[-1]["payload"]["outcome"] != "continued_same_root"
     # Consumer reached the documented terminal fail-closed v2 state.
     assert settled.block_kind is None
+    return {
+        "root_id": root_id, "session_id": session_id, "binding": binding,
+        "results": results,
+    }
+
+
+def test_shipping_real_launch_cli_admission_and_fail_closed_consumer(shipping):
+    fixture = shipping
+    provenance = _provenance(fixture)
+    assert Path(provenance["executable"]).resolve() == Path(sys.executable).resolve()
+    assert Path(provenance["cli_main"]).resolve().is_relative_to(CHECKOUT)
+    assert Path(provenance["runtime"]).resolve().is_relative_to(CHECKOUT)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=str(CHECKOUT),
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert len(head) == 40 and all(c in "0123456789abcdef" for c in head)
+
+    _run_positive_core(fixture)
+
+
+def test_shipping_historically_migrated_schema_fail_closed_consumer(
+    tmp_path, monkeypatch,
+):
+    """The SAME real venue over a FULL historical schema migrated forward.
+
+    Proves the fixture wires into the owned R3 shipping venue and that the
+    documented fail-closed v2 consumer outcome holds on a migrated DB.
+    """
+    from runtime.orchestrator.authority import (
+        _V2_MIGRATED_TABLE_CREATE_SQL,
+        _v2_build_reference_inventories,
+        _v2_capture_inventory,
+    )
+
+    fixture = _ShippingFixture(tmp_path, monkeypatch, seed_historical=True)
+    fixture.start()
+    try:
+        inventory = _v2_capture_inventory(fixture.org.db._conn)
+        references = _v2_build_reference_inventories()
+        # The venue really ran on the accepted migrated layout, not a fresh one.
+        assert inventory["tables"]["threads"]["xinfo"] == (
+            references[1]["tables"]["threads"]["xinfo"]
+        )
+        assert inventory["tables"]["threads"]["xinfo"] != (
+            references[0]["tables"]["threads"]["xinfo"]
+        )
+        assert inventory["tables"]["thread_messages"]["sql"] == (
+            _V2_MIGRATED_TABLE_CREATE_SQL["thread_messages"]
+        )
+        _run_positive_core(fixture)
+    finally:
+        fixture.stop()
 
 
 def test_shipping_missing_admitted_audit_refuses_without_repair(tmp_path, monkeypatch):
@@ -696,8 +759,8 @@ def test_shipping_missing_admitted_audit_refuses_without_repair(tmp_path, monkey
     fixture.start()
     try:
         fixture.activate_v2_pair()
-        root_id = fixture.create_and_enqueue_root()
         fixture.install_launch_hold()
+        root_id = fixture.create_and_enqueue_root()
         captured = fixture.wait_for_launch()
         session_id = captured["session_id"]
         binding = _binding(fixture, root_id, session_id)

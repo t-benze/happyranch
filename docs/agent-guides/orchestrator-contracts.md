@@ -323,6 +323,41 @@ shipping v1 writers in `runtime/daemon/routes/authority_policy.py` still bypass
 it and B2b must converge them, so this remains an intermediate unmerged
 storage/control seam rather than a shippable mixed-writer mode.
 
+Checkpoint C3a lands the accepted v2 CONSTRAINT-SENSITIVE schema-integrity
+prerequisite as a separate, read-only, callable seam in
+`runtime/orchestrator/authority.py`:
+`capture_authority_policy_v2_schema_integrity(db)` and
+`recheck_authority_policy_v2_schema_integrity(evidence, db)` returning the
+narrow typed `AuthorityPolicyV2SchemaIntegrity` evidence from
+`runtime/models.py`. Its reference is constructed independently of the
+candidate database — fresh current source plus ONLY the two accepted exact
+migrated `threads`/`thread_messages` ordered-layout substitutions and their
+index-cid consequences — and the oracle compares the complete non-internal
+object inventory (full table SQL including CHECK/UNIQUE/FK expressions, ordered
+`table_xinfo`, `foreign_key_list`, complete `index_xinfo` including expression
+sentinels/collation/key flags/cid, `index_list` origin/unique/partial, explicit
+index SQL/predicate and full trigger/view SQL; autoindex constraint metadata is
+retained and only rootpage/allocator/internal `sqlite_sequence` contents are
+ignored). It requires `PRAGMA integrity_check` exactly `ok` and zero
+`foreign_key_check` violations, then freezes the validated candidate's ACTUAL
+raw `sqlite_master` DDL digest. A recheck denies ANY later raw-digest drift
+(including a switch to the other accepted layout) and a failed/unavailable
+capture can never become a successful recheck; unknown layouts and read errors
+fail closed with bounded machine-readable diagnostics. The result is integrity
+EVIDENCE only — never policy authority, a clause match or a grant — and the
+candidate is never repaired. The legacy v1
+`_release_schema_digest`/`_live_schema_digest`/`_server_evidence`/
+`_server_fact_clause`/`_during_attempt_drift_clause` behavior and all callers
+are unchanged, and this seam is not yet wired into the authority hook. The
+checked-in full historical schema fixture
+`tests/fixtures/authority_v2_historical_schema.json` (with reconstruction
+support in `tests/authority_v2_historical_schema.py`) rebuilds the whole old
+schema and opens it through the actual current `Database` migration path; the
+R3 shipping venue runs over the migrated DB as well. The persisted
+candidate/pin/evaluation/continuation consumer, the corrected
+adverse/partial/raw-DDL diagnostics and the recovery/generation admission
+fences remain staged later units.
+
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the
 client, validates it; an omitted member remains omitted. The shipping CLI to

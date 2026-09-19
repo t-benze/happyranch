@@ -1059,6 +1059,28 @@ class AuthorityPolicyV2Attempt(BaseModel):
         return self
 
 
+class AuthorityPolicyV2SchemaIntegrity(BaseModel):
+    """Bounded read-only v2 schema-integrity EVIDENCE (THR-229 checkpoint C3a).
+
+    Produced by the independent constraint-sensitive reference oracle in
+    ``runtime/orchestrator/authority.py``.  ``raw_digest`` is the candidate
+    database's ACTUAL raw ``sqlite_master`` DDL digest captured at validation
+    time, and ``inventory_digest`` is the canonical digest of the complete
+    non-internal object inventory that matched an accepted reference layout.
+    This value is integrity evidence only: it is NOT policy authority, NOT a
+    policy-clause match, and NOT a continuation grant.  A recheck denies ANY
+    later raw-digest drift; a failed or unavailable capture can never become a
+    successful recheck.
+    """
+
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    contract_version: StrictStr
+    raw_digest: StrictStr
+    inventory_digest: StrictStr
+    object_count: StrictInt = Field(ge=0, le=100000)
+
+
 class AuthorityPolicyV2PairedControlRequest(BaseModel):
     """Strict paired create+activate request; client version/digest/ids are rejected."""
     model_config = {"extra": "forbid", "strict": True, "frozen": True}
