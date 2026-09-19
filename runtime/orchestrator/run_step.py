@@ -1800,6 +1800,21 @@ def _workspace_cleanup_remainder(after) -> dict | None:
     }
 
 
+def _workspace_cleanup_remainder_fact(remainder: dict | None) -> str:
+    """Render the serialized ``after`` accounting for the prompt fact.
+
+    A known remainder is emitted literally so a partial physical effect survives
+    even when the owner audit publication fails; ``None`` renders the explicit
+    ``null`` marker for unknown after-accounting and is never inferred from the
+    claimed byte/inode counts.
+    """
+    import json as _json
+
+    if remainder is None:
+        return "null"
+    return _json.dumps(remainder, sort_keys=True)
+
+
 def _prepare_workspace_cleanup_reclamation_context(
     orch: "Orchestrator", task: "TaskRecord", agent: str, *,
     stale_orchestration_step_count: int, claimed_next_step_count: int,
@@ -1814,6 +1829,15 @@ def _prepare_workspace_cleanup_reclamation_context(
     # The default is disabled.  Preserve the shared loader's strict parsing:
     # malformed configuration escapes exactly as it does at other consumers.
     if not load_org_config(orch._paths).workspace_cleanup_reclamation_actions_enabled:
+        return ""
+
+    # The selector's steady-state contract relies on its caller to establish a
+    # registered owner identity; its canonical/authoritative workspace arguments
+    # are not that check.  Read the existing in-memory TeamsRegistry (no new DB
+    # or config read, so the bounded action-phase budget is unchanged) and refuse
+    # an unregistered agent before selection/action: it reaches no consumer call
+    # and writes no owner action audit.
+    if orch.teams.team_for_agent(agent) is None:
         return ""
 
     deadline = time.monotonic() + 1.0
@@ -1915,7 +1939,8 @@ def _prepare_workspace_cleanup_reclamation_context(
                 f"target={candidate.task_id} outcome={result.outcome} "
                 f"reason={result.reason} "
                 f"claimed_bytes={result.reclaimed_bytes} "
-                f"claimed_inodes={result.reclaimed_inodes}"
+                f"claimed_inodes={result.reclaimed_inodes} "
+                f"remainder={_workspace_cleanup_remainder_fact(remainder)}"
             )
         try:
             orch._db.insert_audit_log(

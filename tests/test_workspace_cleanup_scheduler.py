@@ -1477,6 +1477,28 @@ def test_org_config_kill_switch_parse():
         OrgConfig.load_from_text("workspace_cleanup: 42\n")
 
 
+@pytest.mark.asyncio
+async def test_tick_org_shared_loader_config_failure_escapes_before_scheduling(
+    tmp_path, test_settings,
+):
+    """The scheduler consumer shares the strict org-config loader: malformed
+    YAML raises before any due/trigger decision (loop-level isolation lives in
+    the scheduler loop, not in ``_tick_org``), so no cleanup task is queued."""
+    from runtime.orchestrator.org_config import OrgConfigError
+
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    cfg_path = org.root / "org" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("workspace_cleanup: {\n")
+    state = _FakeDaemonState()
+    state.orgs = {"test": org}
+
+    with pytest.raises(OrgConfigError):
+        await wcs._tick_org(org, state, now_utc=_sunday_0330_utc())
+    assert state.queue.items == []
+
+
 # ── (l) no Schedule / ordinary-session effect ────────────────────────────
 
 def test_orchestrator_has_no_cleanup_seam():

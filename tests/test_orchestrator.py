@@ -5119,3 +5119,16 @@ def test_run_agent_caught_reporter_raise_keeps_reset_report_audit_read_order(
     assert report is None
     assert report_entered.is_set()
     assert order == ["reset", "report", "audit", "read"]
+
+
+def test_prompt_time_line_shared_loader_config_failure_escapes(
+    orchestrator, test_runtime,
+):
+    """The prompt path shares the strict org-config loader: malformed YAML
+    raises OrgConfigError before an ordinary prompt/summary can be produced."""
+    from runtime.orchestrator.org_config import OrgConfigError
+
+    test_runtime.org_config_path.parent.mkdir(parents=True, exist_ok=True)
+    test_runtime.org_config_path.write_text("workspace_cleanup: {\n")
+    with pytest.raises(OrgConfigError):
+        orchestrator._current_time_line(None)

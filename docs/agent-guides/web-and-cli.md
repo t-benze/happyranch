@@ -5,14 +5,16 @@
 `workspace_cleanup.reclamation_actions_enabled` is an internal, strict boolean
 configuration key that defaults to `false`; it creates no Web or CLI setting.
 When enabled, only the pre-agent cleanup hook may act, and only on a
-third-or-later cleanup ordinal whose scheduler-created preclaim owner reconciles
+third-or-later cleanup ordinal whose scheduler-created preclaim owner is
+assigned to a registered in-memory `TeamsRegistry` agent and reconciles
 to the invocation's initial successful claim (the first two runs stay
 report-only), after its current-owner, bounded provenance, one-second deadline,
 and at-most-23 read/load admissions, with no refill or recovery. It makes at
 most five best-effort consumer calls. A fresh `false` value stops a later
 admission but cannot preempt an already admitted call. Each attempt records the
 owner `workspace_cleanup_reclamation_attempt` audit before the prompt carries the
-known facts. A `None` consumer result is reported literally as
+known facts, including the literal `after` remainder or `null`. A `None`
+consumer result is reported literally as
 `refused_or_unavailable`; known partial/failure facts are retained, the
 transported remainder is exactly the returned `after` accounting or `null`, and
 publication failure stops later calls. The ordinary agent completion summary

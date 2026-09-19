@@ -19,9 +19,10 @@ When starting a feature, read the relevant design doc first and follow existing 
 it is boolean and defaults to `true`. Its separate
 `workspace_cleanup.reclamation_actions_enabled` key is also strictly boolean,
 defaults to `false`, and gates the bounded pre-agent reclamation hook. A true
-value does not bypass the hook's fresh owner, provenance, deadline, or consumer
-admissions. The hook acts only on a third-or-later cleanup ordinal whose
-scheduler-created preclaim owner reconciles to the invocation's initial
+value does not bypass the hook's registered-owner guard, fresh owner, provenance,
+deadline, or consumer admissions. The hook acts only on a third-or-later cleanup
+ordinal whose scheduler-created preclaim owner is assigned to a registered
+in-memory `TeamsRegistry` agent and reconciles to the invocation's initial
 successful `0 -> 1` claim (the first two runs stay report-only); disabling the
 key affects later admissions only and cannot revoke an already admitted call.
 

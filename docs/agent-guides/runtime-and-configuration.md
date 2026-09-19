@@ -352,7 +352,8 @@ machine-local time — host-local night, as intended.)
 and defaults to `false`. When true, the bounded pre-agent reclamation hook may
 select and revalidate finite canonical targets before invoking the existing
 consumer; it acts only on a third-or-later cleanup ordinal whose preclaim owner
-reconciles to the invocation's initial successful claim (the first two runs stay
+is assigned to a registered in-memory `TeamsRegistry` agent and reconciles to
+the invocation's initial successful claim (the first two runs stay
 report-only), under one shared one-second deadline and at most 23 read/load
 admissions with at most five best-effort consumer calls and no refill or
 recovery. `false` prevents those action admissions and affects later admissions
