@@ -399,12 +399,23 @@ export interface AuthorityPolicyApi {
     import('@/lib/api/authorityPolicy').CreateAuthorityPolicyReleaseResponse
   >;
   useActivateTeamEscalationPolicyRelease: () => MutationLike<
-    { agentName: string; body: { release_id: string; expected_previous_epoch: number; request_id: string;
-      action: 'activate' | 'reactivate_rollback'; acknowledge_shared_credential_attribution: true } },
+    { agentName: string; body: import('@/lib/api/authorityPolicy').ActivateAuthorityPolicyReleaseRequest },
     unknown
+  >;
+  /** v2 paired save+activate; the two texts travel together. */
+  useCreateTeamEscalationPolicyV2Release: () => MutationLike<
+    { agentName: string; body: import('@/lib/api/authorityPolicy').V2PairedControlRequest },
+    import('@/lib/api/authorityPolicy').V2AuthorityPolicyControlResponse
+  >;
+  /** v2 select/rollback of an already-saved immutable release. */
+  useActivateTeamEscalationPolicyV2Release: () => MutationLike<
+    { agentName: string; body: import('@/lib/api/authorityPolicy').V2ActivationControlRequest },
+    import('@/lib/api/authorityPolicy').V2AuthorityPolicyControlResponse
   >;
   useTeamEscalationPolicyHistory: (agent: { name: string; team: string; role: string } | undefined) =>
     InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyHistoryResponse>;
+  useTeamEscalationPolicyV2History: (agent: { name: string; team: string; role: string } | undefined) =>
+    InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyV2HistoryResponse>;
   useTeamEscalationPolicyOutcomes: (agent: { name: string; team: string; role: string } | undefined) =>
     InfiniteQueryLike<import('@/lib/api/authorityPolicy').AuthorityPolicyOutcomesResponse>;
 }

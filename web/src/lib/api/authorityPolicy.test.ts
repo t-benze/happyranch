@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
+  activateTeamEscalationPolicyRelease,
+  activateTeamEscalationPolicyV2,
+  createAndActivateTeamEscalationPolicyV2,
   decodeTeamEscalationPolicyResponse,
   getTeamEscalationPolicy,
   type TeamEscalationPolicyResponse,
@@ -8,14 +11,66 @@ import {
 vi.mock('./client', () => ({ request: vi.fn() }));
 import { request } from './client';
 
+const template = {
+  title: 'Policy', normative_text: 'Text', clauses: [],
+  continuation_phrase: 'server-authored phrase',
+};
+const SELECTOR_ID = `APS-${'c'.repeat(64)}`;
 const empty = {
   team: 'engineering',
   target_manager: 'engineering_manager',
   can_mutate: true,
+  family: 'empty',
+  selector_id: SELECTOR_ID,
+  selector_epoch: 0,
   bootstrap_required: true,
-  bootstrap_template: {
-    title: 'Policy', normative_text: 'Text', clauses: [],
-    continuation_phrase: 'server-authored phrase',
+  bootstrap_template: template,
+} as const;
+const legacy = {
+  team: 'engineering',
+  target_manager: 'engineering_manager',
+  can_mutate: true,
+  family: 'legacy_v1',
+  contract_version: 'v1',
+  selector_id: SELECTOR_ID,
+  selector_epoch: 1,
+  bootstrap_template: template,
+  active: {
+    family: 'legacy_v1',
+    activation_id: 'APA-1',
+    epoch: 1,
+    action: 'bootstrap',
+    created_at: '2026-09-02T00:00:00Z',
+    actor_attribution: 'shared local operator credential',
+    release: {
+      id: 'APR-1', policy_id: 'p', version: 1, ...template, digest: 'd',
+      created_at: '2026-09-02T00:00:00Z',
+      actor_attribution: 'shared local operator credential',
+    },
+  },
+} as const;
+const v2 = {
+  team: 'engineering',
+  target_manager: 'engineering_manager',
+  can_mutate: true,
+  family: 'v2',
+  contract_version: 'v2',
+  selector_id: SELECTOR_ID,
+  selector_epoch: 2,
+  bootstrap_template: template,
+  active: {
+    family: 'v2',
+    activation_id: 'APV2A-1',
+    selector_epoch: 2,
+    action: 'bootstrap',
+    created_at: '2026-09-02T00:00:00Z',
+    actor_attribution: 'shared local operator credential',
+    release: {
+      id: 'APV2-1', policy_id: 'p', version: 1, title: 'Dual',
+      what_to_escalate: 'Escalate scope changes.',
+      what_not_to_escalate: 'Continue ordinary work.',
+      digest: 'd', actor_attribution: 'shared local operator credential',
+    },
   },
 } as const;
 
@@ -30,6 +85,18 @@ describe('team escalation policy response contract', () => {
       .resolves.toEqual(empty);
   });
 
+  it('accepts the empty, legacy_v1 and v2 discriminants', () => {
+    expect(decodeTeamEscalationPolicyResponse(empty).family).toBe('empty');
+    const decodedLegacy = decodeTeamEscalationPolicyResponse(legacy);
+    expect(decodedLegacy.family).toBe('legacy_v1');
+    if (decodedLegacy.family !== 'legacy_v1') throw new Error('expected legacy_v1');
+    expect(decodedLegacy.active.release.normative_text).toBe('Text');
+    const decodedV2 = decodeTeamEscalationPolicyResponse(v2);
+    expect(decodedV2.family).toBe('v2');
+    if (decodedV2.family !== 'v2') throw new Error('expected v2');
+    expect(decodedV2.active.release.what_to_escalate).toBe('Escalate scope changes.');
+  });
+
   it('rejects a server response that withdraws release creation', () => {
     expect(() => decodeTeamEscalationPolicyResponse({
       ...empty,
@@ -41,5 +108,102 @@ describe('team escalation policy response contract', () => {
     const { bootstrap_template: _omitted, ...withoutTemplate } = empty;
     expect(() => decodeTeamEscalationPolicyResponse(withoutTemplate))
       .toThrow('Invalid team escalation policy response');
+  });
+
+  it.each([
+    ['missing family', () => { const { family: _f, ...rest } = empty; return { ...rest, active: undefined }; }],
+    ['missing selector id', () => { const { selector_id: _s, ...rest } = empty; return rest; }],
+    ['malformed selector id', () => ({ ...empty, selector_id: 'not-a-selector' })],
+    ['legacy with v2 contract marker', () => ({ ...legacy, contract_version: 'v2' })],
+    ['v2 release carrying v1 clause fields', () => ({
+      ...v2, active: { ...v2.active, release: { ...v2.active.release, clauses: [] } },
+    })],
+    ['empty projection carrying an active selection', () => ({ ...empty, active: legacy.active })],
+    ['v2 activation missing a required text', () => ({
+      ...v2, active: { ...v2.active, release: { ...v2.active.release, what_to_escalate: undefined } },
+    })],
+    ['unknown family', () => ({ ...empty, family: 'legacy' })],
+  ])('rejects malformed/mixed projection: %s', (_label, build) => {
+    expect(() => decodeTeamEscalationPolicyResponse(build()))
+      .toThrow('Invalid team escalation policy response');
+  });
+
+  it('threads the observed selector and exact payload for a legacy selection', async () => {
+    vi.mocked(request).mockResolvedValue({});
+    const body = {
+      release_id: 'APR-2', expected_previous_epoch: 3, expected_selector_id: SELECTOR_ID,
+      request_id: 'REQ-1', action: 'activate' as const,
+      acknowledge_shared_credential_attribution: true as const,
+    };
+    await activateTeamEscalationPolicyRelease('alpha', 'engineering_manager', body);
+    expect(vi.mocked(request)).toHaveBeenCalledWith(
+      '/orgs/alpha/agents/engineering_manager/team-escalation-policy/activations',
+      { method: 'POST', body },
+    );
+  });
+
+  it('keeps explicit null and a missing selector distinct without substitution', async () => {
+    vi.mocked(request).mockResolvedValue({});
+    const withNull = {
+      release_id: 'APR-2', expected_previous_epoch: 0, expected_selector_id: null,
+      request_id: 'REQ-null', action: 'activate' as const,
+      acknowledge_shared_credential_attribution: true as const,
+    };
+    await activateTeamEscalationPolicyRelease('alpha', 'engineering_manager', withNull);
+    expect(vi.mocked(request)).toHaveBeenLastCalledWith(
+      '/orgs/alpha/agents/engineering_manager/team-escalation-policy/activations',
+      { method: 'POST', body: withNull },
+    );
+  });
+
+  it('captures the exact coupled v2 paired payload without normalizing text', async () => {
+    vi.mocked(request).mockResolvedValue({
+      control: 'v2_create_activate', family: 'v2', contract_version: 'v2',
+      selector_id: SELECTOR_ID, selector_epoch: 3, previous_selector_id: SELECTOR_ID,
+      receipt: {},
+    });
+    const body = {
+      team: 'engineering' as const,
+      policy_id: 'engineering-dual-text',
+      title: '  Dual text  ',
+      create_request_id: 'req-create-1',
+      activation_request_id: 'req-activate-1',
+      based_on_selector_id: SELECTOR_ID,
+      expected_selector_id: SELECTOR_ID,
+      action: 'activate' as const,
+      what_to_escalate: 'Line one\nLine two',
+      what_not_to_escalate: '  keep surrounding spaces  ',
+      acknowledge_shared_credential_attribution: true as const,
+    };
+    const decoded = await createAndActivateTeamEscalationPolicyV2('alpha', 'engineering_manager', body);
+    expect(vi.mocked(request)).toHaveBeenCalledWith(
+      '/orgs/alpha/agents/engineering_manager/team-escalation-policy/v2/releases',
+      { method: 'POST', body },
+    );
+    expect(body.title).toBe('  Dual text  ');
+    expect(decoded.control).toBe('v2_create_activate');
+  });
+
+  it('maps the v2 activation route and rejects a malformed control receipt', async () => {
+    vi.mocked(request).mockResolvedValue({
+      control: 'v2_activate', family: 'v2', contract_version: 'v2',
+      selector_id: SELECTOR_ID, selector_epoch: 4, previous_selector_id: null,
+      receipt: {},
+    });
+    const body = {
+      team: 'engineering' as const, release_id: 'APV2-abc', request_id: 'req-1',
+      expected_selector_id: SELECTOR_ID, action: 'reactivate_rollback' as const,
+      acknowledge_shared_credential_attribution: true as const,
+    };
+    await expect(activateTeamEscalationPolicyV2('alpha', 'engineering_manager', body))
+      .resolves.toMatchObject({ control: 'v2_activate' });
+    expect(vi.mocked(request)).toHaveBeenCalledWith(
+      '/orgs/alpha/agents/engineering_manager/team-escalation-policy/v2/activations',
+      { method: 'POST', body },
+    );
+
+    vi.mocked(request).mockResolvedValue({ control: 'v2_activate', family: 'legacy_v1' });
+    await expect(activateTeamEscalationPolicyV2('alpha', 'engineering_manager', body))
+      .rejects.toThrow('Invalid authority policy v2 control response');
   });
 });

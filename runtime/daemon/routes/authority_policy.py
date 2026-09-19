@@ -13,14 +13,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from runtime.daemon.auth import require_token
 from runtime.daemon.routes._org_dep import OrgDep
-from runtime.orchestrator import prompt_loader
-from runtime.orchestrator._paths import OrgPaths
-from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from runtime.orchestrator.active_authority_policy import (
+    ELIGIBLE_POLICY_MANAGER_AGENT,
+    ELIGIBLE_POLICY_MANAGER_TEAM,
     SELF_EVALUATION_CONTRACT_DIGEST,
     SELF_EVALUATION_CONTRACT_ID,
     SELF_EVALUATION_CONTRACT_VERSION,
     SESSION_POLICY_BINDING_ACTION,
+    is_eligible_policy_manager,
 )
 from runtime.models import (
     AuthorityPolicyLegacyActivationRequest,
@@ -37,12 +37,13 @@ from runtime.orchestrator.authority_policy import (
     PROMPT_VERSION,
     POLICY_BY_TEAM,
 )
+from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 
 router = APIRouter(dependencies=[require_token()])
 _logger = logging.getLogger(__name__)
 
-_ELIGIBLE_AGENT = "engineering_manager"
-_ELIGIBLE_TEAM = "engineering"
+_ELIGIBLE_AGENT = ELIGIBLE_POLICY_MANAGER_AGENT
+_ELIGIBLE_TEAM = ELIGIBLE_POLICY_MANAGER_TEAM
 _SURFACE_UNAVAILABLE = {"code": "policy_surface_not_available"}
 _STORE_UNAVAILABLE = {"code": "policy_store_unavailable"}
 _POLICY = POLICY_BY_TEAM[_ELIGIBLE_TEAM]
@@ -217,15 +218,8 @@ def _project_legacy_control(receipt) -> dict:
 
 def _require_eligible_manager(org: OrgDep, agent_name: str) -> None:
     """Resolve the live roster on every request without creating an oracle."""
-    try:
-        agent = prompt_loader.load_agent(OrgPaths(root=org.root), agent_name)
-    except Exception:
-        agent = None
-    if not (
-        agent is not None
-        and agent.name == _ELIGIBLE_AGENT
-        and agent.role == "manager"
-        and agent.team == _ELIGIBLE_TEAM
+    if not is_eligible_policy_manager(
+        root=org.root, agent_name=agent_name, team=_ELIGIBLE_TEAM
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_SURFACE_UNAVAILABLE)
 

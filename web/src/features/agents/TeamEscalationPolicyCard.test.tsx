@@ -9,15 +9,21 @@ const template = {
   clauses: [{ id: 'esc-one', category: 'protected', condition: 'Stop.', action: 'escalate_to_founder' as const }],
   continuation_phrase: 'routine same-root follow-through of the already-completed slice',
 };
+const SELECTOR_ID = `APS-${'a'.repeat(64)}`;
 const empty = {
   team: 'engineering' as const, target_manager: 'engineering_manager' as const,
   can_mutate: true as const, bootstrap_required: true as const,
+  family: 'empty' as const, selector_id: SELECTOR_ID, selector_epoch: 0 as const,
   bootstrap_template: template,
 };
 const active = {
-  ...empty,
-  bootstrap_required: undefined,
+  team: 'engineering' as const, target_manager: 'engineering_manager' as const,
+  can_mutate: true as const,
+  family: 'legacy_v1' as const, contract_version: 'v1' as const,
+  selector_id: SELECTOR_ID, selector_epoch: 3,
+  bootstrap_template: template,
   active: {
+    family: 'legacy_v1' as const,
     activation_id: 'APA-active', epoch: 7, action: 'activate' as const,
     created_at: '2026-09-02T00:00:00Z', actor_attribution: 'shared local operator credential' as const,
     release: {
@@ -27,13 +33,32 @@ const active = {
     },
   },
 };
-const query = { data: empty as typeof empty | typeof active | undefined, isLoading: false, isError: false, error: null, refetch: vi.fn() };
+const v2Active = {
+  team: 'engineering' as const, target_manager: 'engineering_manager' as const,
+  can_mutate: true as const,
+  family: 'v2' as const, contract_version: 'v2' as const,
+  selector_id: SELECTOR_ID, selector_epoch: 4,
+  bootstrap_template: template,
+  active: {
+    family: 'v2' as const,
+    activation_id: 'APV2A-active', selector_epoch: 4, action: 'bootstrap' as const,
+    created_at: '2026-09-02T00:00:00Z', actor_attribution: 'shared local operator credential' as const,
+    release: {
+      id: 'APV2-active', policy_id: 'engineering-dual-text', version: 2, title: 'Dual text',
+      what_to_escalate: 'Escalate scope changes.', what_not_to_escalate: 'Continue ordinary work.',
+      digest: 'abcdef1234567890', actor_attribution: 'shared local operator credential' as const,
+    },
+  },
+};
+const query = { data: undefined as unknown, isLoading: false, isError: false, error: null, refetch: vi.fn() };
 const create = { mutateAsync: vi.fn(), isPending: false };
 const activate = { mutateAsync: vi.fn(), isPending: false };
 const history = { data: { pages: [{ items: [] as Array<Record<string, unknown>>, next_cursor: null as string | null }] }, isLoading: false, isError: false, error: null, fetchNextPage: vi.fn(), hasNextPage: false, isFetchingNextPage: false };
 const outcomes = { data: { pages: [{ items: [] as Array<Record<string, unknown>>, next_cursor: null as string | null }] }, isLoading: false, isError: false, error: null, fetchNextPage: vi.fn(), hasNextPage: false, isFetchingNextPage: false };
 
 vi.mock('@/hooks/authorityPolicy', () => ({
+  authorityPolicyActiveEpoch: (active: { family: string; epoch?: number; selector_epoch?: number }) =>
+    (active.family === 'legacy_v1' ? active.epoch : active.selector_epoch),
   useTeamEscalationPolicy: () => query,
   useCreateTeamEscalationPolicyRelease: () => create,
   useActivateTeamEscalationPolicyRelease: () => activate,
@@ -147,6 +172,7 @@ describe('TeamEscalationPolicyCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
     await waitFor(() => expect(activate.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
       body: expect.objectContaining({ release_id: 'APR-old', expected_previous_epoch: 7,
+        expected_selector_id: SELECTOR_ID,
         action: 'reactivate_rollback' }),
     })));
   });
@@ -212,7 +238,8 @@ describe('TeamEscalationPolicyCard', () => {
     await waitFor(() => expect(activate.mutateAsync).toHaveBeenCalledWith({
       agentName: 'engineering_manager',
       body: {
-        release_id: 'APR-new', expected_previous_epoch: 7, request_id: expect.any(String),
+        release_id: 'APR-new', expected_previous_epoch: 7, expected_selector_id: SELECTOR_ID,
+        request_id: expect.any(String),
         action: 'activate', acknowledge_shared_credential_attribution: true,
       },
     }));
@@ -236,5 +263,19 @@ describe('TeamEscalationPolicyCard', () => {
     expect(screen.getByRole('status')).toHaveTextContent(/was saved inactive, but activation failed/i);
     expect(screen.getByRole('status')).toHaveTextContent(/Retry activation from this saved version/i);
     expect(screen.getByRole('status')).not.toHaveTextContent(/could not be saved/i);
+  });
+
+  it('renders a v2 selection without v1 clause fields or v1 mutation', async () => {
+    query.data = v2Active;
+    render(<TeamEscalationPolicyCard agent={agent} />);
+    expect(await screen.findByText(/Active v2 · epoch 4 · abcdef123456/)).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Escalate scope changes.')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Continue ordinary work.')).toBeInTheDocument();
+    // No v1 editor or mutation surface is exposed for a v2 family.
+    expect(screen.queryByRole('button', { name: 'Save & activate' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save immutable version' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Normative policy')).not.toBeInTheDocument();
+    expect(create.mutateAsync).not.toHaveBeenCalled();
+    expect(activate.mutateAsync).not.toHaveBeenCalled();
   });
 });

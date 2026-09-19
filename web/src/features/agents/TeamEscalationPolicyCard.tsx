@@ -5,7 +5,10 @@ import { Button } from '@/design-system/primitives/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/design-system/primitives/Dialog';
 import { ApiError } from '@/lib/api';
 import {
+  authorityPolicyActiveEpoch,
   type AuthorityPolicyTemplate,
+} from '@/hooks/authorityPolicy';
+import {
   useActivateTeamEscalationPolicyRelease,
   useCreateTeamEscalationPolicyRelease,
   useTeamEscalationPolicy,
@@ -21,7 +24,7 @@ export function TeamEscalationPolicyEntryCard({ agent }: { agent: { name: string
     <PolicyShell>
       <h3 className="font-display text-text-primary text-base font-medium">Manager-only team escalation policy</h3>
       <p className="text-text-muted mt-1 text-xs">Engineering Manager access only.</p>
-      {query.isLoading ? <p className="text-text-muted mt-3 text-xs">Loading active policy status…</p> : query.isError || !query.data ? <p role="alert" className="text-tier-red mt-3 text-xs">Could not load policy status.</p> : query.data.active ? <p className="text-text-muted mt-3 text-xs">Active v{query.data.active.release.version} · epoch {query.data.active.epoch} · {query.data.active.release.digest.slice(0, 12)}</p> : <p className="text-text-muted mt-3 text-xs">No active release. Canonical bootstrap is available.</p>}
+      {query.isLoading ? <p className="text-text-muted mt-3 text-xs">Loading active policy status…</p> : query.isError || !query.data ? <p role="alert" className="text-tier-red mt-3 text-xs">Could not load policy status.</p> : query.data.family === 'empty' ? <p className="text-text-muted mt-3 text-xs">No active release. Canonical bootstrap is available.</p> : <p className="text-text-muted mt-3 text-xs">Active v{query.data.active.release.version} · epoch {authorityPolicyActiveEpoch(query.data.active)} · {query.data.active.release.digest.slice(0, 12)}</p>}
       <Button asChild size="sm" className="mt-3"><Link to={routes.policy(agent.name)}>Open team escalation policy</Link></Button>
     </PolicyShell>
   );
@@ -45,9 +48,23 @@ export function TeamEscalationPolicyCard({
   const [confirm, setConfirm] = useState<'activate' | { releaseId: string; version: number } | null>(null);
   const [savedInactive, setSavedInactive] = useState<{ id: string; version: number } | null>(null);
 
-  const source = useMemo(() => query.data?.active?.release ?? query.data?.bootstrap_template, [query.data]);
+  const data = query.data;
+  // A v2 selection exposes two editable texts, not the v1 clause catalogue. The
+  // complete two-text edit/save/activation UX is deferred (D); this card must
+  // never fabricate a v1 draft or expose v1 mutation from a v2 family.
+  const source = useMemo(() => {
+    if (!data || data.family === 'v2') return undefined;
+    return data.family === 'legacy_v1' ? data.active.release : data.bootstrap_template;
+  }, [data]);
   useEffect(() => {
-    if (!source) return;
+    if (!source) {
+      setDraft(null);
+      setBaseline('');
+      setMessage(null);
+      setConfirm(null);
+      setSavedInactive(null);
+      return;
+    }
     const next = {
       title: source.title,
       normative_text: source.normative_text,
@@ -73,15 +90,74 @@ export function TeamEscalationPolicyCard({
   }, [dirty]);
 
   if (query.isLoading) return <PolicyShell><p className="text-text-muted text-sm">Loading team policy…</p></PolicyShell>;
-  if (query.isError || !query.data || !draft) {
+  if (query.isError || !data) {
     return <PolicyShell><div role="alert" className="text-tier-red flex flex-wrap items-center gap-2 text-sm"><AlertCircle size={14} /><span>Could not load the team policy.</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>Retry</Button></div></PolicyShell>;
   }
 
-  const expected = query.data.bootstrap_template;
-  const validationError = validateDraft(draft, expected);
-  const active = query.data.active;
+  const active = data.family === 'empty' ? undefined : data.active;
+  // The legacy family epoch is distinct from the selector epoch; the legacy
+  // control route ignores it but the wire field stays exact for a v1 family.
+  const legacyEpoch = active && active.family === 'legacy_v1' ? active.epoch : 0;
   const historyItems = history.data?.pages.flatMap((page) => page.items) ?? [];
   const outcomeItems = outcomes.data?.pages.flatMap((page) => page.items) ?? [];
+
+  const historySection = (
+    <section aria-labelledby="policy-history-heading" className="border-border-subtle mt-5 border-t pt-4">
+      <h4 id="policy-history-heading" className="text-text-primary text-sm font-medium">Immutable release history</h4>
+      {history.isLoading ? <p className="text-text-muted mt-2 text-xs">Loading history…</p> : history.isError && !historyItems.length ? <p role="alert" className="text-tier-red mt-2 text-xs">Could not load policy history.</p> : !historyItems.length ? <p className="text-text-muted mt-2 text-xs">No immutable releases yet.</p> : <ul className="mt-2 space-y-2">{historyItems.map((item) => <li key={`${item.release_id}-${item.activation?.id ?? 'inactive'}`} className="bg-surface-sunken rounded p-2 text-xs"><div>v{item.version} · {item.release_id} · {item.policy_digest.slice(0, 12)}</div><div className="text-text-muted">{item.activation ? `epoch ${item.activation.epoch} · ${item.activation.action}` : 'saved inactive'} · {item.actor_attribution}</div>{data.family === 'legacy_v1' && active && item.activation && item.release_id !== active.release.id && item.version < active.release.version && <Button size="sm" variant="ghost" onClick={() => setConfirm({ releaseId: item.release_id, version: item.version })}>Reactivate v{item.version}</Button>}</li>)}</ul>}
+      {history.isError && historyItems.length > 0 && <p role="alert" className="text-tier-red mt-2 text-xs">Could not load more policy history. Loaded releases are preserved.</p>}
+      {!history.isLoading && historyItems.length > 0 && <Button size="sm" variant="ghost" disabled={!history.hasNextPage || history.isFetchingNextPage} aria-label={history.isError ? 'Retry loading policy history' : 'Load more policy history'} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? 'Loading more history…' : history.isError ? 'Retry loading history' : history.hasNextPage ? 'Load more history' : 'End of policy history'}</Button>}
+    </section>
+  );
+
+  const outcomesSection = (
+    <section aria-labelledby="policy-outcomes-heading" className="border-border-subtle mt-5 border-t pt-4">
+      <h4 id="policy-outcomes-heading" className="text-text-primary text-sm font-medium">Manager self-evaluation outcomes</h4>
+      {outcomes.isLoading ? <p className="text-text-muted mt-2 text-xs">Loading outcomes…</p> : outcomes.isError && !outcomeItems.length ? <p role="alert" className="text-tier-red mt-2 text-xs">Could not load outcomes.</p> : !outcomeItems.length ? <p className="text-text-muted mt-2 text-xs">No manager self-evaluation outcomes yet.</p> : <ul className="mt-2 space-y-2">{outcomeItems.map((item) => <li key={item.candidate_id} className="bg-surface-sunken rounded p-2 font-mono text-xs"><div>{item.disposition ?? 'pending'} · {item.disposition_code ?? 'no durable evaluation'}</div><div className="text-text-muted">task {item.root_task_id} · session {item.manager_session_id} · release {item.release_id ?? 'missing'}</div><div className={item.receipt_state === 'complete' ? 'text-tier-green' : 'text-tier-amber'}>{item.receipt_state}</div></li>)}</ul>}
+      {outcomes.isError && outcomeItems.length > 0 && <p role="alert" className="text-tier-red mt-2 text-xs">Could not load more outcomes. Loaded outcomes are preserved.</p>}
+      {!outcomes.isLoading && outcomeItems.length > 0 && <Button size="sm" variant="ghost" disabled={!outcomes.hasNextPage || outcomes.isFetchingNextPage} aria-label={outcomes.isError ? 'Retry loading evaluation outcomes' : 'Load more evaluation outcomes'} onClick={() => void outcomes.fetchNextPage()}>{outcomes.isFetchingNextPage ? 'Loading more outcomes…' : outcomes.isError ? 'Retry loading outcomes' : outcomes.hasNextPage ? 'Load more outcomes' : 'End of evaluation outcomes'}</Button>}
+    </section>
+  );
+
+  if (data.family === 'v2') {
+    const v2 = data.active;
+    return (
+      <PolicyShell>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="font-display text-text-primary text-base font-medium">Team escalation policy</h3>
+            <p className="text-text-muted mt-1 text-xs">Owned by the Engineering team, not by this agent.</p>
+          </div>
+          <span className="bg-accent-soft text-accent-text rounded-full px-2 py-1 text-xs">Team-owned</span>
+        </div>
+        <div className="bg-tier-amber-soft text-text-secondary mt-3 rounded-md p-3 text-xs">
+          Changes are attributed only to the <strong>shared local operator credential</strong>. Individual operator identity is not available.
+        </div>
+        <p className="text-text-muted mt-3 text-xs">Active v{v2.release.version} · epoch {authorityPolicyActiveEpoch(v2)} · {v2.release.digest.slice(0, 12)}</p>
+        <p className="text-text-muted mt-2 text-xs">
+          This team currently runs the dual-text v2 policy family. The two-text editor and its save/activation workflow are a later delivery slice; this selection is shown read-only here.
+        </p>
+        <label className="text-text-secondary mt-4 block text-xs font-medium">Title
+          <input readOnly className="border-border-subtle bg-surface-sunken mt-1 w-full rounded-md border px-3 py-2 text-sm" value={v2.release.title} />
+        </label>
+        <label className="text-text-secondary mt-3 block text-xs font-medium">What to escalate
+          <textarea readOnly className="border-border-subtle bg-surface-sunken mt-1 min-h-32 w-full rounded-md border px-3 py-2 font-mono text-xs" value={v2.release.what_to_escalate} />
+        </label>
+        <label className="text-text-secondary mt-3 block text-xs font-medium">What not to escalate
+          <textarea readOnly className="border-border-subtle bg-surface-sunken mt-1 min-h-32 w-full rounded-md border px-3 py-2 font-mono text-xs" value={v2.release.what_not_to_escalate} />
+        </label>
+        {message && <p role="status" className="mt-3 text-xs text-text-secondary">{message}</p>}
+        {historySection}
+        {outcomesSection}
+      </PolicyShell>
+    );
+  }
+
+  const expected = data.bootstrap_template;
+  if (!draft) {
+    return <PolicyShell><div role="alert" className="text-tier-red flex flex-wrap items-center gap-2 text-sm"><AlertCircle size={14} /><span>Could not load the team policy.</span><Button size="sm" variant="ghost" onClick={() => void query.refetch()}>Retry</Button></div></PolicyShell>;
+  }
+  const validationError = validateDraft(draft, expected);
 
   const save = async (andActivate: boolean) => {
     if (validationError) { setMessage(validationError); return; }
@@ -104,7 +180,10 @@ export function TeamEscalationPolicyCard({
             agentName: agent.name,
             body: {
               release_id: saved.release.id,
-              expected_previous_epoch: active?.epoch ?? 0,
+              expected_previous_epoch: legacyEpoch,
+              // The observed selector base is threaded from the read/draft base;
+              // never refetch or substitute today's value to pass a stale write.
+              expected_selector_id: data.selector_id,
               request_id: crypto.randomUUID(),
               action: 'activate',
               acknowledge_shared_credential_attribution: true,
@@ -132,7 +211,8 @@ export function TeamEscalationPolicyCard({
     setConfirm(null); setMessage(null);
     try {
       await activateRelease.mutateAsync({ agentName: agent.name, body: {
-        release_id: target.releaseId, expected_previous_epoch: active?.epoch ?? 0,
+        release_id: target.releaseId, expected_previous_epoch: legacyEpoch,
+        expected_selector_id: data.selector_id,
         request_id: crypto.randomUUID(), action: 'reactivate_rollback',
         acknowledge_shared_credential_attribution: true,
       } });
@@ -157,7 +237,7 @@ export function TeamEscalationPolicyCard({
       <div className="bg-tier-amber-soft text-text-secondary mt-3 rounded-md p-3 text-xs">
         Changes are attributed only to the <strong>shared local operator credential</strong>. Individual operator identity is not available.
       </div>
-      {active ? <p className="text-text-muted mt-3 text-xs">Active v{active.release.version} · epoch {active.epoch} · {active.release.digest.slice(0, 12)}</p> : <p className="text-text-muted mt-3 text-xs">No active release. Start from the canonical server bootstrap template.</p>}
+      {active ? <p className="text-text-muted mt-3 text-xs">Active v{active.release.version} · epoch {authorityPolicyActiveEpoch(active)} · {active.release.digest.slice(0, 12)}</p> : <p className="text-text-muted mt-3 text-xs">No active release. Start from the canonical server bootstrap template.</p>}
       {savedInactive && <p className="text-accent-text mt-1 text-xs">Saved inactive v{savedInactive.version} · {savedInactive.id}</p>}
       <label className="text-text-secondary mt-4 block text-xs font-medium">Title
         <input className="border-border-subtle bg-surface mt-1 w-full rounded-md border px-3 py-2 text-sm" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
@@ -191,18 +271,8 @@ export function TeamEscalationPolicyCard({
         <Button size="sm" disabled={!dirty || !!validationError || createRelease.isPending} onClick={() => setConfirm('activate')}>Save &amp; activate</Button>
         {message?.includes('base changed') && <Button size="sm" variant="ghost" onClick={() => window.location.reload()}>Reload base</Button>}
       </div>
-      <section aria-labelledby="policy-history-heading" className="border-border-subtle mt-5 border-t pt-4">
-        <h4 id="policy-history-heading" className="text-text-primary text-sm font-medium">Immutable release history</h4>
-        {history.isLoading ? <p className="text-text-muted mt-2 text-xs">Loading history…</p> : history.isError && !historyItems.length ? <p role="alert" className="text-tier-red mt-2 text-xs">Could not load policy history.</p> : !historyItems.length ? <p className="text-text-muted mt-2 text-xs">No immutable releases yet.</p> : <ul className="mt-2 space-y-2">{historyItems.map((item) => <li key={`${item.release_id}-${item.activation?.id ?? 'inactive'}`} className="bg-surface-sunken rounded p-2 text-xs"><div>v{item.version} · {item.release_id} · {item.policy_digest.slice(0, 12)}</div><div className="text-text-muted">{item.activation ? `epoch ${item.activation.epoch} · ${item.activation.action}` : 'saved inactive'} · {item.actor_attribution}</div>{active && item.activation && item.release_id !== active.release.id && item.version < active.release.version && <Button size="sm" variant="ghost" onClick={() => setConfirm({ releaseId: item.release_id, version: item.version })}>Reactivate v{item.version}</Button>}</li>)}</ul>}
-        {history.isError && historyItems.length > 0 && <p role="alert" className="text-tier-red mt-2 text-xs">Could not load more policy history. Loaded releases are preserved.</p>}
-        {!history.isLoading && historyItems.length > 0 && <Button size="sm" variant="ghost" disabled={!history.hasNextPage || history.isFetchingNextPage} aria-label={history.isError ? 'Retry loading policy history' : 'Load more policy history'} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? 'Loading more history…' : history.isError ? 'Retry loading history' : history.hasNextPage ? 'Load more history' : 'End of policy history'}</Button>}
-      </section>
-      <section aria-labelledby="policy-outcomes-heading" className="border-border-subtle mt-5 border-t pt-4">
-        <h4 id="policy-outcomes-heading" className="text-text-primary text-sm font-medium">Manager self-evaluation outcomes</h4>
-        {outcomes.isLoading ? <p className="text-text-muted mt-2 text-xs">Loading outcomes…</p> : outcomes.isError && !outcomeItems.length ? <p role="alert" className="text-tier-red mt-2 text-xs">Could not load outcomes.</p> : !outcomeItems.length ? <p className="text-text-muted mt-2 text-xs">No manager self-evaluation outcomes yet.</p> : <ul className="mt-2 space-y-2">{outcomeItems.map((item) => <li key={item.candidate_id} className="bg-surface-sunken rounded p-2 font-mono text-xs"><div>{item.disposition ?? 'pending'} · {item.disposition_code ?? 'no durable evaluation'}</div><div className="text-text-muted">task {item.root_task_id} · session {item.manager_session_id} · release {item.release_id ?? 'missing'}</div><div className={item.receipt_state === 'complete' ? 'text-tier-green' : 'text-tier-amber'}>{item.receipt_state}</div></li>)}</ul>}
-        {outcomes.isError && outcomeItems.length > 0 && <p role="alert" className="text-tier-red mt-2 text-xs">Could not load more outcomes. Loaded outcomes are preserved.</p>}
-        {!outcomes.isLoading && outcomeItems.length > 0 && <Button size="sm" variant="ghost" disabled={!outcomes.hasNextPage || outcomes.isFetchingNextPage} aria-label={outcomes.isError ? 'Retry loading evaluation outcomes' : 'Load more evaluation outcomes'} onClick={() => void outcomes.fetchNextPage()}>{outcomes.isFetchingNextPage ? 'Loading more outcomes…' : outcomes.isError ? 'Retry loading outcomes' : outcomes.hasNextPage ? 'Load more outcomes' : 'End of evaluation outcomes'}</Button>}
-      </section>
+      {historySection}
+      {outcomesSection}
     </PolicyShell>
   );
 }

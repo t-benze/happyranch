@@ -35,6 +35,12 @@ from runtime.daemon.state import DaemonState
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.database import Database
 from runtime.models import BlockKind, TaskStatus
+from runtime.orchestrator.active_authority_policy import (
+    ELIGIBLE_POLICY_MANAGER_AGENT,
+    ELIGIBLE_POLICY_MANAGER_TEAM,
+    is_eligible_policy_manager,
+)
+from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 from runtime.orchestrator.orchestrator import (
     Orchestrator,
     completion_report_from_result_row,
@@ -453,6 +459,22 @@ def _build_state(settings: Settings) -> DaemonState:
     runtime = RuntimeDir.load(reg.active)
     state = DaemonState.from_runtime(runtime, settings)
     for org in state.orgs.values():
+        # THR-229 checkpoint B2b2: initialize the eligible Engineering selector
+        # through the existing serialized transaction owner BEFORE any startup
+        # recovery/enqueue and before the API becomes available. Initialization
+        # is observation of authentic v1 history or genuine empty state, never
+        # activation: the owning transaction refuses missing/corrupt histories
+        # and an initializer-audit failure rather than manufacturing empty state
+        # or silently selecting legacy. A refusal propagates out of
+        # ``_build_state`` so the daemon never binds the API or admits launch.
+        if is_eligible_policy_manager(
+            root=org.root,
+            agent_name=ELIGIBLE_POLICY_MANAGER_AGENT,
+            team=ELIGIBLE_POLICY_MANAGER_TEAM,
+        ):
+            AuthorityPolicyStore(org.db).ensure_authority_selector(
+                ELIGIBLE_POLICY_MANAGER_TEAM
+            )
         recovered_tokens = _sweep_on_startup(
             org.db, state.queue, org.slug, org.orchestrator,
         )

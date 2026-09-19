@@ -5,14 +5,22 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from runtime.models import AuthorityPolicyActivation, AuthorityPolicyRelease
+from runtime.orchestrator import prompt_loader
+from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.authority_policy import CONTINUE_ROUTINE_PHRASE
 from runtime.orchestrator.authority_policy import AuthorityClause, AuthorityPolicy
 from runtime.orchestrator.authority_policy_store import AuthorityPolicyStore
 
 
 RESERVED_TEAM_POLICY_HEADER = "## [RESERVED] Active Team Escalation Policy"
+# The one roster-eligibility rule for the Engineering policy surface. B2b2
+# reuses it at daemon startup so initialization observes exactly the roster the
+# shipping API already gates on, without widening eligibility.
+ELIGIBLE_POLICY_MANAGER_AGENT = "engineering_manager"
+ELIGIBLE_POLICY_MANAGER_TEAM = "engineering"
 _BEGIN = "<!-- BEGIN HAPPYRANCH ACTIVE TEAM POLICY -->"
 _END = "<!-- END HAPPYRANCH ACTIVE TEAM POLICY -->"
 SESSION_POLICY_BINDING_ACTION = "authority_policy_session_binding"
@@ -25,6 +33,29 @@ SELF_EVALUATION_CONTRACT_DIGEST = hashlib.sha256(
 
 class ActiveAuthorityPolicyError(RuntimeError):
     """Active policy state or reserved prompt ownership is incoherent."""
+
+
+def is_eligible_policy_manager(*, root: Path, agent_name: str, team: str) -> bool:
+    """Return whether *agent_name* is the eligible Engineering manager.
+
+    This is the single roster-eligibility rule shared by the shipping policy
+    routes and daemon startup: the exact eligible name/team must resolve to an
+    active agent file whose declared role is ``manager``. A missing file, a
+    parse error, or a mismatched tuple is ineligible (never an oracle, never a
+    reason to initialize an unrelated team).
+    """
+    if agent_name != ELIGIBLE_POLICY_MANAGER_AGENT or team != ELIGIBLE_POLICY_MANAGER_TEAM:
+        return False
+    try:
+        agent = prompt_loader.load_agent(OrgPaths(root=Path(root)), agent_name)
+    except Exception:
+        return False
+    return (
+        agent is not None
+        and agent.name == agent_name
+        and agent.role == "manager"
+        and agent.team == team
+    )
 
 
 def assert_no_reserved_team_policy_header(text: str, *, source: str) -> None:

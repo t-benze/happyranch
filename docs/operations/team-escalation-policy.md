@@ -41,7 +41,38 @@ rewriting its original bytes. A rejected or stale CAS leaves the saved release
 inactive and requires a refresh. All mutations truthfully attribute only the
 `shared local operator credential`.
 
-Selector-aware control API (B2b1 backend; the web editor mirrors it in B2b2):
+Daemon startup observes and initializes the eligible Engineering selector
+through that same transaction-owning initializer BEFORE any startup
+recovery/enqueue and before the API becomes available. Initialization is
+observation of authentic legacy history or a genuinely empty store — never an
+activation. A missing, corrupt or unselected history, or an initializer-audit
+failure, refuses the launch with no partial initializer instead of manufacturing
+empty state or silently selecting legacy. Repeat/reopen reuses the same
+deterministic initializer with no duplicate rows, an already-selected v2 family
+stays v2, and an ineligible roster initializes no unrelated team. Dynamic launch,
+immutable launch binding and full recovery admission remain later (C) work; this
+startup seam does not claim them.
+
+The B2b2 client decodes the current projection and both history streams as
+discriminated `empty`/`legacy_v1`/`v2` types, rejecting malformed, mixed,
+unsupported or selector-less projections rather than casting v2 into the legacy
+clause shape or falling back to the latest legacy. The observed `selector_id` is
+threaded from the read/draft base through the provider and every legacy
+activation/rollback call site; the wire never refetches or substitutes today's
+selector, infers it from a legacy family epoch, or auto-retries a conflict with a
+fresh base. v2 paired/activation requests mirror the backend fields, carry the
+two texts together with distinct stable create/activation IDs and
+`based_on_selector_id`/`expected_selector_id`, and are not trimmed or rewritten
+in transport. Real/mock hooks exist for the v2 control and v2 history, and a
+successful v2 control invalidates the current projection plus the v2 history
+stream while each family keeps its own pagination. The selector epoch stays
+distinct from the legacy family epoch. A selected v2 family renders read-only
+here (no fabricated v1 draft or v1 mutation); the complete two-text
+edit/save/activation UX and its browser acceptance remain D debt, and v2
+outcomes stay honestly legacy until C supplies them.
+
+Selector-aware control API (B2b1 backend; B2b2 client mirrors the read/control
+contract and its full two-text editor remains deferred debt):
 
 - `GET .../team-escalation-policy` returns the discriminated `family`
   (`empty`/`legacy_v1`/`v2`), the observed `selector_id`/`selector_epoch` and,
