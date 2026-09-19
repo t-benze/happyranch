@@ -8,8 +8,10 @@ fixture generator or re-implement the comparison oracle.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -799,5 +801,411 @@ def test_helper_is_read_only_and_invents_no_admission(tmp_path):
         assert db._conn.execute(
             "SELECT COUNT(*) FROM processed_event_ids"
         ).fetchone()[0] == 1
+    finally:
+        db._conn.close()
+
+
+# --------------------------------------------------------------------------
+# THR-229 C3a correction (TASK-8442): exact internal prefix and one coherent
+# read view.  These drive the real production seam; they never re-implement the
+# oracle or the fixture generator.
+# --------------------------------------------------------------------------
+
+
+def _raiser(exc: BaseException):
+    def _boom(*_args, **_kwargs):
+        raise exc
+
+    return _boom
+
+
+def _lock_free_cross_thread(db: Database, timeout: float = 0.5) -> bool:
+    """True when another thread can take the Database lock (a same-thread RLock
+    re-acquire would mask a leak)."""
+    result: dict[str, bool] = {}
+
+    def _attempt() -> None:
+        got = db._lock.acquire(timeout=timeout)
+        if got:
+            db._lock.release()
+        result["got"] = got
+
+    thread = threading.Thread(target=_attempt, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout + 2.0)
+    return bool(result.get("got"))
+
+
+def _independent_drop_trigger(path) -> None:
+    """Commit a real DDL mutation from an INDEPENDENT sqlite3 connection."""
+    other = sqlite3.connect(str(path))
+    try:
+        other.execute("DROP TRIGGER authority_evaluations_no_delete")
+        other.commit()
+    finally:
+        other.close()
+
+
+def test_reserved_internal_prefix_is_literal_and_case_insensitive():
+    assert authority._v2_is_reserved_internal_name("sqlite_sequence")
+    assert authority._v2_is_reserved_internal_name("sqlite_stat1")
+    assert authority._v2_is_reserved_internal_name("SQLITE_stat1")
+    # Legal user names that merely RESEMBLE the internal namespace stay user
+    # objects; SQL `LIKE 'sqlite_%'` wrongly treats the `_` as a wildcard.
+    for name in ("sqlite", "sqliteXunreviewed", "SQLiteXview", "SqLiTeXtrg",
+                 "sqliteXidx"):
+        assert not authority._v2_is_reserved_internal_name(name), name
+
+
+def test_non_internal_sqliteX_table_is_refused_not_omitted(tmp_path):
+    db = _pristine(tmp_path)
+    try:
+        _seed_preexisting_row(db)
+        baseline = _row_counts(db)
+        db._conn.execute("CREATE TABLE sqliteXunreviewed (id INTEGER)")
+        db._conn.commit()
+
+        # The object is really present and the inventory keeps it (the defect
+        # omitted it via a SQL LIKE wildcard).
+        assert "sqliteXunreviewed" in authority._v2_capture_inventory(db._conn)[
+            "tables"
+        ]
+
+        outcome = _capture(db)
+        _assert_refused(
+            outcome, objects={"sqliteXunreviewed"},
+            codes={"unexpected_object"}, v2=False,
+        )
+        # No repair/deletion and no invented authority/task/audit allocation.
+        assert db._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='sqliteXunreviewed'"
+        ).fetchone() is not None
+        assert _row_counts(db) == baseline
+    finally:
+        db._conn.close()
+
+
+@pytest.mark.parametrize(
+    "name,ddl",
+    [
+        ("sqliteXidx", "CREATE INDEX sqliteXidx ON tasks(status)"),
+        ("SQLiteXidx", "CREATE INDEX SQLiteXidx ON tasks(status)"),
+        ("sqliteXtrg",
+         "CREATE TRIGGER sqliteXtrg AFTER INSERT ON tasks BEGIN SELECT 1; END"),
+        ("SqLiTeXtrg",
+         "CREATE TRIGGER SqLiTeXtrg AFTER INSERT ON tasks BEGIN SELECT 1; END"),
+        ("sqliteXview", "CREATE VIEW sqliteXview AS SELECT 1 AS x"),
+        ("SQLiteXview", "CREATE VIEW SQLiteXview AS SELECT 1 AS x"),
+    ],
+)
+def test_non_internal_sqliteX_index_trigger_view_refused(tmp_path, name, ddl):
+    db = _pristine(tmp_path)
+    try:
+        _seed_preexisting_row(db)
+        baseline = _row_counts(db)
+        db._conn.execute(ddl)
+        db._conn.commit()
+
+        assert name in {
+            key
+            for kind in ("indexes", "triggers", "views")
+            for key in authority._v2_capture_inventory(db._conn)[kind]
+        }
+
+        outcome = _capture(db)
+        _assert_refused(
+            outcome, objects={name}, codes={"unexpected_object"}, v2=False,
+        )
+        # The unexpected object is never silently dropped, and nothing is
+        # admitted.
+        assert db._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name=?", (name,)
+        ).fetchone() is not None
+        assert _row_counts(db) == baseline
+    finally:
+        db._conn.close()
+
+
+def test_internal_objects_are_still_excluded_from_the_inventory(tmp_path):
+    db = _pristine(tmp_path)
+    try:
+        inventory = authority._v2_capture_inventory(db._conn)
+        names = {
+            key
+            for kind in ("tables", "indexes", "triggers", "views")
+            for key in inventory[kind]
+        }
+        assert not any(
+            authority._v2_is_reserved_internal_name(name) for name in names
+        )
+        # The AUTOINCREMENT internal table is real and still excluded.
+        assert db._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='sqlite_sequence'"
+        ).fetchone() is not None
+        assert "sqlite_sequence" not in names
+        # Autoindex constraint metadata is retained inside the owning table
+        # (the autoindex itself stays excluded from the top-level inventory).
+        candidates = inventory["tables"]["authority_candidates"]
+        origins = {meta["origin"] for meta in candidates["indexes"].values()}
+        assert {"pk", "u"} <= origins
+        autoindex_names = [
+            key for key in candidates["indexes"] if key.startswith("sqlite_")
+        ]
+        assert autoindex_names
+        assert not any(
+            key in inventory["indexes"] for key in autoindex_names
+        )
+    finally:
+        db._conn.close()
+
+
+def test_independent_connection_mutation_before_inventory_refuses(tmp_path):
+    db = _pristine(tmp_path)
+    try:
+        _seed_preexisting_row(db)
+        baseline = _row_counts(db)
+        # Committed before any candidate read: visible in the captured snapshot.
+        _independent_drop_trigger(db.db_path)
+
+        outcome = _capture(db)
+        _assert_refused(
+            outcome, objects={"authority_evaluations_no_delete"},
+            codes={"missing_object", "missing_v2_object"},
+        )
+        assert _row_counts(db) == baseline
+    finally:
+        db._conn.close()
+
+
+def test_interleave_between_inventory_and_integrity_keeps_coherent_snapshot(
+    tmp_path, monkeypatch,
+):
+    db = _pristine(tmp_path)
+    try:
+        reference = authority._v2_build_reference_inventories()[0]
+        original = authority._v2_capture_inventory
+
+        def capture_then_mutate(conn):
+            result = original(conn)
+            if conn is db._conn:
+                _independent_drop_trigger(db.db_path)
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(authority, "_v2_capture_inventory", capture_then_mutate)
+            outcome = _capture(db)
+        assert outcome.evidence is not None, outcome.diagnostic
+        # The frozen evidence is the coherent pre-mutation snapshot ...
+        assert outcome.evidence.inventory_digest == (
+            authority._v2_inventory_digest(reference)
+        )
+        # ... and the independent commit is caught by the immediate recheck.
+        assert not recheck_authority_policy_v2_schema_integrity(
+            outcome.evidence, db,
+        )
+    finally:
+        db._conn.close()
+
+
+def test_interleave_between_integrity_and_digest_keeps_coherent_snapshot(
+    tmp_path, monkeypatch,
+):
+    """The manager-supplied trigger-drop reproducer, now coherent."""
+    db = _pristine(tmp_path)
+    try:
+        original = authority._v2_data_integrity_check
+
+        def integrity_then_mutate(conn):
+            result = original(conn)
+            _independent_drop_trigger(db.db_path)
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                authority, "_v2_data_integrity_check", integrity_then_mutate,
+            )
+            outcome = _capture(db)
+        # A mutation invisible to the pinned snapshot may still produce
+        # evidence for that snapshot, but it can never recheck true.
+        assert outcome.evidence is not None, outcome.diagnostic
+        assert not recheck_authority_policy_v2_schema_integrity(
+            outcome.evidence, db,
+        )
+        # The evidence's own raw digest and the live digest already disagree.
+        assert outcome.evidence.raw_digest != authority._live_schema_digest(db)
+    finally:
+        db._conn.close()
+
+
+def test_independent_mutation_after_capture_makes_recheck_refuse(tmp_path):
+    db = _pristine(tmp_path)
+    try:
+        evidence = _capture(db).evidence
+        assert evidence is not None
+        assert recheck_authority_policy_v2_schema_integrity(evidence, db)
+        _independent_drop_trigger(db.db_path)
+        assert not recheck_authority_policy_v2_schema_integrity(evidence, db)
+    finally:
+        db._conn.close()
+
+
+def test_shared_connection_writer_cannot_interleave_candidate_reads(
+    tmp_path, monkeypatch,
+):
+    db = _pristine(tmp_path)
+    writer_threads: list[threading.Thread] = []
+    try:
+        writer_attempted = threading.Event()
+        writer_done = threading.Event()
+        original = authority._v2_data_integrity_check
+
+        def writer() -> None:
+            writer_attempted.set()
+            db.execute("CREATE INDEX thr229_contention ON tasks(status)")
+            db._conn.commit()
+            writer_done.set()
+
+        def parked(conn):
+            result = original(conn)
+            thread = threading.Thread(target=writer, daemon=True)
+            writer_threads.append(thread)
+            thread.start()
+            assert writer_attempted.wait(5.0)
+            # A synchronized Database operation must NOT interleave the
+            # capture: the view holds the shared lock for the whole read.
+            assert not writer_done.wait(0.5)
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(authority, "_v2_data_integrity_check", parked)
+            outcome = _capture(db)
+        assert outcome.evidence is not None, outcome.diagnostic
+
+        for thread in writer_threads:
+            thread.join(timeout=10.0)
+            assert not thread.is_alive()
+        assert writer_done.is_set()
+        # The serialized writer landed only after capture -> immediate refusal.
+        assert not recheck_authority_policy_v2_schema_integrity(
+            outcome.evidence, db,
+        )
+    finally:
+        db._conn.close()
+
+
+def test_standalone_capture_releases_view_and_lock_on_success_and_failure(
+    tmp_path, monkeypatch,
+):
+    db = _pristine(tmp_path)
+    try:
+        assert _capture(db).evidence is not None
+        assert db._conn.in_transaction is False
+        assert _lock_free_cross_thread(db)
+
+        # Candidate read failure.
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                authority, "_v2_capture_inventory",
+                _raiser(sqlite3.DatabaseError("simulated read defect")),
+            )
+            outcome = _capture(db)
+        assert outcome.evidence is None
+        assert outcome.diagnostic["code"] == "candidate_unreadable"
+        assert db._conn.in_transaction is False
+        assert _lock_free_cross_thread(db)
+
+        # Frozen-digest failure.
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                authority, "_live_schema_digest",
+                _raiser(RuntimeError("simulated digest defect")),
+            )
+            outcome = _capture(db)
+        assert outcome.evidence is None
+        assert outcome.diagnostic["code"] == "candidate_unreadable"
+        assert db._conn.in_transaction is False
+        assert _lock_free_cross_thread(db)
+    finally:
+        db._conn.close()
+
+
+def _begin_caller_row(db: Database, key: str) -> None:
+    db._conn.execute("BEGIN")
+    db._conn.execute(
+        "INSERT INTO processed_event_ids"
+        "(org_slug, feishu_event_id, processed_at, outcome) "
+        "VALUES (?, ?, '2026-01-01T00:00:00Z', 'ok')",
+        (f"caller-{key}", f"evt-{key}"),
+    )
+    assert db._conn.in_transaction is True
+
+
+def _caller_row_count(db: Database, key: str) -> int:
+    return db._conn.execute(
+        "SELECT COUNT(*) FROM processed_event_ids WHERE org_slug=?",
+        (f"caller-{key}",),
+    ).fetchone()[0]
+
+
+def test_capture_joins_open_caller_transaction_without_spurious_commit(tmp_path):
+    db = _pristine(tmp_path)
+    try:
+        _begin_caller_row(db, "join")
+        outcome = _capture(db)
+        assert outcome.evidence is not None, outcome.diagnostic
+        # No spurious commit/rollback: the caller still owns the transaction
+        # and its uncommitted row is intact.
+        assert db._conn.in_transaction is True
+        assert _caller_row_count(db, "join") == 1
+        assert _lock_free_cross_thread(db)
+
+        db._conn.commit()
+        assert db._conn.in_transaction is False
+        assert _caller_row_count(db, "join") == 1
+    finally:
+        db._conn.close()
+
+
+def test_capture_inside_caller_transaction_releases_on_failure(
+    tmp_path, monkeypatch,
+):
+    db = _pristine(tmp_path)
+    try:
+        _begin_caller_row(db, "fail")
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                authority, "_v2_capture_inventory",
+                _raiser(sqlite3.DatabaseError("simulated read defect")),
+            )
+            outcome = _capture(db)
+        assert outcome.evidence is None
+        assert outcome.diagnostic["code"] == "candidate_unreadable"
+        # Caller ownership preserved; no lock/transaction leak.
+        assert db._conn.in_transaction is True
+        assert _caller_row_count(db, "fail") == 1
+        assert _lock_free_cross_thread(db)
+
+        db._conn.rollback()
+        assert db._conn.in_transaction is False
+        assert _caller_row_count(db, "fail") == 0
+    finally:
+        db._conn.close()
+
+
+def test_legacy_v1_digest_helpers_unchanged_by_the_coherent_view(tmp_path):
+    db = _pristine(tmp_path)
+    try:
+        digest = authority._live_schema_digest(db)
+        rows = db.execute(
+            "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"
+        ).fetchall()
+        expected = hashlib.sha256(
+            "\n".join(str(row[0]) for row in rows).encode("utf-8")
+        ).hexdigest()
+        assert digest == expected
+        assert db._conn.in_transaction is False
+        release = authority._release_schema_digest()
+        assert isinstance(release, str) and len(release) == 64
     finally:
         db._conn.close()

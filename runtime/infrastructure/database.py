@@ -1049,6 +1049,46 @@ class Database:
         """Alias for ``db_path``. Convenience for callers that prefer ``.path``."""
         return self.db_path
 
+    @contextmanager
+    def coherent_read_view(self):
+        """Yield the shared connection inside ONE coherent, synchronized read view.
+
+        THR-229 C3a: a multi-query validation must not read its schema
+        inventory, integrity results and frozen raw digest through separate
+        unprotected operations. This view closes both gaps:
+
+        * **Shared-connection synchronization.** ``self._lock`` (the same
+          ``threading.RLock`` every ``_synchronized`` method uses) is held for
+          the whole view, so no other ``Database``-mediated operation can
+          interleave statements on the single shared connection.
+        * **One SQLite read snapshot.** A deferred read transaction is pinned,
+          so a commit made on an independent connection cannot split the read
+          into a mixture of old schema/data and a new digest. WAL readers keep
+          their snapshot until the read transaction ends, so an independent
+          writer is never blocked or turned into a hang by this view.
+
+        Transaction ownership: when the caller already owns a transaction the
+        view joins it and performs no ``BEGIN``/``COMMIT``/``ROLLBACK``, so
+        caller work is never committed or rolled back; otherwise a deferred
+        read transaction is opened and always ended with ``ROLLBACK``, which
+        publishes no write and changes neither foreign-key enforcement nor the
+        connection's isolation level. Read-only: callers must not mutate
+        through the yielded connection.
+        """
+        self._lock.acquire(blocking=True)
+        started = False
+        try:
+            if not self._conn.in_transaction:
+                self._conn.execute("BEGIN")
+                started = True
+            yield self._conn
+        finally:
+            try:
+                if started:
+                    self._conn.rollback()
+            finally:
+                self._lock.release()
+
     def _retire_skill_lifecycle_if_present(self) -> None:
         """Permanently remove legacy lifecycle tables and their content blobs."""
         tables = {

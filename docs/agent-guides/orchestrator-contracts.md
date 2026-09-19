@@ -337,8 +337,17 @@ object inventory (full table SQL including CHECK/UNIQUE/FK expressions, ordered
 `table_xinfo`, `foreign_key_list`, complete `index_xinfo` including expression
 sentinels/collation/key flags/cid, `index_list` origin/unique/partial, explicit
 index SQL/predicate and full trigger/view SQL; autoindex constraint metadata is
-retained and only rootpage/allocator/internal `sqlite_sequence` contents are
-ignored). It requires `PRAGMA integrity_check` exactly `ok` and zero
+retained and only rootpage/allocator and SQLite's reserved internal
+`sqlite_`-prefixed objects are ignored). The reserved prefix is matched as that
+exact literal, case-insensitive prefix — never a SQL `LIKE 'sqlite_%'` pattern
+whose `_` is a wildcard — so a legal user object that merely resembles the
+internal namespace (for example `sqliteXunreviewed`) is still inventoried and
+refused as unexpected. Every candidate read and the frozen raw digest run inside
+ONE `Database.coherent_read_view()`: the shared-connection lock is held across
+the whole capture and one SQLite read snapshot is pinned, so a commit on an
+independent connection can neither split the inventory from the digest nor be
+authenticated by a stale inventory — it can only make the subsequent recheck
+refuse. It requires `PRAGMA integrity_check` exactly `ok` and zero
 `foreign_key_check` violations, then freezes the validated candidate's ACTUAL
 raw `sqlite_master` DDL digest. A recheck denies ANY later raw-digest drift
 (including a switch to the other accepted layout) and a failed/unavailable

@@ -321,6 +321,20 @@ def _v2_is_v2_object(name: str) -> bool:
     return str(name).startswith("authority_policy_v2_")
 
 
+def _v2_is_reserved_internal_name(name: str) -> bool:
+    """True only for SQLite's reserved internal ``sqlite_`` prefix.
+
+    SQLite refuses to create a user object whose name begins with ``sqlite_``
+    in ANY ASCII case ("object name reserved for internal use"), so that exact
+    prefix is the internal namespace.  The comparison is case-insensitive to
+    match SQLite's own reserved-name rule, and it is a literal prefix test —
+    never a SQL ``LIKE`` pattern, whose ``_`` would be a single-character
+    wildcard and would wrongly hide legal user objects such as
+    ``sqliteXunreviewed``.
+    """
+    return str(name).lower().startswith("sqlite_")
+
+
 def _v2_index_xinfo(conn, index_name: str) -> list[list]:
     return [
         [int(seqno), int(cid), _v2_optional_text(name), int(desc), str(coll),
@@ -340,10 +354,14 @@ def _v2_capture_inventory(conn) -> dict:
     expression sentinels/collation/key flags/cid, ``index_list``
     origin/unique/partial, explicit index SQL and full trigger/view SQL.
 
-    Only internal ``sqlite_*`` objects (including ``sqlite_sequence``) are
-    excluded from the top-level inventory; autoindex constraint metadata is
-    retained inside each table's ``index_list`` metadata.  ``rootpage`` and
-    allocator/row contents are never read.
+    Only internal ``sqlite_``-prefixed objects (including ``sqlite_sequence``
+    and the autoindex names) are excluded from the top-level inventory;
+    autoindex constraint metadata is retained inside each table's
+    ``index_list`` metadata.  The reserved prefix is matched as a literal,
+    case-insensitive prefix (never a SQL ``LIKE`` pattern), so legal user
+    objects that merely resemble internal names — e.g. ``sqliteXunreviewed`` —
+    stay in the inventory.  ``rootpage`` and allocator/row contents are never
+    read.
     """
     tables: dict[str, dict] = {}
     indexes: dict[str, dict] = {}
@@ -352,11 +370,12 @@ def _v2_capture_inventory(conn) -> dict:
     rows = conn.execute(
         "SELECT type, name, tbl_name, sql FROM sqlite_master "
         "WHERE type IN ('table','index','trigger','view') "
-        "AND name NOT LIKE 'sqlite_%' "
         "ORDER BY type, name"
     ).fetchall()
     for row in rows:
         typ, name, tbl_name, sql = row[0], row[1], row[2], row[3]
+        if _v2_is_reserved_internal_name(name):
+            continue
         if typ == "table":
             xinfo = [
                 [int(cid), str(cname), _v2_optional_text(ctype), int(notnull),
@@ -581,6 +600,13 @@ def capture_authority_policy_v2_schema_integrity(
     digest.  Any unknown layout, read/query error or unavailable reference
     fails closed with a bounded machine-readable diagnostic and no evidence.
     The candidate is never repaired or mutated.
+
+    Every candidate read and the frozen raw digest run inside ONE
+    ``Database.coherent_read_view()``: the shared-connection lock is held for
+    the whole capture and a single SQLite read snapshot is pinned, so a commit
+    on an independent connection cannot produce evidence assembled from an old
+    inventory plus a new digest.  A mutation invisible to that coherent
+    snapshot is caught by the subsequent ``recheck``.
     """
     references = None
     try:
@@ -594,47 +620,49 @@ def capture_authority_policy_v2_schema_integrity(
                         "object": None, "v2": False},
         )
     try:
-        conn = db._conn
-        candidate = _v2_capture_inventory(conn)
+        with db.coherent_read_view() as conn:
+            candidate = _v2_capture_inventory(conn)
+            if not any(
+                not _v2_inventory_mismatches(reference, candidate)
+                for reference in references
+            ):
+                mismatches = _v2_closest_mismatches(references, candidate)
+                diagnostic = mismatches[0] if mismatches else {
+                    "code": "inventory_mismatch", "kind": "inventory",
+                    "object": None, "v2": False,
+                }
+                return AuthorityPolicyV2SchemaIntegrityOutcome(
+                    evidence=None, diagnostic=diagnostic,
+                )
+            data_diagnostic = _v2_data_integrity_check(conn)
+            if data_diagnostic is not None:
+                return AuthorityPolicyV2SchemaIntegrityOutcome(
+                    evidence=None, diagnostic=data_diagnostic,
+                )
+            raw_digest = _live_schema_digest(db)
+            if not isinstance(raw_digest, str) or raw_digest == "unavailable":
+                return AuthorityPolicyV2SchemaIntegrityOutcome(
+                    evidence=None,
+                    diagnostic={"code": "candidate_digest_unavailable",
+                                "kind": "candidate", "object": None, "v2": False},
+                )
+            evidence = AuthorityPolicyV2SchemaIntegrity(
+                contract_version=V2_SCHEMA_INTEGRITY_CONTRACT,
+                raw_digest=raw_digest,
+                inventory_digest=_v2_inventory_digest(candidate),
+                object_count=sum(
+                    len(candidate[kind]) for kind in _V2_INVENTORY_KINDS
+                ),
+            )
+            return AuthorityPolicyV2SchemaIntegrityOutcome(
+                evidence=evidence, diagnostic=None,
+            )
     except Exception:
         return AuthorityPolicyV2SchemaIntegrityOutcome(
             evidence=None,
             diagnostic={"code": "candidate_unreadable", "kind": "candidate",
                         "object": None, "v2": False},
         )
-    if not any(
-        not _v2_inventory_mismatches(reference, candidate)
-        for reference in references
-    ):
-        mismatches = _v2_closest_mismatches(references, candidate)
-        diagnostic = mismatches[0] if mismatches else {
-            "code": "inventory_mismatch", "kind": "inventory",
-            "object": None, "v2": False,
-        }
-        return AuthorityPolicyV2SchemaIntegrityOutcome(
-            evidence=None, diagnostic=diagnostic,
-        )
-    data_diagnostic = _v2_data_integrity_check(conn)
-    if data_diagnostic is not None:
-        return AuthorityPolicyV2SchemaIntegrityOutcome(
-            evidence=None, diagnostic=data_diagnostic,
-        )
-    raw_digest = _live_schema_digest(db)
-    if not isinstance(raw_digest, str) or raw_digest == "unavailable":
-        return AuthorityPolicyV2SchemaIntegrityOutcome(
-            evidence=None,
-            diagnostic={"code": "candidate_digest_unavailable",
-                        "kind": "candidate", "object": None, "v2": False},
-        )
-    evidence = AuthorityPolicyV2SchemaIntegrity(
-        contract_version=V2_SCHEMA_INTEGRITY_CONTRACT,
-        raw_digest=raw_digest,
-        inventory_digest=_v2_inventory_digest(candidate),
-        object_count=sum(len(candidate[kind]) for kind in _V2_INVENTORY_KINDS),
-    )
-    return AuthorityPolicyV2SchemaIntegrityOutcome(
-        evidence=evidence, diagnostic=None,
-    )
 
 
 def recheck_authority_policy_v2_schema_integrity(
