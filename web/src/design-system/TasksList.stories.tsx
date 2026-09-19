@@ -8,7 +8,7 @@ import { mockTasksApi } from './providers/_mock-tasks';
 import { AppBar } from './layouts/AppShell/AppBar';
 import { TasksPage } from '@/features/tasks/TasksPage';
 
-type State = 'populated' | 'loading' | 'empty' | 'error' | 'long';
+type State = 'populated' | 'loading' | 'empty' | 'error' | 'long' | 'no-escalated';
 function Fixture({ state, children }: { state: State; children: ReactNode }) {
   const data = useData();
   const navigate = useNavigate();
@@ -21,6 +21,9 @@ function Fixture({ state, children }: { state: State; children: ReactNode }) {
       queryFn: async () => {
         if (state === 'error' && attempts.current++ === 0) throw new Error('Synthetic story error');
         const base = mockTasksApi.useTasksRootsInfinite(params).data!.pages[0];
+        if (state === 'no-escalated') {
+          return { tasks: base.tasks.filter((task) => task.status !== 'escalated'), next_cursor: null };
+        }
         if (state !== 'long') return base;
         const root = mockTasksApi.useTasksRootsInfinite().data!.pages[0].tasks[0];
         const statuses = ['escalated', 'in_progress', 'pending', 'completed', 'failed', 'cancelled', 'superseded'] as const;
@@ -49,10 +52,16 @@ const meta = {
 } satisfies Meta<typeof TasksPage>;
 export default meta;
 type Story = StoryObj<typeof meta>;
-/** Local fixtures only. Retry is a presentation example, not real-provider proof. */
+/** Local fixtures only. Retry is a presentation example, not real-provider proof.
+ *  The populated fixture carries an escalated root: its independent
+ *  status=escalated traversal renders 'Waiting on you' as the FIRST
+ *  ordinary-styled group inside the shared list shell. */
 export const Populated: Story = {};
 export const Loading: Story = { parameters: { taskState: 'loading' } };
 export const Empty: Story = { parameters: { taskState: 'empty' } };
 export const InitialErrorRetry: Story = { parameters: { taskState: 'error' } };
 
 export const LongContent: Story = { parameters: { taskState: 'long' } };
+
+/** No escalated roots: no 'Waiting on you' group, heading or empty card. */
+export const NoEscalated: Story = { parameters: { taskState: 'no-escalated' } };
