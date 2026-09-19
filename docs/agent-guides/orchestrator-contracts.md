@@ -264,7 +264,7 @@ negative cases. There is no universal post-session detector for arbitrary
 external side effects or role-based pathname enforcement.
 
 The staged THR-229 v2 value contract is separate from that live v1 path until
-its later persisted selector and authenticated consumer land. It has two
+its later authenticated consumer lands. It has two
 editable release texts, `What to escalate` and `What not to escalate`, which
 are a strict pair: `AuthorityPolicyV2Release` (in `runtime/models.py`) forbids
 unknown fields, requires both texts together, bounds the title/text scalars and
@@ -275,8 +275,25 @@ selector, causal-result, candidate/envelope/attempt/notification). A pure
 assessment helper treats an escalate match as dominant, permits continuation
 only for clear non-escalate plus continue applicability, and otherwise fails
 closed; uncertainty always outranks an escalate match. These value-layer
-results are advisory data, not launch authentication or continuation authority,
-and there is no v2 selector, route, launch, queue or UI wiring yet.
+results are advisory data, not launch authentication or continuation authority.
+
+Checkpoint B1 additionally lands the accepted control-plane storage as private
+callable code. `runtime/infrastructure/database.py` owns the additive
+`authority_policy_v2_releases`, `authority_policy_v2_activations`,
+`authority_policy_active_selector`, `authority_policy_active_selector_history`
+and `authority_policy_v2_control_audit` tables plus the transaction-owning
+authenticated `ensure_authority_selector(team)`, paired create+activate and
+existing-release activate/rollback methods under `BEGIN IMMEDIATE`; request
+receipts and audits live in the accepted control-audit persistence.
+`authority_policy_store.py` exposes them as a thin typed facade that never
+begins or commits a transaction. The v2 byte decoder rejects UTF-16/UTF-32
+input and JSON `NaN`/`Infinity`. No startup, route, launch, prompt, completion,
+legacy activation writer, queue/reaper/consumer or UI surface reads or writes
+the selector yet, and the remaining nine approved candidate/binding/envelope/
+recovery tables belong to their actual later transactions. This isolated,
+callable storage is deliberately not a shippable mixed-writer mode: the later
+convergence unit must move every legacy and new selection writer onto one CAS
+transaction before integration.
 
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the
@@ -287,10 +304,10 @@ real loopback HTTP to durable result path is exercised by
 there: `CompletionBody.manager_self_evaluation` is `object | None`, so a
 present JSON `null` reaches the route but is indistinguishable from an omitted
 member and skips validation. The full v2 CLI -> durable result -> hook ->
-Pending/enqueue lifecycle, the persisted versioned store/selector, launch-bound
-v2 authentication, recovery/reaper and API/UI work remain outstanding serial
-units; this staged checkpoint neither activates a policy nor claims that
-lifecycle.
+Pending/enqueue lifecycle, launch-bound v2 authentication, legacy/new writer
+convergence onto the selector, recovery/reaper and API/UI work remain
+outstanding serial units; this staged checkpoint neither activates a policy nor
+claims that lifecycle.
 
 ## Inline Delegation Chains
 

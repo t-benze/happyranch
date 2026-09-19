@@ -400,8 +400,19 @@ def authority_policy_v2_contract_digest() -> str:
     return authority_policy_v2_sha256(AUTHORITY_POLICY_V2_CONTRACT_PREIMAGE)
 
 
+def _reject_authority_policy_v2_json_constant(name: str) -> object:
+    """Reject JSON ``NaN``/``Infinity``/``-Infinity`` before value validation."""
+    raise ValueError(f"v2 wire payload must not contain {name}")
+
+
 def decode_authority_policy_v2_json(raw: str | bytes) -> dict[str, object]:
-    """Decode a v2 wire object and reject duplicate members before validation."""
+    """Decode a v2 wire object strictly.
+
+    R2 requires UTF-8 bytes: ``bytes`` input is decoded explicitly with strict
+    UTF-8 so ``json.loads`` cannot auto-detect UTF-16/UTF-32. Duplicate members,
+    non-object roots, and ``NaN``/``Infinity`` constants are rejected before any
+    typed validation.
+    """
     def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
         decoded: dict[str, object] = {}
         for key, value in pairs:
@@ -410,7 +421,22 @@ def decode_authority_policy_v2_json(raw: str | bytes) -> dict[str, object]:
             decoded[key] = value
         return decoded
 
-    decoded = json.loads(raw, object_pairs_hook=reject_duplicates)
+    if isinstance(raw, bytes):
+        try:
+            text = raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise ValueError("v2 wire payload must be valid UTF-8") from exc
+    elif isinstance(raw, str):
+        text = raw
+    else:
+        raise ValueError("v2 wire payload must be str or bytes")
+    if "\ufeff" in text:
+        raise ValueError("v2 wire payload must not contain a BOM")
+    decoded = json.loads(
+        text,
+        object_pairs_hook=reject_duplicates,
+        parse_constant=_reject_authority_policy_v2_json_constant,
+    )
     if not isinstance(decoded, dict):
         raise ValueError("v2 wire payload must be a JSON object")
     return decoded
@@ -530,6 +556,14 @@ def authority_policy_v2_candidate_claim_digest(values: Mapping[str, object]) -> 
 
 
 _AUTHORITY_POLICY_V2_POLICY_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+# Mirrors the existing saved-policy secret-shape rejection in
+# ``runtime/daemon/routes/authority_policy.py`` byte-for-byte. B1 keeps the
+# rejection at the v2 control value boundary; the route keeps its own copy
+# because B1 wires no route.
+AUTHORITY_POLICY_SECRET_SHAPE_RE = re.compile(
+    r"(?i)(?:authorization\s*:\s*bearer|bearer\s+[a-z0-9._-]{16,}|"
+    r"(?:api[_-]?key|secret|password|token)\s*[:=]\s*\S{8,})"
+)
 AUTHORITY_POLICY_V2_TEAM = "engineering"
 AUTHORITY_POLICY_V2_MAX_CANONICAL_BYTES = 65536
 _AUTHORITY_POLICY_V2_MAX_TITLE = 200
@@ -608,6 +642,312 @@ class AuthorityPolicyV2Release(BaseModel):
         return f"APV2-{self.policy_digest}"
 
 
+_AUTHORITY_POLICY_V2_SELECTOR_ID_RE = re.compile(r"^APS-[0-9a-f]{64}$")
+_AUTHORITY_POLICY_V2_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+AUTHORITY_POLICY_V2_CONTROL_ACTIONS = ("bootstrap", "activate", "reactivate_rollback")
+AUTHORITY_POLICY_V2_SELECTOR_FAMILIES = ("empty", "legacy_v1", "v2")
+
+
+def _validate_authority_policy_v2_selector_ref(value: str | None, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not _AUTHORITY_POLICY_V2_SELECTOR_ID_RE.fullmatch(value):
+        raise ValueError(f"{field_name} must be null or APS- followed by 64 lowercase hex")
+    return value
+
+
+def _validate_authority_policy_v2_request_id(value: str, field_name: str) -> str:
+    if not _AUTHORITY_POLICY_V2_REQUEST_ID_RE.fullmatch(value):
+        raise ValueError(f"{field_name} must match [A-Za-z0-9][A-Za-z0-9._:-]{{0,127}}")
+    return value
+
+
+class AuthorityPolicyV2Activation(BaseModel):
+    """Immutable v2 selection receipt (APV2A content identity)."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    id: StrictStr
+    team: StrictStr
+    selector_epoch: StrictInt = Field(ge=1, le=2147483647)
+    release_id: StrictStr
+    release_digest: StrictStr
+    previous_selector_id: StrictStr | None = None
+    action: Literal["bootstrap", "activate", "reactivate_rollback"]
+    request_id: StrictStr
+    request_digest: StrictStr
+    activation_digest: StrictStr
+    created_at: StrictStr
+
+    @field_validator("release_digest", "request_digest", "activation_digest")
+    @classmethod
+    def _v2_activation_digests(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_digest(value, info.field_name)
+
+    @field_validator("request_id")
+    @classmethod
+    def _v2_activation_request_id(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_request_id(value, info.field_name)
+
+    @field_validator("previous_selector_id")
+    @classmethod
+    def _v2_activation_previous_selector(cls, value: str | None, info) -> str | None:
+        return _validate_authority_policy_v2_selector_ref(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _v2_activation_content_ids(self) -> AuthorityPolicyV2Activation:
+        if self.release_id != f"APV2-{self.release_digest}":
+            raise ValueError("release_id must contain release_digest")
+        expected = authority_policy_v2_activation_digest(
+            action=self.action, previous_selector_id=self.previous_selector_id,
+            release_digest=self.release_digest, release_id=self.release_id,
+            selector_epoch=self.selector_epoch, team=self.team,
+        )
+        if self.activation_digest != expected:
+            raise ValueError("activation_digest does not match canonical activation semantics")
+        if self.id != f"APV2A-{self.activation_digest}":
+            raise ValueError("id must be APV2A- followed by activation_digest")
+        return self
+
+    @classmethod
+    def create(cls, **values: object) -> AuthorityPolicyV2Activation:
+        """Trusted construction boundary deriving the exact content identity."""
+        if "activation_digest" in values:
+            raise ValueError("activation_digest is derived, never supplied")
+        digest = authority_policy_v2_activation_digest(
+            action=values["action"], previous_selector_id=values.get("previous_selector_id"),
+            release_digest=values["release_digest"], release_id=values["release_id"],
+            selector_epoch=values["selector_epoch"], team=values["team"],
+        )
+        return cls.model_validate({
+            **values, "activation_digest": digest, "id": f"APV2A-{digest}",
+        })
+
+
+class AuthorityPolicySelector(BaseModel):
+    """One authenticated team selector (empty epoch0, legacy_v1 epoch1 or v2)."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    team: StrictStr
+    selector_id: StrictStr
+    family: Literal["empty", "legacy_v1", "v2"]
+    selector_epoch: StrictInt = Field(ge=0, le=2147483647)
+    previous_selector_id: StrictStr | None = None
+    legacy_activation_id: StrictStr | None = None
+    v2_activation_id: StrictStr | None = None
+    created_at: StrictStr
+
+    @field_validator("selector_id", "previous_selector_id")
+    @classmethod
+    def _v2_selector_refs(cls, value: str | None, info) -> str | None:
+        return _validate_authority_policy_v2_selector_ref(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _v2_selector_three_arm_and_identity(self) -> AuthorityPolicySelector:
+        if self.family == "empty":
+            valid_arm = (
+                self.selector_epoch == 0 and self.previous_selector_id is None
+                and self.legacy_activation_id is None and self.v2_activation_id is None
+            )
+            expected = authority_policy_v2_initializer_selector_id(
+                family="empty", legacy_activation_id=None, selector_epoch=0, team=self.team,
+            )
+        elif self.family == "legacy_v1":
+            valid_arm = (
+                self.selector_epoch >= 1 and self.previous_selector_id is None
+                and self.legacy_activation_id is not None and self.v2_activation_id is None
+            )
+            expected = authority_policy_v2_initializer_selector_id(
+                family="legacy_v1", legacy_activation_id=self.legacy_activation_id,
+                selector_epoch=self.selector_epoch, team=self.team,
+            )
+        else:
+            valid_arm = (
+                self.selector_epoch >= 1 and self.legacy_activation_id is None
+                and self.v2_activation_id is not None
+            )
+            expected = authority_policy_v2_selector_id(
+                activation_id=self.v2_activation_id, family="v2",
+                previous_selector_id=self.previous_selector_id,
+                selector_epoch=self.selector_epoch, team=self.team,
+            )
+        if not valid_arm:
+            raise ValueError("selector family/epoch/reference arm is invalid")
+        if self.selector_id != expected:
+            raise ValueError("selector_id does not match the frozen selector preimage")
+        return self
+
+
+class AuthorityPolicyV2PairedControlRequest(BaseModel):
+    """Strict paired create+activate request; client version/digest/ids are rejected."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    policy_id: StrictStr
+    title: StrictStr
+    create_request_id: StrictStr
+    activation_request_id: StrictStr
+    based_on_selector_id: StrictStr | None
+    expected_selector_id: StrictStr | None
+    action: Literal["bootstrap", "activate"]
+    what_to_escalate: StrictStr
+    what_not_to_escalate: StrictStr
+
+    @field_validator("policy_id")
+    @classmethod
+    def _v2_paired_policy_id(cls, value: str) -> str:
+        if not _AUTHORITY_POLICY_V2_POLICY_ID_RE.fullmatch(value):
+            raise ValueError("policy_id must match [a-z][a-z0-9-]{0,63}")
+        return value
+
+    @field_validator("title")
+    @classmethod
+    def _v2_paired_title(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, _AUTHORITY_POLICY_V2_MAX_TITLE)
+
+    @field_validator("what_to_escalate", "what_not_to_escalate")
+    @classmethod
+    def _v2_paired_texts(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, _AUTHORITY_POLICY_V2_MAX_TEXT)
+
+    @field_validator("create_request_id", "activation_request_id")
+    @classmethod
+    def _v2_paired_request_ids(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_request_id(value, info.field_name)
+
+    @field_validator("based_on_selector_id", "expected_selector_id")
+    @classmethod
+    def _v2_paired_selector_refs(cls, value: str | None, info) -> str | None:
+        return _validate_authority_policy_v2_selector_ref(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _v2_paired_is_bounded(self) -> AuthorityPolicyV2PairedControlRequest:
+        canonical = authority_policy_v2_canonical_json_bytes(self.model_dump(mode="json"))
+        if len(canonical) > AUTHORITY_POLICY_V2_MAX_CANONICAL_BYTES:
+            raise ValueError(
+                "control request canonical JSON exceeds "
+                f"{AUTHORITY_POLICY_V2_MAX_CANONICAL_BYTES} bytes"
+            )
+        material = "\n".join((self.title, self.what_to_escalate, self.what_not_to_escalate))
+        if AUTHORITY_POLICY_SECRET_SHAPE_RE.search(material):
+            raise ValueError("saved policy text contains secret-shaped input")
+        return self
+
+    def create_request_preimage(self) -> dict[str, object]:
+        return authority_policy_v2_create_request_preimage(
+            based_on_selector_id=self.based_on_selector_id, kind="v2_create",
+            policy_id=self.policy_id, request_id=self.create_request_id, team=self.team,
+            title=self.title, what_to_escalate=self.what_to_escalate,
+            what_not_to_escalate=self.what_not_to_escalate,
+        )
+
+    def activation_request_preimage(self, release_id: str) -> dict[str, object]:
+        return authority_policy_v2_activation_request_preimage(
+            action=self.action, expected_selector_id=self.expected_selector_id,
+            kind="v2_activate", release_id=release_id,
+            request_id=self.activation_request_id, team=self.team,
+        )
+
+    def create_request_digest(self) -> str:
+        return authority_policy_v2_sha256(self.create_request_preimage())
+
+    def to_release(self, *, version: int) -> AuthorityPolicyV2Release:
+        return AuthorityPolicyV2Release(
+            contract_digest=authority_policy_v2_contract_digest(),
+            policy_id=self.policy_id, team=self.team, title=self.title, version=version,
+            what_to_escalate=self.what_to_escalate,
+            what_not_to_escalate=self.what_not_to_escalate,
+        )
+
+
+class AuthorityPolicyV2ActivationControlRequest(BaseModel):
+    """Strict activation request for an existing v2 release."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    release_id: StrictStr
+    request_id: StrictStr
+    expected_selector_id: StrictStr | None
+    action: Literal["bootstrap", "activate", "reactivate_rollback"]
+
+    @field_validator("request_id")
+    @classmethod
+    def _v2_activate_request_id(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_request_id(value, info.field_name)
+
+    @field_validator("expected_selector_id")
+    @classmethod
+    def _v2_activate_selector_ref(cls, value: str | None, info) -> str | None:
+        return _validate_authority_policy_v2_selector_ref(value, info.field_name)
+
+    @field_validator("release_id")
+    @classmethod
+    def _v2_activate_release_id(cls, value: str) -> str:
+        if not value.startswith("APV2-"):
+            raise ValueError("release_id must start with APV2-")
+        _validate_authority_policy_v2_digest(value[len("APV2-"):], "release_id")
+        return value
+
+    def activation_request_preimage(self) -> dict[str, object]:
+        return authority_policy_v2_activation_request_preimage(
+            action=self.action, expected_selector_id=self.expected_selector_id,
+            kind="v2_activate", release_id=self.release_id,
+            request_id=self.request_id, team=self.team,
+        )
+
+    def request_digest(self) -> str:
+        return authority_policy_v2_sha256(self.activation_request_preimage())
+
+
+class AuthorityPolicyV2ControlReceipt(BaseModel):
+    """Deterministic receipt binding both request IDs/digests of a control write."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    kind: Literal["v2_create_activate", "v2_activate"]
+    create_request_id: StrictStr | None
+    create_request_digest: StrictStr | None
+    activation_request_id: StrictStr
+    activation_request_digest: StrictStr
+    release_id: StrictStr
+    policy_digest: StrictStr
+    release_version: StrictInt = Field(ge=1, le=2147483647)
+    activation_id: StrictStr
+    activation_digest: StrictStr
+    selector_id: StrictStr
+    selector_epoch: StrictInt = Field(ge=1, le=2147483647)
+    action: Literal["bootstrap", "activate", "reactivate_rollback"]
+    previous_selector_id: StrictStr | None = None
+    created_at: StrictStr
+
+    @field_validator("create_request_digest", "activation_request_digest", "policy_digest",
+                     "activation_digest")
+    @classmethod
+    def _v2_receipt_digests(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        return _validate_authority_policy_v2_digest(value, info.field_name)
+
+    @field_validator("selector_id", "previous_selector_id")
+    @classmethod
+    def _v2_receipt_selectors(cls, value: str | None, info) -> str | None:
+        return _validate_authority_policy_v2_selector_ref(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _v2_receipt_bound_ids(self) -> AuthorityPolicyV2ControlReceipt:
+        if (self.create_request_id is None) != (self.create_request_digest is None):
+            raise ValueError("paired receipt must bind both create request id and digest")
+        if self.kind == "v2_create_activate" and self.create_request_id is None:
+            raise ValueError("create+activate receipt requires a create request")
+        if self.release_id != f"APV2-{self.policy_digest}":
+            raise ValueError("release_id must contain policy_digest")
+        if self.activation_id != f"APV2A-{self.activation_digest}":
+            raise ValueError("activation_id must contain activation_digest")
+        return self
+
+    def canonical_json(self) -> str:
+        return authority_policy_v2_canonical_json_bytes(self.model_dump(mode="json")).decode("utf-8")
+
+
 def authority_policy_v2_create_request_preimage(
     *, based_on_selector_id: str | None, kind: str, policy_id: str,
     request_id: str, team: str, title: str, what_to_escalate: str,
@@ -644,6 +984,23 @@ def authority_policy_v2_selector_preimage(
 
 def authority_policy_v2_selector_id(**values: object) -> str:
     return f"APS-{authority_policy_v2_sha256(authority_policy_v2_selector_preimage(**values))}"
+
+
+def authority_policy_v2_initializer_selector_preimage(
+    *, family: str, legacy_activation_id: str | None, selector_epoch: int, team: str,
+) -> dict[str, object]:
+    """Frozen R2 initializer preimage (empty family epoch 0 or legacy_v1 epoch 1)."""
+    return {
+        "family": family,
+        "kind": "selector_initialize",
+        "legacy_activation_id": legacy_activation_id,
+        "selector_epoch": selector_epoch,
+        "team": team,
+    }
+
+
+def authority_policy_v2_initializer_selector_id(**values: object) -> str:
+    return f"APS-{authority_policy_v2_sha256(authority_policy_v2_initializer_selector_preimage(**values))}"
 
 
 def authority_policy_v2_causal_result_digest(result_id: int) -> str:

@@ -17,6 +17,12 @@ from runtime.models import (
     AuthorityCandidatePolicyPin,
     AuthorityPolicyActivation,
     AuthorityPolicyRelease,
+    AuthorityPolicySelector,
+    AuthorityPolicyV2Activation,
+    AuthorityPolicyV2ActivationControlRequest,
+    AuthorityPolicyV2ControlReceipt,
+    AuthorityPolicyV2PairedControlRequest,
+    AuthorityPolicyV2Release,
 )
 
 
@@ -78,6 +84,44 @@ class AuthorityPolicyStore:
 
     def get_current_activation(self, team: str) -> AuthorityPolicyActivation | None:
         return self._db.get_current_authority_policy_activation(team)
+
+    # -- THR-229 checkpoint B1: typed facade over the DB-owned v2 control
+    # transactions/readers. No method here begins, commits or rolls back: the
+    # Database owns the transaction boundary, and the facade never nests a
+    # committing call inside another committing call.
+
+    def ensure_authority_selector(self, team: str) -> AuthorityPolicySelector:
+        return self._db.ensure_authority_selector(team)
+
+    def get_authority_selector(self, team: str) -> AuthorityPolicySelector | None:
+        return self._db.get_authority_selector(team)
+
+    def get_authority_selector_by_id(
+        self, team: str, selector_id: str
+    ) -> AuthorityPolicySelector | None:
+        return self._db.get_authority_policy_selector_by_id(team, selector_id)
+
+    def list_selector_history(self, team: str) -> list[AuthorityPolicySelector]:
+        return self._db.list_authority_policy_selector_history(team)
+
+    def list_control_audit(self, team: str) -> list[dict]:
+        return self._db.list_authority_policy_v2_control_audit(team)
+
+    def get_v2_release(self, release_id: str) -> AuthorityPolicyV2Release | None:
+        return self._db.get_authority_policy_v2_release(release_id)
+
+    def get_v2_activation(self, activation_id: str) -> AuthorityPolicyV2Activation | None:
+        return self._db.get_authority_policy_v2_activation(activation_id)
+
+    def create_and_activate_v2(
+        self, request: AuthorityPolicyV2PairedControlRequest
+    ) -> AuthorityPolicyV2ControlReceipt:
+        return self._db.create_and_activate_authority_policy_v2(request)
+
+    def activate_v2(
+        self, request: AuthorityPolicyV2ActivationControlRequest
+    ) -> AuthorityPolicyV2ControlReceipt:
+        return self._db.activate_authority_policy_v2(request)
 
     @staticmethod
     def _encode_cursor(payload: dict) -> str:

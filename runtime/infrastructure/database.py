@@ -24,9 +24,20 @@ from runtime.models import (
     AuthorityEvaluation,
     AuthorityPolicyActivation,
     AuthorityPolicyRelease,
+    AuthorityPolicySelector,
+    AuthorityPolicyV2Activation,
+    AuthorityPolicyV2ActivationControlRequest,
+    AuthorityPolicyV2ControlReceipt,
+    AuthorityPolicyV2PairedControlRequest,
+    AuthorityPolicyV2Release,
     AuthorityFenceResult,
     AuthorityRedactionClass,
     AuthorityRetentionClass,
+    authority_policy_v2_canonical_json_bytes,
+    authority_policy_v2_initializer_selector_id,
+    authority_policy_v2_initializer_selector_preimage,
+    authority_policy_v2_selector_id,
+    authority_policy_v2_sha256,
     BlockKind,
     DreamKbCandidate,
     DreamRecord,
@@ -236,6 +247,155 @@ _AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL = """
                          AND NEW.consumed_at IS OLD.consumed_at)
                     );
                 END;
+"""
+
+
+# THR-229 checkpoint B1: the accepted control-plane subset of the approved v2
+# dual-text persistence. These are strictly additive tables used only by the
+# private callable v2 control store; B1 wires no startup/route/launch/queue/UI
+# reader or writer. The remaining nine approved candidate/binding/envelope/
+# recovery tables belong to a later unit. ``authority_policy_v2_control_audit``
+# is the accepted control persistence: append-only events plus the request
+# receipts bound by (team, kind, request_id).
+_AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
+            CREATE TABLE IF NOT EXISTS authority_policy_v2_releases (
+                id TEXT PRIMARY KEY,
+                team TEXT NOT NULL,
+                policy_id TEXT NOT NULL,
+                version INTEGER NOT NULL CHECK(version > 0 AND version <= 2147483647),
+                title TEXT NOT NULL,
+                what_to_escalate TEXT NOT NULL,
+                what_not_to_escalate TEXT NOT NULL,
+                contract_digest TEXT NOT NULL,
+                canonical_payload_json TEXT NOT NULL,
+                policy_digest TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                UNIQUE(team, policy_id, version)
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_releases_team_policy_version
+                ON authority_policy_v2_releases(team, policy_id, version DESC);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_releases_no_update
+                BEFORE UPDATE ON authority_policy_v2_releases
+                BEGIN SELECT RAISE(ABORT, 'v2 authority policy releases are immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_releases_no_delete
+                BEFORE DELETE ON authority_policy_v2_releases
+                BEGIN SELECT RAISE(ABORT, 'v2 authority policy releases cannot be deleted'); END;
+
+            CREATE TABLE IF NOT EXISTS authority_policy_v2_activations (
+                id TEXT PRIMARY KEY,
+                team TEXT NOT NULL,
+                selector_epoch INTEGER NOT NULL
+                    CHECK(selector_epoch > 0 AND selector_epoch <= 2147483647),
+                release_id TEXT NOT NULL
+                    REFERENCES authority_policy_v2_releases(id) ON DELETE RESTRICT,
+                release_digest TEXT NOT NULL,
+                previous_selector_id TEXT,
+                action TEXT NOT NULL
+                    CHECK(action IN ('bootstrap','activate','reactivate_rollback')),
+                request_id TEXT NOT NULL,
+                request_digest TEXT NOT NULL,
+                activation_digest TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(team, selector_epoch),
+                UNIQUE(team, request_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_activations_team_epoch
+                ON authority_policy_v2_activations(team, selector_epoch DESC);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_activations_validate_insert
+                BEFORE INSERT ON authority_policy_v2_activations
+                BEGIN
+                    SELECT RAISE(ABORT, 'v2 authority activation release mismatch')
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM authority_policy_v2_releases r
+                        WHERE r.id=NEW.release_id AND r.team=NEW.team
+                          AND r.policy_digest=NEW.release_digest);
+                END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_activations_no_update
+                BEFORE UPDATE ON authority_policy_v2_activations
+                BEGIN SELECT RAISE(ABORT, 'v2 authority activations are immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_activations_no_delete
+                BEFORE DELETE ON authority_policy_v2_activations
+                BEGIN SELECT RAISE(ABORT, 'v2 authority activations cannot be deleted'); END;
+
+            CREATE TABLE IF NOT EXISTS authority_policy_active_selector (
+                team TEXT PRIMARY KEY,
+                selector_id TEXT NOT NULL UNIQUE,
+                family TEXT NOT NULL CHECK(family IN ('empty','legacy_v1','v2')),
+                selector_epoch INTEGER NOT NULL
+                    CHECK(selector_epoch >= 0 AND selector_epoch <= 2147483647),
+                previous_selector_id TEXT,
+                legacy_activation_id TEXT
+                    REFERENCES authority_policy_activations(id) ON DELETE RESTRICT,
+                v2_activation_id TEXT
+                    REFERENCES authority_policy_v2_activations(id) ON DELETE RESTRICT,
+                created_at TEXT NOT NULL,
+                CHECK (
+                    (family='empty' AND selector_epoch=0 AND previous_selector_id IS NULL
+                     AND legacy_activation_id IS NULL AND v2_activation_id IS NULL)
+                    OR (family='legacy_v1' AND selector_epoch>=1
+                        AND legacy_activation_id IS NOT NULL AND v2_activation_id IS NULL)
+                    OR (family='v2' AND selector_epoch>=1
+                        AND legacy_activation_id IS NULL AND v2_activation_id IS NOT NULL)
+                )
+            );
+
+            CREATE TABLE IF NOT EXISTS authority_policy_active_selector_history (
+                selector_id TEXT PRIMARY KEY,
+                team TEXT NOT NULL,
+                family TEXT NOT NULL CHECK(family IN ('empty','legacy_v1','v2')),
+                selector_epoch INTEGER NOT NULL
+                    CHECK(selector_epoch >= 0 AND selector_epoch <= 2147483647),
+                previous_selector_id TEXT,
+                legacy_activation_id TEXT
+                    REFERENCES authority_policy_activations(id) ON DELETE RESTRICT,
+                v2_activation_id TEXT
+                    REFERENCES authority_policy_v2_activations(id) ON DELETE RESTRICT,
+                created_at TEXT NOT NULL,
+                UNIQUE(team, selector_epoch),
+                CHECK (
+                    (family='empty' AND selector_epoch=0 AND previous_selector_id IS NULL
+                     AND legacy_activation_id IS NULL AND v2_activation_id IS NULL)
+                    OR (family='legacy_v1' AND selector_epoch>=1
+                        AND legacy_activation_id IS NOT NULL AND v2_activation_id IS NULL)
+                    OR (family='v2' AND selector_epoch>=1
+                        AND legacy_activation_id IS NULL AND v2_activation_id IS NOT NULL)
+                )
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_active_selector_history_team_epoch
+                ON authority_policy_active_selector_history(team, selector_epoch DESC);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_active_selector_history_no_update
+                BEFORE UPDATE ON authority_policy_active_selector_history
+                BEGIN SELECT RAISE(ABORT, 'authority selector history is immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_active_selector_history_no_delete
+                BEFORE DELETE ON authority_policy_active_selector_history
+                BEGIN SELECT RAISE(ABORT, 'authority selector history cannot be deleted'); END;
+
+            CREATE TABLE IF NOT EXISTS authority_policy_v2_control_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                team TEXT NOT NULL,
+                request_id TEXT,
+                request_digest TEXT,
+                kind TEXT NOT NULL CHECK(kind IN
+                    ('selector_initialized_empty','selector_initialized_legacy',
+                     'release_created','activation_selected','activation_rejected')),
+                release_id TEXT,
+                activation_id TEXT,
+                selector_id TEXT,
+                action TEXT,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_authority_policy_v2_control_audit_request
+                ON authority_policy_v2_control_audit(team, kind, request_id)
+                WHERE request_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_control_audit_team
+                ON authority_policy_v2_control_audit(team, id);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_control_audit_no_update
+                BEFORE UPDATE ON authority_policy_v2_control_audit
+                BEGIN SELECT RAISE(ABORT, 'v2 authority control audit is append-only'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_control_audit_no_delete
+                BEFORE DELETE ON authority_policy_v2_control_audit
+                BEGIN SELECT RAISE(ABORT, 'v2 authority control audit is append-only'); END;
 """
 
 
@@ -2515,6 +2675,7 @@ class Database:
             -- earlier reviewed heads that already carry the weaker trigger body are
             -- upgraded by ``_retrofit_authority_lifecycle_trigger_if_needed``.
             {_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL}
+            {_AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL}
         """)
         self._conn.commit()
 
@@ -13152,6 +13313,676 @@ class Database:
             (team,),
         ).fetchone()
         return None if row is None else self._authority_policy_activation_from_row(row)
+
+    # --- THR-229 checkpoint B1: v2 control-plane persistence ---
+    #
+    # Private, callable storage for the accepted dual-text v2 control contract.
+    # This unit wires NO startup/route/launch/queue/reaper/UI reader or writer
+    # and does NOT converge legacy writers onto the selector (B2). The Database
+    # owns every lock/BEGIN IMMEDIATE/commit/rollback; the store facade only
+    # forwards. Legacy releases/activations/history are read through the
+    # authenticated existing readers and never rewritten.
+
+    @staticmethod
+    def _validate_authority_selector_team(team: str) -> str:
+        if not isinstance(team, str) or not team or team.isspace() or len(team) > 128:
+            raise ValueError("authority selector team must be a bounded nonblank string")
+        return team
+
+    def _authority_policy_v2_release_from_row(self, row) -> AuthorityPolicyV2Release:
+        try:
+            release = AuthorityPolicyV2Release.model_validate_json(row["canonical_payload_json"])
+        except Exception as exc:
+            raise ValueError("authority v2 release has a corrupt canonical payload") from exc
+        if release.policy_digest != row["policy_digest"] or release.release_id != row["id"]:
+            raise ValueError("authority v2 release digest/id mismatch")
+        if (
+            release.team != row["team"]
+            or release.policy_id != row["policy_id"]
+            or release.version != row["version"]
+            or release.title != row["title"]
+            or release.what_to_escalate != row["what_to_escalate"]
+            or release.what_not_to_escalate != row["what_not_to_escalate"]
+            or release.contract_digest != row["contract_digest"]
+        ):
+            raise ValueError("authority v2 release column/preimage mismatch")
+        return release
+
+    def get_authority_policy_v2_release(self, release_id: str) -> AuthorityPolicyV2Release | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_releases WHERE id=?", (release_id,)
+        ).fetchone()
+        return None if row is None else self._authority_policy_v2_release_from_row(row)
+
+    def _authority_policy_v2_activation_from_row(self, row) -> AuthorityPolicyV2Activation:
+        try:
+            activation = AuthorityPolicyV2Activation.model_validate(dict(row))
+        except Exception as exc:
+            raise ValueError("authority v2 activation has corrupt fields") from exc
+        release = self.get_authority_policy_v2_release(activation.release_id)
+        if release is None or release.team != activation.team:
+            raise ValueError("authority v2 activation release linkage is corrupt")
+        if release.policy_digest != activation.release_digest:
+            raise ValueError("authority v2 activation release digest is corrupt")
+        return activation
+
+    @_synchronized
+    def get_authority_policy_v2_activation(
+        self, activation_id: str
+    ) -> AuthorityPolicyV2Activation | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_activations WHERE id=?", (activation_id,)
+        ).fetchone()
+        return None if row is None else self._authority_policy_v2_activation_from_row(row)
+
+    def _authority_policy_selector_from_row(self, row) -> AuthorityPolicySelector:
+        try:
+            selector = AuthorityPolicySelector.model_validate(dict(row))
+        except Exception as exc:
+            raise ValueError("authority selector has corrupt fields") from exc
+        if selector.family == "legacy_v1":
+            activation = self.get_authority_policy_activation(selector.legacy_activation_id)
+            if activation is None or activation.team != selector.team:
+                raise ValueError("authority selector legacy activation linkage is corrupt")
+        elif selector.family == "v2":
+            activation = self.get_authority_policy_v2_activation(selector.v2_activation_id)
+            if activation is None or activation.team != selector.team:
+                raise ValueError("authority selector v2 activation linkage is corrupt")
+            if activation.selector_epoch != selector.selector_epoch:
+                raise ValueError("authority selector epoch/activation mismatch")
+        return selector
+
+    def _load_authority_selector_history_chain(
+        self, team: str
+    ) -> list[AuthorityPolicySelector]:
+        """Load and authenticate the complete immutable selector history chain."""
+        rows = self._conn.execute(
+            "SELECT * FROM authority_policy_active_selector_history "
+            "WHERE team=? ORDER BY selector_epoch",
+            (team,),
+        ).fetchall()
+        if not rows:
+            return []
+        selectors = [self._authority_policy_selector_from_row(row) for row in rows]
+        first = selectors[0]
+        if first.family == "empty":
+            start = 0
+        elif first.family == "legacy_v1":
+            start = 1
+        else:
+            raise ValueError("authority selector history does not start at a valid initializer")
+        for expected_epoch, item in enumerate(selectors, start):
+            if item.selector_epoch != expected_epoch:
+                raise ValueError("authority selector history epochs are not contiguous")
+            if expected_epoch == start:
+                if item.previous_selector_id is not None:
+                    raise ValueError("authority selector initializer has a predecessor")
+            else:
+                previous = selectors[expected_epoch - start - 1]
+                if item.previous_selector_id != previous.selector_id:
+                    raise ValueError("authority selector history is not a single chain")
+                if item.family == "empty":
+                    raise ValueError("authority empty selector must be the initializer")
+        return selectors
+
+    @_synchronized
+    def get_authority_selector(self, team: str) -> AuthorityPolicySelector | None:
+        team = self._validate_authority_selector_team(team)
+        chain = self._load_authority_selector_history_chain(team)
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_active_selector WHERE team=?", (team,)
+        ).fetchone()
+        if row is None:
+            if chain:
+                raise ValueError("authority selector history exists without a live selector")
+            return None
+        selector = self._authority_policy_selector_from_row(row)
+        if not chain or chain[-1] != selector:
+            raise ValueError("authority live selector does not match its authenticated history tip")
+        return selector
+
+    @_synchronized
+    def get_authority_policy_selector_by_id(
+        self, team: str, selector_id: str
+    ) -> AuthorityPolicySelector | None:
+        team = self._validate_authority_selector_team(team)
+        for selector in self._load_authority_selector_history_chain(team):
+            if selector.selector_id == selector_id:
+                return selector
+        return None
+
+    @_synchronized
+    def list_authority_policy_selector_history(
+        self, team: str
+    ) -> list[AuthorityPolicySelector]:
+        team = self._validate_authority_selector_team(team)
+        return self._load_authority_selector_history_chain(team)
+
+    @_synchronized
+    def list_authority_policy_v2_control_audit(self, team: str) -> list[dict]:
+        team = self._validate_authority_selector_team(team)
+        rows = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_control_audit WHERE team=? ORDER BY id",
+            (team,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    # -- internal uncommitted write seams (transaction owner above) --
+
+    def _insert_authority_policy_selector_history_uncommitted(
+        self, selector: AuthorityPolicySelector
+    ) -> None:
+        self._conn.execute(
+            """INSERT INTO authority_policy_active_selector_history
+               (selector_id,team,family,selector_epoch,previous_selector_id,
+                legacy_activation_id,v2_activation_id,created_at)
+               VALUES (:selector_id,:team,:family,:selector_epoch,:previous_selector_id,
+                       :legacy_activation_id,:v2_activation_id,:created_at)""",
+            selector.model_dump(mode="json"),
+        )
+
+    def _write_authority_policy_active_selector_uncommitted(
+        self, selector: AuthorityPolicySelector
+    ) -> None:
+        self._conn.execute(
+            """INSERT INTO authority_policy_active_selector
+               (team,selector_id,family,selector_epoch,previous_selector_id,
+                legacy_activation_id,v2_activation_id,created_at)
+               VALUES (:team,:selector_id,:family,:selector_epoch,:previous_selector_id,
+                       :legacy_activation_id,:v2_activation_id,:created_at)
+               ON CONFLICT(team) DO UPDATE SET
+                   selector_id=excluded.selector_id, family=excluded.family,
+                   selector_epoch=excluded.selector_epoch,
+                   previous_selector_id=excluded.previous_selector_id,
+                   legacy_activation_id=excluded.legacy_activation_id,
+                   v2_activation_id=excluded.v2_activation_id,
+                   created_at=excluded.created_at""",
+            selector.model_dump(mode="json"),
+        )
+
+    def _write_authority_policy_v2_release_uncommitted(
+        self, release: AuthorityPolicyV2Release, *, created_at: str
+    ) -> None:
+        self._conn.execute(
+            """INSERT INTO authority_policy_v2_releases
+               (id,team,policy_id,version,title,what_to_escalate,what_not_to_escalate,
+                contract_digest,canonical_payload_json,policy_digest,created_at)
+               VALUES (:id,:team,:policy_id,:version,:title,:what_to_escalate,
+                       :what_not_to_escalate,:contract_digest,:canonical_payload_json,
+                       :policy_digest,:created_at)""",
+            {
+                "id": release.release_id,
+                "team": release.team,
+                "policy_id": release.policy_id,
+                "version": release.version,
+                "title": release.title,
+                "what_to_escalate": release.what_to_escalate,
+                "what_not_to_escalate": release.what_not_to_escalate,
+                "contract_digest": release.contract_digest,
+                "canonical_payload_json": authority_policy_v2_canonical_json_bytes(
+                    release.preimage()
+                ).decode("utf-8"),
+                "policy_digest": release.policy_digest,
+                "created_at": created_at,
+            },
+        )
+
+    def _write_authority_policy_v2_activation_uncommitted(
+        self, activation: AuthorityPolicyV2Activation
+    ) -> None:
+        self._conn.execute(
+            """INSERT INTO authority_policy_v2_activations
+               (id,team,selector_epoch,release_id,release_digest,previous_selector_id,
+                action,request_id,request_digest,activation_digest,created_at)
+               VALUES (:id,:team,:selector_epoch,:release_id,:release_digest,
+                       :previous_selector_id,:action,:request_id,:request_digest,
+                       :activation_digest,:created_at)""",
+            activation.model_dump(mode="json"),
+        )
+
+    def _insert_authority_policy_v2_control_audit_uncommitted(
+        self, *, team: str, request_id: str | None, request_digest: str | None,
+        kind: str, release_id: str | None, activation_id: str | None,
+        selector_id: str | None, action: str | None, payload_json: str,
+        created_at: str,
+    ) -> None:
+        self._conn.execute(
+            """INSERT INTO authority_policy_v2_control_audit
+               (team,request_id,request_digest,kind,release_id,activation_id,
+                selector_id,action,payload_json,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (team, request_id, request_digest, kind, release_id, activation_id,
+             selector_id, action, payload_json, created_at),
+        )
+
+    @staticmethod
+    def _authority_policy_v2_receipt_from_audit_row(
+        row,
+    ) -> AuthorityPolicyV2ControlReceipt:
+        try:
+            payload = json.loads(row["payload_json"])
+            receipt = AuthorityPolicyV2ControlReceipt.model_validate(payload["receipt"])
+        except Exception as exc:
+            raise ValueError("authority v2 control receipt is corrupt") from exc
+        return receipt
+
+    def _get_authority_selector_uncommitted(
+        self, team: str
+    ) -> AuthorityPolicySelector | None:
+        chain = self._load_authority_selector_history_chain(team)
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_active_selector WHERE team=?", (team,)
+        ).fetchone()
+        if row is None:
+            if chain:
+                raise ValueError("authority selector history exists without a live selector")
+            return None
+        selector = self._authority_policy_selector_from_row(row)
+        if not chain or chain[-1] != selector:
+            raise ValueError("authority live selector does not match its authenticated history tip")
+        return selector
+
+    @staticmethod
+    def _require_authority_selector_cas(
+        selector: AuthorityPolicySelector, expected_selector_id: str | None
+    ) -> None:
+        if expected_selector_id is None:
+            if selector.family != "empty" or selector.selector_epoch != 0:
+                raise sqlite3.IntegrityError("v2 authority control base selector conflict")
+        elif expected_selector_id != selector.selector_id:
+            raise sqlite3.IntegrityError("v2 authority control base selector conflict")
+
+    @_synchronized
+    def ensure_authority_selector(self, team: str) -> AuthorityPolicySelector:
+        """Serialized, idempotent, authenticated selector initialization.
+
+        The Database owns ``BEGIN IMMEDIATE`` and commits the initializer,
+        history row and control audit together. Initialization commits
+        separately BEFORE any client control write, so a later policy-write
+        rollback never erases it. An existing selector is authenticated and
+        returned unchanged (never reconstructed).
+        """
+        team = self._validate_authority_selector_team(team)
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = self._conn.execute(
+                "SELECT * FROM authority_policy_active_selector WHERE team=?", (team,)
+            ).fetchone()
+            if existing is not None:
+                selector = self._authority_policy_selector_from_row(existing)
+                chain = self._load_authority_selector_history_chain(team)
+                if not chain or chain[-1] != selector:
+                    raise ValueError(
+                        "authority selector initialization_unavailable: "
+                        "live selector does not match its history tip"
+                    )
+                self._conn.commit()
+                return selector
+            history_count = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM authority_policy_active_selector_history WHERE team=?",
+                (team,),
+            ).fetchone()["n"]
+            if history_count:
+                raise ValueError(
+                    "authority selector initialization_unavailable: selector history residue"
+                )
+            if self._conn.execute(
+                "SELECT 1 FROM authority_policy_v2_activations WHERE team=? LIMIT 1", (team,)
+            ).fetchone() is not None:
+                raise ValueError(
+                    "authority selector initialization_unavailable: v2 activation residue"
+                )
+            v2_release_count = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM authority_policy_v2_releases WHERE team=?", (team,)
+            ).fetchone()["n"]
+            legacy_activation_count = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM authority_policy_activations WHERE team=?", (team,)
+            ).fetchone()["n"]
+            legacy_release_count = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM authority_policy_releases WHERE team=?", (team,)
+            ).fetchone()["n"]
+            # Full sealed-history authentication, not a bare MAX(epoch) lookup.
+            legacy_current = self.get_current_authority_policy_activation(team)
+            covered = 0 if legacy_current is None else legacy_current.epoch
+            if legacy_activation_count != covered:
+                raise ValueError(
+                    "authority selector initialization_unavailable: legacy history is not covered"
+                )
+            if legacy_activation_count == 0 and legacy_release_count > 0:
+                raise ValueError(
+                    "authority selector initialization_unselected_history: legacy releases"
+                )
+            if v2_release_count > 0:
+                raise ValueError(
+                    "authority selector initialization_unselected_history: v2 releases"
+                )
+            created_at = _now().isoformat()
+            if legacy_activation_count == 0 and legacy_release_count == 0:
+                selector_id = authority_policy_v2_initializer_selector_id(
+                    family="empty", legacy_activation_id=None, selector_epoch=0, team=team,
+                )
+                selector = AuthorityPolicySelector(
+                    team=team, selector_id=selector_id, family="empty",
+                    selector_epoch=0, previous_selector_id=None,
+                    legacy_activation_id=None, v2_activation_id=None,
+                    created_at=created_at,
+                )
+                self._insert_authority_policy_selector_history_uncommitted(selector)
+                self._write_authority_policy_active_selector_uncommitted(selector)
+                self._insert_authority_policy_v2_control_audit_uncommitted(
+                    team=team, request_id=None, request_digest=None,
+                    kind="selector_initialized_empty", release_id=None,
+                    activation_id=None, selector_id=selector_id, action=None,
+                    payload_json=authority_policy_v2_canonical_json_bytes(
+                        authority_policy_v2_initializer_selector_preimage(
+                            family="empty", legacy_activation_id=None,
+                            selector_epoch=0, team=team,
+                        )
+                    ).decode("utf-8"),
+                    created_at=created_at,
+                )
+            elif legacy_activation_count > 0 and legacy_current is not None:
+                release = self.get_authority_policy_release(legacy_current.release_id)
+                if release is None or release.team != team:
+                    raise ValueError(
+                        "authority selector initialization_unavailable: "
+                        "legacy release linkage is corrupt"
+                    )
+                selector_id = authority_policy_v2_initializer_selector_id(
+                    family="legacy_v1", legacy_activation_id=legacy_current.id,
+                    selector_epoch=1, team=team,
+                )
+                selector = AuthorityPolicySelector(
+                    team=team, selector_id=selector_id, family="legacy_v1",
+                    selector_epoch=1, previous_selector_id=None,
+                    legacy_activation_id=legacy_current.id, v2_activation_id=None,
+                    created_at=created_at,
+                )
+                self._insert_authority_policy_selector_history_uncommitted(selector)
+                self._write_authority_policy_active_selector_uncommitted(selector)
+                self._insert_authority_policy_v2_control_audit_uncommitted(
+                    team=team, request_id=None, request_digest=None,
+                    kind="selector_initialized_legacy",
+                    release_id=legacy_current.release_id,
+                    activation_id=legacy_current.id, selector_id=selector_id, action=None,
+                    payload_json=authority_policy_v2_canonical_json_bytes(
+                        authority_policy_v2_initializer_selector_preimage(
+                            family="legacy_v1", legacy_activation_id=legacy_current.id,
+                            selector_epoch=1, team=team,
+                        )
+                    ).decode("utf-8"),
+                    created_at=created_at,
+                )
+            else:
+                raise ValueError(
+                    "authority selector initialization_unavailable: unsupported family"
+                )
+            self._conn.commit()
+            return selector
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def create_and_activate_authority_policy_v2(
+        self, request: AuthorityPolicyV2PairedControlRequest | dict
+    ) -> AuthorityPolicyV2ControlReceipt:
+        """Atomically save paired texts and select them in ONE policy transaction."""
+        request = AuthorityPolicyV2PairedControlRequest.model_validate(
+            request.model_dump(mode="json")
+            if isinstance(request, AuthorityPolicyV2PairedControlRequest) else request
+        )
+        team = request.team
+        create_digest = request.create_request_digest()
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM authority_policy_v2_control_audit "
+                "WHERE team=? AND request_id=? ORDER BY id DESC LIMIT 1",
+                (team, request.create_request_id),
+            ).fetchone()
+            if row is not None:
+                if row["kind"] != "release_created" or row["request_digest"] != create_digest:
+                    raise sqlite3.IntegrityError(
+                        "v2 authority create request conflicts with an existing control write"
+                    )
+                receipt = self._authority_policy_v2_receipt_from_audit_row(row)
+                incoming_activation = authority_policy_v2_sha256(
+                    request.activation_request_preimage(receipt.release_id)
+                )
+                if incoming_activation != receipt.activation_request_digest:
+                    raise sqlite3.IntegrityError(
+                        "v2 authority create replay conflicts with a different activation request"
+                    )
+                self._conn.commit()
+                return receipt
+            if self._conn.execute(
+                "SELECT 1 FROM authority_policy_v2_control_audit "
+                "WHERE team=? AND request_id=? LIMIT 1",
+                (team, request.activation_request_id),
+            ).fetchone() is not None:
+                raise sqlite3.IntegrityError(
+                    "v2 authority activation request id is already used"
+                )
+            selector = self._get_authority_selector_uncommitted(team)
+            if selector is None:
+                raise sqlite3.IntegrityError("authority selector is not initialized")
+            self._require_authority_selector_cas(selector, request.based_on_selector_id)
+            self._require_authority_selector_cas(selector, request.expected_selector_id)
+            if request.action == "bootstrap" and selector.family != "empty":
+                raise sqlite3.IntegrityError(
+                    "v2 authority bootstrap requires the empty selector"
+                )
+            if request.action == "activate" and selector.family == "empty":
+                raise sqlite3.IntegrityError(
+                    "v2 authority activate requires an existing selection"
+                )
+            version_row = self._conn.execute(
+                "SELECT MAX(version) AS version FROM authority_policy_v2_releases "
+                "WHERE team=? AND policy_id=?",
+                (team, request.policy_id),
+            ).fetchone()
+            version = 1 if version_row is None or version_row["version"] is None else int(
+                version_row["version"]
+            ) + 1
+            if version > 2147483647:
+                raise sqlite3.IntegrityError("v2 authority policy version is exhausted")
+            release = request.to_release(version=version)
+            new_epoch = selector.selector_epoch + 1
+            if new_epoch > 2147483647:
+                raise sqlite3.IntegrityError("authority selector epoch is exhausted")
+            created_at = _now().isoformat()
+            activation_digest = authority_policy_v2_sha256(
+                request.activation_request_preimage(release.release_id)
+            )
+            activation = AuthorityPolicyV2Activation.create(
+                team=team, selector_epoch=new_epoch, release_id=release.release_id,
+                release_digest=release.policy_digest,
+                previous_selector_id=selector.selector_id, action=request.action,
+                request_id=request.activation_request_id,
+                request_digest=activation_digest, created_at=created_at,
+            )
+            selector_id = authority_policy_v2_selector_id(
+                activation_id=activation.id, family="v2",
+                previous_selector_id=selector.selector_id,
+                selector_epoch=new_epoch, team=team,
+            )
+            new_selector = AuthorityPolicySelector(
+                team=team, selector_id=selector_id, family="v2",
+                selector_epoch=new_epoch, previous_selector_id=selector.selector_id,
+                legacy_activation_id=None, v2_activation_id=activation.id,
+                created_at=created_at,
+            )
+            receipt = AuthorityPolicyV2ControlReceipt(
+                team=team, kind="v2_create_activate",
+                create_request_id=request.create_request_id,
+                create_request_digest=create_digest,
+                activation_request_id=request.activation_request_id,
+                activation_request_digest=activation_digest,
+                release_id=release.release_id, policy_digest=release.policy_digest,
+                release_version=release.version, activation_id=activation.id,
+                activation_digest=activation.activation_digest, selector_id=selector_id,
+                selector_epoch=new_epoch, action=request.action,
+                previous_selector_id=selector.selector_id, created_at=created_at,
+            )
+            receipt_payload = json.dumps(
+                {"receipt": json.loads(receipt.canonical_json())},
+                sort_keys=True, separators=(",", ":"),
+            )
+            self._write_authority_policy_v2_release_uncommitted(release, created_at=created_at)
+            self._write_authority_policy_v2_activation_uncommitted(activation)
+            self._insert_authority_policy_selector_history_uncommitted(new_selector)
+            self._write_authority_policy_active_selector_uncommitted(new_selector)
+            self._insert_authority_policy_v2_control_audit_uncommitted(
+                team=team, request_id=request.create_request_id,
+                request_digest=create_digest, kind="release_created",
+                release_id=release.release_id, activation_id=None,
+                selector_id=None, action=None, payload_json=receipt_payload,
+                created_at=created_at,
+            )
+            self._insert_authority_policy_v2_control_audit_uncommitted(
+                team=team, request_id=request.activation_request_id,
+                request_digest=activation_digest, kind="activation_selected",
+                release_id=release.release_id, activation_id=activation.id,
+                selector_id=selector_id, action=request.action,
+                payload_json=receipt_payload, created_at=created_at,
+            )
+            self._conn.commit()
+            return receipt
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def activate_authority_policy_v2(
+        self, request: AuthorityPolicyV2ActivationControlRequest | dict
+    ) -> AuthorityPolicyV2ControlReceipt:
+        """Select an existing v2 release under the same transaction boundary."""
+        request = AuthorityPolicyV2ActivationControlRequest.model_validate(
+            request.model_dump(mode="json")
+            if isinstance(request, AuthorityPolicyV2ActivationControlRequest) else request
+        )
+        team = request.team
+        request_digest = request.request_digest()
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM authority_policy_v2_control_audit "
+                "WHERE team=? AND request_id=? ORDER BY id DESC LIMIT 1",
+                (team, request.request_id),
+            ).fetchone()
+            if row is not None:
+                if row["kind"] != "activation_selected" or row["request_digest"] != request_digest:
+                    raise sqlite3.IntegrityError(
+                        "v2 authority activation request conflicts with an existing control write"
+                    )
+                receipt = self._authority_policy_v2_receipt_from_audit_row(row)
+                self._conn.commit()
+                return receipt
+            selector = self._get_authority_selector_uncommitted(team)
+            if selector is None:
+                raise sqlite3.IntegrityError("authority selector is not initialized")
+            self._require_authority_selector_cas(selector, request.expected_selector_id)
+            release = self.get_authority_policy_v2_release(request.release_id)
+            if release is None or release.team != team:
+                raise sqlite3.IntegrityError("v2 authority activation release is unavailable")
+            previously_selected = self._conn.execute(
+                "SELECT 1 FROM authority_policy_v2_activations WHERE team=? AND release_id=? LIMIT 1",
+                (team, release.release_id),
+            ).fetchone() is not None
+            if request.action == "bootstrap":
+                raise sqlite3.IntegrityError(
+                    "v2 authority bootstrap is only valid for a newly saved release"
+                )
+            if request.action == "activate":
+                if selector.family == "empty":
+                    raise sqlite3.IntegrityError(
+                        "v2 authority activate requires an existing selection"
+                    )
+                if previously_selected:
+                    raise sqlite3.IntegrityError(
+                        "v2 authority activate target was previously selected"
+                    )
+            else:
+                if not previously_selected:
+                    raise sqlite3.IntegrityError(
+                        "v2 authority rollback target was never selected"
+                    )
+                if selector.family != "v2" or selector.v2_activation_id is None:
+                    raise sqlite3.IntegrityError(
+                        "v2 authority rollback requires a current v2 selection"
+                    )
+                current_activation = self.get_authority_policy_v2_activation(
+                    selector.v2_activation_id
+                )
+                if current_activation is None:
+                    raise ValueError("authority selector v2 activation linkage is corrupt")
+                current_release = self.get_authority_policy_v2_release(
+                    current_activation.release_id
+                )
+                if current_release is None:
+                    raise ValueError("authority v2 current release is missing")
+                if release.release_id == current_release.release_id:
+                    raise sqlite3.IntegrityError(
+                        "v2 authority rollback target is the current release"
+                    )
+                if (
+                    release.policy_id != current_release.policy_id
+                    or release.version >= current_release.version
+                ):
+                    raise sqlite3.IntegrityError(
+                        "v2 authority rollback target is not an older revision of the current policy"
+                    )
+            new_epoch = selector.selector_epoch + 1
+            if new_epoch > 2147483647:
+                raise sqlite3.IntegrityError("authority selector epoch is exhausted")
+            created_at = _now().isoformat()
+            activation = AuthorityPolicyV2Activation.create(
+                team=team, selector_epoch=new_epoch, release_id=release.release_id,
+                release_digest=release.policy_digest,
+                previous_selector_id=selector.selector_id, action=request.action,
+                request_id=request.request_id, request_digest=request_digest,
+                created_at=created_at,
+            )
+            selector_id = authority_policy_v2_selector_id(
+                activation_id=activation.id, family="v2",
+                previous_selector_id=selector.selector_id,
+                selector_epoch=new_epoch, team=team,
+            )
+            new_selector = AuthorityPolicySelector(
+                team=team, selector_id=selector_id, family="v2",
+                selector_epoch=new_epoch, previous_selector_id=selector.selector_id,
+                legacy_activation_id=None, v2_activation_id=activation.id,
+                created_at=created_at,
+            )
+            receipt = AuthorityPolicyV2ControlReceipt(
+                team=team, kind="v2_activate", create_request_id=None,
+                create_request_digest=None, activation_request_id=request.request_id,
+                activation_request_digest=request_digest, release_id=release.release_id,
+                policy_digest=release.policy_digest, release_version=release.version,
+                activation_id=activation.id, activation_digest=activation.activation_digest,
+                selector_id=selector_id, selector_epoch=new_epoch, action=request.action,
+                previous_selector_id=selector.selector_id, created_at=created_at,
+            )
+            receipt_payload = json.dumps(
+                {"receipt": json.loads(receipt.canonical_json())},
+                sort_keys=True, separators=(",", ":"),
+            )
+            self._write_authority_policy_v2_activation_uncommitted(activation)
+            self._insert_authority_policy_selector_history_uncommitted(new_selector)
+            self._write_authority_policy_active_selector_uncommitted(new_selector)
+            self._insert_authority_policy_v2_control_audit_uncommitted(
+                team=team, request_id=request.request_id, request_digest=request_digest,
+                kind="activation_selected", release_id=release.release_id,
+                activation_id=activation.id, selector_id=selector_id,
+                action=request.action, payload_json=receipt_payload,
+                created_at=created_at,
+            )
+            self._conn.commit()
+            return receipt
+        except Exception:
+            self._conn.rollback()
+            raise
 
     @_synchronized
     def get_authority_candidate_policy_pin(
