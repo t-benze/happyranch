@@ -3,16 +3,29 @@ a task one subprocess call at a time under the new async execution model."""
 from __future__ import annotations
 
 import json
+import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from runtime.config import Settings
+from runtime.daemon import workspace_cleanup_scheduler as wcs
+from runtime.daemon.sessions import SessionTracker
 from runtime.infrastructure.database import Database
-from runtime.models import BlockKind, TaskRecord, TaskStatus
+from runtime.models import (
+    BlockKind,
+    JobInterpreter,
+    JobRecord,
+    JobStatus,
+    TaskRecord,
+    TaskStatus,
+)
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.runtime import RuntimeDir
+from tests.test_workspace_cleanup_scheduler import _FakeQueue
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +68,121 @@ def test_run_step_silent_noop_when_task_missing(runtime, db):
     orch = Orchestrator(db=db, settings=settings, paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
     # Just must not raise
     orch.run_step("TASK-NOPE")
+
+
+def test_workspace_cleanup_hook_is_disabled_without_shared_config(runtime, db, monkeypatch):
+    """The pre-agent hook has no selector, consumer, or audit side effect by default."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    monkeypatch.setattr(
+        db, "select_workspace_cleanup_reclamation_candidates",
+        lambda **_: pytest.fail("disabled hook must not query the selector"),
+    )
+
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, SimpleNamespace(id="TASK-HOOK"), "dev_agent",
+        stale_orchestration_step_count=0, claimed_next_step_count=1,
+    ) == ""
+    assert not [
+        row for row in db.get_audit_logs("TASK-HOOK")
+        if row["action"] == "workspace_cleanup_reclamation_attempt"
+    ]
+
+
+def test_workspace_cleanup_hook_starts_budget_after_enabled_load_and_uses_org_workspace(
+    runtime, db, monkeypatch,
+):
+    """The shipping hook supplies the selector's first seven timed admissions.
+
+    This directly exercises the hook rather than a selector-only model: the
+    initial enabled config is outside the one-second window, and canonical and
+    authoritative workspace arguments are the one OrgPaths-derived value.
+    """
+    from runtime.infrastructure.database import WorkspaceCleanupReclamationSelection
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    runtime.org_config_path.write_text(
+        "workspace_cleanup:\n  reclamation_actions_enabled: true\n"
+    )
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    observed: list[str] = []
+
+    def selector(**kwargs):
+        assert kwargs["owner_task_id"] == "TASK-HOOK"
+        assert kwargs["stale_orchestration_step_count"] == 0
+        assert kwargs["claimed_next_step_count"] == 1
+        assert kwargs["canonical_workspace"] == runtime.workspaces_dir / "dev_agent"
+        assert kwargs["authoritative_workspace"] is kwargs["canonical_workspace"]
+        for name in ("owner", "marker", "history", "newer_owner", "candidates", "graph_tasks", "graph_edges"):
+            assert kwargs["admit_observation"](name)
+            observed.append(name)
+        return WorkspaceCleanupReclamationSelection(
+            owner_task_id="TASK-HOOK", candidates=(), read_observations=tuple(observed),
+        )
+
+    monkeypatch.setattr(db, "select_workspace_cleanup_reclamation_candidates", selector)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, SimpleNamespace(id="TASK-HOOK"), "dev_agent",
+        stale_orchestration_step_count=0, claimed_next_step_count=1,
+    ) == ""
+    assert observed == ["owner", "marker", "history", "newer_owner", "candidates", "graph_tasks", "graph_edges"]
+
+
+def test_workspace_cleanup_hook_records_literal_none_result_before_agent_launch(
+    runtime, db, monkeypatch,
+):
+    """An invoked consumer's ``None`` is one literal owner audit and prompt fact."""
+    from runtime.infrastructure.database import (
+        WorkspaceCleanupReclamationCandidate,
+        WorkspaceCleanupReclamationSelection,
+    )
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    runtime.org_config_path.write_text(
+        "workspace_cleanup:\n  reclamation_actions_enabled: true\n"
+    )
+    db.insert_task(TaskRecord(id="TASK-HOOK", brief="cleanup", assigned_agent="dev_agent"))
+    db.update_task("TASK-HOOK", status=TaskStatus.IN_PROGRESS, block_kind=None,
+                   orchestration_step_count=1)
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._sessions = object()
+    selection = WorkspaceCleanupReclamationSelection(
+        owner_task_id="TASK-HOOK",
+        candidates=(WorkspaceCleanupReclamationCandidate(
+            task_id="TASK-OLD", session_id="session-old",
+            scratch_path=runtime.workspaces_dir / "dev_agent" / ".happyranch" / "task-tmp" / "TASK-OLD",
+            result={"status": "completed"},
+        ),),
+        read_observations=(),
+    )
+    monkeypatch.setattr(db, "select_workspace_cleanup_reclamation_candidates", lambda **_: selection)
+    monkeypatch.setattr(
+        "runtime.daemon.task_scratch_reclamation.collect_revalidate_seal_consume_disposable",
+        lambda **_: None,
+    )
+
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, SimpleNamespace(id="TASK-HOOK"), "dev_agent",
+        stale_orchestration_step_count=0, claimed_next_step_count=1,
+    )
+    assert "refused_or_unavailable" in prompt
+    assert "target=TASK-OLD refused_or_unavailable" in prompt
+    audits = [row for row in db.get_audit_logs("TASK-HOOK")
+              if row["action"] == "workspace_cleanup_reclamation_attempt"]
+    assert len(audits) == 1
+    payload = audits[0]["payload"]
+    assert payload == {
+        "target_task_id": "TASK-OLD", "outcome": "none", "claimed_bytes": 0,
+        "claimed_inodes": 0, "remainder": None, "reason": None,
+        "publication": "attempted",
+    }
 
 
 def test_run_step_noop_on_blocked_escalated(runtime, db):
@@ -4207,3 +4335,1933 @@ def test_thr183_stale_lineage_does_not_escalate_a_fresh_failure(
     assert _escalation_audit_rows(db, "T-FRESH") == []
     assert orch._queue.qsize() == 1
     assert orch._queue.get_nowait() == ("test", "T-FRESH")
+
+
+# ── workspace-cleanup reclamation hook: scheduler → CAS → consumer ──────
+
+_SCRATCH_OLD_NS = 1_700_000_000_000_000_000
+
+
+def _make_fake_proc_root(tmp_path: Path) -> Path:
+    proc = tmp_path / "proc"
+    (proc / "sys/kernel/random").mkdir(parents=True)
+    (proc / "sys/kernel/random/boot_id").write_text(
+        "123e4567-e89b-42d3-a456-426614174000\n"
+    )
+    process = proc / "42"
+    (process / "fd").mkdir(parents=True)
+    (process / "stat").write_text(
+        "42 (agent) S 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 9 0"
+    )
+    (process / "root").symlink_to("/")
+    (process / "cwd").symlink_to("/")
+    return proc
+
+
+def _prepare_manifested_scratch(workspace, task_id, session_id, *, old_ns, links=200):
+    from runtime.orchestrator.task_scratch import prepare_task_scratch
+
+    contract = prepare_task_scratch(
+        workspace=workspace, task_id=task_id, producer_kind="agent",
+        producer_id=session_id,
+    )
+    payload = contract.root / "nested" / "file"
+    payload.parent.mkdir(parents=True, exist_ok=True)
+    payload.write_bytes(b"x" * 8192)
+    for index in range(links):
+        os.link(payload, contract.root / "nested" / f"payload-link-{index}")
+    for path in (payload, contract.root / "nested", contract.root):
+        os.utime(path, ns=(old_ns, old_ns), follow_symlinks=False)
+    return contract
+
+
+def _insert_terminal_task_with_result(db, *, task_id, agent, session_id, created_at,
+                                      completed_at, brief="prior"):
+    db.insert_task(TaskRecord(
+        id=task_id, brief=brief, assigned_agent=agent, status=TaskStatus.COMPLETED,
+        current_session_id=session_id, created_at=created_at, completed_at=completed_at,
+    ))
+    db.insert_task_result(task_id, agent, session_id, "done", 1, status="completed")
+    db.insert_job(JobRecord(
+        id=f"JOB-{task_id}", task_id=task_id, agent_name=agent, title="terminal",
+        rationale="test", script_text="true", interpreter=JobInterpreter.BASH,
+        status=JobStatus.COMPLETED, created_at=completed_at.isoformat(),
+    ))
+
+
+def _enable_reclamation_actions(runtime: OrgPaths) -> None:
+    runtime.org_config_path.write_text(
+        "workspace_cleanup:\n  reclamation_actions_enabled: true\n"
+    )
+
+
+def _build_cleanup_org(runtime: OrgPaths, db: Database, settings: Settings):
+    from runtime.daemon.org_state import OrgState
+
+    return OrgState(
+        slug="test", root=runtime.root, db=db,
+        teams=TeamsRegistry.load(runtime.root), settings=settings,
+        orchestrator=None, sessions=SessionTracker(),
+    )
+
+
+def _seed_cleanup_target_and_history(db, *, agent, old_ns, now):
+    """One removable third-run target plus older marker-bearing cleanup rows."""
+    completed_target = datetime.fromtimestamp(
+        (old_ns + 120_000_000_000) / 1_000_000_000, tz=timezone.utc,
+    )
+    _insert_terminal_task_with_result(
+        db, task_id="TASK-100", agent=agent, session_id="session-100",
+        created_at=now - timedelta(days=40), completed_at=completed_target,
+        brief=wcs._CLEANUP_BRIEF_MARKER + "\nprior cleanup run",
+    )
+    _insert_terminal_task_with_result(
+        db, task_id="TASK-101", agent=agent, session_id="session-101",
+        created_at=now - timedelta(days=30), completed_at=now - timedelta(days=29),
+        brief=wcs._CLEANUP_BRIEF_MARKER + "\nprior cleanup run",
+    )
+
+
+def _install_real_consumer_wrapper(monkeypatch, *, proc_root, now_ns, calls):
+    import runtime.daemon.task_scratch_reclamation as reclamation
+
+    real = reclamation.collect_revalidate_seal_consume_disposable
+
+    def wrapper(*, db, sessions, workspace, task_id, agent_name,
+                monotonic_now, daemon_started_monotonic):
+        calls.append(task_id)
+        return real(
+            db=db, sessions=sessions, workspace=workspace, task_id=task_id,
+            agent_name=agent_name, proc_root=proc_root, now_ns=now_ns,
+            daemon_started_monotonic=0, monotonic_now=31,
+        )
+
+    monkeypatch.setattr(
+        reclamation, "collect_revalidate_seal_consume_disposable", wrapper,
+    )
+    return real
+
+
+def _protected_cleanup_snapshot(workspace: Path, contract, sibling) -> dict:
+    return {
+        "manifest": contract.manifest_path.read_bytes(),
+        "lock": contract.manifest_path.with_suffix(".lock").read_bytes(),
+        "sibling_root": sibling.root.is_dir(),
+        "sibling_file": (sibling.root / "sibling.txt").read_bytes(),
+        "workspace": workspace.is_dir(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_real_scheduler_cas_consumer_removes_target(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """Real scheduler third owner → real CAS → unchanged consumer removal.
+
+    The owner is allocated/enqueued by the shipping scheduler trigger (run #3,
+    marker audit), claimed by the shipping ``run_step`` CAS (stale0/durable1),
+    and the shipping hook then invokes the unchanged consumer on the older
+    manifested cleanup target. Only the consumer's proc/clock inputs are
+    controlled; db/sessions/workspace/task/agent are the real shipping values.
+    """
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    _enable_reclamation_actions(runtime)
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    workspace = runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    proc = _make_fake_proc_root(tmp_path)
+    now = datetime.now(timezone.utc)
+    _seed_cleanup_target_and_history(db, agent="dev_agent", old_ns=_SCRATCH_OLD_NS, now=now)
+    contract = _prepare_manifested_scratch(
+        workspace, "TASK-100", "session-100", old_ns=_SCRATCH_OLD_NS,
+    )
+    sibling = _prepare_manifested_scratch(
+        workspace, "TASK-2", "session-2", old_ns=_SCRATCH_OLD_NS,
+    )
+    (sibling.root / "sibling.txt").write_text("keep sibling")
+
+    expected_bytes = sum(
+        os.lstat(path).st_blocks * 512
+        for path in (contract.root, *contract.root.rglob("*"))
+    )
+    expected_inodes = len([contract.root, *contract.root.rglob("*")])
+
+    org = _build_cleanup_org(runtime, db, test_settings)
+    queue = _FakeQueue()
+    owner_id = await wcs.trigger_cleanup(org, agent="dev_agent", enqueue=queue.enqueue)
+    assert owner_id is not None
+    assert queue.items == [("test", owner_id)]
+    assert db.get_task(owner_id).brief.startswith(wcs._CLEANUP_BRIEF_MARKER)
+
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=proc, now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    protected_before = _protected_cleanup_snapshot(workspace, contract, sibling)
+
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=5),
+                        paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._sessions = SessionTracker()
+    orch._queue = _SlugQueue()
+    captured: dict = {}
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        captured["prompt"] = prompt
+        owner = db.get_task(task_id)
+        captured["owner_status"] = owner.status
+        captured["owner_block"] = owner.block_kind
+        captured["owner_count"] = owner.orchestration_step_count
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "done", "summary": "cleanup done"}),
+        )
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    orch.run_step(owner_id)
+
+    # Durable CAS state observed immediately before agent launch.
+    assert captured["owner_status"] == TaskStatus.IN_PROGRESS
+    assert captured["owner_block"] is None
+    assert captured["owner_count"] == 1
+
+    # The real consumer actually removed the manifested target root.
+    assert calls[0] == "TASK-100"
+    assert not contract.root.exists()
+    assert _protected_cleanup_snapshot(workspace, contract, sibling) == protected_before
+
+    assert "outcome=completed" in captured["prompt"]
+    assert f"claimed_bytes={expected_bytes}" in captured["prompt"]
+    assert f"claimed_inodes={expected_inodes}" in captured["prompt"]
+
+    audits = [row for row in db.get_audit_logs(owner_id)
+              if row["action"] == "workspace_cleanup_reclamation_attempt"]
+    completed = [row for row in audits
+                 if row["payload"]["target_task_id"] == "TASK-100"]
+    assert len(completed) == 1
+    payload = completed[0]["payload"]
+    assert payload["outcome"] == "completed"
+    assert payload["claimed_bytes"] == expected_bytes
+    assert payload["claimed_inodes"] == expected_inodes
+    assert payload["publication"] == "attempted"
+
+
+async def _make_third_run_owner(runtime, db, test_settings, monkeypatch):
+    """Real scheduler allocation of a run #3 cleanup owner for dev_agent."""
+    _enable_reclamation_actions(runtime)
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    workspace = runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "occupancy.bin").write_bytes(b"x")
+    now = datetime.now(timezone.utc)
+    for index in range(2):
+        _insert_terminal_task_with_result(
+            db, task_id=f"TASK-{110 + index}", agent="dev_agent",
+            session_id=f"session-{110 + index}",
+            created_at=now - timedelta(days=40 - index),
+            completed_at=now - timedelta(days=39 - index),
+            brief=wcs._CLEANUP_BRIEF_MARKER + "\nprior cleanup run",
+        )
+    org = _build_cleanup_org(runtime, db, test_settings)
+    queue = _FakeQueue()
+    owner_id = await wcs.trigger_cleanup(org, agent="dev_agent", enqueue=queue.enqueue)
+    assert owner_id is not None
+    assert queue.items == [("test", owner_id)]
+    marker = [row for row in db.get_audit_logs(owner_id)
+              if row["action"] == "workspace_cleanup_triggered"]
+    assert marker and marker[0]["payload"]["run_number"] == 3
+    return owner_id, workspace
+
+
+def _claim_owner_and_orchestrator(runtime, db, owner_id):
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    assert db.try_claim_for_step(
+        owner_id, expected_status=TaskStatus.PENDING,
+        expected_block_kind=None, new_count=1,
+    )
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=5),
+                        paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._sessions = SessionTracker()
+    orch._queue = _SlugQueue()
+    return orch, db.get_task(owner_id)
+
+
+def _add_disposable_target(db, workspace):
+    contract = _prepare_manifested_scratch(
+        workspace, "TASK-100", "session-100", old_ns=_SCRATCH_OLD_NS,
+    )
+    completed = datetime.fromtimestamp(
+        (_SCRATCH_OLD_NS + 120_000_000_000) / 1_000_000_000, tz=timezone.utc,
+    )
+    db.insert_task(TaskRecord(
+        id="TASK-100", brief="prior cleanup target", assigned_agent="dev_agent",
+        status=TaskStatus.COMPLETED, current_session_id="session-100",
+        created_at=completed, completed_at=completed,
+    ))
+    db.insert_task_result("TASK-100", "dev_agent", "session-100", "done", 1, status="completed")
+    db.insert_job(JobRecord(
+        id="JOB-TASK-100", task_id="TASK-100", agent_name="dev_agent", title="terminal",
+        rationale="test", script_text="true", interpreter=JobInterpreter.BASH,
+        status=JobStatus.COMPLETED, created_at=completed.isoformat(),
+    ))
+    return contract
+
+
+def _reclamation_audits(db, owner_id):
+    return [row for row in db.get_audit_logs(owner_id)
+            if row["action"] == "workspace_cleanup_reclamation_attempt"]
+
+
+def _config_wrapper(monkeypatch, *, when, before=None, after=None, raises=False):
+    import runtime.orchestrator.run_step as run_step_module
+
+    real = run_step_module.load_org_config
+    state = {"n": 0}
+
+    def wrapper(paths):
+        state["n"] += 1
+        at = state["n"] == when
+        if at and raises:
+            from runtime.orchestrator.org_config import OrgConfigError
+            raise OrgConfigError("per-target load failure")
+        if at and before is not None:
+            before()
+        config = real(paths)
+        if at and after is not None:
+            after()
+        return config
+
+    monkeypatch.setattr(run_step_module, "load_org_config", wrapper)
+    return state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seeded", [0, 1])
+async def test_workspace_cleanup_hook_first_and_second_runs_are_ordinary_only(
+    runtime, db, test_settings, monkeypatch, tmp_path, seeded,
+):
+    """Run #1/#2 owners claim normally but never reach selector/consumer/audit."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    _enable_reclamation_actions(runtime)
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    workspace = runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "occupancy.bin").write_bytes(b"x")
+    now = datetime.now(timezone.utc)
+    for index in range(seeded):
+        _insert_terminal_task_with_result(
+            db, task_id=f"TASK-{120 + index}", agent="dev_agent",
+            session_id=f"session-{120 + index}",
+            created_at=now - timedelta(days=40 - index),
+            completed_at=now - timedelta(days=39 - index),
+            brief=wcs._CLEANUP_BRIEF_MARKER + "\nprior cleanup run",
+        )
+    org = _build_cleanup_org(runtime, db, test_settings)
+    queue = _FakeQueue()
+    owner_id = await wcs.trigger_cleanup(org, agent="dev_agent", enqueue=queue.enqueue)
+    assert owner_id is not None
+
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert prompt == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+    assert db.get_task(owner_id).orchestration_step_count == 1
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_later_count2_claim_is_ordinary_only(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    _enable_reclamation_actions(runtime)
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    workspace = runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "occupancy.bin").write_bytes(b"x")
+    now = datetime.now(timezone.utc)
+    for index in range(2):
+        _insert_terminal_task_with_result(
+            db, task_id=f"TASK-{110 + index}", agent="dev_agent",
+            session_id=f"session-{110 + index}",
+            created_at=now - timedelta(days=40 - index),
+            completed_at=now - timedelta(days=39 - index),
+            brief=wcs._CLEANUP_BRIEF_MARKER + "\nprior cleanup run",
+        )
+    owner_id = await wcs.trigger_cleanup(
+        _build_cleanup_org(runtime, db, test_settings),
+        agent="dev_agent", enqueue=lambda *_: None,
+    )
+    db.update_task(owner_id, status=TaskStatus.IN_PROGRESS,
+                   block_kind=BlockKind.DELEGATED, orchestration_step_count=1)
+
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    from runtime.orchestrator.orchestrator import Orchestrator
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=5),
+                        paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._sessions = SessionTracker()
+    orch._queue = _SlugQueue()
+    captured: dict = {}
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        captured["prompt"] = prompt
+        captured["count"] = db.get_task(task_id).orchestration_step_count
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "done", "summary": "cleanup done"}),
+        )
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    orch.run_step(owner_id)
+    assert captured["count"] == 2
+    assert "Workspace cleanup reclamation" not in captured["prompt"]
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_duplicate_live_claim_is_refused_at_existing_entry(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """A live in_progress/NULL owner is never re-admitted by the existing CAS entry."""
+    _enable_reclamation_actions(runtime)
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    workspace = runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "occupancy.bin").write_bytes(b"x")
+    now = datetime.now(timezone.utc)
+    for index in range(2):
+        _insert_terminal_task_with_result(
+            db, task_id=f"TASK-{110 + index}", agent="dev_agent",
+            session_id=f"session-{110 + index}",
+            created_at=now - timedelta(days=40 - index),
+            completed_at=now - timedelta(days=39 - index),
+            brief=wcs._CLEANUP_BRIEF_MARKER + "\nprior cleanup run",
+        )
+    owner_id = await wcs.trigger_cleanup(
+        _build_cleanup_org(runtime, db, test_settings),
+        agent="dev_agent", enqueue=lambda *_: None,
+    )
+    assert db.try_claim_for_step(owner_id, expected_status=TaskStatus.PENDING,
+                                 expected_block_kind=None, new_count=1)
+
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    from runtime.orchestrator.orchestrator import Orchestrator
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=5),
+                        paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._sessions = SessionTracker()
+    orch.run_step(owner_id)
+    assert calls == []
+    assert db.get_task(owner_id).orchestration_step_count == 1
+    assert _reclamation_audits(db, owner_id) == []
+
+
+def _set_actions_enabled(runtime, enabled: bool) -> None:
+    runtime.org_config_path.write_text(
+        "workspace_cleanup:\n"
+        f"  reclamation_actions_enabled: {str(enabled).lower()}\n"
+    )
+
+
+def _install_never_consumer(monkeypatch, calls):
+    """A consumer wrapper that is only observable if it is wrongly reached."""
+    import runtime.daemon.task_scratch_reclamation as reclamation
+
+    def wrapper(**kwargs):
+        calls.append(kwargs.get("task_id"))
+        raise AssertionError("consumer must not run")
+
+    monkeypatch.setattr(
+        reclamation, "collect_revalidate_seal_consume_disposable", wrapper,
+    )
+
+
+def _owner_read_fault(monkeypatch, db, owner_id, *, on_call, raises=False):
+    real = db.get_task
+    state = {"n": 0}
+
+    def wrapper(task_id, *args, **kwargs):
+        if task_id == owner_id:
+            state["n"] += 1
+            if state["n"] == on_call:
+                if raises:
+                    raise ValueError("owner read failed")
+                return None
+        return real(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(db, "get_task", wrapper)
+    return state
+
+
+async def _third_run_owner_and_newer_owner(runtime, db, test_settings, monkeypatch):
+    owner_id, workspace = await _make_third_run_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    newer_id = await wcs.trigger_cleanup(
+        _build_cleanup_org(runtime, db, test_settings),
+        agent="dev_agent", enqueue=lambda *_: None,
+    )
+    assert newer_id is not None and newer_id != owner_id
+    return owner_id, newer_id, workspace
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("newer_status", [TaskStatus.PENDING, TaskStatus.IN_PROGRESS])
+async def test_workspace_cleanup_hook_refuses_newer_live_owner(
+    runtime, db, test_settings, monkeypatch, newer_status,
+):
+    """A later live marker-bearing cleanup owner is a whole selection refusal."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, newer_id, _ws = await _third_run_owner_and_newer_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    db.update_task(newer_id, status=newer_status)
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert prompt == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_refuses_newer_terminal_owner(
+    runtime, db, test_settings, monkeypatch,
+):
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, newer_id, _ws = await _third_run_owner_and_newer_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    db.update_task(newer_id, status=TaskStatus.COMPLETED)
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_refuses_unreadable_newer_owner(
+    runtime, db, test_settings, monkeypatch,
+):
+    """An orphan marker audit (no task row) is an unreadable newer owner."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    db.insert_audit_log(
+        "TASK-999", "dev_agent", "workspace_cleanup_triggered",
+        {"run_number": 99, "brief_kind": "cleanup"},
+    )
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_refuses_duplicate_owner_marker(
+    runtime, db, test_settings, monkeypatch,
+):
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    db.insert_audit_log(
+        owner_id, "dev_agent", "workspace_cleanup_triggered",
+        {"run_number": 3, "brief_kind": "cleanup"},
+    )
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_delayed_original_with_newer_ordinary_task_succeeds(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """Only marker-bearing newer owners refuse; a newer ordinary task does not."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, workspace = await _make_third_run_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    contract = _add_disposable_target(db, workspace)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    _insert_terminal_task_with_result(
+        db, task_id="TASK-130", agent="dev_agent", session_id="session-130",
+        created_at=later, completed_at=later + timedelta(minutes=1),
+        brief="ordinary newer task",
+    )
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls and calls[0] == "TASK-100"
+    assert not contract.root.exists()
+    assert "outcome=completed" in prompt
+    assert len(_reclamation_audits(db, owner_id)) >= 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["cancelled", "agent", "count", "state", "block"])
+async def test_workspace_cleanup_hook_fresh_owner_invalidation_stops_next_admission(
+    runtime, db, test_settings, monkeypatch, mutation,
+):
+    """A fresh owner read that no longer matches refuses with zero consumer/audit."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+
+    def mutate():
+        if mutation == "cancelled":
+            db.update_task(owner_id, cancelled_at=datetime.now(timezone.utc))
+        elif mutation == "agent":
+            db.update_task(owner_id, assigned_agent="content_agent")
+        elif mutation == "count":
+            db.update_task(owner_id, orchestration_step_count=2)
+        elif mutation == "state":
+            db.update_task(owner_id, status=TaskStatus.COMPLETED)
+        elif mutation == "block":
+            db.update_task(owner_id, block_kind=BlockKind.BLOCKED_ON_JOB)
+
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    _config_wrapper(monkeypatch, when=2, after=mutate)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raises", [False, True])
+async def test_workspace_cleanup_hook_unreadable_owner_read_is_a_refusal(
+    runtime, db, test_settings, monkeypatch, raises,
+):
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    _owner_read_fault(monkeypatch, db, owner_id, on_call=2, raises=raises)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_held_latch_disable_stops_next_admission(
+    runtime, db, test_settings, monkeypatch,
+):
+    """A fresh config admission that now reads disabled performs zero next action."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    _config_wrapper(monkeypatch, when=2, before=lambda: _set_actions_enabled(runtime, False))
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_failed_per_target_config_does_not_escape(
+    runtime, db, test_settings, monkeypatch,
+):
+    """A per-target load failure is one bounded refusal, not an escape."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    _config_wrapper(monkeypatch, when=2, raises=True)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_post_admission_disable_keeps_admitted_consumer(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """Disabling after the fresh admission does not cancel the admitted call."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, workspace = await _make_third_run_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    contract = _add_disposable_target(db, workspace)
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    _config_wrapper(monkeypatch, when=2, after=lambda: _set_actions_enabled(runtime, False))
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls and calls[0] == "TASK-100"
+    assert not contract.root.exists()
+    assert "outcome=completed" in prompt
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_retains_earlier_fact_when_next_admission_disabled(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """Earlier known facts survive a later fresh-config refusal."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, workspace = await _make_third_run_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    contract = _add_disposable_target(db, workspace)
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    # Candidate order is TASK-100 (removable) then TASK-110/TASK-111.  Disable
+    # before the second candidate's fresh config admission.
+    _config_wrapper(monkeypatch, when=3, before=lambda: _set_actions_enabled(runtime, False))
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls == ["TASK-100"]
+    assert not contract.root.exists()
+    assert "outcome=completed" in prompt
+    audits = _reclamation_audits(db, owner_id)
+    assert len(audits) == 1
+    assert audits[0]["payload"]["target_task_id"] == "TASK-100"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["maybe", 1])
+async def test_workspace_cleanup_hook_invalid_initial_shared_config_still_escapes(
+    runtime, db, test_settings, monkeypatch, invalid,
+):
+    """The initial shared-config load keeps its ordinary escaping error."""
+    from runtime.orchestrator.org_config import OrgConfigError
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    runtime.org_config_path.write_text(
+        "workspace_cleanup:\n"
+        f"  reclamation_actions_enabled: {invalid}\n"
+    )
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    with pytest.raises(OrgConfigError):
+        _prepare_workspace_cleanup_reclamation_context(
+            orch, owner, "dev_agent", stale_orchestration_step_count=0,
+            claimed_next_step_count=1,
+        )
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Groups 4/5/6: action-phase read/load budget, controlled monotonic clock and
+# real-selector refusal parity at the shipping hook (repair correction 4).
+# Group 5/6 prior selector regression evidence is mapped in the handoff; the
+# cases here exercise selection/graph boundaries through the real hook.
+# ---------------------------------------------------------------------------
+
+
+class _CleanupMonotonicClock:
+    """Controlled ``time.monotonic`` as seen by ``runtime.orchestrator.run_step``.
+
+    ``expire_at_call`` returns a value past the hook's one-second deadline for
+    every 1-based call at/after that index; ``expire`` flips the same behaviour
+    on demand (used to model an already-admitted consumer that overruns 1s).
+    """
+
+    def __init__(self, *, start: float = 1000.0, expire_at_call: int | None = None):
+        self.start = start
+        self.calls = 0
+        self.expire = False
+        self.expire_at_call = expire_at_call
+
+    def __call__(self) -> float:
+        self.calls += 1
+        if self.expire or (
+            self.expire_at_call is not None and self.calls >= self.expire_at_call
+        ):
+            return self.start + 10.0
+        return self.start
+
+
+class _RunStepTimeProxy:
+    """Replaces only ``run_step``'s module-level ``time`` binding.
+
+    The stdlib module is shared, so patching ``time.monotonic`` globally would
+    also perturb the Database lock's own timing.  This proxy exposes the
+    controlled monotonic to the hook while every other ``time`` attribute (and
+    every other module's ``import time``) stays real.
+    """
+
+    def __init__(self, monotonic):
+        self._monotonic = monotonic
+
+    def monotonic(self) -> float:
+        return self._monotonic()
+
+    def __getattr__(self, name):
+        import time as real_time
+
+        return getattr(real_time, name)
+
+
+def _install_run_step_clock(monkeypatch, clock):
+    import runtime.orchestrator.run_step as run_step_module
+
+    monkeypatch.setattr(run_step_module, "time", _RunStepTimeProxy(clock))
+    return clock
+
+
+def _install_counting_config_loads(monkeypatch):
+    """Count the hook's actual ``load_org_config`` calls (1 initial + 1/slot)."""
+    import runtime.orchestrator.run_step as run_step_module
+
+    real = run_step_module.load_org_config
+    loads: list[int] = []
+
+    def wrapper(paths):
+        loads.append(len(loads) + 1)
+        return real(paths)
+
+    monkeypatch.setattr(run_step_module, "load_org_config", wrapper)
+    return loads
+
+
+def _install_admission_counter(monkeypatch, db):
+    """Wrap the real selector and count its ``admit_observation`` admissions.
+
+    The names recorded are exactly the hook's own config/owner admissions and
+    the real selector's owner/marker/history/newer_owner/candidates/graph_tasks/
+    graph_edges/result reads.  Consumer-internal collector admissions and test
+    verification reads are deliberately not routed through this callback.
+    """
+    real = db.select_workspace_cleanup_reclamation_candidates
+    state: dict = {"names": [], "raw_admit": None}
+
+    def wrapper(**kwargs):
+        raw_admit = kwargs["admit_observation"]
+        state["raw_admit"] = raw_admit
+
+        def admit(name):
+            ok = raw_admit(name)
+            state["names"].append((name, ok))
+            return ok
+
+        kwargs["admit_observation"] = admit
+        return real(**kwargs)
+
+    monkeypatch.setattr(db, "select_workspace_cleanup_reclamation_candidates", wrapper)
+    return state
+
+
+def _install_owner_read_counter(monkeypatch, db, owner_id):
+    """Count ``get_task(owner_id)`` reads (selector owner read + fresh hook reads)."""
+    real = db.get_task
+    state = {"count": 0}
+
+    def wrapper(task_id, *args, **kwargs):
+        if task_id == owner_id:
+            state["count"] += 1
+        return real(task_id, *args, **kwargs)
+
+    monkeypatch.setattr(db, "get_task", wrapper)
+    return state
+
+
+async def _third_run_owner_with_five_slots(runtime, db, test_settings, monkeypatch):
+    """Real run-#3 owner whose two marker history rows plus three ordinary
+    terminal rows give the selector exactly five eligible slots."""
+    owner_id, workspace = await _make_third_run_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    now = datetime.now(timezone.utc)
+    for index in range(3):
+        _insert_terminal_task_with_result(
+            db, task_id=f"TASK-{120 + index}", agent="dev_agent",
+            session_id=f"session-{120 + index}",
+            created_at=now - timedelta(days=20 + index),
+            completed_at=now - timedelta(days=19 + index),
+            brief=f"ordinary older target {index}",
+        )
+    return owner_id, workspace
+
+
+_FIVE_SLOT_ORDER = ["TASK-110", "TASK-111", "TASK-122", "TASK-121", "TASK-120"]
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_exact_23_reads_admits_fifth_consumer(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """Five eligible slots reach exactly 23 reads/loads; the fifth call is allowed.
+
+    Read 1 is the initial enabled config load, taken outside the one-second
+    clock.  The real selector then admits owner, marker, history, newer_owner,
+    candidates, graph_tasks, graph_edges and five persisted-result reads (12).
+    Each of the five candidates then admits one fresh config and one fresh owner
+    (10).  ``admit_observation`` is invoked 22 times, so 1 + 22 = 23 actual
+    reads/loads; a prospective 24th admission is refused by the same latch.
+    """
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, workspace = await _third_run_owner_with_five_slots(
+        runtime, db, test_settings, monkeypatch,
+    )
+    admissions = _install_admission_counter(monkeypatch, db)
+    loads = _install_counting_config_loads(monkeypatch)
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    # Installed only for the action phase: the selector's one owner read plus
+    # the hook's five fresh owner reads.
+    owner_reads = _install_owner_read_counter(monkeypatch, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+
+    selector_names = [name for name, _ok in admissions["names"]]
+    assert [ok for _name, ok in admissions["names"]] == [True] * 12
+    assert selector_names == [
+        "owner", "marker", "history", "newer_owner", "candidates", "graph_tasks",
+        "graph_edges", "result:TASK-110", "result:TASK-111", "result:TASK-122",
+        "result:TASK-121", "result:TASK-120",
+    ]
+    assert len(loads) == 6  # 1 initial + 5 fresh per-candidate loads
+    # 6 config loads + 12 real selector admissions + 5 fresh owner reads = 23.
+    fresh_owner_reads = owner_reads["count"] - 1  # selector already read the owner
+    assert fresh_owner_reads == 5
+    assert len(loads) + len(admissions["names"]) + fresh_owner_reads == 23
+    assert calls == _FIVE_SLOT_ORDER  # fifth consumer call admitted at read 23
+    # 1 initial config + 22 admitted callback observations = exactly 23 reads.
+    assert admissions["raw_admit"]("probe") is False  # no 24th observation
+    assert len(_reclamation_audits(db, owner_id)) == 5
+    assert prompt.count("refused_or_unavailable") == 5
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_initial_config_load_is_outside_the_clock(
+    runtime, db, test_settings, monkeypatch,
+):
+    """The initial enabled config load precedes the one-second deadline."""
+    import runtime.orchestrator.run_step as run_step_module
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    clock = _CleanupMonotonicClock()
+    _install_run_step_clock(monkeypatch, clock)
+    real_load = run_step_module.load_org_config
+    loads_at: list[int] = []
+
+    def load(paths):
+        loads_at.append(clock.calls)
+        return real_load(paths)
+
+    monkeypatch.setattr(run_step_module, "load_org_config", load)
+    monkeypatch.setattr(db, "select_workspace_cleanup_reclamation_candidates", lambda **_: None)
+
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert loads_at == [0]   # enabled decision made before any clock read
+    assert clock.calls == 1  # only the deadline start is taken
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop,expire_at_call,expect_selector,expect_loads", [
+    ("selector_read", 4, 3, 1),
+    ("fresh_config", 14, 12, 1),
+    ("fresh_owner", 15, 12, 2),
+    ("consumer_call", 16, 12, 2),
+])
+async def test_workspace_cleanup_hook_deadline_stops_next_read_or_call(
+    runtime, db, test_settings, monkeypatch, stop, expire_at_call, expect_selector, expect_loads,
+):
+    """A clock past the deadline refuses the next observation/call and stops.
+
+    Monotonic call order on the five-slot fixture: 1 deadline; 2..13 the twelve
+    real selector admissions; then per candidate config(14/18/...),
+    owner(15/19/...), the pre-consumer deadline check(16/20/...) and the
+    consumer ``monotonic_now``(17/21/...).  The parametrised index expires
+    exactly at the named boundary.
+    """
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _third_run_owner_with_five_slots(
+        runtime, db, test_settings, monkeypatch,
+    )
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    clock = _CleanupMonotonicClock(expire_at_call=expire_at_call)
+    _install_run_step_clock(monkeypatch, clock)
+    admissions = _install_admission_counter(monkeypatch, db)
+    loads = _install_counting_config_loads(monkeypatch)
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert len(admissions["names"]) == expect_selector
+    if stop == "selector_read":
+        # The boundary selector admission itself was refused by the deadline.
+        assert admissions["names"][-1][1] is False
+    else:
+        assert all(ok for _name, ok in admissions["names"])
+    assert len(loads) == expect_loads
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_admitted_consumer_overrun_keeps_result_then_stops(
+    runtime, db, test_settings, monkeypatch,
+):
+    """An already-admitted consumer that overruns 1s keeps its result/audit,
+    then no later candidate observation or call starts."""
+    import runtime.daemon.task_scratch_reclamation as reclamation
+    from runtime.daemon.task_scratch_reclamation import Accounting, ReclamationResult
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _third_run_owner_with_five_slots(
+        runtime, db, test_settings, monkeypatch,
+    )
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    clock = _CleanupMonotonicClock()
+    _install_run_step_clock(monkeypatch, clock)
+    admissions = _install_admission_counter(monkeypatch, db)
+    loads = _install_counting_config_loads(monkeypatch)
+    calls: list[str] = []
+
+    def overrunning(**kwargs):
+        calls.append(kwargs["task_id"])
+        clock.expire = True  # crossed the deadline while the admitted call ran
+        return ReclamationResult(
+            kwargs["task_id"], "completed", None,
+            Accounting(100, 100, 1), Accounting(0, 0, 0), 100, 1,
+        )
+
+    monkeypatch.setattr(
+        reclamation, "collect_revalidate_seal_consume_disposable", overrunning,
+    )
+
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls == ["TASK-110"]
+    audits = _reclamation_audits(db, owner_id)
+    assert len(audits) == 1
+    assert audits[0]["payload"]["outcome"] == "completed"
+    assert audits[0]["payload"]["claimed_bytes"] == 100
+    assert "target=TASK-110" in prompt and "outcome=completed" in prompt
+    # 12 real selector admissions, then only the first candidate's fresh config;
+    # the next candidate's fresh-config admission is refused by the deadline.
+    assert len(admissions["names"]) == 12
+    assert len(loads) == 2  # 1 initial + the one admitted fresh config
+
+
+# ---------------------------------------------------------------------------
+# Group 5/6: selection and graph boundaries observed through the real selector
+# at the shipping hook.  The deeper selector regressions (complete 1000/1001,
+# raw sixth without refill, bytewise ties, graph row/edge sentinels, relevant
+# foreign-live components) live in tests/test_database.py and are mapped in the
+# handoff; these cases prove the hook turns the same refusal into zero consumer
+# calls and zero action audits.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_real_selector_sixth_raw_candidate_refuses(
+    runtime, db, test_settings, monkeypatch,
+):
+    """Six raw canonical terminal rows refuse the whole phase (no refill)."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    now = datetime.now(timezone.utc)
+    for index in range(4):
+        _insert_terminal_task_with_result(
+            db, task_id=f"TASK-{130 + index}", agent="dev_agent",
+            session_id=f"session-{130 + index}",
+            created_at=now - timedelta(days=20 + index),
+            completed_at=now - timedelta(days=19 + index),
+            brief=f"ordinary older target {index}",
+        )
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_real_selector_relevant_foreign_live_relative_refuses(
+    runtime, db, test_settings, monkeypatch,
+):
+    """A relevant foreign live relative refuses the owner/candidate component."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, workspace = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    _add_disposable_target(db, workspace)
+    db.insert_task(TaskRecord(
+        id="TASK-200", brief="foreign live relative", assigned_agent="content_agent",
+        status=TaskStatus.PENDING, parent_task_id="TASK-100",
+    ))
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+# ---------------------------------------------------------------------------
+# Group 7: literal returned-field transport, remainder from the real
+# ``after`` accounting, preserved reason, publication_unavailable and the
+# no-fabricated-None contract (repair correction 5).
+# ---------------------------------------------------------------------------
+
+
+def _hook_owner_with_mocked_selection(runtime, db, monkeypatch, *, candidates):
+    """Owner in the exact claimed shape plus a canned selection."""
+    from runtime.infrastructure.database import (
+        WorkspaceCleanupReclamationCandidate, WorkspaceCleanupReclamationSelection,
+    )
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    _enable_reclamation_actions(runtime)
+    db.insert_task(TaskRecord(id="TASK-HOOK", brief="cleanup", assigned_agent="dev_agent"))
+    db.update_task("TASK-HOOK", status=TaskStatus.IN_PROGRESS, block_kind=None,
+                   orchestration_step_count=1)
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._sessions = object()
+    selection = WorkspaceCleanupReclamationSelection(
+        owner_task_id="TASK-HOOK",
+        candidates=tuple(WorkspaceCleanupReclamationCandidate(
+            task_id=task_id, session_id=f"session-{task_id}",
+            scratch_path=runtime.workspaces_dir / "dev_agent" / ".happyranch"
+            / "task-tmp" / task_id,
+            result={"status": "completed"},
+        ) for task_id in candidates),
+        read_observations=(),
+    )
+    monkeypatch.setattr(
+        db, "select_workspace_cleanup_reclamation_candidates", lambda **_: selection,
+    )
+    return orch, SimpleNamespace(id="TASK-HOOK")
+
+
+def _install_result_consumer(monkeypatch, results):
+    """Canned consumer sequence; returns the observed call list."""
+    import runtime.daemon.task_scratch_reclamation as reclamation
+
+    calls: list[str] = []
+
+    def wrapper(**kwargs):
+        calls.append(kwargs["task_id"])
+        return results[len(calls) - 1]
+
+    monkeypatch.setattr(
+        reclamation, "collect_revalidate_seal_consume_disposable", wrapper,
+    )
+    return calls
+
+
+def _manual_third_run_owner(runtime, db, *, owner_id="TASK-120", target_id="TASK-050"):
+    """Run #3 owner with two older non-terminal marker rows and one target.
+
+    Used where a case needs exactly one selected slot without the scheduler's
+    terminal history rows becoming candidates themselves.
+    """
+    now = datetime.now(timezone.utc)
+    for index in range(2):
+        db.insert_task(TaskRecord(
+            id=f"TASK-{110 + index}",
+            brief=wcs._CLEANUP_BRIEF_MARKER + "\nprior cleanup run",
+            assigned_agent="dev_agent", status=TaskStatus.PENDING,
+            created_at=now - timedelta(days=40 - index),
+        ))
+    completed = datetime.fromtimestamp(
+        (_SCRATCH_OLD_NS + 120_000_000_000) / 1_000_000_000, tz=timezone.utc,
+    )
+    db.insert_task(TaskRecord(
+        id=target_id, brief="prior cleanup target", assigned_agent="dev_agent",
+        status=TaskStatus.COMPLETED, current_session_id=f"session-{target_id}",
+        created_at=completed, completed_at=completed,
+    ))
+    db.insert_task_result(target_id, "dev_agent", f"session-{target_id}", "done", 1,
+                          status="completed")
+    db.insert_job(JobRecord(
+        id=f"JOB-{target_id}", task_id=target_id, agent_name="dev_agent",
+        title="terminal", rationale="test", script_text="true",
+        interpreter=JobInterpreter.BASH, status=JobStatus.COMPLETED,
+        created_at=completed.isoformat(),
+    ))
+    db.insert_task(TaskRecord(
+        id=owner_id, brief=wcs._CLEANUP_BRIEF_MARKER + "\ncleanup run",
+        assigned_agent="dev_agent", created_at=now,
+    ))
+    db.insert_audit_log(owner_id, "dev_agent", "workspace_cleanup_triggered",
+                        {"run_number": 3, "brief_kind": "cleanup"})
+    return owner_id, target_id
+
+
+@pytest.mark.parametrize("outcome,after_tuple,reason,claimed_bytes,claimed_inodes,expected_remainder", [
+    ("completed", (0, 0, 0), None, 8192, 3,
+     {"allocated_bytes": 0, "apparent_bytes": 0, "inodes": 0}),
+    ("failed", (4096, 8192, 1), "fail-closed filesystem error", 0, 0,
+     {"allocated_bytes": 4096, "apparent_bytes": 8192, "inodes": 1}),
+    ("failed", None, "fail-closed filesystem error", 0, 0, None),
+])
+def test_workspace_cleanup_hook_transports_remainder_and_reason(
+    runtime, db, monkeypatch, outcome, after_tuple, reason, claimed_bytes,
+    claimed_inodes, expected_remainder,
+):
+    """Returned fields are literal; remainder is the serialized real ``after``
+    accounting (``None`` when ``after`` is None) and the prompt keeps reason."""
+    from runtime.daemon.task_scratch_reclamation import Accounting, ReclamationResult
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    orch, owner = _hook_owner_with_mocked_selection(
+        runtime, db, monkeypatch, candidates=["TASK-OLD"],
+    )
+    after = Accounting(*after_tuple) if after_tuple is not None else None
+    result = ReclamationResult(
+        "TASK-OLD", outcome, reason, Accounting(8192, 8192, 3), after,
+        claimed_bytes, claimed_inodes,
+    )
+    calls = _install_result_consumer(monkeypatch, [result])
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls == ["TASK-OLD"]
+    audits = _reclamation_audits(db, "TASK-HOOK")
+    assert len(audits) == 1
+    assert audits[0]["payload"] == {
+        "target_task_id": "TASK-OLD", "outcome": outcome,
+        "claimed_bytes": claimed_bytes, "claimed_inodes": claimed_inodes,
+        "remainder": expected_remainder, "reason": reason,
+        "publication": "attempted",
+    }
+    assert f"target=TASK-OLD outcome={outcome}" in prompt
+    assert f"reason={reason}" in prompt
+    assert f"claimed_bytes={claimed_bytes}" in prompt
+    assert f"claimed_inodes={claimed_inodes}" in prompt
+    # The prompt fact transports the actual returned ``after`` accounting
+    # (or the explicit ``null`` for unknown after-accounting) -- not only the
+    # audit payload -- so a known partial remainder survives even when owner
+    # audit publication fails.
+    if expected_remainder is None:
+        assert "remainder=null" in prompt
+    else:
+        assert (
+            "remainder=" + json.dumps(expected_remainder, sort_keys=True)
+        ) in prompt
+    # The hook publishes only the audit/prompt facts; it never writes a
+    # synthetic completion summary for the owner.
+    assert db.get_task_results("TASK-HOOK") == []
+
+
+def test_workspace_cleanup_hook_escaped_consumer_exception_publishes_no_audit_and_stops(
+    runtime, db, monkeypatch,
+):
+    """An escaped ordinary consumer failure is unknown: no fabricated None
+    audit/claims and no later target starts."""
+    import runtime.daemon.task_scratch_reclamation as reclamation
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    orch, owner = _hook_owner_with_mocked_selection(
+        runtime, db, monkeypatch, candidates=["TASK-OLD", "TASK-OLD-2"],
+    )
+    calls: list[str] = []
+
+    def boom(**kwargs):
+        calls.append(kwargs["task_id"])
+        raise RuntimeError("consumer exploded")
+
+    monkeypatch.setattr(
+        reclamation, "collect_revalidate_seal_consume_disposable", boom,
+    )
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    ) == ""
+    assert calls == ["TASK-OLD"]
+    assert _reclamation_audits(db, "TASK-HOOK") == []
+    # Unknown outcome is never reconstructed into a summary or result row.
+    assert db.get_task_results("TASK-HOOK") == []
+
+
+def test_workspace_cleanup_hook_baseexception_interruption_escapes(
+    runtime, db, monkeypatch,
+):
+    """BaseException-class interruption is never swallowed as a refusal."""
+    import runtime.daemon.task_scratch_reclamation as reclamation
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    class _Interruption(BaseException):
+        pass
+
+    orch, owner = _hook_owner_with_mocked_selection(
+        runtime, db, monkeypatch, candidates=["TASK-OLD", "TASK-OLD-2"],
+    )
+    calls: list[str] = []
+
+    def interrupt(**kwargs):
+        calls.append(kwargs["task_id"])
+        raise _Interruption("cancelled")
+
+    monkeypatch.setattr(
+        reclamation, "collect_revalidate_seal_consume_disposable", interrupt,
+    )
+    with pytest.raises(_Interruption):
+        _prepare_workspace_cleanup_reclamation_context(
+            orch, owner, "dev_agent", stale_orchestration_step_count=0,
+            claimed_next_step_count=1,
+        )
+    assert calls == ["TASK-OLD"]
+    assert _reclamation_audits(db, "TASK-HOOK") == []
+
+
+@pytest.mark.parametrize("after_tuple", [(4096, 8192, 1), None])
+def test_workspace_cleanup_hook_audit_failure_keeps_known_facts_and_stops(
+    runtime, db, monkeypatch, after_tuple,
+):
+    """A known return whose audit publication fails transports only the known
+    facts -- including the literal ``after`` remainder (or ``null``) -- plus
+    ``publication_unavailable`` and starts no later target."""
+    from runtime.daemon.task_scratch_reclamation import Accounting, ReclamationResult
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    orch, owner = _hook_owner_with_mocked_selection(
+        runtime, db, monkeypatch, candidates=["TASK-OLD", "TASK-OLD-2"],
+    )
+    after = Accounting(*after_tuple) if after_tuple is not None else None
+    result = ReclamationResult(
+        "TASK-OLD", "failed", "fail-closed filesystem error",
+        Accounting(8192, 8192, 3), after, 0, 0,
+    )
+    calls = _install_result_consumer(monkeypatch, [result, result])
+
+    def failing_audit(*args, **kwargs):
+        raise RuntimeError("audit store unavailable")
+
+    monkeypatch.setattr(db, "insert_audit_log", failing_audit)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls == ["TASK-OLD"]
+    assert "target=TASK-OLD outcome=failed" in prompt
+    assert "reason=fail-closed filesystem error" in prompt
+    assert "publication_unavailable" in prompt
+    if after is None:
+        assert "remainder=null" in prompt
+    else:
+        assert (
+            "remainder=" + json.dumps(
+                {"allocated_bytes": 4096, "apparent_bytes": 8192, "inodes": 1},
+                sort_keys=True,
+            )
+        ) in prompt
+    assert "TASK-OLD-2" not in prompt
+    assert _reclamation_audits(db, "TASK-HOOK") == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_real_between_ec_mutation_returns_one_none_audit(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """A real mutation between the consumer's compared E/C observations invokes
+    ``None`` with no executor and exactly one literal None audit."""
+    from dataclasses import replace
+    import runtime.daemon.task_scratch_reclamation as reclamation
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    _enable_reclamation_actions(runtime)
+    owner_id, target_id = _manual_third_run_owner(runtime, db)
+    workspace = runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    contract = _prepare_manifested_scratch(
+        workspace, target_id, f"session-{target_id}", old_ns=_SCRATCH_OLD_NS,
+    )
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    real_coverage = reclamation._collect_private_coverage
+    coverage_calls: list = []
+
+    def mutated(**kwargs):
+        value = real_coverage(**kwargs)
+        coverage_calls.append(value)
+        if len(coverage_calls) == 1:
+            snapshot = replace(
+                value.snapshot,
+                populations=(*value.snapshot.populations, ("injected", ("42",))),
+            )
+            return replace(value, snapshot=snapshot)
+        return value
+
+    monkeypatch.setattr(reclamation, "_collect_private_coverage", mutated)
+    executed: list = []
+    monkeypatch.setattr(reclamation, "execute_ledger", lambda rows: executed.extend(rows))
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls == [target_id]
+    assert not executed
+    assert contract.root.is_dir()  # no executor ran, so the literal root survives
+    audits = _reclamation_audits(db, owner_id)
+    assert len(audits) == 1
+    assert audits[0]["payload"] == {
+        "target_task_id": target_id, "outcome": "none", "claimed_bytes": 0,
+        "claimed_inodes": 0, "remainder": None, "reason": None,
+        "publication": "attempted",
+    }
+    assert f"target={target_id} refused_or_unavailable" in prompt
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_harmless_pre_e1_mutation_is_not_a_refusal(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """A completed change observed consistently from E1 onward still removes
+    the root; it is not automatically a mismatch refusal."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    _enable_reclamation_actions(runtime)
+    owner_id, target_id = _manual_third_run_owner(runtime, db)
+    workspace = runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    contract = _prepare_manifested_scratch(
+        workspace, target_id, f"session-{target_id}", old_ns=_SCRATCH_OLD_NS,
+    )
+    extra = contract.root / "nested" / "extra-before-e1"
+    extra.write_bytes(b"y" * 4096)
+    for path in (extra, contract.root / "nested", contract.root):
+        os.utime(path, ns=(_SCRATCH_OLD_NS, _SCRATCH_OLD_NS), follow_symlinks=False)
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls == [target_id]
+    assert not contract.root.exists()
+    audits = _reclamation_audits(db, owner_id)
+    assert len(audits) == 1
+    assert audits[0]["payload"]["outcome"] == "completed"
+    assert f"target={target_id} outcome=completed" in prompt
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_action_audit_precedes_prompt_and_latest_five(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """Action -> owner audit -> prompt ordering, and the target-only reclamation
+    audit never becomes a trigger-marked latest-five row."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    _enable_reclamation_actions(runtime)
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    workspace = runtime.workspaces_dir / "dev_agent"
+    workspace.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    _seed_cleanup_target_and_history(db, agent="dev_agent", old_ns=_SCRATCH_OLD_NS, now=now)
+    _prepare_manifested_scratch(workspace, "TASK-100", "session-100", old_ns=_SCRATCH_OLD_NS)
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    owner_id = await wcs.trigger_cleanup(
+        _build_cleanup_org(runtime, db, test_settings),
+        agent="dev_agent", enqueue=lambda *_: None,
+    )
+    assert owner_id is not None
+
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=5),
+                        paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._sessions = SessionTracker()
+    orch._queue = _SlugQueue()
+    observed: dict = {}
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        records = _reclamation_audits(db, owner_id)
+        observed["targets_at_prompt"] = [
+            row["payload"]["target_task_id"] for row in records
+        ]
+        observed["prompt"] = prompt
+        # Simulate the ordinary post-launch completion callback, which is the
+        # real writer of the durable task_results summary.
+        db.insert_task_result(
+            task_id, agent, "session-owner",
+            json.dumps({"action": "done", "summary": "cleanup done"}),
+            1, status="completed",
+        )
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "done", "summary": "cleanup done"}),
+        )
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    orch.run_step(owner_id)
+
+    # Every owner-side audit (including TASK-100's completed removal) is durable
+    # before the prompt reaches the agent.
+    assert "TASK-100" in observed["targets_at_prompt"]
+    assert "target=TASK-100 outcome=completed" in observed["prompt"]
+    # The ordinary completion summary is persisted for the owner.
+    reports = db.get_task_results(owner_id)
+    assert reports
+    assert reports[-1]["output_summary"] == json.dumps(
+        {"action": "done", "summary": "cleanup done"}
+    )
+    # latest-five is trigger-marker scoped: the target-only reclamation audit
+    # neither adds a row nor displaces the owner.
+    activity = db.list_workspace_cleanup_activity("dev_agent", limit=5)
+    assert [row["task_id"] for row in activity] == [owner_id]
+
+
+# ---------------------------------------------------------------------------
+# TASK-8417 correction 1: the registered-owner guard is the caller's duty.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_unregistered_owner_is_refused_before_selection(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """An enqueued scheduled third owner whose agent is absent from the
+    in-memory TeamsRegistry reaches no selector/consumer call or action audit,
+    and the scratch stays intact: canonical path construction is not a
+    registration check."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    owner_id, workspace = await _make_third_run_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    contract = _add_disposable_target(db, workspace)
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    teams = TeamsRegistry.load(runtime.root)
+    teams.remove_worker("engineering", "dev_agent")
+    assert teams.team_for_agent("dev_agent") is None
+    assert "dev_agent" not in teams.all_agents()
+
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=5),
+                        paths=runtime, slug="test", teams=teams)
+    orch._sessions = SessionTracker()
+    orch._queue = _SlugQueue()
+    prompts: list[str] = []
+
+    def fake_run_agent(task_id, agent, prompt, on_session_started=None):
+        prompts.append(prompt)
+        return _make_result(), _make_report(
+            output_summary=json.dumps({"action": "done", "summary": "done"}),
+        )
+
+    monkeypatch.setattr(orch, "_run_agent", fake_run_agent)
+    orch.run_step(owner_id)
+
+    assert calls == []
+    assert contract.root.is_dir()
+    assert _reclamation_audits(db, owner_id) == []
+    assert all("Workspace cleanup reclamation" not in text for text in prompts)
+
+
+# ---------------------------------------------------------------------------
+# TASK-8417 correction 3: ordinary callback / completion-result loss windows.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingCompletionEventBus:
+    def __init__(self) -> None:
+        self.published: list[tuple] = []
+
+    async def publish(self, task_id, event) -> None:
+        self.published.append((task_id, event))
+
+
+class _RaisingCompletionEventBus:
+    """Disposable double that fails after the real callback commit."""
+
+    async def publish(self, task_id, event) -> None:
+        raise RuntimeError("callback transport failed after commit")
+
+
+async def _drive_ordinary_completion(
+    db, *, task_id: str, agent: str, session_id: str, summary: str, event_bus,
+):
+    """Drive the real ordinary completion boundary (route + DB transaction).
+
+    The route guards, the SessionTracker binding lease, and
+    ``admit_task_completion_callback`` are the shipping seams; only the
+    post-commit event bus is a disposable double.
+    """
+    import asyncio
+
+    from runtime.daemon.routes.tasks import CompletionBody, submit_completion
+
+    sessions = SessionTracker()
+    sessions.set_active(task_id, agent, session_id)
+    org = SimpleNamespace(
+        db=db, sessions=sessions, db_lock=asyncio.Lock(), event_bus=event_bus,
+    )
+    body = CompletionBody(
+        session_id=session_id, agent=agent, status="completed",
+        confidence=80, output_summary=summary,
+    )
+    return await submit_completion(task_id, body, org), org
+
+
+def _completed_action(runtime, db, monkeypatch):
+    """Run the hook once with one canned completed consumer result."""
+    from runtime.daemon.task_scratch_reclamation import Accounting, ReclamationResult
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    orch, owner = _hook_owner_with_mocked_selection(
+        runtime, db, monkeypatch, candidates=["TASK-OLD"],
+    )
+    result = ReclamationResult(
+        "TASK-OLD", "completed", None, Accounting(8192, 8192, 3),
+        Accounting(0, 0, 0), 8192, 3,
+    )
+    calls = _install_result_consumer(monkeypatch, [result])
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls == ["TASK-OLD"]
+    assert len(_reclamation_audits(db, "TASK-HOOK")) == 1
+    return orch, calls, prompt
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_precommit_callback_failure_has_no_owner_summary(
+    runtime, db, monkeypatch,
+):
+    """A callback whose uncommitted result insert fails rolls the real
+    transaction back: no durable owner summary and no fabricated report, while
+    the reclamation action/audit evidence is untouched."""
+    orch, calls, _prompt = _completed_action(runtime, db, monkeypatch)
+
+    def precommit_boom(**kwargs):
+        raise RuntimeError("precommit insert failed")
+
+    monkeypatch.setattr(db, "_insert_task_result", precommit_boom)
+    with pytest.raises(RuntimeError):
+        await _drive_ordinary_completion(
+            db, task_id="TASK-HOOK", agent="dev_agent",
+            session_id="session-owner",
+            summary=json.dumps({"action": "done", "summary": "cleanup done"}),
+            event_bus=_RecordingCompletionEventBus(),
+        )
+
+    assert db.get_task_results("TASK-HOOK") == []
+    assert db.get_latest_task_result("TASK-HOOK", "dev_agent", "session-owner") is None
+    assert orch._read_completion_from_db(
+        "TASK-HOOK", "dev_agent", "session-owner",
+    ) is None
+    # Action/audit evidence preserved; the action is never retried/rescanned.
+    assert calls == ["TASK-OLD"]
+    assert len(_reclamation_audits(db, "TASK-HOOK")) == 1
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_postcommit_callback_failure_retains_actual_result(
+    runtime, db, monkeypatch,
+):
+    """A callback that fails after the real commit retains exactly the durable
+    same-agent/session result; the ordinary read reconstructs it and no
+    synthetic summary is produced."""
+    orch, calls, _prompt = _completed_action(runtime, db, monkeypatch)
+    summary = json.dumps({"action": "done", "summary": "cleanup done"})
+
+    with pytest.raises(RuntimeError):
+        await _drive_ordinary_completion(
+            db, task_id="TASK-HOOK", agent="dev_agent",
+            session_id="session-owner", summary=summary,
+            event_bus=_RaisingCompletionEventBus(),
+        )
+
+    row = db.get_latest_task_result("TASK-HOOK", "dev_agent", "session-owner")
+    assert row is not None
+    assert row["output_summary"] == summary
+    report = orch._read_completion_from_db("TASK-HOOK", "dev_agent", "session-owner")
+    assert report is not None
+    assert report.output_summary == summary
+    assert len(db.get_task_results("TASK-HOOK")) == 1
+    assert calls == ["TASK-OLD"]
+    assert len(_reclamation_audits(db, "TASK-HOOK")) == 1
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_result_read_loss_retains_actual_durable_result(
+    runtime, db, monkeypatch,
+):
+    """A lost subsequent completion-result read never fabricates a summary and
+    never changes the actual durable same-agent/session result row."""
+    orch, calls, _prompt = _completed_action(runtime, db, monkeypatch)
+    summary = json.dumps({"action": "done", "summary": "cleanup done"})
+    response, _org = await _drive_ordinary_completion(
+        db, task_id="TASK-HOOK", agent="dev_agent",
+        session_id="session-owner", summary=summary,
+        event_bus=_RecordingCompletionEventBus(),
+    )
+    assert response == {"ok": True}
+
+    # The subsequent completion-result read is lost while the durable row stays.
+    monkeypatch.setattr(db, "get_latest_task_result", lambda *a, **k: None)
+    assert orch._read_completion_from_db(
+        "TASK-HOOK", "dev_agent", "session-owner",
+    ) is None
+    rows = db.get_task_results("TASK-HOOK")
+    assert len(rows) == 1
+    assert rows[0]["agent"] == "dev_agent"
+    assert rows[0]["session_id"] == "session-owner"
+    assert rows[0]["output_summary"] == summary
+    assert calls == ["TASK-OLD"]
+    assert len(_reclamation_audits(db, "TASK-HOOK")) == 1
+
+
+# ---------------------------------------------------------------------------
+# TASK-8417 correction 4: finite shared-config seam matrix.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("config_text", [
+    "",
+    "workspace_cleanup:\n",
+    "workspace_cleanup: {}\n",
+])
+def test_workspace_cleanup_hook_missing_null_block_is_disabled(
+    runtime, db, monkeypatch, config_text,
+):
+    """Missing file, null block, and empty block all default the action key to
+    false: no selector query, no consumer call, no action audit."""
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    if config_text:
+        runtime.org_config_path.write_text(config_text)
+    orch = Orchestrator(db=db, settings=Settings(), paths=runtime,
+                        slug="test", teams=TeamsRegistry.load(runtime.root))
+    monkeypatch.setattr(
+        db, "select_workspace_cleanup_reclamation_candidates",
+        lambda **_: pytest.fail("disabled hook must not query the selector"),
+    )
+    assert _prepare_workspace_cleanup_reclamation_context(
+        orch, SimpleNamespace(id="TASK-HOOK"), "dev_agent",
+        stale_orchestration_step_count=0, claimed_next_step_count=1,
+    ) == ""
+    assert _reclamation_audits(db, "TASK-HOOK") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config_text", [
+    "workspace_cleanup:\n  reclamation_actions_enabled:\n",
+    "workspace_cleanup: {\n",
+])
+async def test_workspace_cleanup_hook_invalid_initial_config_forms_escape(
+    runtime, db, test_settings, monkeypatch, config_text,
+):
+    """A null action key and malformed YAML keep the shared loader's
+    OrgConfigError escape at the initial hook read: zero consumer calls and
+    zero action audits."""
+    from runtime.orchestrator.org_config import OrgConfigError
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    runtime.org_config_path.write_text(config_text)
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    with pytest.raises(OrgConfigError):
+        _prepare_workspace_cleanup_reclamation_context(
+            orch, owner, "dev_agent", stale_orchestration_step_count=0,
+            claimed_next_step_count=1,
+        )
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_config_read_oserror_escapes(
+    runtime, db, test_settings, monkeypatch,
+):
+    """``Path.read_text()`` OSError is not a YAML error: the shared loader (and
+    therefore the hook) lets it escape with zero consumer calls/audits."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, _ws = await _make_third_run_owner(runtime, db, test_settings, monkeypatch)
+    # A directory at the config path makes read_text() raise IsADirectoryError.
+    runtime.org_config_path.unlink()
+    runtime.org_config_path.mkdir()
+    calls: list[str] = []
+    _install_never_consumer(monkeypatch, calls)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    with pytest.raises(OSError):
+        _prepare_workspace_cleanup_reclamation_context(
+            orch, owner, "dev_agent", stale_orchestration_step_count=0,
+            claimed_next_step_count=1,
+        )
+    assert calls == []
+    assert _reclamation_audits(db, owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_later_fresh_load_failure_retains_prior_fact(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """A fresh per-target load failure after an earlier known action is a
+    bounded refusal: it starts no next action and retains the prior fact."""
+    from runtime.orchestrator.run_step import _prepare_workspace_cleanup_reclamation_context
+
+    owner_id, workspace = await _make_third_run_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    contract = _add_disposable_target(db, workspace)
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    # Load #1 is the initial enabled read; #2 is TASK-100's fresh load (which
+    # succeeds and acts); #3 is the next candidate's fresh load and fails.
+    _config_wrapper(monkeypatch, when=3, raises=True)
+    orch, owner = _claim_owner_and_orchestrator(runtime, db, owner_id)
+    prompt = _prepare_workspace_cleanup_reclamation_context(
+        orch, owner, "dev_agent", stale_orchestration_step_count=0,
+        claimed_next_step_count=1,
+    )
+    assert calls == ["TASK-100"]
+    assert not contract.root.exists()
+    assert "outcome=completed" in prompt
+    audits = _reclamation_audits(db, owner_id)
+    assert len(audits) == 1
+    assert audits[0]["payload"]["target_task_id"] == "TASK-100"
+
+
+@pytest.mark.asyncio
+async def test_workspace_cleanup_hook_initial_config_failure_aborts_step_before_action(
+    runtime, db, test_settings, monkeypatch, tmp_path,
+):
+    """An upstream shared-loader failure on the shipping ``run_step`` path
+    raises before any action/audit and never promises an ordinary report."""
+    from runtime.orchestrator.org_config import OrgConfigError
+    from runtime.orchestrator.orchestrator import Orchestrator
+
+    owner_id, workspace = await _make_third_run_owner(
+        runtime, db, test_settings, monkeypatch,
+    )
+    contract = _add_disposable_target(db, workspace)
+    calls: list[str] = []
+    _install_real_consumer_wrapper(
+        monkeypatch, proc_root=_make_fake_proc_root(tmp_path),
+        now_ns=_SCRATCH_OLD_NS + 121_000_000_000, calls=calls,
+    )
+    runtime.org_config_path.write_text("workspace_cleanup: {\n")
+    orch = Orchestrator(db=db, settings=Settings(max_orchestration_steps=5),
+                        paths=runtime, slug="test", teams=TeamsRegistry.load(runtime.root))
+    orch._sessions = SessionTracker()
+    orch._queue = _SlugQueue()
+    with pytest.raises(OrgConfigError):
+        orch.run_step(owner_id)
+    assert calls == []
+    assert contract.root.is_dir()
+    assert _reclamation_audits(db, owner_id) == []
+    assert db.get_task_results(owner_id) == []

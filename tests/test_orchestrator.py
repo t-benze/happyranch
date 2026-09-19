@@ -4967,3 +4967,168 @@ def test_wrong_root_task_scratch_manifest_preserves_agent_failure_note_and_audit
     failures = [row for row in audits if row["action"] == "task_scratch_containment_failed"]
     assert len(failures) == 1
     assert failures[0]["payload"] == {"error": "manifest is corrupt"}
+
+
+# ── Group 9: ordinary held-reporter teardown ordering (TASK-8399) ─────────
+
+
+def _hold_group9_teardown_reporter(monkeypatch, orchestrator, *, raise_on_report=False):
+    """Instrument the real ``_run_agent`` teardown tail seams.
+
+    Records the exact shipping call order (``reset_task_scratch`` ->
+    ``report_task_scratch`` -> ``log_session_end`` -> ``_read_completion_from_db``)
+    and lets the reporter be held on a ``threading.Event`` or made to raise.
+    ``_cleanup_session_attachments`` still runs for real between audit and read.
+    """
+    import threading
+
+    from runtime.orchestrator import orchestrator as orchestrator_module
+
+    order: list[str] = []
+    report_entered = threading.Event()
+    release = threading.Event()
+
+    # Record the shipping reset WITHOUT replacing its effect: the real
+    # ``reset_task_scratch`` must still clear the active task-scratch
+    # ContextVar, otherwise the activation leaks into every later test in the
+    # same xdist worker and unrelated ``_callee_env`` tests fail closed with
+    # ``TaskScratchError: inherited task containment override refused``.
+    real_reset_task_scratch = orchestrator_module.reset_task_scratch
+
+    def _reset(token):
+        order.append("reset")
+        real_reset_task_scratch(token)
+
+    monkeypatch.setattr(orchestrator_module, "reset_task_scratch", _reset)
+
+    def _report(**kwargs):
+        order.append("report")
+        report_entered.set()
+        if raise_on_report:
+            raise RuntimeError("group 9 held reporter raised")
+        assert release.wait(timeout=10.0), "group 9 reporter was never released"
+        return None
+
+    monkeypatch.setattr(orchestrator_module, "report_task_scratch", _report)
+    monkeypatch.setattr(
+        orchestrator._audit, "log_session_end", lambda **kwargs: order.append("audit"),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_read_completion_from_db",
+        lambda *args, **kwargs: order.append("read") or None,
+    )
+    return order, report_entered, release
+
+
+def test_run_agent_held_reporter_blocks_read_and_return_while_loop_advances(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Group 9 (TASK-8399): in an ordinary orchestrator venue a held teardown
+    reporter blocks the worker's return and the completion read while the
+    asyncio event loop keeps advancing; releasing it preserves the shipping
+    ``reset -> report -> audit -> completion-read`` order."""
+    import asyncio
+
+    _setup_codex_workspace(test_runtime, "engineering_head")
+    task_id = orchestrator.create_task("ping")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-group9-held")
+
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="sess-group9-held",
+    )
+
+    order, report_entered, release = _hold_group9_teardown_reporter(
+        monkeypatch, orchestrator,
+    )
+
+    async def _drive():
+        loop = asyncio.get_running_loop()
+        ticks = 0
+
+        async def _ticker():
+            nonlocal ticks
+            while True:
+                ticks += 1
+                await asyncio.sleep(0.002)
+
+        ticker = asyncio.create_task(_ticker())
+        with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+            future = loop.run_in_executor(
+                None,
+                lambda: orchestrator._run_agent(task_id, "engineering_head", "any prompt"),
+            )
+            for _ in range(500):
+                if report_entered.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert report_entered.is_set(), "teardown reporter was never reached"
+            # Held reporter: worker has not returned and the read has not run.
+            assert not future.done(), "worker returned while the reporter was held"
+            assert "read" not in order, "completion read ran while the reporter was held"
+            assert order == ["reset", "report"]
+            # The event loop itself is still advancing while held.
+            before = ticks
+            for _ in range(20):
+                await asyncio.sleep(0.01)
+            assert ticks > before, "event loop did not advance while the reporter was held"
+            assert not future.done()
+            assert "read" not in order
+            release.set()
+            result, report = await asyncio.wait_for(future, timeout=30.0)
+        ticker.cancel()
+        try:
+            await ticker
+        except asyncio.CancelledError:
+            pass
+        return result, report
+
+    result, report = asyncio.run(_drive())
+
+    assert result.success is True
+    assert report is None
+    assert order == ["reset", "report", "audit", "read"]
+
+
+def test_run_agent_caught_reporter_raise_keeps_reset_report_audit_read_order(
+    orchestrator, test_runtime, monkeypatch,
+):
+    """Group 9 (TASK-8399): a raising teardown reporter is caught (logged) and
+    the ordinary tail still completes ``reset -> report -> audit -> read``
+    without failing the launch."""
+    _setup_codex_workspace(test_runtime, "engineering_head")
+    task_id = orchestrator.create_task("ping")
+    monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-group9-raise")
+
+    mock_executor = MagicMock()
+    mock_executor.run.return_value = ExecutorResult(
+        success=True, duration_seconds=1, session_id="sess-group9-raise",
+    )
+
+    order, report_entered, _release = _hold_group9_teardown_reporter(
+        monkeypatch, orchestrator, raise_on_report=True,
+    )
+
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        result, report = orchestrator._run_agent(
+            task_id, "engineering_head", "any prompt",
+        )
+
+    assert result.success is True  # the caught reporter raise did not fail the launch
+    assert report is None
+    assert report_entered.is_set()
+    assert order == ["reset", "report", "audit", "read"]
+
+
+def test_prompt_time_line_shared_loader_config_failure_escapes(
+    orchestrator, test_runtime,
+):
+    """The prompt path shares the strict org-config loader: malformed YAML
+    raises OrgConfigError before an ordinary prompt/summary can be produced."""
+    from runtime.orchestrator.org_config import OrgConfigError
+
+    test_runtime.org_config_path.parent.mkdir(parents=True, exist_ok=True)
+    test_runtime.org_config_path.write_text("workspace_cleanup: {\n")
+    with pytest.raises(OrgConfigError):
+        orchestrator._current_time_line(None)

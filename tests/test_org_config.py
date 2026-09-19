@@ -28,13 +28,15 @@ def test_missing_file_returns_empty_config(tmp_path: Path) -> None:
     [
         "",
         "workspace_cleanup: {}\n",
+        "workspace_cleanup:\n",
         "workspace_cleanup:\n  enabled: false\n",
     ],
 )
 def test_workspace_cleanup_reclamation_actions_default_false(
     tmp_path: Path, body: str,
 ) -> None:
-    """An absent reclamation action key is reserved and disabled."""
+    """An absent block/key, a null block, and an empty block are reserved and
+    disabled (the null block is not a mapping error)."""
     runtime = _runtime(tmp_path)
     _write_config(runtime, body)
 
