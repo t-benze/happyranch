@@ -300,6 +300,29 @@ callable storage is deliberately not a shippable mixed-writer mode: the later
 convergence unit must move every legacy and new selection writer onto one CAS
 transaction before integration.
 
+Checkpoint B2a makes the accepted cross-family controls authenticated. Every
+shared read boundary — live selector, immutable selector history, by-id lookup,
+`ensure_authority_selector` and the v2 create/activate replay receipts — now
+authenticates the accepted control-audit preimage/receipt links in addition to
+the release/activation/selector chain: a missing, mutated, duplicated,
+mismatched or orphaned audit, or a type-valid receipt whose durable activation,
+release or selector row is absent, refuses without reconstructing, allocating
+or replacing anything, and orphan initializer audit residue refuses
+initialization instead of writing a replacement. A non-initial `legacy_v1`
+selector is bound by the regular APS preimage with its real predecessor; only
+the initial empty epoch-0 / legacy epoch-1 selector uses the frozen initializer
+preimage, and the exact three-arm CHECK is unchanged. Selector-aware legacy
+`activate` (a newly activated v1 release) and `reactivate_rollback` (an
+authenticated previously selected v1 activation) run under the same
+`BEGIN IMMEDIATE` selector CAS as v2; the v2→v1 reactivation appends a NEW
+selector/history/control audit and never appends, renumbers or reseals the
+original legacy activation. Legacy family epochs and team selector epochs
+remain separate counters. No startup, route, launch, prompt, completion,
+queue/reaper/consumer or UI surface reads or writes the selector yet: the
+shipping v1 writers in `runtime/daemon/routes/authority_policy.py` still bypass
+it and B2b must converge them, so this remains an intermediate unmerged
+storage/control seam rather than a shippable mixed-writer mode.
+
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the
 client, validates it; an omitted member remains omitted. The shipping CLI to

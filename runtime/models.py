@@ -752,14 +752,25 @@ class AuthorityPolicySelector(BaseModel):
                 family="empty", legacy_activation_id=None, selector_epoch=0, team=self.team,
             )
         elif self.family == "legacy_v1":
-            valid_arm = (
-                self.selector_epoch >= 1 and self.previous_selector_id is None
-                and self.legacy_activation_id is not None and self.v2_activation_id is None
-            )
-            expected = authority_policy_v2_initializer_selector_id(
-                family="legacy_v1", legacy_activation_id=self.legacy_activation_id,
-                selector_epoch=self.selector_epoch, team=self.team,
-            )
+            # Accepted R2: only the initial legacy epoch-1 selector is bound by
+            # the frozen initializer preimage. Every later legacy selection is a
+            # regular APS preimage with its real predecessor, exactly like v2.
+            if self.legacy_activation_id is None or self.v2_activation_id is not None:
+                valid_arm = False
+                expected = self.selector_id
+            elif self.previous_selector_id is None:
+                valid_arm = self.selector_epoch == 1
+                expected = authority_policy_v2_initializer_selector_id(
+                    family="legacy_v1", legacy_activation_id=self.legacy_activation_id,
+                    selector_epoch=1, team=self.team,
+                )
+            else:
+                valid_arm = self.selector_epoch >= 2
+                expected = authority_policy_v2_selector_id(
+                    activation_id=self.legacy_activation_id, family="legacy_v1",
+                    previous_selector_id=self.previous_selector_id,
+                    selector_epoch=self.selector_epoch, team=self.team,
+                )
         else:
             valid_arm = (
                 self.selector_epoch >= 1 and self.legacy_activation_id is None
@@ -942,6 +953,185 @@ class AuthorityPolicyV2ControlReceipt(BaseModel):
             raise ValueError("release_id must contain policy_digest")
         if self.activation_id != f"APV2A-{self.activation_digest}":
             raise ValueError("activation_id must contain activation_digest")
+        return self
+
+    def canonical_json(self) -> str:
+        return authority_policy_v2_canonical_json_bytes(self.model_dump(mode="json")).decode("utf-8")
+
+
+_AUTHORITY_POLICY_LEGACY_ACTIVATION_ID_RE = re.compile(r"^APA-[A-Za-z0-9._:-]{1,124}$")
+_AUTHORITY_POLICY_LEGACY_RELEASE_ID_RE = re.compile(r"^APR-[0-9a-f]{64}$")
+
+
+def _validate_authority_policy_legacy_activation_id(value: str, field_name: str) -> str:
+    # The shipping legacy activation id is ``APA-`` + sha256 hex, but the
+    # persisted activation model does not force that exact suffix. Stay strict
+    # and bounded while accepting every already-persisted legacy activation id.
+    if not _AUTHORITY_POLICY_LEGACY_ACTIVATION_ID_RE.fullmatch(value):
+        raise ValueError(f"{field_name} must be a bounded APA- legacy activation id")
+    return value
+
+
+def _validate_authority_policy_legacy_release_id(value: str, field_name: str) -> str:
+    if not _AUTHORITY_POLICY_LEGACY_RELEASE_ID_RE.fullmatch(value):
+        raise ValueError(f"{field_name} must be APR- followed by 64 lowercase hex")
+    return value
+
+
+def authority_policy_legacy_activation_request_preimage(
+    *, action: str, expected_selector_id: str | None, kind: str, release_id: str,
+    request_id: str, team: str,
+) -> dict[str, object]:
+    return {
+        "action": action, "expected_selector_id": expected_selector_id, "kind": kind,
+        "release_id": release_id, "request_id": request_id, "team": team,
+    }
+
+
+def authority_policy_legacy_reactivation_request_preimage(
+    *, action: str, activation_id: str, expected_selector_id: str | None, kind: str,
+    request_id: str, team: str,
+) -> dict[str, object]:
+    return {
+        "action": action, "activation_id": activation_id,
+        "expected_selector_id": expected_selector_id, "kind": kind,
+        "request_id": request_id, "team": team,
+    }
+
+
+class AuthorityPolicyLegacyActivationRequest(BaseModel):
+    """Strict selector-aware request to activate a NEW legacy v1 release.
+
+    The observed selector is the CAS base; the legacy family epoch is allocated
+    server-side from the sealed legacy stream, never supplied by the client.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    release_id: StrictStr
+    request_id: StrictStr
+    expected_selector_id: StrictStr | None
+    action: Literal["activate"] = "activate"
+
+    @field_validator("release_id")
+    @classmethod
+    def _legacy_activate_release_id(cls, value: str, info) -> str:
+        return _validate_authority_policy_legacy_release_id(value, info.field_name)
+
+    @field_validator("request_id")
+    @classmethod
+    def _legacy_activate_request_id(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_request_id(value, info.field_name)
+
+    @field_validator("expected_selector_id")
+    @classmethod
+    def _legacy_activate_selector_ref(cls, value: str | None, info) -> str | None:
+        return _validate_authority_policy_v2_selector_ref(value, info.field_name)
+
+    def request_preimage(self) -> dict[str, object]:
+        return authority_policy_legacy_activation_request_preimage(
+            action=self.action, expected_selector_id=self.expected_selector_id,
+            kind="legacy_activate", release_id=self.release_id,
+            request_id=self.request_id, team=self.team,
+        )
+
+    def request_digest(self) -> str:
+        return authority_policy_v2_sha256(self.request_preimage())
+
+
+class AuthorityPolicyLegacyReactivationRequest(BaseModel):
+    """Strict selector-aware request to re-select an already selected v1 activation.
+
+    The target is the exact authenticated legacy activation; the original
+    legacy activation row is never appended, renumbered or resealed.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    activation_id: StrictStr
+    request_id: StrictStr
+    expected_selector_id: StrictStr | None
+    action: Literal["reactivate_rollback"] = "reactivate_rollback"
+
+    @field_validator("activation_id")
+    @classmethod
+    def _legacy_reactivate_activation_id(cls, value: str, info) -> str:
+        return _validate_authority_policy_legacy_activation_id(value, info.field_name)
+
+    @field_validator("request_id")
+    @classmethod
+    def _legacy_reactivate_request_id(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_request_id(value, info.field_name)
+
+    @field_validator("expected_selector_id")
+    @classmethod
+    def _legacy_reactivate_selector_ref(cls, value: str | None, info) -> str | None:
+        return _validate_authority_policy_v2_selector_ref(value, info.field_name)
+
+    def request_preimage(self) -> dict[str, object]:
+        return authority_policy_legacy_reactivation_request_preimage(
+            action=self.action, activation_id=self.activation_id,
+            expected_selector_id=self.expected_selector_id,
+            kind="legacy_reactivate", request_id=self.request_id, team=self.team,
+        )
+
+    def request_digest(self) -> str:
+        return authority_policy_v2_sha256(self.request_preimage())
+
+
+class AuthorityPolicyLegacyControlReceipt(BaseModel):
+    """Deterministic receipt for a selector-aware legacy v1 selection."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    kind: Literal["legacy_activate", "legacy_reactivate_rollback"]
+    request_id: StrictStr
+    request_digest: StrictStr
+    release_id: StrictStr
+    policy_digest: StrictStr
+    release_version: StrictInt = Field(ge=1)
+    activation_id: StrictStr
+    activation_digest: StrictStr
+    selector_id: StrictStr
+    selector_epoch: StrictInt = Field(ge=1, le=2147483647)
+    previous_selector_id: StrictStr | None = None
+    action: Literal["bootstrap", "activate", "reactivate_rollback"]
+    created_at: StrictStr
+
+    @field_validator("request_digest", "policy_digest", "activation_digest")
+    @classmethod
+    def _legacy_receipt_digests(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_digest(value, info.field_name)
+
+    @field_validator("request_id")
+    @classmethod
+    def _legacy_receipt_request_id(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_request_id(value, info.field_name)
+
+    @field_validator("release_id")
+    @classmethod
+    def _legacy_receipt_release_id(cls, value: str, info) -> str:
+        return _validate_authority_policy_legacy_release_id(value, info.field_name)
+
+    @field_validator("activation_id")
+    @classmethod
+    def _legacy_receipt_activation_id(cls, value: str, info) -> str:
+        return _validate_authority_policy_legacy_activation_id(value, info.field_name)
+
+    @field_validator("selector_id", "previous_selector_id")
+    @classmethod
+    def _legacy_receipt_selectors(cls, value: str | None, info) -> str | None:
+        return _validate_authority_policy_v2_selector_ref(value, info.field_name)
+
+    @model_validator(mode="after")
+    def _legacy_receipt_bound_ids(self) -> AuthorityPolicyLegacyControlReceipt:
+        if self.release_id != f"APR-{self.policy_digest}":
+            raise ValueError("release_id must contain policy_digest")
+        if self.kind == "legacy_activate":
+            if self.action not in ("bootstrap", "activate"):
+                raise ValueError("legacy activate receipt action is invalid")
+        elif self.action != "reactivate_rollback":
+            raise ValueError("legacy reactivate receipt action is invalid")
         return self
 
     def canonical_json(self) -> str:

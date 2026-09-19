@@ -23,6 +23,9 @@ from runtime.models import (
     AuthorityCandidatePolicyPin,
     AuthorityEvaluation,
     AuthorityPolicyActivation,
+    AuthorityPolicyLegacyActivationRequest,
+    AuthorityPolicyLegacyControlReceipt,
+    AuthorityPolicyLegacyReactivationRequest,
     AuthorityPolicyRelease,
     AuthorityPolicySelector,
     AuthorityPolicyV2Activation,
@@ -13200,95 +13203,132 @@ class Database:
             release = self.get_authority_policy_release(release_id)
             if release is None or release.team != team:
                 raise LookupError("authority activation release unavailable")
-            previous = self._conn.execute(
-                "SELECT * FROM authority_policy_activations WHERE team=? "
-                "ORDER BY epoch DESC LIMIT 1",
-                (team,),
-            ).fetchone()
-            if previous is None:
-                if expected_previous_epoch != 0 or action != "bootstrap":
-                    raise sqlite3.IntegrityError("authority activation bootstrap CAS conflict")
-                epoch = 1
-            elif previous["epoch"] != expected_previous_epoch or action == "bootstrap":
-                raise sqlite3.IntegrityError("authority activation CAS conflict")
-            else:
-                epoch = previous["epoch"] + 1
-            created_at = _now()
-            activation_id = "APA-" + hashlib.sha256(
-                f"{team}:{request_id}:{request_digest}".encode("utf-8")
-            ).hexdigest()
-            activation = AuthorityPolicyActivation.create(
-                id=activation_id,
-                team=team,
-                epoch=epoch,
-                release_id=release_id,
-                previous_activation_id=None if previous is None else previous["id"],
+            activation = self._append_authority_policy_activation_uncommitted(
+                team=team, release=release,
                 expected_previous_epoch=expected_previous_epoch,
-                action=action,
-                actor_kind="shared_local_operator_credential",
-                request_id=request_id,
+                action=action, request_id=request_id,
                 request_digest=request_digest,
-                created_at=created_at,
             )
-            previously_activated = self._conn.execute(
-                "SELECT 1 FROM authority_policy_activations "
-                "WHERE team=? AND release_id=? LIMIT 1",
-                (team, release_id),
-            ).fetchone() is not None
-            if action == "activate" and previously_activated:
-                raise sqlite3.IntegrityError("activate target was previously activated")
-            if action == "reactivate_rollback":
-                older = self._conn.execute(
-                    """SELECT 1 FROM authority_policy_releases target
-                       JOIN authority_policy_releases current ON current.id=?
-                       WHERE target.id=? AND target.policy_id=current.policy_id
-                         AND target.version<current.version""",
-                    (previous["release_id"], release_id),
-                ).fetchone()
-                if (
-                    not previously_activated
-                    or release_id == previous["release_id"]
-                    or older is None
-                ):
-                    raise sqlite3.IntegrityError(
-                        "reactivation target is not an older prior release"
-                    )
-            self._conn.execute(
-                """INSERT INTO authority_policy_activations
-                   (id,team,epoch,release_id,previous_activation_id,
-                    expected_previous_epoch,action,actor_kind,request_id,
-                    request_digest,created_at,activation_digest)
-                   VALUES (:id,:team,:epoch,:release_id,:previous_activation_id,
-                           :expected_previous_epoch,:action,:actor_kind,:request_id,
-                           :request_digest,:created_at,:activation_digest)""",
-                activation.model_dump(mode="json"),
-            )
-            audit_action = (
-                "authority_policy_activated"
-                if action in ("activate", "bootstrap")
-                else "authority_policy_reactivated"
-            )
-            payload = {
-                "activation_id": activation.id,
-                "action": action,
-                "actor_kind": "shared_local_operator_credential",
-                "epoch": epoch,
-                "policy_digest": release.policy_digest,
-                "release_id": release.id,
-                "request_digest": request_digest,
-                "team": team,
-            }
-            self.insert_audit_log_uncommitted(
-                task_id=f"config:authority-policy:{team}",
-                agent="shared_local_operator_credential",
-                action=audit_action,
-                payload=payload,
+            self._insert_authority_policy_activation_audit_uncommitted(
+                team=team, release=release, activation=activation,
+                request_digest=request_digest,
             )
             self._conn.commit()
             return activation
         except Exception:
             self._conn.rollback()
             raise
+
+    def _append_authority_policy_activation_uncommitted(
+        self,
+        *,
+        team: str,
+        release: AuthorityPolicyRelease,
+        expected_previous_epoch: int,
+        action: str,
+        request_id: str,
+        request_digest: str,
+    ) -> AuthorityPolicyActivation:
+        """Validate the legacy CAS/action rules and INSERT one activation.
+
+        The transaction owner is the caller. This seam never begins, commits or
+        rolls back, so a selector-aware legacy write can keep the legacy
+        activation and the selector/history/control audit in ONE
+        ``BEGIN IMMEDIATE`` without changing the legacy semantics.
+        """
+        previous = self._conn.execute(
+            "SELECT * FROM authority_policy_activations WHERE team=? "
+            "ORDER BY epoch DESC LIMIT 1",
+            (team,),
+        ).fetchone()
+        if previous is None:
+            if expected_previous_epoch != 0 or action != "bootstrap":
+                raise sqlite3.IntegrityError("authority activation bootstrap CAS conflict")
+            epoch = 1
+        elif previous["epoch"] != expected_previous_epoch or action == "bootstrap":
+            raise sqlite3.IntegrityError("authority activation CAS conflict")
+        else:
+            epoch = previous["epoch"] + 1
+        created_at = _now()
+        activation_id = "APA-" + hashlib.sha256(
+            f"{team}:{request_id}:{request_digest}".encode("utf-8")
+        ).hexdigest()
+        activation = AuthorityPolicyActivation.create(
+            id=activation_id,
+            team=team,
+            epoch=epoch,
+            release_id=release.id,
+            previous_activation_id=None if previous is None else previous["id"],
+            expected_previous_epoch=expected_previous_epoch,
+            action=action,
+            actor_kind="shared_local_operator_credential",
+            request_id=request_id,
+            request_digest=request_digest,
+            created_at=created_at,
+        )
+        previously_activated = self._conn.execute(
+            "SELECT 1 FROM authority_policy_activations "
+            "WHERE team=? AND release_id=? LIMIT 1",
+            (team, release.id),
+        ).fetchone() is not None
+        if action == "activate" and previously_activated:
+            raise sqlite3.IntegrityError("activate target was previously activated")
+        if action == "reactivate_rollback":
+            older = self._conn.execute(
+                """SELECT 1 FROM authority_policy_releases target
+                   JOIN authority_policy_releases current ON current.id=?
+                   WHERE target.id=? AND target.policy_id=current.policy_id
+                     AND target.version<current.version""",
+                (previous["release_id"], release.id),
+            ).fetchone()
+            if (
+                not previously_activated
+                or release.id == previous["release_id"]
+                or older is None
+            ):
+                raise sqlite3.IntegrityError(
+                    "reactivation target is not an older prior release"
+                )
+        self._conn.execute(
+            """INSERT INTO authority_policy_activations
+               (id,team,epoch,release_id,previous_activation_id,
+                expected_previous_epoch,action,actor_kind,request_id,
+                request_digest,created_at,activation_digest)
+               VALUES (:id,:team,:epoch,:release_id,:previous_activation_id,
+                       :expected_previous_epoch,:action,:actor_kind,:request_id,
+                       :request_digest,:created_at,:activation_digest)""",
+            activation.model_dump(mode="json"),
+        )
+        return activation
+
+    def _insert_authority_policy_activation_audit_uncommitted(
+        self,
+        *,
+        team: str,
+        release: AuthorityPolicyRelease,
+        activation: AuthorityPolicyActivation,
+        request_digest: str,
+    ) -> None:
+        audit_action = (
+            "authority_policy_activated"
+            if activation.action in ("activate", "bootstrap")
+            else "authority_policy_reactivated"
+        )
+        self.insert_audit_log_uncommitted(
+            task_id=f"config:authority-policy:{team}",
+            agent="shared_local_operator_credential",
+            action=audit_action,
+            payload={
+                "activation_id": activation.id,
+                "action": activation.action,
+                "actor_kind": "shared_local_operator_credential",
+                "epoch": activation.epoch,
+                "policy_digest": release.policy_digest,
+                "release_id": release.id,
+                "request_digest": request_digest,
+                "team": team,
+            },
+        )
 
     @_synchronized
     def get_authority_policy_activation(self, activation_id: str) -> AuthorityPolicyActivation | None:
@@ -13423,6 +13463,11 @@ class Database:
                     raise ValueError("authority selector history is not a single chain")
                 if item.family == "empty":
                     raise ValueError("authority empty selector must be the initializer")
+        # Authenticated control audit/preimage/receipt links are part of the
+        # selector's authority: a missing/mutated/duplicated initializer or
+        # selection audit, or a receipt without its durable activation/release,
+        # refuses without reconstructing anything.
+        self._authenticate_authority_selector_control_audit(team, selectors)
         return selectors
 
     @_synchronized
@@ -13566,6 +13611,237 @@ class Database:
             raise ValueError("authority v2 control receipt is corrupt") from exc
         return receipt
 
+    @staticmethod
+    def _authority_policy_legacy_receipt_from_audit_row(
+        row,
+    ) -> AuthorityPolicyLegacyControlReceipt:
+        try:
+            payload = json.loads(row["payload_json"])
+            receipt = AuthorityPolicyLegacyControlReceipt.model_validate(payload["receipt"])
+        except Exception as exc:
+            raise ValueError("authority legacy control receipt is corrupt") from exc
+        return receipt
+
+    def _authenticate_authority_v2_control_receipt(
+        self, receipt: AuthorityPolicyV2ControlReceipt, team: str,
+        selectors: list[AuthorityPolicySelector],
+    ) -> AuthorityPolicySelector:
+        """Prove a type-valid v2 receipt against the authenticated durable state."""
+        if receipt.team != team:
+            raise ValueError("authority v2 control receipt team mismatch")
+        matches = [s for s in selectors if s.selector_id == receipt.selector_id]
+        if len(matches) != 1:
+            raise ValueError("authority v2 control receipt selector is not authenticated")
+        selector = matches[0]
+        if selector.family != "v2" or selector.selector_epoch != receipt.selector_epoch:
+            raise ValueError("authority v2 control receipt selector is not authenticated")
+        if selector.v2_activation_id != receipt.activation_id:
+            raise ValueError("authority v2 control receipt activation is not authenticated")
+        if selector.previous_selector_id != receipt.previous_selector_id:
+            raise ValueError("authority v2 control receipt predecessor mismatch")
+        activation = self.get_authority_policy_v2_activation(receipt.activation_id)
+        if activation is None or activation.team != team:
+            raise ValueError("authority v2 control receipt activation is not durable")
+        if (
+            activation.release_id != receipt.release_id
+            or activation.release_digest != receipt.policy_digest
+            or activation.selector_epoch != receipt.selector_epoch
+            or activation.previous_selector_id != receipt.previous_selector_id
+            or activation.action != receipt.action
+            or activation.activation_digest != receipt.activation_digest
+            or activation.request_id != receipt.activation_request_id
+            or activation.request_digest != receipt.activation_request_digest
+        ):
+            raise ValueError("authority v2 control receipt does not match its durable activation")
+        release = self.get_authority_policy_v2_release(receipt.release_id)
+        if (
+            release is None or release.team != team
+            or release.policy_digest != receipt.policy_digest
+            or release.version != receipt.release_version
+        ):
+            raise ValueError("authority v2 control receipt release is not durable")
+        return selector
+
+    def _authenticate_authority_legacy_control_receipt(
+        self, receipt: AuthorityPolicyLegacyControlReceipt, team: str,
+        selectors: list[AuthorityPolicySelector],
+    ) -> AuthorityPolicySelector:
+        """Prove a type-valid legacy receipt against the authenticated durable state."""
+        if receipt.team != team:
+            raise ValueError("authority legacy control receipt team mismatch")
+        matches = [s for s in selectors if s.selector_id == receipt.selector_id]
+        if len(matches) != 1:
+            raise ValueError("authority legacy control receipt selector is not authenticated")
+        selector = matches[0]
+        if selector.family != "legacy_v1" or selector.selector_epoch != receipt.selector_epoch:
+            raise ValueError("authority legacy control receipt selector is not authenticated")
+        if selector.legacy_activation_id != receipt.activation_id:
+            raise ValueError("authority legacy control receipt activation is not authenticated")
+        if selector.previous_selector_id != receipt.previous_selector_id:
+            raise ValueError("authority legacy control receipt predecessor mismatch")
+        activation = self.get_authority_policy_activation(receipt.activation_id)
+        if activation is None or activation.team != team:
+            raise ValueError("authority legacy control receipt activation is not durable")
+        if (
+            activation.release_id != receipt.release_id
+            or activation.activation_digest != receipt.activation_digest
+        ):
+            raise ValueError(
+                "authority legacy control receipt does not match its durable activation")
+        if receipt.kind == "legacy_activate":
+            if (
+                activation.action != receipt.action
+                or activation.request_id != receipt.request_id
+                or activation.request_digest != receipt.request_digest
+            ):
+                raise ValueError(
+                    "authority legacy control receipt does not match its durable activation")
+        release = self.get_authority_policy_release(receipt.release_id)
+        if (
+            release is None or release.team != team
+            or release.policy_digest != receipt.policy_digest
+            or release.version != receipt.release_version
+        ):
+            raise ValueError("authority legacy control receipt release is not durable")
+        return selector
+
+    def _authenticate_authority_selector_control_audit(
+        self, team: str, selectors: list[AuthorityPolicySelector]
+    ) -> None:
+        """Authenticate the accepted control audit/preimage/receipt links.
+
+        Every live selector must be backed by exactly one accepted control-audit
+        event; orphan or duplicated audit rows, a missing initializer, a
+        mismatched preimage/receipt or a receipt whose durable activation or
+        release is absent all refuse. Diagnostic ``activation_rejected`` events
+        are not successful write authority and are ignored. Read-only: never
+        allocates, reconstructs or replaces anything.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_control_audit WHERE team=? ORDER BY id",
+            (team,),
+        ).fetchall()
+        initializers: dict[str, list] = {}
+        selections: dict[str, list] = {}
+        created: dict[str, list] = {}
+        for row in rows:
+            kind = row["kind"]
+            if kind in ("selector_initialized_empty", "selector_initialized_legacy"):
+                selector_id = row["selector_id"]
+                if not isinstance(selector_id, str) or not selector_id:
+                    raise ValueError("authority selector initialization audit is corrupt")
+                initializers.setdefault(selector_id, []).append(row)
+            elif kind == "activation_selected":
+                selector_id = row["selector_id"]
+                if not isinstance(selector_id, str) or not selector_id:
+                    raise ValueError("authority selector selection audit is corrupt")
+                selections.setdefault(selector_id, []).append(row)
+            elif kind == "release_created":
+                request_id = row["request_id"]
+                if not isinstance(request_id, str) or not request_id:
+                    raise ValueError("authority v2 create audit is corrupt")
+                created.setdefault(request_id, []).append(row)
+            elif kind == "activation_rejected":
+                continue
+            else:
+                raise ValueError("authority selector control audit kind is invalid")
+
+        first = selectors[0]
+        initializer_rows = initializers.get(first.selector_id, [])
+        if len(initializer_rows) != 1:
+            raise ValueError(
+                "authority selector initialization audit is missing or duplicated")
+        initializer_row = initializer_rows[0]
+        if first.family == "empty":
+            expected_kind = "selector_initialized_empty"
+            expected_release_id = None
+            expected_activation_id = None
+            preimage = authority_policy_v2_initializer_selector_preimage(
+                family="empty", legacy_activation_id=None, selector_epoch=0, team=team)
+        else:
+            activation = self.get_authority_policy_activation(first.legacy_activation_id)
+            if activation is None or activation.team != team:
+                raise ValueError("authority selector legacy initializer is corrupt")
+            expected_kind = "selector_initialized_legacy"
+            expected_release_id = activation.release_id
+            expected_activation_id = activation.id
+            preimage = authority_policy_v2_initializer_selector_preimage(
+                family="legacy_v1", legacy_activation_id=activation.id,
+                selector_epoch=1, team=team)
+        if (
+            initializer_row["kind"] != expected_kind
+            or initializer_row["request_id"] is not None
+            or initializer_row["request_digest"] is not None
+            or initializer_row["release_id"] != expected_release_id
+            or initializer_row["activation_id"] != expected_activation_id
+            or initializer_row["action"] is not None
+            or initializer_row["payload_json"]
+            != authority_policy_v2_canonical_json_bytes(preimage).decode("utf-8")
+        ):
+            raise ValueError("authority selector initialization audit is corrupt")
+        if set(initializers) != {first.selector_id}:
+            raise ValueError("authority selector initialization audit residue")
+
+        expected_selection_ids = {s.selector_id for s in selectors[1:]}
+        if set(selections) != expected_selection_ids:
+            raise ValueError("authority selector selection audit is missing or orphaned")
+
+        paired_create_ids: set[str] = set()
+        for selector in selectors[1:]:
+            selector_rows = selections.get(selector.selector_id, [])
+            if len(selector_rows) != 1:
+                raise ValueError("authority selector selection audit is duplicated")
+            row = selector_rows[0]
+            if selector.family == "v2":
+                activation = self.get_authority_policy_v2_activation(
+                    selector.v2_activation_id)
+                if activation is None or activation.team != team:
+                    raise ValueError("authority selector v2 activation linkage is corrupt")
+                if (
+                    row["activation_id"] != activation.id
+                    or row["release_id"] != activation.release_id
+                    or row["action"] != activation.action
+                    or row["request_id"] != activation.request_id
+                    or row["request_digest"] != activation.request_digest
+                ):
+                    raise ValueError("authority selector selection audit is corrupt")
+                receipt = self._authority_policy_v2_receipt_from_audit_row(row)
+                self._authenticate_authority_v2_control_receipt(receipt, team, selectors)
+                if receipt.create_request_id is not None:
+                    paired = created.get(receipt.create_request_id, [])
+                    if len(paired) != 1:
+                        raise ValueError("authority v2 create audit is missing or duplicated")
+                    paired_row = paired[0]
+                    if (
+                        paired_row["release_id"] != receipt.release_id
+                        or paired_row["request_digest"] != receipt.create_request_digest
+                        or paired_row["selector_id"] is not None
+                        or paired_row["activation_id"] is not None
+                        or self._authority_policy_v2_receipt_from_audit_row(paired_row)
+                        != receipt
+                    ):
+                        raise ValueError("authority v2 create audit is corrupt")
+                    paired_create_ids.add(receipt.create_request_id)
+            else:
+                activation = self.get_authority_policy_activation(
+                    selector.legacy_activation_id)
+                if activation is None or activation.team != team:
+                    raise ValueError("authority selector legacy activation linkage is corrupt")
+                if (
+                    row["activation_id"] != activation.id
+                    or row["release_id"] != activation.release_id
+                    or row["action"] not in ("activate", "reactivate_rollback")
+                ):
+                    raise ValueError("authority selector selection audit is corrupt")
+                receipt = self._authority_policy_legacy_receipt_from_audit_row(row)
+                self._authenticate_authority_legacy_control_receipt(receipt, team, selectors)
+
+        if set(created) != paired_create_ids:
+            raise ValueError("authority v2 create audit is missing or orphaned")
+        for request_id, request_rows in created.items():
+            if len(request_rows) != 1:
+                raise ValueError("authority v2 create audit is duplicated")
+
     def _get_authority_selector_uncommitted(
         self, team: str
     ) -> AuthorityPolicySelector | None:
@@ -13625,6 +13901,16 @@ class Database:
             if history_count:
                 raise ValueError(
                     "authority selector initialization_unavailable: selector history residue"
+                )
+            # Orphan initializer/control audit without a selector or history is
+            # refusal, never a reason to allocate a replacement initializer.
+            control_audit_count = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM authority_policy_v2_control_audit WHERE team=?",
+                (team,),
+            ).fetchone()["n"]
+            if control_audit_count:
+                raise ValueError(
+                    "authority selector initialization_unavailable: control audit residue"
                 )
             if self._conn.execute(
                 "SELECT 1 FROM authority_policy_v2_activations WHERE team=? LIMIT 1", (team,)
@@ -13754,6 +14040,8 @@ class Database:
                     raise sqlite3.IntegrityError(
                         "v2 authority create replay conflicts with a different activation request"
                     )
+                selectors = self._load_authority_selector_history_chain(team)
+                self._authenticate_authority_v2_control_receipt(receipt, team, selectors)
                 self._conn.commit()
                 return receipt
             if self._conn.execute(
@@ -13877,6 +14165,8 @@ class Database:
                         "v2 authority activation request conflicts with an existing control write"
                     )
                 receipt = self._authority_policy_v2_receipt_from_audit_row(row)
+                selectors = self._load_authority_selector_history_chain(team)
+                self._authenticate_authority_v2_control_receipt(receipt, team, selectors)
                 self._conn.commit()
                 return receipt
             selector = self._get_authority_selector_uncommitted(team)
@@ -13977,6 +14267,213 @@ class Database:
                 activation_id=activation.id, selector_id=selector_id,
                 action=request.action, payload_json=receipt_payload,
                 created_at=created_at,
+            )
+            self._conn.commit()
+            return receipt
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def activate_authority_policy_legacy(
+        self, request: AuthorityPolicyLegacyActivationRequest | dict
+    ) -> AuthorityPolicyLegacyControlReceipt:
+        """Select a NEW legacy v1 release under the shared selector CAS.
+
+        The legacy family epoch is allocated from the sealed legacy stream and
+        the legacy activation, its legacy audit, the new selector/history and
+        the control audit/receipt commit in ONE ``BEGIN IMMEDIATE``.
+        """
+        request = AuthorityPolicyLegacyActivationRequest.model_validate(
+            request.model_dump(mode="json")
+            if isinstance(request, AuthorityPolicyLegacyActivationRequest) else request
+        )
+        team = request.team
+        request_digest = request.request_digest()
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM authority_policy_v2_control_audit "
+                "WHERE team=? AND request_id=? ORDER BY id DESC LIMIT 1",
+                (team, request.request_id),
+            ).fetchone()
+            if row is not None:
+                if (
+                    row["kind"] != "activation_selected"
+                    or row["request_digest"] != request_digest
+                ):
+                    raise sqlite3.IntegrityError(
+                        "legacy authority activation request conflicts with an existing control write"
+                    )
+                receipt = self._authority_policy_legacy_receipt_from_audit_row(row)
+                selectors = self._load_authority_selector_history_chain(team)
+                self._authenticate_authority_legacy_control_receipt(receipt, team, selectors)
+                self._conn.commit()
+                return receipt
+            selector = self._get_authority_selector_uncommitted(team)
+            if selector is None:
+                raise sqlite3.IntegrityError("authority selector is not initialized")
+            self._require_authority_selector_cas(selector, request.expected_selector_id)
+            release = self.get_authority_policy_release(request.release_id)
+            if release is None or release.team != team:
+                raise sqlite3.IntegrityError(
+                    "legacy authority activation release is unavailable")
+            previous = self._conn.execute(
+                "SELECT * FROM authority_policy_activations WHERE team=? "
+                "ORDER BY epoch DESC LIMIT 1",
+                (team,),
+            ).fetchone()
+            expected_previous_epoch = 0 if previous is None else previous["epoch"]
+            action = "bootstrap" if previous is None else "activate"
+            activation = self._append_authority_policy_activation_uncommitted(
+                team=team, release=release,
+                expected_previous_epoch=expected_previous_epoch, action=action,
+                request_id=request.request_id, request_digest=request_digest,
+            )
+            self._insert_authority_policy_activation_audit_uncommitted(
+                team=team, release=release, activation=activation,
+                request_digest=request_digest,
+            )
+            new_epoch = selector.selector_epoch + 1
+            if new_epoch > 2147483647:
+                raise sqlite3.IntegrityError("authority selector epoch is exhausted")
+            created_at = _now().isoformat()
+            selector_id = authority_policy_v2_selector_id(
+                activation_id=activation.id, family="legacy_v1",
+                previous_selector_id=selector.selector_id,
+                selector_epoch=new_epoch, team=team,
+            )
+            new_selector = AuthorityPolicySelector(
+                team=team, selector_id=selector_id, family="legacy_v1",
+                selector_epoch=new_epoch, previous_selector_id=selector.selector_id,
+                legacy_activation_id=activation.id, v2_activation_id=None,
+                created_at=created_at,
+            )
+            receipt = AuthorityPolicyLegacyControlReceipt(
+                team=team, kind="legacy_activate", request_id=request.request_id,
+                request_digest=request_digest, release_id=release.id,
+                policy_digest=release.policy_digest, release_version=release.version,
+                activation_id=activation.id,
+                activation_digest=activation.activation_digest,
+                selector_id=selector_id, selector_epoch=new_epoch,
+                previous_selector_id=selector.selector_id, action=action,
+                created_at=created_at,
+            )
+            receipt_payload = json.dumps(
+                {"receipt": json.loads(receipt.canonical_json())},
+                sort_keys=True, separators=(",", ":"),
+            )
+            self._insert_authority_policy_selector_history_uncommitted(new_selector)
+            self._write_authority_policy_active_selector_uncommitted(new_selector)
+            self._insert_authority_policy_v2_control_audit_uncommitted(
+                team=team, request_id=request.request_id,
+                request_digest=request_digest, kind="activation_selected",
+                release_id=release.id, activation_id=activation.id,
+                selector_id=selector_id, action=action,
+                payload_json=receipt_payload, created_at=created_at,
+            )
+            self._conn.commit()
+            return receipt
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    @_synchronized
+    def reactivate_authority_policy_legacy(
+        self, request: AuthorityPolicyLegacyReactivationRequest | dict
+    ) -> AuthorityPolicyLegacyControlReceipt:
+        """Re-select an authenticated previously selected legacy v1 activation.
+
+        Appends a NEW selector/history/control audit with
+        ``reactivate_rollback``. The original legacy activation is never
+        appended, renumbered or resealed, so a v1->v2->v1 cross-family
+        rollback is byte-preserving.
+        """
+        request = AuthorityPolicyLegacyReactivationRequest.model_validate(
+            request.model_dump(mode="json")
+            if isinstance(request, AuthorityPolicyLegacyReactivationRequest) else request
+        )
+        team = request.team
+        request_digest = request.request_digest()
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM authority_policy_v2_control_audit "
+                "WHERE team=? AND request_id=? ORDER BY id DESC LIMIT 1",
+                (team, request.request_id),
+            ).fetchone()
+            if row is not None:
+                if (
+                    row["kind"] != "activation_selected"
+                    or row["request_digest"] != request_digest
+                ):
+                    raise sqlite3.IntegrityError(
+                        "legacy authority reactivation request conflicts with an existing control write"
+                    )
+                receipt = self._authority_policy_legacy_receipt_from_audit_row(row)
+                selectors = self._load_authority_selector_history_chain(team)
+                self._authenticate_authority_legacy_control_receipt(receipt, team, selectors)
+                self._conn.commit()
+                return receipt
+            selector = self._get_authority_selector_uncommitted(team)
+            if selector is None:
+                raise sqlite3.IntegrityError("authority selector is not initialized")
+            self._require_authority_selector_cas(selector, request.expected_selector_id)
+            activation = self.get_authority_policy_activation(request.activation_id)
+            if activation is None or activation.team != team:
+                raise sqlite3.IntegrityError(
+                    "legacy authority reactivation target is unavailable")
+            release = self.get_authority_policy_release(activation.release_id)
+            if release is None or release.team != team:
+                raise ValueError("legacy authority reactivation release linkage is corrupt")
+            previously_selected = self._conn.execute(
+                "SELECT 1 FROM authority_policy_active_selector_history "
+                "WHERE team=? AND legacy_activation_id=? LIMIT 1",
+                (team, activation.id),
+            ).fetchone() is not None
+            if not previously_selected:
+                raise sqlite3.IntegrityError(
+                    "legacy authority reactivation target was never selected")
+            if selector.family == "legacy_v1" and selector.legacy_activation_id == activation.id:
+                raise sqlite3.IntegrityError(
+                    "legacy authority reactivation target is the current selection")
+            new_epoch = selector.selector_epoch + 1
+            if new_epoch > 2147483647:
+                raise sqlite3.IntegrityError("authority selector epoch is exhausted")
+            created_at = _now().isoformat()
+            selector_id = authority_policy_v2_selector_id(
+                activation_id=activation.id, family="legacy_v1",
+                previous_selector_id=selector.selector_id,
+                selector_epoch=new_epoch, team=team,
+            )
+            new_selector = AuthorityPolicySelector(
+                team=team, selector_id=selector_id, family="legacy_v1",
+                selector_epoch=new_epoch, previous_selector_id=selector.selector_id,
+                legacy_activation_id=activation.id, v2_activation_id=None,
+                created_at=created_at,
+            )
+            receipt = AuthorityPolicyLegacyControlReceipt(
+                team=team, kind="legacy_reactivate_rollback",
+                request_id=request.request_id, request_digest=request_digest,
+                release_id=release.id, policy_digest=release.policy_digest,
+                release_version=release.version, activation_id=activation.id,
+                activation_digest=activation.activation_digest,
+                selector_id=selector_id, selector_epoch=new_epoch,
+                previous_selector_id=selector.selector_id,
+                action="reactivate_rollback", created_at=created_at,
+            )
+            receipt_payload = json.dumps(
+                {"receipt": json.loads(receipt.canonical_json())},
+                sort_keys=True, separators=(",", ":"),
+            )
+            self._insert_authority_policy_selector_history_uncommitted(new_selector)
+            self._write_authority_policy_active_selector_uncommitted(new_selector)
+            self._insert_authority_policy_v2_control_audit_uncommitted(
+                team=team, request_id=request.request_id,
+                request_digest=request_digest, kind="activation_selected",
+                release_id=release.id, activation_id=activation.id,
+                selector_id=selector_id, action="reactivate_rollback",
+                payload_json=receipt_payload, created_at=created_at,
             )
             self._conn.commit()
             return receipt

@@ -16,6 +16,9 @@ from runtime.models import (
     AuthorityCandidate,
     AuthorityCandidatePolicyPin,
     AuthorityPolicyActivation,
+    AuthorityPolicyLegacyActivationRequest,
+    AuthorityPolicyLegacyControlReceipt,
+    AuthorityPolicyLegacyReactivationRequest,
     AuthorityPolicyRelease,
     AuthorityPolicySelector,
     AuthorityPolicyV2Activation,
@@ -122,6 +125,16 @@ class AuthorityPolicyStore:
         self, request: AuthorityPolicyV2ActivationControlRequest
     ) -> AuthorityPolicyV2ControlReceipt:
         return self._db.activate_authority_policy_v2(request)
+
+    def activate_legacy_authority_policy(
+        self, request: AuthorityPolicyLegacyActivationRequest
+    ) -> AuthorityPolicyLegacyControlReceipt:
+        return self._db.activate_authority_policy_legacy(request)
+
+    def reactivate_legacy_authority_policy(
+        self, request: AuthorityPolicyLegacyReactivationRequest
+    ) -> AuthorityPolicyLegacyControlReceipt:
+        return self._db.reactivate_authority_policy_legacy(request)
 
     @staticmethod
     def _encode_cursor(payload: dict) -> str:
