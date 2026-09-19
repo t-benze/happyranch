@@ -1607,6 +1607,20 @@ def _current_budget_ceilings(orch: "Orchestrator") -> int:
     return org_cap
 
 
+def authority_policy_v2_claim_eligibility(orch: "Orchestrator") -> dict[str, int]:
+    """Narrow server-owned mechanical-eligibility input for a v2 claim.
+
+    Returns only the org-config revise-round ceiling that the claim
+    transaction must enforce against the actual persisted
+    ``tasks.revision_count``; the Database re-reads every task/owner/session
+    fact itself and accepts no caller-supplied boolean.  This deliberately
+    does NOT consult ``_server_fact_clause`` adverse-review, partial-work or
+    raw-DDL must-escalate clauses: those remain v1 escalation diagnostics and
+    are never a v2 claim veto, and no phrase or clause unlock is introduced.
+    """
+    return {"max_revise_rounds": _current_budget_ceilings(orch)}
+
+
 def _server_evidence(
     orch: "Orchestrator",
     current: "TaskRecord",

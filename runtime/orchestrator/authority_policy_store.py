@@ -24,10 +24,13 @@ from runtime.models import (
     AuthorityPolicyV2Activation,
     AuthorityPolicyV2ActivationControlRequest,
     AuthorityPolicyV2Attempt,
+    AuthorityPolicyV2Candidate,
     AuthorityPolicyV2ControlReceipt,
     AuthorityPolicyV2PairedControlRequest,
+    AuthorityPolicyV2Pin,
     AuthorityPolicyV2Release,
     AuthorityPolicyV2SessionBinding,
+    AuthorityPolicyV2StageOutcome,
 )
 
 
@@ -182,6 +185,51 @@ class AuthorityPolicyStore:
     ) -> list[dict]:
         return self._db.list_authority_policy_v2_result_stage_audits(
             root_task_id=root_task_id, manager_agent=manager_agent,
+        )
+
+    # -- THR-229 checkpoint C3b: thin forwarders over the DB-owned v2
+    # candidate/pin claim and the separate claim-audit stage.  The facade never
+    # begins, commits or rolls back and never nests a committing call.
+
+    def claim_v2_candidate(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
+    ) -> AuthorityPolicyV2StageOutcome:
+        return self._db.claim_authority_policy_v2_candidate(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+            max_revise_rounds=max_revise_rounds,
+        )
+
+    def audit_v2_candidate_claim(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        return self._db.audit_authority_policy_v2_candidate_claim(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+        )
+
+    def get_v2_candidate(self, candidate_id: str) -> AuthorityPolicyV2Candidate | None:
+        return self._db.get_authority_policy_v2_candidate(candidate_id)
+
+    def get_v2_candidate_for_result(
+        self, result_id: int
+    ) -> AuthorityPolicyV2Candidate | None:
+        return self._db.get_authority_policy_v2_candidate_for_result(result_id)
+
+    def get_v2_pin(self, candidate_id: str) -> AuthorityPolicyV2Pin | None:
+        return self._db.get_authority_policy_v2_pin(candidate_id)
+
+    def list_v2_candidate_audits(self, candidate_id: str) -> list[dict]:
+        return self._db.list_authority_policy_v2_candidate_audits(candidate_id)
+
+    def get_v2_candidate_claim_audit(self, candidate_id: str) -> dict | None:
+        return self._db.get_authority_policy_v2_candidate_audit(
+            candidate_id, "claimed",
         )
 
     def bind_legacy_session(

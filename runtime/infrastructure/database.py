@@ -32,19 +32,31 @@ from runtime.models import (
     AuthorityPolicyV2Activation,
     AuthorityPolicyV2ActivationControlRequest,
     AuthorityPolicyV2Attempt,
+    AuthorityPolicyV2Candidate,
+    AuthorityPolicyV2CandidateAudit,
     AuthorityPolicyV2ControlReceipt,
     AuthorityPolicyV2PairedControlRequest,
+    AuthorityPolicyV2Pin,
     AuthorityPolicyV2Release,
     AuthorityPolicyV2SessionBinding,
+    AuthorityPolicyV2StageOutcome,
     AuthorityFenceResult,
     AuthorityRedactionClass,
     AuthorityRetentionClass,
     AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_STATES,
     AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_TRANSITIONS,
     AUTHORITY_POLICY_V2_ATTEMPT_STAGES,
+    AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+    AUTHORITY_POLICY_V2_TEAM,
     authority_policy_v2_attempt_id,
     authority_policy_v2_canonical_json_bytes,
+    authority_policy_v2_candidate_claim_preimage,
+    authority_policy_v2_causal_result_digest,
+    authority_policy_v2_contract_digest,
     authority_policy_v2_initializer_selector_id,
     authority_policy_v2_initializer_selector_preimage,
     authority_policy_v2_selector_id,
@@ -468,7 +480,7 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
                 activation_epoch INTEGER NOT NULL
                     CHECK(activation_epoch > 0 AND activation_epoch <= 2147483647),
                 selector_id TEXT NOT NULL,
-                stage TEXT NOT NULL CHECK(stage IN ('admitted')),
+                stage TEXT NOT NULL CHECK(stage IN ('admitted','claimed','claim_audited')),
                 finalization_state TEXT NOT NULL
                     CHECK(finalization_state IN
                         ('unfinalized','continued','refused','owner_lost')),
@@ -507,6 +519,122 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
             CREATE TRIGGER IF NOT EXISTS authority_policy_v2_attempts_no_delete
                 BEFORE DELETE ON authority_policy_v2_attempts
                 BEGIN SELECT RAISE(ABORT, 'v2 attempt journal cannot be deleted'); END;
+
+            -- THR-229 checkpoint C3b: durable candidate (K), policy pin (P) and
+            -- the closed candidate-audit event (a1 claim stage).  The candidate
+            -- is created by the claim transaction from one immutable admitted
+            -- result/attempt and is bound to the authenticated pinned
+            -- release/activation/selector.  ``claim_key`` uniqueness prevents a
+            -- second candidate for the same exact causal tuple.  Identity
+            -- columns are immutable; the audit is append-only and requires a
+            -- real candidate FK.  No dummy candidate and no free-form payload.
+            CREATE TABLE IF NOT EXISTS authority_policy_v2_candidates (
+                candidate_id TEXT PRIMARY KEY,
+                claim_key TEXT NOT NULL,
+                team TEXT NOT NULL,
+                root_task_id TEXT NOT NULL,
+                manager_agent TEXT NOT NULL,
+                manager_session_id TEXT NOT NULL,
+                attempt_id TEXT NOT NULL
+                    REFERENCES authority_policy_v2_attempts(attempt_id) ON DELETE RESTRICT,
+                result_id INTEGER NOT NULL
+                    REFERENCES task_results(id) ON DELETE RESTRICT,
+                binding_id TEXT NOT NULL,
+                contract_id TEXT NOT NULL,
+                contract_version TEXT NOT NULL,
+                contract_digest TEXT NOT NULL,
+                release_id TEXT NOT NULL,
+                policy_version INTEGER NOT NULL
+                    CHECK(policy_version > 0 AND policy_version <= 2147483647),
+                policy_digest TEXT NOT NULL,
+                activation_id TEXT NOT NULL,
+                activation_epoch INTEGER NOT NULL
+                    CHECK(activation_epoch > 0 AND activation_epoch <= 2147483647),
+                selector_id TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                executor_kind TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                causal_result_id INTEGER NOT NULL,
+                causal_result_digest TEXT NOT NULL,
+                origin_boot_id TEXT NOT NULL,
+                owner_attempt_id TEXT NOT NULL,
+                canonical_payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(claim_key),
+                UNIQUE(root_task_id, manager_agent, manager_session_id, result_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_candidates_result
+                ON authority_policy_v2_candidates(result_id);
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_candidates_team_root
+                ON authority_policy_v2_candidates(team, root_task_id);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_candidates_no_update
+                BEFORE UPDATE ON authority_policy_v2_candidates
+                BEGIN SELECT RAISE(ABORT, 'v2 candidate is immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_candidates_no_delete
+                BEFORE DELETE ON authority_policy_v2_candidates
+                BEGIN SELECT RAISE(ABORT, 'v2 candidate cannot be deleted'); END;
+
+            CREATE TABLE IF NOT EXISTS authority_policy_v2_pins (
+                candidate_id TEXT PRIMARY KEY
+                    REFERENCES authority_policy_v2_candidates(candidate_id) ON DELETE RESTRICT,
+                claim_key TEXT NOT NULL,
+                team TEXT NOT NULL,
+                root_task_id TEXT NOT NULL,
+                manager_agent TEXT NOT NULL,
+                manager_session_id TEXT NOT NULL,
+                attempt_id TEXT NOT NULL,
+                result_id INTEGER NOT NULL,
+                binding_id TEXT NOT NULL,
+                release_id TEXT NOT NULL,
+                activation_id TEXT NOT NULL,
+                activation_epoch INTEGER NOT NULL
+                    CHECK(activation_epoch > 0 AND activation_epoch <= 2147483647),
+                selector_id TEXT NOT NULL,
+                policy_version INTEGER NOT NULL
+                    CHECK(policy_version > 0 AND policy_version <= 2147483647),
+                policy_digest TEXT NOT NULL,
+                contract_digest TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                executor_kind TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                canonical_payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_pins_team_root
+                ON authority_policy_v2_pins(team, root_task_id);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_pins_no_update
+                BEFORE UPDATE ON authority_policy_v2_pins
+                BEGIN SELECT RAISE(ABORT, 'v2 policy pin is immutable'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_pins_no_delete
+                BEFORE DELETE ON authority_policy_v2_pins
+                BEGIN SELECT RAISE(ABORT, 'v2 policy pin cannot be deleted'); END;
+
+            CREATE TABLE IF NOT EXISTS authority_policy_v2_candidate_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id TEXT NOT NULL
+                    REFERENCES authority_policy_v2_candidates(candidate_id) ON DELETE RESTRICT,
+                team TEXT NOT NULL,
+                root_task_id TEXT NOT NULL,
+                manager_agent TEXT NOT NULL,
+                manager_session_id TEXT NOT NULL,
+                event TEXT NOT NULL CHECK(event IN ('claimed')),
+                claim_key TEXT NOT NULL,
+                attempt_id TEXT NOT NULL,
+                result_id INTEGER NOT NULL,
+                owner_attempt_id TEXT NOT NULL,
+                origin_boot_id TEXT NOT NULL,
+                canonical_payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(candidate_id, event)
+            );
+            CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_candidate_audit_candidate
+                ON authority_policy_v2_candidate_audit(candidate_id, id);
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_candidate_audit_no_update
+                BEFORE UPDATE ON authority_policy_v2_candidate_audit
+                BEGIN SELECT RAISE(ABORT, 'v2 candidate audit is append-only'); END;
+            CREATE TRIGGER IF NOT EXISTS authority_policy_v2_candidate_audit_no_delete
+                BEFORE DELETE ON authority_policy_v2_candidate_audit
+                BEGIN SELECT RAISE(ABORT, 'v2 candidate audit is append-only'); END;
 """
 
 
@@ -982,6 +1110,14 @@ class Database:
         # e.g. `walk_ancestors` → `get_task` and `get_recall_payload` → `get_task`
         # both re-enter public methods while already holding the lock.
         self._lock = threading.RLock()
+        # THR-229 checkpoint C3b: process-local proof of an uninterrupted live
+        # attempt owner.  The admission transaction registers the winning
+        # ``(attempt_id, owner_attempt_id)`` here; the claim/claim-audit stages
+        # require that exact live token, so a reopened Database instance, a new
+        # daemon boot, or a caller that merely possesses the persisted UUID
+        # strings cannot advance the attempt.  This is an ownership marker, not
+        # a credential, and it is never persisted.
+        self._v2_live_attempt_owners: dict[str, str] = {}
         # THR-129 lock instrumentation: configurable warning threshold for
         # lock wait/hold times (seconds). Test seam — tests set this to a low
         # value to verify instrumentation fires.
@@ -6061,12 +6197,19 @@ class Database:
                    WHERE task_id=? AND agent=? AND recovery_session_id=? AND state='claimed'""",
                 (accepted_result_id, session_id, now, task_id, agent, session_id),
             )
+            admitted_attempt = None
             if v2_admission is not None:
-                self._insert_authority_policy_v2_attempt_uncommitted(
+                admitted_attempt = self._insert_authority_policy_v2_attempt_uncommitted(
                     task_id=task_id, agent=agent, session_id=session_id,
                     result_id=accepted_result_id, admission=v2_admission, now=now,
                 )
             self._conn.commit()
+            if admitted_attempt is not None:
+                # Register the live-owner proof only AFTER the durable commit,
+                # so a rolled-back admission can never leave a claimable token.
+                self._v2_live_attempt_owners[admitted_attempt.attempt_id] = (
+                    admitted_attempt.owner_attempt_id
+                )
             return True
         except Exception:
             self._conn.rollback()
@@ -6117,6 +6260,25 @@ class Database:
         identity/reference columns plus its own frozen stage/finalization
         markers, so a later legitimate finalization of the mutable attempt row
         does not invalidate the admission record.
+
+        C3b stage scoping: this authenticates the **admitted** event only,
+        inside its own stage.  Later legitimate stage events on the same
+        attempt (``claim_audited``) add result-stage rows but never invalidate
+        the single immutable ``a0`` admission event.
+        """
+        return self._authenticate_v2_attempt_stage_audit_uncommitted(
+            attempt_row, AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+            require_unfinalized=True,
+        )
+
+    def _authenticate_v2_attempt_stage_audit_uncommitted(
+        self, attempt_row: dict, stage: str, *, require_unfinalized: bool = False,
+    ) -> bool:
+        """Require exactly one authentic closed event for ``stage``.
+
+        Every needed later stage is authenticated independently; a missing,
+        duplicated, mutated or mismatched event for the requested stage
+        refuses.  Events belonging to a different stage are ignored.
         """
         root_task_id = attempt_row["root_task_id"]
         manager_agent = attempt_row["manager_agent"]
@@ -6128,6 +6290,7 @@ class Database:
                 and row.get("agent") == manager_agent
                 and isinstance(row.get("payload"), dict)
                 and row["payload"].get("attempt_id") == attempt_id
+                and row["payload"].get("stage") == stage
             ]
         except Exception:
             return False
@@ -6135,7 +6298,7 @@ class Database:
             return False
         payload = candidates[0]["payload"]
         expected = {
-            "stage": AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+            "stage": stage,
             "result_id": attempt_row["result_id"],
             "binding_id": attempt_row["binding_id"],
             "contract_id": attempt_row["contract_id"],
@@ -6148,8 +6311,9 @@ class Database:
             "assessment_digest": attempt_row["assessment_digest"],
             "owner_attempt_id": attempt_row["owner_attempt_id"],
             "origin_boot_id": attempt_row["origin_boot_id"],
-            "finalization_state": "unfinalized",
         }
+        if require_unfinalized:
+            expected["finalization_state"] = "unfinalized"
         return all(payload.get(key) == value for key, value in expected.items())
 
     def _insert_authority_policy_v2_attempt_uncommitted(
@@ -6310,6 +6474,731 @@ class Database:
             if row["action"] == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
             and row.get("agent") == manager_agent
         ]
+
+    # -- THR-229 checkpoint C3b: durable v2 candidate/pin claim and the
+    # separate claim-audit stage.  The Database owns synchronization, the
+    # BEGIN IMMEDIATE boundary and every write; the store is a thin forwarder.
+    # This checkpoint deliberately implements NO refusal housekeeping and NO
+    # evaluation/consume/envelope/finalization: a refusal returns only a
+    # bounded disposition for the later consumer.
+
+    def _forget_v2_live_owner(self, attempt_id: str, owner_attempt_id: str) -> None:
+        if self._v2_live_attempt_owners.get(attempt_id) == owner_attempt_id:
+            self._v2_live_attempt_owners.pop(attempt_id, None)
+
+    def _refuse_v2_stage(
+        self, *, attempt_id: str, owner_attempt_id: str, code: str,
+        candidate_id: str | None = None, claim_key: str | None = None,
+        stage: str | None = None, poison: bool = True,
+    ) -> AuthorityPolicyV2StageOutcome:
+        if poison:
+            self._forget_v2_live_owner(attempt_id, owner_attempt_id)
+        return AuthorityPolicyV2StageOutcome(
+            status="refused", refusal_code=code, attempt_id=attempt_id,
+            candidate_id=candidate_id, claim_key=claim_key, stage=stage,
+        )
+
+    def _authenticate_v2_result_body_uncommitted(
+        self, result_row, attempt: AuthorityPolicyV2Attempt,
+    ) -> bool:
+        """Authenticate the persisted result's normalized assessment body.
+
+        CRD is only the row-identity digest; the persisted decision carrier's
+        ``_manager_self_evaluation`` value is re-canonicalized here and must
+        hash to the admitted ``assessment_digest``.  A mutated body refuses.
+        """
+        raw = result_row["decision_json"]
+        if not isinstance(raw, str) or not raw:
+            return False
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return False
+        if not isinstance(parsed, dict):
+            return False
+        carrier = parsed.get("_manager_self_evaluation")
+        if not isinstance(carrier, dict):
+            return False
+        try:
+            return authority_policy_v2_sha256(carrier) == attempt.assessment_digest
+        except Exception:
+            return False
+
+    def _advance_v2_attempt_stage_uncommitted(
+        self, attempt: AuthorityPolicyV2Attempt, new_stage: str,
+    ) -> None:
+        """Advance the mutable stage/payload pair in ONE consistent update."""
+        expected = AUTHORITY_POLICY_V2_ATTEMPT_STAGE_TRANSITIONS.get(attempt.stage)
+        if expected != new_stage:
+            raise ValueError("illegal v2 attempt stage transition")
+        snapshot = attempt.model_dump(mode="json")
+        snapshot["stage"] = new_stage
+        self._conn.execute(
+            """UPDATE authority_policy_v2_attempts
+                  SET stage=?, canonical_payload_json=?
+                WHERE attempt_id=?""",
+            (
+                new_stage,
+                authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8"),
+                attempt.attempt_id,
+            ),
+        )
+
+    def _authority_policy_v2_candidate_from_row(self, row) -> AuthorityPolicyV2Candidate:
+        try:
+            candidate = AuthorityPolicyV2Candidate.model_validate_json(
+                row["canonical_payload_json"]
+            )
+        except Exception as exc:
+            raise ValueError("authority v2 candidate has a corrupt canonical payload") from exc
+        if candidate.candidate_id != row["candidate_id"]:
+            raise ValueError("authority v2 candidate identity mismatch")
+        for column, value in candidate.model_dump(mode="json").items():
+            if row[column] != value:
+                raise ValueError("authority v2 candidate column/preimage mismatch")
+        return candidate
+
+    def _authority_policy_v2_pin_from_row(self, row) -> AuthorityPolicyV2Pin:
+        try:
+            pin = AuthorityPolicyV2Pin.model_validate_json(
+                row["canonical_payload_json"]
+            )
+        except Exception as exc:
+            raise ValueError("authority v2 pin has a corrupt canonical payload") from exc
+        if pin.candidate_id != row["candidate_id"]:
+            raise ValueError("authority v2 pin identity mismatch")
+        for column, value in pin.model_dump(mode="json").items():
+            if row[column] != value:
+                raise ValueError("authority v2 pin column/preimage mismatch")
+        return pin
+
+    def _claim_authority_policy_v2_candidate_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int, now: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+
+        def _refused(code: str) -> AuthorityPolicyV2StageOutcome:
+            return AuthorityPolicyV2StageOutcome(
+                status="refused", refusal_code=code, attempt_id=attempt_id,
+            )
+
+        row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_attempts
+               WHERE root_task_id=? AND manager_agent=?
+                 AND manager_session_id=? AND result_id=?""",
+            (root_task_id, manager_agent, manager_session_id, result_id),
+        ).fetchone()
+        if row is None:
+            return _refused("identity_mismatch")
+        try:
+            attempt = self._authority_policy_v2_attempt_from_row(row)
+        except ValueError:
+            return _refused("identity_mismatch")
+        if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED:
+            if attempt.stage in (
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
+                AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+            ):
+                return _refused("already_claimed")
+            return _refused("identity_mismatch")
+        if attempt.finalization_state != "unfinalized":
+            return _refused("owner_lost")
+        # Uninterrupted live-owner proof: the in-memory winning token, the
+        # persisted random owner marker and the daemon-process boot UUID must
+        # all agree.  Persisted UUID strings alone are never proof.
+        if self._v2_live_attempt_owners.get(attempt.attempt_id) != owner_attempt_id:
+            return _refused("owner_lost")
+        if (
+            owner_attempt_id != attempt.owner_attempt_id
+            or origin_boot_id != attempt.origin_boot_id
+        ):
+            return _refused("owner_lost")
+        if not self._authenticate_v2_attempt_admission_audit_uncommitted(dict(row)):
+            return _refused("identity_mismatch")
+
+        task = self._conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (root_task_id,)
+        ).fetchone()
+        if task is None:
+            return _refused("identity_mismatch")
+        if task["cancelled_at"] is not None or task["status"] in {
+            "completed", "failed", "cancelled", "superseded",
+        }:
+            return _refused("cancelled")
+        if task["status"] != "in_progress" or task["block_kind"] is not None:
+            return _refused("cancelled")
+        if (
+            task["assigned_agent"] != manager_agent
+            or task["current_session_id"] != manager_session_id
+        ):
+            return _refused("owner_lost")
+        if (
+            task["revisit_of_task_id"]
+            or task["active_chain"]
+            or task["active_fanout"]
+            or task["blocked_on_job_ids"]
+        ):
+            return _refused("claim_failed")
+        successor = self._conn.execute(
+            "SELECT 1 FROM manager_supersessions WHERE successor_task_id=? LIMIT 1",
+            (root_task_id,),
+        ).fetchone()
+        if successor is not None:
+            return _refused("claim_failed")
+        if max_revise_rounds > 0 and int(task["revision_count"] or 0) >= max_revise_rounds:
+            return _refused("claim_failed")
+
+        result_row = self._conn.execute(
+            "SELECT * FROM task_results WHERE id=?", (result_id,)
+        ).fetchone()
+        if (
+            result_row is None
+            or result_row["task_id"] != root_task_id
+            or result_row["agent"] != manager_agent
+            or result_row["session_id"] != manager_session_id
+        ):
+            return _refused("identity_mismatch")
+        if not self._authenticate_v2_result_body_uncommitted(result_row, attempt):
+            return _refused("identity_mismatch")
+
+        binding = self.get_authority_policy_v2_session_binding(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id,
+        )
+        if binding is None:
+            return _refused("identity_mismatch")
+        try:
+            self._authenticate_v2_session_binding_uncommitted(binding)
+        except Exception:
+            return _refused("identity_mismatch")
+        if (
+            binding.binding_id != attempt.binding_id
+            or binding.team != attempt.team
+            or binding.contract_id != attempt.contract_id
+            or binding.contract_version != attempt.contract_version
+            or binding.contract_digest != attempt.contract_digest
+            or binding.release_id != attempt.release_id
+            or binding.activation_id != attempt.activation_id
+            or binding.activation_epoch != attempt.activation_epoch
+            or binding.selector_id != attempt.selector_id
+        ):
+            return _refused("identity_mismatch")
+
+        release = self.get_authority_policy_v2_release(attempt.release_id)
+        activation = self.get_authority_policy_v2_activation(attempt.activation_id)
+        if release is None or activation is None:
+            return _refused("identity_mismatch")
+        if (
+            release.team != attempt.team
+            or release.policy_digest != binding.policy_digest
+            or release.version != binding.policy_version
+            or activation.team != attempt.team
+            or activation.release_id != attempt.release_id
+            or activation.release_digest != release.policy_digest
+            or activation.selector_epoch != attempt.activation_epoch
+            or binding.provider_id == "" or binding.executor_kind == ""
+            or binding.model_id == ""
+        ):
+            return _refused("identity_mismatch")
+
+        claim_key = authority_policy_v2_sha256(
+            authority_policy_v2_candidate_claim_preimage(
+                activation_id=attempt.activation_id,
+                activation_selector_epoch=attempt.activation_epoch,
+                causal_result_digest=authority_policy_v2_causal_result_digest(result_id),
+                causal_result_id=result_id,
+                contract_digest=attempt.contract_digest,
+                executor_kind=binding.executor_kind,
+                manager_agent=manager_agent,
+                manager_session_id=manager_session_id,
+                model_id=binding.model_id,
+                policy_digest=release.policy_digest,
+                policy_version=release.version,
+                provider_id=binding.provider_id,
+                release_id=attempt.release_id,
+                root_task_id=root_task_id,
+                team=attempt.team,
+            )
+        )
+        candidate = self._v2_candidate_from_claim_key(
+            claim_key, attempt=attempt, binding=binding,
+            origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+        )
+        return self._insert_v2_candidate_and_pin_uncommitted(
+            candidate=candidate, attempt=attempt, binding=binding,
+            owner_attempt_id=owner_attempt_id, origin_boot_id=origin_boot_id,
+            now=now,
+        )
+
+    def _v2_candidate_from_claim_key(
+        self, claim_key: str, *, attempt: AuthorityPolicyV2Attempt,
+        binding: AuthorityPolicyV2SessionBinding, origin_boot_id: str,
+        owner_attempt_id: str,
+    ) -> AuthorityPolicyV2Candidate:
+        return AuthorityPolicyV2Candidate(
+            candidate_id=f"APV2C-{claim_key}",
+            claim_key=claim_key,
+            team=attempt.team,
+            root_task_id=attempt.root_task_id,
+            manager_agent=attempt.manager_agent,
+            manager_session_id=attempt.manager_session_id,
+            attempt_id=attempt.attempt_id,
+            result_id=attempt.result_id,
+            binding_id=attempt.binding_id,
+            contract_id=attempt.contract_id,
+            contract_version=attempt.contract_version,
+            contract_digest=attempt.contract_digest,
+            release_id=attempt.release_id,
+            policy_version=binding.policy_version,
+            policy_digest=binding.policy_digest,
+            activation_id=attempt.activation_id,
+            activation_epoch=attempt.activation_epoch,
+            selector_id=attempt.selector_id,
+            provider_id=binding.provider_id,
+            executor_kind=binding.executor_kind,
+            model_id=binding.model_id,
+            causal_result_id=attempt.result_id,
+            causal_result_digest=authority_policy_v2_causal_result_digest(
+                attempt.result_id
+            ),
+            origin_boot_id=origin_boot_id,
+            owner_attempt_id=owner_attempt_id,
+        )
+
+    def _insert_v2_candidate_and_pin_uncommitted(
+        self, *, candidate: AuthorityPolicyV2Candidate,
+        attempt: AuthorityPolicyV2Attempt,
+        binding: AuthorityPolicyV2SessionBinding, owner_attempt_id: str,
+        origin_boot_id: str, now: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        candidate_snapshot = candidate.model_dump(mode="json")
+        self._conn.execute(
+            """INSERT INTO authority_policy_v2_candidates
+               (candidate_id, claim_key, team, root_task_id, manager_agent,
+                manager_session_id, attempt_id, result_id, binding_id, contract_id,
+                contract_version, contract_digest, release_id, policy_version,
+                policy_digest, activation_id, activation_epoch, selector_id,
+                provider_id, executor_kind, model_id, causal_result_id,
+                causal_result_digest, origin_boot_id, owner_attempt_id,
+                canonical_payload_json, created_at)
+               VALUES (:candidate_id,:claim_key,:team,:root_task_id,:manager_agent,
+                       :manager_session_id,:attempt_id,:result_id,:binding_id,
+                       :contract_id,:contract_version,:contract_digest,:release_id,
+                       :policy_version,:policy_digest,:activation_id,
+                       :activation_epoch,:selector_id,:provider_id,:executor_kind,
+                       :model_id,:causal_result_id,:causal_result_digest,
+                       :origin_boot_id,:owner_attempt_id,:canonical_payload_json,
+                       :created_at)""",
+            {
+                **candidate_snapshot,
+                "canonical_payload_json": authority_policy_v2_canonical_json_bytes(
+                    candidate_snapshot
+                ).decode("utf-8"),
+            },
+        )
+        pin = AuthorityPolicyV2Pin(
+            candidate_id=candidate.candidate_id,
+            claim_key=candidate.claim_key,
+            team=candidate.team,
+            root_task_id=candidate.root_task_id,
+            manager_agent=candidate.manager_agent,
+            manager_session_id=candidate.manager_session_id,
+            attempt_id=candidate.attempt_id,
+            result_id=candidate.result_id,
+            binding_id=candidate.binding_id,
+            release_id=candidate.release_id,
+            activation_id=candidate.activation_id,
+            activation_epoch=candidate.activation_epoch,
+            selector_id=candidate.selector_id,
+            policy_version=candidate.policy_version,
+            policy_digest=candidate.policy_digest,
+            contract_digest=candidate.contract_digest,
+            provider_id=candidate.provider_id,
+            executor_kind=candidate.executor_kind,
+            model_id=candidate.model_id,
+        )
+        pin_snapshot = pin.model_dump(mode="json")
+        self._conn.execute(
+            """INSERT INTO authority_policy_v2_pins
+               (candidate_id, claim_key, team, root_task_id, manager_agent,
+                manager_session_id, attempt_id, result_id, binding_id, release_id,
+                activation_id, activation_epoch, selector_id, policy_version,
+                policy_digest, contract_digest, provider_id, executor_kind,
+                model_id, canonical_payload_json, created_at)
+               VALUES (:candidate_id,:claim_key,:team,:root_task_id,:manager_agent,
+                       :manager_session_id,:attempt_id,:result_id,:binding_id,
+                       :release_id,:activation_id,:activation_epoch,:selector_id,
+                       :policy_version,:policy_digest,:contract_digest,:provider_id,
+                       :executor_kind,:model_id,:canonical_payload_json,:created_at)""",
+            {
+                **pin_snapshot,
+                "canonical_payload_json": authority_policy_v2_canonical_json_bytes(
+                    pin_snapshot
+                ).decode("utf-8"),
+            },
+        )
+        self._advance_v2_attempt_stage_uncommitted(
+            attempt, AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
+        )
+        return AuthorityPolicyV2StageOutcome(
+            status="claimed", attempt_id=attempt.attempt_id,
+            candidate_id=candidate.candidate_id, claim_key=candidate.claim_key,
+            stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
+        )
+
+    @_synchronized
+    def claim_authority_policy_v2_candidate(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+        max_revise_rounds: int = 0,
+    ) -> AuthorityPolicyV2StageOutcome:
+        """First C3b transaction: atomically create K+P and advance J to claimed.
+
+        The independent C3a schema reference is constructed OUTSIDE this write
+        transaction; the frozen raw digest is then re-validated while holding
+        BEGIN IMMEDIATE, so an independent connection's DDL cannot change the
+        candidate between capture and the commit.  This transaction never
+        appends the separate ``a1`` claim-stage audit.
+        """
+        from runtime.orchestrator.authority import (
+            capture_authority_policy_v2_schema_integrity,
+            recheck_authority_policy_v2_schema_integrity,
+        )
+
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+        capture = capture_authority_policy_v2_schema_integrity(self)
+        if capture.evidence is None:
+            return self._refuse_v2_stage(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code="schema_drift", stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+            )
+        evidence = capture.evidence
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            if not recheck_authority_policy_v2_schema_integrity(evidence, self):
+                self._conn.rollback()
+                return self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code="schema_drift",
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+                )
+            outcome = self._claim_authority_policy_v2_candidate_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+                max_revise_rounds=max_revise_rounds, now=now,
+            )
+            if outcome.status == "refused":
+                self._conn.rollback()
+                return self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code=outcome.refusal_code or "claim_failed",
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+                    poison=outcome.refusal_code not in {
+                        "already_claimed", "already_audited",
+                    },
+                )
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            self._refuse_v2_stage(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code="claim_failed",
+            )
+            raise
+
+    def _audit_authority_policy_v2_candidate_claim_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str, now: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+
+        def _refused(code: str, candidate_id: str | None = None) -> AuthorityPolicyV2StageOutcome:
+            return AuthorityPolicyV2StageOutcome(
+                status="refused", refusal_code=code, attempt_id=attempt_id,
+                candidate_id=candidate_id,
+            )
+
+        row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_attempts
+               WHERE root_task_id=? AND manager_agent=?
+                 AND manager_session_id=? AND result_id=?""",
+            (root_task_id, manager_agent, manager_session_id, result_id),
+        ).fetchone()
+        if row is None:
+            return _refused("identity_mismatch")
+        try:
+            attempt = self._authority_policy_v2_attempt_from_row(row)
+        except ValueError:
+            return _refused("identity_mismatch")
+        if attempt.stage == AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED:
+            return _refused("already_audited")
+        if attempt.stage != AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED:
+            return _refused("claim_audit_missing")
+        if attempt.finalization_state != "unfinalized":
+            return _refused("owner_lost")
+        if self._v2_live_attempt_owners.get(attempt.attempt_id) != owner_attempt_id:
+            return _refused("owner_lost")
+        if (
+            owner_attempt_id != attempt.owner_attempt_id
+            or origin_boot_id != attempt.origin_boot_id
+        ):
+            return _refused("owner_lost")
+        if not self._authenticate_v2_attempt_admission_audit_uncommitted(dict(row)):
+            return _refused("identity_mismatch")
+
+        candidate_row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_candidates
+               WHERE root_task_id=? AND manager_agent=?
+                 AND manager_session_id=? AND result_id=?""",
+            (root_task_id, manager_agent, manager_session_id, result_id),
+        ).fetchone()
+        if candidate_row is None:
+            return _refused("claim_audit_missing")
+        try:
+            candidate = self._authority_policy_v2_candidate_from_row(candidate_row)
+        except ValueError:
+            return _refused("identity_mismatch")
+        pin_row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_pins WHERE candidate_id=?",
+            (candidate.candidate_id,),
+        ).fetchone()
+        if pin_row is None:
+            return _refused("claim_audit_missing", candidate.candidate_id)
+        try:
+            pin = self._authority_policy_v2_pin_from_row(pin_row)
+        except ValueError:
+            return _refused("identity_mismatch", candidate.candidate_id)
+        if (
+            candidate.attempt_id != attempt.attempt_id
+            or candidate.claim_key != pin.claim_key
+            or pin.candidate_id != candidate.candidate_id
+            or candidate.binding_id != attempt.binding_id
+            or candidate.release_id != attempt.release_id
+            or candidate.activation_id != attempt.activation_id
+            or candidate.activation_epoch != attempt.activation_epoch
+            or candidate.selector_id != attempt.selector_id
+        ):
+            return _refused("identity_mismatch", candidate.candidate_id)
+
+        # The same uninterrupted winning owner and the task's live owner/session
+        # must still hold; a cancellation or replacement between stages refuses
+        # without touching the replacement state.
+        task = self._conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (root_task_id,)
+        ).fetchone()
+        if task is None:
+            return _refused("identity_mismatch", candidate.candidate_id)
+        if task["cancelled_at"] is not None or task["status"] != "in_progress" or (
+            task["block_kind"] is not None
+        ):
+            return _refused("cancelled", candidate.candidate_id)
+        if (
+            task["assigned_agent"] != manager_agent
+            or task["current_session_id"] != manager_session_id
+        ):
+            return _refused("owner_lost", candidate.candidate_id)
+
+        existing_audit = self._conn.execute(
+            """SELECT 1 FROM authority_policy_v2_candidate_audit
+               WHERE candidate_id=? AND event=?""",
+            (candidate.candidate_id, AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED),
+        ).fetchone()
+        if existing_audit is not None:
+            return _refused("already_audited", candidate.candidate_id)
+
+        audit = AuthorityPolicyV2CandidateAudit(
+            candidate_id=candidate.candidate_id,
+            team=candidate.team,
+            root_task_id=root_task_id,
+            manager_agent=manager_agent,
+            manager_session_id=manager_session_id,
+            event=AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
+            claim_key=candidate.claim_key,
+            attempt_id=attempt.attempt_id,
+            result_id=result_id,
+            owner_attempt_id=owner_attempt_id,
+            origin_boot_id=origin_boot_id,
+        )
+        audit_snapshot = audit.model_dump(mode="json")
+        self._conn.execute(
+            """INSERT INTO authority_policy_v2_candidate_audit
+               (candidate_id, team, root_task_id, manager_agent, manager_session_id,
+                event, claim_key, attempt_id, result_id, owner_attempt_id,
+                origin_boot_id, canonical_payload_json, created_at)
+               VALUES (:candidate_id,:team,:root_task_id,:manager_agent,
+                       :manager_session_id,:event,:claim_key,:attempt_id,:result_id,
+                       :owner_attempt_id,:origin_boot_id,:canonical_payload_json,
+                       :created_at)""",
+            {
+                **audit_snapshot,
+                "canonical_payload_json": authority_policy_v2_canonical_json_bytes(
+                    audit_snapshot
+                ).decode("utf-8"),
+            },
+        )
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            {
+                "stage": AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+                "attempt_id": attempt.attempt_id,
+                "candidate_id": candidate.candidate_id,
+                "result_id": result_id,
+                "binding_id": attempt.binding_id,
+                "contract_id": attempt.contract_id,
+                "contract_version": attempt.contract_version,
+                "contract_digest": attempt.contract_digest,
+                "release_id": attempt.release_id,
+                "activation_id": attempt.activation_id,
+                "activation_epoch": attempt.activation_epoch,
+                "selector_id": attempt.selector_id,
+                "assessment_digest": attempt.assessment_digest,
+                "owner_attempt_id": owner_attempt_id,
+                "origin_boot_id": origin_boot_id,
+                "finalization_state": "unfinalized",
+            },
+        )
+        self._advance_v2_attempt_stage_uncommitted(
+            attempt, AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+        )
+        return AuthorityPolicyV2StageOutcome(
+            status="claim_audited", attempt_id=attempt.attempt_id,
+            candidate_id=candidate.candidate_id, claim_key=candidate.claim_key,
+            stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+        )
+
+    @_synchronized
+    def audit_authority_policy_v2_candidate_claim(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, origin_boot_id: str, owner_attempt_id: str,
+    ) -> AuthorityPolicyV2StageOutcome:
+        """Second C3b transaction: append the a1 claim event and audited stage.
+
+        Authenticates the same uninterrupted winning owner, K/P/J and the a0
+        admission evidence; inserts exactly one candidate claim event plus the
+        required ``claim_audited`` result-stage evidence; advances J to
+        ``claim_audited`` atomically.  A failure preserves the claimed K/P.
+        """
+        attempt_id = authority_policy_v2_attempt_id(
+            manager_agent=manager_agent, manager_session_id=manager_session_id,
+            result_id=result_id, root_task_id=root_task_id,
+            team=AUTHORITY_POLICY_V2_TEAM,
+        )
+        now = _now().isoformat()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._audit_authority_policy_v2_candidate_claim_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                origin_boot_id=origin_boot_id, owner_attempt_id=owner_attempt_id,
+                now=now,
+            )
+            if outcome.status == "refused":
+                self._conn.rollback()
+                return self._refuse_v2_stage(
+                    attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                    code=outcome.refusal_code or "claim_audit_missing",
+                    candidate_id=outcome.candidate_id,
+                    stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
+                    poison=outcome.refusal_code in {
+                        "claim_audit_missing", "cancelled", "owner_lost",
+                        "identity_mismatch",
+                    },
+                )
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            self._refuse_v2_stage(
+                attempt_id=attempt_id, owner_attempt_id=owner_attempt_id,
+                code="claim_audit_missing",
+                stage=AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
+            )
+            raise
+
+    @_synchronized
+    def get_authority_policy_v2_candidate(
+        self, candidate_id: str,
+    ) -> AuthorityPolicyV2Candidate | None:
+        """Authenticated read of one persisted candidate (independent of claim)."""
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_candidates WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return self._authority_policy_v2_candidate_from_row(row)
+        except ValueError:
+            return None
+
+    @_synchronized
+    def get_authority_policy_v2_candidate_for_result(
+        self, result_id: int,
+    ) -> AuthorityPolicyV2Candidate | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_candidates WHERE result_id=?",
+            (result_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return self._authority_policy_v2_candidate_from_row(row)
+        except ValueError:
+            return None
+
+    @_synchronized
+    def get_authority_policy_v2_pin(
+        self, candidate_id: str,
+    ) -> AuthorityPolicyV2Pin | None:
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_pins WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return self._authority_policy_v2_pin_from_row(row)
+        except ValueError:
+            return None
+
+    @_synchronized
+    def list_authority_policy_v2_candidate_audits(
+        self, candidate_id: str,
+    ) -> list[dict]:
+        rows = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_candidate_audit
+               WHERE candidate_id=? ORDER BY id""",
+            (candidate_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @_synchronized
+    def get_authority_policy_v2_candidate_audit(
+        self, candidate_id: str, event: str,
+    ) -> dict | None:
+        row = self._conn.execute(
+            """SELECT * FROM authority_policy_v2_candidate_audit
+               WHERE candidate_id=? AND event=?""",
+            (candidate_id, event),
+        ).fetchone()
+        return None if row is None else dict(row)
 
 
     @_synchronized

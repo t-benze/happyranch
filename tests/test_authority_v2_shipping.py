@@ -819,3 +819,110 @@ def test_shipping_fixture_paths_and_markers_are_owned(tmp_path, monkeypatch):
             assert "You perform isolated fixture work." in marker.read_text()
     finally:
         fixture.stop()
+
+
+# --------------------------------------------------------------------------
+# C3b: the real admitted result drives the callable claim/claim-audit seam
+# --------------------------------------------------------------------------
+
+
+def _drive_c3b_claim(fixture: _ShippingFixture) -> tuple[str, str]:
+    """Real launch -> subprocess CLI admission -> callable K/P claim + a1 audit.
+
+    Shared by the fresh and the historically migrated venues.  The provider
+    launch is held only at the external process boundary, so the durable
+    admitted result is genuine and the claim seam runs against it.
+    """
+    fixture.activate_v2_pair()
+    fixture.install_launch_hold()
+    root_id = fixture.create_and_enqueue_root()
+    captured = fixture.wait_for_launch()
+    session_id = captured["session_id"]
+    binding = _binding(fixture, root_id, session_id)
+    assert binding is not None and binding["mode"] == "v2"
+
+    body = _completion_body(binding, root_id)
+    payload = fixture.write_payload(body)
+    result = fixture.run_cli(payload)
+    assert result.returncode == 0, result.stderr
+    assert fixture.last_http()["status"] == 200
+
+    results, attempt, audits = _admission_counts(fixture, root_id)
+    assert len(results) == 1 and attempt is not None
+    assert attempt.stage == "admitted"
+    row_id = results[0]["id"]
+    db = fixture.org.db
+
+    # Real admitted result -> callable seam: one atomic K/P/J claimed commit.
+    claimed = db.claim_authority_policy_v2_candidate(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=row_id, origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    assert claimed.status == "claimed", claimed
+    candidate = db.get_authority_policy_v2_candidate_for_result(row_id)
+    assert candidate is not None and candidate.candidate_id == claimed.candidate_id
+    assert db.get_authority_policy_v2_pin(candidate.candidate_id) is not None
+    assert db.list_authority_policy_v2_candidate_audits(candidate.candidate_id) == []
+    assert db.get_authority_policy_v2_attempt_for_result(row_id).stage == "claimed"
+    _results, after_attempt, after_audits = _admission_counts(fixture, root_id)
+    assert [a["payload"]["stage"] for a in after_audits] == ["admitted"]
+    assert after_attempt.owner_attempt_id == attempt.owner_attempt_id
+
+    # Exact CLI/HTTP retry after legitimate progression stays read-only success.
+    before = (len(_admission_counts(fixture, root_id)[0]),
+              len(_admission_counts(fixture, root_id)[2]),
+              _admission_counts(fixture, root_id)[1].owner_attempt_id)
+    retry = fixture.run_cli(payload)
+    assert retry.returncode == 0, retry.stderr
+    assert fixture.last_http()["status"] == 200
+    after = _admission_counts(fixture, root_id)
+    assert (len(after[0]), len(after[2]), after[1].owner_attempt_id) == before
+
+    # Separate second transaction: exactly one a1 + claim_audited evidence.
+    audited = db.audit_authority_policy_v2_candidate_claim(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=row_id, origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    assert audited.status == "claim_audited", audited
+    assert db.get_authority_policy_v2_attempt_for_result(row_id).stage == "claim_audited"
+    assert len(db.list_authority_policy_v2_candidate_audits(candidate.candidate_id)) == 1
+    assert [
+        a["payload"]["stage"]
+        for a in _admission_counts(fixture, root_id)[2]
+    ] == ["admitted", "claim_audited"]
+
+    retry2 = fixture.run_cli(payload)
+    assert retry2.returncode == 0, retry2.stderr
+    assert fixture.last_http()["status"] == 200
+    changed = dict(body)
+    changed["decision"] = {"action": "escalate", "reason": "changed after claim"}
+    refused = fixture.run_cli(fixture.write_payload(changed, "changed-c3b.json"))
+    assert refused.returncode != 0
+    assert fixture.last_http()["status"] == 409
+
+    # Real task/current session/receipt preserved; no continuation manufactured.
+    task = db.get_task(root_id)
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert task.current_session_id == session_id
+    fixture.release_launch()
+    fixture.join_workers()
+    settled = db.get_task(root_id)
+    assert settled.status is TaskStatus.ESCALATED
+    assert db.get_active_authority_continue_envelope(root_id) is None
+    return root_id, candidate.candidate_id
+
+
+def test_shipping_real_admitted_result_drives_claim_and_claim_audit(shipping):
+    _drive_c3b_claim(shipping)
+
+
+def test_shipping_historically_migrated_claim_and_claim_audit(tmp_path, monkeypatch):
+    """The SAME real venue over a FULL historical schema migrated forward."""
+    fixture = _ShippingFixture(tmp_path, monkeypatch, seed_historical=True)
+    fixture.start()
+    try:
+        _drive_c3b_claim(fixture)
+    finally:
+        fixture.stop()

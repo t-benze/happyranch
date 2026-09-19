@@ -928,18 +928,51 @@ class AuthorityPolicyV2SessionBinding(BaseModel):
 
 
 # THR-229 checkpoint C2: result-keyed immutable attempt journal.  The attempt
-# is created by the callback admission transaction and this unit only ever
-# writes the ``admitted`` stage; later claim/evaluate/consume/finalize
-# transitions remain subsequent C work and must extend the closed set below,
-# never add an early continuation entry point.
+# is created by the callback admission transaction.  THR-229 checkpoint C3b
+# completes the staged, unmerged definition admitted -> claimed ->
+# claim_audited; later evaluate/consume/finalize transitions remain subsequent
+# C work.  The extension is additive to this PR's own new table (the released
+# schema has no v2 attempt stage); the identity preimage is unchanged.
 AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED = "admitted"
+AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED = "claimed"
+AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED = "claim_audited"
 AUTHORITY_POLICY_V2_ATTEMPT_STAGES = frozenset({
     AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
 })
+# The only allowed stage transitions for this checkpoint.  Every writer checks
+# the exact expected prior stage before advancing; no skipped/replayed/resumed
+# transition is accepted.
+AUTHORITY_POLICY_V2_ATTEMPT_STAGE_TRANSITIONS = {
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED:
+        AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED,
+    AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIMED:
+        AUTHORITY_POLICY_V2_ATTEMPT_STAGE_CLAIM_AUDITED,
+}
 AUTHORITY_POLICY_V2_ATTEMPT_FINALIZATION_STATES = frozenset({
     "unfinalized", "continued", "refused", "owner_lost",
 })
 AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION = "authority_policy_v2_result_stage"
+
+# THR-229 checkpoint C3b: the closed candidate-audit event vocabulary.  This
+# checkpoint writes exactly the claim-stage event; later evaluation/consume/
+# final/spend stages extend this set additively under their own checkpoint.
+AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED = "claimed"
+AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENTS = frozenset({
+    AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENT_CLAIMED,
+})
+
+# Bounded, machine-readable stage outcome.  ``refused`` carries exactly one
+# closed refusal code; this checkpoint only returns the disposition for the
+# later refusal-housekeeping consumer and never mutates task/attempt state.
+AUTHORITY_POLICY_V2_STAGE_OUTCOME_STATUSES = frozenset({
+    "claimed", "claim_audited", "refused",
+})
+AUTHORITY_POLICY_V2_STAGE_REFUSAL_CODES = frozenset({
+    "cancelled", "owner_lost", "identity_mismatch", "claim_failed",
+    "claim_audit_missing", "already_claimed", "already_audited", "schema_drift",
+})
 
 
 class AuthorityPolicyV2Attempt(BaseModel):
@@ -1056,6 +1089,385 @@ class AuthorityPolicyV2Attempt(BaseModel):
             raise ValueError("contract_digest does not match the v2 contract")
         if not self.release_id.startswith("APV2-"):
             raise ValueError("release_id is not a v2 release reference")
+        return self
+
+
+# THR-229 checkpoint C3b: the durable candidate/pin/claim-audit values.
+
+def authority_policy_v2_causal_result_digest(result_id: int) -> str:
+    """Frozen R2 causal-result row-identity digest (CRD).
+
+    CRD is only the immutable row-identity digest ``sha256({"kind":
+    "task_result","result_id":CR})``; it is NEVER a hash of the result body.
+    The persisted result row/task/agent/session join and the normalized body
+    are authenticated separately by the claim transaction.
+    """
+    return authority_policy_v2_sha256({"kind": "task_result", "result_id": result_id})
+
+
+def authority_policy_v2_candidate_claim_preimage(
+    *, activation_id: str, activation_selector_epoch: int, causal_result_digest: str,
+    causal_result_id: int, contract_digest: str, executor_kind: str,
+    manager_agent: str, manager_session_id: str, model_id: str, policy_digest: str,
+    policy_version: int, provider_id: str, release_id: str, root_task_id: str,
+    team: str,
+) -> dict[str, object]:
+    """The exact frozen R2 candidate claim-key preimage.
+
+    The object literally carries ``causal_result_digest``/``causal_result_id``;
+    the candidate identity is derived from exactly this object and no caller
+    may substitute an interpretation of it.
+    """
+    return {
+        "activation_id": activation_id,
+        "activation_selector_epoch": activation_selector_epoch,
+        "causal_result_digest": causal_result_digest,
+        "causal_result_id": causal_result_id,
+        "contract_digest": contract_digest,
+        "executor_kind": executor_kind,
+        "manager_agent": manager_agent,
+        "manager_session_id": manager_session_id,
+        "model_id": model_id,
+        "policy_digest": policy_digest,
+        "policy_version": policy_version,
+        "provider_id": provider_id,
+        "release_id": release_id,
+        "root_task_id": root_task_id,
+        "team": team,
+    }
+
+
+def authority_policy_v2_candidate_identity(claim_key: str) -> str:
+    """``APV2C-`` + the frozen claim-key digest (identity is derived, never supplied)."""
+    _validate_authority_policy_v2_digest(claim_key, "claim_key")
+    return f"APV2C-{claim_key}"
+
+
+class AuthorityPolicyV2Candidate(BaseModel):
+    """Durable v2 candidate (K) claimed from one immutable admitted result.
+
+    The identity is exactly ``APV2C-`` + the R2 claim-key digest over the
+    frozen claim preimage, and the row is bound to the admitted attempt, the
+    authenticated launch binding, the pinned release/activation/selector and
+    the resolved provider/executor/model.  Uniqueness of ``claim_key`` (the
+    causal tuple) prevents a second candidate for the same exact attempt.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    candidate_id: StrictStr
+    claim_key: StrictStr
+    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    root_task_id: StrictStr
+    manager_agent: StrictStr
+    manager_session_id: StrictStr
+    attempt_id: StrictStr
+    result_id: StrictInt = Field(ge=1, le=9223372036854775807)
+    binding_id: StrictStr
+    contract_id: Literal[AUTHORITY_POLICY_V2_CONTRACT_ID]
+    contract_version: Literal[AUTHORITY_POLICY_V2_CONTRACT_VERSION]
+    contract_digest: StrictStr
+    release_id: StrictStr
+    policy_version: StrictInt = Field(ge=1, le=2147483647)
+    policy_digest: StrictStr
+    activation_id: StrictStr
+    activation_epoch: StrictInt = Field(ge=1, le=2147483647)
+    selector_id: StrictStr
+    provider_id: StrictStr
+    executor_kind: StrictStr
+    model_id: StrictStr
+    causal_result_id: StrictInt = Field(ge=1, le=9223372036854775807)
+    causal_result_digest: StrictStr
+    origin_boot_id: StrictStr
+    owner_attempt_id: StrictStr
+    created_at: datetime = Field(default_factory=_now)
+
+    @field_validator(
+        "claim_key", "contract_digest", "policy_digest", "causal_result_digest",
+    )
+    @classmethod
+    def _v2_candidate_digests_are_lower_hex(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_digest(value, info.field_name)
+
+    @field_validator("candidate_id")
+    @classmethod
+    def _v2_candidate_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2C-"):
+            raise ValueError("candidate_id must start with APV2C-")
+        _validate_authority_policy_v2_digest(value[len("APV2C-"):], "candidate_id")
+        return value
+
+    @field_validator("attempt_id")
+    @classmethod
+    def _v2_candidate_attempt_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2R-"):
+            raise ValueError("attempt_id must start with APV2R-")
+        _validate_authority_policy_v2_digest(value[len("APV2R-"):], "attempt_id")
+        return value
+
+    @field_validator("binding_id")
+    @classmethod
+    def _v2_candidate_binding_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2B-"):
+            raise ValueError("binding_id must start with APV2B-")
+        _validate_authority_policy_v2_digest(value[len("APV2B-"):], "binding_id")
+        return value
+
+    @field_validator("activation_id")
+    @classmethod
+    def _v2_candidate_activation_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2A-"):
+            raise ValueError("activation_id must start with APV2A-")
+        _validate_authority_policy_v2_digest(value[len("APV2A-"):], "activation_id")
+        return value
+
+    @field_validator("release_id")
+    @classmethod
+    def _v2_candidate_release_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2-"):
+            raise ValueError("release_id must start with APV2-")
+        _validate_authority_policy_v2_digest(value[len("APV2-"):], "release_id")
+        return value
+
+    @field_validator("selector_id")
+    @classmethod
+    def _v2_candidate_selector_ref(cls, value: str) -> str:
+        return _validate_authority_policy_v2_selector_ref(value, "selector_id")
+
+    @field_validator(
+        "manager_agent", "manager_session_id", "model_id", "origin_boot_id",
+        "owner_attempt_id", "provider_id", "root_task_id",
+    )
+    @classmethod
+    def _v2_candidate_identity_scalars(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, 128)
+
+    def preimage(self) -> dict[str, object]:
+        return authority_policy_v2_candidate_claim_preimage(
+            activation_id=self.activation_id,
+            activation_selector_epoch=self.activation_epoch,
+            causal_result_digest=self.causal_result_digest,
+            causal_result_id=self.causal_result_id,
+            contract_digest=self.contract_digest,
+            executor_kind=self.executor_kind,
+            manager_agent=self.manager_agent,
+            manager_session_id=self.manager_session_id,
+            model_id=self.model_id,
+            policy_digest=self.policy_digest,
+            policy_version=self.policy_version,
+            provider_id=self.provider_id,
+            release_id=self.release_id,
+            root_task_id=self.root_task_id,
+            team=self.team,
+        )
+
+    @model_validator(mode="after")
+    def _v2_candidate_identity_is_frozen(self) -> AuthorityPolicyV2Candidate:
+        expected_key = authority_policy_v2_sha256(self.preimage())
+        if self.claim_key != expected_key:
+            raise ValueError("claim_key does not match the frozen claim preimage")
+        if self.candidate_id != f"APV2C-{expected_key}":
+            raise ValueError("candidate_id does not match the frozen claim preimage")
+        if self.result_id != self.causal_result_id:
+            raise ValueError("causal_result_id must be the admitted result id")
+        if self.causal_result_digest != authority_policy_v2_causal_result_digest(
+            self.result_id
+        ):
+            raise ValueError("causal_result_digest is not the frozen row-identity digest")
+        if self.contract_digest != authority_policy_v2_contract_digest():
+            raise ValueError("contract_digest does not match the v2 contract")
+        if self.release_id != f"APV2-{self.policy_digest}":
+            raise ValueError("release_id must contain policy_digest")
+        if self.attempt_id != authority_policy_v2_attempt_id(
+            manager_agent=self.manager_agent, manager_session_id=self.manager_session_id,
+            result_id=self.result_id, root_task_id=self.root_task_id, team=self.team,
+        ):
+            raise ValueError("attempt_id does not match the frozen attempt preimage")
+        return self
+
+
+class AuthorityPolicyV2Pin(BaseModel):
+    """Durable v2 policy pin (P); its identity equals the candidate identity."""
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    candidate_id: StrictStr
+    claim_key: StrictStr
+    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    root_task_id: StrictStr
+    manager_agent: StrictStr
+    manager_session_id: StrictStr
+    attempt_id: StrictStr
+    result_id: StrictInt = Field(ge=1, le=9223372036854775807)
+    binding_id: StrictStr
+    release_id: StrictStr
+    activation_id: StrictStr
+    activation_epoch: StrictInt = Field(ge=1, le=2147483647)
+    selector_id: StrictStr
+    policy_version: StrictInt = Field(ge=1, le=2147483647)
+    policy_digest: StrictStr
+    contract_digest: StrictStr
+    provider_id: StrictStr
+    executor_kind: StrictStr
+    model_id: StrictStr
+    created_at: datetime = Field(default_factory=_now)
+
+    @field_validator("candidate_id")
+    @classmethod
+    def _v2_pin_candidate_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2C-"):
+            raise ValueError("candidate_id must start with APV2C-")
+        _validate_authority_policy_v2_digest(value[len("APV2C-"):], "candidate_id")
+        return value
+
+    @field_validator("claim_key", "contract_digest", "policy_digest")
+    @classmethod
+    def _v2_pin_digests_are_lower_hex(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_digest(value, info.field_name)
+
+    @field_validator("release_id")
+    @classmethod
+    def _v2_pin_release_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2-"):
+            raise ValueError("release_id must start with APV2-")
+        _validate_authority_policy_v2_digest(value[len("APV2-"):], "release_id")
+        return value
+
+    @field_validator("activation_id")
+    @classmethod
+    def _v2_pin_activation_id_shape(cls, value: str) -> str:
+        if not value.startswith("APV2A-"):
+            raise ValueError("activation_id must start with APV2A-")
+        _validate_authority_policy_v2_digest(value[len("APV2A-"):], "activation_id")
+        return value
+
+    @field_validator("selector_id")
+    @classmethod
+    def _v2_pin_selector_ref(cls, value: str) -> str:
+        return _validate_authority_policy_v2_selector_ref(value, "selector_id")
+
+    @field_validator(
+        "manager_agent", "manager_session_id", "model_id", "provider_id",
+        "root_task_id",
+    )
+    @classmethod
+    def _v2_pin_identity_scalars(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, 128)
+
+    @property
+    def pin_id(self) -> str:
+        return self.candidate_id
+
+    @model_validator(mode="after")
+    def _v2_pin_identity_matches_candidate(self) -> AuthorityPolicyV2Pin:
+        if self.pin_id != f"APV2C-{self.claim_key}":
+            raise ValueError("pin identity must equal the candidate claim identity")
+        if self.release_id != f"APV2-{self.policy_digest}":
+            raise ValueError("release_id must contain policy_digest")
+        return self
+
+
+class AuthorityPolicyV2CandidateAudit(BaseModel):
+    """Immutable, closed candidate-stage audit event (a1 claim stage here).
+
+    The event carries only the bounded claim identity; there is no free-form
+    rationale, model transcript or credential, and the attached payload is
+    frozen canonical JSON.  A real candidate FK is required.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    candidate_id: StrictStr
+    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    root_task_id: StrictStr
+    manager_agent: StrictStr
+    manager_session_id: StrictStr
+    event: StrictStr
+    claim_key: StrictStr
+    attempt_id: StrictStr
+    result_id: StrictInt = Field(ge=1, le=9223372036854775807)
+    owner_attempt_id: StrictStr
+    origin_boot_id: StrictStr
+    created_at: datetime = Field(default_factory=_now)
+
+    @field_validator("event")
+    @classmethod
+    def _v2_candidate_audit_event_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_CANDIDATE_AUDIT_EVENTS:
+            raise ValueError("candidate audit event is not a current closed value")
+        return value
+
+    @field_validator("candidate_id")
+    @classmethod
+    def _v2_candidate_audit_candidate_id(cls, value: str) -> str:
+        if not value.startswith("APV2C-"):
+            raise ValueError("candidate_id must start with APV2C-")
+        _validate_authority_policy_v2_digest(value[len("APV2C-"):], "candidate_id")
+        return value
+
+    @field_validator("claim_key")
+    @classmethod
+    def _v2_candidate_audit_claim_key(cls, value: str) -> str:
+        return _validate_authority_policy_v2_digest(value, "claim_key")
+
+    @field_validator("attempt_id")
+    @classmethod
+    def _v2_candidate_audit_attempt_id(cls, value: str) -> str:
+        if not value.startswith("APV2R-"):
+            raise ValueError("attempt_id must start with APV2R-")
+        _validate_authority_policy_v2_digest(value[len("APV2R-"):], "attempt_id")
+        return value
+
+    @field_validator(
+        "manager_agent", "manager_session_id", "origin_boot_id",
+        "owner_attempt_id", "root_task_id",
+    )
+    @classmethod
+    def _v2_candidate_audit_identity_scalars(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, 128)
+
+    @model_validator(mode="after")
+    def _v2_candidate_audit_identity_matches(self) -> AuthorityPolicyV2CandidateAudit:
+        if self.candidate_id != f"APV2C-{self.claim_key}":
+            raise ValueError("candidate audit candidate_id must match claim_key")
+        return self
+
+
+class AuthorityPolicyV2StageOutcome(BaseModel):
+    """Bounded outcome of one callable v2 claim/claim-audit stage.
+
+    ``refused`` names exactly one closed refusal code and grants no authority;
+    this checkpoint performs NO task/attempt/refusal mutation.  The later
+    refusal-housekeeping consumer (documented in CLAUDE.md) owns any durable
+    refusal/settlement.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    status: StrictStr
+    refusal_code: StrictStr | None = None
+    attempt_id: StrictStr | None = None
+    candidate_id: StrictStr | None = None
+    claim_key: StrictStr | None = None
+    stage: StrictStr | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _v2_stage_outcome_status_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_STAGE_OUTCOME_STATUSES:
+            raise ValueError("stage outcome status is not a closed value")
+        return value
+
+    @field_validator("refusal_code")
+    @classmethod
+    def _v2_stage_outcome_refusal_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_STAGE_REFUSAL_CODES:
+            raise ValueError("stage refusal code is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_stage_outcome_shape(self) -> AuthorityPolicyV2StageOutcome:
+        if self.status == "refused":
+            if self.refusal_code is None:
+                raise ValueError("a refused outcome requires a refusal code")
+        elif self.refusal_code is not None:
+            raise ValueError("a non-refused outcome carries no refusal code")
         return self
 
 

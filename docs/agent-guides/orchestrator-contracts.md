@@ -367,6 +367,61 @@ candidate/pin/evaluation/continuation consumer, the corrected
 adverse/partial/raw-DDL diagnostics and the recovery/generation admission
 fences remain staged later units.
 
+Checkpoint C3b lands the durable v2 candidate/pin claim and the SEPARATE
+claim-audit stages. The Database owns synchronization and the transaction
+boundary and adds exactly three additive tables: `authority_policy_v2_candidates`
+(K), `authority_policy_v2_pins` (P; its identity equals the candidate identity)
+and `authority_policy_v2_candidate_audit` (a closed claim-stage event with a real
+candidate FK and an immutable canonical payload; no free-form rationale/model
+transcript/credential). The candidate identity is exactly the frozen R2 claim-key
+preimage (`APV2C-` + the claim-key digest) and `claim_key` uniqueness prevents a
+second candidate for the same causal tuple. This PR's own new
+`authority_policy_v2_attempts` stage CHECK is completed to
+`admitted|claimed|claim_audited`; no released column is altered, dropped or
+reinterpreted and `audit_log` keeps its existing action scope.
+
+`Database.claim_authority_policy_v2_candidate` runs ONE synchronized
+`BEGIN IMMEDIATE` (the independent C3a reference is constructed OUTSIDE it and
+its frozen raw digest is re-validated while the transaction is held) that
+re-reads and authenticates the actual immutable admitted result: exact
+attempt/root/team/manager/session/result plus `origin_boot_id`/`owner_attempt_id`,
+`unfinalized`/`admitted` state, the single authenticated `admitted` audit, the
+actual task (`in_progress`, null `block_kind`, null `cancelled_at`, current
+owner/session), the causal result row/task/agent/session AND its normalized body
+(the persisted `_manager_self_evaluation` carrier must re-hash to the admitted
+`assessment_digest`; the CRD is only the row-identity digest), the immutable
+launch binding, the pinned release/activation/selector identity through its own
+pinned epoch (a later legitimate activation never replaces or invalidates an
+older pin, and corrupt/mixed pinned history refuses with no fallback to today's
+policy) and the resolved provider/executor/model. The applicable mechanical
+eligibility predicates — revisit lineage, active chain/fanout, blocked job,
+successor root and the revise-budget ceiling — are re-derived from the persisted
+task row; no caller boolean substitutes for a server fact, and the legacy
+adverse-review/partial-work/raw-DDL `_server_fact_clause` diagnostics are never
+a v2 veto or a phrase/clause unlock. On success it inserts K+P and advances J to
+`claimed`, preserving R and a0 and NOT appending the a1 claim event.
+
+A separate second transaction (`audit_authority_policy_v2_candidate_claim`)
+authenticates the same uninterrupted live winning owner (an in-memory
+admission-registered token, never the mere persisted UUID strings), K/P/J and all
+prior evidence, inserts exactly one candidate claim event plus the required
+`claim_audited` result-stage evidence, and advances J to `claim_audited`
+atomically. A failed claim leaves J admitted/a0 with no K/P; a failed claim-audit
+preserves the claimed K/P with no a1; both poison the winning token so a retry
+cannot become a fresh authority. Refusals return only a bounded
+`AuthorityPolicyV2StageOutcome` with a closed refusal code: this checkpoint
+performs NO refusal housekeeping and NO evaluation/consume/envelope/finalization,
+does not mutate tasks into Pending/Escalated, and the later THR-229
+refusal-housekeeping consumer owns any durable refusal/settlement. The
+admission-audit authentication is scoped to exactly one authentic `admitted`
+event inside its own stage, so later legitimate stage events never invalidate
+the single immutable a0; exact CLI/HTTP transport retries after progression stay
+read-only success and a changed client payload still refuses. `AuthorityPolicyStore`
+exposes only thin forwarders (`claim_v2_candidate`, `audit_v2_candidate_claim`,
+the authenticated K/P/a1 readers) and never commits or nests. The shipping
+authority hook remains fail-closed (ESCALATE) until the complete
+consumer/refusal/finalization path lands.
+
 The file-backed completion CLI preserves a supplied `manager_self_evaluation`
 member verbatim (including invalid/null values) so the daemon, rather than the
 client, validates it; an omitted member remains omitted. The shipping CLI to
