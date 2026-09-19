@@ -265,14 +265,32 @@ external side effects or role-based pathname enforcement.
 
 The staged THR-229 v2 value contract is separate from that live v1 path until
 its later persisted selector and authenticated consumer land. It has two
-editable release texts, `What to escalate` and `What not to escalate`; a pure
+editable release texts, `What to escalate` and `What not to escalate`, which
+are a strict pair: `AuthorityPolicyV2Release` (in `runtime/models.py`) forbids
+unknown fields, requires both texts together, bounds the title/text scalars and
+the canonical UTF-8 byte size, rejects NUL/surrogate/blank strings and
+non-lowercase-hex digests, and derives the exact approved immutable preimages
+and digests (contract, release, create/activation request, activation,
+selector, causal-result, candidate/envelope/attempt/notification). A pure
 assessment helper treats an escalate match as dominant, permits continuation
 only for clear non-escalate plus continue applicability, and otherwise fails
-closed. These value-layer results are advisory data, not launch authentication
-or continuation authority. The file-backed completion CLI preserves a supplied
-`manager_self_evaluation` member verbatim (including invalid/null values) so
-the daemon, rather than the client, validates it; an omitted member remains
-omitted.
+closed; uncertainty always outranks an escalate match. These value-layer
+results are advisory data, not launch authentication or continuation authority,
+and there is no v2 selector, route, launch, queue or UI wiring yet.
+
+The file-backed completion CLI preserves a supplied `manager_self_evaluation`
+member verbatim (including invalid/null values) so the daemon, rather than the
+client, validates it; an omitted member remains omitted. The shipping CLI to
+real loopback HTTP to durable result path is exercised by
+`tests/daemon/test_completion_cli_loopback.py` against a real uvicorn server
+(not a mock or in-process ASGI client). One current v1 limitation is recorded
+there: `CompletionBody.manager_self_evaluation` is `object | None`, so a
+present JSON `null` reaches the route but is indistinguishable from an omitted
+member and skips validation. The full v2 CLI -> durable result -> hook ->
+Pending/enqueue lifecycle, the persisted versioned store/selector, launch-bound
+v2 authentication, recovery/reaper and API/UI work remain outstanding serial
+units; this staged checkpoint neither activates a policy nor claims that
+lifecycle.
 
 ## Inline Delegation Chains
 

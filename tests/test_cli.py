@@ -487,8 +487,12 @@ def test_cmd_report_completion_from_file_posts_loaded_body(tmp_path):
 
 
 @pytest.mark.parametrize("evaluation", [None, False, "", [], {"malformed": True}])
-def test_cmd_report_completion_from_file_sends_explicit_evaluation_over_http(tmp_path, evaluation):
-    """The shipping CLI request preserves supplied data for the route validator."""
+def test_cmd_report_completion_from_file_request_includes_explicit_evaluation(tmp_path, evaluation):
+    """Request construction only (mocked client); see the real loopback proof.
+
+    ``tests/daemon/test_completion_cli_loopback.py`` drives the shipping CLI
+    against a real HTTP server and asserts the received bytes and durable row.
+    """
     import json
     from cli.main import cmd_report_completion
 
@@ -505,7 +509,7 @@ def test_cmd_report_completion_from_file_sends_explicit_evaluation_over_http(tmp
     assert client.post.call_args.kwargs["json"]["manager_self_evaluation"] == evaluation
 
 
-def test_cmd_report_completion_from_file_omits_evaluation_from_http_when_absent(tmp_path):
+def test_cmd_report_completion_from_file_request_omits_evaluation_when_absent(tmp_path):
     import json
     from cli.main import cmd_report_completion
 

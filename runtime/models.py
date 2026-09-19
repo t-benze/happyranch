@@ -529,6 +529,150 @@ def authority_policy_v2_candidate_claim_digest(values: Mapping[str, object]) -> 
     return authority_policy_v2_sha256(dict(values))
 
 
+_AUTHORITY_POLICY_V2_POLICY_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+AUTHORITY_POLICY_V2_TEAM = "engineering"
+AUTHORITY_POLICY_V2_MAX_CANONICAL_BYTES = 65536
+_AUTHORITY_POLICY_V2_MAX_TITLE = 200
+_AUTHORITY_POLICY_V2_MAX_TEXT = 20000
+# DESIGN R2 makes ``policy_version`` the release revision and the v2 wire team
+# surface exactly ``engineering``; the broader family is selected later by the
+# persisted selector, not by this value layer.
+
+
+class AuthorityPolicyV2Release(BaseModel):
+    """Strict paired v2 release value.
+
+    Both editable texts are required together; there is no shape for saving or
+    activating one alone. The value layer validates bytes and derives the exact
+    approved preimage/digest only. Authentication of the launch binding and any
+    continuation authority remain a later persisted consumer's obligation.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    contract_digest: StrictStr
+    policy_id: StrictStr
+    team: Literal[AUTHORITY_POLICY_V2_TEAM]
+    title: StrictStr
+    version: StrictInt = Field(ge=1, le=2147483647)
+    what_not_to_escalate: StrictStr
+    what_to_escalate: StrictStr
+
+    @field_validator("contract_digest")
+    @classmethod
+    def _v2_release_contract_digest(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_digest(value, info.field_name)
+
+    @field_validator("policy_id")
+    @classmethod
+    def _v2_release_policy_id(cls, value: str) -> str:
+        if not _AUTHORITY_POLICY_V2_POLICY_ID_RE.fullmatch(value):
+            raise ValueError("policy_id must match [a-z][a-z0-9-]{0,63}")
+        return value
+
+    @field_validator("title")
+    @classmethod
+    def _v2_release_title(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, _AUTHORITY_POLICY_V2_MAX_TITLE)
+
+    @field_validator("what_to_escalate", "what_not_to_escalate")
+    @classmethod
+    def _v2_release_texts(cls, value: str, info) -> str:
+        return _validate_authority_policy_v2_text(value, info.field_name, _AUTHORITY_POLICY_V2_MAX_TEXT)
+
+    @model_validator(mode="after")
+    def _v2_release_is_contract_bound_and_bounded(self) -> AuthorityPolicyV2Release:
+        if self.contract_digest != authority_policy_v2_contract_digest():
+            raise ValueError("contract_digest does not match the v2 contract")
+        canonical = authority_policy_v2_canonical_json_bytes(self.preimage())
+        if len(canonical) > AUTHORITY_POLICY_V2_MAX_CANONICAL_BYTES:
+            raise ValueError(
+                "release canonical JSON exceeds "
+                f"{AUTHORITY_POLICY_V2_MAX_CANONICAL_BYTES} bytes"
+            )
+        return self
+
+    def preimage(self) -> dict[str, object]:
+        return authority_policy_v2_release_preimage(
+            contract_digest=self.contract_digest, policy_id=self.policy_id,
+            team=self.team, title=self.title, version=self.version,
+            what_to_escalate=self.what_to_escalate,
+            what_not_to_escalate=self.what_not_to_escalate,
+        )
+
+    @property
+    def policy_digest(self) -> str:
+        return authority_policy_v2_sha256(self.preimage())
+
+    @property
+    def release_id(self) -> str:
+        return f"APV2-{self.policy_digest}"
+
+
+def authority_policy_v2_create_request_preimage(
+    *, based_on_selector_id: str | None, kind: str, policy_id: str,
+    request_id: str, team: str, title: str, what_to_escalate: str,
+    what_not_to_escalate: str,
+) -> dict[str, object]:
+    return {
+        "based_on_selector_id": based_on_selector_id, "kind": kind,
+        "policy_id": policy_id, "request_id": request_id, "team": team,
+        "title": title, "what_not_to_escalate": what_not_to_escalate,
+        "what_to_escalate": what_to_escalate,
+    }
+
+
+def authority_policy_v2_activation_request_preimage(
+    *, action: str, expected_selector_id: str | None, kind: str, release_id: str,
+    request_id: str, team: str,
+) -> dict[str, object]:
+    return {
+        "action": action, "expected_selector_id": expected_selector_id, "kind": kind,
+        "release_id": release_id, "request_id": request_id, "team": team,
+    }
+
+
+def authority_policy_v2_selector_preimage(
+    *, activation_id: str, family: str, previous_selector_id: str | None,
+    selector_epoch: int, team: str,
+) -> dict[str, object]:
+    return {
+        "activation_id": activation_id, "family": family,
+        "previous_selector_id": previous_selector_id,
+        "selector_epoch": selector_epoch, "team": team,
+    }
+
+
+def authority_policy_v2_selector_id(**values: object) -> str:
+    return f"APS-{authority_policy_v2_sha256(authority_policy_v2_selector_preimage(**values))}"
+
+
+def authority_policy_v2_causal_result_digest(result_id: int) -> str:
+    """Immutable row-identity digest; never a hash of the result body."""
+    return authority_policy_v2_sha256({"kind": "task_result", "result_id": result_id})
+
+
+def authority_policy_v2_candidate_id(claim_key: str) -> str:
+    return f"APV2C-{claim_key}"
+
+
+def authority_policy_v2_envelope_id(candidate_id: str) -> str:
+    return f"APV2E-{authority_policy_v2_sha256({'candidate_id': candidate_id, 'kind': 'continue_envelope'})}"
+
+
+def authority_policy_v2_attempt_id(
+    *, manager_agent: str, manager_session_id: str, result_id: int,
+    root_task_id: str, team: str,
+) -> str:
+    return "APV2R-" + authority_policy_v2_sha256({
+        "manager_agent": manager_agent, "manager_session_id": manager_session_id,
+        "result_id": result_id, "root_task_id": root_task_id, "team": team,
+    })
+
+
+def authority_policy_v2_notification_id(envelope_id: str) -> str:
+    return f"APV2N-{authority_policy_v2_sha256({'envelope_id': envelope_id, 'kind': 'continuation_notification'})}"
+
+
 class TaskStep(BaseModel):
     agent: str
     action: str
