@@ -765,7 +765,19 @@ class AuthorityPolicySelector(BaseModel):
                     selector_epoch=1, team=self.team,
                 )
             else:
-                valid_arm = self.selector_epoch >= 2
+                # Accepted R2: a selection away from the genuinely-empty
+                # initializer is legitimate at selector epoch 1 with the empty
+                # selector as its predecessor (no prior policy selection), so
+                # the regular APS preimage still bounds it. Every other legacy
+                # selection is at epoch >= 2 with its real predecessor.
+                empty_initializer_id = authority_policy_v2_initializer_selector_id(
+                    family="empty", legacy_activation_id=None, selector_epoch=0,
+                    team=self.team,
+                )
+                valid_arm = self.selector_epoch >= 2 or (
+                    self.selector_epoch == 1
+                    and self.previous_selector_id == empty_initializer_id
+                )
                 expected = authority_policy_v2_selector_id(
                     activation_id=self.legacy_activation_id, family="legacy_v1",
                     previous_selector_id=self.previous_selector_id,

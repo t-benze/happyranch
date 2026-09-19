@@ -13512,6 +13512,79 @@ class Database:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    @_synchronized
+    def get_authority_policy_v2_history_snapshot(self, team: str) -> tuple[int, int]:
+        """Bounded, stable snapshot identity for the v2 release history stream."""
+        team = self._validate_authority_selector_team(team)
+        row = self._conn.execute(
+            """SELECT COALESCE(MAX(r.version),0) AS version,
+                      COALESCE((SELECT MAX(selector_epoch)
+                                FROM authority_policy_v2_activations
+                                WHERE team=?),0) AS epoch
+               FROM authority_policy_v2_releases r WHERE r.team=?""",
+            (team, team),
+        ).fetchone()
+        return int(row["version"]), int(row["epoch"])
+
+    @_synchronized
+    def list_authority_policy_v2_history(
+        self,
+        team: str,
+        *,
+        snapshot_version: int,
+        snapshot_epoch: int,
+        after_version: int | None,
+        after_release_id: str | None,
+        limit: int,
+    ) -> list[dict]:
+        """Read immutable v2 release receipts with their last in-snapshot selection.
+
+        Only B2b read projection: no prose, no control audit, deterministic
+        newest-first cursor on ``(version, release_id)``. A later selection of an
+        older release does not move a cursor opened against the earlier snapshot.
+        """
+        team = self._validate_authority_selector_team(team)
+        rows = self._conn.execute(
+            """SELECT r.id AS release_id,r.policy_id,r.version,r.title,
+                      r.what_to_escalate,r.what_not_to_escalate,r.contract_digest,
+                      r.policy_digest,r.created_at AS release_created_at,
+                      a.id AS activation_id,a.selector_epoch,a.action,
+                      a.activation_digest,a.created_at AS activation_created_at
+               FROM authority_policy_v2_releases r
+               LEFT JOIN authority_policy_v2_activations a
+                 ON a.release_id=r.id AND a.selector_epoch=(
+                     SELECT MAX(a2.selector_epoch)
+                     FROM authority_policy_v2_activations a2
+                     WHERE a2.release_id=r.id AND a2.selector_epoch<=?)
+               WHERE r.team=? AND r.version<=?
+                 AND (? IS NULL OR (r.version,r.id) < (?,?))
+               ORDER BY r.version DESC,r.id DESC LIMIT ?""",
+            (
+                snapshot_epoch, team, snapshot_version, after_version,
+                after_version, after_release_id, limit,
+            ),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @_synchronized
+    def get_authority_policy_activation_for_release(
+        self, team: str, release_id: str
+    ) -> AuthorityPolicyActivation | None:
+        """Latest authenticated legacy activation of one release, if any.
+
+        Read adapter for the selector-aware legacy rollback path: the v1 wire
+        contract names a release, while the transaction-owning
+        ``reactivate_authority_policy_legacy`` names the exact authenticated
+        activation. Never fabricates a missing activation.
+        """
+        team = self._validate_authority_selector_team(team)
+        row = self._conn.execute(
+            "SELECT * FROM authority_policy_activations "
+            "WHERE team=? AND release_id=? ORDER BY epoch DESC LIMIT 1",
+            (team, release_id),
+        ).fetchone()
+        return None if row is None else self._authority_policy_activation_from_row(row)
+
     # -- internal uncommitted write seams (transaction owner above) --
 
     def _insert_authority_policy_selector_history_uncommitted(
@@ -13830,7 +13903,8 @@ class Database:
                 if (
                     row["activation_id"] != activation.id
                     or row["release_id"] != activation.release_id
-                    or row["action"] not in ("activate", "reactivate_rollback")
+                    or row["action"] not in (
+                        "bootstrap", "activate", "reactivate_rollback")
                 ):
                     raise ValueError("authority selector selection audit is corrupt")
                 receipt = self._authority_policy_legacy_receipt_from_audit_row(row)

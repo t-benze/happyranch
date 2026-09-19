@@ -85,6 +85,11 @@ class AuthorityPolicyStore:
     def get_activation(self, activation_id: str) -> AuthorityPolicyActivation | None:
         return self._db.get_authority_policy_activation(activation_id)
 
+    def get_activation_for_release(
+        self, team: str, release_id: str
+    ) -> AuthorityPolicyActivation | None:
+        return self._db.get_authority_policy_activation_for_release(team, release_id)
+
     def get_current_activation(self, team: str) -> AuthorityPolicyActivation | None:
         return self._db.get_current_authority_policy_activation(team)
 
@@ -202,6 +207,40 @@ class AuthorityPolicyStore:
             "sv": snapshot_version, "se": snapshot_epoch,
             "av": last["version"], "ae": last["epoch"] or 0,
             "ar": last["release_id"], "aa": last["activation_id"] or "",
+        })
+
+    def list_v2_history(
+        self, team: str, *, cursor: str | None, limit: int
+    ) -> tuple[list[dict], str | None]:
+        """Return a stable newest-first page of immutable v2 release receipts."""
+        if cursor is None:
+            snapshot_version, snapshot_epoch = (
+                self._db.get_authority_policy_v2_history_snapshot(team)
+            )
+            after = None
+        else:
+            token = self._decode_cursor(cursor, stream="v2_history")
+            if token.get("team") != team:
+                raise ValueError("invalid pagination cursor")
+            try:
+                snapshot_version = self._cursor_int(token, "sv")
+                snapshot_epoch = self._cursor_int(token, "se")
+                after = (self._cursor_int(token, "av"), self._cursor_str(token, "ar"))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("invalid pagination cursor") from exc
+        rows = self._db.list_authority_policy_v2_history(
+            team, snapshot_version=snapshot_version, snapshot_epoch=snapshot_epoch,
+            after_version=None if after is None else after[0],
+            after_release_id=None if after is None else after[1], limit=limit + 1,
+        )
+        page = rows[:limit]
+        if len(rows) <= limit or not page:
+            return page, None
+        last = page[-1]
+        return page, self._encode_cursor({
+            "v": 1, "stream": "v2_history", "team": team,
+            "sv": snapshot_version, "se": snapshot_epoch,
+            "av": last["version"], "ar": last["release_id"],
         })
 
     def list_outcomes(self, team: str, *, cursor: str | None, limit: int) -> tuple[list[dict], str | None]:
