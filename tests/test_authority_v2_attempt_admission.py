@@ -406,3 +406,166 @@ def test_audit_failure_rolls_back_result_and_attempt(tmp_path, monkeypatch):
     assert _result_count(store._db) == 0
     assert _attempt_count(store._db) == 0
     assert store._db.get_latest_task_result(TASK_ID, MANAGER, SESSION_ID) is None
+
+
+# ── C2b: exact-replay completeness and admitted-evidence authentication ──
+
+
+def _admitted(store, *, confidence: int = 90):
+    binding = _seed_bound_task(store)
+    carrier, admission = _carrier_and_admission(binding, confidence=confidence)
+    assert _admit(store, carrier, admission) is True
+    row = store._db.get_latest_task_result(TASK_ID, MANAGER, SESSION_ID)
+    assert row is not None
+    attempt = store._db.get_authority_policy_v2_attempt_for_result(row["id"])
+    assert attempt is not None
+    audits = store._db.list_authority_policy_v2_result_stage_audits(
+        root_task_id=TASK_ID, manager_agent=MANAGER,
+    )
+    assert len(audits) == 1
+    return carrier, admission, row, attempt, audits[0]
+
+
+def _attempt_state(store):
+    row = store._db._conn.execute(
+        "SELECT attempt_id, owner_attempt_id, origin_boot_id, assessment_digest "
+        "FROM authority_policy_v2_attempts"
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def _audit_ids(store):
+    return [
+        row["id"] for row in store._db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=TASK_ID, manager_agent=MANAGER,
+        )
+    ]
+
+
+def test_exact_replay_preserves_ids_owner_counts_and_receipt(tmp_path):
+    """An identical retry is read-only success; nothing is reallocated."""
+    store = _store(tmp_path)
+    carrier, admission, row, attempt, audit = _admitted(store)
+    results, attempts = _result_count(store._db), _attempt_count(store._db)
+    owner, origin, digest = attempt.owner_attempt_id, attempt.origin_boot_id, attempt.assessment_digest
+    audit_ids = _audit_ids(store)
+
+    assert _admit(store, carrier, admission) is True
+
+    assert _result_count(store._db) == results
+    assert _attempt_count(store._db) == attempts
+    assert _audit_ids(store) == audit_ids
+    after = store._db.get_authority_policy_v2_attempt_for_result(row["id"])
+    assert after is not None
+    assert after.attempt_id == attempt.attempt_id
+    assert after.owner_attempt_id == owner
+    assert after.origin_boot_id == origin
+    assert after.assessment_digest == digest
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"output_summary": "changed summary"},
+        {"status": "failed"},
+        {"confidence_score": 10},
+        {"verdict": "REQUEST_CHANGES"},
+        {"risks_flagged": ["new risk"]},
+        {"output_dir": "output/TASK-C2-other"},
+        {"local_ci_json": json.dumps({"command": "scripts/local_ci.sh all", "exit_code": 0})},
+        {"decision_json": json.dumps({"action": "escalate", "reason": "changed"})},
+    ],
+)
+def test_changed_payload_replay_refuses_without_allocation(tmp_path, override):
+    """A changed durable completion field refuses even when admission matches."""
+    store = _store(tmp_path)
+    carrier, admission, _, _, _ = _admitted(store)
+    results, attempts = _result_count(store._db), _attempt_count(store._db)
+    audit_ids = _audit_ids(store)
+
+    assert _admit(store, carrier, admission, **override) is False
+
+    assert _result_count(store._db) == results
+    assert _attempt_count(store._db) == attempts
+    assert _audit_ids(store) == audit_ids
+
+
+def test_changed_decision_semantics_refuses_even_with_same_key_set(tmp_path):
+    """Semantic JSON equality, not raw string equality, governs decisions."""
+    store = _store(tmp_path)
+    binding = _seed_bound_task(store)
+    carrier, admission = _carrier_and_admission(binding)
+    first = json.dumps({"action": "escalate", "reason": "a"}, indent=2)
+    assert _admit(store, carrier, admission, decision_json=first) is True
+    # Same parsed decision, different whitespace/key order -> exact replay.
+    same = json.dumps({"reason": "a", "action": "escalate"})
+    assert _admit(store, carrier, admission, decision_json=same) is True
+    changed = json.dumps({"action": "escalate", "reason": "b"})
+    assert _admit(store, carrier, admission, decision_json=changed) is False
+
+
+def test_missing_admission_audit_refuses_replay_and_typed_read(tmp_path):
+    """Deleting ONLY the admitted stage audit makes the evidence unauthenticated."""
+    store = _store(tmp_path)
+    carrier, admission, row, _, _ = _admitted(store)
+    store._db._conn.execute(
+        "DELETE FROM audit_log WHERE action='authority_policy_v2_result_stage'"
+    )
+    store._db._conn.commit()
+    assert _audit_ids(store) == []
+
+    assert _admit(store, carrier, admission) is False
+    assert store._db.get_authority_policy_v2_attempt_for_result(row["id"]) is None
+    assert store._db.get_authority_policy_v2_attempt(
+        root_task_id=TASK_ID, manager_agent=MANAGER,
+        manager_session_id=SESSION_ID, result_id=row["id"],
+    ) is None
+    # No repair/allocation side effect from the refused retry.
+    assert _result_count(store._db) == 1
+    assert _attempt_count(store._db) == 1
+    assert _audit_ids(store) == []
+
+
+def test_duplicated_admission_audit_refuses(tmp_path):
+    store = _store(tmp_path)
+    carrier, admission, row, _, audit = _admitted(store)
+    store._db.insert_audit_log_uncommitted(
+        TASK_ID, MANAGER, "authority_policy_v2_result_stage", dict(audit["payload"]),
+    )
+    store._db.commit()
+    assert len(_audit_ids(store)) == 2
+
+    assert _admit(store, carrier, admission) is False
+    assert store._db.get_authority_policy_v2_attempt_for_result(row["id"]) is None
+
+
+def test_mutated_admission_audit_refuses(tmp_path):
+    store = _store(tmp_path)
+    carrier, admission, row, _, _ = _admitted(store)
+    store._db._conn.execute(
+        """UPDATE audit_log
+              SET payload = json_set(payload, '$.assessment_digest', ?)
+            WHERE action='authority_policy_v2_result_stage'""",
+        ("f" * 64,),
+    )
+    store._db._conn.commit()
+
+    assert _admit(store, carrier, admission) is False
+    assert store._db.get_authority_policy_v2_attempt_for_result(row["id"]) is None
+
+
+def test_authentic_reopen_readonly_retry_still_refuses_changed_payload(tmp_path):
+    """A fresh Database handle over the same fixture reads the same authenticated
+    evidence and preserves the exact-replay/changed-payload outcome."""
+    db_path = tmp_path / "reopen.db"
+    first = AuthorityPolicyStore(Database(db_path))
+    carrier, admission, row, _, _ = _admitted(first)
+    first._db.close() if hasattr(first._db, "close") else None
+
+    reopened = AuthorityPolicyStore(Database(db_path))
+    attempt = reopened._db.get_authority_policy_v2_attempt_for_result(row["id"])
+    assert attempt is not None
+    assert _admit(reopened, carrier, admission) is True
+    assert _admit(reopened, carrier, admission, output_summary="changed") is False
+    assert _result_count(reopened._db) == 1
+    assert _attempt_count(reopened._db) == 1

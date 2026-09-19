@@ -209,3 +209,48 @@ def test_shipping_cli_changed_v2_payload_replay_fails(
     assert len(org.db.list_authority_policy_v2_result_stage_audits(
         root_task_id=task_id, manager_agent=MANAGER,
     )) == 1
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda p: p.update(summary="changed summary"),
+        lambda p: p.update(decision={"action": "escalate", "reason": "changed"}),
+        lambda p: p.update(confidence=10),
+        lambda p: p.update(verdict="REQUEST_CHANGES"),
+        lambda p: p.update(risks=["new"]),
+        lambda p: p.update(output_dir="output/other"),
+    ],
+)
+def test_shipping_cli_changed_completion_field_after_tracker_cleared_refuses(
+    tmp_home, daemon_state, monkeypatch, tmp_path, mutate,
+) -> None:
+    """The tracker-cleared HTTP retry seam authenticates the complete result.
+
+    The admission/assessment evidence is byte-identical, so only the complete
+    normalized persisted-completion comparison can refuse these changed fields.
+    """
+    org = daemon_state.orgs["alpha"]
+    capture = _CaptureCompletionTraffic(create_app(daemon_state))
+    with _LoopbackServer(capture):
+        task_id, captured = _launch_v2_manager_and_complete(
+            org, monkeypatch, tmp_path, session_id=f"sess-c2-field-{abs(hash(mutate))}",
+            evaluation_factory=_valid_v2_evaluation,
+        )
+        result_rows = org.db.get_task_results(task_id)
+        audit_rows = org.db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=task_id, manager_agent=MANAGER,
+        )
+        import json as _json
+        from pathlib import Path
+
+        payload = _json.loads(Path(captured["file"]).read_text())
+        mutate(payload)
+        Path(captured["file"]).write_text(_json.dumps(payload))
+        with pytest.raises(SystemExit):
+            _run_shipping_completion_cli(captured["file"])
+    assert capture.records[-1]["status"] == 409
+    assert len(org.db.get_task_results(task_id)) == len(result_rows) == 1
+    assert len(org.db.list_authority_policy_v2_result_stage_audits(
+        root_task_id=task_id, manager_agent=MANAGER,
+    )) == len(audit_rows) == 1

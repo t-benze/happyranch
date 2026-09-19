@@ -692,6 +692,68 @@ def _serialize_authority_audit_payload(payload: object | None) -> str | None:
     return json.dumps(model.model_dump(mode="json", exclude_none=True))
 
 
+def _canonical_completion_json(value):
+    """Return one canonical structural form for a persisted JSON column.
+
+    ``value`` is either the persisted TEXT column (a JSON document string or
+    ``None``) or the in-flight client value the callback route projects (a
+    ``dict``/``list``, a pre-serialized JSON string, or ``None``).  Parsing both
+    sides before re-dumping gives semantic JSON equality without depending on
+    key order or whitespace.  Unparseable/ unrepresentable values become a
+    distinct sentinel tuple so they never accidentally compare equal.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes, bytearray)):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return ("__unparseable__", str(value))
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        return ("__unserializable__", repr(value))
+
+
+def completion_result_payload_matches(
+    stored_result: dict | sqlite3.Row, *,
+    output_summary: str, confidence_score: int, status: str,
+    risks_flagged: list[str] | None, output_dir: str | None,
+    decision_json: str | None, waiting_on_job_ids: list[str] | None,
+    verdict: str | None, local_ci_json: str | None,
+) -> bool:
+    """Compare the complete normalized persisted completion projection.
+
+    This is derived from the exact projection ``_insert_task_result`` persists
+    (the same values the callback route builds and passes to
+    ``admit_task_completion_callback``), so an identity-exact transport retry
+    matches structurally while a changed summary/status/confidence/verdict/
+    output path, decision, risks, wait IDs or local-CI evidence refuses.  The
+    callback's server-owned ``created_at``/boot identity are intentionally
+    excluded: they are not client payload and are not part of the admitted
+    exactness contract.
+
+    JSON-valued fields (decision, risks, wait IDs, local-CI evidence) compare
+    with semantic JSON equality; scalar fields compare by value.
+    """
+    row = dict(stored_result) if not isinstance(stored_result, dict) else stored_result
+    return (
+        row.get("output_summary") == output_summary
+        and row.get("confidence_score") == confidence_score
+        and row.get("status") == status
+        and row.get("output_dir") == output_dir
+        and row.get("verdict") == verdict
+        and _canonical_completion_json(row.get("risks_flagged"))
+        == _canonical_completion_json(risks_flagged)
+        and _canonical_completion_json(row.get("decision_json"))
+        == _canonical_completion_json(decision_json)
+        and _canonical_completion_json(row.get("waiting_on_job_ids"))
+        == _canonical_completion_json(waiting_on_job_ids)
+        and _canonical_completion_json(row.get("local_ci"))
+        == _canonical_completion_json(local_ci_json)
+    )
+
+
 def _synchronized(method):
     """Serialize every public ``Database`` call through ``self._lock``.
 
@@ -5879,7 +5941,7 @@ class Database:
                     self._conn.rollback()
                     return False
             existing = self._conn.execute(
-                "SELECT id FROM task_results WHERE task_id=? AND agent=? AND session_id=?",
+                "SELECT * FROM task_results WHERE task_id=? AND agent=? AND session_id=?",
                 (task_id, agent, session_id),
             ).fetchone()
             if existing is not None:
@@ -5889,30 +5951,56 @@ class Database:
                     self._conn.rollback()
                     return True
                 # Narrowed v2 retry seam: an existing result is only an exact
-                # replay when the admitted attempt matches the supplied
-                # contract/family references and assessment digest.  A changed
-                # payload refuses rather than silently succeeding.
-                admitted = self._conn.execute(
-                    """SELECT attempt_id, binding_id, contract_id, contract_version,
-                              contract_digest, release_id, activation_id,
-                              activation_epoch, selector_id, assessment_digest,
-                              stage, finalization_state
-                       FROM authority_policy_v2_attempts
+                # replay when the authenticated admitted evidence and the
+                # complete normalized completion payload both match.  The
+                # retry re-reads the raw attempt columns, so it must re-run the
+                # same canonical column/preimage and unique admission-audit
+                # authentication as the typed readers; a missing, mutated,
+                # duplicated or mismatched attempt/audit, or any changed
+                # summary/decision/status/confidence/verdict/risks/output
+                # path/wait-ID/local-CI field, refuses rather than silently
+                # acknowledging a changed completion result.
+                admitted_row = self._conn.execute(
+                    """SELECT * FROM authority_policy_v2_attempts
                        WHERE root_task_id=? AND manager_agent=?
                          AND manager_session_id=? AND result_id=?""",
                     (task_id, agent, session_id, existing["id"]),
                 ).fetchone()
-                if admitted is None:
+                if admitted_row is None:
+                    self._conn.rollback()
+                    return False
+                try:
+                    admitted = self._authority_policy_v2_attempt_from_row(admitted_row)
+                except ValueError:
+                    self._conn.rollback()
+                    return False
+                if not self._authenticate_v2_attempt_admission_audit_uncommitted(
+                    dict(admitted_row)
+                ):
                     self._conn.rollback()
                     return False
                 if (
-                    admitted["assessment_digest"] != v2_admission["assessment_digest"]
-                    or admitted["binding_id"] != v2_admission["binding_id"]
-                    or admitted["release_id"] != v2_admission["release_id"]
-                    or admitted["activation_id"] != v2_admission["activation_id"]
-                    or admitted["activation_epoch"] != v2_admission["activation_epoch"]
-                    or admitted["selector_id"] != v2_admission["selector_id"]
-                    or admitted["contract_digest"] != v2_admission["contract_digest"]
+                    admitted.assessment_digest != v2_admission["assessment_digest"]
+                    or admitted.binding_id != v2_admission["binding_id"]
+                    or admitted.release_id != v2_admission["release_id"]
+                    or admitted.activation_id != v2_admission["activation_id"]
+                    or admitted.activation_epoch != v2_admission["activation_epoch"]
+                    or admitted.selector_id != v2_admission["selector_id"]
+                    or admitted.contract_digest != v2_admission["contract_digest"]
+                ):
+                    self._conn.rollback()
+                    return False
+                if not completion_result_payload_matches(
+                    existing,
+                    output_summary=output_summary,
+                    confidence_score=confidence_score,
+                    status=status,
+                    risks_flagged=risks_flagged,
+                    output_dir=output_dir,
+                    decision_json=decision_json,
+                    waiting_on_job_ids=waiting_on_job_ids,
+                    verdict=verdict,
+                    local_ci_json=local_ci_json,
                 ):
                     self._conn.rollback()
                     return False
@@ -5974,6 +6062,55 @@ class Database:
             and binding.activation_epoch == admission["activation_epoch"]
             and binding.selector_id == admission["selector_id"]
         )
+
+    def _authenticate_v2_attempt_admission_audit_uncommitted(
+        self, attempt_row: dict,
+    ) -> bool:
+        """Require exactly one closed admission-stage audit for one attempt.
+
+        The immutable ``authority_policy_v2_attempts`` row is only authoritative
+        admitted evidence together with its write-once
+        ``authority_policy_v2_result_stage`` audit.  A deleted, duplicated,
+        mutated or mismatched audit is missing evidence and refuses: the caller
+        must not allocate, repair, or repair-by-reinsert anything.  The audit's
+        admission-stage snapshot is compared against the immutable attempt
+        identity/reference columns plus its own frozen stage/finalization
+        markers, so a later legitimate finalization of the mutable attempt row
+        does not invalidate the admission record.
+        """
+        root_task_id = attempt_row["root_task_id"]
+        manager_agent = attempt_row["manager_agent"]
+        attempt_id = attempt_row["attempt_id"]
+        try:
+            candidates = [
+                row for row in self.get_audit_logs(root_task_id)
+                if row.get("action") == AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION
+                and row.get("agent") == manager_agent
+                and isinstance(row.get("payload"), dict)
+                and row["payload"].get("attempt_id") == attempt_id
+            ]
+        except Exception:
+            return False
+        if len(candidates) != 1:
+            return False
+        payload = candidates[0]["payload"]
+        expected = {
+            "stage": AUTHORITY_POLICY_V2_ATTEMPT_STAGE_ADMITTED,
+            "result_id": attempt_row["result_id"],
+            "binding_id": attempt_row["binding_id"],
+            "contract_id": attempt_row["contract_id"],
+            "contract_version": attempt_row["contract_version"],
+            "contract_digest": attempt_row["contract_digest"],
+            "release_id": attempt_row["release_id"],
+            "activation_id": attempt_row["activation_id"],
+            "activation_epoch": attempt_row["activation_epoch"],
+            "selector_id": attempt_row["selector_id"],
+            "assessment_digest": attempt_row["assessment_digest"],
+            "owner_attempt_id": attempt_row["owner_attempt_id"],
+            "origin_boot_id": attempt_row["origin_boot_id"],
+            "finalization_state": "unfinalized",
+        }
+        return all(payload.get(key) == value for key, value in expected.items())
 
     def _insert_authority_policy_v2_attempt_uncommitted(
         self, *, task_id: str, agent: str, session_id: str, result_id: int,
@@ -6063,12 +6200,26 @@ class Database:
     def get_authority_policy_v2_attempt_for_result(
         self, result_id: int,
     ) -> AuthorityPolicyV2Attempt | None:
-        """Authenticated read of the admitted attempt bound to one result."""
+        """Authenticated read of the admitted attempt bound to one result.
+
+        Returns ``None`` when the attempt row is absent/corrupt or its unique
+        matching admission-stage audit is missing, duplicated, mutated or
+        mismatched — a partial attempt without its admitted audit is never a
+        usable authenticated read.
+        """
         row = self._conn.execute(
             "SELECT * FROM authority_policy_v2_attempts WHERE result_id=?",
             (result_id,),
         ).fetchone()
-        return None if row is None else self._authority_policy_v2_attempt_from_row(row)
+        if row is None:
+            return None
+        try:
+            attempt = self._authority_policy_v2_attempt_from_row(row)
+        except ValueError:
+            return None
+        if not self._authenticate_v2_attempt_admission_audit_uncommitted(dict(row)):
+            return None
+        return attempt
 
     @_synchronized
     def get_authority_policy_v2_attempt(
@@ -6081,7 +6232,15 @@ class Database:
                  AND manager_session_id=? AND result_id=?""",
             (root_task_id, manager_agent, manager_session_id, result_id),
         ).fetchone()
-        return None if row is None else self._authority_policy_v2_attempt_from_row(row)
+        if row is None:
+            return None
+        try:
+            attempt = self._authority_policy_v2_attempt_from_row(row)
+        except ValueError:
+            return None
+        if not self._authenticate_v2_attempt_admission_audit_uncommitted(dict(row)):
+            return None
+        return attempt
 
     def _authority_policy_v2_attempt_from_row(self, row) -> AuthorityPolicyV2Attempt:
         try:

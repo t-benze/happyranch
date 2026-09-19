@@ -723,6 +723,39 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                     status_code=status.HTTP_409_CONFLICT,
                     detail={"code": "v2_attempt_payload_mismatch", "task_id": task_id},
                 )
+            # The admitted attempt identity is only half of the exactness
+            # contract: the complete normalized persisted completion result must
+            # also match the retried client payload.  Derive the comparison from
+            # the same route-to-insert projection the first call used, so a
+            # changed summary/status/confidence/verdict/output path/decision/
+            # risks/wait-ID/local-CI field refuses after the tracker cleared
+            # exactly as it does while the tracker is still active.
+            from runtime.infrastructure.database import completion_result_payload_matches
+
+            if "waiting_on_job_ids" in body.model_fields_set:
+                retry_wait_ids = sorted(set(body.waiting_on_job_ids)) or None
+            else:
+                retry_wait_ids = body.waiting_on_job_ids or None
+            if not completion_result_payload_matches(
+                prior,
+                output_summary=body.output_summary,
+                confidence_score=body.confidence,
+                status=body.status,
+                risks_flagged=body.risks_flagged,
+                output_dir=body.output_dir,
+                decision_json=(
+                    _json.dumps(decision_payload) if decision_payload is not None else None
+                ),
+                waiting_on_job_ids=retry_wait_ids,
+                verdict=body.verdict,
+                local_ci_json=(
+                    _json.dumps(body.local_ci) if body.local_ci is not None else None
+                ),
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": "v2_attempt_payload_mismatch", "task_id": task_id},
+                )
             return {"ok": True}
         # No persisted row for this session -> genuinely-unknown / fabricated
         # session. Preserve the security gate: STILL 409.
