@@ -1309,8 +1309,9 @@ def test_forged_or_cross_root_ledger_is_rejected(tmp_path):
     assert tmp_path.is_dir()
 
 
-def test_module_has_no_production_importers():
+def test_module_has_only_the_bounded_run_step_production_importer():
     root = Path(__file__).parents[1]
-    assert [path for path in (root / "runtime").rglob("*.py")
-            if path.name != "task_scratch_reclamation.py"
-            and "task_scratch_reclamation" in path.read_text()] == []
+    importers = [path.relative_to(root) for path in (root / "runtime").rglob("*.py")
+                 if path.name != "task_scratch_reclamation.py"
+                 and "task_scratch_reclamation" in path.read_text()]
+    assert importers == [Path("runtime/orchestrator/run_step.py")]
