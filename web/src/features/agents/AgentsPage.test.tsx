@@ -276,8 +276,22 @@ describe('AgentDetailPane — editable fields', () => {
       http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [manager] })),
       http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`, () => HttpResponse.json({
         team: 'engineering', target_manager: 'engineering_manager', can_mutate: true,
+        family: 'legacy_v1', contract_version: 'v1',
+        selector_id: 'APS-0000000000000000000000000000000000000000000000000000000000000000',
+        selector_epoch: 1,
         bootstrap_template: { title: 'Canonical policy', normative_text: 'Policy', clauses: [], continuation_phrase: 'routine same-root follow-through of the already-completed slice' },
-        active: { epoch: 4, release: { version: 2, digest: 'abcdef1234567890' } },
+        active: {
+          family: 'legacy_v1', activation_id: 'act-legacy-1', epoch: 4, action: 'activate',
+          created_at: '2026-09-01T00:00:00Z',
+          actor_attribution: 'shared local operator credential',
+          release: {
+            id: 'rel-legacy-2', policy_id: 'engineering-escalation', version: 2,
+            title: 'Canonical policy', normative_text: 'Policy', clauses: [],
+            continuation_phrase: 'routine same-root follow-through of the already-completed slice',
+            digest: 'abcdef1234567890', created_at: '2026-09-01T00:00:00Z',
+            actor_attribution: 'shared local operator credential',
+          },
+        },
       })),
     );
     mountAt(`/orgs/${SLUG}/agents/engineering_manager`);
@@ -1455,6 +1469,9 @@ describe('Team escalation policy dedicated route', () => {
   };
   const policyResponse = {
     team: 'engineering', target_manager: 'engineering_manager', can_mutate: true,
+    family: 'empty',
+    selector_id: 'APS-0000000000000000000000000000000000000000000000000000000000000000',
+    selector_epoch: 0,
     bootstrap_required: true,
     bootstrap_template: { title: 'Canonical policy', normative_text: 'Policy', clauses: [], continuation_phrase: 'routine same-root follow-through of the already-completed slice' },
   };
