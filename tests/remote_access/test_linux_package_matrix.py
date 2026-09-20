@@ -407,19 +407,36 @@ def _ranks(trace: list[tuple[str, str, str]]) -> dict[int, int]:
     return ranks
 
 
-def _path_binding_matches(expected_name: str, fired_path: str | None) -> bool:
+def _path_binding_matches(expected_relpath: str, fired_path: str | None,
+                          root: Path) -> bool:
     """The fault fired on the destination the case actually names.
 
-    The allocated stage directory carries a fresh random suffix on every run,
-    so its basename is compared by exact stage shape instead; every other
-    operation name binds its literal destination basename.
+    The destination is compared as the path relative to the install root, so a
+    root-scoped seam (``stage_create`` before, whose target *is* the install
+    root) binds the case's own root rather than whichever directory the
+    recording build happened to use.  The allocated stage directory carries a
+    fresh random suffix on every run, so any path component that is a stage
+    directory is compared by exact stage shape; every other component must
+    match literally.
     """
     if fired_path is None:
         return False
-    fired_name = Path(fired_path).name
-    if expected_name.startswith(_STAGE_PREFIX):
-        return fired_name.startswith(_STAGE_PREFIX)
-    return fired_name == expected_name
+    try:
+        fired = Path(fired_path).relative_to(root)
+    except ValueError:
+        return False
+    expected_parts = Path(expected_relpath).parts
+    fired_parts = fired.parts
+    if len(expected_parts) != len(fired_parts):
+        return False
+    for expected_part, fired_part in zip(expected_parts, fired_parts):
+        if expected_part.startswith(_STAGE_PREFIX) or fired_part.startswith(_STAGE_PREFIX):
+            if not (expected_part.startswith(_STAGE_PREFIX)
+                    and fired_part.startswith(_STAGE_PREFIX)):
+                return False
+        elif expected_part != fired_part:
+            return False
+    return True
 
 
 _WORK = _DISCOVERY_ROOT / "discovery"
@@ -487,6 +504,7 @@ def _config_cache(config: _Config) -> dict:
     _CACHE[config.name] = {
         "config": config,
         "template": template,
+        "root": root,
         "old": old_snapshot,
         "new": new_snapshot,
         "old_payload": old_payload,
@@ -507,7 +525,7 @@ class _PubCase:
         stage, operation, path = cache["trace"][index]
         self.stage = stage
         self.operation = operation
-        self.relpath = Path(path).name
+        self.relpath = str(Path(path).relative_to(cache["root"]))
         self.occurrence = cache["ranks"][index]
         self.id = (
             f"{cache['config'].name}-{mode}-{operation}-{stage}-{self.occurrence}"
@@ -575,6 +593,7 @@ def _recovery_cache(config: _Config) -> dict:
     _CACHE[key] = {
         "config": config,
         "template": template,
+        "root": interrupted,
         "old": old_snapshot,
         "new": _snapshot(expected),
         "old_payload": old_payload,
@@ -600,7 +619,7 @@ class _RRCase:
         stage, operation, path = cache["trace"][index]
         self.stage = stage
         self.operation = operation
-        self.relpath = Path(path).name
+        self.relpath = str(Path(path).relative_to(cache["root"]))
         self.occurrence = cache["ranks"][index]
         suffix = "-persistent" if persistent else ""
         self.id = (
@@ -780,7 +799,7 @@ def test_publication_operation_fault_matrix(tmp_path: Path, pub_case: _PubCase) 
     # guard keeps observing the product's own recovery seams after the
     # injected failure, so ``seen`` may exceed the fire occurrence.
     assert rule.fired_seen == pub_case.occurrence
-    assert _path_binding_matches(pub_case.relpath, rule.fired_path)
+    assert _path_binding_matches(pub_case.relpath, rule.fired_path, case)
 
     if unrecorded:
         # M9: no durable ownership record yet; the unknown orphan is preserved
@@ -883,7 +902,7 @@ def test_recovery_operation_fault_matrix(tmp_path: Path, rr_case: _RRCase) -> No
     # Exact binding on the recovery route too: the case's own stage/operation
     # occurrence and its real destination path, not a same-named sibling.
     assert recovery_rule.fired_seen == rr_case.occurrence
-    assert _path_binding_matches(rr_case.relpath, recovery_rule.fired_path)
+    assert _path_binding_matches(rr_case.relpath, recovery_rule.fired_path, case)
 
     # While faulted, every OLD byte/mode remains reachable in its active or
     # recorded backup location (the immediate-state oracle before recovery).
