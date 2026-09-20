@@ -45,6 +45,7 @@ from runtime.models import (
     AuthorityPolicyV2RootDispatch,
     AuthorityPolicyV2SessionBinding,
     AuthorityPolicyV2SettlementOutcome,
+    AuthorityPolicyV2SpendOutcome,
     AuthorityPolicyV2StageOutcome,
 )
 
@@ -501,6 +502,23 @@ class AuthorityPolicyStore:
             root_task_id=root_task_id, manager_agent=manager_agent,
             manager_session_id=manager_session_id, result_id=result_id,
             generation_id=generation_id, next_session_id=next_session_id,
+        )
+
+    # -- THR-229 checkpoint C3d3c1: thin forwarder over the DB-owned atomic
+    # next-result spend-to-ready transaction.  The facade still never begins,
+    # commits or rolls back, and the call performs no consumer dispatch, queue
+    # call or task-status effect.
+
+    def spend_v2_continue_envelope(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, generation_id: str | None, next_session_id: str | None,
+        spending_result_id: int,
+    ) -> AuthorityPolicyV2SpendOutcome:
+        return self._db.spend_authority_policy_v2_continue_envelope(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            generation_id=generation_id, next_session_id=next_session_id,
+            spending_result_id=spending_result_id,
         )
 
     def bind_legacy_session(

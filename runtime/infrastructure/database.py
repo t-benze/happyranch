@@ -54,6 +54,7 @@ from runtime.models import (
     AuthorityPolicyV2RootDispatch,
     AuthorityPolicyV2SessionBinding,
     AuthorityPolicyV2SettlementOutcome,
+    AuthorityPolicyV2SpendOutcome,
     AuthorityPolicyV2StageOutcome,
     AuthorityFenceResult,
     AuthorityRedactionClass,
@@ -97,6 +98,7 @@ from runtime.models import (
     AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISH_RETURNED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_PUBLISHED,
     AUTHORITY_POLICY_V2_RESULT_STAGE_REFUSED,
+    AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT,
     AUTHORITY_POLICY_V2_TEAM,
     authority_policy_v2_attempt_id,
     authority_policy_v2_canonical_json_bytes,
@@ -900,12 +902,24 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
                 lifecycle_state TEXT NOT NULL DEFAULT 'active'
                     CHECK(lifecycle_state IN ('active','consumed')),
                 spending_result_id INTEGER,
+                decision_state TEXT
+                    CHECK(decision_state IS NULL OR decision_state IN
+                        ('ready','claimed','applied','refused')),
                 canonical_payload_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                CHECK((lifecycle_state='consumed') = (spending_result_id IS NOT NULL))
+                CHECK((lifecycle_state='consumed') = (spending_result_id IS NOT NULL)),
+                CHECK((lifecycle_state='consumed') = (decision_state IS NOT NULL))
             );
             CREATE INDEX IF NOT EXISTS idx_authority_policy_v2_continue_envelopes_team_root
                 ON authority_policy_v2_continue_envelopes(team, root_task_id);
+            -- THR-229 checkpoint C3d3c1: the RESULT-KEYED spend receipt is unique
+            -- per spending result, so a distinct later R2 authority attempt or
+            -- generation B can never share (or be overwritten through) the exact
+            -- consumed envelope of the causal generation.
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                idx_authority_policy_v2_continue_envelopes_spending_result
+                ON authority_policy_v2_continue_envelopes(spending_result_id)
+                WHERE spending_result_id IS NOT NULL;
             CREATE TRIGGER IF NOT EXISTS authority_policy_v2_continue_envelopes_lifecycle_guard
                 BEFORE UPDATE ON authority_policy_v2_continue_envelopes
                 WHEN (
@@ -939,12 +953,22 @@ _AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL = """
                  OR OLD.created_at IS NOT NEW.created_at
                  OR NOT (
                         (OLD.lifecycle_state='active' AND OLD.spending_result_id IS NULL
-                         AND NEW.lifecycle_state='active' AND NEW.spending_result_id IS NULL)
+                         AND OLD.decision_state IS NULL
+                         AND NEW.lifecycle_state='active' AND NEW.spending_result_id IS NULL
+                         AND NEW.decision_state IS NULL)
                      OR (OLD.lifecycle_state='active' AND OLD.spending_result_id IS NULL
-                         AND NEW.lifecycle_state='consumed' AND NEW.spending_result_id IS NOT NULL)
+                         AND OLD.decision_state IS NULL
+                         AND NEW.lifecycle_state='consumed' AND NEW.spending_result_id IS NOT NULL
+                         AND NEW.decision_state='ready')
                      OR (OLD.lifecycle_state='consumed' AND OLD.spending_result_id IS NOT NULL
+                         AND OLD.decision_state IS NOT NULL
                          AND NEW.lifecycle_state='consumed'
-                         AND NEW.spending_result_id IS OLD.spending_result_id)
+                         AND NEW.spending_result_id IS OLD.spending_result_id
+                         AND (NEW.decision_state IS OLD.decision_state
+                              OR (OLD.decision_state='ready'
+                                  AND NEW.decision_state IN ('claimed','refused'))
+                              OR (OLD.decision_state='claimed'
+                                  AND NEW.decision_state IN ('applied','refused'))))
                  )
                 )
                 BEGIN SELECT RAISE(ABORT, 'v2 continuation envelope identity is immutable and lifecycle is forward-only'); END;
@@ -10492,8 +10516,8 @@ class Database:
                 activation_epoch, selector_id, provider_id, executor_kind,
                 model_id, causal_result_id, causal_result_digest,
                 evaluation_outcome, origin_boot_id, owner_attempt_id,
-                lifecycle_state, spending_result_id, canonical_payload_json,
-                created_at)
+                lifecycle_state, spending_result_id, decision_state,
+                canonical_payload_json, created_at)
                VALUES (:envelope_id,:candidate_id,:claim_key,:team,:root_task_id,
                        :manager_agent,:manager_session_id,:attempt_id,:result_id,
                        :binding_id,:contract_id,:contract_version,:contract_digest,
@@ -10501,8 +10525,8 @@ class Database:
                        :activation_epoch,:selector_id,:provider_id,:executor_kind,
                        :model_id,:causal_result_id,:causal_result_digest,
                        :evaluation_outcome,:origin_boot_id,:owner_attempt_id,
-                       :lifecycle_state,:spending_result_id,:canonical_payload_json,
-                       :created_at)""",
+                       :lifecycle_state,:spending_result_id,:decision_state,
+                       :canonical_payload_json,:created_at)""",
             {
                 **snapshot,
                 "canonical_payload_json": authority_policy_v2_canonical_json_bytes(
@@ -13266,6 +13290,456 @@ class Database:
             self._conn.rollback()
             return AuthorityPolicyV2AdmissionSettlementOutcome(
                 status="settlement_pending", reason="settlement_failed",
+            )
+
+    # ------------------------------------------------------------------
+    # THR-229 checkpoint C3d3c1: the ONE atomic next-result spend-to-ready
+    # writer and its result-keyed receipt.  Public, callable and deliberately
+    # DARK: no production consumer calls it, no queue/child/task-status effect
+    # and no launch authority is produced here.  The ordinary decision consumer
+    # (ready -> claimed -> applied/refused) remains the NEXT serial unit.
+    # ------------------------------------------------------------------
+
+    def _v2_spend_event_payload(
+        self, *, attempt_id: str, candidate_id: str, result_id: int,
+        envelope_id: str, notification_id: str, generation_id: str,
+        next_session_id: str, spending_result_id: int,
+    ) -> dict:
+        """One closed ``ax`` spend result-stage payload (result-keyed receipt)."""
+        return {
+            "stage": AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT,
+            "attempt_id": attempt_id,
+            "candidate_id": candidate_id,
+            "result_id": result_id,
+            "envelope_id": envelope_id,
+            "notification_id": notification_id,
+            "generation_id": generation_id,
+            "next_session_id": next_session_id,
+            "spending_result_id": spending_result_id,
+        }
+
+    def _v2_spend_event_identity_keys(self) -> set[str]:
+        return {
+            "stage", "attempt_id", "candidate_id", "result_id", "envelope_id",
+            "notification_id", "generation_id", "next_session_id",
+            "spending_result_id",
+        }
+
+    def _v2_related_spend_events_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, attempt_id: str,
+        candidate_id: str, result_id: int, envelope_id: str,
+        notification_id: str, generation_id: str, next_session_id: str,
+        spending_result_id: int,
+    ) -> list[dict] | None:
+        """Enumerate POTENTIALLY related ``spent`` events BEFORE filtering.
+
+        Identity-scoped enumeration happens before any stage/discriminator
+        filtering, so an appended row whose attempt/result/generation/session
+        reference is null/missing/mistyped/foreign -- or whose body is opaque or
+        carries extra keys -- can never be discarded before classification.
+        ``None`` means unreadable or opaque: the caller must fail closed.  A row
+        is independently unrelated ONLY when every present causal reference is
+        well-typed and provably different.
+        """
+        rows = self._v2_identity_scoped_audits(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            attempt_id=None, include_opaque=True,
+        )
+        if rows is None:
+            return None
+        identities = (
+            ("attempt_id", attempt_id, "str"),
+            ("candidate_id", candidate_id, "str"),
+            ("result_id", result_id, "int"),
+            ("envelope_id", envelope_id, "str"),
+            ("notification_id", notification_id, "str"),
+            ("generation_id", generation_id, "str"),
+            ("next_session_id", next_session_id, "str"),
+            ("spending_result_id", spending_result_id, "int"),
+        )
+        related: list[dict] = []
+        for row in rows:
+            payload = row["payload"]
+            if not isinstance(payload, dict):
+                return None
+            if payload.get("stage") != AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT:
+                # A different closed stage is legitimate distinct history.
+                continue
+            states = [
+                self._v2_identity_observation(payload, field, value, kind)
+                for field, value, kind in identities
+            ]
+            if all(state == "distinct" for state in states):
+                continue
+            related.append(payload)
+        return related
+
+    def _v2_spend_event_absent_uncommitted(self, **kwargs) -> bool:
+        """True only when ZERO potentially-related ``spent`` events exist.
+
+        Absence is proven separately from a false/malformed authentication: a
+        malformed/duplicate/foreign/opaque related row is a conflict, never
+        absence, and is never repaired by inserting another event.
+        """
+        related = self._v2_related_spend_events_uncommitted(**kwargs)
+        return related is not None and len(related) == 0
+
+    def _authenticate_v2_spend_event_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, expected: dict,
+    ) -> bool:
+        """Exactly one authentic CLOSED ``spent`` event for the exact receipt."""
+        related = self._v2_related_spend_events_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=expected["attempt_id"],
+            candidate_id=expected["candidate_id"],
+            result_id=expected["result_id"], envelope_id=expected["envelope_id"],
+            notification_id=expected["notification_id"],
+            generation_id=expected["generation_id"],
+            next_session_id=expected["next_session_id"],
+            spending_result_id=expected["spending_result_id"],
+        )
+        if related is None or len(related) != 1:
+            return False
+        payload = related[0]
+        if not isinstance(payload, dict):
+            return False
+        if set(payload.keys()) != self._v2_spend_event_identity_keys():
+            return False
+        return self._v2_json_type_sensitive_equal(payload, expected)
+
+    def _authenticate_v2_spending_result_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, next_session_id: str,
+        spending_result_id, causal_result_id: int,
+    ):
+        """Authenticate the immutable spending result R2 or return ``None``.
+
+        R2 must be a real persisted result of the SAME root + reserved manager
+        session (never a foreign/root/other-session row), must differ from the
+        causal result R, and must carry an exact persisted decision/report body
+        (a JSON object).  A missing/null/mistyped identifier, an equal-to-R id,
+        a foreign session or a malformed report is invalid -- never absence and
+        never an ordinary-path permission.
+        """
+        if not self._v2_is_int(spending_result_id) or spending_result_id < 1:
+            return None
+        if not self._v2_is_int(causal_result_id) or spending_result_id == causal_result_id:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM task_results WHERE id=?", (spending_result_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if (
+            row["task_id"] != root_task_id
+            or row["agent"] != manager_agent
+            or row["session_id"] != next_session_id
+        ):
+            return None
+        raw = row["decision_json"]
+        if not isinstance(raw, str) or not raw:
+            return None
+        try:
+            decision = json.loads(raw)
+        except Exception:
+            return None
+        if not isinstance(decision, dict):
+            return None
+        return row
+
+    def _consume_v2_continue_envelope_uncommitted(
+        self, envelope: AuthorityPolicyV2ContinueEnvelope, spending_result_id: int,
+    ) -> None:
+        """CAS E active -> consumed with the result-keyed READY receipt."""
+        updated = envelope.model_copy(update={
+            "lifecycle_state": "consumed",
+            "spending_result_id": spending_result_id,
+            "decision_state": "ready",
+        })
+        snapshot = updated.model_dump(mode="json")
+        canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+        cursor = self._conn.execute(
+            """UPDATE authority_policy_v2_continue_envelopes
+                  SET lifecycle_state='consumed', spending_result_id=?,
+                      decision_state='ready', canonical_payload_json=?
+                WHERE envelope_id=? AND lifecycle_state='active'
+                  AND spending_result_id IS NULL AND decision_state IS NULL""",
+            (spending_result_id, canonical, envelope.envelope_id),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("v2 continuation envelope spend CAS lost")
+
+    def _retire_v2_root_dispatch_uncommitted(
+        self, dispatch: AuthorityPolicyV2RootDispatch, now_dt: datetime,
+    ) -> None:
+        """CAS D admitted(G) -> retired(G) for the exact spent generation."""
+        updated = dispatch.model_copy(update={"state": "retired", "updated_at": now_dt})
+        snapshot = updated.model_dump(mode="json")
+        canonical = authority_policy_v2_canonical_json_bytes(snapshot).decode("utf-8")
+        cursor = self._conn.execute(
+            """UPDATE authority_policy_v2_root_dispatch
+                  SET state='retired', canonical_payload_json=?, updated_at=?
+                WHERE root_task_id=? AND generation_id=? AND state='admitted'""",
+            (
+                canonical, snapshot["updated_at"], dispatch.root_task_id,
+                dispatch.generation_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("v2 root dispatch retire CAS lost")
+
+    def _spend_v2_continuation_envelope_uncommitted(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, generation_id: str | None, next_session_id: str | None,
+        spending_result_id, now_dt: datetime,
+    ) -> AuthorityPolicyV2SpendOutcome:
+        def _pending(
+            reason: str, **kw,
+        ) -> AuthorityPolicyV2SpendOutcome:
+            return AuthorityPolicyV2SpendOutcome(
+                status="spend_pending", reason=reason, **kw,
+            )
+
+        if not self._v2_is_int(spending_result_id) or spending_result_id < 1:
+            return _pending("identity_mismatch")
+        if not isinstance(next_session_id, str) or not next_session_id:
+            return _pending("identity_mismatch")
+        if not self._v2_is_int(result_id) or spending_result_id == result_id:
+            return _pending("identity_mismatch")
+        code, ctx = self._authenticate_v2_post_final_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+        )
+        if code is not None:
+            return _pending(
+                "evidence_drift" if code == "evidence_drift" else "identity_mismatch"
+            )
+        assert ctx is not None
+        attempt = ctx["attempt"]
+        candidate = ctx["candidate"]
+        envelope = ctx["envelope"]
+        notification = ctx["notification"]
+        dispatch = ctx["dispatch"]
+        base = {
+            "attempt_id": attempt.attempt_id,
+            "candidate_id": candidate.candidate_id,
+            "notification_id": notification.notification_id,
+            "envelope_id": envelope.envelope_id,
+            "generation_id": notification.notification_id,
+            "result_id": result_id,
+            "spending_result_id": spending_result_id,
+            "next_session_id": next_session_id,
+        }
+        # "G is authority, P is diagnostic": the exact tagged generation is
+        # required, the reserved session must be the one this generation
+        # reserved, and the live root pointer must still name it.  A missing/
+        # null/mistyped token is invalid, never an ordinary-path permission.
+        if (
+            not isinstance(generation_id, str) or not generation_id
+            or generation_id != notification.notification_id
+            or dispatch.generation_id != notification.notification_id
+        ):
+            return _pending("identity_mismatch", **base)
+        if notification.next_session_id != next_session_id:
+            return _pending("identity_mismatch", **base)
+        if dispatch.state not in ("admitted", "retired"):
+            return _pending("identity_mismatch", **base)
+        expected_spent = self._v2_spend_event_payload(
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification_id=notification.notification_id,
+            generation_id=generation_id, next_session_id=next_session_id,
+            spending_result_id=spending_result_id,
+        )
+        # R2: the immutable spending result of the reserved same-root manager.
+        r2_row = self._authenticate_v2_spending_result_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            next_session_id=next_session_id, spending_result_id=spending_result_id,
+            causal_result_id=result_id,
+        )
+        if r2_row is None:
+            return _pending("missing_result", **base)
+        # Complete retained publication evidence + genuine ordinary OR exact
+        # callback_consumed recovery settlement proof for the CAUSAL tuple
+        # (including any conflicting potentially-related Q).
+        if not self._authenticate_v2_retained_publication_evidence_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification=notification, generation_id=generation_id,
+            allowed_states=("admitted", "settled"),
+        ):
+            return _pending("evidence_drift", **base)
+        if not self._authenticate_v2_publication_settlement_proof_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=manager_session_id, result_id=result_id,
+            attempt=attempt, candidate=candidate, envelope=envelope,
+            notification=notification, result_row=ctx["result_row"],
+        ):
+            return _pending("evidence_drift", **base)
+        # Complete retained generation-admission evidence (ag + as).
+        for stage in (
+            AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED,
+            AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED,
+        ):
+            if not self._authenticate_v2_admission_event_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                attempt_id=attempt.attempt_id,
+                expected=self._v2_admission_event_payload(
+                    stage=stage, attempt_id=attempt.attempt_id,
+                    candidate_id=candidate.candidate_id, result_id=result_id,
+                    envelope_id=envelope.envelope_id,
+                    notification_id=notification.notification_id,
+                    generation_id=generation_id, next_session_id=next_session_id,
+                ),
+            ):
+                return _pending("evidence_drift", **base)
+        # R2's own authentic launch binding / pinned lineage.  Equality with
+        # TODAY'S selector is deliberately NOT required: a later legitimate
+        # activation never invalidates this pinned generation, so only the
+        # binding's own sealed release/activation/selector lineage is proved.
+        binding2 = self.get_authority_policy_v2_session_binding(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            manager_session_id=next_session_id,
+        )
+        if binding2 is None:
+            return _pending("identity_mismatch", **base)
+        try:
+            self._authenticate_v2_session_binding_uncommitted(binding2)
+        except Exception:
+            return _pending("identity_mismatch", **base)
+        if (
+            binding2.team != candidate.team
+            or binding2.contract_id != candidate.contract_id
+            or binding2.contract_version != candidate.contract_version
+            or binding2.contract_digest != candidate.contract_digest
+        ):
+            return _pending("identity_mismatch", **base)
+        # ------------------------------------------------------------------
+        # Exact same-R2 replay: an authenticated consumed READY receipt is read
+        # back without any write, remint or dispatch.  Consumed/retired states
+        # are authenticated WITHOUT requiring an impossible active pre-state.
+        # ------------------------------------------------------------------
+        if envelope.lifecycle_state == "consumed":
+            if (
+                envelope.spending_result_id != spending_result_id
+                or envelope.decision_state is None
+            ):
+                return _pending("receipt_conflict", **base)
+            if (
+                dispatch.state != "retired"
+                or dispatch.generation_id != generation_id
+                or notification.state != "settled"
+            ):
+                return _pending("receipt_conflict", **base)
+            if not self._authenticate_v2_spend_event_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                expected=expected_spent,
+            ):
+                return _pending("receipt_conflict", **base)
+            return AuthorityPolicyV2SpendOutcome(
+                status="already_spent_exact", **base,
+                decision_state=envelope.decision_state,
+            )
+        # ------------------------------------------------------------------
+        # First spend.  Only an active/null-receipt envelope with an admitted
+        # pointer and a settled notification is spendable.
+        # ------------------------------------------------------------------
+        if (
+            envelope.lifecycle_state != "active"
+            or envelope.spending_result_id is not None
+            or envelope.decision_state is not None
+            or dispatch.state != "admitted"
+            or notification.state != "settled"
+        ):
+            return _pending("not_spendable", **base)
+        task_row = self._conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (root_task_id,)
+        ).fetchone()
+        if (
+            task_row is None
+            or task_row["cancelled_at"] is not None
+            or task_row["status"] != TaskStatus.IN_PROGRESS.value
+            or task_row["block_kind"] is not None
+            or task_row["assigned_agent"] != manager_agent
+            or task_row["current_session_id"] != next_session_id
+        ):
+            return _pending("owner_lost", **base)
+        # A distinct later R2 authority attempt / generation B is NEVER
+        # overwritten: any OTHER envelope already carrying this exact spending
+        # result is a conflict.  The partial unique index is the durable backstop.
+        other = self._conn.execute(
+            """SELECT envelope_id FROM authority_policy_v2_continue_envelopes
+               WHERE spending_result_id=? AND envelope_id<>?""",
+            (spending_result_id, envelope.envelope_id),
+        ).fetchone()
+        if other is not None:
+            return _pending("receipt_conflict", **base)
+        # The FIRST spend must be the ONLY one: prove ABSENCE of any related
+        # spent event separately from a false/malformed authentication.
+        if not self._v2_spend_event_absent_uncommitted(
+            root_task_id=root_task_id, manager_agent=manager_agent,
+            attempt_id=attempt.attempt_id, candidate_id=candidate.candidate_id,
+            result_id=result_id, envelope_id=envelope.envelope_id,
+            notification_id=notification.notification_id,
+            generation_id=generation_id, next_session_id=next_session_id,
+            spending_result_id=spending_result_id,
+        ):
+            return _pending("receipt_conflict", **base)
+        # One atomic mutation: E active -> consumed(R2, ready), D admitted ->
+        # retired, exactly one closed ``spent`` audit.  Task, R2, N, K/P/V,
+        # causal J and every prior audit are retained byte-for-byte.
+        self._consume_v2_continue_envelope_uncommitted(envelope, spending_result_id)
+        self._retire_v2_root_dispatch_uncommitted(dispatch, now_dt)
+        self.insert_audit_log_uncommitted(
+            root_task_id, manager_agent, AUTHORITY_POLICY_V2_RESULT_STAGE_ACTION,
+            expected_spent,
+        )
+        return AuthorityPolicyV2SpendOutcome(
+            status="spent", **base, decision_state="ready",
+        )
+
+    @_synchronized
+    def spend_authority_policy_v2_continue_envelope(
+        self, *, root_task_id: str, manager_agent: str, manager_session_id: str,
+        result_id: int, generation_id: str | None, next_session_id: str | None,
+        spending_result_id: int,
+    ) -> AuthorityPolicyV2SpendOutcome:
+        """ONE synchronized atomic next-result spend-to-ready transaction.
+
+        Authenticates the complete post-final causal evidence, the exact tagged
+        generation G, the reserved same-root manager session and the immutable
+        spending result R2 (its persisted report and its own launch binding),
+        then atomically CASes E ``active`` -> ``consumed`` with
+        ``spending_result_id=R2`` + ``decision_state='ready'``, D ``admitted``
+        -> ``retired`` and exactly one closed ``spent`` audit.  An exact same-R2
+        retry is a read-only ``already_spent_exact``; everything missing/null/
+        mistyped/conflicting/malformed refuses (``spend_pending``) with the whole
+        transaction rolled back, E active, D admitted, R2 retained and the
+        decision unapplied.  This method performs NO consumer call, NO queue
+        call, NO child creation and NO task-status effect.
+        """
+        if self._conn.in_transaction:
+            return AuthorityPolicyV2SpendOutcome(
+                status="spend_pending", reason="transaction_owned",
+            )
+        now_dt = _now()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            outcome = self._spend_v2_continuation_envelope_uncommitted(
+                root_task_id=root_task_id, manager_agent=manager_agent,
+                manager_session_id=manager_session_id, result_id=result_id,
+                generation_id=generation_id, next_session_id=next_session_id,
+                spending_result_id=spending_result_id, now_dt=now_dt,
+            )
+            if outcome.status == "spend_pending":
+                self._conn.rollback()
+                return outcome
+            self._conn.commit()
+            return outcome
+        except Exception:
+            self._conn.rollback()
+            return AuthorityPolicyV2SpendOutcome(
+                status="spend_pending", reason="spend_failed",
             )
 
     @_synchronized

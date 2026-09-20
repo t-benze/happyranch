@@ -1118,6 +1118,22 @@ AUTHORITY_POLICY_V2_NOTIFICATION_STATES = frozenset({
 AUTHORITY_POLICY_V2_DISPATCH_STATES = frozenset({
     "pending", "admitted", "retired",
 })
+# THR-229 checkpoint C3d3c1: the RESULT-KEYED spend/decision receipt.  A
+# consumed continuation envelope (E) carrying a non-null ``spending_result_id``
+# IS the result-keyed spending receipt for that exact reserved-session result;
+# its closed, forward-only ``decision_state`` distinguishes the durable READY
+# decision receipt from the later ordinary decision-consumer lifecycle.  Only
+# the atomic active -> consumed spend-to-ready writer ships in this unit; the
+# consumer bookkeeping (ready -> claimed -> applied/refused) remains dark.
+AUTHORITY_POLICY_V2_DECISION_STATES = frozenset({
+    "ready", "claimed", "applied", "refused",
+})
+AUTHORITY_POLICY_V2_DECISION_FORWARD_TRANSITIONS = {
+    "ready": frozenset({"claimed", "refused"}),
+    "claimed": frozenset({"applied", "refused"}),
+    "applied": frozenset(),
+    "refused": frozenset(),
+}
 # Closed non-semantic audit actions written by the final continuation
 # transaction and the receipt-settlement transaction.  ``af`` in the accepted
 # R4 notation is the final candidate/task/hook audit set plus the closed
@@ -1228,6 +1244,27 @@ AUTHORITY_POLICY_V2_ADMISSION_SETTLEMENT_PENDING_REASONS = frozenset({
 # exact causal identity plus the reserved session, and never mint authority.
 AUTHORITY_POLICY_V2_RESULT_STAGE_GENERATION_CLAIMED = "generation_claimed"
 AUTHORITY_POLICY_V2_RESULT_STAGE_NOTIFICATION_SETTLED = "notification_settled"
+
+# THR-229 checkpoint C3d3c1: bounded outcome of the ONE atomic next-result
+# spend-to-ready transaction.  ``spent`` just committed E active -> consumed
+# with the exact spending result and D admitted -> retired; ``already_spent_exact``
+# is a read-only exact retry of the authenticated consumed/ready receipt
+# (no write, no remint); ``spend_pending`` means NO spend occurred (or the
+# transaction failed) and E stayed active / D admitted with the decision
+# unapplied.  None of these statuses is launch authority.
+AUTHORITY_POLICY_V2_SPEND_STATUSES = frozenset({
+    "spent", "already_spent_exact", "spend_pending",
+})
+AUTHORITY_POLICY_V2_SPEND_PENDING_REASONS = frozenset({
+    "transaction_owned", "identity_mismatch", "evidence_drift", "owner_lost",
+    "not_spendable", "missing_result", "receipt_conflict", "spend_failed",
+})
+# Closed result-stage event appended by the spend writer (the accepted ``ax``
+# audit).  It reuses the existing ``authority_policy_v2_result_stage`` action and
+# binds the exact causal identity PLUS the spending result and its reserved
+# session, so one receipt is discoverable and no new audit scope/table/column
+# outside this PR's unreleased additive representation is introduced.
+AUTHORITY_POLICY_V2_RESULT_STAGE_SPENT = "spent"
 
 
 class AuthorityPolicyV2Attempt(BaseModel):
@@ -2067,6 +2104,10 @@ class AuthorityPolicyV2ContinueEnvelope(BaseModel):
     spending_result_id: StrictInt | None = Field(
         default=None, ge=1, le=9223372036854775807,
     )
+    # The result-keyed decision receipt state.  NULL while the envelope is
+    # active; once consumed it is exactly one closed forward-only state.  This
+    # unit only ever writes the durable ``ready`` receipt.
+    decision_state: StrictStr | None = None
     created_at: datetime = Field(default_factory=_now)
 
     @field_validator(
@@ -2144,6 +2185,13 @@ class AuthorityPolicyV2ContinueEnvelope(BaseModel):
             raise ValueError("envelope lifecycle_state is not a closed value")
         return value
 
+    @field_validator("decision_state")
+    @classmethod
+    def _v2_envelope_decision_state_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_DECISION_STATES:
+            raise ValueError("envelope decision_state is not a closed value")
+        return value
+
     @model_validator(mode="after")
     def _v2_envelope_identity_is_frozen(self) -> AuthorityPolicyV2ContinueEnvelope:
         if self.candidate_id != f"APV2C-{self.claim_key}":
@@ -2167,6 +2215,10 @@ class AuthorityPolicyV2ContinueEnvelope(BaseModel):
             raise ValueError("envelope contract_digest does not match the v2 contract")
         if (self.lifecycle_state == "consumed") != (self.spending_result_id is not None):
             raise ValueError("a consumed envelope requires exactly one spending result")
+        if (self.lifecycle_state == "consumed") != (self.decision_state is not None):
+            raise ValueError(
+                "a consumed envelope requires exactly one decision receipt state"
+            )
         return self
 
 
@@ -2723,6 +2775,73 @@ class AuthorityPolicyV2AdmissionSettlementOutcome(BaseModel):
             or self.generation_id is None or self.next_session_id is None
         ):
             raise ValueError("a completed settlement requires the exact identity")
+        return self
+
+
+class AuthorityPolicyV2SpendOutcome(BaseModel):
+    """Bounded outcome of the ONE atomic next-result spend-to-ready transaction.
+
+    ``spent`` just committed the receipt (E active -> consumed with the exact
+    spending result + ``decision_state=ready``, D admitted -> retired); the
+    caller may then let the ordinary decision consumer process the SAME result.
+    ``already_spent_exact`` is a read-only exact retry of an authenticated
+    consumed/ready receipt and performs NO write, remint or dispatch.
+    ``spend_pending`` means no spend occurred and E stayed active / D admitted
+    with the decision unapplied.  None of these statuses is launch authority.
+    """
+    model_config = {"extra": "forbid", "strict": True, "frozen": True}
+
+    status: StrictStr
+    reason: StrictStr | None = None
+    attempt_id: StrictStr | None = None
+    candidate_id: StrictStr | None = None
+    notification_id: StrictStr | None = None
+    envelope_id: StrictStr | None = None
+    generation_id: StrictStr | None = None
+    result_id: StrictInt | None = Field(default=None, ge=1, le=9223372036854775807)
+    spending_result_id: StrictInt | None = Field(
+        default=None, ge=1, le=9223372036854775807,
+    )
+    next_session_id: StrictStr | None = None
+    decision_state: StrictStr | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _v2_spend_status_is_closed(cls, value: str) -> str:
+        if value not in AUTHORITY_POLICY_V2_SPEND_STATUSES:
+            raise ValueError("spend status is not a closed value")
+        return value
+
+    @field_validator("reason")
+    @classmethod
+    def _v2_spend_reason_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_SPEND_PENDING_REASONS:
+            raise ValueError("spend reason is not a closed value")
+        return value
+
+    @field_validator("decision_state")
+    @classmethod
+    def _v2_spend_decision_state_is_closed(cls, value: str | None) -> str | None:
+        if value is not None and value not in AUTHORITY_POLICY_V2_DECISION_STATES:
+            raise ValueError("spend decision_state is not a closed value")
+        return value
+
+    @model_validator(mode="after")
+    def _v2_spend_shape(self) -> AuthorityPolicyV2SpendOutcome:
+        if self.status == "spend_pending":
+            if self.reason is None:
+                raise ValueError("a pending spend requires a bounded reason")
+            return self
+        if self.reason is not None:
+            raise ValueError("a committed spend carries no pending reason")
+        if (
+            self.attempt_id is None or self.candidate_id is None
+            or self.notification_id is None or self.envelope_id is None
+            or self.generation_id is None or self.result_id is None
+            or self.spending_result_id is None or self.next_session_id is None
+            or self.decision_state is None
+        ):
+            raise ValueError("a committed spend requires the exact receipt identity")
         return self
 
 

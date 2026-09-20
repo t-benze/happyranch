@@ -2219,3 +2219,248 @@ def test_shipping_historically_migrated_ack_corruption_refuses(tmp_path, monkeyp
         _drive_c3d3b_admission(fixture, negative="ack_corruption")
     finally:
         fixture.stop()
+
+
+# --------------------------------------------------------------------------
+# C3d3c1: the ACTUAL reserved next invocation + real R2 callback admission,
+# then an explicit invocation of the real public spend-to-ready writer.
+#
+# This is stage proof with a direct storage handoff -- explicitly NOT
+# common-consumer integration, NOT final CLI->hook->Pending/enqueue acceptance.
+# The public spend writer stays DARK (no automatic caller).  The provider launch
+# remains the sole external-launch double.
+# --------------------------------------------------------------------------
+
+
+class _SpendFailingConn:
+    """Test-only connection wrapper injecting one exact spend-audit failure."""
+
+    def __init__(self, real, *, audit_stage: str) -> None:
+        self._real = real
+        self._audit_stage = audit_stage
+
+    def execute(self, sql, *args, **kwargs):
+        params = args[0] if args else None
+        if (
+            "INSERT INTO audit_log" in sql
+            and isinstance(params, (tuple, list)) and len(params) >= 4
+            and isinstance(params[3], str) and self._audit_stage in params[3]
+        ):
+            raise RuntimeError("injected spend audit failure")
+        return self._real.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def _spend_call(db, *, root_id, session_id, causal_id, generation, reserved, r2):
+    return db.spend_authority_policy_v2_continue_envelope(
+        root_task_id=root_id, manager_agent=MANAGER,
+        manager_session_id=session_id, result_id=causal_id,
+        generation_id=generation, next_session_id=reserved,
+        spending_result_id=r2,
+    )
+
+
+def _drive_c3d3c1_spend(fixture: _ShippingFixture) -> str:
+    fixture.activate_v2_pair()
+    fixture.install_launch_hold()
+    root_id = fixture.create_and_enqueue_root()
+    captured = fixture.wait_for_launch()
+    session_id = captured["session_id"]
+    binding = _binding(fixture, root_id, session_id)
+    assert binding is not None and binding["mode"] == "v2"
+
+    body = _completion_body(binding, root_id)
+    payload = fixture.write_payload(body)
+    result = fixture.run_cli(payload)
+    assert result.returncode == 0, result.stderr
+    assert fixture.last_http()["status"] == 200
+
+    results, attempt, _audits = _admission_counts(fixture, root_id)
+    assert len(results) == 1 and attempt is not None
+    causal_id = results[0]["id"]
+    db = fixture.org.db
+
+    from runtime.orchestrator.authority import (
+        _strict_permission_surface_digest,
+        publish_authority_policy_v2_notifications,
+    )
+
+    db.bind_authority_policy_v2_permission_surface_reader(
+        lambda agent: _strict_permission_surface_digest(
+            fixture.org.orchestrator, agent,
+        )
+    )
+    stage_kwargs = dict(
+        root_task_id=root_id, manager_agent=MANAGER, manager_session_id=session_id,
+        result_id=causal_id, origin_boot_id=attempt.origin_boot_id,
+        owner_attempt_id=attempt.owner_attempt_id,
+    )
+    assert db.claim_authority_policy_v2_candidate(**stage_kwargs).status == "claimed"
+    assert db.audit_authority_policy_v2_candidate_claim(**stage_kwargs).status == "claim_audited"
+    assert db.evaluate_authority_policy_v2_candidate(**stage_kwargs).status == "evaluated"
+    assert db.audit_authority_policy_v2_candidate_evaluation(**stage_kwargs).status == "evaluation_audited"
+    assert db.consume_authority_policy_v2_candidate(**stage_kwargs).status == "consumed"
+    assert db.audit_authority_policy_v2_candidate_consumption(**stage_kwargs).status == "consumed_audited"
+    finalized = db.finalize_authority_policy_v2_continuation(**stage_kwargs)
+    assert finalized.status == "continued", finalized
+    generation = finalized.notification_id
+
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+
+    result_row = db._conn.execute(
+        "SELECT * FROM task_results WHERE id=?", (causal_id,)
+    ).fetchone()
+    report = completion_report_from_result_row(
+        root_id, dict(result_row), fallback_agent=MANAGER,
+    )
+    fixture.org.orchestrator._log_step_result(
+        root_id, types.SimpleNamespace(session_id=session_id), report,
+        result_row_id=causal_id,
+    )
+    pub_kwargs = dict(
+        root_task_id=root_id, manager_agent=MANAGER,
+        manager_session_id=session_id, result_id=causal_id,
+    )
+    assert db.settle_authority_policy_v2_continuation_receipt(**pub_kwargs).status == "settled"
+    db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)
+
+    # The REAL publisher -> REAL TaskQueue -> Dispatcher/run_step -> tagged
+    # generation admission reserves the next session and holds its launch.
+    receipts = publish_authority_policy_v2_notifications(
+        fixture.org.orchestrator, fixture.state.queue,
+    )
+    assert receipts and receipts[0]["status"] in ("published", "publish_returned"), receipts
+
+    reserved = None
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        admitted = db.get_authority_policy_v2_recovery_notification(generation)
+        if (
+            admitted is not None and admitted.state == "settled"
+            and admitted.next_session_id
+        ):
+            reserved = admitted.next_session_id
+            if fixture.captured.get("session_id") == reserved:
+                break
+        time.sleep(0.05)
+    assert reserved is not None, "generation was never admitted"
+    assert reserved != session_id
+    assert fixture.captured["session_id"] == reserved
+
+    # The reserved invocation is STILL HELD at the real external launch
+    # boundary: produce its REAL persisted result R2 through the actual
+    # shipping subprocess CLI -> HTTP callback route (a genuine new R2
+    # authority attempt J2), with the task still in_progress and the decision
+    # not yet applied.
+    reserved_binding = _binding(fixture, root_id, reserved)
+    assert reserved_binding is not None and reserved_binding["mode"] == "v2"
+    reserved_body = _completion_body(reserved_binding, root_id)
+    reserved_payload = fixture.write_payload(
+        reserved_body, name="completion-reserved.json",
+    )
+    reserved_result = fixture.run_cli(reserved_payload)
+    assert reserved_result.returncode == 0, reserved_result.stderr
+    assert fixture.last_http()["status"] == 200
+
+    rows = db.get_task_results(root_id)
+    r2_row = rows[-1]
+    assert r2_row["session_id"] == reserved
+    r2 = r2_row["id"]
+    assert r2 != causal_id
+    # A genuine NEW R2 authority attempt exists and is entirely untouched by
+    # the spend writer.
+    r2_attempt = db.get_authority_policy_v2_attempt_for_result(r2)
+    assert r2_attempt is not None and r2_attempt.result_id == r2
+    before_task = db.get_task(root_id)
+    assert before_task.status is TaskStatus.IN_PROGRESS
+    assert before_task.current_session_id == reserved
+
+    # Deterministic spend-audit failure: E active / D admitted / R2 retained.
+    real = db._conn
+    db._conn = _SpendFailingConn(real, audit_stage="spent")
+    try:
+        failed = _spend_call(
+            db, root_id=root_id, session_id=session_id, causal_id=causal_id,
+            generation=generation, reserved=reserved, r2=r2,
+        )
+    finally:
+        db._conn = real
+    assert failed.status == "spend_pending", failed
+    assert failed.reason == "spend_failed", failed
+    active = db.get_authority_policy_v2_continue_envelope(finalized.envelope_id)
+    assert active.lifecycle_state == "active", active
+    assert db.get_authority_policy_v2_root_dispatch(root_id).state == "admitted"
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM task_results WHERE id=?", (r2,),
+    ).fetchone()[0] == 1
+
+    # Exact retry of the SAME spend transaction succeeds.
+    spend = _spend_call(
+        db, root_id=root_id, session_id=session_id, causal_id=causal_id,
+        generation=generation, reserved=reserved, r2=r2,
+    )
+    assert spend.status == "spent", spend
+    assert spend.decision_state == "ready"
+
+    consumed = db.get_authority_policy_v2_continue_envelope(finalized.envelope_id)
+    assert consumed.lifecycle_state == "consumed"
+    assert consumed.spending_result_id == r2
+    assert consumed.decision_state == "ready"
+    dispatch = db.get_authority_policy_v2_root_dispatch(root_id)
+    assert dispatch.state == "retired" and dispatch.generation_id == generation
+    notification = db.get_authority_policy_v2_recovery_notification(generation)
+    assert notification.state == "settled"
+    stages = [
+        a["payload"]["stage"]
+        for a in db.list_authority_policy_v2_result_stage_audits(
+            root_task_id=root_id, manager_agent=MANAGER,
+        )
+    ]
+    assert stages.count("spent") == 1
+    # No normal decision/child/enqueue effect and no task-status change.
+    after_task = db.get_task(root_id)
+    assert after_task.status is TaskStatus.IN_PROGRESS
+    assert after_task.current_session_id == reserved
+    assert after_task.orchestration_step_count == before_task.orchestration_step_count
+    assert db.get_authority_policy_v2_attempt_for_result(r2).attempt_id == r2_attempt.attempt_id
+
+    # Read-only exact replay: no remint, no second receipt/audit, no dispatch.
+    replay = _spend_call(
+        db, root_id=root_id, session_id=session_id, causal_id=causal_id,
+        generation=generation, reserved=reserved, r2=r2,
+    )
+    assert replay.status == "already_spent_exact", replay
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM authority_policy_v2_continue_envelopes "
+        "WHERE spending_result_id=?", (r2,),
+    ).fetchone()[0] == 1
+
+    fixture.release_launch()
+    fixture.join_workers()
+    return root_id
+
+
+def test_shipping_real_reserved_invocation_and_atomic_spend(tmp_path, monkeypatch):
+    fixture = _ShippingFixture(tmp_path, monkeypatch, queue_workers=2)
+    fixture.start()
+    try:
+        _drive_c3d3c1_spend(fixture)
+    finally:
+        fixture.stop()
+
+
+def test_shipping_historically_migrated_reserved_invocation_and_spend(
+    tmp_path, monkeypatch,
+):
+    """The SAME reserved-invocation + atomic spend venue over a FULL historical
+    migrated DB."""
+    fixture = _ShippingFixture(
+        tmp_path, monkeypatch, seed_historical=True, queue_workers=2,
+    )
+    fixture.start()
+    try:
+        _drive_c3d3c1_spend(fixture)
+    finally:
+        fixture.stop()
