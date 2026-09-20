@@ -192,21 +192,18 @@ class _RecordingGitRun:
 
 # ── (a) per-agent trigger decision: cadence, dedup, cooldown ─────────────
 
-def _sunday_0330_utc() -> datetime:
-    """Next Sunday 03:30 UTC (deterministic reference for due/not-due)."""
+def _daily_0330_utc() -> datetime:
+    """Next local 03:30 UTC (deterministic reference for due/not-due)."""
     now = datetime.now(timezone.utc)
-    days = (6 - now.weekday()) % 7
-    sunday = (now + timedelta(days=days)).replace(
-        hour=3, minute=30, second=0, microsecond=0,
-    )
-    if sunday < now:
-        sunday += timedelta(days=7)
-    return sunday
+    occurrence = now.replace(hour=3, minute=30, second=0, microsecond=0)
+    if occurrence <= now:
+        occurrence += timedelta(days=1)
+    return occurrence
 
 
 def test_trigger_decision_not_due_before_occurrence(tmp_path):
     db = Database(tmp_path / "db.sqlite")
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
     just_before = occurrence - timedelta(minutes=30)  # Sunday 03:00: this week's occurrence is still in the future
     decision = wcs.decide_cleanup_trigger(
         db=db, agent="dev_agent", now_utc=just_before, tz=timezone.utc,
@@ -217,7 +214,7 @@ def test_trigger_decision_not_due_before_occurrence(tmp_path):
 
 def test_trigger_decision_due_with_no_prior_run(tmp_path):
     db = Database(tmp_path / "db.sqlite")
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
     decision = wcs.decide_cleanup_trigger(
         db=db, agent="dev_agent", now_utc=occurrence, tz=timezone.utc,
     )
@@ -227,7 +224,7 @@ def test_trigger_decision_due_with_no_prior_run(tmp_path):
 
 def test_trigger_decision_dedup_prior_run_in_flight(tmp_path):
     db = Database(tmp_path / "db.sqlite")
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
     _insert_cleanup_task(
         db, task_id="TASK-100", created_at=occurrence - timedelta(days=7),
         status=TaskStatus.IN_PROGRESS,
@@ -243,7 +240,7 @@ def test_trigger_decision_suppresses_other_nonterminal_statuses(tmp_path):
     """Any non-terminal status (e.g. ESCALATED) suppresses; terminal set is
     exactly COMPLETED/FAILED/SUPERSEDED/CANCELLED."""
     db = Database(tmp_path / "db.sqlite")
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
     _insert_cleanup_task(
         db, task_id="TASK-100", created_at=occurrence - timedelta(days=7),
         status=TaskStatus.ESCALATED,
@@ -257,7 +254,7 @@ def test_trigger_decision_suppresses_other_nonterminal_statuses(tmp_path):
 
 def test_trigger_decision_at_most_once_per_window(tmp_path):
     db = Database(tmp_path / "db.sqlite")
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
     _insert_cleanup_task(
         db, task_id="TASK-100", created_at=occurrence + timedelta(seconds=1),
     )
@@ -271,7 +268,7 @@ def test_trigger_decision_at_most_once_per_window(tmp_path):
 
 def test_trigger_decision_terminal_prior_run_before_window_triggers(tmp_path):
     db = Database(tmp_path / "db.sqlite")
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
     _insert_cleanup_task(
         db, task_id="TASK-100", created_at=occurrence - timedelta(days=8),
         status=TaskStatus.COMPLETED,
@@ -285,7 +282,7 @@ def test_trigger_decision_terminal_prior_run_before_window_triggers(tmp_path):
 def test_trigger_decision_ignores_unrelated_tasks(tmp_path):
     """A non-cleanup task (no marker) never counts for dedup/cooldown."""
     db = Database(tmp_path / "db.sqlite")
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
     _insert_cleanup_task(
         db, task_id="TASK-100", created_at=occurrence + timedelta(seconds=1),
         brief="Ordinary dev_agent work, no cleanup marker.",
@@ -297,45 +294,48 @@ def test_trigger_decision_ignores_unrelated_tasks(tmp_path):
     assert decision.should_trigger is True
 
 
-def test_trigger_decision_seven_day_cooldown_suppresses(tmp_path):
-    """A terminal prior cleanup task younger than 7 days suppresses even when
-    the weekly window is unserviced (rolling per-agent cooldown)."""
+def test_trigger_decision_no_rolling_cooldown_prior_window_permits(tmp_path):
+    """S11/C2: a terminal prior run created in the PREVIOUS window (even
+    seconds after yesterday's boundary) never delays the current window via
+    elapsed-hours arithmetic — only the current occurrence boundary decides."""
     db = Database(tmp_path / "db.sqlite")
-    occurrence = _sunday_0330_utc()
-    # Terminal run from ~6 days ago: older than the last occurrence but
-    # younger than the seven-day cooldown.
+    occurrence = _daily_0330_utc()
     _insert_cleanup_task(
         db, task_id="TASK-100",
-        created_at=occurrence - timedelta(days=6) - timedelta(hours=23),
-        status=TaskStatus.COMPLETED,
-    )
-    decision = wcs.decide_cleanup_trigger(
-        db=db, agent="dev_agent", now_utc=occurrence, tz=timezone.utc,
-    )
-    assert decision.should_trigger is False
-    assert decision.reason == "cooldown"
-
-
-def test_trigger_decision_cooldown_expired_triggers(tmp_path):
-    """A terminal prior cleanup task older than 7 days with an unserviced
-    window triggers."""
-    db = Database(tmp_path / "db.sqlite")
-    occurrence = _sunday_0330_utc()
-    _insert_cleanup_task(
-        db, task_id="TASK-100",
-        created_at=occurrence - timedelta(days=8),
+        created_at=occurrence - timedelta(days=1) + timedelta(seconds=42),
         status=TaskStatus.COMPLETED,
     )
     decision = wcs.decide_cleanup_trigger(
         db=db, agent="dev_agent", now_utc=occurrence, tz=timezone.utc,
     )
     assert decision.should_trigger is True
+    assert decision.reason is None
+
+
+def test_trigger_decision_current_window_terminal_run_suppresses(tmp_path):
+    """S11/C2: a terminal run inside the current window (seconds late)
+    suppresses; there is no elapsed-hours cooldown."""
+    db = Database(tmp_path / "db.sqlite")
+    occurrence = _daily_0330_utc()
+    _insert_cleanup_task(
+        db, task_id="TASK-100",
+        created_at=occurrence + timedelta(seconds=42),
+        status=TaskStatus.COMPLETED,
+    )
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent",
+        now_utc=occurrence + timedelta(minutes=5),
+        previous_scan_utc=occurrence - timedelta(seconds=1),
+        tz=timezone.utc,
+    )
+    assert decision.should_trigger is False
+    assert decision.reason == "already_triggered_this_window"
 
 
 def test_trigger_decision_is_per_agent(tmp_path):
     """Agent A's in-flight cleanup task never suppresses agent B's trigger."""
     db = Database(tmp_path / "db.sqlite")
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
     _insert_cleanup_task(
         db, task_id="TASK-100", agent="dev_agent",
         created_at=occurrence - timedelta(days=7),
@@ -566,7 +566,7 @@ async def test_due_scheduler_tick_spawns_when_measurement_is_unavailable(
     )
     state = _FakeDaemonState()
     state.orgs = {"test": org}
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
 
     await wcs._tick_org(
         org,
@@ -621,7 +621,7 @@ async def test_due_tick_spawns_when_partial_traversal_is_unreadable(
 
     monkeypatch.setattr(wcs.os, "scandir", partly_unreadable_scandir)
     state = _FakeDaemonState()
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
 
     await wcs._tick_org(
         org,
@@ -714,7 +714,7 @@ async def test_due_tick_spawns_when_entry_metadata_is_unreadable(
 
     monkeypatch.setattr(wcs.os, "scandir", OrderedScandir)
     state = _FakeDaemonState()
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
 
     await wcs._tick_org(
         org,
@@ -1427,7 +1427,7 @@ async def test_kill_switch_default_enabled_triggers(tmp_path, test_settings, mon
         wcs, "decide_cleanup_trigger",
         lambda **kw: wcs.CleanupTriggerDecision(True, None),
     )
-    await wcs._tick_org(org, state, now_utc=_sunday_0330_utc())
+    await wcs._tick_org(org, state, now_utc=_daily_0330_utc())
     assert triggered == ["dev_agent", "qa_engineer"]
 
 
@@ -1456,7 +1456,7 @@ async def test_kill_switch_disabled_skips_org(tmp_path, test_settings, monkeypat
         wcs, "decide_cleanup_trigger",
         lambda **kw: wcs.CleanupTriggerDecision(True, None),
     )
-    await wcs._tick_org(org, state, now_utc=_sunday_0330_utc())
+    await wcs._tick_org(org, state, now_utc=_daily_0330_utc())
     assert triggered == []
 
 
@@ -1495,7 +1495,7 @@ async def test_tick_org_shared_loader_config_failure_escapes_before_scheduling(
     state.orgs = {"test": org}
 
     with pytest.raises(OrgConfigError):
-        await wcs._tick_org(org, state, now_utc=_sunday_0330_utc())
+        await wcs._tick_org(org, state, now_utc=_daily_0330_utc())
     assert state.queue.items == []
 
 
@@ -1623,7 +1623,7 @@ async def test_loop_ticks_and_triggers_when_due(tmp_path, test_settings, monkeyp
     state.orgs = {"test": org}
     state.metrics_registry = _FakeMetricsRegistry()
 
-    due = _sunday_0330_utc()
+    due = _daily_0330_utc()
     triggered: list[str] = []
 
     async def fake_trigger(org, *, agent, enqueue, now_utc=None):
@@ -1659,7 +1659,7 @@ async def test_loop_ticks_and_skips_when_not_due(tmp_path, test_settings, monkey
         wcs, "decide_cleanup_trigger",
         lambda **kw: wcs.CleanupTriggerDecision(False, "not_due"),
     )
-    await wcs._tick_org(org, state, now_utc=_sunday_0330_utc())
+    await wcs._tick_org(org, state, now_utc=_daily_0330_utc())
     assert triggered == []
 
 
@@ -1682,7 +1682,7 @@ async def test_tick_org_below_threshold_audits_once_at_weekly_boundary(
             available=True, workspaces_bytes=0,
         ),
     )
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
     for minute in range(3):
         await wcs._tick_org(
             org, state, now_utc=occurrence + timedelta(minutes=minute),
@@ -1699,11 +1699,11 @@ async def test_tick_org_below_threshold_audits_once_at_weekly_boundary(
 
 
 @pytest.mark.asyncio
-async def test_tick_org_retries_below_threshold_at_later_cooldown_boundary(
+async def test_tick_org_observes_below_threshold_once_per_daily_boundary(
     tmp_path, test_settings, monkeypatch,
 ):
-    """A rolling cooldown can suppress the first cadence boundary; the next
-    weekly boundary observes below-threshold state once after it expires."""
+    """With the seven-day cooldown removed, an unserviced below-threshold agent
+    is observed once per daily boundary (and once per boundary only)."""
     db = Database(tmp_path / "db.sqlite")
     org = _org_with_workspaces(tmp_path, db, test_settings)
     cfg_path = org.root / "org" / "config.yaml"
@@ -1717,7 +1717,7 @@ async def test_tick_org_retries_below_threshold_at_later_cooldown_boundary(
             available=True, workspaces_bytes=0,
         ),
     )
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
     _insert_cleanup_task(
         db,
         task_id="TASK-100",
@@ -1728,7 +1728,7 @@ async def test_tick_org_retries_below_threshold_at_later_cooldown_boundary(
 
     await wcs._tick_org(org, state, now_utc=occurrence)
     await wcs._tick_org(org, state, now_utc=occurrence + timedelta(minutes=1))
-    later_boundary = occurrence + timedelta(days=7)
+    later_boundary = occurrence + timedelta(days=1)
     await wcs._tick_org(org, state, now_utc=later_boundary)
     await wcs._tick_org(
         org, state, now_utc=later_boundary + timedelta(minutes=1),
@@ -1741,7 +1741,7 @@ async def test_tick_org_retries_below_threshold_at_later_cooldown_boundary(
         and row["agent"] == "dev_agent"
         and row["payload"].get("reason") == "workspace_below_threshold"
     ]
-    assert len(below_threshold) == 1
+    assert len(below_threshold) == 2
 
 
 @pytest.mark.asyncio
@@ -1767,11 +1767,18 @@ async def test_shipping_loop_reaches_occurrence_once_across_phase_and_processing
             measured_at="2026-08-30T03:30:00+00:00",
         ),
     )
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
+    # Yesterday's window is already serviced terminal for both agents, so the
+    # first-scan catch-up is a no-op and only the real crossing can act.
+    for i, agent in enumerate(("dev_agent", "qa_engineer")):
+        _insert_cleanup_task(
+            db, task_id=f"TASK-{600 + i}", agent=agent,
+            created_at=occurrence - timedelta(days=1, minutes=-5),
+            status=TaskStatus.COMPLETED,
+        )
     scan_times = iter([
-        occurrence - timedelta(microseconds=500_000),  # cursor initialization
-        occurrence - timedelta(microseconds=500_000),  # first scan
-        occurrence + timedelta(minutes=1, microseconds=500_000),
+        occurrence - timedelta(microseconds=500_000),  # first scan (catch-up)
+        occurrence + timedelta(minutes=1, microseconds=500_000),  # crossing
         occurrence + timedelta(minutes=2, seconds=2),
     ])
 
@@ -1809,7 +1816,7 @@ async def test_shipping_loop_reaches_occurrence_once_across_phase_and_processing
 async def test_shipping_loop_catches_up_current_window_once_on_startup(
     tmp_path, test_settings, monkeypatch,
 ):
-    """A daemon starting after 03:30 evaluates the current weekly occurrence
+    """A daemon starting after 03:30 evaluates the current daily occurrence
     once, without replaying it on later loop ticks."""
     db = Database(tmp_path / "db.sqlite")
     org = _org_with_workspaces(tmp_path, db, test_settings)
@@ -1827,7 +1834,7 @@ async def test_shipping_loop_catches_up_current_window_once_on_startup(
             measured_at="2026-08-30T07:30:00+00:00",
         ),
     )
-    occurrence = _sunday_0330_utc()
+    occurrence = _daily_0330_utc()
     scan_times = iter([
         occurrence + timedelta(hours=4),
         occurrence + timedelta(hours=4, seconds=1),
@@ -1880,7 +1887,7 @@ async def test_loop_waits_out_boot_warm_up_before_any_tick(
 
     ticks: list[str] = []
 
-    async def fake_tick(org, state, now_utc, previous_scan_utc=None):
+    async def fake_tick(org, state, now_utc, previous_scan_utc=None, first_scan=False):
         ticks.append(org.slug)
 
     monkeypatch.setattr(wcs, "_tick_org", fake_tick)
@@ -1919,10 +1926,10 @@ def test_trigger_decision_suppresses_on_history_lookup_error(tmp_path, monkeypat
     def boom(*a, **kw):
         raise RuntimeError("db read failure")
 
-    monkeypatch.setattr(db, "list_tasks_by_brief_prefix", boom)
+    monkeypatch.setattr(db, "summarize_workspace_cleanup_marker_history", boom)
     decision = wcs.decide_cleanup_trigger(
         db=db, agent="dev_agent",
-        now_utc=_sunday_0330_utc(), tz=timezone.utc,
+        now_utc=_daily_0330_utc(), tz=timezone.utc,
     )
     assert decision.should_trigger is False
     assert decision.reason == "history_indeterminate"
@@ -1944,8 +1951,8 @@ async def test_tick_org_audits_boundary_history_failure_once_without_task(
     def boom(*a, **kw):
         raise RuntimeError("db read failure")
 
-    monkeypatch.setattr(db, "list_tasks_by_brief_prefix", boom)
-    occurrence = _sunday_0330_utc()
+    monkeypatch.setattr(db, "summarize_workspace_cleanup_marker_history", boom)
+    occurrence = _daily_0330_utc()
     await wcs._tick_org(
         org, state,
         now_utc=occurrence - timedelta(seconds=1),
@@ -1987,7 +1994,7 @@ async def test_trigger_audits_skip_on_history_indeterminate(
     def boom(*a, **kw):
         raise RuntimeError("db read failure")
 
-    monkeypatch.setattr(db, "list_tasks_by_brief_prefix", boom)
+    monkeypatch.setattr(db, "summarize_workspace_cleanup_marker_history", boom)
     state = _FakeDaemonState()
     task_id = await wcs.trigger_cleanup(
         org, agent="dev_agent",
@@ -2006,8 +2013,9 @@ async def test_trigger_audits_skip_on_history_indeterminate(
 # ── (p) TASK-6043 finding 2: authoritative marker filter (no bounded-scan exhaustion) ──
 
 def test_cleanup_task_history_orders_newest_first(tmp_path):
-    """The marker-filtered history returns the newest cleanup task first and
-    an exact count — the inputs of weekly dedup, cooldown, and run number."""
+    """The complete marker-history summary returns the newest marker instant
+    (UTC), an exact count, and the any-unfinished flag — the inputs of daily
+    dedup and the exact run ordinal."""
     db = Database(tmp_path / "db.sqlite")
     now = datetime.now(timezone.utc)
     for i, days_ago in enumerate((60, 30, 7)):
@@ -2019,18 +2027,18 @@ def test_cleanup_task_history_orders_newest_first(tmp_path):
     history = wcs._cleanup_task_history(db, "dev_agent")
     assert history.indeterminate is False
     assert history.count == 3
-    assert history.latest is not None
-    assert history.latest.id == "TASK-102"  # newest (7 days ago)
+    assert history.has_unfinished is False
+    assert history.newest_utc == now - timedelta(days=7)  # newest (7 days ago)
 
 
 def test_cleanup_history_finds_marker_row_beyond_former_scan_bound(tmp_path):
-    """An old cleanup row buried under >1000 newer ordinary tasks is still
-    found by the SQL-side marker filter — the former bounded scan (1000 rows)
+    """An old unfinished cleanup row buried under >1000 newer ordinary tasks is
+    still visible to the complete reader — the former bounded scan (1000 rows)
     would have hidden it and let the daemon double-trigger."""
     db = Database(tmp_path / "db.sqlite")
     now = datetime.now(timezone.utc)
-    # Non-terminal cleanup run 8 days ago (younger than the 7-day cooldown is
-    # irrelevant: non-terminal suppression applies regardless of age).
+    # Non-terminal cleanup run 8 days ago (its age is irrelevant: non-terminal
+    # suppression applies regardless of age).
     _insert_cleanup_task(
         db, task_id="TASK-100", agent="dev_agent",
         created_at=now - timedelta(days=8), status=TaskStatus.IN_PROGRESS,
@@ -2050,13 +2058,13 @@ def test_cleanup_history_finds_marker_row_beyond_former_scan_bound(tmp_path):
     history = wcs._cleanup_task_history(db, "dev_agent")
     assert history.indeterminate is False
     assert history.count == 1
-    assert history.latest is not None
-    assert history.latest.id == "TASK-100"
+    assert history.has_unfinished is True
+    assert history.newest_utc == now - timedelta(days=8)
 
     # The decision seam honors the found non-terminal row: no double trigger.
     decision = wcs.decide_cleanup_trigger(
         db=db, agent="dev_agent",
-        now_utc=_sunday_0330_utc(), tz=timezone.utc,
+        now_utc=_daily_0330_utc(), tz=timezone.utc,
     )
     assert decision.should_trigger is False
     assert decision.reason == "prior_run_in_flight"
@@ -2097,7 +2105,7 @@ def test_cleanup_history_is_per_agent_and_prefix_exact(tmp_path):
     ))
     dev = wcs._cleanup_task_history(db, "dev_agent")
     assert dev.count == 2
-    assert dev.latest.id == "TASK-103"  # newest first
+    assert dev.newest_utc == now  # newest by UTC instant
     qa = wcs._cleanup_task_history(db, "qa_engineer")
     assert qa.count == 1
 
@@ -2610,7 +2618,7 @@ async def test_tick_processes_all_agents_beyond_cap(
         wcs, "decide_cleanup_trigger",
         lambda **kw: wcs.CleanupTriggerDecision(True, None),
     )
-    await wcs._tick_org(org, state, now_utc=_sunday_0330_utc())
+    await wcs._tick_org(org, state, now_utc=_daily_0330_utc())
     assert len(triggered) == len(agents)
     assert set(triggered) == set(agents)
 
@@ -2635,3 +2643,672 @@ def test_iter_workspaces_pages_across_batches(tmp_path):
         offset += wcs._MAX_WORKSPACES
     assert len(seen) == total
     assert seen == sorted(f"agent{i:04d}" for i in range(total))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TASK-8479 daily-cadence finite cases C1-C11, C13 (accepted revision 3)
+# ══════════════════════════════════════════════════════════════════════════
+
+def _install_clock(monkeypatch, times, holder):
+    iterator = iter(times)
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = next(iterator)
+            holder["now"] = value
+            return value
+
+    monkeypatch.setattr(wcs, "datetime", _Clock)
+
+
+def _install_sleep_cancel(monkeypatch, after):
+    counter = {"n": 0}
+
+    async def fake_sleep(_seconds):
+        counter["n"] += 1
+        if counter["n"] >= after:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(wcs.asyncio, "sleep", fake_sleep)
+
+
+def _install_stamped_task_record(monkeypatch, holder):
+    real = wcs.TaskRecord
+
+    def factory(**kwargs):
+        kwargs.setdefault("created_at", holder["now"])
+        return real(**kwargs)
+
+    monkeypatch.setattr(wcs, "TaskRecord", factory)
+
+
+def _install_measurement(
+    monkeypatch, calls, *, available=True, workspaces_bytes=2048, reason="",
+):
+    def _measure(*args, **kwargs):
+        calls.append(1)
+        return wcs.WorkspaceContextSnapshot(
+            measured_at="2026-09-20T03:31:00+00:00",
+            available=available, workspaces_bytes=workspaces_bytes,
+            reason=reason, truncated=False,
+        )
+
+    monkeypatch.setattr(wcs, "measure_workspace_context", _measure)
+
+
+def _seeded_org(tmp_path, test_settings):
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    cfg_path = org.root / "org" / "config.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("timezone: UTC\n")
+    state = _FakeDaemonState()
+    state.orgs = {"test": org}
+    state.metrics_registry = _FakeMetricsRegistry()
+    return db, org, state
+
+
+# ── C1: all weekdays, exact crossing vs no crossing ───────────────────────
+
+@pytest.mark.parametrize("weekday", range(7))
+def test_c1_daily_crossing_all_weekdays_exact_and_boundaries(tmp_path, weekday):
+    db = Database(tmp_path / "db.sqlite")
+    base = datetime(2026, 9, 14, 3, 30, tzinfo=timezone.utc)  # Monday
+    occ = base + timedelta(days=weekday)
+    assert occ.weekday() == weekday
+
+    before = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occ - timedelta(seconds=1),
+        previous_scan_utc=occ - timedelta(seconds=2), tz=timezone.utc,
+    )
+    assert before.should_trigger is False
+    assert before.reason == "not_due"
+
+    exact = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occ,
+        previous_scan_utc=occ - timedelta(seconds=1), tz=timezone.utc,
+    )
+    assert exact.should_trigger is True
+
+    after = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occ + timedelta(seconds=30),
+        previous_scan_utc=occ - timedelta(seconds=1), tz=timezone.utc,
+    )
+    assert after.should_trigger is True
+
+    same_window = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occ + timedelta(seconds=30),
+        previous_scan_utc=occ + timedelta(seconds=29), tz=timezone.utc,
+    )
+    assert same_window.should_trigger is False
+    assert same_window.reason == "not_due"
+
+
+# ── C2: UTC dedup across all rows, microsecond boundary, text-sort ────────
+
+@pytest.mark.parametrize(
+    ("offset_us", "expected_trigger", "expected_reason"),
+    [
+        (-1, True, None),
+        (0, False, "already_triggered_this_window"),
+        (1, False, "already_triggered_this_window"),
+        (1_000_000, False, "already_triggered_this_window"),
+        (3_600_000_000, False, "already_triggered_this_window"),
+    ],
+)
+def test_c2_utc_dedup_microsecond_boundary(
+    tmp_path, offset_us, expected_trigger, expected_reason,
+):
+    db = Database(tmp_path / "db.sqlite")
+    occ = datetime(2026, 9, 20, 3, 30, tzinfo=timezone.utc)
+    _insert_cleanup_task(
+        db, task_id="TASK-100",
+        created_at=occ + timedelta(microseconds=offset_us),
+        status=TaskStatus.COMPLETED,
+    )
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occ + timedelta(seconds=5),
+        previous_scan_utc=occ - timedelta(seconds=1), tz=timezone.utc,
+    )
+    assert decision.should_trigger is expected_trigger
+    assert decision.reason == expected_reason
+
+
+def test_c2_utc_dedup_not_text_sort_winner(tmp_path):
+    """D2: `12:00+09:00` (03:00Z) must not outrank the exact `03:30Z` boundary
+    merely because its stored string sorts later."""
+    db = Database(tmp_path / "db.sqlite")
+    occ = datetime(2026, 9, 20, 3, 30, tzinfo=timezone.utc)
+    db.insert_task(TaskRecord(
+        id="TASK-EARLIER-TEXT-LATER",
+        brief=wcs._CLEANUP_BRIEF_MARKER + "\noffset representation",
+        team="engineering", assigned_agent="dev_agent",
+        status=TaskStatus.COMPLETED,
+        created_at=datetime(2026, 9, 20, 12, 0, tzinfo=timezone(timedelta(hours=9))),
+    ))
+    db.insert_task(TaskRecord(
+        id="TASK-AT-BOUNDARY",
+        brief=wcs._CLEANUP_BRIEF_MARKER + "\nboundary",
+        team="engineering", assigned_agent="dev_agent",
+        status=TaskStatus.COMPLETED, created_at=occ,
+    ))
+    history = wcs._cleanup_task_history(db, "dev_agent")
+    assert history.count == 2
+    assert history.newest_utc == occ  # 03:00Z < 03:30Z despite lexical order
+
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occ + timedelta(minutes=10),
+        previous_scan_utc=occ - timedelta(seconds=1), tz=timezone.utc,
+    )
+    assert decision.should_trigger is False
+    assert decision.reason == "already_triggered_this_window"
+
+
+# ── C3: first resumed post-boundary scan creates once per agent ───────────
+
+@pytest.mark.asyncio
+async def test_c3_real_loop_resumed_scan_after_boundary_once_per_agent(
+    tmp_path, test_settings, monkeypatch,
+):
+    db, org, state = _seeded_org(tmp_path, test_settings)
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    occ = _daily_0330_utc()
+    for i, agent in enumerate(("dev_agent", "qa_engineer")):
+        _insert_cleanup_task(
+            db, task_id=f"TASK-{700 + i}", agent=agent,
+            created_at=occ - timedelta(days=1) + timedelta(minutes=5),
+            status=TaskStatus.COMPLETED,
+        )
+    measurement_calls: list[int] = []
+    _install_measurement(monkeypatch, measurement_calls)
+    holder = {"now": occ}
+    _install_stamped_task_record(monkeypatch, holder)
+    _install_clock(monkeypatch, [
+        occ - timedelta(microseconds=500_000),          # 03:29:59.5, first scan
+        occ + timedelta(seconds=60, microseconds=500_000),  # 03:31:00.5
+        occ + timedelta(seconds=122),                   # 03:32:02
+    ], holder)
+    _install_sleep_cancel(monkeypatch, 3)
+
+    with pytest.raises(asyncio.CancelledError):
+        await wcs.workspace_cleanup_scheduler_loop(
+            state, interval_seconds=60, warm_up_seconds=0,
+        )
+
+    assert len(state.queue.items) == 2
+    tasks = [db.get_task(task_id) for _, task_id in state.queue.items]
+    assert {task.assigned_agent for task in tasks} == {"dev_agent", "qa_engineer"}
+    resumed = occ + timedelta(seconds=60, microseconds=500_000)
+    assert all(task.created_at == resumed for task in tasks)
+    for task in tasks:
+        assert task.brief.startswith(wcs._CLEANUP_BRIEF_MARKER)
+        triggered = [
+            row for row in db.get_audit_logs(task.id)
+            if row["action"] == "workspace_cleanup_triggered"
+        ]
+        assert len(triggered) == 1
+        assert triggered[0]["payload"]["run_number"] == 2
+    # measurement ran only on the resumed post-boundary scan (2 agents).
+    assert len(measurement_calls) == 2
+
+
+# ── C4: empty-history pre-boundary startup catch-up (labeled) ─────────────
+
+@pytest.mark.asyncio
+async def test_c4_real_loop_empty_history_pre_boundary_catch_up(
+    tmp_path, test_settings, monkeypatch,
+):
+    """Proves the first_scan catch-up of the PREVIOUS window, not a crossing:
+    the imminent boundary is then suppressed by the unfinished catch-up run."""
+    db, org, state = _seeded_org(tmp_path, test_settings)
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    occ = _daily_0330_utc()
+    measurement_calls: list[int] = []
+    _install_measurement(monkeypatch, measurement_calls)
+    holder = {"now": occ}
+    _install_stamped_task_record(monkeypatch, holder)
+    _install_clock(monkeypatch, [
+        occ - timedelta(seconds=30),
+        occ - timedelta(seconds=29),
+        occ - timedelta(seconds=28),
+    ], holder)
+    _install_sleep_cancel(monkeypatch, 3)
+
+    with pytest.raises(asyncio.CancelledError):
+        await wcs.workspace_cleanup_scheduler_loop(
+            state, interval_seconds=1, warm_up_seconds=0,
+        )
+
+    assert len(state.queue.items) == 2  # one per registered agent
+    catch_up = occ - timedelta(seconds=30)
+    assert all(
+        db.get_task(task_id).created_at == catch_up
+        for _, task_id in state.queue.items
+    )
+    assert len(measurement_calls) == 2  # later scans added nothing
+
+
+# ── C5: multi-day jump evaluates the latest window only ───────────────────
+
+@pytest.mark.asyncio
+async def test_c5_real_loop_multiday_jump_latest_window_only(
+    tmp_path, test_settings, monkeypatch,
+):
+    db, org, state = _seeded_org(tmp_path, test_settings)
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    occ = _daily_0330_utc()
+    for i, agent in enumerate(("dev_agent", "qa_engineer")):
+        _insert_cleanup_task(
+            db, task_id=f"TASK-{800 + i}", agent=agent,
+            created_at=occ + timedelta(seconds=5), status=TaskStatus.COMPLETED,
+        )
+    measurement_calls: list[int] = []
+    _install_measurement(monkeypatch, measurement_calls)
+    holder = {"now": occ}
+    _install_stamped_task_record(monkeypatch, holder)
+    _install_clock(monkeypatch, [
+        occ + timedelta(seconds=60),   # startup window serviced terminal
+        occ + timedelta(days=3),       # jump across two unserviced windows
+    ], holder)
+    _install_sleep_cancel(monkeypatch, 2)
+
+    with pytest.raises(asyncio.CancelledError):
+        await wcs.workspace_cleanup_scheduler_loop(
+            state, interval_seconds=1, warm_up_seconds=0,
+        )
+
+    assert len(state.queue.items) == 2  # latest window only, no per-day replay
+    assert all(
+        db.get_task(task_id).created_at == occ + timedelta(days=3)
+        for _, task_id in state.queue.items
+    )
+    assert len(measurement_calls) == 2
+
+
+# ── C6: warm-up + terminal serviced restart (incl. reopened DB) ───────────
+
+def test_c6_terminal_serviced_marker_restart_reopened_db(tmp_path):
+    db_path = tmp_path / "db.sqlite"
+    db = Database(db_path)
+    occ = _daily_0330_utc()
+    # A catch-up task terminalized without rewriting created_at.
+    _insert_cleanup_task(
+        db, task_id="TASK-100", created_at=occ - timedelta(minutes=90),
+        status=TaskStatus.PENDING,
+    )
+    db.update_task("TASK-100", status=TaskStatus.COMPLETED)
+    before = db.get_task("TASK-100")
+
+    reopened = Database(db_path)  # fresh loop reopening the same DB
+    after = reopened.get_task("TASK-100")
+    assert after.created_at == before.created_at == occ - timedelta(minutes=90)
+    assert after.status == TaskStatus.COMPLETED
+
+    decision = wcs.decide_cleanup_trigger(
+        db=reopened, agent="dev_agent",
+        now_utc=occ - timedelta(minutes=80), first_scan=True, tz=timezone.utc,
+    )
+    assert decision.should_trigger is False
+    assert decision.reason == "already_triggered_this_window"
+
+
+def test_c6_fresh_restart_terminal_current_window_marker_no_work(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    occ = _daily_0330_utc()
+    _insert_cleanup_task(
+        db, task_id="TASK-100", created_at=occ + timedelta(minutes=5),
+        status=TaskStatus.COMPLETED,
+    )
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occ + timedelta(hours=4),
+        first_scan=True, tz=timezone.utc,
+    )
+    assert decision.should_trigger is False
+    assert decision.reason == "already_triggered_this_window"
+
+
+# ── C7: reason precedence + both continuing/restart final transitions ─────
+
+def test_c7_reason_precedence_and_final_transitions(tmp_path):
+    occ = _daily_0330_utc()
+    db = Database(tmp_path / "db.sqlite")
+    # A: pre-occurrence unfinished marker suppresses at the crossing.
+    _insert_cleanup_task(
+        db, task_id="TASK-100",
+        created_at=occ - timedelta(days=1) + timedelta(minutes=5),
+        status=TaskStatus.PENDING,
+    )
+    decision = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occ,
+        previous_scan_utc=occ - timedelta(seconds=1), tz=timezone.utc,
+    )
+    assert decision.reason == "prior_run_in_flight"
+
+    # Terminalizing without rewriting created_at turns the ordinary later scan
+    # into not_due (no creation) and the restart into an eligible window.
+    db.update_task("TASK-100", status=TaskStatus.COMPLETED)
+    assert db.get_task("TASK-100").created_at == (
+        occ - timedelta(days=1) + timedelta(minutes=5)
+    )
+    later = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occ + timedelta(minutes=30),
+        previous_scan_utc=occ + timedelta(minutes=29), tz=timezone.utc,
+    )
+    assert later.should_trigger is False
+    assert later.reason == "not_due"
+
+    # B: continuing to the next boundary creates exactly once.
+    next_boundary = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occ + timedelta(days=1),
+        previous_scan_utc=occ + timedelta(days=1) - timedelta(seconds=1),
+        tz=timezone.utc,
+    )
+    assert next_boundary.should_trigger is True
+
+    # C: restart within the still-unserviced current window creates once.
+    restart = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occ + timedelta(minutes=10),
+        first_scan=True, tz=timezone.utc,
+    )
+    assert restart.should_trigger is True
+
+    # D: a marker at/after the occurrence suppresses both unfinished and
+    # terminal, with current-window precedence over prior_run_in_flight.
+    db2 = Database(tmp_path / "db2.sqlite")
+    _insert_cleanup_task(
+        db2, task_id="TASK-200", created_at=occ + timedelta(seconds=1),
+        status=TaskStatus.PENDING,
+    )
+    due_unfinished = wcs.decide_cleanup_trigger(
+        db=db2, agent="dev_agent", now_utc=occ + timedelta(minutes=1),
+        previous_scan_utc=occ - timedelta(seconds=1), tz=timezone.utc,
+    )
+    assert due_unfinished.reason == "already_triggered_this_window"
+    db2.update_task("TASK-200", status=TaskStatus.COMPLETED)
+    due_terminal = wcs.decide_cleanup_trigger(
+        db=db2, agent="dev_agent", now_utc=occ + timedelta(minutes=2),
+        previous_scan_utc=occ - timedelta(seconds=1), tz=timezone.utc,
+    )
+    assert due_terminal.reason == "already_triggered_this_window"
+
+
+# ── C8: legacy weekly ordinals 1/2 -> daily ordinal 3, same thread ────────
+
+@pytest.mark.asyncio
+async def test_c8_legacy_weekly_ordinals_to_daily_ordinal_three_same_thread(
+    tmp_path, test_settings, monkeypatch,
+):
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
+    state = _FakeDaemonState()
+
+    first = await wcs.trigger_cleanup(
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    )
+    thread_id = wcs._find_report_thread(db, "dev_agent").thread_id
+    assert thread_id is not None
+    db.update_task(first, status=TaskStatus.COMPLETED)
+    first_row = db.get_task(first)
+
+    # A preserved legacy weekly marker row (ordinal 2) with an old timestamp.
+    legacy_created = datetime.now(timezone.utc) - timedelta(days=180)
+    _insert_cleanup_task(
+        db, task_id="TASK-LEGACY-2", agent="dev_agent",
+        created_at=legacy_created, status=TaskStatus.COMPLETED,
+    )
+    legacy_row = db.get_task("TASK-LEGACY-2")
+
+    third = await wcs.trigger_cleanup(
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    )
+    third_task = db.get_task(third)
+    assert f"--thread-id {thread_id}" in third_task.brief
+    audit = [
+        row for row in db.get_audit_logs(third)
+        if row["action"] == "workspace_cleanup_triggered"
+    ]
+    assert audit[0]["payload"]["run_number"] == 3
+    assert audit[0]["payload"]["brief_kind"] == "cleanup"
+
+    # Both prior marker rows are unchanged (brief/status/created_at).
+    assert db.get_task(first).brief == first_row.brief
+    assert db.get_task(first).status == first_row.status
+    assert db.get_task(first).created_at == first_row.created_at
+    assert db.get_task("TASK-LEGACY-2").brief == legacy_row.brief
+    assert db.get_task("TASK-LEGACY-2").status == legacy_row.status
+    assert db.get_task("TASK-LEGACY-2").created_at == legacy_row.created_at
+
+
+# ── C9: DST valid 23h/25h pairs, fold-before-second, gap, fractional ──────
+
+def test_c9_dst_fold_gap_and_valid_pairs():
+    from datetime import date
+    from zoneinfo import ZoneInfo
+
+    hel = ZoneInfo("Europe/Helsinki")
+    ny = ZoneInfo("America/New_York")
+    chatham = ZoneInfo("Pacific/Chatham")
+    shanghai = ZoneInfo("Asia/Shanghai")
+
+    ny_before = wcs._local_occurrence_utc(date(2026, 3, 7), ny)
+    ny_after = wcs._local_occurrence_utc(date(2026, 3, 8), ny)
+    assert ny_before == datetime(2026, 3, 7, 8, 30, tzinfo=timezone.utc)
+    assert ny_after == datetime(2026, 3, 8, 7, 30, tzinfo=timezone.utc)
+    assert ny_after - ny_before == timedelta(hours=23)
+
+    ny_fall_before = wcs._local_occurrence_utc(date(2026, 10, 31), ny)
+    ny_fall_after = wcs._local_occurrence_utc(date(2026, 11, 1), ny)
+    assert ny_fall_before == datetime(2026, 10, 31, 7, 30, tzinfo=timezone.utc)
+    assert ny_fall_after == datetime(2026, 11, 1, 8, 30, tzinfo=timezone.utc)
+    assert ny_fall_after - ny_fall_before == timedelta(hours=25)
+
+    # Fall-back ambiguous 03:30 -> first instance only (fold=0).
+    first_instance = wcs._local_occurrence_utc(date(2026, 10, 25), hel)
+    assert first_instance == datetime(2026, 10, 25, 0, 30, tzinfo=timezone.utc)
+    # fold-before-second 03:30 (01:15Z local 03:15+02:00 fold=1) still resolves
+    # to the first instance.
+    assert wcs._latest_due_occurrence_utc(
+        datetime(2026, 10, 25, 1, 15, tzinfo=timezone.utc), hel,
+    ) == first_instance
+    # at the second 03:30 there is no second occurrence.
+    assert wcs._latest_due_occurrence_utc(
+        datetime(2026, 10, 25, 1, 30, tzinfo=timezone.utc), hel,
+    ) == first_instance
+
+    # Spring-forward gap: 2027-03-28 03:30 does not exist; latest due resolves
+    # to the previous existing occurrence (47h window).
+    assert wcs._local_occurrence_utc(date(2027, 3, 28), hel) is None
+    gap_due = wcs._latest_due_occurrence_utc(
+        datetime(2027, 3, 28, 12, 0, tzinfo=timezone.utc), hel,
+    )
+    assert gap_due == datetime(2027, 3, 27, 1, 30, tzinfo=timezone.utc)
+    assert wcs._local_occurrence_utc(date(2027, 3, 29), hel) == datetime(
+        2027, 3, 29, 0, 30, tzinfo=timezone.utc,
+    )
+    assert wcs._local_occurrence_utc(date(2027, 3, 29), hel) - gap_due == timedelta(hours=47)
+
+    # Fractional-offset zone: Chatham fold0, then a gap.
+    assert wcs._local_occurrence_utc(date(2026, 4, 5), chatham) == datetime(
+        2026, 4, 4, 13, 45, tzinfo=timezone.utc,
+    )
+    assert wcs._local_occurrence_utc(date(2026, 9, 27), chatham) is None
+
+    # Fixed offset zone.
+    assert wcs._local_occurrence_utc(date(2026, 9, 20), shanghai) == datetime(
+        2026, 9, 19, 19, 30, tzinfo=timezone.utc,
+    )
+
+
+# ── C10: inclusive today+3 lookup; exhausted search fails closed ─────────
+
+def test_c10_lookback_inclusive_and_exhausted_fails_closed(tmp_path, monkeypatch):
+    from datetime import date
+
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+    calls: list[object] = []
+
+    def only_today_minus_three(local_date, tz):
+        calls.append(local_date)
+        if local_date == date(2026, 9, 17):  # today-3 inclusive
+            return datetime.combine(
+                local_date, wcs._OCCURRENCE_TIME, tzinfo=timezone.utc,
+            )
+        return None
+
+    monkeypatch.setattr(wcs, "_local_occurrence_utc", only_today_minus_three)
+    found = wcs._latest_due_occurrence_utc(now, timezone.utc)
+    assert found == datetime(2026, 9, 17, 3, 30, tzinfo=timezone.utc)
+    assert calls == [
+        date(2026, 9, 20), date(2026, 9, 19),
+        date(2026, 9, 18), date(2026, 9, 17),
+    ]
+
+    def only_today_minus_four(local_date, tz):
+        calls.append(local_date)
+        if local_date == date(2026, 9, 16):  # today-4 is NOT searched
+            return datetime.combine(
+                local_date, wcs._OCCURRENCE_TIME, tzinfo=timezone.utc,
+            )
+        return None
+
+    calls.clear()
+    monkeypatch.setattr(wcs, "_local_occurrence_utc", only_today_minus_four)
+    assert wcs._latest_due_occurrence_utc(now, timezone.utc) is None
+    assert calls == [
+        date(2026, 9, 20), date(2026, 9, 19),
+        date(2026, 9, 18), date(2026, 9, 17),
+    ]
+
+    monkeypatch.setattr(wcs, "_local_occurrence_utc", lambda *a, **k: None)
+    decision = wcs.decide_cleanup_trigger(
+        db=Database(tmp_path / "db.sqlite"), agent="dev_agent",
+        now_utc=now, tz=timezone.utc,
+    )
+    assert decision.should_trigger is False
+    assert decision.reason == "occurrence_search_exhausted"
+
+
+# ── C11: exact count/ordinal beyond page + decisive old unfinished ───────
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("total", [999, 1000, 1001, 1500])
+async def test_c11_exact_ordinal_n_plus_one_no_saturation(
+    tmp_path, test_settings, monkeypatch, total,
+):
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
+    occ = _daily_0330_utc()
+    base = occ - timedelta(days=2)
+    for i in range(total):
+        _insert_cleanup_task(
+            db, task_id=f"TASK-{1000 + i}", agent="dev_agent",
+            created_at=base + timedelta(seconds=i), status=TaskStatus.COMPLETED,
+        )
+    history = wcs._cleanup_task_history(db, "dev_agent")
+    assert history.count == total
+    assert history.has_unfinished is False
+
+    state = _FakeDaemonState()
+    task_id = await wcs.trigger_cleanup(
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    )
+    assert task_id is not None
+    audit = [
+        row for row in db.get_audit_logs(task_id)
+        if row["action"] == "workspace_cleanup_triggered"
+    ]
+    assert audit[0]["payload"]["run_number"] == total + 1
+
+
+@pytest.mark.asyncio
+async def test_c11_decisive_old_unfinished_beyond_page_and_newer_stamps(
+    tmp_path, test_settings, monkeypatch,
+):
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
+    occ = _daily_0330_utc()
+    before = occ - timedelta(days=2)
+    # 1001 newer terminal rows (first ascending page), all before the occurrence.
+    for i in range(1001):
+        _insert_cleanup_task(
+            db, task_id=f"TASK-{2000 + i}", agent="dev_agent",
+            created_at=before + timedelta(seconds=i), status=TaskStatus.COMPLETED,
+        )
+    # The decisive older unfinished marker is the FINAL rowid, beyond both the
+    # first 1000-row page and the 1000 newest timestamps.
+    _insert_cleanup_task(
+        db, task_id="TASK-OLD-UNFINISHED", agent="dev_agent",
+        created_at=before - timedelta(days=100), status=TaskStatus.IN_PROGRESS,
+    )
+    history = wcs._cleanup_task_history(db, "dev_agent")
+    assert history.count == 1002
+    assert history.has_unfinished is True
+
+    state = _FakeDaemonState()
+    blocked = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occ,
+        previous_scan_utc=occ - timedelta(seconds=1), tz=timezone.utc,
+    )
+    assert blocked.should_trigger is False
+    assert blocked.reason == "prior_run_in_flight"
+
+    # Terminalizing only that row makes the window eligible with exact N+1.
+    db.update_task("TASK-OLD-UNFINISHED", status=TaskStatus.COMPLETED)
+    eligible = wcs.decide_cleanup_trigger(
+        db=db, agent="dev_agent", now_utc=occ,
+        previous_scan_utc=occ - timedelta(seconds=1), tz=timezone.utc,
+    )
+    assert eligible.should_trigger is True
+    task_id = await wcs.trigger_cleanup(
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    )
+    audit = [
+        row for row in db.get_audit_logs(task_id)
+        if row["action"] == "workspace_cleanup_triggered"
+    ]
+    assert audit[0]["payload"]["run_number"] == 1003
+
+
+# ── C13: exact 1 GiB threshold and unavailable measurement ───────────────
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("workspaces_bytes", "should_trigger"),
+    [((2 ** 30) - 1, False), (2 ** 30, True)],
+)
+async def test_c13_exact_threshold_boundary(
+    tmp_path, test_settings, monkeypatch, workspaces_bytes, should_trigger,
+):
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    calls: list[int] = []
+    _install_measurement(
+        monkeypatch, calls, workspaces_bytes=workspaces_bytes,
+    )
+    state = _FakeDaemonState()
+    task_id = await wcs.trigger_cleanup(
+        org, agent="dev_agent",
+        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
+    )
+    if should_trigger:
+        assert task_id is not None
+        assert state.queue.items == [("test", task_id)]
+    else:
+        assert task_id is None
+        assert state.queue.items == []
+        audits = [
+            row for row in db.get_audit_logs("workspace-cleanup:skipped")
+            if row["payload"].get("reason") == "workspace_below_threshold"
+        ]
+        assert len(audits) == 1

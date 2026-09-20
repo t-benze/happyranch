@@ -347,7 +347,12 @@ machine-local time — host-local night, as intended.)
 ## Org Config: Workspace Cleanup
 
 `workspace_cleanup.enabled` is a boolean scheduler switch that defaults to
-`true`; setting it to `false` disables the daemon-managed cleanup scheduler.
+`true`; setting it to `false` disables the daemon-managed cleanup scheduler. When
+enabled, the scheduler evaluates the daily local 03:30 occurrence in the org
+timezone, comparing existing occurrences as UTC instants (skipping nonexistent
+spring-forward times and taking the first `fold=0` instance of ambiguous fall-back
+times), with exactly one post-warmup current-window catch-up, no historical backfill
+and no rolling 24-hour or seven-day trigger cooldown.
 `workspace_cleanup.reclamation_actions_enabled` is separately strictly boolean
 and defaults to `false`. When true, the bounded pre-agent reclamation hook may
 select and revalidate finite canonical targets before invoking the existing
