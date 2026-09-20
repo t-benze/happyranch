@@ -440,7 +440,7 @@ func TestAdmissionRemovalUnknownFailsClosedWithoutCleanup(t *testing.T) {
 func TestStructuredChildHealthAcceptsExactRecords(t *testing.T) {
 	records := make(chan childHealth, 2)
 	failed := make(chan error, 1)
-	scanChildHealth(bytes.NewBufferString(healthRecord("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1, "ready")), records, failed)
+	scanChildHealth(bytes.NewBufferString(healthRecord("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1, "ready")), records, failed, nil)
 	select {
 	case err := <-failed:
 		t.Fatal(err)
@@ -460,12 +460,41 @@ func TestStructuredChildHealthRejectsMalformedPartialAndUnknownShape(t *testing.
 	} {
 		records := make(chan childHealth, 2)
 		failed := make(chan error, 1)
-		scanChildHealth(bytes.NewBufferString(raw), records, failed)
+		scanChildHealth(bytes.NewBufferString(raw), records, failed, nil)
 		select {
 		case <-failed:
 		default:
 			t.Fatalf("accepted malformed record %q", raw)
 		}
+	}
+}
+
+// R2 direct seam: a decoded record whose delivery is blocked on the
+// unbuffered records channel must abort when the supervisor cancels the owned
+// scanner, close the records channel, and report no protocol failure.
+func TestStructuredChildHealthAbortsPendingDeliveryOnStop(t *testing.T) {
+	records := make(chan childHealth)
+	failed := make(chan error, 1)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		scanChildHealth(bytes.NewBufferString(healthRecord("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1, "ready")), records, failed, stop)
+	}()
+	waitHR8466BlockedScanner(t, 2*time.Second)
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancellation did not unblock the pending scanChildHealth delivery")
+	}
+	if _, ok := <-records; ok {
+		t.Fatal("scanChildHealth did not close the records channel on cancellation")
+	}
+	select {
+	case err := <-failed:
+		t.Fatalf("cancellation reported a protocol failure: %v", err)
+	default:
 	}
 }
 

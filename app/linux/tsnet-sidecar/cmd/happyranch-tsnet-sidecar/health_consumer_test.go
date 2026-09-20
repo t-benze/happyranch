@@ -43,6 +43,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -100,7 +101,12 @@ func TestConnectorHealthFixtureChild(t *testing.T) {
 	for i, state := range plan {
 		if barrier != "" {
 			appendHR8466Event(events, fmt.Sprintf("waiting:%d", i))
-			if !waitHR8466Line(barrier, strconv.Itoa(i), hr8466NormalBarrier) {
+			released, exiting := waitHR8466LineOrExit(barrier, strconv.Itoa(i), exitPath, hr8466NormalBarrier)
+			if exiting {
+				appendHR8466Event(events, "child-exit")
+				os.Exit(0)
+			}
+			if !released {
 				appendHR8466Event(events, fmt.Sprintf("barrier-timeout:%d", i))
 				os.Exit(3)
 			}
@@ -191,6 +197,31 @@ func waitHR8466Line(path, value string, timeout time.Duration) bool {
 		}
 		if time.Now().After(deadline) {
 			return false
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// waitHR8466LineOrExit is the child-side barrier wait.  It also observes the
+// test-owned exit file so a real child can exit spontaneously while it is
+// parked at any barrier, which is what the R1/R2 child-exit regressions need.
+// It returns (released, exiting); an exit request wins over a pending release
+// so the two signals can never both be consumed.
+func waitHR8466LineOrExit(barrier, value, exitPath string, timeout time.Duration) (bool, bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		if exitPath != "" {
+			if _, err := os.Stat(exitPath); err == nil {
+				return false, true
+			}
+		}
+		for _, line := range hr8466Events(barrier) {
+			if line == value {
+				return true, false
+			}
+		}
+		if time.Now().After(deadline) {
+			return false, false
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -431,6 +462,76 @@ func (f *hr8466Fixture) setPlan(states ...string) {
 func (f *hr8466Fixture) holdPresent()        { writeHR8466File(f.hold, "hold") }
 func (f *hr8466Fixture) requireStopFailure() { writeHR8466File(f.failStop, "fail") }
 func (f *hr8466Fixture) releaseChild(i int)  { appendHR8466File(f.barrier, strconv.Itoa(i)+"\n") }
+
+// holdFirstUnhealthyShow rewrites the fixture systemctl stand-in so the first
+// nonhealthy show stays alive after its completion receipt until the test
+// releases it.  The receipt (“show-done“) is written before the shell exits
+// and therefore before the production parser/cmd.Output boundary returns, so a
+// test that arms its gate on that receipt can capture the wrong observation.
+// This reproduces the reviewer's delayed-completion counterexample.
+func (f *hr8466Fixture) holdFirstUnhealthyShow() {
+	f.t.Helper()
+	script := strings.Replace(hr8466FixtureScript,
+		`echo "show-done:$state" >> "$HR8466_EVENTS"`,
+		`echo "show-done:$state" >> "$HR8466_EVENTS"
+    if [ "$state" = unhealthy ]; then while [ ! -f "$HR8466_STATE.release" ]; do /bin/sleep 0.001; done; fi`,
+		1)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(f.state), "systemctl"), []byte(script), 0700); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *hr8466Fixture) releaseHeldShow() { writeHR8466File(f.state+".release", "release") }
+
+// hr8466ScannerGoroutineStack reports whether any live goroutine is inside
+// scanChildHealth.  The production helper is joined on supervisor return, so a
+// surviving goroutine is the exact owned-helper leak this harness forbids.
+func hr8466ScannerGoroutineStack() bool {
+	buffer := make([]byte, 1<<20)
+	count := runtime.Stack(buffer, true)
+	return strings.Contains(string(buffer[:count]), "scanChildHealth(")
+}
+
+// hr8466BlockedScannerStack reports whether the owned scanner has decoded a
+// record and is waiting on its cancellation-aware delivery select, which is the
+// exact pending-delivery state the supervisor must unblock and join.
+func hr8466BlockedScannerStack() bool {
+	buffer := make([]byte, 1<<20)
+	count := runtime.Stack(buffer, true)
+	for _, goroutine := range strings.Split(string(buffer[:count]), "\n\n") {
+		if !strings.Contains(goroutine, "scanChildHealth(") {
+			continue
+		}
+		if strings.Contains(goroutine, "[select]") || strings.Contains(goroutine, "[chan send]") {
+			return true
+		}
+	}
+	return false
+}
+
+func waitHR8466BlockedScanner(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !hr8466BlockedScannerStack() {
+		if time.Now().After(deadline) {
+			t.Fatal("the owned health scanner never reached a pending record delivery")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func assertHR8466ScannerJoined(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for hr8466ScannerGoroutineStack() {
+		if time.Now().After(deadline) {
+			buffer := make([]byte, 1<<20)
+			count := runtime.Stack(buffer, true)
+			t.Fatalf("the owned health scanner was not joined before supervisor return:\n%s", string(buffer[:count]))
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
 
 // beginTeardown records the explicit test-owned teardown boundary before any
 // test-owned exit/TERM/kill action so those actions can never be mistaken for
@@ -2205,29 +2306,44 @@ func TestConsumerCancellationAfterCompletedHealthyQuerySuppressesPositive(
 			h := startHR8466Supervisor(t, f, 10*time.Second, 10*time.Second)
 			defer h.teardown()
 
-			index := 0
+			expected := 1
 			switch mode {
 			case "later":
 				f.waitChildWaiting(t, 0)
 				f.releaseChild(0)
-				// The real initial query completed against a nonhealthy
-				// sidecar and must not publish READY.
-				f.waitShowComplete(t, "unhealthy", 1, hr8466NormalBarrier)
+				// The real initial query must have COMPLETED and been
+				// classified nonhealthy before the later gate is armed.  A
+				// fixture ``show-done`` receipt is emitted before the shell
+				// exits and before the production parser/``cmd.Output``
+				// returns, so waiting on that receipt could arm the gate for
+				// the still-unparsed initial unhealthy observation.
+				h.waitProbes(1, hr8466NormalBarrier)
+				if _, result, ok := h.probe.resultAt(0); !ok || result != sidecarPresentUnhealthy {
+					t.Fatalf("first real observation result=%v, want present-unhealthy before arming the later gate", result)
+				}
 				if got := h.count("READY=1"); got != 0 {
 					t.Fatalf("nonhealthy first observation published READY: %v", h.calls())
 				}
 				f.setState("healthy")
-				index = 1
+				expected = 2
 			case "watchdog":
 				f.waitChildWaiting(t, 0)
 				f.releaseChild(0)
 				h.waitCount("READY=1", 1, hr8466NormalBarrier)
-				index = 1
+				expected = 2
 			}
 			h.armProbeGate()
-			f.waitChildWaiting(t, index)
-			f.releaseChild(index)
-			h.waitProbeGateEntered(hr8466NormalBarrier)
+			f.waitChildWaiting(t, expected-1)
+			f.releaseChild(expected - 1)
+			index := h.waitProbeGateEntered(hr8466NormalBarrier)
+			// The gate must have captured the intended completed healthy
+			// observation, not an earlier unhealthy one.
+			if index != expected {
+				t.Fatalf("cancellation gate captured observation %d, want the completed later healthy observation %d; calls=%v", index, expected, h.calls())
+			}
+			if _, result, ok := h.probe.resultAt(index - 1); !ok || result != sidecarPresentHealthy {
+				t.Fatalf("gated observation %d result=%v, want present-healthy before cancellation", index, result)
+			}
 			// The healthy query has completed; cancellation precedes delivery.
 			h.cancel()
 			h.releaseProbeGate()
@@ -2249,6 +2365,173 @@ func TestConsumerCancellationAfterCompletedHealthyQuerySuppressesPositive(
 			assertHR8466NoFixtureLeak(t, f)
 		})
 	}
+}
+
+// R1: a real child that exits while a completed healthy observation is still
+// held must never receive a positive notification at ANY of the three
+// publication boundaries.  The production single Wait reaps the child; the
+// stale observation is released only after ESRCH, so the boundary fence must
+// observe the completed child before it can publish READY or WATCHDOG.
+func TestConsumerChildExitWhileCompletedHealthyObservationHeld(t *testing.T) {
+	for _, mode := range []string{"ready", "later", "watchdog"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newHR8466Fixture(t)
+			f.setPlan("ready", "healthy", "healthy")
+			if mode == "later" {
+				f.setState("unhealthy")
+			} else {
+				f.setState("healthy")
+			}
+			h := startHR8466Supervisor(t, f, 20*time.Second, 20*time.Second)
+			defer h.teardown()
+
+			indexRecord := 0
+			initialReady := 0
+			if mode != "ready" {
+				f.waitChildWaiting(t, 0)
+				f.releaseChild(0)
+				if mode == "watchdog" {
+					h.waitCount("READY=1", 1, hr8466NormalBarrier)
+					initialReady = 1
+				} else {
+					h.waitProbes(1, hr8466NormalBarrier)
+					if _, result, ok := h.probe.resultAt(0); !ok || result != sidecarPresentUnhealthy {
+						t.Fatalf("first real observation result=%v, want present-unhealthy", result)
+					}
+					if got := h.count("READY=1"); got != 0 {
+						t.Fatalf("nonhealthy first observation published READY: %v", h.calls())
+					}
+				}
+				f.setState("healthy")
+				indexRecord = 1
+			}
+			h.armProbeGate()
+			f.waitChildWaiting(t, indexRecord)
+			f.releaseChild(indexRecord)
+			index := h.waitProbeGateEntered(hr8466NormalBarrier)
+			if _, result, ok := h.probe.resultAt(index - 1); !ok || result != sidecarPresentHealthy {
+				t.Fatalf("gated observation index=%d result=%v, want a completed healthy query", index, result)
+			}
+			// The completed healthy result is held.  The real child now exits
+			// and the supervisor's single owned Wait reaps it.
+			writeHR8466File(f.childExit, "exit")
+			deadline := time.Now().Add(hr8466NormalBarrier)
+			for syscall.Kill(h.cmd.Process.Pid, 0) != syscall.ESRCH {
+				if time.Now().After(deadline) {
+					t.Fatal("the production Wait owner did not reap the exited health child")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			h.releaseProbeGate()
+			code := h.waitDone(hr8466AdmissionBound)
+			if got := h.count("READY=1"); got != initialReady {
+				t.Errorf("READY emitted after the health child was already reaped: count=%d want=%d calls=%v", got, initialReady, h.calls())
+			}
+			if got := h.count("WATCHDOG=1"); got != 0 {
+				t.Errorf("WATCHDOG emitted after the health child was already reaped: count=%d calls=%v", got, h.calls())
+			}
+			if got := h.count("STOPPING=1"); got != 1 {
+				t.Errorf("terminal STOPPING count=%d, want exactly 1; calls=%v", got, h.calls())
+			}
+			if code != 1 {
+				t.Errorf("spontaneous child-exit classification=%d, want 1", code)
+			}
+			assertHR8466NoFixtureLeak(t, f)
+		})
+	}
+}
+
+// R2: the supervisor owns the health scanner and must join it within a bounded
+// lifecycle even when the scanner has decoded a valid record and is blocked on
+// its unbuffered delivery while the child exits.  A child-ESRCH or supervisor
+// join check alone does not prove the owned helper completed.
+func TestConsumerScannerJoinedOnChildExitWithPendingRecord(t *testing.T) {
+	f := newHR8466Fixture(t)
+	f.setPlan("ready", "healthy", "healthy")
+	f.setState("healthy")
+	h := startHR8466Supervisor(t, f, 20*time.Second, 20*time.Second)
+	defer h.teardown()
+
+	h.armProbeGate()
+	f.waitChildWaiting(t, 0)
+	f.releaseChild(0)
+	index := h.waitProbeGateEntered(hr8466NormalBarrier)
+	if _, result, ok := h.probe.resultAt(index - 1); !ok || result != sidecarPresentHealthy {
+		t.Fatalf("gated observation index=%d result=%v, want a completed healthy query", index, result)
+	}
+	// Let the real child emit and the scanner decode the next valid record.
+	f.waitChildWaiting(t, 1)
+	f.releaseChild(1)
+	f.waitChildEmitted(t, 1)
+	// The scanner is now blocked delivering that decoded record.
+	waitHR8466BlockedScanner(t, hr8466NormalBarrier)
+
+	// The real child exits while the pending delivery is still blocked.
+	writeHR8466File(f.childExit, "exit")
+	deadline := time.Now().Add(hr8466NormalBarrier)
+	for syscall.Kill(h.cmd.Process.Pid, 0) != syscall.ESRCH {
+		if time.Now().After(deadline) {
+			t.Fatal("the production Wait owner did not reap the exited health child")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	h.releaseProbeGate()
+	h.waitDone(hr8466AdmissionBound)
+	// The owned helper must have completed: no scanner goroutine may remain,
+	// let alone one blocked on a channel send.
+	assertHR8466ScannerJoined(t, hr8466NormalBarrier)
+	assertHR8466NoFixtureLeak(t, f)
+}
+
+// R3 counterexample: the reviewer delayed the initial unhealthy shell after its
+// completion receipt.  Arming on that receipt would capture the still-unparsed
+// initial unhealthy observation; waiting for the real probe result and
+// asserting the expected later index/classification is the corrected proof.
+func TestConsumerLaterCancellationRequiresCompletedFirstProbe(t *testing.T) {
+	f := newHR8466Fixture(t)
+	f.holdFirstUnhealthyShow()
+	f.setPlan("ready", "healthy")
+	f.setState("unhealthy")
+	h := startHR8466Supervisor(t, f, 10*time.Second, 10*time.Second)
+	defer h.teardown()
+
+	f.waitChildWaiting(t, 0)
+	f.releaseChild(0)
+	// The shell completion receipt lands before the production parser returns.
+	f.waitShowComplete(t, "unhealthy", 1, hr8466NormalBarrier)
+	f.releaseHeldShow()
+	// Only now has the real first observation completed and been classified.
+	h.waitProbes(1, hr8466NormalBarrier)
+	if _, result, ok := h.probe.resultAt(0); !ok || result != sidecarPresentUnhealthy {
+		t.Fatalf("first real observation result=%v, want present-unhealthy", result)
+	}
+	if got := h.count("READY=1"); got != 0 {
+		t.Fatalf("nonhealthy first observation published READY: %v", h.calls())
+	}
+	f.setState("healthy")
+	h.armProbeGate()
+	f.waitChildWaiting(t, 1)
+	f.releaseChild(1)
+	index := h.waitProbeGateEntered(hr8466NormalBarrier)
+	if index != 2 {
+		t.Fatalf("receipt-only arming captured observation %d, want the completed later healthy observation 2; calls=%v", index, h.calls())
+	}
+	if _, result, ok := h.probe.resultAt(index - 1); !ok || result != sidecarPresentHealthy {
+		t.Fatalf("gated observation %d result=%v, want present-healthy before cancellation", index, result)
+	}
+	h.cancel()
+	h.releaseProbeGate()
+	h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+	if h.count("READY=1") != 0 || h.count("WATCHDOG=1") != 0 {
+		t.Fatalf("positive notification published after cancellation: %v", h.calls())
+	}
+	if got := h.count("STOPPING=1"); got != 1 {
+		t.Fatalf("terminal STOPPING count=%d, want 1; calls=%v", got, h.calls())
+	}
+	if code := h.waitDone(hr8466AdmissionBound); code != 0 {
+		t.Fatalf("cancellation exit code=%d, want 0", code)
+	}
+	assertHR8466NoFixtureLeak(t, f)
 }
 
 // Case 7: the at-most-once terminal STOPPING latch is independent of child

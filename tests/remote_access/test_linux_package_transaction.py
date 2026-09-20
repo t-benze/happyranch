@@ -27,6 +27,7 @@ from runtime.remote_access.linux_package import (
     UNITS,
     _PAYLOAD_BACKUP_NAME,
     _UNIT_BACKUP_NAME,
+    _assert_committed_active_new,
     _inventory_tree,
     _recover_interrupted,
     _record_temp,
@@ -1071,8 +1072,8 @@ def test_absent_stage_identity_is_refused_and_owned_stage_preserved(
     tmp_path: Path,
 ) -> None:
     """F2: an absent stage key is refused by the actual loader on both the
-    direct-recovery and shipping-installer entry paths, with the owned stage and
-    complete snapshot preserved."""
+    direct-recovery and shipping-installer entry paths, twice each, with the
+    owned stage and complete snapshot preserved after every call."""
     root, package = _preparing_root(tmp_path, "absent-stage")
     record = json.loads((root / TRANSACTION_MARKER).read_text())
     stage = Path(record["stage"])
@@ -1083,74 +1084,151 @@ def test_absent_stage_identity_is_refused_and_owned_stage_preserved(
         lambda: _recover_interrupted(root),
         lambda: install_linux_package(package, root),
     ):
-        with pytest.raises(PackageError, match="transaction_state_invalid"):
-            call()
-        assert _full_snapshot(root) == before
+        for _ in range(2):
+            with pytest.raises(PackageError, match="transaction_state_invalid"):
+                call()
+            assert _full_snapshot(root) == before
     assert stage.is_dir()
     assert (root / TRANSACTION_MARKER).exists()
 
 
-@pytest.mark.parametrize("divergence", [
-    "payload-bytes", "payload-mode", "payload-type",
-    "unit-bytes", "unit-mode", "unit-absent",
-])
-def test_committed_active_new_divergence_is_refused_unchanged(
-    tmp_path: Path, divergence: str,
-) -> None:
-    """F1: every active NEW category is validated before committed cleanup.
+_DIVERGENCE_CATEGORIES = ("bytes", "mode", "type", "absent")
 
-    Starting from the same real impossible-commit state, one payload or unit
-    artifact is diverged in bytes, type or mode; the committed validator must
-    refuse before deleting the OLD backups and preserve the full snapshot.
+
+def _genuine_committed_new_root(
+    tmp_path: Path, name: str, *, enrollment: bool = False,
+) -> tuple[Path, Path]:
+    """A durable ``committed`` complete-NEW installation with owned residue.
+
+    The real cleanup is interrupted before its first backup removal, so the
+    authoritative committed record, the complete OLD payload/unit backup
+    inventory and the owned stage all survive.  Unlike ``_false_committed_root``
+    the active installation is genuinely complete NEW, so a divergence test
+    introduces exactly one contradiction in one selected identity category
+    instead of inheriting the retired fixture's unrelated OLD final unit.
     """
-    root, _new = _false_committed_root(tmp_path, f"divergence-{divergence}")
-    payload_file = root / "opt/happyranch/bin/happyranch-tsnet-sidecar"
-    unit_file = root / "etc/systemd/system" / UNITS[0]
-    if divergence == "payload-bytes":
-        payload_file.write_bytes(b"tampered-payload")
-    elif divergence == "payload-mode":
-        payload_file.chmod(0o644)
-    elif divergence == "payload-type":
-        payload_file.unlink()
-        payload_file.symlink_to("happyranch-connector")
-    elif divergence == "unit-bytes":
-        unit_file.write_bytes(b"tampered-unit")
-    elif divergence == "unit-mode":
-        unit_file.chmod(0o644)
-    elif divergence == "unit-absent":
-        unit_file.unlink()
+    root = _upgrade_root(tmp_path, system_service=True, enrollment=enrollment)
+    _old, new = _old_new(tmp_path)
+    guard = _InstallerGuard(
+        operation="backup_remove:unlink", stage="before", occurrence=1,
+        exception=_Interrupted,
+    )
+    with pytest.raises(_Interrupted):
+        install_linux_package(new, root, system_service=True, guard=guard)
+    assert guard.fired == 1
+    record = json.loads((root / TRANSACTION_MARKER).read_text())
+    assert record["phase"] == "committed"
+    # The unmodified control is a genuine complete-NEW committed installation.
+    _assert_committed_active_new(root, record)
+    assert (root / _PAYLOAD_BACKUP_NAME).is_dir()
+    assert (root / _UNIT_BACKUP_NAME).is_dir()
+    return root, new
+
+
+def _diverge(target: Path, category: str) -> None:
+    """Change exactly one identity category of a real published artifact."""
+    if category == "bytes":
+        target.write_bytes(b"diverged-bytes\n")
+    elif category == "mode":
+        target.chmod(0o644)
+    elif category == "type":
+        target.unlink()
+        target.symlink_to("diverged-type-target")
+    elif category == "absent":
+        target.unlink()
+    else:
+        raise AssertionError(f"unknown divergence category {category!r}")
+
+
+def _assert_committed_divergence_refused(
+    root: Path, new: Path, *, system_service: bool = True,
+) -> None:
+    """Refuse on both entry paths, twice each, with a complete snapshot oracle."""
     before = _full_snapshot(root)
     for _ in range(2):
         with pytest.raises(PackageError, match="transaction_state_invalid"):
             _recover_interrupted(root)
         assert _full_snapshot(root) == before
-    # The OLD backups still exist: no cleanup ran on a contradictory commit.
-    assert (root / _PAYLOAD_BACKUP_NAME).is_dir()
-    assert (root / _UNIT_BACKUP_NAME).is_dir()
+    for _ in range(2):
+        with pytest.raises(PackageError, match="transaction_state_invalid"):
+            install_linux_package(new, root, system_service=system_service)
+        assert _full_snapshot(root) == before
 
 
-def test_committed_new_dropin_divergence_is_refused_unchanged(tmp_path: Path) -> None:
-    """F1: the published NEW drop-in identity is part of complete active NEW."""
-    root, _new = _committed_partial_cleanup_root(tmp_path, "dropin-new", enrollment=True)
+@pytest.mark.parametrize("category", _DIVERGENCE_CATEGORIES)
+def test_committed_active_new_payload_divergence_is_refused_unchanged(
+    tmp_path: Path, category: str,
+) -> None:
+    """F1: a genuine committed complete-NEW payload is validated per category.
+
+    Only the selected payload identity category diverges, so the refusal and
+    full snapshot equality prove that category's own validation rather than an
+    unrelated contradiction.
+    """
+    root, new = _genuine_committed_new_root(tmp_path, f"genuine-payload-{category}")
+    _diverge(root / "opt/happyranch/bin/happyranch-tsnet-sidecar", category)
+    _assert_committed_divergence_refused(root, new)
+
+
+@pytest.mark.parametrize("unit", UNITS)
+@pytest.mark.parametrize("category", _DIVERGENCE_CATEGORIES)
+def test_committed_active_new_unit_divergence_is_refused_unchanged(
+    tmp_path: Path, unit: str, category: str,
+) -> None:
+    """F1: every published unit of a genuine committed complete-NEW install is
+    validated independently in bytes, mode, type and absence."""
+    root, new = _genuine_committed_new_root(tmp_path, f"genuine-unit-{unit}-{category}")
+    _diverge(root / "etc/systemd/system" / unit, category)
+    _assert_committed_divergence_refused(root, new)
+
+
+def test_genuine_committed_new_control_is_accepted_and_reinstalls(
+    tmp_path: Path,
+) -> None:
+    """The equivalent control: unchanged genuine committed complete-NEW state is
+    accepted, recovered, and then supports two successful installs."""
+    root, new = _genuine_committed_new_root(tmp_path, "genuine-committed-control")
+    record = json.loads((root / TRANSACTION_MARKER).read_text())
+    # The unchanged genuine committed complete-NEW state is accepted.
+    _assert_committed_active_new(root, record)
+    _recover_interrupted(root)
+    assert not (root / TRANSACTION_MARKER).exists()
+    assert not list(root.glob(".happyranch-*"))
+    install_linux_package(new, root, system_service=True)
+    install_linux_package(new, root, system_service=True)
+    assert not (root / TRANSACTION_MARKER).exists()
+    assert not list(root.glob(".happyranch-*"))
+
+
+@pytest.mark.parametrize("category", _DIVERGENCE_CATEGORIES)
+def test_committed_new_dropin_divergence_is_refused_unchanged(
+    tmp_path: Path, category: str,
+) -> None:
+    """F1: the published NEW drop-in identity is part of complete active NEW and
+    is validated per category from a genuine committed complete-NEW install."""
+    root, new = _genuine_committed_new_root(
+        tmp_path, f"genuine-dropin-new-{category}", enrollment=True,
+    )
     record = json.loads((root / TRANSACTION_MARKER).read_text())
     assert record["new_dropin"] is not None
     dropin = (
         root / "etc/systemd/system/happyranch-tsnet-sidecar.service.d"
         / "10-enrollment-credential.conf"
     )
-    dropin.write_bytes(b"tampered-new-dropin\n")
-    before = _full_snapshot(root)
-    for _ in range(2):
-        with pytest.raises(PackageError, match="transaction_state_invalid"):
-            _recover_interrupted(root)
-        assert _full_snapshot(root) == before
+    _diverge(dropin, category)
+    _assert_committed_divergence_refused(root, new)
 
 
-def test_committed_preserved_prior_dropin_divergence_is_refused_unchanged(
-    tmp_path: Path,
-) -> None:
-    """F1: the unchanged-prior-drop-in branch is validated against its recorded
-    prior identity, not inferred from the absence of a new drop-in."""
+def _genuine_committed_prior_dropin_root(
+    tmp_path: Path, name: str,
+) -> tuple[Path, Path, Path]:
+    """A genuine committed complete-NEW install that retained a prior drop-in.
+
+    Interrupting the real cleanup before its first backup removal keeps the
+    authoritative committed record, the complete OLD backup inventory and the
+    operator-managed prior drop-in, whose recorded identity is the contract the
+    unchanged-prior branch must validate.
+    """
     root = _upgrade_root(tmp_path, system_service=True, enrollment=False)
     dropin_dir = root / "etc/systemd/system/happyranch-tsnet-sidecar.service.d"
     dropin_dir.mkdir(mode=0o710, exist_ok=True)
@@ -1159,20 +1237,32 @@ def test_committed_preserved_prior_dropin_divergence_is_refused_unchanged(
     dropin.chmod(0o640)
     _old, new = _old_new(tmp_path)
     guard = _InstallerGuard(
-        operation="marker_remove", stage="before", exception=_Interrupted,
+        operation="backup_remove:unlink", stage="before", occurrence=1,
+        exception=_Interrupted,
     )
     with pytest.raises(_Interrupted):
         install_linux_package(new, root, system_service=True, guard=guard)
+    assert guard.fired == 1
     record = json.loads((root / TRANSACTION_MARKER).read_text())
     assert record["phase"] == "committed"
     assert record["new_dropin"] is None
     assert record["dropin_present"] is True
-    dropin.write_bytes(b"tampered-preserved-prior-dropin\n")
-    before = _full_snapshot(root)
-    for _ in range(2):
-        with pytest.raises(PackageError, match="transaction_state_invalid"):
-            _recover_interrupted(root)
-        assert _full_snapshot(root) == before
+    _assert_committed_active_new(root, record)
+    return root, new, dropin
+
+
+@pytest.mark.parametrize("category", _DIVERGENCE_CATEGORIES)
+def test_committed_preserved_prior_dropin_divergence_is_refused_unchanged(
+    tmp_path: Path, category: str,
+) -> None:
+    """F1: the unchanged-prior-drop-in branch is validated against its recorded
+    prior identity in bytes, mode, type and absence, not inferred from the
+    absence of a new drop-in."""
+    root, new, dropin = _genuine_committed_prior_dropin_root(
+        tmp_path, f"genuine-dropin-prior-{category}",
+    )
+    _diverge(dropin, category)
+    _assert_committed_divergence_refused(root, new)
 
 
 @pytest.mark.parametrize("field", ["created_parents", "published_units"])

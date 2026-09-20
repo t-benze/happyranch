@@ -199,6 +199,10 @@ func removeSidecarAdmission(ctx context.Context, healthy sidecarHealthProbe, sto
 	}
 }
 
+// connectorHealthJoinBound bounds the owned health-reader scanner shutdown so a
+// misbehaving reader can never defer supervisor return indefinitely.
+const connectorHealthJoinBound = 2 * time.Second
+
 func superviseConnector(parent context.Context, argv []string, notifier notifySender, startupDeadline, staleAfter time.Duration, started chan<- *exec.Cmd, sidecarHealthy sidecarHealthProbe, stopSidecar sidecarStop) int {
 	generationBytes := make([]byte, 16)
 	if _, err := rand.Read(generationBytes); err != nil {
@@ -239,7 +243,28 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 	defer stopSignals()
 	records := make(chan childHealth)
 	protocolErr := make(chan error, 1)
-	go scanChildHealth(reader, records, protocolErr)
+	// scannerStop and scannerDone make the reader scanner an explicitly owned
+	// helper rather than an abandoned goroutine.  A scanner that has decoded a
+	// valid record can block forever on the unbuffered delivery, and closing
+	// the read end alone cannot unblock a channel send, so the scanner selects
+	// on scannerStop and the supervisor joins scannerDone within a bounded
+	// lifecycle on every return path.
+	scannerStop := make(chan struct{})
+	scannerDone := make(chan struct{})
+	go func() {
+		defer close(scannerDone)
+		scanChildHealth(reader, records, protocolErr, scannerStop)
+	}()
+	defer func() {
+		close(scannerStop)
+		_ = reader.Close()
+		select {
+		case <-scannerDone:
+		case <-time.After(connectorHealthJoinBound):
+			// Fail loudly rather than silently abandoning an owned helper.
+			fmt.Fprintln(os.Stderr, "connector_health_scanner_join_timeout")
+		}
+	}()
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
 	// The initial deadline is intentionally absolute.  It is anchored once and
@@ -333,6 +358,21 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 		}
 		return 1
 	}
+	// fenceChildExit reconciles a child that has already completed its single
+	// owned Wait before any positive notification is published.  A health
+	// observation can be in flight when the child exits, so the outer-loop
+	// priority check cannot observe that exit until the observation returns; a
+	// stale completed healthy result must therefore never publish READY or
+	// WATCHDOG.  The fence re-reads the one owned Wait result and returns the
+	// terminal classification when the child has exited.
+	fenceChildExit := func() (int, bool) {
+		select {
+		case err := <-waited:
+			return finishChildExit(err), true
+		default:
+			return 0, false
+		}
+	}
 	for {
 		// A completed child Wait is the terminal event for this supervisor.
 		// Give it priority over another cancellation wakeup: when the sidecar
@@ -385,6 +425,9 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 							stopChild()
 							continue
 						}
+						if code, exited := fenceChildExit(); exited {
+							return code
+						}
 						if notifier.Notify("READY=1", "STATUS=composite healthy") != nil {
 							stopChild()
 							continue
@@ -415,6 +458,9 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 						stopChild()
 						continue
 					}
+					if code, exited := fenceChildExit(); exited {
+						return code
+					}
 					if notifier.Notify("READY=1", "STATUS=composite healthy") != nil {
 						stopChild()
 						continue
@@ -432,10 +478,15 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 						stopChild()
 					case observation != sidecarPresentHealthy:
 						stopChild()
-					case notifier.Notify("WATCHDOG=1") != nil:
-						stopChild()
 					default:
-						resetStale()
+						if code, exited := fenceChildExit(); exited {
+							return code
+						}
+						if notifier.Notify("WATCHDOG=1") != nil {
+							stopChild()
+						} else {
+							resetStale()
+						}
 					}
 				}
 			case "stopping", "failed":
@@ -449,7 +500,12 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 	}
 }
 
-func scanChildHealth(reader io.Reader, records chan<- childHealth, failed chan<- error) {
+// scanChildHealth is the supervisor-owned health reader.  It decodes only
+// canonical versioned records and delivers them on records.  Delivery is
+// cancellation-aware: stop lets the supervisor's bounded teardown unblock a
+// decoded record that is waiting on the unbuffered channel, so the helper is
+// always joined instead of being abandoned after its reader is closed.
+func scanChildHealth(reader io.Reader, records chan<- childHealth, failed chan<- error, stop <-chan struct{}) {
 	defer close(records)
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 256), 4096)
@@ -476,7 +532,11 @@ func scanChildHealth(reader io.Reader, records chan<- childHealth, failed chan<-
 				return
 			}
 		}
-		records <- record
+		select {
+		case records <- record:
+		case <-stop:
+			return
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		failed <- fmt.Errorf("child_health_read: %w", err)
